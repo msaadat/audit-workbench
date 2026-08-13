@@ -227,6 +227,48 @@ def _plain_json(value: object) -> object:
     return value
 
 
+def _model_facing_context(
+    request: WorkerRequest,
+    *exclude_source_ids: str,
+) -> dict[str, Any]:
+    """Serialize the resolved bundle as the audit material, without its transport.
+
+    Every resolved item carries a ``supplied_size`` block — item, character and
+    token counts, media tallies — and a ``representation`` envelope. Both exist
+    so the durable manifest can account for what was supplied and prove what the
+    worker saw. Neither tells the model anything about the engagement: the
+    counts describe the message being sent, and ``source_id`` already says what
+    kind of material each item is.
+
+    Across the validation engagement's analysis stages that envelope was around
+    an eighth of every prompt, and ``supplied_size`` alone was 9% of the summary
+    call. It is dropped here rather than in the bundle because the manifest must
+    keep it — this is the same projection ``workers.tests`` performs by
+    promoting item content, expressed for a bundle with too many source types to
+    promote one at a time.
+    """
+    context = request.context.to_dict()
+    excluded = set(exclude_source_ids)
+    items = []
+    for item in context["items"]:
+        if item.get("source_id") in excluded:
+            continue
+        projected = {
+            key: value
+            for key, value in item.items()
+            if key not in {"supplied_size", "representation"}
+        }
+        # The representation's ``kind`` names what the content is where a source
+        # supplies more than one shape of it; its ``options`` are resolver input
+        # the model never acts on.
+        kind = str((item.get("representation") or {}).get("kind") or "")
+        if kind:
+            projected["representation"] = kind
+        items.append(projected)
+    context["items"] = items
+    return context
+
+
 def _json_object(response: str) -> dict[str, Any]:
     try:
         value = json.loads(response)
@@ -1228,17 +1270,26 @@ def run_analysis_definition_worker(
     # The target schema is named once, above, in the shape the submission
     # tool's enums were built from. Repeating it inside the serialized bundle
     # bills the same 4 KB twice on every frame.
-    context = request.context.to_dict()
-    context["items"] = [
-        item
-        for item in context["items"]
-        if item.get("source_id") != TARGET_SCHEMA_SOURCE_ID
-    ]
+    #
+    # The analytics catalog leaves the bundle for a different reason. One
+    # definition turn is taken per frame, and the catalog is byte-identical on
+    # every one of them — the same ~1,500 tokens re-sent per frame. A provider
+    # can only reuse a prompt prefix it has already seen, and the prefix ends at
+    # the first byte that differs, so a stable block sitting behind the frame
+    # description can never be part of one. Promoted here it sits ahead of
+    # everything frame-specific, extending the identical head from the system
+    # prompt alone to the system prompt plus the catalog. Nothing is dropped:
+    # the same content is sent, earlier.
+    catalog = _plain_json(_resolved_item(request, ANALYTICS_REGISTRY_SOURCE_ID))
+    context = _model_facing_context(
+        request, TARGET_SCHEMA_SOURCE_ID, ANALYTICS_REGISTRY_SOURCE_ID
+    )
     hypotheses = [
         _plain_json(item) for item in _source_items(request, JOIN_HYPOTHESIS_SOURCE_ID)
     ]
     user = json.dumps(
         {
+            **({"ANALYTICS CATALOG": catalog} if catalog else {}),
             "TARGET FRAME": schema,
             # What this frame was admitted for. Present only on a frame the
             # utility gate retained a relationship for, and authoritative about
@@ -1747,7 +1798,7 @@ def run_analysis_summary_worker(
 ) -> str:
     """Transform only the supplied bundle into one budgeted model request."""
     user = json.dumps(
-        {"RESOLVED CONTEXT": request.context.to_dict()},
+        {"RESOLVED CONTEXT": _model_facing_context(request)},
         indent=1,
         ensure_ascii=False,
         default=str,

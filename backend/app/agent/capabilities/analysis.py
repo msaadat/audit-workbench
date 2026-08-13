@@ -23,7 +23,7 @@ from itertools import combinations
 from ... import analytics
 from ...text import counted, verb
 from ...analysis_results import analysis_result_state, summary_basis_digest
-from ...workspaces import Workspace
+from ...workspaces import Workspace, WorkspaceError
 from .. import joins as join_diagnostics
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import analysis as analysis_workflow
@@ -45,6 +45,21 @@ ANALYSIS_SUMMARY_REF = "analysis_summary:current"
 # scope, so the cap is what keeps an unscoped request from turning a large
 # workspace into an unbounded Polars sweep.
 MAX_SCOPE_TABLES = 6
+
+# A reference table is a lookup an auditor reads directly — an approval matrix
+# of four designations, a status list — not a population a procedure can
+# conclude about. One definition turn is spent per frame, so recognising one is
+# what stops the turn being spent at all: the validation engagement spent three
+# on a four-row approval matrix and got two completeness checks and a sign scan
+# reporting "No negatives".
+#
+# Recognised by two conditions together, because neither alone is sound. An
+# absolute floor would call every frame in a small workspace a lookup. A purely
+# relative rule would call a 200-row dimension a lookup beside a million-row
+# ledger, when 200 rows can carry a real conclusion. A frame is a lookup when it
+# is small in itself *and* dwarfed by what it sits beside.
+MIN_ANALYSABLE_FRAME_ROWS = 5
+LOOKUP_SCALE_RATIO = 10
 
 # Analyses this workflow authored. ``Workspace._apply_provenance`` stamps
 # ``created_by="agent"`` for any item carrying an ``agent_run_id``, and a manual
@@ -261,6 +276,53 @@ def chain_pairs(
             claimed.add(combined)
             pairs.append((chain, table))
     return tuple(pairs)
+
+
+def definable_targets(
+    workspace: Workspace, table_scope: TableScope
+) -> tuple[str, ...]:
+    """Scoped frames worth spending a model turn on.
+
+    One definition turn is made per frame, so a frame that cannot carry a
+    population conclusion costs a call and returns procedures that restate a
+    reference table. The validation engagement spent three turns on a four-row
+    approval matrix and got a completeness check, a second completeness check,
+    and a sign scan reporting "No negatives".
+
+    Only the frame's own size decides this. Join depth deliberately does not:
+    the single most valuable procedure in that engagement — the approval-limit
+    breach — came from a three-way join of requisitions, the approval matrix and
+    staff, and a depth cap would have removed exactly it.
+
+    A frame whose size cannot be established stays eligible. Pruning on absent
+    information would silently narrow the analysis rather than bound it.
+
+    Two guards keep this from becoming a way to analyse nothing. A scope the
+    auditor named explicitly is never pruned — asking for a frame is the answer
+    to whether it is worth analysing. And a scope where every frame is small is
+    a small workspace, not an empty one: the rule discriminates between frames,
+    so it cannot decide the whole engagement.
+    """
+    if table_scope.explicit:
+        return table_scope.targets
+    sizes: dict[str, int] = {}
+    for name in table_scope.targets:
+        try:
+            rows = workspace.get_profile(name).get("rows")
+        except (OSError, WorkspaceError):
+            continue
+        if isinstance(rows, int):
+            sizes[name] = rows
+    largest = max(sizes.values(), default=0)
+    eligible = tuple(
+        name
+        for name in table_scope.targets
+        if not (
+            0 < sizes.get(name, 0) < MIN_ANALYSABLE_FRAME_ROWS
+            and sizes[name] * LOOKUP_SCALE_RATIO <= largest
+        )
+    )
+    return eligible if eligible else table_scope.targets
 
 
 def agent_analyses(workspace: Workspace, table_scope: TableScope) -> list[dict]:
@@ -480,8 +542,15 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
     defined = {
         str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
     }
-    missing = [target for target in table_scope.targets if target not in defined]
-    details = {"targets": len(table_scope.targets), "defined": len(defined)}
+    targets = definable_targets(workspace, table_scope)
+    missing = [target for target in targets if target not in defined]
+    details = {
+        "targets": len(targets),
+        "defined": len(defined),
+        # Frames in scope that no definition turn will be spent on. Reported so
+        # a narrowed stage is visible rather than looking like full coverage.
+        "skipped": len(table_scope.targets) - len(targets),
+    }
     if not missing:
         return Readiness("satisfied", details=details)
     return Readiness(
@@ -506,7 +575,7 @@ def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             (f"{'join' if target in joins else 'table'}:{target}",),
             {"target": target},
         )
-        for target in table_scope.targets
+        for target in definable_targets(workspace, table_scope)
         if forced or target not in defined
     ]
 

@@ -85,6 +85,11 @@ gate APM generation on the analysis workflow having completed, or add an explici
 planning context. The adapter already exists (`backend/app/analysis_memo.py`,
 `flatten_embeds()`); it is the sequencing that is missing.
 
+Enforcing the ordering means paying the EDA's latency on the critical path of every engagement,
+which is what has made it unattractive. **§8 measures that cost, implements what can be recovered
+without raising provider concurrency, and prices the decision honestly at roughly two minutes per
+engagement.**
+
 **P2. Derive the audit period from the populations.** When the planning context supplies no
 period, state the observed min/max of the date columns as a *proposed* scope with a clear
 "to be confirmed" qualifier, rather than emitting `_[audit period — not available]_`. The memo
@@ -531,6 +536,226 @@ Without this, "the findings got better" stays a matter of opinion.
 | 6 | T1 / S3 — bypass warnings | Prevents the next silent regression |
 | 7 | T2 — Checkpoint C repeat with a non-zero cycle-test assertion | Tracked in `vouching-grid-plan.md`; no new design |
 | 8 | S6 — regression harness over Appendix A | Makes every fix above measurable |
+
+---
+
+## 8. Making the EDA fast enough to run before the APM
+
+Measured on run `20260809-160933-ea3678`, the analysis workflow that produced all 29 saved
+analyses and the memo.
+
+| | |
+|---|---|
+| Wall clock | **157.5s** (16:09:33.119 → 16:12:10.621) |
+| Model time | **153.4s** across 18 calls |
+| **Model wait as a share of wall clock** | **97.4%** |
+| Prompt tokens | 292,488 (largest of any run in the engagement) |
+| Completion tokens | 15,488 |
+| Cost | $0.046 |
+
+Local Polars execution of all 29 analyses, join inference and profiling together account for
+**about 4 seconds**. The EDA is not slow because it computes a lot. It is slow because it makes
+18 model calls one after another.
+
+### 8.1 Nothing in this pipeline runs concurrently
+
+LLM-seconds divided by wall-seconds, every run in the workspace:
+
+| Run | Stage | Calls | Model s | Wall s | Ratio |
+|---|---|---:|---:|---:|---:|
+| `…152235-5545ab` | document analysis | 8 | 110.1 | 110.3 | **1.00** |
+| `…153300-d20f7e` | test generation | 25 | 267.7 | 268.7 | **1.00** |
+| `…154605-2d9448` | document QA | 30 | 116.1 | 117.5 | **0.99** |
+| `…160933-ea3678` | **analysis / EDA** | 18 | 153.4 | 157.1 | **0.98** |
+| `…165554-d16221` | findings | 24 | 190.4 | 191.0 | **1.00** |
+
+A ratio of 1.00 means strictly serial — one call in flight at a time, everywhere, for the whole
+engagement. Total serialized model wait across all runs is **~21.9 minutes**.
+
+This is not a missing feature. The scheduler already implements a parallel barrier
+(`agent/workflow.py:30`, `PARALLEL_BARRIER = "all_settled_parallel"`) and
+`workflow_runner.py:425` fans units out under `max_llm_concurrency`, defaulting to 4. Two
+capabilities already declare the barrier — document chunks (`capabilities/documents.py:543`)
+and test generation (`capabilities/tests.py:155`).
+
+**Both are nonetheless serial, by design:**
+
+```python
+# backend/app/agent/routing.py:1029
+max_llm_concurrency=int(run.get("limits", {}).get("max_llm_concurrency") or 1),
+```
+
+Every run is installed with `max_llm_concurrency: 1`, which is a **deliberate choice to stay
+inside the LLM provider's rate limits**, not an oversight. The `or 4` default in the runner is
+consequently unreachable, since routing always sets the key.
+
+This is the binding constraint on everything below. The parallel barrier is built and correct,
+but raising it is a provider-capacity decision rather than a code one, so the optimisations in
+§8.4 all had to work without it — and the ceiling on what they can achieve follows directly.
+
+### 8.2 Where the 153 seconds go
+
+| Stage | Calls | Model s | Share |
+|---|---:|---:|---:|
+| `analysis_definitions` | 16 | **104.2** | 68% |
+| `analysis_summary` | 1 | **34.9** | 23% |
+| `join_utility` | 1 | 14.2 | 9% |
+
+Per-call prompt sizes for the 16 definition calls run 10.7k → 18.6k tokens, with **near-zero
+cached tokens** (one call reported 1,331; the rest reported 0). Two things drive the growth:
+frame width, and the `current_analyses` source — capped at 16,000 characters — which shows each
+call what earlier frames already produced so it does not repeat them.
+
+That duplicate-avoidance channel also couples the units to each other, which is the same
+coupling `docs/test-generation-quality.md` §5 already recommends removing from the test worker:
+*deduplicate after generation, not during it*. With concurrency fixed at 1 that coupling costs
+nothing today, but it is what any future batching or fan-out would have to undo first.
+
+### 8.3 The work itself is larger than it needs to be
+
+One model call is made **per frame**, and frames grow combinatorially: 6 tables and 14 joins
+produced 20 targets and 16 definition calls. What those calls bought:
+
+- **3 analyses over `financial_approval_matrix` — a 4-row reference table.** Two frames, two
+  full model calls, zero exceptions, and nothing a 4-row table could have yielded.
+  (`A-8E91E011`, `A-B6F3ACA1` completeness; `A-CE59BB14` "Invalid approval limit sign scan" —
+  verdict *"No negatives (0 zero value(s))"*.)
+- **`A-ACDFA399` duplicate-check on `REQUISITION_ID`** — a primary key whose profile already
+  records `distinct_pct` 100. Zero by construction.
+- **14 of 29 analyses returned zero exceptions** (48%).
+- **`A-94DC6898` weekend requisition approvals** — 29 of 108 rows flagged, which is a calendar
+  fact, not a control exception.
+- Four of the five three-way derived join frames produced no analysis at all, yet each still
+  cost a full model turn. The fifth is the counter-example that rules out a depth cap:
+  `requisitions_financial_approval_matrix_staff_details_joined_joined` is where the
+  approval-limit breach was found. Depth does not predict value here; frame size does.
+
+Meanwhile **all 29 analyses are marked `informative: true`** — the informativeness gate exists
+in the result contract and never fires, so nothing downstream can tell the shared bank accounts
+(`A-A86687CB`) from the sign scan on four rows.
+
+### 8.4 What was implemented
+
+Concurrency is fixed at 1 deliberately, to stay inside the provider's rate limits. E1 and E2 are
+therefore **struck** — not deferred. Everything below is independent of concurrency, and each
+change is measured against the recorded prompts of run `20260809-160933-ea3678` rather than
+estimated.
+
+**Implemented — A. Reference tables no longer claim a definition turn.**
+`capabilities/analysis.py`: `definable_targets()`, used by both the readiness check and the unit
+expansion so the stage cannot disagree with itself about its own scope.
+
+A frame is a lookup when it is **small in itself and dwarfed by what it sits beside** — under
+`MIN_ANALYSABLE_FRAME_ROWS` (5) *and* at least `LOOKUP_SCALE_RATIO` (10×) smaller than the
+largest frame in scope. Neither condition works alone: an absolute floor calls every frame in a
+small workspace a lookup, and a purely relative rule calls a 200-row dimension a lookup beside a
+million-row ledger. Two guards keep it from deciding an engagement — an explicitly named frame is
+never pruned, and a scope where everything is small is analysed in full.
+
+Measured on the procurement workspace: **2 of 20 frames pruned** — `financial_approval_matrix`
+and `financial_approval_matrix_staff_details_joined`, both 4 rows. The three-way
+`requisitions_financial_approval_matrix_staff_details_joined_joined` (112 rows) survives, which
+matters: it carried the approval-limit breach, the single most valuable analysis in the run.
+
+*This is materially less than the "5–6 of 16 calls" estimated in the first draft of this
+section.* Only two frames in the whole workspace are lookups, and the join-depth cap that
+estimate assumed would have removed the best result in the engagement. Frame pruning is correct
+and worth keeping, but it is a ~12% saving on the definition stage, not a third.
+
+**Implemented — B. The transport envelope no longer bills as audit material.**
+`workers/analysis.py`: `_model_facing_context()`, used by both analysis workers.
+
+Every resolved item carried a `supplied_size` block (item, character, token and media counts) and
+a `representation` envelope. Both exist so the durable manifest can account for what was supplied;
+neither says anything about the engagement. `workers/tests.py` already performs this projection —
+its docstring is explicit that the model needs the audit material and not the transport envelope —
+but the analysis workers serialized the bundle whole.
+
+Measured across the 16 re-parseable analysis-stage calls: **97,344 characters removed, 14.1% of
+context, ~24,300 prompt tokens.** No content the model reasons over is affected.
+
+**Implemented — C. The analytics catalog moved ahead of the frame description.**
+`workers/analysis.py`, definition worker.
+
+The catalog is byte-identical on all 16 calls — verified, one content hash across the run — at
+5,983 characters (~1,495 tokens) re-sent per frame. A provider can only reuse a prefix it has
+already seen, and the prefix ends at the first differing byte, so a stable block sitting behind
+the per-frame `TARGET FRAME` can never be part of one. Promoting it ahead of everything
+frame-specific costs nothing and lengthens the identical head.
+
+Measured shared prefix across the definition calls: **1,160 → 3,021 tokens (2.6×)**, total prompt
+characters **756,528 → 650,089 (−14.1%)**. This also lifts the prefix clear of the ~1,024-token
+minimum most providers require, which fits the observed behaviour: 15 of 16 calls reported zero
+cached tokens against a 1,149-token system prompt sitting right at that boundary.
+
+### 8.5 Not implemented, and why
+
+**E6 — the informativeness gate.** Attempted, then reverted. The gate only fires on *saturation*
+(a procedure flagging so much of its frame that the count is the population). Extending it to
+*vacuity* — a duplicates test on a key the profile already shows is unique — conflicts with a
+deliberate existing contract: `test_an_uninformative_proposal_is_run_and_dropped_before_it_is_saved`
+asserts that exactly such a check is the *good* proposal that must survive, and `informative` is
+load-bearing, so a false there **drops the procedure**. That is defensible — a uniqueness control
+that passes is audit evidence, not noise.
+
+Making this work needs a distinction the contract does not currently carry: *established
+nothing* (drop) versus *redundant with a cheaper signal* (keep, deprioritise). That is a contract
+change, not a tuning change, and it is the same field S1 would need for coverage reconciliation.
+Worth doing deliberately; not worth smuggling in as an optimization.
+
+**E4 as originally scoped — dropping zero-exception results from the memo.** Measuring the
+summary prompt showed the premise was wrong. Composition of its 126,930 characters:
+
+| Source | Items | Chars | Share |
+|---|---:|---:|---:|
+| `analysis_results` | 29 | 38,162 | 40.4% |
+| `analysis_anomalies` | 11 | 16,332 | 17.3% |
+| `table_profiles` | 6 | 11,920 | 12.6% |
+| `table_joins` | 14 | 11,844 | 12.5% |
+| `analysis_exceptions` | 4 | 7,017 | 7.4% |
+| `table_metadata` | 6 | 6,663 | 7.1% |
+
+The zero-exception results are not padding — they are the coverage record, and a memo that
+narrates only what failed cannot say what was tested and found clean. The genuinely wasteful 9%
+was the `supplied_size` envelope, which B removes. The rest is evidence the memo uses.
+
+### 8.6 Projected
+
+| | Wall clock | Basis |
+|---|---:|---|
+| Today | **157s** | measured |
+| Frame pruning (A) | ~144s | 2 of 16 calls removed, measured |
+| Envelope + catalog (B, C) | **~130–140s** | −14% prompt; latency gain is prompt-processing only, and the cache effect is unverified against the live provider |
+
+**Roughly 10–17%, not the 3× the concurrency-based plan projected.** With concurrency fixed at 1,
+the EDA stays a ~2.2-minute step, because 16 serialized round trips dominate and only removing
+round trips changes that materially.
+
+That reframes the P1 decision honestly: enforcing EDA-before-APM costs about two minutes of wall
+clock per engagement. The question is whether two minutes is acceptable on the critical path —
+and given §1, where the EDA layer independently found three of the highest-value missed issues,
+it very likely is. But it should be decided as a two-minute cost, not on a promise of 50 seconds.
+
+If that cost does need to come down further without raising concurrency, the only remaining lever
+of size is **making fewer calls**: one turn per frame is the design, and 20 frames from 6 tables
+is the multiplier. Batching several small frames into one turn, or proposing across the join
+family at once, would cut round trips in a way none of the above can.
+
+### 8.7 Verification
+
+```
+backend/tests/test_workflow_analysis.py::test_a_lookup_table_costs_no_definition_turn
+backend/tests/test_workflow_analysis.py::test_a_small_workspace_is_not_an_empty_one
+```
+
+Full suite: **1544 passed, 2 failed** — `test_completion_uses_execution_and_outcome_gates` and
+`test_synthetic_procurement_acceptance_from_population_to_preliminary_report`, both failing
+identically before these changes. The first is the separately tracked Phase 3 item recorded in
+`docs/vouching-grid-plan.md`.
+
+Measurements B and C were taken by replaying the recorded prompts in
+`Workspaces/procurement/Debug/LLMCalls/` through the new projection, so they are observed on real
+payloads rather than modelled. No agent run was executed and no workspace artifact was modified.
 
 ---
 

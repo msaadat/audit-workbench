@@ -358,6 +358,44 @@ def test_unscoped_request_is_bounded_and_reports_its_own_ambiguity():
     assert named.ambiguity is None
 
 
+def test_a_lookup_table_costs_no_definition_turn():
+    """One turn is taken per frame, so a reference table must not claim one."""
+    ws = workspaces.create_workspace("Lookup and ledger")
+    ledger = pl.DataFrame(
+        {
+            "id": list(range(1, 61)),
+            "grade": ["A", "B", "C"] * 20,
+            "amount": [float(value) for value in range(1, 61)],
+        }
+    )
+    ws.add_table("ledger.csv", ledger.write_csv().encode())
+    # Four rows beside sixty: small in itself and dwarfed by what it sits next
+    # to, which is what makes it a lookup rather than a small population.
+    grades = pl.DataFrame({"grade": ["A", "B", "C", "D"], "limit": [1, 2, 3, 4]})
+    ws.add_table("grades.csv", grades.write_csv().encode())
+
+    scope = analysis_capabilities.resolve_table_scope(ws, {})
+    assert set(scope.targets) == {"ledger", "grades"}
+    assert analysis_capabilities.definable_targets(ws, scope) == ("ledger",)
+
+    # Naming it is the answer to whether it is worth analysing.
+    named = analysis_capabilities.resolve_table_scope(ws, {"tables": ["grades"]})
+    assert "grades" in analysis_capabilities.definable_targets(ws, named)
+
+
+def test_a_small_workspace_is_not_an_empty_one():
+    """The rule discriminates between frames; it cannot decide an engagement."""
+    ws = workspaces.create_workspace("Small everywhere")
+    for name in ("left", "right"):
+        frame = pl.DataFrame({"id": [1, 2, 3], "value": [1, 2, 3]})
+        ws.add_table(f"{name}.csv", frame.write_csv().encode())
+
+    scope = analysis_capabilities.resolve_table_scope(ws, {})
+    # Every frame is under the floor, and none is dwarfed by another. Pruning
+    # here would analyse nothing at all, so nothing is pruned.
+    assert set(analysis_capabilities.definable_targets(ws, scope)) == {"left", "right"}
+
+
 def test_unknown_table_blocks_every_analysis_capability(workspace_with_data):
     scope = {"tables": ["not_imported"]}
     state = capability_registries.ANALYSIS_REGISTRY.workflow_state(
