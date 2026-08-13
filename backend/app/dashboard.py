@@ -365,7 +365,7 @@ def _engagement_state(workspace: Workspace) -> dict:
     report_errors = [issue for issue in quality["issues"] if issue["severity"] == "error"]
     report_issues = []
     if not str(current_report.get("markdown") or "").strip():
-        report_issues.append("The report has no Markdown content.")
+        report_issues.append("The report has not been drafted yet.")
     report_issues.extend(issue["message"] for issue in report_errors[:3])
     report_complete = (
         bool(str(current_report.get("markdown") or "").strip())
@@ -487,7 +487,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     if state_counts["manual_review"] or unresolved_exceptions:
         actions.append(_action("resolve-exceptions", "Resolve fieldwork exceptions", fieldwork_issues[-1], "doc-tests", priority="high"))
     if fieldwork_complete and not current_report.get("markdown"):
-        actions.append(_action("generate-report", "Generate the audit report", "Fieldwork is ready to be summarized in an evidence-linked report.", "report", priority="medium"))
+        actions.append(_action("generate-report", "Generate the audit report", "Fieldwork is ready to be summarised in an evidence-linked report.", "report", priority="medium"))
     if report_errors:
         actions.append(_action("fix-report-quality", "Resolve report quality errors", report_errors[0]["message"], "report", priority="high"))
     if broken_tiles:

@@ -128,6 +128,13 @@ function stageExternal(files: StagedFile[]) {
 }
 defineExpose({ stageExternal })
 
+/** Enter and Space open the file picker the label wraps. */
+function activatePicker(event: KeyboardEvent) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  ;(event.currentTarget as HTMLElement).querySelector('input')?.click()
+}
+
 function chooseFiles(event: Event) {
   const input = event.target as HTMLInputElement
   addStaged(Array.from(input.files ?? []).map((file) => ({ file, relativePath: file.name })))
@@ -332,11 +339,17 @@ function reset() {
         <strong>Drop files or folders here</strong>
         <span>Data tables (CSV, Excel) and documents (PDF, DOCX, images, text) are detected and routed automatically.</span>
         <div class="picker-actions">
-          <label class="picker-button">
+          <!-- Focusable, and marked `autofocus`: PrimeVue's Dialog always
+               moves focus on open and falls back to the header close button
+               when it finds nothing, so a dropzone built from plain <label>s
+               opened with a focus ring around "cancel". `tabindex` plus the
+               keydown handler make the label behave as the button it looks
+               like, for pointer and keyboard alike. -->
+          <label class="picker-button" tabindex="0" autofocus @keydown="activatePicker">
             <i class="pi pi-file" /> Choose files
             <input type="file" multiple @change="chooseFiles" />
           </label>
-          <label class="picker-button">
+          <label class="picker-button" tabindex="0" @keydown="activatePicker">
             <i class="pi pi-folder-open" /> Choose folder
             <input type="file" multiple webkitdirectory @change="chooseFolder" />
           </label>

@@ -38,7 +38,7 @@ interface RailEntry {
 const rail: RailEntry[] = [
   { section: 'dashboard', destination: 'dashboard', label: 'Dashboard', icon: 'pi pi-th-large' },
   { section: 'apm', destination: 'apm', label: 'APM', icon: 'pi pi-map', phase: 'planning' },
-  { section: 'coverage', destination: 'rcm', label: 'Coverage', icon: 'pi pi-table', phase: 'planning' },
+  { section: 'coverage', destination: 'rcm', label: 'RCM', icon: 'pi pi-table', phase: 'planning' },
   { section: 'data-tests', destination: 'data-tests', label: 'Data tests', icon: 'pi pi-shield' },
   { section: 'doc-tests', destination: 'doc-tests', label: 'Document tests', icon: 'pi pi-verified', phase: 'fieldwork' },
   { section: 'findings', destination: 'findings', label: 'Findings', icon: 'pi pi-flag', count: () => workspace.value.finding_count ?? 0 },

@@ -6,7 +6,12 @@ import '@milkdown/crepe/theme/frame.css'
 
 // WYSIWYG markdown editor: a thin v-model wrapper around Milkdown Crepe.
 // Crepe stores content as markdown natively, so it round-trips with workspace documents.
-const props = defineProps<{ modelValue: string }>()
+const props = withDefaults(defineProps<{ modelValue: string; placeholder?: string }>(), {
+  // Crepe ships "Please enter…", which is neither this product's voice nor
+  // this product's language. Callers override it with something about the
+  // document they are editing.
+  placeholder: 'Start writing, or generate a draft.',
+})
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
 
 const host = ref<HTMLElement>()
@@ -20,6 +25,7 @@ async function mount(value: string) {
     root: host.value,
     defaultValue: value,
     features: { [CrepeFeature.TopBar]: true },
+    featureConfigs: { [CrepeFeature.Placeholder]: { text: props.placeholder } },
   })
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, markdown, prev) => {

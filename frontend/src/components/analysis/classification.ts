@@ -1,6 +1,12 @@
 /**
  * Auditor-facing vocabulary for what a saved analysis concluded.
  *
+ * The labels deliberately match the Data tests and Document tests rails: a
+ * procedure that ran and found nothing says "No exception" on every surface,
+ * not "Clear" here and "No exception" next door. Only the states genuinely
+ * unique to a saved procedure — staleness, informational output — keep names
+ * of their own.
+ *
  * The server classifies every procedure once, from its durable result
  * (`analysis_results.analysis_state`). This module only names those
  * classifications — it never re-derives one from a live recomputation, which is
@@ -25,13 +31,13 @@ const META: Record<AnalysisSummaryClassification, ClassificationMeta> = {
     hint: 'This procedure concluded that the population contains exceptions.',
   },
   unusual: {
-    label: 'Unusual result',
+    label: 'Need review',
     severity: 'warn',
     icon: 'pi pi-exclamation-triangle',
     hint: 'This procedure returned something worth a look, short of an exception.',
   },
   execution_error: {
-    label: 'Execution issue',
+    label: 'Blocked',
     severity: 'danger',
     icon: 'pi pi-ban',
     hint: 'The definition could not run. Fix the spec, then run it again.',
@@ -49,7 +55,7 @@ const META: Record<AnalysisSummaryClassification, ClassificationMeta> = {
     hint: 'This procedure has never been executed, so it has concluded nothing.',
   },
   clear: {
-    label: 'Clear',
+    label: 'No exception',
     severity: 'success',
     icon: 'pi pi-check-circle',
     hint: 'This procedure ran and found nothing to report.',

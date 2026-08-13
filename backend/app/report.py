@@ -1062,7 +1062,8 @@ KEY_FINDINGS_SYSTEM = (
     "`recommendation` is one short imperative sentence: the action management "
     "should take, with no record identifiers.\n"
     "Never introduce a fact the narrative does not carry, never omit a supplied "
-    "finding, and keep every cell on one line."
+    "finding, and keep every cell on one line.\n"
+    "Use British spelling — analyse, summarise, recognise, organisation."
 )
 
 
@@ -1478,7 +1479,7 @@ def quality_checks(
     exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)
 
     if not text.strip():
-        issues.append(_issue("report_empty", "warning", "The report has no Markdown content."))
+        issues.append(_issue("report_empty", "warning", "The report has not been drafted yet."))
     for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", text):
         if not any(item.get("id") == match.group(1) for item in workspace.findings):
             issues.append(_issue("broken_report_citation", "error", f"The report cites missing finding {match.group(1)}.", [f"finding:{match.group(1)}"]))

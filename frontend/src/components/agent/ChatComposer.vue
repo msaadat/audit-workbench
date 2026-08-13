@@ -25,14 +25,19 @@ const emit = defineEmits<{
 const draft = ref('')
 const textareaRef = ref()
 const modeMenu = ref()
+// Labels match the New engagement dialog's "How should the agent work?" — the
+// same choice named two ways in two places reads as two settings.
 const modeOptions = [
-  { label: 'Auto', value: 'auto', hint: 'Apply workspace changes automatically' },
-  { label: 'Ask', value: 'permission', hint: 'Ask for approval before changes' },
+  { label: 'Auto', value: 'auto', hint: 'Apply changes as the work goes, and still stop when something needs you' },
+  { label: 'Ask first', value: 'permission', hint: 'Stop for your approval before committing any change' },
 ]
 const modeLabel = computed(() => modeOptions.find(option => option.value === props.mode)?.label ?? 'Auto')
+// The hint travels with the item so the menu can say what each mode does; a
+// bare "Auto / Ask first" made the reader guess which one commits work.
 const modeMenuItems = computed(() => modeOptions.map(option => ({
   label: option.label,
-  icon: option.value === props.mode ? 'pi pi-check' : undefined,
+  hint: option.hint,
+  selected: option.value === props.mode,
   command: () => emit('update:mode', option.value as AgentMode),
 })))
 const canSend = computed(() => {
@@ -130,7 +135,14 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
       <div class="toolbar">
         <Button class="control" icon="pi pi-paperclip" label="Context" outlined size="small" severity="secondary" @click="emit('documents')" />
         <Button class="control mode" :label="modeLabel" icon="pi pi-angle-down" iconPos="right" outlined size="small" severity="secondary" aria-haspopup="true" aria-controls="composer-mode-menu" @click="openModeMenu" />
-        <Menu id="composer-mode-menu" ref="modeMenu" :model="modeMenuItems" popup />
+        <Menu id="composer-mode-menu" ref="modeMenu" :model="modeMenuItems" popup>
+          <template #item="{ item, props: itemProps }">
+            <a class="mode-item" v-bind="itemProps.action">
+              <i class="pi" :class="item.selected ? 'pi-check' : 'pi-circle'" aria-hidden="true" />
+              <span><strong>{{ item.label }}</strong><small>{{ item.hint }}</small></span>
+            </a>
+          </template>
+        </Menu>
         <span class="grow" />
         <!-- Stopping a run is a first-class action, not something to hunt for
              inside an expanded card. -->
@@ -154,5 +166,6 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
 .composer :deep(textarea){width:100%;min-height:1.6rem;padding:.18rem 0;border:0;border-radius:0;background:transparent;box-shadow:none;font-size:var(--aw-text-sm);line-height:1.35;max-height:9rem;resize:none}
 .composer :deep(textarea:enabled:focus){border-color:transparent;outline:0;box-shadow:none}
 .toolbar{display:flex;align-items:center;gap:.35rem}.grow{flex:1}.control{font-size:var(--aw-text-xs)}.control :deep(.p-button-label){font-weight:600}.control :deep(.p-button-icon){font-size:var(--aw-text-xs)}.mode{min-width:3.15rem}.send{font-size:var(--aw-text-xs)}.send :deep(.p-button-label){font-weight:700}.send :deep(.p-button-icon){font-size:var(--aw-text-2xs)}.chips{display:flex;gap:.3rem;overflow:auto}.chips span{display:flex;align-items:center;gap:.25rem;flex:0 0 auto;max-width:11rem;padding:.25rem .4rem;border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-2xs)}.chips span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chips button{border:0;background:transparent;color:inherit;cursor:pointer;padding:0}
+.mode-item{display:flex;align-items:flex-start;gap:.5rem;padding:.5rem .7rem}.mode-item i{padding-top:.15rem;font-size:var(--aw-text-2xs);color:var(--aw-teal)}.mode-item span{display:grid;gap:.1rem}.mode-item strong{font-size:var(--aw-text-sm)}.mode-item small{max-width:18rem;color:var(--aw-muted);font-size:var(--aw-text-xs);line-height:1.35;white-space:normal}
 @media(max-width:520px){.composer{padding:.4rem}.control{padding-inline:.4rem}.control :deep(.p-button-label){display:none}.mode :deep(.p-button-label){display:inline}.send{padding-inline:.5rem}}
 </style>

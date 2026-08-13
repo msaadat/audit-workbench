@@ -102,7 +102,7 @@ COMMANDS: dict[str, Command] = {
         Command(
             "analyze_data", "data_analysis", "Analyze data",
             slash=("analyze data", "data analysis"),
-            description="Analyze available structured data and preserve useful validated work.",
+            description="Analyse available structured data and preserve useful validated work.",
             phrases=("analyze the data", "analyse the data", "explore the data"),
         ),
         Command(
@@ -126,7 +126,7 @@ COMMANDS: dict[str, Command] = {
         Command(
             "analyze_documents", "document_analysis", "Analyze documents",
             slash=("analyze documents", "document analysis"),
-            description="Analyze the documents in scope.",
+            description="Analyse the documents in scope.",
             phrases=(
                 "analyze the documents", "analyse the documents",
                 "summarize the documents", "summarise the documents",

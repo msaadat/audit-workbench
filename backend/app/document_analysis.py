@@ -776,7 +776,7 @@ def patch_review(workspace: Workspace, document_id: str, payload: dict) -> dict:
         raise WorkspaceError(f"Document '{document_id}' not found.")
     with document_lock(workspace, document_id):
         if not load_index(workspace, document_id).get("active_analysis_id"):
-            raise WorkspaceError("Analyze the document before editing its analysis.")
+            raise WorkspaceError("Analyse the document before editing its analysis.")
         review = load_review(workspace, document_id)
         if int(payload.get("review_revision", -1)) != int(review["revision"]):
             raise AnalysisConflict("Document analysis review changed; reload it before saving.")

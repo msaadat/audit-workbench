@@ -39,7 +39,7 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
 <template>
   <div class="rcm-grid">
     <div class="grid-head">
-      <div><strong>Risk &amp; Control Matrix</strong><small>{{ rows.length }} rows</small></div>
+      <div><strong>Risk and control matrix</strong></div>
       <Button label="Add risk" icon="pi pi-plus" size="small" outlined @click="emit('add')" />
     </div>
     <DataTable :value="rows" scrollable scrollHeight="60vh" size="small" stripedRows>

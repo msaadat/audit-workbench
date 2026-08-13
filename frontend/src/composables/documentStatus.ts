@@ -24,7 +24,7 @@ interface DocumentStatusOptions {
 export function documentStatus(doc: StatusFields, options: DocumentStatusOptions = {}): DocumentStatusSummary {
   const working: string[] = []
   if (doc.text_state === 'pending') working.push('Extracting text')
-  if (doc.analysis_run_state === 'queued' || doc.analysis_run_state === 'analyzing') working.push('Analyzing')
+  if (doc.analysis_run_state === 'queued' || doc.analysis_run_state === 'analyzing') working.push('Analysing')
   if (doc.search_index_state === 'pending' || doc.search_index_state === 'indexing') working.push('Indexing for search')
 
   const problems: string[] = []
@@ -43,7 +43,7 @@ export function documentStatus(doc: StatusFields, options: DocumentStatusOptions
   else if (doc.search_index_state === 'stale') problems.push('Search index stale')
 
   const analysisDetail = doc.analysis_coverage_state === 'none'
-    ? 'not analyzed'
+    ? 'not analysed'
     : `${doc.analysis_coverage_state}${doc.analysis_validity_state ? ` (${doc.analysis_validity_state})` : ''}`
   const detail = `Extraction: ${doc.text_state.replace('_', ' ')} · Analysis: ${analysisDetail} · Search: ${doc.search_index_state}`
 

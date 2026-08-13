@@ -70,8 +70,11 @@ onMounted(load)
       <div>
         <p class="eyebrow">Engagement index</p>
         <h1>Your audit workspaces</h1>
+        <p class="home-lede">An engagement holds the audit file — the planning memorandum, the risk and control matrix, the tests and their evidence, and the report they support. Bring in the folder and the assistant works through it with you.</p>
       </div>
-      <Button label="New engagement" icon="pi pi-plus" @click="showCreate = true" />
+      <!-- One primary action per screen. While the list is empty the empty
+           state below owns it; a hero button here made two. -->
+      <Button v-if="workspaces.length" label="New engagement" icon="pi pi-plus" @click="showCreate = true" />
     </div>
 
     <div v-if="loading" class="loading-grid">
@@ -81,7 +84,9 @@ onMounted(load)
       <div>
         <span class="empty-state-icon"><i class="pi pi-folder-open" /></span>
         <h3>Start your first engagement</h3>
-        <Button label="Create your first engagement" icon="pi pi-plus" @click="showCreate = true" />
+        <p>Name it, point it at the audit folder, and the assistant proposes the plan before it changes anything.</p>
+        <Button label="New engagement" icon="pi pi-plus" @click="showCreate = true" />
+        <p class="empty-aside"><a href="/about.html">Why this exists <i class="pi pi-arrow-up-right" /></a></p>
       </div>
     </div>
 
@@ -131,6 +136,12 @@ h1 {
   margin: 0 0 0.4rem;
   font-size: var(--aw-text-2xl);
 }
+
+.home-lede { max-width: 58ch; margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-base); line-height: 1.5; }
+.empty-aside { margin: 0.9rem 0 0; font-size: var(--aw-text-sm); }
+.empty-aside a { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--aw-teal); text-decoration: none; }
+.empty-aside a:hover { text-decoration: underline; }
+.empty-aside i { font-size: var(--aw-text-2xs); }
 
 .portfolio-strip { display: flex; align-items: stretch; margin-bottom: 1.2rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); overflow: hidden; }
 .portfolio-strip > span { display: flex; flex-direction: column; min-width: 10rem; padding: 0.8rem 1.2rem; border-right: 1px solid var(--aw-border); }

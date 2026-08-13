@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 export interface TriageCount {
   key: string
   label: string
@@ -6,8 +8,21 @@ export interface TriageCount {
   tone?: 'danger' | 'warn' | 'ok' | 'info' | 'muted'
 }
 
-defineProps<{ counts: TriageCount[]; active?: string | null }>()
+const props = defineProps<{ counts: TriageCount[]; active?: string | null }>()
 defineEmits<{ select: [key: string] }>()
+
+/**
+ * An outcome nothing matched is not a filter — it is a chip that can only ever
+ * produce an empty list. Half the Analysis toolbar was chips reading `0`, which
+ * spent the row on states the engagement has not reached.
+ *
+ * Two always survive: the first entry, which is the "all" escape hatch, and
+ * whichever filter is active — a chip must not vanish from under the click that
+ * selected it and strand the auditor on a list they cannot leave.
+ */
+const visible = computed(() => props.counts.filter(
+  (count, index) => count.value > 0 || index === 0 || count.key === props.active,
+))
 </script>
 
 <template>
@@ -16,7 +31,7 @@ defineEmits<{ select: [key: string] }>()
        they do not need 90px of vertical space on every fieldwork screen. -->
   <div class="triage" role="group" aria-label="Filter by outcome">
     <button
-      v-for="count in counts"
+      v-for="count in visible"
       :key="count.key"
       type="button"
       class="triage-chip"

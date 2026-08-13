@@ -99,7 +99,10 @@ function format(value: unknown, column: string): string {
       :class="{ 'num-col': numericColumns.has(column), 'aw-figure': figureColumns.has(column) }"
     >
       <template #body="{ data }">
-        <span :class="{ 'cell-null': data[column] === null || data[column] === undefined }">
+        <span
+          :class="{ 'cell-null': data[column] === null || data[column] === undefined }"
+          :title="format(data[column], column)"
+        >
           {{ format(data[column], column) }}
         </span>
       </template>
@@ -121,6 +124,18 @@ function format(value: unknown, column: string): string {
 <style scoped>
 :deep(.num-col) {
   text-align: right;
+}
+
+/* One line per cell. A single long value in a narrow column — a step label, an
+   item description — used to wrap to four lines and set the height of the whole
+   row, so a 43-row exception table showed four rows in a viewport. Rows are now
+   uniform and roughly ten fit; the full value is in the row's expansion, and
+   the title attribute carries it on hover. */
+:deep(.p-datatable-tbody > tr > td) {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cell-null::after {

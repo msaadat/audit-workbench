@@ -45,8 +45,10 @@ because the supplied evidence does not establish why the exception occurred.
 
 The narrative is copied into the audit report unchanged, so write final report
 prose: no first person, no test ids, run ids, or run mechanics, and no
-commentary about drafting. Any number you state must be a number the supplied
-execution result holds.
+commentary about drafting. Use British spelling throughout — analyse,
+summarise, recognise, organisation — so the deliverable matches the rest of the
+audit file. Any number you state must be a number the supplied execution result
+holds.
 
 Be specific. A finding that counts exceptions without identifying them is not
 actionable:

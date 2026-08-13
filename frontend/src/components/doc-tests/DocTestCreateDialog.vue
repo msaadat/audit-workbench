@@ -393,7 +393,7 @@ function submit() {
     <div v-if="step === 1" class="form">
       <label class="wide">
         Test shape
-        <Select v-model="shape" :options="shapes" optionLabel="label" optionValue="value" />
+        <Select v-model="shape" :options="shapes" optionLabel="label" optionValue="value" autofocus />
         <small>{{ selectedShape.hint }}</small>
       </label>
       <label class="wide">

@@ -24,4 +24,4 @@
 
 ## Key risks and planned response
 
-<!-- section: Summarize the risk assessment, planned reliance on controls, data analytics, and substantive procedures. Distinguish assumptions from established facts. Where the data analysis has already evidenced or contradicted a risk, say which. -->
+<!-- section: Summarise the risk assessment, planned reliance on controls, data analytics, and substantive procedures. Distinguish assumptions from established facts. Where the data analysis has already evidenced or contradicted a risk, say which. -->

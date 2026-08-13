@@ -23,6 +23,7 @@ import RcmGrid from './planning/RcmGrid.vue'
 import RcmControlAttributesEditor from './planning/RcmControlAttributesEditor.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiEmptyState from './ui/UiEmptyState.vue'
 import UiTestStatus from './ui/UiTestStatus.vue'
 import { plural } from '../format'
 
@@ -376,6 +377,14 @@ const copyOptions = [
 // the missing tests is frequent enough to earn a place in the header; the rest
 // are occasional, so they live behind one menu instead of seven controls.
 const agentBusy = computed(() => isActive.value || !agent.state.status?.configured)
+// An untouched memorandum gets an empty state rather than a blank editor: there
+// is nothing to attribute, nothing to save, and no reason to show a formatting
+// toolbar above nothing.
+const apmHasContent = computed(() => Boolean(data.value?.planning.apm_markdown?.trim()))
+/** Open the editor on a memorandum the auditor intends to write by hand. */
+function startApm() {
+  if (data.value) data.value.planning.apm_markdown = '# Audit planning memorandum\n\n'
+}
 const rcmActions = computed(() => [
   {
     label: 'Generate planning drafts',
@@ -448,10 +457,22 @@ const rcmActions = computed(() => [
       </template>
     </UiPageHeader>
     <section v-if="section === 'apm'" class="apm-view">
-      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide provenance' : 'Provenance'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
+      <!-- Provenance describes a document that exists. On an untouched
+           engagement the old unconditional label read "Auditor edited" over a
+           blank editor nobody had opened. -->
+      <div class="section-toolbar"><div><strong>Audit planning memorandum</strong><span v-if="apmHasContent" class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide provenance' : 'Provenance'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
       <input ref="apmImportInput" type="file" accept=".md,.markdown,.txt" hidden @change="importApm"/>
       <div class="apm-body" :class="{ 'with-rail': apmProvenanceOpen }">
-        <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
+        <UiEmptyState
+          v-if="!apmHasContent"
+          icon="pi pi-map"
+          title="No planning memorandum yet"
+          description="The assistant drafts it from the engagement material — the documents you imported, the planning context, and the risks already recorded. You can also write it yourself."
+        >
+          <Button label="Generate planning drafts" icon="pi pi-sparkles" :disabled="agentBusy" @click="generate" />
+          <Button label="Start writing" icon="pi pi-pencil" outlined @click="startApm" />
+        </UiEmptyState>
+        <div v-else class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown" placeholder="Write the planning memorandum, or generate a draft from the engagement material."/></div>
         <!-- Attribution is per artifact, which is what the sidecars record.
              There is no per-section trail because no per-section record exists. -->
         <ProvenanceRail v-if="apmProvenanceOpen" :workspaceId="workspace.id" artifactRef="planning:apm"/>
@@ -462,7 +483,7 @@ const rcmActions = computed(() => [
       <div class="view-toggle" role="group" aria-label="RCM view">
         <button :class="{ on: rcmView === 'board' }" :aria-pressed="rcmView === 'board'" @click="setRcmView('board')"><i class="pi pi-th-large"/>Board</button>
         <button :class="{ on: rcmView === 'grid' }" :aria-pressed="rcmView === 'grid'" @click="setRcmView('grid')"><i class="pi pi-table"/>Grid</button>
-        <span class="view-hint">{{ rcmView === 'board' ? 'Grouped by state of assurance. Switch to the grid to edit rows in bulk.' : `Edit, import, and export from here.` }}</span>
+        <span class="view-hint">{{ plural(data.rcm.length, 'risk') }} · {{ rcmView === 'board' ? 'grouped by state of assurance; switch to the grid to edit in bulk' : 'edit, import, and export from here' }}</span>
       </div>
       <CoverageBoard v-if="rcmView === 'board'" :rows="data.rcm" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @open="openRcm" @generate="generatePlannedTests"/>
       <RcmGrid v-else :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>

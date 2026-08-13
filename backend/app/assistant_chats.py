@@ -202,6 +202,28 @@ def _clean_title(content: str) -> str:
     return value[:59].rstrip() + "…"
 
 
+def _auto_title(workspace: Workspace, content: str, command_id: str | None) -> str:
+    """The name a chat gives itself from its opening message.
+
+    A message the auditor typed is their own words and makes the best title. A
+    message a shortcut generated is not: the phrasing is the app's, so nine
+    chats started from the same button all read
+    "Run all 28 Document Tests and preserve the results." and the list stopped
+    distinguishing anything. Those take the command's own short label, made
+    unique against the chats already in the workspace.
+    """
+    command = commands.COMMANDS.get(str(command_id or "")) if command_id else None
+    if command is None:
+        return _clean_title(content)
+    taken = {str(item.get("title") or "") for item in list_chats(workspace, limit=200)["chats"]}
+    if command.label not in taken:
+        return command.label
+    ordinal = 2
+    while f"{command.label} ({ordinal})" in taken:
+        ordinal += 1
+    return f"{command.label} ({ordinal})"
+
+
 def update_chat(workspace: Workspace, chat_id: str, changes: dict) -> dict:
     allowed = {"title", "document_ids"}
     if set(changes) - allowed:
@@ -582,7 +604,7 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                 record["next_ordinal"] += 1
                 record["messages"].append(user)
                 if record.get("title_source") != "user" and not any(item.get("role") == "user" for item in record["messages"][:-1]):
-                    record["title"] = _clean_title(content)
+                    record["title"] = _auto_title(workspace, content, command_id)
                 record["updated_at"] = utcnow()
                 write_json_atomic(path, record)
 

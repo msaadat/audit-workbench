@@ -15,6 +15,7 @@ import type { AuditReport, MarkdownTemplate, ReportContext, ReportQuality, Repor
 import MarkdownEditor from './MarkdownEditor.vue'
 import ReportReconcileDialog from './ReportReconcileDialog.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -138,6 +139,12 @@ function openIssueRef(ref: string) {
   else if (kind === 'rcm') void nav.replace('rcm', { rcm: id })
   else if (kind === 'analysis' || kind === 'ruleset') void nav.replace('data-tests')
 }
+const hasContent = computed(() => Boolean(report.value?.markdown?.trim()))
+/** Open the editor on a report the auditor intends to write by hand. */
+function startReport() {
+  if (report.value) report.value.markdown = '# Internal audit report\n\n'
+}
+
 function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.issues ?? []), ...(report.value?.quality.editorial ?? [])] }
 
 /**
@@ -146,13 +153,23 @@ function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.i
  * not name the problem. Anything unmapped still degrades to the humanised code.
  */
 const ISSUE_HEADINGS: Record<string, string> = {
-  stale_evidence: 'Evidence has changed since it was cited',
+  broken_evidence: 'A finding cites evidence that cannot be resolved',
+  broken_rcm_ref: 'A finding references an RCM row that no longer exists',
+  broken_report_citation: 'The report cites a finding that no longer exists',
   broken_test_ref: 'A finding references a test that no longer exists',
-  unsupported_finding: 'A finding has no supporting test result',
+  duplicate_finding: 'Two findings report nearly the same thing',
+  editorial_unavailable: 'Editorial review could not run',
   finding_draft: 'A finding is still a draft',
+  finding_missing_from_report: 'A confirmed finding is not cited in the report',
+  missing_limitations: 'Recorded scope limitations are not disclosed',
+  preliminary_label_missing: 'The report is not labelled as a preliminary draft',
+  report_arithmetic: "The report's finding count does not match the register",
+  report_empty: 'The report has not been drafted yet',
+  report_rating_unsupported: 'The report asserts a rating nothing supports',
+  report_risk_arithmetic: "The report's risk counts disagree with the RCM",
+  stale_evidence: 'Evidence has changed since it was cited',
   unresolved_exception: 'An exception has no recorded disposition',
-  missing_observation: 'An exception has no RCM observation',
-  risk_count_conflict: "The report's risk counts disagree with the RCM",
+  unsupported_finding: 'A finding has no supporting test result',
 }
 function issueHeading(code: string): string {
   return ISSUE_HEADINGS[code] ?? code.replaceAll('_', ' ')
@@ -216,7 +233,19 @@ const secondaryActions = computed(() => [
     <div class="report-nav"><SelectButton v-model="view" :options="views" optionLabel="label" optionValue="value" :allowEmpty="false"/><span v-if="report.generated_at" class="muted generated-at">Generated {{ report.generated_at.slice(0,16).replace('T',' ') }}</span></div>
 
     <section v-if="view === 'editor'" class="editor-view">
-      <div class="editor-pane card"><div class="pane-title"><strong>Report editor</strong><Button label="Save" icon="pi pi-save" size="small" :loading="busy" @click="save(true)"/></div><MarkdownEditor v-model="report.markdown" /></div>
+      <!-- Before generation there is nothing to edit and nothing to save, so the
+           section says what it will draw on instead of showing an empty editor
+           under a redundant "Report editor / Save" band. -->
+      <UiEmptyState
+        v-if="!hasContent"
+        icon="pi pi-file-edit"
+        title="No report drafted yet"
+        description="The draft is written from the audit file: the confirmed findings, the tests behind them, and the scope limitations recorded during fieldwork. Every figure it states is checked against the register."
+      >
+        <Button label="Generate report" icon="pi pi-sparkles" :loading="busy" @click="generate"/>
+        <Button label="Write it myself" icon="pi pi-pencil" outlined @click="startReport"/>
+      </UiEmptyState>
+      <div v-else class="editor-pane card"><div class="pane-title"><Button label="Save" icon="pi pi-save" size="small" :loading="busy" @click="save(true)"/></div><MarkdownEditor v-model="report.markdown" placeholder="Write the report, or generate a draft from the audit file."/></div>
     </section>
     <section v-else class="quality-view">
       <div class="quality-card card">
@@ -270,7 +299,7 @@ const secondaryActions = computed(() => [
 </template>
 
 <style scoped>
-.report-tab { min-width:0 }.report-head,.report-actions,.report-nav,.pane-title,.quality-head,.quality-counts { display:flex; align-items:center }.report-head { justify-content:space-between; gap:1rem; margin-bottom:.8rem }.report-head h2 { margin:.1rem 0 }.report-actions { justify-content:flex-end; gap:.4rem; flex-wrap:wrap }.generation-warning { display:flex; gap:.5rem; padding:.65rem .8rem; margin-bottom:.7rem; color:var(--aw-info); background:var(--aw-info-soft); border-radius:var(--aw-radius-control) }.report-nav { gap:.4rem; margin-bottom:.8rem }.grow { flex:1 }.editor-view { min-height:34rem }.editor-pane { display:flex; flex-direction:column; padding:1rem; min-width:0 }.pane-title { justify-content:space-between; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border); margin-bottom:.7rem }.editor-pane :deep(.markdown-editor) { flex:1; min-height:32rem }.quality-view { display:grid; grid-template-columns:minmax(0,1fr) 20rem; gap: var(--aw-section-gap) }.quality-card,.sources-card { padding:1rem }.quality-head { justify-content:space-between; gap:1rem; border-bottom:1px solid var(--aw-border); padding-bottom:.75rem }.quality-head p { margin:.2rem 0 0; color:var(--aw-muted); font-size:var(--aw-text-sm) }.quality-counts { gap:.4rem; flex-wrap:wrap }.issue-list { display:flex; flex-direction:column; gap:.55rem; margin-top:.8rem }.issue-list article { display:flex; align-items:flex-start; gap:.6rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.issue-list article > div { flex:1 }.issue-list p { margin:.2rem 0 }.refs { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.35rem }.refs button { border:1px solid var(--aw-border); background:var(--aw-teal-soft); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.2rem .45rem; cursor:pointer }.quality-ok { color:var(--aw-ok); padding:1rem }.sources-card h3 { margin-top:0 }.sources-card h4 { margin:.9rem 0 .35rem }.sources-card a { display:block; color:var(--aw-teal); margin:.35rem 0; text-decoration:none }.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem }.stats span { display:flex; flex-direction:column; padding:.55rem; background:var(--aw-canvas); border-radius:var(--aw-radius-control); font-size:var(--aw-text-xs); color:var(--aw-muted); text-transform:capitalize }.stats strong { color:var(--aw-ink); font-size:var(--aw-text-md) }.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }.muted { color:var(--aw-muted) }
+.report-tab { min-width:0 }.report-head,.report-actions,.report-nav,.pane-title,.quality-head,.quality-counts { display:flex; align-items:center }.report-head { justify-content:space-between; gap:1rem; margin-bottom:.8rem }.report-head h2 { margin:.1rem 0 }.report-actions { justify-content:flex-end; gap:.4rem; flex-wrap:wrap }.generation-warning { display:flex; gap:.5rem; padding:.65rem .8rem; margin-bottom:.7rem; color:var(--aw-info); background:var(--aw-info-soft); border-radius:var(--aw-radius-control) }.report-nav { gap:.4rem; margin-bottom:.8rem }.grow { flex:1 }.editor-view { min-height:34rem }.editor-pane { display:flex; flex-direction:column; padding:1rem; min-width:0 }.pane-title { justify-content:flex-end; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border); margin-bottom:.7rem }.editor-pane :deep(.markdown-editor) { flex:1; min-height:32rem }.quality-view { display:grid; grid-template-columns:minmax(0,1fr) 20rem; gap: var(--aw-section-gap) }.quality-card,.sources-card { padding:1rem }.quality-head { justify-content:space-between; gap:1rem; border-bottom:1px solid var(--aw-border); padding-bottom:.75rem }.quality-head p { margin:.2rem 0 0; color:var(--aw-muted); font-size:var(--aw-text-sm) }.quality-counts { gap:.4rem; flex-wrap:wrap }.issue-list { display:flex; flex-direction:column; gap:.55rem; margin-top:.8rem }.issue-list article { display:flex; align-items:flex-start; gap:.6rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.issue-list article > div { flex:1 }.issue-list p { margin:.2rem 0 }.refs { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.35rem }.refs button { border:1px solid var(--aw-border); background:var(--aw-teal-soft); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.2rem .45rem; cursor:pointer }.quality-ok { color:var(--aw-ok); padding:1rem }.sources-card h3 { margin-top:0 }.sources-card h4 { margin:.9rem 0 .35rem }.sources-card a { display:block; color:var(--aw-teal); margin:.35rem 0; text-decoration:none }.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem }.stats span { display:flex; flex-direction:column; padding:.55rem; background:var(--aw-canvas); border-radius:var(--aw-radius-control); font-size:var(--aw-text-xs); color:var(--aw-muted); text-transform:capitalize }.stats strong { color:var(--aw-ink); font-size:var(--aw-text-md) }.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }.muted { color:var(--aw-muted) }
 .editor-view { min-height:34rem }
 .generated-at { margin-left:auto }
 

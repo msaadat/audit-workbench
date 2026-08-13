@@ -120,7 +120,7 @@ GOAL_TEMPLATES: dict[str, dict] = {
         ),
     },
     "data_analysis": {
-        "objective": "Analyze available structured data and preserve useful validated work.",
+        "objective": "Analyse available structured data and preserve useful validated work.",
     },
     "analysis_execution": {
         "objective": "Execute the saved analysis procedures and record their results.",
@@ -132,7 +132,7 @@ GOAL_TEMPLATES: dict[str, dict] = {
     "table_relationships": {
         "objective": "Infer table relationships and materialize supported joins.",
     },
-    "document_analysis": {"objective": "Analyze the documents in scope."},
+    "document_analysis": {"objective": "Analyse the documents in scope."},
     "document_test_preparation": {
         "objective": "Write the executable specification for each drafted test.",
     },

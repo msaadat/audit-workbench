@@ -415,7 +415,7 @@ async function batchAnalyze() {
   try {
     await assistantChat.createChat()
     await assistantChat.send(
-      `Analyze ${eligible.length === 1 ? 'this document' : `these ${eligible.length} documents`}.`,
+      `Analyse ${eligible.length === 1 ? 'this document' : `these ${eligible.length} documents`}.`,
       'act', agent.launchMode.value,
       {
         command: 'analyze_documents', source: 'tab_button',
@@ -569,7 +569,7 @@ onUnmounted(() => {
   <section class="documents-tab">
     <UiPageHeader title="Documents">
       <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
-      <Button label="Analyze all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
+      <Button label="Analyse all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
       <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
 
@@ -667,7 +667,7 @@ onUnmounted(() => {
             <div>
               <strong>{{ selected.analysis_vision_used && selected.analysis_validity_state === 'current' ? 'Visual source—analysis available' : 'Visual source' }}</strong>
               <p v-if="selected.analysis_vision_used && selected.analysis_validity_state === 'current'">The extracted-text view is empty, but the current analysis includes an AI-derived visual transcription. Open the Analysis tab to review it.</p>
-              <p v-else-if="visionAvailable">This page has insufficient extractable text. Analyze it with the configured vision profile; the original remains the authoritative source.</p>
+              <p v-else-if="visionAvailable">This page has insufficient extractable text. Analyse it with the configured vision profile; the original remains the authoritative source.</p>
               <p v-else>This page has insufficient extractable text. You can start analysis now; it will remain an open item without a model charge until a vision profile is configured.</p>
             </div>
           </div>
@@ -708,7 +708,7 @@ onUnmounted(() => {
                 text
                 @click="openVisionSettings"
               />
-              <Button v-if="!analysis?.generated" label="Analyze" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
+              <Button v-if="!analysis?.generated" label="Analyse" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
               <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" />
               <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" @click="compareCandidate = !compareCandidate" />
             </div>
@@ -727,7 +727,7 @@ onUnmounted(() => {
           </div>
           <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity. It remains available to agent context; refresh it before relying on it as current.</span></div>
 
-          <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyze this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
+          <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyse this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
           <template v-else>
             <section class="analysis-editor">
               <header>

@@ -68,11 +68,11 @@ const triage = computed<TriageCount[]>(() => {
   const counts = summary.value?.counts
   return [
     { key: 'all', label: 'All procedures', value: analyses.value.length },
-    { key: 'exception', label: 'Exception', value: counts?.exception ?? 0, tone: 'danger' },
-    { key: 'unusual', label: 'Unusual result', value: counts?.unusual ?? 0, tone: 'warn' },
-    { key: 'errors', label: 'Execution issues', value: counts?.errors ?? 0, tone: 'danger' },
+    { key: 'exception', label: 'Exceptions', value: counts?.exception ?? 0, tone: 'danger' },
+    { key: 'unusual', label: 'Need review', value: counts?.unusual ?? 0, tone: 'warn' },
+    { key: 'errors', label: 'Blocked', value: counts?.errors ?? 0, tone: 'danger' },
     { key: 'stale', label: 'Rerun required', value: counts?.stale ?? 0, tone: 'warn' },
-    { key: 'clear', label: 'Clear', value: counts?.clear ?? 0, tone: 'ok' },
+    { key: 'clear', label: 'No exception', value: counts?.clear ?? 0, tone: 'ok' },
     { key: 'informational', label: 'Informational', value: counts?.informational ?? 0, tone: 'info' },
     { key: 'not_run', label: 'Not run', value: counts?.not_run ?? 0 },
   ]

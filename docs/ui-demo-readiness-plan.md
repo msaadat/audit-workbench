@@ -42,16 +42,17 @@ Severity is fixed by the review and does not change as work proceeds:
 
 | Section | Items | Blocker | Rough | Polish | Done |
 |---|---|---|---|---|---|
-| 01 Opening and engagement setup | 5 | 3 | 1 | 1 | 3 |
-| 02 File upload and import | 3 | 0 | 1 | 2 | 0 |
-| 03 Planning — APM and RCM | 4 | 1 | 2 | 1 | 1 |
-| 04 Data tests and document tests | 5 | 1 | 3 | 1 | 1 |
-| 05 Findings and report | 4 | 1 | 2 | 1 | 1 |
-| 06 Console and chat | 4 | 2 | 2 | 0 | 2 |
-| 07 System-wide | 4 | 2 | 1 | 1 | 2 |
-| **Total** | **29** | **10** | **12** | **7** | **10** |
+| 01 Opening and engagement setup | 5 | 3 | 1 | 1 | 4 |
+| 02 File upload and import | 3 | 0 | 1 | 2 | 1 |
+| 03 Planning — APM and RCM | 4 | 1 | 2 | 1 | 3 |
+| 04 Data tests and document tests | 5 | 1 | 3 | 1 | 4 |
+| 05 Findings and report | 4 | 1 | 2 | 1 | 3 |
+| 06 Console and chat | 4 | 2 | 2 | 0 | 4 |
+| 07 System-wide | 4 | 2 | 1 | 1 | 3 |
+| **Total** | **29** | **10** | **12** | **7** | **22** |
 
-**All 10 blockers are done.** What remains is 12 rough edges and 7 polish items.
+**All 10 blockers and all 12 rough edges are done.** What remains is 7 polish
+items: OP-5, IM-2, PL-4, TS-5, RP-4, SY-4, and the OP-0 "leave it alone" note.
 
 *(29 rows below; OP-0 is a "keep this as it is" note, not a change.)*
 
@@ -122,6 +123,47 @@ Not caused by this work, but present on `main` @ `5d69af1` and worth fixing sepa
 `test_rcm_central_e2e.py::test_synthetic_procurement_acceptance_from_population_to_preliminary_report`
 both fail on a clean checkout.
 
+### 2026-08-11 — the rough edges
+
+- **OP-4** `HomeView.vue` — one primary action instead of two (the hero button is suppressed while
+  the list is empty, so the empty state owns it), a sentence of positioning under the heading, and
+  a labelled "Why this exists" link to `about.html` rather than an unlabelled ⓘ.
+- **IM-1** `ImportDialog.vue`, `DocTestCreateDialog.vue` — PrimeVue 4's Dialog has no
+  `focusOnShow`; it always moves focus, searching footer → header → default slot for `[autofocus]`
+  and falling back to the header close button. The dropzone's pickers were plain `<label>`s, so
+  there was nothing to find. They now carry `tabindex`, `autofocus`, and keyboard activation, and
+  the document-test dialog's first Select is marked `autofocus`.
+- **PL-2** `AuditFileView.vue`, `RcmGrid.vue`, `PlanningTab.vue` — the rail, the heading and the
+  grid all say **RCM**, and the row count appears once, in the view toolbar.
+- **PL-3 / RP-3** `MarkdownEditor.vue` gained a `placeholder` prop (Crepe's untranslated "Please
+  enter…" was showing through), and both the APM and the report show a `UiEmptyState` with a
+  generate action instead of a blank editor. The APM's provenance label only renders once the
+  document has content.
+- **TS-2** `AnalysisTab.vue`, `analysis/classification.ts` — the same state now has the same name
+  everywhere: *Clear* → **No exception**, *Unusual result* → **Need review**, *Execution issue* →
+  **Blocked**, *Exception* → **Exceptions**. Only genuinely procedure-specific states (rerun
+  required, informational) keep names of their own.
+- **TS-3** `UiTriageCounts.vue` — chips with a zero count are hidden, so half the Analysis toolbar
+  stopped being dead filters. The first chip ("all") and the active filter always survive, so a
+  chip never vanishes from under the click that selected it.
+- **TS-4** `FrameTable.vue` — one line per cell with an ellipsis and a `title`. A long step label
+  in a narrow column was wrapping to four lines and setting the height of the whole row: exception
+  rows went from 73 px to a uniform 31 px, so roughly ten fit where four did.
+- **RP-2** `ReportTab.vue` — all 17 quality codes the backend emits map to written headings; a
+  test-time check confirmed none is missing. The `text-transform: capitalize` that was turning
+  those sentences back into Title Case is gone.
+- **CH-3** `ChatTranscript.vue` — the transcript column is capped at `46rem` and centred, so prose
+  no longer runs to ~190 characters per line on a presentation screen.
+- **CH-4** `ChatHistoryPanel.vue`, `ChatComposer.vue`, `assistant_chats.py` — icon-only new-chat
+  button, rename and delete moved into a per-row overflow menu on the active chat, titles clamped
+  to two lines. The composer's mode menu now describes each mode and calls the second one "Ask
+  first", matching the New engagement dialog. Chats started from a shortcut take the command's own
+  short label, made unique within the workspace, instead of the generated prompt — which is why
+  nine chats all read "Run all 28 Document Tests and preserve the results."
+- **SY-3** en-GB throughout the UI and in the report and finding prompts. Identifiers, API fields
+  and the routing phrase table keep their American spellings — routing already matched both, and
+  changing a phrase list would break input matching.
+
 ---
 
 ## 01 · Opening and engagement setup
@@ -177,7 +219,7 @@ outcome rather than the stage. Keep the flat list available behind a disclosure.
 **Done when** The dialog shows five named phases with a one-line description each; the twenty
 underlying steps remain reachable; `plan.outcomes` is unchanged for existing consumers.
 
-### `[ ]` OP-4 — The first screen does not say what the product is · **Rough**
+### `[x]` OP-4 — The first screen does not say what the product is · **Rough**
 
 **Where** `frontend/src/views/HomeView.vue`
 
@@ -214,7 +256,7 @@ The numbered **Add files → Upload → Review → Complete** wizard, the full-w
 the editable routing proposals are all well judged, and the dropzone copy is the register the
 rest of the app should adopt. Recorded here so it is not "tidied" by accident.
 
-### `[ ]` IM-1 — Opening the import dialog focuses the close button · **Rough**
+### `[x]` IM-1 — Opening the import dialog focuses the close button · **Rough**
 
 **Where** `frontend/src/components/ImportDialog.vue`,
 `frontend/src/components/doc-tests/DocTestCreateDialog.vue`
@@ -259,7 +301,7 @@ the board uses. Full text opens in the existing RCM detail dialog.
 **Done when** No cell is cut mid-word at 1366 px and roughly nine rows are visible.
 Mockup MU5 in the review is the specification.
 
-### `[ ]` PL-2 — The nav says "Coverage", the page says "RCM" · **Rough**
+### `[x]` PL-2 — The nav says "Coverage", the page says "RCM" · **Rough**
 
 **Where** `frontend/src/views/AuditFileView.vue`, `frontend/src/components/PlanningTab.vue`
 
@@ -270,7 +312,7 @@ Mockup MU5 in the review is the specification.
 
 **Done when** One name and one row count per screen.
 
-### `[ ]` PL-3 — An untouched APM is labelled "Auditor edited" · **Rough**
+### `[x]` PL-3 — An untouched APM is labelled "Auditor edited" · **Rough**
 
 **Where** `frontend/src/components/PlanningTab.vue`, `frontend/src/components/MarkdownEditor.vue`
 
@@ -319,7 +361,7 @@ tabs.
 **Done when** No rail card exceeds four lines total and cards are of uniform height.
 Mockup MU1 in the review is the specification.
 
-### `[ ]` TS-2 — Two parallel test systems with different status vocabularies · **Rough**
+### `[x]` TS-2 — Two parallel test systems with different status vocabularies · **Rough**
 
 **Where** `frontend/src/components/DataTestsTab.vue`, `frontend/src/components/AnalysisTab.vue`
 
@@ -334,7 +376,7 @@ a secondary attribute rather than a peer chip.
 
 **Done when** The same state has the same name on both surfaces.
 
-### `[ ]` TS-3 — Zero-count filter chips are always present · **Rough**
+### `[x]` TS-3 — Zero-count filter chips are always present · **Rough**
 
 **Where** `frontend/src/components/DataTestsTab.vue`, `frontend/src/components/DocTestsTab.vue`,
 `frontend/src/components/AnalysisTab.vue`
@@ -346,7 +388,7 @@ four dead chips out of eight.
 
 **Done when** No chip reads `0` unless it is the active filter.
 
-### `[ ]` TS-4 — Exception tables waste vertical space · **Rough**
+### `[x]` TS-4 — Exception tables waste vertical space · **Rough**
 
 **Where** `frontend/src/components/data-tests/ExceptionExplorer.vue`
 
@@ -390,7 +432,7 @@ traceability as named links.
 **Done when** No serialised object appears on the panel and every label is written English.
 Mockup MU4 in the review is the specification.
 
-### `[ ]` RP-2 — Quality issue titles are enum names · **Rough**
+### `[x]` RP-2 — Quality issue titles are enum names · **Rough**
 
 **Where** `frontend/src/components/ReportTab.vue`
 
@@ -402,7 +444,7 @@ and "Finding Draft" does not describe the problem.
 
 **Done when** Every quality issue heading is a sentence about the problem.
 
-### `[ ]` RP-3 — An empty report opens a blank editor · **Rough**
+### `[x]` RP-3 — An empty report opens a blank editor · **Rough**
 
 **Where** `frontend/src/components/ReportTab.vue`
 
@@ -465,7 +507,7 @@ stages where nothing needs attention.
 
 **Done when** No milestone card claims completion while its own body reports failures.
 
-### `[ ]` CH-3 — Transcript lines run 1,360 px wide at 1920 · **Rough**
+### `[x]` CH-3 — Transcript lines run 1,360 px wide at 1920 · **Rough**
 
 **Where** `frontend/src/components/agent/ChatTranscript.vue`
 
@@ -478,7 +520,7 @@ cards, tables and artifacts full-width.
 **Done when** Prose stays under about 90 characters per line at 1920 px.
 Mockup MU6 in the review is the specification.
 
-### `[ ]` CH-4 — Chat rail and composer details · **Rough**
+### `[x]` CH-4 — Chat rail and composer details · **Rough**
 
 **Where** `frontend/src/components/agent/ChatHistoryPanel.vue`,
 `frontend/src/components/agent/ChatComposer.vue`,
@@ -528,7 +570,7 @@ the value is rounded to whole megabytes.
 
 **Done when** Name and type are visibly separated and no table reports 0 MB.
 
-### `[ ]` SY-3 — Mixed British and American spelling · **Rough**
+### `[x]` SY-3 — Mixed British and American spelling · **Rough**
 
 **Where** `frontend/src/components/DocumentsTab.vue`, `frontend/src/components/AnalysisTab.vue`,
 `backend/app/templates/`, prompt templates
