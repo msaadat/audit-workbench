@@ -417,7 +417,8 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": ("planning.apm_ready",),
         "tests.specified": ("planning.rcm_ready",),
-        "fieldwork.executed": ("tests.specified",),
+        "tests.promoted_from_analysis": ("tests.specified",),
+        "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
         "results.rolled_up": ("fieldwork.executed",),
         "findings.drafted": ("results.rolled_up",),
         "working_papers.generated": ("results.rolled_up",),
@@ -459,6 +460,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "planning.apm_ready",
         "planning.rcm_ready",
         "tests.specified",
+        "tests.promoted_from_analysis",
         "fieldwork.executed",
         "results.rolled_up",
         "findings.drafted",
@@ -2180,6 +2182,10 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
         "over them, which is not the same as a procedure that found no exception.",
         "Incomplete execution-definition coverage: 1 execution-definition step "
         "failed and 1 required execution definition is missing.",
+        # Coverage from the data's side rather than the matrix's: this run
+        # imported one two-column table and produced no data test naming
+        # either column, which no per-control measure reports.
+        "No data test evaluates 2 imported columns: transactions (2 of 2).",
     ]
     assert "# Preliminary Internal Audit Working Draft" in current.report["markdown"]
     assert "Incomplete execution-definition coverage" in current.report["markdown"]

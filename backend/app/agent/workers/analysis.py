@@ -1883,3 +1883,236 @@ __all__ = [
     "validate_join_utility_proposal",
     "validate_analysis_summary",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# analysis.promotion
+# --------------------------------------------------------------------------- #
+ANALYSIS_PROMOTION_WORKER_ID = "analysis.promotion"
+PROMOTION_SUBJECT_SOURCE_ID = "promotion_subject"
+PROMOTION_RCM_SOURCE_ID = "rcm_rows"
+PROMOTION_TABLE_SOURCE_ID = "table_metadata"
+
+ANALYSIS_PROMOTION_SYSTEM = f"""[agent:analysis_promotion]
+You are placing one exploratory data-analysis procedure into the audit's risk
+and control matrix, or setting it aside.
+
+The procedure has already run and already flagged rows. Nothing asks you to
+decide whether its arithmetic is right or to reproduce what it found. You are
+answering one question: **is this procedure evidence about a control, and if so
+which one?**
+
+Promote when the condition the procedure flags would, if real, indicate that a
+control did not operate — an amount that should have agreed and did not, an
+authorisation that is missing or exceeded, a sequence that ran out of order, a
+record that should be unique and is not, a payment to a party that was not
+approved.
+
+Decline when the condition is a property of the data rather than a failure of a
+control: a calendar fact (activity on a weekend or a holiday), a distribution
+fact (a value unusual only relative to its own population), a descriptive
+count, or a data-quality observation with no control that would have prevented
+it. Declining is a real answer and the reason is recorded — say plainly what
+the procedure establishes and why that is not a control exception.
+
+Choosing the row. Pick the RCM row whose control the flagged condition would
+be a failure *of*. Where several could hold it, pick the one whose control
+requirement names the same thing the procedure measures. Do not create a row
+and do not pick a row merely because it mentions the same population.
+
+Writing the step.
+- Where `code` is supplied, it is the procedure that produced these exceptions.
+  Return it **unchanged** as the step's code. Do not rewrite, re-filter, tidy
+  or extend it.
+- Where `code` is empty, the procedure is a catalog test named by
+  `catalog_test` with `parameters`. Write the Polars step that performs exactly
+  that test over `frame`, using only the supplied schemas for column spelling.
+  Assign the flagged rows to `result`.
+- `population` is the base population the step asserts *about*, at its own
+  grain — for a test over invoices joined to purchase orders that is the
+  invoice population, not the joined frame. The code may read whichever frame
+  carries the columns; the declared population is what the conclusion is about.
+
+`title` names the test as an auditor would list it. `objective` states what the
+test determines, in one sentence, without asserting its outcome.
+
+{JSON_RULES}
+
+Return exactly one of:
+{{"promote": true, "rcm_id": "...", "title": "...", "objective": "...",
+  "step": {{"label": "...", "instruction": "...", "population": "...",
+           "code": "..."}}}}
+{{"promote": false, "reason": "..."}}"""
+
+
+def _promotion_subject(request: WorkerRequest) -> Mapping[str, Any]:
+    subject = _resolved_item(request, PROMOTION_SUBJECT_SOURCE_ID)
+    if not isinstance(subject, Mapping):
+        raise WorkerContractError(
+            "Analysis promotion requires exactly one supplied procedure."
+        )
+    return subject
+
+
+def _promotion_rows(request: WorkerRequest) -> list[object]:
+    return _source_items(request, PROMOTION_RCM_SOURCE_ID)
+
+
+def _promotion_response_schema(response: str) -> Mapping[str, Any]:
+    """Structural contract for one fitting decision."""
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError(
+            "the response must be a JSON object"
+        )
+    if "promote" not in payload or not isinstance(payload.get("promote"), bool):
+        raise WorkerResponseValidationError(
+            "the response must carry a boolean `promote`"
+        )
+    if not payload.get("promote"):
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise WorkerResponseValidationError(
+                "a declined procedure must carry a `reason` saying what it "
+                "establishes and why that is not a control exception"
+            )
+        return {"promote": False, "reason": reason}
+    errors = []
+    fields = {
+        key: str(payload.get(key) or "").strip()
+        for key in ("rcm_id", "title", "objective")
+    }
+    for key, value in fields.items():
+        if not value:
+            errors.append(f"a promoted procedure requires `{key}`")
+    step = payload.get("step")
+    if not isinstance(step, Mapping):
+        errors.append("a promoted procedure requires a `step` object")
+        step = {}
+    step_fields = {
+        key: str(step.get(key) or "").strip()
+        for key in ("label", "instruction", "population", "code")
+    }
+    for key, value in step_fields.items():
+        if not value:
+            errors.append(f"a promoted procedure requires `step.{key}`")
+    if errors:
+        raise WorkerResponseValidationError(errors)
+    return {"promote": True, **fields, "step": step_fields}
+
+
+def validate_promotion_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Check the fit against the material the turn was actually given.
+
+    Three things the supplied bundle can decide and the model cannot be trusted
+    to: that the chosen row exists, that a carried procedure was carried rather
+    than rewritten, and that the code is a valid sandbox program. The last is
+    checked here rather than left to the commit because a promotion that fails
+    at execution has already consumed its disposition — the analysis would read
+    as answered while nothing tests it.
+    """
+    if not proposal.get("promote"):
+        return proposal
+    errors: list[str] = []
+    rows = {
+        str(row.get("id") or "")
+        for row in _promotion_rows(request)
+        if isinstance(row, Mapping)
+    }
+    rcm_id = str(proposal.get("rcm_id") or "")
+    if rcm_id not in rows:
+        errors.append(
+            f"rcm_id '{rcm_id}' is not one of the supplied RCM rows; choose one "
+            f"of {', '.join(sorted(rows)) or 'the supplied rows'}"
+        )
+    step = proposal.get("step") or {}
+    code = str(step.get("code") or "")
+    carried = str(_promotion_subject(request).get("code") or "").strip()
+    # A procedure that already ran is evidence. A rewritten one is a different
+    # procedure with the first one's exception count attached to it, which is
+    # the single most misleading artifact this capability could produce.
+    if carried and code.strip() != carried:
+        errors.append(
+            "the supplied procedure carries its own code and must be promoted "
+            "unchanged; return step.code exactly as supplied"
+        )
+    if "result" not in code:
+        errors.append("step.code must assign the flagged rows to `result`")
+    try:
+        sandbox.validate(code)
+    except Exception as error:  # noqa: BLE001 - surfaced as a repairable error
+        errors.append(f"step.code is not a valid sandbox program: {error}")
+    if errors:
+        raise WorkerResponseValidationError(errors)
+    return proposal
+
+
+def run_analysis_promotion_worker(
+    request: WorkerRequest, gateway: ModelGateway, attempt: WorkerAttempt
+) -> str:
+    """Transform one candidate procedure and the matrix into one fitting turn."""
+    subject = _promotion_subject(request)
+    prompt = json.dumps(
+        {
+            "PROCEDURE": subject,
+            "RCM ROWS": _promotion_rows(request),
+            "TABLE SCHEMAS": _source_items(request, PROMOTION_TABLE_SOURCE_ID),
+            "REQUIRED OUTPUT": (
+                "Return one JSON object: a promotion naming an exact rcm_id, or "
+                "a decline carrying a reason."
+            ),
+        },
+        indent=1,
+        ensure_ascii=False,
+    )
+    if attempt.is_repair:
+        prompt += "\nRepair the prior response: " + "; ".join(
+            attempt.validation_errors
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "analysis_promotion",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(
+        ANALYSIS_PROMOTION_SYSTEM, prompt, activity, attempt=attempt.number
+    )
+
+
+ANALYSIS_PROMOTION_WORKER = WorkerDefinition(
+    worker_id=ANALYSIS_PROMOTION_WORKER_ID,
+    implementation_hash=_sha256_text(
+        inspect.getsource(run_analysis_promotion_worker)
+        + inspect.getsource(_promotion_subject)
+        + inspect.getsource(_promotion_rows)
+    ),
+    prompt_hash=_sha256_text(ANALYSIS_PROMOTION_SYSTEM),
+    response_schema=WorkerResponseSchema(
+        schema_id="analysis.promotion.response",
+        schema_hash=_sha256_text(
+            "analysis-promotion-response:v1:promote-or-decline"
+        ),
+        validator=_promotion_response_schema,
+    ),
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the fit against the supplied RCM rows, schemas, and the "
+            "procedure's own code."
+        ),
+    ),
+    implementation=run_analysis_promotion_worker,
+    semantic_validation_hash=_sha256_text(
+        inspect.getsource(validate_promotion_proposal)
+    ),
+    semantic_validator=validate_promotion_proposal,
+)
+WORKERS.register(ANALYSIS_PROMOTION_WORKER)

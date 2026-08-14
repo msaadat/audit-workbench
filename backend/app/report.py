@@ -10,7 +10,15 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from . import data_tests, debug_store, doc_tests, llm, rcm_execution, templates_store
+from . import (
+    column_coverage,
+    data_tests,
+    debug_store,
+    doc_tests,
+    llm,
+    rcm_execution,
+    templates_store,
+)
 from .text import counted, verb
 from .documents import append_activity
 from .findings import CAUSE_SECTION_KEYS, artifact, support_issues
@@ -307,6 +315,17 @@ def _incomplete_coverage(
         ],
         "failed_execution_definition_units": failed_definitions,
         "missing_execution_definitions": missing_definitions,
+        # The same distinction one level out from ``untested_controls``. That
+        # counts controls the matrix wrote and no procedure covered; this
+        # counts columns of the supplied populations that no procedure names at
+        # all — a gap no matrix row has to exist for anyone to have.
+        "untested_columns": column_coverage.untested_column_warning(
+            completion.get("untested_columns") or []
+        ),
+        "undispositioned_analyses": int(
+            completion.get("undispositioned_analyses") or 0
+        ),
+        "declined_analyses": int(completion.get("declined_analyses") or 0),
     }
 
 
@@ -341,6 +360,22 @@ def _coverage_warnings(coverage: dict) -> list[str]:
             "Incomplete execution-definition coverage: "
             f"{counted(failed_definitions, 'execution-definition step')} failed and "
             f"{counted(missing_definitions, 'required execution definition')} {verb(missing_definitions, 'is', 'are')} missing."
+        )
+    columns = str(coverage.get("untested_columns") or "").strip()
+    if columns:
+        warnings.append(columns)
+    declined = int(coverage.get("declined_analyses") or 0)
+    if declined:
+        warnings.append(
+            f"{counted(declined, 'exploratory procedure')} that flagged records "
+            f"{verb(declined, 'was', 'were')} reviewed and judged not to evidence "
+            "a control failure; each carries a recorded reason."
+        )
+    pending = int(coverage.get("undispositioned_analyses") or 0)
+    if pending:
+        warnings.append(
+            f"{counted(pending, 'exploratory procedure')} flagged records and "
+            f"{verb(pending, 'was', 'were')} neither tested nor dispositioned."
         )
     return warnings
 

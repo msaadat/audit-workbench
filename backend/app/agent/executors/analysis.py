@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from ... import analysis_results, sandbox
+from ... import analysis_promotion, analysis_results, data_tests, sandbox
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
@@ -43,6 +43,7 @@ JOIN_EXECUTOR_ID = "analysis.join"
 DEFINITIONS_EXECUTOR_ID = "analysis.definitions"
 EXECUTION_EXECUTOR_ID = "analysis.execution"
 SUMMARY_EXECUTOR_ID = "analysis.summary"
+PROMOTION_EXECUTOR_ID = "analysis.promotion"
 
 AUDITOR_ANALYSIS_PRESERVED = "auditor_owned_analysis_preserved"
 # Every accepted definition was run and none of them separated anything. Like
@@ -1054,6 +1055,178 @@ def reconcile_analysis_summary(
     )
 
 
+# --------------------------------------------------------------------------- #
+# analysis.promotion
+# --------------------------------------------------------------------------- #
+@dataclass
+class PromotionExecutorTarget:
+    """One saved procedure's fitting decision, and where it commits."""
+
+    workspace: Workspace
+    run_id: str
+    analysis_id: str
+
+    @property
+    def parent_ref(self) -> str:
+        return analysis_ref(self.analysis_id)
+
+
+def _promotion_analysis(workspace: Workspace, analysis_id: str) -> dict:
+    analysis = next(
+        (
+            item
+            for item in workspace.analyses
+            if str(item.get("id")) == str(analysis_id)
+        ),
+        None,
+    )
+    if analysis is None:
+        raise WorkspaceError(f"Analysis '{analysis_id}' no longer exists.")
+    return analysis
+
+
+def _validated_promotion(
+    request: ExecutorRequest, raw_target: object
+) -> tuple[PromotionExecutorTarget, Mapping]:
+    if not isinstance(raw_target, PromotionExecutorTarget):
+        raise WorkspaceError("Analysis promotion requires its own target.")
+    decision = request.proposal if isinstance(request.proposal, Mapping) else {}
+    if "promote" not in decision:
+        raise WorkspaceError("A promotion proposal must carry a decision.")
+    return raw_target, decision
+
+
+def execute_analysis_promotion(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Commit one procedure's disposition, and the test it became.
+
+    Both halves land in one transaction guarded on the analysis. A promotion
+    that wrote the test and not the disposition would re-promote on the next
+    run; one that wrote the disposition and not the test would record the
+    procedure as answered while nothing tests it. The second failure is the one
+    this capability exists to prevent, so it may not be reachable through the
+    capability's own commit.
+    """
+    target, decision = _validated_promotion(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        analysis = _promotion_analysis(fresh, target.analysis_id)
+        sha1 = analysis_promotion.result_sha1(analysis)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if not decision.get("promote"):
+            analysis[analysis_promotion.PROMOTION_FIELD] = (
+                analysis_promotion.declined_record(
+                    result_sha1=sha1,
+                    reason=str(decision.get("reason") or ""),
+                    agent_run_id=target.run_id,
+                    decided_at=now,
+                )
+            )
+            fresh.save()
+            return {"state": analysis_promotion.DECLINED, "test_id": ""}
+        step = dict(decision.get("step") or {})
+        semantic = f"datatest:promoted:{target.analysis_id}"
+        item = data_tests.create(
+            fresh,
+            {
+                "id": f"DAT-{analysis_stable_id(semantic)[4:]}",
+                "semantic_id": semantic,
+                "title": str(decision.get("title") or ""),
+                "objective": str(decision.get("objective") or ""),
+                "rcm_id": str(decision.get("rcm_id") or ""),
+                "engine": "polars",
+                "steps": [step],
+                "spec": {"schema_version": 2, "steps": [step]},
+                "agent_run_id": target.run_id,
+                # Provenance the report and the coverage assertion both read:
+                # this test exists because a saved procedure found something.
+                "source_analysis_id": target.analysis_id,
+            },
+        )
+        analysis = _promotion_analysis(fresh, target.analysis_id)
+        analysis[analysis_promotion.PROMOTION_FIELD] = (
+            analysis_promotion.promoted_record(
+                result_sha1=sha1,
+                test_id=str(item["id"]),
+                rcm_id=str(decision.get("rcm_id") or ""),
+                agent_run_id=target.run_id,
+                decided_at=now,
+            )
+        )
+        fresh.save()
+        return {"state": analysis_promotion.PROMOTED, "test_id": str(item["id"])}
+
+    committed = mutate(
+        target.workspace, commit, expected_parents=request.expected_parents
+    )
+    target.workspace = committed.workspace
+    outcome = committed.value
+    refs = [target.parent_ref]
+    if outcome["test_id"]:
+        refs.append(f"datatest:{outcome['test_id']}")
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=state["revision_before"],
+        workspace_revision_after=committed.workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(committed.workspace, refs),
+        output={
+            "status": "committed",
+            "analysis_id": target.analysis_id,
+            **outcome,
+        },
+    )
+
+
+def reconcile_analysis_promotion(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    """Classify an interrupted promotion commit.
+
+    The disposition is the evidence. It is written in the same transaction as
+    the test and stamped with the ``result_sha1`` it answered, so its presence
+    proves the whole commit landed and its absence proves none of it did.
+    """
+    target, _decision = _validated_promotion(request, raw_target)
+    current = Workspace(target.workspace.root)
+    parent_ref = target.parent_ref
+    analysis = next(
+        (
+            item
+            for item in current.analyses
+            if str(item.get("id")) == str(target.analysis_id)
+        ),
+        None,
+    )
+    if analysis is None:
+        return ExecutorReconciliation(
+            "conflict", reason=f"Analysis '{target.analysis_id}' no longer exists."
+        )
+    if analysis_promotion.disposition(analysis) is not None:
+        return ExecutorReconciliation(
+            "applied", postcondition_hashes=parent_hashes(current, [parent_ref])
+        )
+    return ExecutorReconciliation("not_applied")
+
+
+PROMOTION_EXECUTOR = ExecutorDefinition(
+    executor_id=PROMOTION_EXECUTOR_ID,
+    implementation_hash=_sha256_text(inspect.getsource(execute_analysis_promotion)),
+    reconciliation_hash=_sha256_text(
+        inspect.getsource(reconcile_analysis_promotion)
+    ),
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_analysis_promotion,
+    reconciler=reconcile_analysis_promotion,
+)
+
+
 JOIN_EXECUTOR = ExecutorDefinition(
     executor_id=JOIN_EXECUTOR_ID,
     implementation_hash=_sha256_text(inspect.getsource(execute_join)),
@@ -1094,6 +1267,7 @@ EXECUTORS.register(JOIN_EXECUTOR)
 EXECUTORS.register(DEFINITIONS_EXECUTOR)
 EXECUTORS.register(EXECUTION_EXECUTOR)
 EXECUTORS.register(SUMMARY_EXECUTOR)
+EXECUTORS.register(PROMOTION_EXECUTOR)
 
 
 __all__ = [

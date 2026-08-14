@@ -1338,6 +1338,68 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
+        preset_id="analysis.promotion",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="promotion_subject",
+                    source_type="analyses",
+                    required=True,
+                    # The adapter scopes this source to the single candidate
+                    # the unit is about, so "all" is one procedure here.
+                    selector=ContextSelector(selector_id="analyses.all"),
+                    # One procedure per turn: its definition, its verdict and
+                    # its counts. Never the rows it flagged — deciding which
+                    # control a procedure is evidence about is a judgement
+                    # about the procedure, not about what it caught, so this
+                    # preset has no reason to request the row permission and
+                    # deliberately does not.
+                    representations=(ContextRepresentation("analysis_result"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="rcm_rows",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    # Every row, not a lexically ranked subset. The fit is a
+                    # choice among the whole matrix, and a ranked shortlist
+                    # would decide it by the same prose overlap that was
+                    # measured not to separate — every analysis in one
+                    # engagement matched some row at 4-11 shared tokens.
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=80, max_characters=48_000),
+                ),
+                ContextSource(
+                    id="table_metadata",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # Column spelling. A carried procedure needs none of this,
+                    # but a catalog procedure's step has to be written, and a
+                    # step naming a column that does not exist fails at commit.
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=24, max_characters=24_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=105, max_characters=80_000),
+            privacy=ContextPrivacy(
+                # ``current_artifact`` is authored audit text and travels under
+                # the document-text permission, the same way the RCM rows reach
+                # ``planning.rcm``. No engagement row of any kind is admitted:
+                # neither table-row permission is declared, and the flagged
+                # rows behind the procedure stay in their sidecar.
+                allow_document_text=True,
+                allow_table_metadata=True,
+                allow_analysis_results=True,
+            ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
         preset_id="documents.analysis_chunk",
         spec=ContextSpec(
             sources=(

@@ -2471,6 +2471,79 @@ def analysis_summary_scope(workspace: Workspace) -> ContextScope:
     )
 
 
+PROMOTION_SUBJECT_SOURCE_ID = "promotion_subject"
+PROMOTION_RCM_SOURCE_ID = "rcm_rows"
+PROMOTION_TABLE_SOURCE_ID = "table_metadata"
+
+# What a fitting turn is shown of an RCM row. The narrative and the control
+# requirements decide which control a flagged condition would be a failure of;
+# planned tests, rollups and evidence references say nothing about that and
+# would put the row's existing conclusions in front of a turn whose whole job
+# is to judge the row's coverage independently of them.
+_PROMOTION_ROW_FIELDS = (
+    "id",
+    "process",
+    "risk",
+    "risk_rating",
+    "control",
+    "control_attributes",
+)
+
+
+def promotion_scope(workspace: Workspace, analysis_id: str) -> ContextScope:
+    """Build the candidate scope for fitting one saved procedure to the matrix.
+
+    The procedure is supplied through ``analysis_promotion.fitting_subject``
+    rather than through the memo's result projection: that projection carries
+    bounded statistics and verdict text a memo narrates, and this turn needs
+    the *definition* — the catalog test and its parameters, or the code — which
+    is what decides whether the step can be carried through unchanged.
+    """
+    from ...analysis_promotion import fitting_subject
+
+    analysis = next(
+        (
+            item
+            for item in workspace.analyses
+            if str(item.get("id")) == str(analysis_id)
+        ),
+        None,
+    )
+    subject = fitting_subject(analysis or {})
+    return ContextScope(
+        candidates={
+            PROMOTION_SUBJECT_SOURCE_ID: (
+                (
+                    ContextCandidate(
+                        source_ref=f"analysis:{analysis_id}",
+                        source=subject,
+                        representations={"analysis_result": subject},
+                        metadata={"analysis_id": str(analysis_id)},
+                    ),
+                )
+                if analysis is not None
+                else ()
+            ),
+            PROMOTION_RCM_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=f"rcm:{row['id']}",
+                    source=projection,
+                    representations={"current_artifact": projection},
+                    metadata={"rcm_id": str(row["id"])},
+                )
+                for row in workspace.rcm
+                for projection in (
+                    {key: row.get(key) for key in _PROMOTION_ROW_FIELDS},
+                )
+            ),
+            PROMOTION_TABLE_SOURCE_ID: apm_table_metadata_candidates(
+                workspace, imported_only=False
+            ),
+        },
+        selector_context={},
+    )
+
+
 DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
@@ -2808,6 +2881,10 @@ __all__ = [
     "analysis_aggregate_candidates",
     "analysis_definition_scope",
     "analysis_relationship_candidates",
+    "PROMOTION_SUBJECT_SOURCE_ID",
+    "PROMOTION_RCM_SOURCE_ID",
+    "PROMOTION_TABLE_SOURCE_ID",
+    "promotion_scope",
     "APM_DOCUMENT_SOURCE_ID",
     "APM_METHODOLOGY_SOURCE_ID",
     "APM_TABLE_METADATA_SOURCE_ID",

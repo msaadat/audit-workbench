@@ -42,6 +42,7 @@ from .context import (
     analysis_definition_scope,
     join_utility_scope,
     analysis_summary_scope,
+    promotion_scope,
 )
 from .executors import EXECUTORS, ExecutorReceipt
 from .executors.analysis import (
@@ -51,6 +52,7 @@ from .executors.analysis import (
     AnalysisDefinitionExecutorTarget,
     AnalysisExecutionExecutorTarget,
     AnalysisSummaryExecutorTarget,
+    PromotionExecutorTarget,
     JoinExecutorTarget,
     NO_INFORMATIVE_ANALYSIS,
     analysis_ref,
@@ -1079,6 +1081,130 @@ class AnalysisWorkflowExecution(BaseRunner):
                 capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
                     "analysis_summary" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
+
+    # ---------------------------------------------------- analysis.promoted
+    def _bind_promotion(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind one saved procedure's fitting decision to the shared pipeline.
+
+        Guarded on the analysis rather than on the RCM row, because the row is
+        chosen by the turn and is not known until the proposal exists. The
+        disposition and the test it becomes commit together under that guard,
+        so an interrupted unit is either wholly applied or wholly absent.
+        """
+        self.ws = subject
+        analysis_id = str((unit.get("payload") or {}).get("analysis_id") or "")
+        if not analysis_id:
+            analysis_id = unit["parent_refs"][0].split(":", 1)[1]
+        parent_ref = f"analysis:{analysis_id}"
+        expected = parent_hashes(self.ws, [parent_ref])
+        target = PromotionExecutorTarget(self.ws, self.run["id"], analysis_id)
+        task = self.add_task(
+            "analysis_promotion",
+            "workflow:analysis_promotion",
+            "Analyses placed in the matrix",
+        )
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                promotion_scope(self.ws, analysis_id),
+            )
+
+        def approval_provider(proposal):
+            # Permission mode gates the writing of audit artifacts. A promotion
+            # writes a Data Test against a control and is gated like any other
+            # generated test; a decline writes only the run's own record that it
+            # considered the procedure and set it aside. Asking an auditor to
+            # approve each of those would put a confirmation in front of every
+            # exploratory procedure to record that nothing was produced from it.
+            if not proposal.get("promote"):
+                return dict(proposal)
+            summary = f"Test for {proposal.get('rcm_id')} from this analysis."
+            accepted = self.request_approval(
+                "analysis_promotion",
+                task,
+                [
+                    self.proposal_item(
+                        str(proposal.get("title") or "Analysis placement"),
+                        summary,
+                        dict(proposal),
+                    )
+                ],
+            )
+            return dict(accepted[0]["spec"]) if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            if outcome.receipt is None:
+                return
+            output = outcome.receipt.output
+            state = str(output.get("state") or "")
+            test_id = str(output.get("test_id") or "")
+            if test_id:
+                self.record_artifact("datatest", test_id, "", "created", task)
+                self.task_detail(
+                    task,
+                    f"{analysis_id} became Data Test {test_id}.",
+                )
+                self.emit(
+                    "workspace_changed",
+                    {"kind": "datatest", "id": test_id, "action": "created"},
+                )
+            else:
+                # A decline is an answer, and an answer nobody can read is not
+                # one. It reaches the run record here rather than only the
+                # analysis, so the stage reports what it set aside and why.
+                self.task_detail(task, f"{analysis_id} set aside — {state}.")
+            self.task_status(task, "completed")
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="analysis.promotion",
+                executor_id="analysis.promotion",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": [parent_ref],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected,
+                capability_definition_hash=workflow.capability_definition_hash(
+                    capability
+                ),
+                approval_kind=(
+                    "analysis_promotion"
+                    if self.run["mode"] == "permission"
+                    else None
                 ),
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=unit.get("receipt_sidecar"),

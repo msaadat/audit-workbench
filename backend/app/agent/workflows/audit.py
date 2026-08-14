@@ -69,7 +69,23 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
     "tests.specified": ("planning.rcm_ready",),
-    "fieldwork.executed": ("tests.specified",),
+    # Placing an exploratory procedure needs the matrix to place it in. It sits
+    # after test generation so a promoted test is written against a matrix whose
+    # own tests already exist, and before fieldwork so a promoted test is
+    # executed with everything else — a procedure carried into a test and then
+    # never run has not been carried anywhere.
+    #
+    # ``analysis.executed`` is deliberately *not* an edge here, for the reason
+    # the memo is not an edge into planning: it would make exploratory analysis
+    # a prerequisite of every request that reaches fieldwork, so asking for one
+    # finding draft would schedule the whole branch. Ordering is not at risk
+    # from leaving it out — the analysis capabilities are declared first in the
+    # registry, so any closure containing them places them before
+    # ``tests.specified``, and a closure that omits them has no procedure to
+    # place. Readiness is satisfied when nothing is pending, which is exactly
+    # the state of a workspace that ran no exploratory analysis.
+    "tests.promoted_from_analysis": ("tests.specified",),
+    "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
     "working_papers.generated": ("results.rolled_up",),

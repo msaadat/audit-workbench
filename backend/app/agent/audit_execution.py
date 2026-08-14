@@ -1364,7 +1364,12 @@ _PARTIAL_DEPENDENCIES = {
     "documents.analysis_chunks_ready": {"documents.text_ready"},
     "documents.analysis_generated": {"documents.analysis_chunks_ready"},
     "planning.context_ready": {"documents.analysis_generated"},
-    "fieldwork.executed": {"tests.specified"},
+    # Promotion is additive: it carries an exploratory procedure into a test
+    # the engagement would not otherwise have. A fit the model could not make
+    # is one test the audit does not gain, and must never withhold the tests it
+    # already has — without this, one unsatisfiable placement blocked every
+    # data and document test in the engagement.
+    "fieldwork.executed": {"tests.specified", "tests.promoted_from_analysis"},
     "results.rolled_up": {"fieldwork.executed"},
     "report.working_draft": {"findings.drafted"},
     "audit.verified": {
@@ -1487,6 +1492,10 @@ def build_audit_workflow_runner(
         "analysis.summarized": (
             analysis_adapter._bind_summary,
             {"worker": "analysis.summary", "executor": "analysis.summary"},
+        ),
+        "tests.promoted_from_analysis": (
+            analysis_adapter._bind_promotion,
+            {"worker": "analysis.promotion", "executor": "analysis.promotion"},
         ),
     }
     _ANALYSIS_DETERMINISTIC_BINDERS = {

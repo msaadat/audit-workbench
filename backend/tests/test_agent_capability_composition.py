@@ -312,8 +312,11 @@ def test_only_independent_non_committing_unit_expansions_declare_the_parallel_ba
     bound. Document chunks qualify because a chunk reads no other chunk; test
     generation qualifies because one unit is one RCM row, the turn reads no other
     unit's output, and the commit guards exactly that row's parent hash against a
-    freshly read workspace. Everything else commits into shared planning state
-    and stays serialized, so this pins the set rather than the two members.
+    freshly read workspace. Analysis promotion qualifies for the same reason one
+    step out: one unit is one saved procedure, and each commits its disposition
+    and the test it became under that procedure's own parent hash. Everything
+    else commits into shared planning state and stays serialized, so this pins
+    the set rather than its members.
     """
     parallel = {
         capability.id
@@ -321,4 +324,8 @@ def test_only_independent_non_committing_unit_expansions_declare_the_parallel_ba
         if capability.barrier == workflow.PARALLEL_BARRIER
     }
 
-    assert parallel == {"documents.analysis_chunks_ready", "tests.specified"}
+    assert parallel == {
+        "documents.analysis_chunks_ready",
+        "tests.specified",
+        "tests.promoted_from_analysis",
+    }

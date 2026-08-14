@@ -275,6 +275,10 @@ def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -
         "created_by": "agent" if payload.get("agent_run_id") else "user",
         "agent_run_id": payload.get("agent_run_id"),
         "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
+        # Set only on a test promoted from a saved analysis. It is what lets
+        # the coverage assertion check that an exploratory procedure which
+        # found exceptions actually became something the audit executes.
+        "source_analysis_id": str(payload.get("source_analysis_id") or "") or None,
         "created": now,
         "updated": now,
     }

@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from . import cycle_vouching, data_tests, doc_tests
+from . import analysis_promotion, column_coverage, cycle_vouching, data_tests, doc_tests
 from .evidence import normalize_anchor
 from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import Workspace
@@ -960,4 +960,19 @@ def completion(
         "assurance_gaps": assurance_gaps,
         "evidence_ceilings": evidence_ceilings,
         "pending_cycle_dispositions": pending_cycle_dispositions,
+        # What the audit never framed a procedure over, from the data's side
+        # rather than the matrix's. Reported alongside the ceilings because it
+        # is the same disclosure one level out: a ceiling says a conclusion
+        # claims more than its evidence, this says a population holds columns
+        # no evidence was gathered about at all. Counts only — this payload is
+        # embedded whole into the report's model context, which is not given
+        # the shape of the data.
+        "untested_columns": column_coverage.untested_column_summary(workspace),
+        # The promotion guarantee, restated as something the run can say about
+        # itself: a saved procedure that computed exceptions and was neither
+        # carried into a test nor recorded as declined is the exact loss the
+        # promotion capability exists to close, so a non-empty count here is a
+        # regression rather than a scope note.
+        "undispositioned_analyses": len(analysis_promotion.candidates(workspace)),
+        "declined_analyses": len(analysis_promotion.declined(workspace)),
     }

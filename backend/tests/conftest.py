@@ -268,6 +268,13 @@ class FakeAgentLLM:
         "agent:join_utility": _join_utility_response,
         "agent:analysis_definitions": _analysis_definitions_response,
         "agent:analysis_summary": _analysis_summary_response,
+        # A decline is a complete answer and needs no knowledge of a fixture's
+        # matrix, so it is the default every existing agent-run test gets. The
+        # promotion path is exercised explicitly by the tests that override it.
+        "agent:analysis_promotion": {
+            "promote": False,
+            "reason": "The procedure describes the population rather than a control.",
+        },
         "agent:fix_code": {"code": "result = transactions.head(0)"},
         "agent:document_analysis_map": _document_analysis_response,
     }

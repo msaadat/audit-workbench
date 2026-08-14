@@ -17,7 +17,13 @@ declared context. The dependency edges come from the authoritative graph in
 
 from __future__ import annotations
 
-from ... import cycle_vouching, doc_tests, document_analysis, rcm_execution
+from ... import (
+    analysis_promotion,
+    cycle_vouching,
+    doc_tests,
+    document_analysis,
+    rcm_execution,
+)
 from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
@@ -25,7 +31,10 @@ from ..workflows import audit as audit_workflow
 from ._shared import rows as _rows
 from ._shared import target_rcm_ids as _target_rcm_ids
 
-CAPABILITY_IDS: tuple[str, ...] = ("tests.specified",)
+CAPABILITY_IDS: tuple[str, ...] = (
+    "tests.specified",
+    "tests.promoted_from_analysis",
+)
 
 
 def _scoped_manifest(workspace: Workspace, scope: dict) -> list[dict]:
@@ -195,6 +204,82 @@ def _generation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     return units
 
 
+# --------------------------------------------------------------------------- #
+# tests.promoted_from_analysis
+# --------------------------------------------------------------------------- #
+def _promotion_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Whether every procedure that found something has been answered for.
+
+    Satisfied when nothing is pending, including the case where no analysis
+    ever ran: this capability adds no work of its own and must not turn an
+    engagement that did no exploratory analysis into an incomplete one.
+
+    Deliberately not scoped by table. A procedure's disposition is a statement
+    about the audit's coverage of it, and narrowing an unscoped request to six
+    base tables would leave the rest silently unanswered — which is the exact
+    shape of the loss this capability exists to close.
+    """
+    if not workspace.rcm:
+        return Readiness(
+            "blocked",
+            ("no RCM rows exist to fit a promoted procedure to",),
+            blocking_on=("planning.rcm_ready",),
+        )
+    pending = analysis_promotion.candidates(workspace)
+    details = {
+        "pending": len(pending),
+        "exceptions": sum(
+            analysis_promotion.exception_count(item) for item in pending
+        ),
+    }
+    if not pending:
+        return Readiness("satisfied", details=details)
+    return Readiness(
+        "missing",
+        (
+            f"{counted(len(pending), 'saved analysis', 'saved analyses')} holding "
+            f"exceptions {verb(len(pending), 'has', 'have')} neither become a test "
+            "nor been recorded as declined",
+        ),
+        details=details,
+    )
+
+
+def _promotion_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    if not workspace.rcm:
+        return []
+    return [
+        UnitSpec(
+            semantic_unit_id("analysis_promotion", str(item["id"])),
+            "analysis_promotion",
+            f"Place analysis — {item.get('title') or item['id']}",
+            (f"analysis:{item['id']}",),
+            {"analysis_id": str(item["id"])},
+        )
+        for item in analysis_promotion.candidates(workspace)
+    ]
+
+
+def _analysis_promoted() -> Capability:
+    return Capability(
+        "tests.promoted_from_analysis",
+        "analysis_promotion",
+        "Analyses placed in the matrix",
+        "analysis_promotion",
+        audit_workflow.dependencies("tests.promoted_from_analysis"),
+        _promotion_ready,
+        _promotion_units,
+        context="analysis.promotion",
+        # One unit is one saved procedure. The units read no shared state and
+        # each commits under its own analysis' parent hash, so the ordering
+        # between them is immaterial and the stage is free to fan out.
+        barrier="all_settled_parallel",
+        # A rewritten RCM invalidates every fit: a procedure placed against a
+        # row that no longer exists is a placement nobody made.
+        invalidate_on=("rcm",),
+    )
+
+
 def _tests_specified() -> Capability:
     return Capability(
         "tests.specified",
@@ -218,6 +303,7 @@ def _tests_specified() -> Capability:
 
 _BUILDERS = {
     "tests.specified": _tests_specified,
+    "tests.promoted_from_analysis": _analysis_promoted,
 }
 
 

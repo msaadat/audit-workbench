@@ -764,6 +764,10 @@ _NEXT_STEPS: dict[str, tuple[str, str]] = {
     "planning.apm_ready": ("Draft the APM", "Draft the APM."),
     "planning.rcm_ready": ("Generate the RCM", "Generate the RCM."),
     "tests.specified": ("Draft the tests", "Draft the tests the RCM rows still need."),
+    "tests.promoted_from_analysis": (
+        "Place saved analyses",
+        "Place the saved analyses that found exceptions into the matrix.",
+    ),
     "doc_tests.executed": ("Run document tests", "Run the outstanding Document Tests."),
     "findings.drafted": ("Draft findings", "Draft findings."),
     "report.working_draft": ("Draft the report", "Draft the report."),
