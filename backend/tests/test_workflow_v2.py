@@ -2174,8 +2174,8 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
     assert completed["status"] == "completed_with_failures"
     assert current.report["markdown"]
     assert current.report["generation_warnings"] == [
-        "Incomplete planning coverage: 0 planning steps failed and "
-        "1 required planning item is missing.",
+        "1 control in the matrix was not tested: no procedure was performed "
+        "over them, which is not the same as a procedure that found no exception.",
         "Incomplete execution-definition coverage: 1 execution-definition step "
         "failed and 1 required execution definition is missing.",
     ]

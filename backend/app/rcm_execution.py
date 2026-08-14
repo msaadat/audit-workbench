@@ -14,7 +14,22 @@ from . import cycle_vouching, data_tests, doc_tests
 from .evidence import normalize_anchor
 from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import Workspace
-from .text import counted
+from .text import counted, relevance_tokens
+
+# A document test of this kind asks whether the documentation *describes* a
+# control. That is design inquiry: it can establish that a policy exists and
+# never that the population complies with it.
+_DESIGN_INQUIRY_VARIANTS = frozenset({"qa"})
+# Distinct words of a requirement that an executed test must name before the
+# requirement counts as covered. One shared word is coincidence, two is a
+# subject.
+MIN_COVERAGE_TOKEN_MATCH = 2
+# Carried by the tokenizer because they are long enough to look like content.
+# Harmless when ranking, where noise cancels; not harmless against a threshold,
+# where "are" alone can make a requirement look covered.
+_EMPTY_WORDS = frozenset(
+    {"and", "are", "for", "from", "not", "that", "the", "their", "them", "this", "with"}
+)
 
 
 _DURABLE_DOC_TEST_STATUSES = frozenset({
@@ -552,6 +567,74 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
     return status, exceptions, open_exceptions, executed, evidence_refs
 
 
+def _evidence_ceiling(row: dict, test_rollups: list[dict]) -> str:
+    """Why this row's evidence cannot support ``effective``, or an empty string.
+
+    One invariant: a conclusion may never be stronger than the evidence class
+    behind it. Two ways a row breaks it, both observed in the same engagement —
+    a critical vendor-integrity row concluded from documentation inquiry alone,
+    and a vendor-master row that reached "effective" on two tests checking that
+    IDs were unique and status values spelled correctly, while the requirement
+    naming bank-account changes went untested underneath.
+
+    The remedy is a downgrade with a stated scope limitation, never a hard
+    failure: the tests that did run are real evidence for what they covered.
+    """
+    contributing = [item for item in test_rollups if item["conclusion_eligible"]]
+    if not contributing:
+        return ""
+    if all(item["variant"] in _DESIGN_INQUIRY_VARIANTS for item in contributing):
+        return (
+            "Every test contributing to this conclusion asks whether the "
+            "documentation describes the control. Design inquiry cannot "
+            "establish that the population complies with it."
+        )
+    executed = set().union(
+        *(set(item["subject_tokens"]) for item in contributing), set()
+    ) - _EMPTY_WORDS
+    # A transaction_cycle attribute declares its evidence through the registry
+    # contract, and the cycle evaluator checks the comparisons that contract
+    # names. Its coverage is established structurally, so matching its wording
+    # against a test title decides nothing and only caps rows that were in fact
+    # vouched.
+    vouched = any(item["variant"] == "cycle_vouch" for item in contributing)
+    attributes = [
+        attribute
+        for attribute in row.get("control_attributes") or []
+        if isinstance(attribute, dict)
+        and not (vouched and attribute.get("evidence_kind") == "transaction_cycle")
+    ]
+    # What this detects is *selective* testing: a row that decomposed its
+    # control into several requirements and then evidenced only some of them.
+    # A single-attribute row cannot be selectively tested, and comparing one
+    # requirement's wording against one test's title is not a measurement — it
+    # caps rows whose evidence is real and whose phrasing merely differs.
+    if len(attributes) < 2:
+        return ""
+    wording = [
+        relevance_tokens(attribute.get("requirement")) - _EMPTY_WORDS
+        for attribute in attributes
+    ]
+    # What makes each requirement different from its siblings. A row about
+    # vendor master data has "vendor" in every attribute, so matching on it
+    # says only that the tests were about vendors — the question is whether
+    # anything executed named *bank account changes*, and the shared words are
+    # exactly what hides that.
+    shared = set.intersection(*wording)
+    uncovered = [
+        str(attribute.get("key") or attribute.get("requirement") or "")
+        for attribute, tokens in zip(attributes, wording)
+        if len((tokens - shared) & executed) < MIN_COVERAGE_TOKEN_MATCH
+    ]
+    if uncovered:
+        return (
+            "No executed test names the subject of "
+            f"{counted(len(uncovered), 'control requirement')}: "
+            f"{', '.join(sorted(uncovered))}."
+        )
+    return ""
+
+
 def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
     """Recompute one test's outcome from its own durable results."""
     item = test["item"]
@@ -609,6 +692,14 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
     return {
         "test_id": test["id"],
         "kind": test["kind"],
+        # The evidence class, not the storage class: `kind` says which store a
+        # test lives in, `variant` says what sort of evidence it produced.
+        "variant": (
+            str(item.get("kind") or "") if test["kind"] == "doctest" else "data"
+        ),
+        "subject_tokens": sorted(
+            relevance_tokens(item.get("title")) | relevance_tokens(item.get("objective"))
+        ),
         "title": str(item.get("title") or ""),
         "executed_count": executed,
         "exception_count": exceptions,
@@ -681,6 +772,11 @@ def rollup(
             control_conclusion = "not_applicable"
         else:
             control_conclusion = "no_conclusion"
+        evidence_ceiling = ""
+        if control_conclusion == "effective":
+            evidence_ceiling = _evidence_ceiling(row, test_rollups)
+            if evidence_ceiling:
+                control_conclusion = "partially_effective"
         # The row-level conclusion is this tally: how much of the linked work
         # completed, how much of it passed, and what it produced.
         row_rollup = {
@@ -716,6 +812,7 @@ def rollup(
                 }
             ),
             "control_conclusion": control_conclusion,
+            "evidence_ceiling": evidence_ceiling,
             "findings": len(row.get("finding_refs") or []),
             "review_status": row.get("review_status") or "draft",
             "test_rollups": test_rollups,
@@ -814,6 +911,17 @@ def completion(
         and not (row.get("execution_rollup") or {}).get("conclusion_eligible_tests")
         and (row.get("execution_rollup") or {}).get("supplemental_tests")
     ]
+    # A conclusion that was capped rather than earned. Reported separately from
+    # the rows that reached no conclusion at all, because "we tested less than
+    # this claims" and "we could not look" are different disclosures.
+    evidence_ceilings = [
+        {
+            "rcm_id": row["id"],
+            "reason": str((row.get("execution_rollup") or {}).get("evidence_ceiling")),
+        }
+        for row in workspace.rcm
+        if (row.get("execution_rollup") or {}).get("evidence_ceiling")
+    ]
     pending_cycle_dispositions = [
         {
             "rcm_id": row["id"],
@@ -850,5 +958,6 @@ def completion(
         "blocked_without_plan": blocked_without_plan,
         "rcm_without_conclusion": rcm_without_conclusion,
         "assurance_gaps": assurance_gaps,
+        "evidence_ceilings": evidence_ceilings,
         "pending_cycle_dispositions": pending_cycle_dispositions,
     }

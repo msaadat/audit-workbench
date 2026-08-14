@@ -47,6 +47,7 @@ from .documents_execution import (
 from .context import (
     ContextResolver,
     apm_document_methodology_scope,
+    apm_table_profile_candidates,
     finding_draft_scope,
     planning_context_scope,
     rcm_scope,
@@ -86,6 +87,8 @@ from .runtime import (
     unsettled_capabilities,
 )
 from .workers import WORKERS
+from .workers import planning as planning_workers
+
 
 class AuditWorkflowExecution(ActionRunner):
     """Per-unit audit execution bindings and projections for the scheduler."""
@@ -773,6 +776,35 @@ class AuditWorkflowExecution(ActionRunner):
                 self.run["planning_changes"][f"rcm_{action}"] += 1
                 self.record_artifact(
                     "rcm", str(row["id"]), str(row["semantic_id"]), action, task
+                )
+            # Reconciliation the matrix passed on a single shared word. Too
+            # weak to refuse a matrix over — it flagged three of ten themes on
+            # one that covered all of them — and too pointed to discard, since
+            # a theme nothing in the matrix discusses is exactly how a planned
+            # response becomes no procedure. The auditor decides.
+            for theme in planning_workers.weakly_owned_themes(
+                str(self.ws.planning.get("apm_markdown") or ""), self.ws.rcm
+            ):
+                self.warn(
+                    f"Check that the matrix covers the planned risk theme "
+                    f"'{theme}': no row states it in the memorandum's terms."
+                )
+            # A row asserting that no imported table answers it makes the test
+            # worker withhold every schema, so no data test can be generated
+            # for it at all. Often right — a bid file is not in a table — and
+            # too often wrong to enforce, so the auditor is told and decides.
+            profiles = [
+                candidate.representations["table_profile"]
+                for candidate in apm_table_profile_candidates(
+                    self.ws, imported_only=True
+                )
+            ]
+            for row in planning_workers.untested_population_rows(
+                profiles, self.ws.rcm
+            ):
+                self.warn(
+                    f"Check that no population test applies to '{row}': the row "
+                    "asserts none does, which makes a data test unreachable for it."
                 )
 
         return BoundUnitPipeline(

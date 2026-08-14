@@ -17,7 +17,7 @@ declared context. The dependency edges come from the authoritative graph in
 
 from __future__ import annotations
 
-from ... import rcm_execution
+from ... import cycle_vouching, doc_tests, document_analysis, rcm_execution
 from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
@@ -54,6 +54,51 @@ def _by_row(manifest: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def _unvouched_packs(workspace: Workspace) -> list[tuple[str, list[str]]]:
+    """Packs whose source records were extracted and never vouched against.
+
+    The bypass this reports is silent by construction. Cycle vouching is
+    reachable only through a ``transaction_cycle`` control attribute; when the
+    matrix classifies every attribute some other way, no cycle test is
+    requested, the registry packs and the evaluator are never called, and the
+    run reports success. An engagement whose documents were read *as* a
+    registered transaction cycle and then never tie-matched has degraded from
+    the strongest evidence path available to it, and must say so.
+
+    Deliberately keyed on the extracted records rather than on the matrix: it
+    is the matrix's classification that is in question, so it cannot also be
+    the thing that decides whether the question gets asked.
+    """
+    if not workspace.documents:
+        return []
+    if any(
+        doc_tests.is_cycle_test(test) for test in doc_tests.list_tests(workspace)
+    ):
+        return []
+    unvouched = []
+    for pack in cycle_vouching.DEFAULT_REGISTRY.metadata().get("packs") or []:
+        pack_id = str(pack.get("id") or "")
+        if not pack_id:
+            continue
+        try:
+            reference = cycle_vouching.DEFAULT_REGISTRY.reference(pack_id).to_dict()
+            records = document_analysis.registry_evidence_records(workspace, reference)
+        except Exception:
+            # A pack that cannot be resolved against this workspace is not
+            # evidence of a bypass; readiness must not fail on it.
+            continue
+        kinds = sorted(
+            {
+                str(record.get("record_kind") or "")
+                for record in records
+                if record.get("record_kind")
+            }
+        )
+        if kinds:
+            unvouched.append((pack_id, kinds))
+    return unvouched
+
+
 # --------------------------------------------------------------------------- #
 # tests.specified
 # --------------------------------------------------------------------------- #
@@ -77,6 +122,20 @@ def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
         ):
             review_required += 1
     if total and ready == total:
+        unvouched = _unvouched_packs(workspace)
+        if unvouched:
+            return Readiness(
+                "review_required",
+                tuple(
+                    f"{counted(len(kinds), 'record kind')} of the '{pack}' "
+                    f"transaction cycle {verb(len(kinds), 'was', 'were')} extracted "
+                    f"from the supplied documents ({', '.join(kinds)}) and no cycle "
+                    "test vouches them; the matrix classified no control attribute "
+                    "as transaction_cycle"
+                    for pack, kinds in unvouched
+                ),
+                details={"ready": ready, "total": total},
+            )
         return Readiness("satisfied", details={"ready": ready, "total": total})
     if not _testable(workspace):
         return Readiness(

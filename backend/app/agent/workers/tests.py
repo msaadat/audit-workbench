@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import cycle_vouching, doc_tests, sandbox
+from ...text import relevance_tokens
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -153,14 +154,6 @@ def _model_transaction_manifest(value: object) -> object:
     }
 
 
-def _schema_relevance_tokens(value: object) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-z0-9]+", str(value or "").casefold())
-        if len(token) > 2
-    }
-
-
 def _relevant_table_schemas(
     raw_tables: list[object], rcm_row: object, transaction_manifest: object
 ) -> list[object]:
@@ -180,7 +173,7 @@ def _relevant_table_schemas(
     ]
     for attribute in attributes:
         query_parts.extend((attribute.get("key"), attribute.get("requirement")))
-    query_tokens = set().union(*(_schema_relevance_tokens(item) for item in query_parts))
+    query_tokens = set().union(*(relevance_tokens(item) for item in query_parts))
     candidate_tables = {
         str(candidate.get("table") or "")
         for group in (
@@ -198,10 +191,10 @@ def _relevant_table_schemas(
             ranked.append((0, 0, -index, raw))
             continue
         table = str(raw.get("table") or "")
-        table_tokens = _schema_relevance_tokens(table)
+        table_tokens = relevance_tokens(table)
         column_tokens = set().union(
             *(
-                _schema_relevance_tokens(column.get("name"))
+                relevance_tokens(column.get("name"))
                 for column in raw.get("columns") or []
                 if isinstance(column, Mapping)
             ),
@@ -223,7 +216,7 @@ def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[ob
     for attribute in rcm_row.get("control_attributes") or []:
         if isinstance(attribute, Mapping):
             query_parts.extend((attribute.get("key"), attribute.get("requirement")))
-    query_tokens = set().union(*(_schema_relevance_tokens(item) for item in query_parts))
+    query_tokens = set().union(*(relevance_tokens(item) for item in query_parts))
     ranked = []
     for index, raw in enumerate(raw_documents):
         if not isinstance(raw, Mapping):
@@ -231,7 +224,7 @@ def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[ob
             continue
         document_tokens = set().union(
             *(
-                _schema_relevance_tokens(raw.get(key))
+                relevance_tokens(raw.get(key))
                 for key in ("title", "source", "category", "summary")
             )
         )
@@ -1419,7 +1412,7 @@ GENERATE_WORKER = WorkerDefinition(
         + inspect.getsource(_model_transaction_manifest)
         + inspect.getsource(_relevant_table_schemas)
         + inspect.getsource(_relevant_documents)
-        + inspect.getsource(_schema_relevance_tokens)
+        + inspect.getsource(relevance_tokens)
         + inspect.getsource(_manifest_candidate_ids)
     ),
     prompt_hash=_sha256_text(GENERATE_SYSTEM),

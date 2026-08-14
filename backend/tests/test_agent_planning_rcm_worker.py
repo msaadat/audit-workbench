@@ -50,7 +50,7 @@ class _Gateway:
         return self.responses.pop(0)
 
 
-def _bundle(*, current_rows=None):
+def _bundle(*, current_rows=None, profiles=(), apm=None):
     values = [
         (
             "rcm_template",
@@ -62,7 +62,7 @@ def _bundle(*, current_rows=None):
             "current_apm",
             "planning:apm",
             ContextRepresentation("current_artifact"),
-            "# APM\n\nAssess procurement approvals.",
+            apm or "# APM\n\nAssess procurement approvals.",
         ),
         (
             "planning_context",
@@ -78,6 +78,15 @@ def _bundle(*, current_rows=None):
                 f"rcm:{row['id']}",
                 ContextRepresentation("current_artifact"),
                 row,
+            )
+        )
+    for profile in profiles:
+        values.append(
+            (
+                "table_profiles",
+                f"table:{profile['table']}",
+                ContextRepresentation("table_profile"),
+                profile,
             )
         )
     items = tuple(
@@ -192,6 +201,407 @@ def test_rcm_worker_uses_only_bundle_and_returns_validated_rows():
     # The APM narrative and template reach the model.
     assert "Assess procurement approvals" in gateway.calls[0]["user"]
     assert "Risk and control matrix" in gateway.calls[0]["user"]
+
+
+_INVOICES = {
+    "table": "invoice_data",
+    "rows": 118,
+    "columns": [
+        {"name": "INVOICE_ID"},
+        {"name": "VENDOR_INVOICE_NUMBER"},
+        {"name": "INVOICE_AMOUNT"},
+    ],
+}
+_UNRELATED = {
+    "table": "office_locations",
+    "rows": 12,
+    "columns": [{"name": "SITE_NAME"}, {"name": "FLOOR_AREA"}],
+}
+
+
+def test_a_row_claiming_no_population_answers_it_is_reported_not_refused():
+    """The defect is untestability; refusing the matrix over it was worse.
+
+    A row with no ``tabular_population`` attribute makes the test worker
+    withhold every table schema, so ``data`` never enters its allowed variants
+    and no data test can be generated for it. Worth an auditor's attention —
+    and not something to fail a matrix over, because the same lexical signal
+    calls competitive bidding and ERP configuration testable when no column in
+    the engagement holds a quotation or a role assignment.
+    """
+    gateway = _Gateway([json.dumps({"rows": [_row()]})])
+
+    result = WORKERS.execute(_request(_bundle(profiles=[_INVOICES])), gateway)
+
+    assert len(result.proposal["rows"]) == 1
+    (flagged,) = planning.untested_population_rows([_INVOICES], result.proposal["rows"])
+    assert "invoice_data" in flagged
+
+
+def test_a_row_the_populations_do_not_bear_on_is_not_reported():
+    gateway = _Gateway([json.dumps({"rows": [_row()]})])
+
+    result = WORKERS.execute(_request(_bundle(profiles=[_UNRELATED])), gateway)
+
+    assert result.proposal["rows"][0]["control_attributes"][0]["evidence_kind"] == (
+        "manual_inspection"
+    )
+    assert planning.untested_population_rows([_UNRELATED], result.proposal["rows"]) == []
+
+
+def test_a_reference_table_is_not_a_population_a_row_can_be_tested_against():
+    # Four rows of approval limits are read *through*, not tested. Without this
+    # the matrix answered every row whose risk mentioned approval, because the
+    # table's own name carries the word.
+    matrix = {
+        "table": "financial_approval_matrix",
+        "rows": 4,
+        "columns": [{"name": "ROLE"}, {"name": "MAX_APPROVAL_AMOUNT"}],
+    }
+    row = _row(risk="Approval limits may be exceeded", control="Approval matrix")
+
+    assert planning.untested_population_rows([matrix], [row]) == []
+
+
+def test_a_row_that_already_claims_the_population_passes_the_gate():
+    row = _row(
+        control_attributes=[
+            {
+                "key": "duplicate_invoice_number",
+                "assertion": "Completeness",
+                "requirement": "Vendor invoice numbers are unique across the population.",
+                "evidence_kind": "tabular_population",
+            }
+        ]
+    )
+    gateway = _Gateway([json.dumps({"rows": [row]})])
+
+    result = WORKERS.execute(_request(_bundle(profiles=[_INVOICES])), gateway)
+
+    assert len(result.proposal["rows"]) == 1
+
+
+_PLANNED = """# APM
+
+## Key risks and planned response
+
+### Accounts payable
+
+Duplicate payment risk.
+
+### Goods receipt and three-way match
+
+Payment before receipt risk.
+"""
+
+
+def test_every_risk_theme_the_memorandum_plans_for_must_be_owned_by_a_row():
+    """The matrix is the memo's risk assessment made testable.
+
+    A theme planned for and never converted into a control is how goods receipt
+    came to have no owning row while the memo raised it.
+    """
+    gateway = _Gateway([json.dumps({"rows": [_row()]})] * 2)
+
+    with pytest.raises(WorkerRunError, match="Goods receipt and three-way match"):
+        WORKERS.execute(_request(_bundle(apm=_PLANNED)), gateway)
+
+
+_BULLETED = """# APM
+
+## Fraud risk and management override
+
+Management override is presumed present.
+
+* **Circumvention through transaction splitting:** A party avoiding thresholds
+  could divide purchases across requisitions.
+
+* **Unauthorised payment destinations:** Duplicate bank-account assignments
+  create an opportunity for payments to be directed incorrectly.
+
+## Key risks and planned response
+
+### Accounts payable
+
+Duplicate payment risk.
+"""
+
+
+def test_a_theme_is_a_theme_whether_it_is_a_heading_or_a_bold_bullet():
+    """A memo's formatting is not a statement about its risk assessment.
+
+    A regenerated APM moved its fraud risks from sub-headings to bold bullets
+    and this check went from enforcing six themes to enforcing none, silently.
+    """
+    themes = planning.planned_risk_themes(_BULLETED)
+
+    assert themes == [
+        "Circumvention through transaction splitting",
+        "Unauthorised payment destinations",
+        "Accounts payable",
+    ]
+
+
+def test_bullets_under_a_headed_section_are_detail_not_themes():
+    # The shipped template puts a seven-lens checklist under each process, each
+    # entry bold-led. Reading both levels turns one theme into eight.
+    memo = (
+        "# APM\n\n## Key risks and planned response\n\n### Accounts payable\n\n"
+        "* **Authorisation against limits:** considered and applicable.\n"
+        "* **Timing and sequence:** considered and applicable.\n"
+    )
+
+    assert planning.planned_risk_themes(memo) == ["Accounts payable"]
+
+
+def test_a_risk_section_that_enumerates_nothing_is_reported_not_ignored():
+    prose = (
+        "# APM\n\n## Fraud risk and management override\n\n"
+        + "Management override is presumed present for this engagement and the "
+        "planned response will include testing entries and approval records for "
+        "unusual or high-value activity, reviewing changes to vendor and payment "
+        "data, and corroborating approval evidence with independent records. "
+        "Override indicators will be evaluated without assuming intent.\n"
+    )
+
+    assert planning.unstructured_risk_sections(prose) == [
+        "fraud risk and management override"
+    ]
+
+
+def test_theme_ownership_survives_ordinary_variation_in_wording():
+    """Inflection and spelling are not coverage gaps.
+
+    Exact token equality reported three owned themes as unowned on the live
+    pair: the memo wrote "circumvention" and "payments" where the matrix wrote
+    "circumvent" and "payment", and "unauthorised" against "unauthorized".
+    Matching is still lexical, so a theme and a row that share no word at all
+    remain unreconciled — that costs a repair round, and forcing the matrix to
+    answer in the memo's terms is the point of the check.
+    """
+    rows = [
+        {
+            "process": "Purchasing",
+            "risk": (
+                "Commitments may be split across transactions to circumvent "
+                "approval thresholds"
+            ),
+        },
+        {
+            "process": "Payments",
+            "risk": "Payment may be directed to unauthorized destinations",
+        },
+    ]
+
+    assert planning._unowned_themes(planning.planned_risk_themes(_BULLETED)[:2], rows) == []
+
+
+_VALUED_PROFILES = [
+    {
+        "table": "invoice_data",
+        "rows": 118,
+        "columns": [{"name": "INVOICE_AMOUNT", "sum": "3,103,467,230"}],
+    },
+    {
+        "table": "po_data",
+        "rows": 93,
+        "columns": [{"name": "PO_TOTAL_AMOUNT", "sum": "1,934,810,970"}],
+    },
+]
+
+
+def _tabular_row(**overrides):
+    """A row that already satisfies the inquiry gate, so the next one is tested."""
+    return _row(
+        control_attributes=[
+            {
+                "key": "duplicate_invoice_number",
+                "assertion": "Completeness",
+                "requirement": "Vendor invoice numbers are unique across the population.",
+                "evidence_kind": "tabular_population",
+            }
+        ],
+        **overrides,
+    )
+
+
+def test_two_valued_populations_require_a_requirement_that_they_agree():
+    """The third leg of the three-way match, and the one a matrix omits.
+
+    Sequence and authorization get reached for unprompted; agreement of the
+    amounts is where an invoice of 80,000,000 against a purchase order of
+    8,000,000 had no requirement it could fail.
+    """
+    gateway = _Gateway([json.dumps({"rows": [_tabular_row()]})] * 4)
+    request = _request(_bundle(profiles=_VALUED_PROFILES))
+
+    with pytest.raises(WorkerRunError, match="recorded values agree"):
+        WORKERS.execute(request, gateway)
+
+
+def test_a_requirement_asserting_agreement_satisfies_it():
+    row = _tabular_row()
+    row["control_attributes"].append(
+        {
+            "key": "invoice_to_order_agreement",
+            "assertion": "Accuracy",
+            "requirement": (
+                "The invoice amount agrees to the approved purchase order total."
+            ),
+            "evidence_kind": "tabular_population",
+        }
+    )
+    gateway = _Gateway([json.dumps({"rows": [row]})])
+
+    result = WORKERS.execute(_request(_bundle(profiles=_VALUED_PROFILES)), gateway)
+
+    assert len(result.proposal["rows"]) == 1
+
+
+def test_one_valued_population_asserts_nothing_about_agreement():
+    # Nothing to reconcile against: a single population records what a
+    # transaction is worth in exactly one place.
+    gateway = _Gateway([json.dumps({"rows": [_tabular_row()]})])
+
+    result = WORKERS.execute(
+        _request(_bundle(profiles=_VALUED_PROFILES[:1])), gateway
+    )
+
+    assert len(result.proposal["rows"]) == 1
+
+
+def test_a_theme_owned_on_one_shared_word_passes_but_is_reported():
+    """A memo names the technique; a matrix names the risk condition.
+
+    "Circumvention through transaction splitting" is answered by "a commitment
+    may be divided across related requisitions to circumvent approval", and
+    those share exactly one word. Requiring two rejected a 27-row matrix that
+    covered every theme it was accused of missing, and failed the run.
+    """
+    rows = [
+        {
+            "process": "Requisition approval",
+            "risk": (
+                "A commitment may be divided across related requisitions to "
+                "circumvent approval thresholds"
+            ),
+        },
+        {"process": "Payments", "risk": "Payment may be directed incorrectly"},
+        {"process": "Accounts payable", "risk": "Duplicate payment"},
+    ]
+    themes = planning.planned_risk_themes(_BULLETED)
+
+    assert planning._unowned_themes(themes, rows) == []
+    assert "Circumvention through transaction splitting" in planning.weakly_owned_themes(
+        _BULLETED, rows
+    )
+
+
+def test_a_document_level_failure_re_asks_the_whole_matrix():
+    """A scoped repair cannot add what the document as a whole is missing.
+
+    Every row validating means there is nothing to scope to, and the previous
+    behaviour returned the identical rows without asking the model anything —
+    which made a document-level error unrepairable by construction.
+    """
+    corrected = _tabular_row()
+    corrected["control_attributes"].append(
+        {
+            "key": "invoice_to_order_agreement",
+            "assertion": "Accuracy",
+            "requirement": "The invoice amount agrees to the purchase order total.",
+            "evidence_kind": "tabular_population",
+        }
+    )
+    gateway = _Gateway(
+        [
+            json.dumps({"rows": [_tabular_row()]}),
+            json.dumps({"rows": [corrected]}),
+        ]
+    )
+
+    result = WORKERS.execute(
+        _request(_bundle(profiles=_VALUED_PROFILES)), gateway
+    )
+
+    assert result.repaired is True
+    repair = gateway.calls[1]
+    assert "ROWS TO CORRECT" not in repair["user"]
+    assert "Return the complete matrix again" in repair["user"]
+    assert "recorded values agree" in repair["user"]
+    assert len(result.proposal["rows"]) == 1
+
+
+def test_a_repair_that_echoes_the_request_envelope_still_splices():
+    """The request presents each failing row as {row_index, row}.
+
+    A real engagement had the model answer in that same shape, and every
+    corrected row spliced in as ``{"row": {…}}`` — no process, no risk, no
+    attributes. Nineteen good rows were replaced by empty ones and the matrix
+    was then rejected for covering nothing, which read as the model's failure
+    and was the parser's.
+    """
+    good = _row(process="Payments", risk="Payments may be misdirected")
+    failing = _row()
+    corrected = _row(
+        control_attributes=[
+            {
+                "key": "duplicate_invoice_number",
+                "assertion": "Completeness",
+                "requirement": "Vendor invoice numbers are unique across the population.",
+                "evidence_kind": "tabular_population",
+            }
+        ]
+    )
+
+    merged = planning._repair_scoped_rows(
+        [good, failing],
+        [{"index": 2}],
+        json.dumps({"rows": [{"row_index": 2, "row": corrected}]}),
+    )
+
+    assert [row["process"] for row in merged] == ["Payments", "Accounts payable"]
+    assert merged[1]["control_attributes"][0]["evidence_kind"] == "tabular_population"
+    # The row that validated is the object that was parsed, untouched.
+    assert merged[0] is good
+
+
+def test_row_and_document_failures_are_reported_in_one_pass():
+    """One repair attempt has to answer everything that is wrong.
+
+    A gate that only fires once the previous one is satisfied costs an attempt
+    each. With one attempt available, a matrix that tripped a row rule first
+    had its rows corrected and then failed on a document rule it had never been
+    told about — which is how a regeneration failed with 19 good rows in hand.
+    """
+    # An unsupported rating trips the row-level gate; nothing in the row
+    # asserts that recorded values agree, which trips the document-level one.
+    gateway = _Gateway([json.dumps({"rows": [_row(risk_rating="severe")]})] * 2)
+    request = _request(_bundle(profiles=_VALUED_PROFILES))
+
+    with pytest.raises(WorkerRunError) as error:
+        WORKERS.execute(request, gateway)
+
+    message = str(error.value)
+    assert "unsupported risk rating" in message
+    assert "recorded values agree" in message
+    # Both were on the table from the first repair, not discovered one per turn.
+    assert "recorded values agree" in gateway.calls[1]["user"]
+    assert "unsupported risk rating" in gateway.calls[1]["user"]
+
+
+def test_a_theme_owned_by_any_proposed_row_reconciles():
+    receipt = _row(
+        process="Goods receipt",
+        risk="Payment is made before the three-way match is complete",
+        control="No control identified",
+        new_risk_reason="The memorandum plans a response for goods receipt.",
+    )
+    gateway = _Gateway([json.dumps({"rows": [_row(), receipt]})])
+
+    result = WORKERS.execute(_request(_bundle(apm=_PLANNED)), gateway)
+
+    assert len(result.proposal["rows"]) == 2
 
 
 def test_rcm_worker_accepts_json_fenced_response():
@@ -342,12 +752,15 @@ def test_rcm_worker_completes_a_partial_evidence_contract_from_the_second_pass()
     )
 
 
-def test_rcm_worker_reports_an_attribute_the_evidence_pass_declined():
-    """An attribute the pack cannot express fails; it is never given a stand-in.
+def test_an_attribute_the_evidence_pass_declined_takes_the_next_best_path():
+    """The pack's limit is not the requirement's limit.
 
-    Silently substituting a comparison the pack *can* express would answer a
-    different question than the requirement asked, and the row would commit
-    looking correct.
+    A comparison the registry cannot express is still never substituted with a
+    different one — the attribute keeps its own requirement. What changed is
+    that it no longer keeps a classification nothing can act on: leaving it
+    ``transaction_cycle`` with no contract failed the row, discarding its risk
+    and control along with it, and tested nothing at all. It takes the
+    documents instead, and the auditor is told what was re-routed.
     """
 
     gateway = _Gateway(
@@ -366,11 +779,14 @@ def test_rcm_worker_reports_an_attribute_the_evidence_pass_declined():
                 }
             ),
         ]
-        * 2
     )
 
-    with pytest.raises(WorkerRunError, match="names no evidence contract"):
-        WORKERS.execute(_request(), gateway)
+    result = WORKERS.execute(_request(), gateway)
+
+    (attribute,) = result.proposal["rows"][0]["control_attributes"]
+    assert attribute["evidence_kind"] == "document_content"
+    assert attribute["key"] == "three_way_match"
+    assert "registry" not in attribute
 
 
 def test_rcm_worker_aggregates_quality_errors_across_rows():

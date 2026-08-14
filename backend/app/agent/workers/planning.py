@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import cycle_vouching
+from ...text import counted, relevance_tokens
 from .. import prompts
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
@@ -345,6 +346,13 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   process, drawn from your own knowledge of the cycle. Supplied observations
   refine the risk set; they never define it. Never emit a row whose only content
   is a restatement of a supplied observation or audit note.
+- Every risk theme the planning memorandum organises its assessment under must
+  be owned by a row. Where the memorandum assesses fraud risk and management
+  override, the override patterns it names are risks in their own right —
+  circumventing an approval threshold by dividing a commitment, paying the same
+  obligation twice, and directing payment to a party the entity has not
+  approved are matrix rows, not narrative. A theme the memo plans a response
+  for and the matrix omits is a planned procedure that will never run.
 - Write risks in generic, condition-independent auditor wording. Never quote
   percentages, counts, null rates, column names, or file names in a risk, never
   embed the cause, and never pre-conclude that a deficiency exists.
@@ -388,6 +396,13 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   add a separate tabular_population attribute if the table can also provide
   broader population assurance. Do not use inquiry for something supplied
   tables can measure.
+- A row whose control field says "No control identified" still chooses
+  evidence_kind from the supplied material. Where the imported tables carry the
+  fields the requirement names, that is tabular_population regardless of
+  whether a control is asserted: testing the population is how the absence of
+  the control is evidenced, and it is the only evidence there is. Reserve
+  inquiry for a requirement no supplied table and no supplied document can
+  answer.
 - A transaction_cycle attribute states evidence_kind and stops there. Do not
   write registry, required_record_kinds, required_comparisons, or
   comparison_recipes: the evidence contract for those attributes is authored in a
@@ -574,6 +589,135 @@ def _rcm_response_schema(response: str) -> Mapping[str, Any]:
     return parsed
 
 
+# The test worker ranks a table for a row as 4×(table-name hits) + (column-name
+# hits), and this gate must agree with it: a row may not claim no table can
+# answer its requirement when the same scorer would have ranked one into the
+# generation prompt. The bar is one table-name hit — a table *named* for the
+# subject — or the four column hits worth as much. One stray column word is
+# not enough; "date" and "amount" occur in every ledger ever imported.
+TABLE_NAME_WEIGHT = 4
+MIN_TABULAR_RELEVANCE = TABLE_NAME_WEIGHT
+# How many words two phrases must share before one is held to be about the
+# other, where no table name is involved.
+MIN_TOKEN_MATCH = 2
+# What it takes for a matrix row to answer a memo's risk theme. Deliberately
+# one shared stem, because a memo names the *technique* and a matrix names the
+# *risk condition*: "Circumvention through transaction splitting" is answered
+# by "a commitment may be divided across related requisitions to circumvent
+# approval", and those two phrases share exactly one word. Requiring two
+# rejected a 27-row matrix that covered every theme it was accused of missing,
+# and failed the run outright. A theme sharing nothing at all with any row is
+# still a real signal; anything above that is not one this can measure.
+MIN_THEME_MATCH = 1
+
+
+# A table smaller than this is a reference list, not a population: the audit
+# reads *through* it rather than testing it. The same floor the analysis stage
+# uses to decide a frame is a lookup. Without it the four-row approval matrix
+# answered every row whose risk mentioned approval — eight of twenty-nine in
+# one run — because its name alone carries the word.
+MIN_TESTABLE_POPULATION_ROWS = 5
+
+
+def _tabular_answers(request: WorkerRequest) -> list[tuple[str, set[str], set[str]]]:
+    """Each testable population as the words in its name and its column names."""
+    return tabular_answers(_supplied_items(request, "table_profiles"))
+
+
+def tabular_answers(profiles) -> list[tuple[str, set[str], set[str]]]:
+    """The same view of the populations, from profiles a caller already holds."""
+    answers = []
+    for profile in profiles:
+        if not isinstance(profile, Mapping):
+            continue
+        rows = profile.get("rows")
+        if not isinstance(rows, int) or rows < MIN_TESTABLE_POPULATION_ROWS:
+            continue
+        table = str(profile.get("table") or "")
+        columns: set[str] = set()
+        for column in profile.get("columns") or []:
+            if isinstance(column, Mapping):
+                columns |= relevance_tokens(column.get("name"))
+        if table and columns:
+            answers.append((table, relevance_tokens(table), columns))
+    return answers
+
+
+def _answering_table(
+    row: Mapping[str, Any],
+    answers: list[tuple[str, set[str], set[str]]],
+):
+    """The supplied table most plainly about this row, if any is."""
+    query: set[str] = set()
+    for key in ("process", "risk", "control", "criteria"):
+        query |= relevance_tokens(row.get(key))
+    for attribute in row.get("control_attributes") or []:
+        if isinstance(attribute, Mapping):
+            query |= relevance_tokens(attribute.get("key"))
+            query |= relevance_tokens(attribute.get("requirement"))
+    for table, name_tokens, column_tokens in answers:
+        matched = (query & name_tokens) | (query & column_tokens)
+        score = TABLE_NAME_WEIGHT * len(query & name_tokens) + len(
+            query & column_tokens
+        )
+        if score >= MIN_TABULAR_RELEVANCE:
+            return table, sorted(matched)
+    return None
+
+
+def _untested_population(
+    row: Mapping[str, Any],
+    answers: list[tuple[str, set[str], set[str]]],
+):
+    """The table that may answer a row asserting that none can.
+
+    A row with no ``tabular_population`` attribute tells the test worker to
+    withhold every table schema, and without schemas ``data`` never enters the
+    allowed variants — so the row is not under-tested, it is untestable by
+    construction. Absence of a control is precisely when the population matters
+    most: it is the only evidence left.
+
+    Reported, never enforced. This began as a rejection and failed three
+    consecutive regenerations on rows that were right: competitive bidding,
+    vendor due diligence and ERP configuration are documentary because no
+    column in the engagement holds a quotation, a due-diligence file or a role
+    assignment — yet each names a business noun that some table is named for.
+    Measured across 71 attributes of one matrix, column overlap ran 0-4 for
+    ``tabular_population`` and 0-5 for ``manual_inspection``: the classes do
+    not separate, so no threshold over this signal can carry a veto. The
+    classification itself is now the prompt's job, and it does it — that run
+    produced 32 population attributes and no inquiry at all.
+    """
+    attributes = [
+        item
+        for item in row.get("control_attributes") or []
+        if isinstance(item, Mapping)
+    ]
+    if not attributes:
+        return None
+    if any(
+        item.get("evidence_kind") == "tabular_population"
+        or (item.get("evidence_kind") == "transaction_cycle" and item.get("registry"))
+        for item in attributes
+    ):
+        return None
+    return _answering_table(row, answers)
+
+
+def untested_population_rows(
+    profiles,
+    rows: list[Mapping[str, Any]],
+) -> list[str]:
+    """Rows an auditor should check are not testable from the populations."""
+    answers = tabular_answers(profiles)
+    flagged = []
+    for row in rows:
+        answered = _untested_population(row, answers)
+        if answered:
+            flagged.append(f"{row.get('risk') or row.get('process')} ({answered[0]})")
+    return flagged
+
+
 def _partition_rcm_rows(
     rows: object,
     request: WorkerRequest,
@@ -591,11 +735,12 @@ def _partition_rcm_rows(
         for row in _current_rcm_rows(request)
         if isinstance(row, Mapping) and row.get("id")
     }
+    answers = _tabular_answers(request)
     normalized: list[dict] = []
     failures: list[dict] = []
     for index, row in enumerate(rows or (), start=1):
         try:
-            normalized.append(_normalized_rcm_row(row, index, existing_ids))
+            normalized.append(_normalized_rcm_row(row, index, existing_ids, answers))
         except WorkerResponseValidationError as error:
             failures.append(
                 {
@@ -611,6 +756,7 @@ def _normalized_rcm_row(
     row: object,
     index: int,
     existing_ids: set[str],
+    tabular_answers: list[tuple[str, set[str]]] | None = None,
 ) -> dict:
     """Validate and normalize exactly one proposed RCM row."""
 
@@ -683,6 +829,235 @@ def _normalized_rcm_row(
     }
 
 
+# A memo names a risk theme in one of two shapes: a sub-heading, or a list
+# item that leads with the theme in bold. Both are enumerations; which one a
+# given memo uses is a formatting choice the reconciliation must not depend on.
+# It did depend on it once — a regenerated APM moved its fraud risks from
+# sub-headings to bold bullets, and the coverage check went from enforcing six
+# themes to enforcing none without saying so.
+_BOLD_LED_ITEM = re.compile(r"^\s*[-*]\s+\*\*\s*(.+?)\s*:?\s*\*\*", re.MULTILINE)
+
+
+def planned_risk_themes(apm_markdown: str) -> list[str]:
+    """The themes the APM organises its risk assessment under.
+
+    Scoped by the word "risk" in the parent heading rather than by the shipped
+    template's exact wording, so a firm that renames the section keeps the
+    check. A section that enumerates nothing contributes nothing — but see
+    :func:`unstructured_risk_sections`, because that is worth saying out loud
+    rather than passing as coverage.
+    """
+    themes: list[str] = []
+    for heading, body in _section_bodies(apm_markdown).items():
+        if "risk" not in heading:
+            continue
+        # A section enumerates at one level. Where it has sub-headings those are
+        # its themes, and the bullets beneath them are detail within a theme —
+        # reading both turns a per-theme checklist into nine more themes, each
+        # demanding its own row. Bullets are the enumeration only when nothing
+        # else is.
+        headed = [
+            match.group(2).strip()
+            for match in _HEADING.finditer(body)
+            if len(match.group(1)) == 3
+        ]
+        themes.extend(
+            headed
+            or [match.group(1).strip() for match in _BOLD_LED_ITEM.finditer(body)]
+        )
+    return list(dict.fromkeys(theme for theme in themes if theme))
+
+
+def unstructured_risk_sections(apm_markdown: str) -> list[str]:
+    """Risk sections carrying substantive prose that enumerate no theme.
+
+    Not an error: a memo may argue its risk assessment in continuous prose, and
+    a matrix built from that is not thereby incomplete. It is a degradation of
+    what the reconciliation can check, and degradation that says nothing is how
+    this check silently stopped covering fraud.
+    """
+    quiet = []
+    for heading, body in _section_bodies(apm_markdown).items():
+        if "risk" not in heading or len(body.split()) < 40:
+            continue
+        if not _HEADING.search(body) and not _BOLD_LED_ITEM.search(body):
+            quiet.append(heading)
+    return quiet
+
+
+# Shortest token that may be matched as a prefix of a longer one. Below this,
+# prefixes stop being word stems: "pay" would tie "payment" to "payable".
+_MIN_STEM = 5
+
+
+def _comparable(value: object) -> set[str]:
+    """Tokens normalized enough to survive ordinary variation in wording.
+
+    A memo writes "circumvention" where a matrix row writes "circumvent", and
+    "unauthorised" where another writes "unauthorized". Neither difference is a
+    coverage gap, and both defeated exact token equality — the first draft of
+    this check reported three owned themes as unowned for no better reason.
+    """
+    return {
+        token.replace("isa", "iza").replace("ise", "ize").replace("yse", "yze")
+        for token in relevance_tokens(value)
+    }
+
+
+def _shares(left: set[str], right: set[str]) -> int:
+    """How many of ``left``'s tokens some token of ``right`` matches."""
+    matched = 0
+    for token in left:
+        if token in right or any(
+            (other.startswith(token) and len(token) >= _MIN_STEM)
+            or (token.startswith(other) and len(other) >= _MIN_STEM)
+            for other in right
+        ):
+            matched += 1
+    return matched
+
+
+def _theme_ownership(themes: list[str], rows: list[dict]) -> list[tuple[str, int]]:
+    """Each theme with the best overlap any one row achieves against it."""
+    owned = [
+        _comparable(row.get("process")) | _comparable(row.get("risk"))
+        for row in rows
+    ]
+    scored = []
+    for theme in themes:
+        tokens = _comparable(theme)
+        if not tokens:
+            continue
+        best = max((_shares(tokens, row_tokens) for row_tokens in owned), default=0)
+        scored.append((theme, best))
+    return scored
+
+
+def _unowned_themes(themes: list[str], rows: list[dict]) -> list[str]:
+    """Risk themes the APM plans for that no proposed row so much as mentions.
+
+    The matrix is the APM's risk assessment made testable. A theme the memo
+    committed to and the matrix never converts into a control is how a planned
+    response becomes no procedure at all — which is what happened to goods
+    receipt: raised in planning, never a row, so the invoices with no receipt
+    evidence had no control to fail.
+
+    Rejection is reserved for a theme with no lexical connection to any row at
+    all. See :data:`MIN_THEME_MATCH`: a stricter bar measures phrasing rather
+    than coverage, and a matrix may not be discarded over phrasing.
+    """
+    return [
+        theme
+        for theme, best in _theme_ownership(themes, rows)
+        if best < MIN_THEME_MATCH
+    ]
+
+
+def weakly_owned_themes(apm_markdown: str, rows: list[dict]) -> list[str]:
+    """Themes whose ownership rests on a single shared word.
+
+    Reported to the auditor rather than enforced. On a matrix that genuinely
+    covered every theme, three of ten sat here — so this cannot decide whether
+    a matrix is acceptable, and saying so is the whole of its usefulness.
+    """
+    return [
+        theme
+        for theme, best in _theme_ownership(planned_risk_themes(apm_markdown), rows)
+        if best == MIN_THEME_MATCH
+    ]
+
+
+# The language in which one record is asserted to agree with another. Ordinary
+# audit vocabulary, not a domain's: the same words state that a payroll payment
+# agrees to an approved rate and that an invoice agrees to its purchase order.
+_AGREEMENT = re.compile(
+    r"\b(agree\w*|match\w*|reconcil\w*|equal\w*|exceed\w*|consistent|"
+    r"tally|tallies|corroborat\w*|within)\b",
+    re.IGNORECASE,
+)
+_VALUED = re.compile(
+    r"\b(amount\w*|total\w*|value\w*|price\w*|quantit\w*|cost\w*|sum|rate\w*)\b",
+    re.IGNORECASE,
+)
+# Populations carrying a summable column. Two or more of them means the
+# engagement records what a transaction is worth in more than one place, and
+# whether those places agree is an assertion the matrix has to carry.
+MIN_VALUED_POPULATIONS = 2
+
+
+def _valued_populations(request: WorkerRequest) -> list[str]:
+    """Imported tables carrying at least one column whose total means something."""
+    tables = []
+    for profile in _supplied_items(request, "table_profiles"):
+        if not isinstance(profile, Mapping):
+            continue
+        if any(
+            isinstance(column, Mapping) and column.get("sum") is not None
+            for column in profile.get("columns") or []
+        ):
+            tables.append(str(profile.get("table") or ""))
+    return [table for table in tables if table]
+
+
+def _asserts_agreement(rows: list[Mapping[str, Any]]) -> bool:
+    """Whether any requirement states that recorded values agree with each other."""
+    for row in rows:
+        for attribute in row.get("control_attributes") or []:
+            if not isinstance(attribute, Mapping):
+                continue
+            requirement = str(attribute.get("requirement") or "")
+            if _AGREEMENT.search(requirement) and _VALUED.search(requirement):
+                return True
+    return False
+
+
+def document_level_errors(
+    request: WorkerRequest,
+    rows: list[Mapping[str, Any]],
+) -> list[str]:
+    """Quality failures of the matrix as a whole rather than of any one row.
+
+    Judged against every row the model wrote, including rows that failed their
+    own validation: a row needing a small correction still states its risk, and
+    holding its subject against it would report coverage gaps that vanish the
+    moment the row is repaired.
+
+    Collected rather than raised one at a time. Each gate that fires in its own
+    turn costs a repair attempt, and with one attempt available a matrix that
+    tripped a row rule first could never reach these at all — which is exactly
+    how a regeneration failed with the row errors fixed and this unreported.
+    """
+    errors: list[str] = []
+    existing = [
+        row for row in _current_rcm_rows(request) if isinstance(row, Mapping)
+    ]
+    everything = [*existing, *rows]
+    themes = planned_risk_themes(str(_resolved_item(request, "current_apm") or ""))
+    unowned = _unowned_themes(themes, everything)
+    if unowned:
+        errors.append(
+            "the planning memorandum plans a response for "
+            f"{counted(len(unowned), 'risk theme')} that no row owns: "
+            f"{'; '.join(unowned)}. Add a row whose risk and control concern "
+            "each, or state in the risk why the theme needs no control."
+        )
+    # The three-way match's third leg. Sequence and authorization are what a
+    # matrix reaches for unprompted; agreement of the amounts is what it omits,
+    # and it is where the largest single exception in this engagement lived —
+    # an invoice of 80,000,000 billed against a purchase order of 8,000,000,
+    # with no requirement anywhere it could fail.
+    valued = _valued_populations(request)
+    if len(valued) >= MIN_VALUED_POPULATIONS and not _asserts_agreement(everything):
+        errors.append(
+            f"{counted(len(valued), 'imported population')} record what a "
+            f"transaction is worth ({', '.join(sorted(valued))}), and no control "
+            "requirement asserts that those recorded values agree with each "
+            "other. Add the requirement to the row that owns the matching or "
+            "approval control."
+        )
+    return errors
+
+
 def validate_rcm_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
@@ -692,10 +1067,12 @@ def validate_rcm_proposal(
     if not isinstance(rows, (list, tuple)) or not rows:
         raise WorkerResponseValidationError("no RCM rows were proposed")
     normalized, failures = _partition_rcm_rows(rows, request)
-    if failures:
-        raise WorkerResponseValidationError(
-            [message for failure in failures for message in failure["errors"]]
-        )
+    proposed = [row for row in rows if isinstance(row, Mapping)]
+    problems = [
+        message for failure in failures for message in failure["errors"]
+    ] + document_level_errors(request, proposed)
+    if problems:
+        raise WorkerResponseValidationError(problems)
     accepted: dict[str, Any] = {"rows": normalized}
     quarantined = proposal.get("quarantined")
     if isinstance(quarantined, (list, tuple)) and quarantined:
@@ -832,16 +1209,30 @@ def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
             if entry is None:
                 updated.append(attribute)
                 continue
-            updated.append(
-                {
-                    **attribute,
-                    **{
-                        field: _plain_json(entry[field])
-                        for field in _CONTRACT_FIELDS
-                        if entry.get(field) is not None
-                    },
-                }
-            )
+            contract = {
+                field: _plain_json(entry[field])
+                for field in _CONTRACT_FIELDS
+                if entry.get(field) is not None
+            }
+            # A citation names the audit shape and stops there; which record
+            # kinds fill its placeholders is decided during test generation,
+            # against the evidence a workspace actually holds. The evidence
+            # pass volunteers `bindings` anyway, every time, and the contract
+            # rejects the whole attribute for the extra key — so the citation
+            # is projected onto what it is allowed to say.
+            recipes = contract.get("comparison_recipes")
+            if isinstance(recipes, list):
+                contract["comparison_recipes"] = [
+                    {
+                        key: value
+                        for key, value in citation.items()
+                        if key in cycle_vouching.RECIPE_CITATION_KEYS
+                    }
+                    if isinstance(citation, Mapping)
+                    else citation
+                    for citation in recipes
+                ]
+            updated.append({**attribute, **contract})
         merged.append({**row, "control_attributes": updated})
     return merged
 
@@ -896,6 +1287,12 @@ def _repair_scoped_rows(
     Rows that validated are carried through as the identical objects that were
     parsed, never re-serialized from a second model turn, so a repair cannot
     quietly reword a row it was not asked about.
+
+    A corrected row may arrive flat, carrying ``row_index`` beside its own
+    fields, or nested under ``row`` the way the request presented it. Both are
+    accepted: the model echoed the request envelope on a real engagement, every
+    corrected row spliced in as ``{"row": {…}}`` with no process and no risk of
+    its own, and nineteen good rows were replaced by empty ones without a word.
     """
 
     corrected = _first_json_object(response)
@@ -912,6 +1309,8 @@ def _repair_scoped_rows(
             index = int(entry.get("row_index"))
         except (TypeError, ValueError):
             continue
+        if isinstance(entry.get("row"), Mapping):
+            entry = {"row_index": index, **entry["row"]}
         if index in scoped:
             by_index[index] = {
                 key: _plain_json(value)
@@ -1028,6 +1427,51 @@ def _rcm_document(
     )
 
 
+def _downgraded_uncontracted(
+    request: WorkerRequest,
+    rows: list[dict],
+) -> list[dict]:
+    """Re-route attributes the evidence pass could not contract for.
+
+    An attribute the registry cannot express is a limit of the *documentary*
+    path, not of the requirement. "The invoice amount agrees to the purchase
+    order total" is answerable from the imported populations whether or not a
+    comparison recipe exists for the source records, and leaving the attribute
+    classified ``transaction_cycle`` with no contract does not preserve rigour —
+    it fails the row, discards its risk and its control along with it, and
+    tests nothing at all.
+
+    So the attribute keeps its requirement and takes the strongest path still
+    open to it: the population where the supplied tables bear on the row, the
+    documents otherwise. This became load-bearing the moment the matrix started
+    classifying attributes as ``transaction_cycle`` at all — before that, this
+    path never ran, and eight rows carrying real risks died on it in one run.
+    """
+    answers = _tabular_answers(request)
+    downgraded: list[dict] = []
+    for row in rows:
+        attributes = row.get("control_attributes")
+        if not isinstance(attributes, list):
+            downgraded.append(row)
+            continue
+        fallback = (
+            "tabular_population"
+            if _answering_table(row, answers)
+            else "document_content"
+        )
+        updated = []
+        for attribute in attributes:
+            if (
+                isinstance(attribute, Mapping)
+                and attribute.get("evidence_kind") == "transaction_cycle"
+                and not attribute.get("registry")
+            ):
+                attribute = {**attribute, "evidence_kind": fallback}
+            updated.append(attribute)
+        downgraded.append({**row, "control_attributes": updated})
+    return downgraded
+
+
 def _with_evidence_contracts(
     request: WorkerRequest,
     gateway: ModelGateway,
@@ -1056,7 +1500,7 @@ def _with_evidence_contracts(
         attempt=attempt.number,
     )
     try:
-        return _merge_evidence_contracts(rows, response)
+        return _downgraded_uncontracted(request, _merge_evidence_contracts(rows, response))
     except WorkerResponseValidationError:
         # Nothing to merge. The attributes stay without a contract and fail the
         # gate as such, which is a bounded, repairable outcome — and a truthful
@@ -1095,10 +1539,31 @@ def _repaired_rcm(
             ),
         )
     _, failures = _partition_rcm_rows(rows, request)
-    if not failures:
-        # The prior draft validates as parsed: the errors were about the document
-        # as a whole (an empty rows array), so there is nothing to scope to.
-        return json.dumps({"rows": rows}, ensure_ascii=False)
+    document_errors = document_level_errors(
+        request, [row for row in rows if isinstance(row, Mapping)]
+    )
+    if document_errors or not failures:
+        # The matrix is wrong as a whole — a risk theme no row owns, no
+        # requirement that recorded values agree — and a scoped repair cannot
+        # express that: the correction is to *add* something, and the scoped
+        # prompt forbids returning rows it did not list. Whole-document even
+        # when individual rows also failed, because one repair attempt has to
+        # answer everything that is wrong or the next gate is never reached.
+        return _contracted_document(
+            request,
+            gateway,
+            attempt,
+            gateway.complete(
+                RCM_SYSTEM,
+                user
+                + "\n\nThe previous matrix failed the engagement quality gate: "
+                + "; ".join(attempt.validation_errors)
+                + ". Return the complete matrix again, correcting every listed "
+                "error and preserving every other row unchanged.",
+                _rcm_activity(request, "rcm_repair"),
+                attempt=attempt.number,
+            ),
+        )
     response = gateway.complete(
         RCM_SYSTEM + "\n\n" + RCM_EVIDENCE_SYSTEM,
         json.dumps(

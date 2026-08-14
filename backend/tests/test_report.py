@@ -346,9 +346,14 @@ def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage
 
     generated = report.generate(ws, use_model=False, workflow=workflow_state)
 
+    # A control with no procedure is disclosed as untested rather than folded
+    # into the count of planning artifacts that do not exist: a reader has to be
+    # able to tell it from a control that was tested and found clean.
     assert generated["generation_warnings"] == [
         "Incomplete planning coverage: 1 planning step failed and "
-        "1 required planning item is missing.",
+        "0 required planning items are missing.",
+        "1 control in the matrix was not tested: no procedure was performed "
+        "over them, which is not the same as a procedure that found no exception.",
         "Incomplete execution-definition coverage: 1 execution-definition step "
         "failed and 1 required execution definition is missing.",
     ]
@@ -357,7 +362,7 @@ def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage
     # a section of their own a reader has to go looking for.
     assert "### 2. Objective and Scope" in generated["markdown"]
     assert "**Scope limitations**" in generated["markdown"]
-    assert "Incomplete planning coverage: 1 planning step failed" in generated["markdown"]
+    assert "1 control in the matrix was not tested" in generated["markdown"]
     assert "Incomplete execution-definition coverage: 1 execution-definition step failed" in generated["markdown"]
 
 

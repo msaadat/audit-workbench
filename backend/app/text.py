@@ -11,6 +11,23 @@ words on screen.
 
 from __future__ import annotations
 
+import re
+
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def relevance_tokens(value: object) -> set[str]:
+    """The comparable words of a phrase, a column name, or a requirement.
+
+    Deliberately crude: lowercase alphanumeric runs of more than two
+    characters, so ``PO_TOTAL_AMOUNT`` and "the amount of the purchase order"
+    share ``amount``. It lives here rather than beside either caller because
+    two stages must score relevance *identically* — a matrix row may not claim
+    that no table can answer its requirement when the test worker, using this
+    same function, would have ranked a table into the prompt for it.
+    """
+    return {token for token in _TOKEN.findall(str(value or "").casefold()) if len(token) > 2}
+
 
 def plural_word(count: int, singular: str, plural: str | None = None) -> str:
     """Just the noun, for callers that render the number themselves."""

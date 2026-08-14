@@ -322,6 +322,141 @@ def test_effective_conclusion_with_open_exception_is_inconsistent(workspace_with
     assert result["inconsistent_conclusions"][0]["test_id"] == item["id"]
 
 
+def _rollup_stub(variant, subject, **overrides):
+    return {
+        "variant": variant,
+        "subject_tokens": sorted(subject),
+        "conclusion_eligible": True,
+        **overrides,
+    }
+
+
+def test_design_inquiry_alone_cannot_conclude_a_control_effective():
+    """Whether a policy exists is not whether the population complies with it."""
+    row = {
+        "control_attributes": [
+            {
+                "key": "approval_before_commitment",
+                "requirement": "Purchases are approved before commitment.",
+            }
+        ]
+    }
+    contributing = [
+        _rollup_stub("qa", {"purchases", "approved", "before", "commitment"})
+    ]
+
+    ceiling = rcm_execution._evidence_ceiling(row, contributing)
+
+    assert "documentation describes the control" in ceiling
+
+
+def test_a_substantive_test_beside_design_inquiry_lifts_the_ceiling():
+    row = {
+        "control_attributes": [
+            {
+                "key": "approval_before_commitment",
+                "requirement": "Purchases are approved before commitment.",
+            }
+        ]
+    }
+    contributing = [
+        _rollup_stub("qa", {"purchases", "approved"}),
+        _rollup_stub("data", {"purchases", "approved", "before", "commitment"}),
+    ]
+
+    assert rcm_execution._evidence_ceiling(row, contributing) == ""
+
+
+def test_a_requirement_no_executed_test_names_blocks_effective(workspace_with_data):
+    ws = workspace_with_data
+    row = ws.add_rcm(
+        {
+            "process": "Vendor management",
+            "risk": "Payments are directed to unapproved bank details",
+            "risk_rating": "critical",
+            "control": "Vendor master amendments are independently reviewed.",
+            "control_attributes": [
+                {
+                    "key": "vendor_id_unique",
+                    "assertion": "Completeness",
+                    "requirement": "Vendor identifiers are unique.",
+                    "evidence_kind": "tabular_population",
+                },
+                {
+                    "key": "bank_account_amendment",
+                    "assertion": "Authorization",
+                    "requirement": (
+                        "Changes to vendor bank account details are approved "
+                        "independently of the requester."
+                    ),
+                    "evidence_kind": "tabular_population",
+                },
+            ],
+        }
+    )
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Vendor identifier uniqueness",
+            "objective": "Confirm vendor identifiers are unique.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Unique ids",
+                        "instruction": "Check uniqueness.",
+                        "table_refs": ["transactions"],
+                        "code": "result = transactions.head(0)",
+                    }
+                ],
+            },
+        },
+    )
+    data_tests.run(ws, item["id"])
+    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+
+    rolled = rcm_execution.rollup(ws)
+    (rolled_row,) = [entry for entry in rolled["rows"] if entry["rcm_id"] == row["id"]]
+
+    # The uniqueness test is real evidence for uniqueness and says nothing
+    # about the bank-account requirement sitting beside it.
+    assert rolled_row["control_conclusion"] == "partially_effective"
+    assert "bank_account_amendment" in rolled_row["evidence_ceiling"]
+
+
+def test_a_row_whose_requirements_were_all_tested_still_concludes_effective(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = ws.add_rcm(
+        {
+            "process": "Procurement",
+            "risk": "Unsupported purchases",
+            "risk_rating": "high",
+            "control": "Large transactions are screened.",
+            "control_attributes": [
+                {
+                    "key": "large_transaction_screening",
+                    "assertion": "Operational",
+                    "requirement": "Large transaction screening identifies purchases.",
+                    "evidence_kind": "tabular_population",
+                }
+            ],
+        }
+    )
+    item = _data_test(ws, row)
+    data_tests.run(ws, item["id"])
+    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+
+    rolled = rcm_execution.rollup(ws)
+    (rolled_row,) = [entry for entry in rolled["rows"] if entry["rcm_id"] == row["id"]]
+
+    assert rolled_row["control_conclusion"] == "effective"
+    assert rolled_row["evidence_ceiling"] == ""
+
+
 def test_rcm_working_paper_contains_data_and_document_result_hashes(
     workspace_with_data,
 ):

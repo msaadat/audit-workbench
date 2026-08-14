@@ -287,15 +287,24 @@ def _incomplete_coverage(
     )
     completion = rcm_execution.completion(workspace, document_tests=document_tests)
     coverage = completion.get("coverage") or {}
+    # Counted apart from the artifacts that do not exist. A control with no
+    # procedure was not tested, which a reader must be able to tell from a
+    # control that was tested and found clean; both render as an absence in a
+    # findings list, and only one of them is assurance.
+    untested_controls = len(coverage.get("rows_without_tests") or [])
     missing_planning = (
         int(not str(workspace.planning.get("apm_markdown") or "").strip())
         + int(not workspace.rcm)
-        + len(coverage.get("rows_without_tests") or [])
     )
     missing_definitions = len(coverage.get("unspecified_tests") or [])
     return {
         "failed_planning_units": failed_planning,
         "missing_planning_items": missing_planning,
+        "untested_controls": untested_controls,
+        "capped_conclusions": [
+            str(item.get("reason") or "")
+            for item in completion.get("evidence_ceilings") or []
+        ],
         "failed_execution_definition_units": failed_definitions,
         "missing_execution_definitions": missing_definitions,
     }
@@ -310,6 +319,20 @@ def _coverage_warnings(coverage: dict) -> list[str]:
             "Incomplete planning coverage: "
             f"{counted(failed_planning, 'planning step')} failed and "
             f"{counted(missing_planning, 'required planning item')} {verb(missing_planning, 'is', 'are')} missing."
+        )
+    untested = int(coverage.get("untested_controls") or 0)
+    if untested:
+        warnings.append(
+            f"{counted(untested, 'control')} in the matrix {verb(untested, 'was', 'were')} "
+            "not tested: no procedure was performed over them, which is not the "
+            "same as a procedure that found no exception."
+        )
+    capped = list(coverage.get("capped_conclusions") or [])
+    if capped:
+        warnings.append(
+            f"{counted(len(capped), 'control conclusion')} "
+            f"{verb(len(capped), 'was', 'were')} limited by the evidence obtained "
+            f"rather than by what the tests found: {' '.join(dict.fromkeys(capped))}"
         )
     failed_definitions = int(coverage.get("failed_execution_definition_units") or 0)
     missing_definitions = int(coverage.get("missing_execution_definitions") or 0)
