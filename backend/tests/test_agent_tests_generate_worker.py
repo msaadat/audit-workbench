@@ -1461,6 +1461,38 @@ def test_a_requirement_naming_a_population_must_produce_a_step_about_it():
     assert "at its own grain" in message
 
 
+def test_a_malformed_response_is_repaired_against_the_position_that_broke():
+    """"Not a valid JSON object" locates nothing, so nothing gets corrected.
+
+    A live splitting-risk row emitted one stray ``}`` after its first step, in
+    two thousand characters of escaped Polars code. Told only that the response
+    was invalid, the model re-emitted the same brace in the same place three
+    times and the row was lost. The decoder already knows the offending
+    position; the repair message has to carry it.
+    """
+    broken = (
+        '{"tests":[{"source":"data","title":"T","objective":"O","steps":['
+        '{"label":"One","instruction":"I","population":"transactions",'
+        '"code":"result = transactions.head(1)"}},'
+        '{"label":"Two","instruction":"I","population":"transactions",'
+        '"code":"result = transactions.head(2)"}]}]}'
+    )
+    gateway = _Gateway([broken] * 3)
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(), gateway)
+
+    message = str(caught.value)
+    assert "not a valid JSON object" in message
+    # The decoder's own position, and the text there, so the model can see the
+    # brace rather than re-derive the whole response.
+    assert "at character" in message
+    assert 'transactions.head(1)"}}' in message
+    # The repair turn is given the same guidance, not just the run error.
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "at character" in guidance
+
+
 def test_generate_worker_rejects_an_unknown_document_id():
     invalid = json.dumps(
         {"tests": [_document_test(steps=[_question_step(document_ids=["DOC-GHOST"])])]}

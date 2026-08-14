@@ -23,6 +23,7 @@ from .model import (
     WorkerRequest,
     WorkerResponseSchema,
     WorkerResponseValidationError,
+    decode_json_response,
 )
 
 
@@ -1702,18 +1703,7 @@ _LABELLED_FACT = re.compile(r"^\s*[-*]?\s*\*\*([^*]+?):\*\*\s*(.+?)\s*$")
 
 
 def _planning_context_response_schema(response: str) -> Mapping[str, Any]:
-    value = str(response or "").strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?\s*\n?(.*?)\n?```",
-        value,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError:
-        raise WorkerResponseValidationError("the response is not a valid JSON object")
+    payload = decode_json_response(response)
     if not isinstance(payload, dict):
         raise WorkerResponseValidationError("the response must be a JSON object")
     context = payload.get("context")

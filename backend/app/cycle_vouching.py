@@ -2356,13 +2356,47 @@ def unanswerable_cycle_requirements(
         manifest = transaction_evidence_manifest(workspace, attributes)
     except (CycleSchemaError, RegistryError, OSError):
         return []
+    unanswerable = sorted(unanswerable_cycle_attributes(manifest, rcm_row))
+    if not unanswerable:
+        return []
     rcm_id = str(rcm_row.get("id") or "")
+    # Where a group holds no records at all but does hold exclusions, every
+    # attribute in it is unanswerable for one reason, and that reason is not
+    # the one the per-attribute text gives. Reporting "the recipes cannot be
+    # answered" ten times describes the symptom; the cause is that the
+    # analysed vouchers were set aside, which is both a single fact and an
+    # actionable one. A bumped pack version does exactly this — the extracted
+    # records stay on disk and stop counting — so it must not read as an
+    # evidence gap in the engagement.
+    starved = [
+        group
+        for group in manifest.get("groups") or []
+        if isinstance(group, Mapping)
+        and not (group.get("records") or [])
+        and (group.get("excluded_documents") or [])
+    ]
+    if starved:
+        notes = []
+        for group in starved:
+            excluded = group.get("excluded_documents") or []
+            reasons = sorted({str(item.get("reason") or "") for item in excluded})
+            pack = str((group.get("registry") or {}).get("pack_id") or "")
+            notes.append(
+                f"{rcm_id}: no transaction evidence is available for pack "
+                f"'{pack}' — all {len(excluded)} analysed voucher "
+                f"{'document' if len(excluded) == 1 else 'documents'} are "
+                f"excluded ({', '.join(reasons)}), so no cycle test could be "
+                f"generated for {', '.join(repr(key) for key in unanswerable)}. "
+                "Re-run document analysis to bring the extracted records back "
+                "into scope."
+            )
+        return notes
     return [
         f"{rcm_id} control attribute '{key}' declares transaction_cycle evidence "
         "but the extracted records answer none of the comparison recipes it "
         "cites, so no cycle test could be generated for it and the requirement "
         "is untested."
-        for key in sorted(unanswerable_cycle_attributes(manifest, rcm_row))
+        for key in unanswerable
     ]
 
 

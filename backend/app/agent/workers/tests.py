@@ -41,6 +41,7 @@ from .model import (
     WorkerRequest,
     WorkerResponseSchema,
     WorkerResponseValidationError,
+    decode_json_response,
 )
 
 
@@ -349,18 +350,7 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
 
 
 def _json_payload(response: str) -> object:
-    value = str(response or "").strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?\s*\n?(.*?)\n?```",
-        value,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        raise WorkerResponseValidationError("the response is not a valid JSON object")
+    return decode_json_response(response)
 
 
 def _context_metrics(request: WorkerRequest, worker_kind: str) -> dict:

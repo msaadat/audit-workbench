@@ -118,6 +118,44 @@ class WorkerResponseValidationError(ValueError):
         super().__init__("; ".join(normalized))
 
 
+_FENCED_JSON = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL | re.IGNORECASE)
+#: How much of the response to quote either side of a parse failure. Enough to
+#: contain the malformed token and the structure around it; short enough that
+#: the repair message stays readable next to the other errors.
+_JSON_ERROR_WINDOW = 120
+
+
+def decode_json_response(response: object) -> object:
+    """Parse a fenced-or-bare JSON response, saying where it broke if it did.
+
+    "The response is not a valid JSON object" is true and useless: it locates
+    nothing, so a response with one misplaced brace in two thousand characters
+    of escaped Polars code gets re-emitted with the same brace in the same
+    place until the repair allowance runs out. That is what happened to a live
+    splitting-risk row — three attempts, one stray ``}`` after the first step,
+    every time. Quoting the decoder's own position and the text around it turns
+    an unactionable retry into a correction the model can actually make.
+    """
+    value = str(response or "").strip()
+    fenced = _FENCED_JSON.fullmatch(value)
+    if fenced:
+        value = fenced.group(1).strip()
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as error:
+        window = value[
+            max(0, error.pos - _JSON_ERROR_WINDOW) : error.pos + _JSON_ERROR_WINDOW
+        ]
+        raise WorkerResponseValidationError(
+            "the response is not a valid JSON object: "
+            f"{error.msg} at character {error.pos}. The text around that "
+            f"position reads: ...{window}... Re-emit the whole object with "
+            "that region corrected; check the braces and brackets there close "
+            "exactly what they opened, and that every quote and backslash "
+            "inside a code string is escaped."
+        ) from error
+
+
 class WorkerRunError(RuntimeError):
     """A worker exhausted its bounded response-repair allowance."""
 
