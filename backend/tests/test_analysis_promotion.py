@@ -440,3 +440,122 @@ def test_a_placement_that_cannot_be_made_does_not_withhold_fieldwork(monkeypatch
     # so the coverage warning still reports it.
     current = workspaces.load_workspace(ws.id)
     assert len(analysis_promotion.candidates(current)) == 1
+
+
+@pytest.mark.parametrize(
+    "population, expected",
+    [
+        # Both observed on the procurement workspace, and both failed at commit
+        # rather than at validation, so the repair turn never saw them.
+        ("Invoice population (118 invoices)", "not a supplied frame"),
+        ("transactions_customers_joined", "joined frame"),
+    ],
+)
+def test_a_population_must_be_a_frame_that_is_its_own_grain(population, expected):
+    ws = _workspace()
+    # A joined frame carrying the transactions grain, so the second case has a
+    # real frame to name rather than an invented one.
+    ws.add_table(
+        "customers.csv",
+        pl.DataFrame({"invoice": [1, 2, 3], "customer": ["a", "b", "c"]})
+        .write_csv()
+        .encode(),
+    )
+    ws.add_join(
+        {
+            "name": "transactions_customers_joined",
+            "left": "transactions",
+            "right": "customers",
+            "left_on": ["invoice"],
+            "right_on": ["invoice"],
+            "how": "left",
+        }
+    )
+    # Run the procedure against the joined frame, so the frame is supplied to
+    # the turn and the grain rule is what rejects it — rather than it simply
+    # being absent, which is a different error with a different fix.
+    saved = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": "transactions_customers_joined",
+            "title": "Large amounts by customer",
+            "spec": {
+                "code": 'result = tables["transactions_customers_joined"]'
+                '.filter(pl.col("amount") > 100)'
+            },
+            "outcome_policy": {"mode": "exception_rows"},
+        }
+    )
+    analysis_results.execute_and_record(ws, saved["id"])
+    request = _worker_request(ws, saved["id"])
+    carried = next(x for x in ws.analyses if x["id"] == saved["id"])["spec"]["code"]
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        analysis_workers.validate_promotion_proposal(
+            {
+                "promote": True,
+                "rcm_id": ws.rcm[0]["id"],
+                "title": "Placed on the wrong grain",
+                "objective": "Determine something.",
+                "step": {
+                    "label": "Check",
+                    "instruction": "Check.",
+                    "population": population,
+                    "code": carried,
+                },
+            },
+            request,
+        )
+    assert any(expected in message for message in error.value.errors)
+
+
+def test_the_frame_a_procedure_runs_against_is_always_supplied():
+    """A turn that cannot see the procedure's own frame declines it falsely.
+
+    Observed on the procurement workspace: the schema projection is large, so
+    twenty frames overran the source budget and the resolver dropped eight by
+    reference order — including two base tables and the joined frame the
+    carried procedure reads. The turn declined it, reporting that no supplied
+    table held the columns. That was true of what it saw and false of the
+    engagement, and it was recorded as a judgement about the audit.
+    """
+    ws = _workspace()
+    ws.add_table(
+        "customers.csv",
+        pl.DataFrame({"invoice": [1, 2, 3], "customer": ["a", "b", "c"]})
+        .write_csv()
+        .encode(),
+    )
+    ws.add_join(
+        {
+            "name": "transactions_customers_joined",
+            "left": "transactions",
+            "right": "customers",
+            "left_on": ["invoice"],
+            "right_on": ["invoice"],
+            "how": "left",
+        }
+    )
+    saved = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": "transactions_customers_joined",
+            "title": "Large amounts by customer",
+            "spec": {
+                "code": 'result = tables["transactions_customers_joined"]'
+                '.filter(pl.col("amount") > 100)'
+            },
+            "outcome_policy": {"mode": "exception_rows"},
+        }
+    )
+    analysis_results.execute_and_record(ws, saved["id"])
+
+    request = _worker_request(ws, saved["id"])
+    supplied = {
+        item.content.get("table")
+        for item in request.context.items
+        if item.source_id == "table_metadata"
+    }
+    # The frame it runs against, and every base population it could declare.
+    assert "transactions_customers_joined" in supplied
+    assert {"transactions", "customers"} <= supplied

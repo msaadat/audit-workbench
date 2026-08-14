@@ -1928,10 +1928,12 @@ Writing the step.
   `catalog_test` with `parameters`. Write the Polars step that performs exactly
   that test over `frame`, using only the supplied schemas for column spelling.
   Assign the flagged rows to `result`.
-- `population` is the base population the step asserts *about*, at its own
-  grain — for a test over invoices joined to purchase orders that is the
-  invoice population, not the joined frame. The code may read whichever frame
-  carries the columns; the declared population is what the conclusion is about.
+- `population` is a table name copied exactly from TABLE SCHEMAS — never a
+  description, a row count, or a phrase. Choose the frame the step asserts
+  *about*, which is one whose `grain` equals its own name: for a test over
+  invoices joined to purchase orders that is `invoice_data`, not
+  `invoice_data_po_data_joined`. The code may read whichever frame carries the
+  columns; the declared population is what the conclusion is about.
 
 `title` names the test as an auditor would list it. `objective` states what the
 test determines, in one sentence, without asserting its outcome.
@@ -2029,6 +2031,34 @@ def validate_promotion_proposal(
             f"of {', '.join(sorted(rows)) or 'the supplied rows'}"
         )
     step = proposal.get("step") or {}
+    # The anchor rule, checked here rather than at commit. ``population`` names
+    # what the step asserts *about*, so it has to be a supplied frame whose
+    # grain is itself: a joined frame carries its left side's grain, and a
+    # conclusion drawn over it is stated about a population that does not
+    # exist. Both failures this catches were observed — a prose description
+    # ("Invoice population (118 invoices)") and a joined frame — and both
+    # surfaced at commit, after the repair budget was already spent.
+    grains: dict[str, str] = {}
+    for table in _source_items(request, PROMOTION_TABLE_SOURCE_ID):
+        if not isinstance(table, Mapping):
+            continue
+        name = str(table.get("table") or "").strip()
+        if name:
+            grains[name] = str(table.get("grain") or name).strip() or name
+    population = str(step.get("population") or "").strip()
+    if grains and population not in grains:
+        errors.append(
+            f"step.population '{population}' is not a supplied frame; use one "
+            f"of {', '.join(sorted(name for name, grain in grains.items() if grain == name))} "
+            "exactly as spelled in TABLE SCHEMAS"
+        )
+    elif grains and grains[population] != population:
+        errors.append(
+            f"step.population '{population}' is a joined frame carrying the "
+            f"grain of '{grains[population]}'; a step asserts about a "
+            f"population, so declare '{grains[population]}' and read the "
+            "joined frame in the code"
+        )
     code = str(step.get("code") or "")
     carried = str(_promotion_subject(request).get("code") or "").strip()
     # A procedure that already ran is evidence. A rewritten one is a different

@@ -2536,8 +2536,34 @@ def promotion_scope(workspace: Workspace, analysis_id: str) -> ContextScope:
                     {key: row.get(key) for key in _PROMOTION_ROW_FIELDS},
                 )
             ),
-            PROMOTION_TABLE_SOURCE_ID: apm_table_metadata_candidates(
-                workspace, imported_only=False
+            # The same schema projection test generation is given, and for the
+            # same two reasons: a step written against column names alone has
+            # to guess what a status column holds, and each frame's declared
+            # ``grain`` is what lets the anchor rule be checked here rather
+            # than discovered at commit.
+            #
+            # Scoped, though, rather than handed the whole workspace. That
+            # projection carries category values and is large, so twenty frames
+            # overran the source budget and the resolver dropped eight of them
+            # by reference order — including two base tables and the joined
+            # frame one carried procedure actually reads. The turn then
+            # declined it, reporting that no supplied table held the columns,
+            # which was true of what it saw and false of the engagement. A
+            # false decline is worse than a missing one: it is recorded as a
+            # judgement about the audit.
+            #
+            # What a fitting turn can need is bounded and knowable: the frame
+            # the procedure runs against, and the base populations it might
+            # declare as its grain. Nothing else is reachable from a carried
+            # procedure or a catalog test.
+            PROMOTION_TABLE_SOURCE_ID: tuple(
+                candidate
+                for candidate in test_generate_table_metadata_candidates(workspace)
+                if candidate.metadata.get("table")
+                in {
+                    str(subject.get("frame") or ""),
+                    *(str(table.get("name") or "") for table in workspace.tables),
+                }
             ),
         },
         selector_context={},
