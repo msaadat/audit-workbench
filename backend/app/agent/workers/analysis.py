@@ -2075,6 +2075,32 @@ def validate_promotion_proposal(
         sandbox.validate(code)
     except Exception as error:  # noqa: BLE001 - surfaced as a repairable error
         errors.append(f"step.code is not a valid sandbox program: {error}")
+    else:
+        # Safe is not the same as runnable, and only the second is worth
+        # anything here. Four promoted steps passed the static check, referred
+        # to a bare ``frame`` variable that the sandbox never defines, and
+        # failed at execution — by which point the analysis was already
+        # recorded as answered and the test sat in the workspace reporting no
+        # exceptions over a procedure that had found four. Running against
+        # zero-row frames resolves every name and column without reading a row.
+        schemas = {
+            str(table.get("table") or ""): {
+                str(column.get("name") or ""): str(column.get("dtype") or "")
+                for column in table.get("columns") or []
+                if isinstance(column, Mapping)
+            }
+            for table in _source_items(request, PROMOTION_TABLE_SOURCE_ID)
+            if isinstance(table, Mapping) and table.get("table")
+        }
+        if schemas:
+            try:
+                sandbox.run(code, sandbox.empty_schema_frames(schemas))
+            except sandbox.SandboxError as error:
+                errors.append(
+                    f"step.code cannot run against the supplied table schemas: "
+                    f"{error}. Read a frame as tables['exact_name'] or by its "
+                    "bare table name; no other frame variable exists."
+                )
     if errors:
         raise WorkerResponseValidationError(errors)
     return proposal

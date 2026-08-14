@@ -153,3 +153,47 @@ def run(code: str, frames: dict[str, pl.DataFrame]) -> tuple[pl.DataFrame, str]:
     if len(captured) > MAX_STDOUT_CHARS:
         captured = captured[:MAX_STDOUT_CHARS] + "\n… (output truncated)"
     return _coerce_result(namespace["result"]), captured
+
+
+def empty_frame_dtype(dtype: str):
+    """Map a compact context dtype into a safe, useful empty-frame dtype."""
+    normalized = str(dtype or "").casefold().replace(" ", "")
+    if normalized.startswith("uint"):
+        return pl.UInt64
+    if normalized.startswith("int"):
+        return pl.Int64
+    if normalized.startswith(("float", "decimal")):
+        return pl.Float64
+    if normalized in {"bool", "boolean"}:
+        return pl.Boolean
+    if normalized == "date":
+        return pl.Date
+    if normalized.startswith("datetime"):
+        return pl.Datetime
+    if normalized == "time":
+        return pl.Time
+    return pl.String
+
+
+def empty_schema_frames(tables) -> dict:
+    """Zero-row frames preserving the supplied table schemas only.
+
+    Running a candidate step against these is how a stage learns that its code
+    is not merely *safe* but *runnable* — that every name resolves and every
+    column exists — without reading or exposing a single row.
+
+    It lives here rather than beside either caller because two stages must
+    decide runnability identically. Test generation validated steps this way
+    from the start; analysis promotion did not, and shipped four steps that
+    passed the static safety check, referenced a frame variable that does not
+    exist, and failed at execution with the audit already believing them
+    written. Same reason ``relevance_tokens`` is shared rather than duplicated.
+    """
+    return {
+        table: pl.DataFrame(
+            schema={
+                column: empty_frame_dtype(dtype) for column, dtype in columns.items()
+            }
+        )
+        for table, columns in tables.items()
+    }

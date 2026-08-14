@@ -642,34 +642,9 @@ def _generate_supplied_grains(request: WorkerRequest) -> dict[str, str]:
     return grains
 
 
-def _empty_frame_dtype(dtype: str):
-    """Map the compact context dtype into a safe, useful empty-frame dtype."""
-    normalized = dtype.casefold().replace(" ", "")
-    if normalized.startswith("uint"):
-        return sandbox.pl.UInt64
-    if normalized.startswith("int"):
-        return sandbox.pl.Int64
-    if normalized.startswith(("float", "decimal")):
-        return sandbox.pl.Float64
-    if normalized in {"bool", "boolean"}:
-        return sandbox.pl.Boolean
-    if normalized == "date":
-        return sandbox.pl.Date
-    if normalized.startswith("datetime"):
-        return sandbox.pl.Datetime
-    if normalized == "time":
-        return sandbox.pl.Time
-    return sandbox.pl.String
-
-
 def _empty_schema_frames(tables: Mapping[str, Mapping[str, str]]) -> dict:
     """Build zero-row frames that preserve the supplied table schemas only."""
-    return {
-        table: sandbox.pl.DataFrame(
-            schema={column: _empty_frame_dtype(dtype) for column, dtype in columns.items()}
-        )
-        for table, columns in tables.items()
-    }
+    return sandbox.empty_schema_frames(tables)
 
 
 def _generate_supplied_document_ids(request: WorkerRequest) -> set[str]:

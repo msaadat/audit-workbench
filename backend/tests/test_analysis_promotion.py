@@ -559,3 +559,64 @@ def test_the_frame_a_procedure_runs_against_is_always_supplied():
     # The frame it runs against, and every base population it could declare.
     assert "transactions_customers_joined" in supplied
     assert {"transactions", "customers"} <= supplied
+
+
+def test_a_step_that_cannot_execute_is_rejected_before_it_is_committed():
+    """Safe is not runnable, and only the second is worth anything here.
+
+    Four steps written for analytics-kind procedures on the procurement
+    workspace passed the static sandbox check, referred to a bare ``frame``
+    variable the sandbox never defines, and failed at execution. By then the
+    analysis was recorded as answered and the test sat on its RCM row reporting
+    no exceptions over a procedure that had found four — a false clear on a
+    real issue, which is worse than never having promoted it.
+    """
+    ws = _workspace()
+    analysis = _flagging_analysis(ws)
+    request = _worker_request(ws, analysis["id"])
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        analysis_workers.validate_promotion_proposal(
+            {
+                "promote": True,
+                "rcm_id": ws.rcm[0]["id"],
+                "title": "Amounts above the approved commitment",
+                "objective": "Determine whether payments exceeded the amount.",
+                "step": {
+                    "label": "Compare",
+                    "instruction": "Compare each payment to its approved amount.",
+                    "population": "transactions",
+                    # Exactly what the run shipped: syntactically fine, safe
+                    # under the static check, and unrunnable.
+                    "code": 'result = frame.filter(pl.col("amount") > 100)',
+                },
+            },
+            request,
+        )
+    assert any("cannot run against" in message for message in error.value.errors)
+    assert any("frame" in message for message in error.value.errors)
+
+
+def test_an_unknown_column_is_rejected_before_it_is_committed():
+    """The same check, on the other way a written step goes wrong."""
+    ws = _workspace()
+    analysis = _flagging_analysis(ws)
+    request = _worker_request(ws, analysis["id"])
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        analysis_workers.validate_promotion_proposal(
+            {
+                "promote": True,
+                "rcm_id": ws.rcm[0]["id"],
+                "title": "Amounts above the approved commitment",
+                "objective": "Determine whether payments exceeded the amount.",
+                "step": {
+                    "label": "Compare",
+                    "instruction": "Compare each payment to its approved amount.",
+                    "population": "transactions",
+                    "code": 'result = transactions.filter(pl.col("APPROVED_AMOUNT") > 100)',
+                },
+            },
+            request,
+        )
+    assert any("cannot run against" in message for message in error.value.errors)
