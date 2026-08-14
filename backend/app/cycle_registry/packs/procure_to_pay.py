@@ -156,7 +156,7 @@ DATE_LIFECYCLE = (
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Procure to pay",
-    version=6,
+    version=7,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),

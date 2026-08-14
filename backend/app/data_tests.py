@@ -208,14 +208,25 @@ def _validate_spec(
             except ValueError as error:
                 raise WorkspaceError(str(error)) from error
             step_id = str(raw_step.get("step_id") or "").strip() or _step_id(semantic_id, label, index)
-            steps.append(
-                {
-                    "step_id": step_id,
-                    "label": label,
-                    "instruction": instruction,
-                    "code": code,
-                }
-            )
+            step = {
+                "step_id": step_id,
+                "label": label,
+                "instruction": instruction,
+                "code": code,
+            }
+            # Which population the step makes a statement about. Optional so an
+            # auditor-authored step stays valid, but durable where supplied:
+            # coverage reconciliation after fieldwork has no other way to know
+            # which populations the executed tests actually spoke about.
+            population = str(raw_step.get("population") or "").strip()
+            if population:
+                if population not in workspace.table_names():
+                    raise WorkspaceError(
+                        f"Data Test step '{label}' names unknown population "
+                        f"'{population}'."
+                    )
+                step["population"] = population
+            steps.append(step)
         value = {"schema_version": 2, "steps": steps}
     return value, warnings, refs
 
@@ -558,6 +569,13 @@ _COLUMN_PAIR_RE = re.compile(
     r"""pl\.col\(\s*['"](?P<right>[^'"]+)['"]\s*\)"""
 )
 
+# A duplicate screen states its notion of identity as the key it groups on. The
+# key is the whole test: widen it by one column and the collision it was meant
+# to find stops being a collision.
+_DUPLICATE_KEY_RE = re.compile(
+    r"""(?:group_by|unique)\(\s*(?:subset\s*=\s*)?\[(?P<key>[^\]]+)\]""",
+)
+
 
 def _category_values(frames: dict[str, pl.DataFrame]) -> dict[str, set[str]]:
     """Map each low-cardinality text column to the values it actually holds."""
@@ -682,6 +700,91 @@ def _step_reality_issues(
     return list(dict.fromkeys(issues))
 
 
+def _overwide_duplicate_key_issues(
+    step: dict, result: pl.DataFrame, frames: dict[str, pl.DataFrame]
+) -> list[str]:
+    """Flag a duplicate screen whose key is too wide to see its own risk.
+
+    A duplicate-payment screen keyed on ``(VENDOR_ID, VENDOR_INVOICE_NUMBER,
+    ...)`` returned "no duplicate keys found" on a population holding two
+    vendor invoice numbers each billed under *two different* vendor ids. The
+    key excluded the collision by construction: the field whose repetition is
+    the risk was inside the definition of identity. Reported as a clean pass
+    under a critical row, that is worse than not testing at all.
+
+    Checked only where the step found nothing, and only by dropping columns
+    from the key the step itself declared — so a screen that already finds
+    exceptions is left alone, and the check can never demand a key the
+    generating turn did not choose.
+    """
+    if result.height:
+        return []
+    code = str(step.get("code") or "")
+    issues: list[str] = []
+    for match in _DUPLICATE_KEY_RE.finditer(code):
+        key = [name for name in _QUOTED_RE.findall(match.group("key")) if name]
+        if len(key) < 2:
+            continue
+        for frame in frames.values():
+            if frame is None or not set(key) <= set(frame.columns):
+                continue
+            if frame.height != frame.unique(subset=key).height:
+                continue  # the key does collide; the step is simply clean
+            narrower = [
+                dropped
+                for dropped in key
+                if frame.height
+                != frame.unique(subset=[name for name in key if name != dropped]).height
+            ]
+            if narrower:
+                issues.append(
+                    f"Step '{step['label']}' finds no duplicates on "
+                    f"{key}, but the same rows do collide once "
+                    f"{sorted(narrower)} is dropped from the key. A duplicate "
+                    "screen cannot include the field whose repetition is the "
+                    "risk; this result is a property of the key, not evidence "
+                    "that no duplicate exists."
+                )
+            break
+    return list(dict.fromkeys(issues))
+
+
+def _coincident_step_issues(results: list[tuple[str, pl.DataFrame]]) -> list[str]:
+    """Flag steps of one test that excepted exactly the same rows.
+
+    Three steps of one live test read as three separate authority tests — an
+    approver was designated, was within the matrix limit, approved before the
+    order — and returned one identical set of 22 rows, every one of them a row
+    where the join had produced nulls. Each condition was written as a chain of
+    alternatives beginning with the same null check, so the null check decided
+    every result and the two substantive conditions never ran against a
+    populated row. The exception counts hid it: three steps, 22 each, reads as
+    corroboration rather than as one finding counted three times.
+
+    Compared on the columns the steps share, since steps select what their own
+    condition needs and identity is about the rows reached, not the projection.
+    """
+    issues: list[str] = []
+    for index, (label, frame) in enumerate(results):
+        for other_label, other in results[index + 1 :]:
+            if frame.height != other.height or not frame.height:
+                continue
+            shared = sorted(set(frame.columns) & set(other.columns))
+            if not shared:
+                continue
+            if frame.select(shared).sort(shared).equals(
+                other.select(shared).sort(shared)
+            ):
+                issues.append(
+                    f"Steps '{label}' and '{other_label}' excepted the same "
+                    f"{frame.height} rows. Two conditions that never disagree on "
+                    "any row are one condition: the exceptions are being decided "
+                    "by a term the steps share, so the rest of each predicate is "
+                    "untested and the counts double-count one result."
+                )
+    return issues
+
+
 def _base_table_names(workspace: Workspace) -> list[str]:
     """Imported tables only. A join is a view of a population, not a population."""
     return [table["name"] for table in workspace.tables]
@@ -724,6 +827,7 @@ def _run_polars_steps(
     exception_frames: list[pl.DataFrame] = []
     step_frames: list[pl.DataFrame] = []
     reason_columns: dict[str, list[str]] = {}
+    coincidence_inputs: list[tuple[str, pl.DataFrame]] = []
     stdout_parts: list[str] = []
     total_exceptions = 0
     any_step_failed = False
@@ -756,8 +860,10 @@ def _run_polars_steps(
                 f"Step '{step['label']}' result is entirely null."
             )
         issues.extend(_step_reality_issues(step, result, frames, categories))
+        issues.extend(_overwide_duplicate_key_issues(step, result, frames))
         step_exception_count = result.height
         total_exceptions += step_exception_count
+        coincidence_inputs.append((step["label"], result))
         summary_frames.append(result)
         if step_exception_count:
             # A step's filter is several alternative conditions; which one a row
@@ -784,6 +890,7 @@ def _run_polars_steps(
                 "error": None,
             }
         )
+    issues.extend(_coincident_step_issues(coincidence_inputs))
     summary = pl.concat(summary_frames, how="diagonal_relaxed") if summary_frames else None
     exceptions = pl.concat(exception_frames, how="diagonal_relaxed") if exception_frames else None
     if any_step_failed:
@@ -897,6 +1004,13 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
             or "mis-specified predicate" in issue
             or "can never match" in issue
             or "cannot match the rows it describes" in issue
+            # Steps that never disagree are one condition counted several
+            # times, so neither the shared term nor the ones it masks has been
+            # tested — and the repeated counts read as corroboration.
+            or "excepted the same" in issue
+            # A clean pass that is a property of the key rather than of the
+            # population is the most dangerous shape a result can take.
+            or "a property of the key" in issue
             for issue in semantic_issues
         )
         status = (

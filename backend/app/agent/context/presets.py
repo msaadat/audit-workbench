@@ -98,6 +98,14 @@ class SelectorDefinition:
     required_configuration_keys: tuple[str, ...] = ()
     tie_breaker: str = "source_ref_ascending"
     emits_reasons: bool = True
+    #: Whether a scoring strategy ranks the candidate set or filters it. A
+    #: document that shares no term with the query is not evidence and is
+    #: rightly dropped. A *table* that shares none is still a population the
+    #: turn may have to test, and dropping it empties the schema list, which
+    #: is the one input that decides whether a data test can be written at
+    #: all. Where this is set, unmatched candidates keep their place at the
+    #: tail in source-ref order rather than leaving the result.
+    retain_unmatched: bool = False
     local_embedding_model_hash: str | None = None
     local_embedding_index_hash: str | None = None
 
@@ -176,6 +184,11 @@ class SelectorDefinition:
             raise ValueError(
                 "Lexical and local-embedding selectors must use the stable "
                 "source_ref_ascending tie-breaker."
+            )
+        if self.retain_unmatched and self.strategy == "metadata":
+            raise ValueError(
+                "selector_definition.retain_unmatched applies only to a scoring "
+                "strategy; a metadata selector matches or does not."
             )
         if self.tie_breaker == "declared_reference_order" and (
             "refs" not in required_keys
@@ -509,6 +522,26 @@ _register_selectors(
                 "tables.all:metadata-all:source-ref-ascending"
             ),
             strategy="metadata",
+        ),
+        SelectorDefinition(
+            # ``tables.all`` fills a budgeted source in source-ref order, which
+            # is alphabetical. On a workspace whose join frames sort early and
+            # are several times wider than a base table, the character budget
+            # is spent before the populations an RCM row is actually about are
+            # reached: a vendor-master row was offered seven frames, none of
+            # them the vendor master. Ranking the same candidates against the
+            # row spends the budget on what the row names instead.
+            selector_id="tables.lexical",
+            selector_kind="auto",
+            supported_source_types=("tables",),
+            implementation_hash=_implementation_hash(
+                "tables.lexical:stable-local-lexical-score:retain-unmatched"
+                ":source-ref-ascending"
+            ),
+            strategy="lexical",
+            configuration_keys=("query_fields",),
+            required_configuration_keys=("query_fields",),
+            retain_unmatched=True,
         ),
         SelectorDefinition(
             selector_id="analyses.all",
@@ -870,13 +903,24 @@ PRESETS.register(
                 # prompt — more than the target row by a factor of twenty — and was
                 # truncated by its own budget besides. Deduplication needs a pass
                 # that can see every generated test at once, not a per-unit prompt.
+                # Unlike planning, this source carries the derived join frames
+                # as well as the base tables, because a data test is written
+                # against whichever frame already holds the columns it needs.
+                # That makes the candidate set wide enough for fill order to
+                # decide coverage, so it is ranked against the row rather than
+                # taken alphabetically, and budgeted to hold more than the six
+                # the worker finally selects.
                 ContextSource(
                     id="table_metadata",
                     source_type="tables",
                     required=False,
-                    selector=ContextSelector(selector_id="tables.all"),
+                    selector=AutoSelect(
+                        selector_id="tables.lexical",
+                        item_limit=12,
+                        configuration={"query_fields": ["test_generate_query"]},
+                    ),
                     representations=(ContextRepresentation("table_metadata"),),
-                    budget=ContextBudget(max_items=12, max_characters=12_000),
+                    budget=ContextBudget(max_items=12, max_characters=24_000),
                 ),
                 ContextSource(
                     id="transaction_evidence",

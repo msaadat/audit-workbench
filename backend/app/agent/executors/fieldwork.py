@@ -36,6 +36,7 @@ from ...workspace_transactions import (
     parent_hashes,
 )
 from ...workspaces import Workspace, WorkspaceError, sync_workspace
+from .. import joins as join_diagnostics
 from ..capabilities import _shared as audit_hashes
 from .model import (
     EXECUTORS,
@@ -96,6 +97,48 @@ def roll_up_results(
 
     result = rcm_execution.rollup(workspace, rcm_ids=rcm_ids)
     return [result_ref(row["rcm_id"]) for row in result["rows"]]
+
+
+def untested_populations(workspace: Workspace) -> list[str]:
+    """Imported populations no executed data-test step makes a statement about.
+
+    The counterpart to the anchor rule. That rule stops a step claiming to test
+    a population it is not anchored on; this reports the populations nothing
+    claimed at all — the gap no individual test can be blamed for and which
+    therefore never surfaces. On the engagement this comes from, every data
+    test was anchored on the invoice population, so ``requisitions`` was
+    untested end to end while nineteen of its rows were unreachable from any
+    frame in use, one of them the largest approval breach in the workspace.
+
+    Reach is a per-table statement rather than a row count because a frame's
+    grain is its left-most base table: a step anchored on a population sees all
+    of its rows, and a step anchored elsewhere sees only those its join matched.
+    So a population is either fully covered by some step or covered by none.
+    """
+
+    reached: set[str] = set()
+    for item in workspace.data_tests:
+        last_run = item.get("last_run") or {}
+        if not last_run or last_run.get("status") == "error":
+            continue
+        steps = (item.get("spec") or {}).get("steps") or []
+        declared = {
+            str(step.get("population") or "").strip()
+            for step in steps
+            if str(step.get("population") or "").strip()
+        }
+        if declared:
+            reached |= declared
+            continue
+        # A test with no declared population: an analytics or validation
+        # engine, an auditor-authored step, or one written before the field
+        # existed. Fall back to the grain of the frames it runs against, so
+        # reconciliation does not report a population such a test does cover.
+        for name in item.get("table_refs") or []:
+            reached.add(join_diagnostics.frame_grain(workspace, str(name)))
+    return sorted(
+        {str(table.get("name") or "") for table in workspace.tables} - reached - {""}
+    )
 
 
 # --------------------------------------------------------------------------- #

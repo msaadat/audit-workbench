@@ -483,3 +483,63 @@ def test_compiled_assertions_choose_the_operand_form_the_evidence_allows(contrac
     )
     assert amount["left"]["source"] == "role"
     assert "role_quantifier" not in amount
+
+
+def test_party_agreement_compares_counterparties_not_every_name_on_the_record(
+    contract,
+):
+    """Two records that each name several parties still have one counterparty.
+
+    Scoring the agreement on ``parties.name`` made both operands sets as soon
+    as either record named more than one party, and a set-to-set comparison is
+    refused — correctly, since "every name here equals every name there" has no
+    reading. It cost the live engagement its purchase-order-to-requisition
+    vouch: the order named a supplier and a contact, the requisition a
+    department, a requester and a proposed vendor, and the one comparison an
+    auditor wanted was between the supplier and the proposed vendor.
+    """
+    manifest = _manifest(contract)
+    group = manifest["groups"][0]
+    for record in group["records"]:
+        names = next(
+            (field for field in record["available_fields"] if field["kind"] == "name"),
+            None,
+        )
+        if names is not None:
+            names["distinct_value_counts"]["name"] = 3
+        record["available_fields"].append(
+            {
+                "group": "parties",
+                "kind": "counterparty",
+                "distinct_value_counts": {"name": 1},
+            }
+        )
+    row = _row_payload(contract)
+    attribute = row["control_attributes"][0]
+    attribute["comparison_recipes"] = [{"recipe_id": "common.party_agreement"}]
+    bindings = [
+        {
+            "recipe_id": "common.party_agreement",
+            "bindings": {
+                "source": "procure_to_pay.purchase_order",
+                "target": "procure_to_pay.purchase_requisition",
+            },
+        }
+    ]
+
+    compiled = cycle_vouching.compile_required_assertions(
+        comparisons=cycle_vouching.required_comparisons_for(
+            rcm_row=row,
+            requirement_refs=[f"{row['id']}:{attribute['key']}"],
+            recipe_bindings=bindings,
+        ),
+        group=group,
+    )
+
+    party = next(item for item in compiled if item["key"] == "party_agreement")
+    assert party["left"]["field"]["kind"] == "counterparty"
+    # Both operands scalar: no role_quantifier, and nothing for the set-to-set
+    # rule in ``validate_assertions`` to reject.
+    assert party["left"]["source"] == "role"
+    assert party["right"]["source"] == "role"
+    assert "role_quantifier" not in party

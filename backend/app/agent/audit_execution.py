@@ -15,7 +15,7 @@ handler.
 
 from __future__ import annotations
 
-from .. import doc_tests, rcm_execution
+from .. import cycle_vouching, doc_tests, rcm_execution
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import (
@@ -54,7 +54,11 @@ from .context import (
     test_generate_scope,
 )
 from .executors import EXECUTORS
-from .executors.fieldwork import roll_up_results, run_data_test
+from .executors.fieldwork import (
+    roll_up_results,
+    run_data_test,
+    untested_populations,
+)
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
@@ -911,6 +915,16 @@ class AuditWorkflowExecution(ActionRunner):
                 self.record_artifact(
                     str(item["kind"]), str(item["id"]), "", action, None
                 )
+            # A requirement the evidence cannot answer produces no cycle test
+            # and no validation error — the generation turn has no move that
+            # would change that. Without this the row commits looking complete.
+            row = next(
+                (item for item in self.ws.rcm if str(item.get("id")) == rcm_id), None
+            )
+            for warning in cycle_vouching.unanswerable_cycle_requirements(
+                self.ws, row or {}
+            ):
+                self.warn(warning)
 
         return BoundUnitPipeline(
             request=UnitPipelineRequest(
@@ -1023,6 +1037,14 @@ class AuditWorkflowExecution(ActionRunner):
             )
         except WorkspaceConflict as error:
             return DeterministicUnitResult("conflict", error=str(error))
+        # Roll-up is the first point that can see the fieldwork as a whole, and
+        # so the only one that can report the populations it never reached. A
+        # per-row conclusion cannot: every row concluded on the tests it had.
+        for population in untested_populations(self.ws):
+            self.warn(
+                f"No executed data test makes a statement about the '{population}' "
+                "population; its rows are outside the tested scope."
+            )
         self.emit(
             "workspace_changed", {"kind": "rcm", "id": "rollup", "action": "updated"}
         )

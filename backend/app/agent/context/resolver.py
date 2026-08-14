@@ -376,6 +376,7 @@ def _metadata_matches_for_source(
 
 def _lexical_matches(
     source: ContextSource,
+    definition: SelectorDefinition,
     candidates: Iterable[_SelectorInput],
     selector_context: Mapping[str, object],
 ) -> tuple[_SelectorMatch, ...]:
@@ -390,12 +391,27 @@ def _lexical_matches(
         for field_name in raw_fields
         for token in _tokens(selector_context.get(str(field_name)))
     )
+    eligible = [
+        candidate
+        for candidate in candidates
+        if _metadata_matches(candidate, source.selector.configuration)
+    ]
+    # A ranking selector with nothing to rank by still has to return the
+    # candidate set in its stable order; only a filtering one may conclude
+    # that an empty query matches nothing.
     if not query_terms:
-        return ()
+        if not definition.retain_unmatched:
+            return ()
+        return tuple(
+            _SelectorMatch(
+                candidate.source_ref,
+                "Ranked below every lexically matched candidate.",
+            )
+            for candidate in sorted(eligible, key=lambda item: item.source_ref)
+        )
     ranked: list[tuple[int, str, _SelectorInput]] = []
-    for candidate in candidates:
-        if not _metadata_matches(candidate, source.selector.configuration):
-            continue
+    unmatched: list[_SelectorInput] = []
+    for candidate in eligible:
         candidate_terms = Counter(_tokens(candidate.lexical_text))
         score = sum(
             min(count, candidate_terms.get(term, 0))
@@ -403,13 +419,25 @@ def _lexical_matches(
         )
         if score > 0:
             ranked.append((-score, candidate.source_ref, candidate))
+        elif definition.retain_unmatched:
+            unmatched.append(candidate)
     ranked.sort(key=lambda item: (item[0], item[1]))
+    unmatched.sort(key=lambda item: item.source_ref)
     return tuple(
-        _SelectorMatch(
-            candidate.source_ref,
-            f"Matched {abs(score)} normalized lexical term occurrence(s).",
-        )
-        for score, _source_ref, candidate in ranked
+        [
+            _SelectorMatch(
+                candidate.source_ref,
+                f"Matched {abs(score)} normalized lexical term occurrence(s).",
+            )
+            for score, _source_ref, candidate in ranked
+        ]
+        + [
+            _SelectorMatch(
+                candidate.source_ref,
+                "Ranked below every lexically matched candidate.",
+            )
+            for candidate in unmatched
+        ]
     )
 
 
@@ -479,7 +507,9 @@ def _select_candidates(
     if definition.strategy == "metadata":
         return _metadata_matches_for_source(source, selection_inputs)
     if definition.strategy == "lexical":
-        return _lexical_matches(source, selection_inputs, scope.selector_context)
+        return _lexical_matches(
+            source, definition, selection_inputs, scope.selector_context
+        )
     if definition.strategy == "local_embedding":
         return _local_embedding_matches(
             source,

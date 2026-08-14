@@ -697,6 +697,126 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
     assert supplied["id"]
 
 
+def _vendor_workspace(name):
+    """A workspace whose join frames outnumber and outsize its base tables."""
+    workspace = workspaces.create_workspace(name)
+    workspace.add_table(
+        "vendor_master_file.csv",
+        pl.DataFrame(
+            {
+                "VENDOR_ID": ["V1", "V2"],
+                "VENDOR_NAME": ["A", "B"],
+                "BANK_ACCOUNT_NUMBER": ["1", "1"],
+                "APPROVED_BY": [7, 7],
+            }
+        )
+        .write_csv()
+        .encode(),
+    )
+    workspace.add_table(
+        "invoice_data.csv",
+        pl.DataFrame(
+            {
+                "INVOICE_ID": ["I1", "I2"],
+                "VENDOR_ID": ["V1", "V2"],
+                "INVOICE_AMOUNT": [10, 20],
+                "PAYMENT_STATUS": ["Paid", "Paid"],
+                "PAYMENT_DATE": ["2024-01-01", "2024-01-02"],
+                "VERIFIED_BY_ID": [7, 8],
+            }
+        )
+        .write_csv()
+        .encode(),
+    )
+    return workspace
+
+
+def test_a_population_outranks_the_join_frames_built_over_it():
+    """The table an RCM row is about must survive a budgeted, ranked source.
+
+    A join frame's name contains every word of the tables it was built from, so
+    at equal weight it matches every query its parents match and sorts above
+    all of them. Six joins *over* the vendor master once filled a vendor-master
+    row's schema list while the vendor master itself never reached the prompt.
+    """
+    workspace = _vendor_workspace("Vendor ranking")
+    workspace.add_join(
+        {
+            "name": "invoice_data_vendor_master_file_joined",
+            "left": "invoice_data",
+            "right": "vendor_master_file",
+            "left_on": ["VENDOR_ID"],
+            "right_on": ["VENDOR_ID"],
+            "how": "left",
+        }
+    )
+    row = workspace.add_rcm(
+        {
+            "process": "Vendor master maintenance",
+            "risk": "Two vendor master records may share one bank account",
+            "control": "Vendor master bank account review",
+        }
+    )
+
+    scope = context_adapters.test_generate_scope(workspace, row["id"])
+    candidates = {
+        candidate.metadata["table"]: candidate
+        for candidate in scope.candidates["table_metadata"]
+    }
+
+    assert candidates["vendor_master_file"].metadata["grain"] == "vendor_master_file"
+    assert (
+        candidates["invoice_data_vendor_master_file_joined"].metadata["grain"]
+        == "invoice_data"
+    )
+    manifest, bundle = ContextResolver().resolve(
+        workspace,
+        {"id": "tests.specified", "context": "tests.generate"},
+        {"id": f"test_generation:{row['id']}"},
+        scope,
+    )
+    ordered = [
+        item.source_ref for item in bundle.items if item.source_id == "table_metadata"
+    ]
+    assert ordered.index("table:vendor_master_file") < ordered.index(
+        "table:invoice_data_vendor_master_file_joined"
+    )
+    assert manifest.omissions == () or all(
+        omission.source_id != "table_metadata" for omission in manifest.omissions
+    )
+
+
+def test_a_table_no_word_of_the_row_matches_is_ranked_down_not_dropped():
+    """Lexical ranking of tables is an ordering, not a filter.
+
+    A document sharing no term with the row is not evidence for it. A *table*
+    sharing none is still a population the turn may have to test, and dropping
+    it empties the schema list — the one input that decides whether a data test
+    can be written for the row at all.
+    """
+    workspace = _vendor_workspace("Unmatched ranking")
+    row = workspace.add_rcm(
+        {
+            "process": "Vendor master maintenance",
+            "risk": "Two vendor master records may share one bank account",
+            "control": "Vendor master bank account review",
+        }
+    )
+
+    scope = context_adapters.test_generate_scope(workspace, row["id"])
+    _, bundle = ContextResolver().resolve(
+        workspace,
+        {"id": "tests.specified", "context": "tests.generate"},
+        {"id": f"test_generation:{row['id']}"},
+        scope,
+    )
+    ordered = [
+        item.source_ref for item in bundle.items if item.source_id == "table_metadata"
+    ]
+
+    assert ordered == ["table:vendor_master_file", "table:invoice_data"]
+
+
 def test_test_generate_metadata_supplies_category_values_but_never_row_values():
     """A generated Polars step is a predicate, so it needs the column's domain.
 

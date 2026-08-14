@@ -152,7 +152,7 @@ DATE_LIFECYCLE = (
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Payroll",
-    version=4,
+    version=5,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),

@@ -1145,6 +1145,20 @@ def _pack_descriptor(pack_id: str) -> str:
             "  interpretive attributes, which may use your own wording rather "
             "than a quote: " + ", ".join(interpretive)
         )
+    if "common.party.counterparty" in pack.field_kind_ids:
+        # Every other selector is self-describing from its name. This one names
+        # a choice: which of the parties the record prints is the external
+        # party it transacts with, as opposed to the people who handled it.
+        # Downstream comparisons treat it as single-valued, so a second entry
+        # makes the record ambiguous rather than better described.
+        lines.append(
+            "  parties.counterparty is the single external party this record "
+            "transacts with — the supplier a purchase order is placed on, the "
+            "vendor a requisition proposes, the payee of a voucher. Supply at "
+            "most one entry, and record everyone else the document names "
+            "(requesters, approvers, contacts, departments) under parties.name "
+            "with their role. Omit it where the record names no external party."
+        )
     for record_id in pack.record_kind_ids:
         record = registry.record_kinds[record_id]
         if not record.bindable:

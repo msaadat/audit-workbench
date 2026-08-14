@@ -22,6 +22,7 @@ from ... import (
     templates_store,
 )
 from ...analysis_memo import flatten_embeds
+from ...text import relevance_tokens
 from ...workspaces import Workspace, WorkspaceError
 from .. import joins as join_diagnostics
 from ..workflows import analysis as analysis_workflow
@@ -1032,6 +1033,47 @@ MIN_CATEGORY_ROWS = 20
 MIN_CATEGORY_REPETITION = 4
 
 
+#: How much more a match on the table's own name is worth than a match on one
+#: of its columns. The same weighting the test worker's own schema ranking
+#: applies, so the selector that decides which schemas survive the budget and
+#: the worker that decides which of the survivors to prompt with cannot reach
+#: different conclusions about the same row.
+_TABLE_NAME_WEIGHT = 4
+#: The weight a derived frame's name carries instead. A join frame's name is
+#: the concatenation of the names of everything it was built from, so at equal
+#: weight it matches every query its parents match and outranks all of them —
+#: six joins *over* the vendor master crowded out the vendor master itself.
+#: Ranking a population above a view over that population is the right default
+#: where both answer the query; where the view is what the test needs, it is
+#: still ahead of every frame that does not mention the subject at all.
+_DERIVED_TABLE_NAME_WEIGHT = 2
+
+
+def _table_lexical_text(
+    table_name: str,
+    columns: Iterable[Mapping[str, object]],
+    *,
+    derived: bool = False,
+) -> str:
+    """The words of a table, weighted the way relevance is scored downstream.
+
+    Two things have to be undone for a generic lexical scorer to rank tables
+    usefully. It reads ``vendor_master_file`` as one atomic term, which matches
+    no phrase an auditor writes, so the identifiers are split into words with
+    the shared :func:`relevance_tokens`. And it scores by term *occurrence*,
+    which on a schema is a proxy for column count — a 47-column join frame
+    outscored the 14-column vendor master on a vendor-master risk purely on
+    width. Emitting each column word once removes that, and repeating the
+    table's own words restores the intended emphasis.
+    """
+    weight = _DERIVED_TABLE_NAME_WEIGHT if derived else _TABLE_NAME_WEIGHT
+    name_terms = sorted(relevance_tokens(table_name))
+    column_terms: set[str] = set()
+    for column in columns:
+        column_terms |= relevance_tokens(column.get("name"))
+    return " ".join([*(name_terms * weight), *sorted(column_terms)])
+
+
 def test_generate_table_metadata_candidates(
     workspace: Workspace,
     *,
@@ -1094,15 +1136,26 @@ def test_generate_table_metadata_candidates(
                 ):
                     entry["values"] = values
             columns.append(entry)
-        content = {**table, "columns": columns}
+        # Which population a frame has one row of. A generated step cannot
+        # judge whether it is asserting about the right population from a
+        # column list — the requisition columns are present on the
+        # invoice-grained join frame exactly as they are on ``requisitions``,
+        # and only their reach differs.
+        grain = join_diagnostics.frame_grain(workspace, table_name)
+        content = {
+            **table,
+            "columns": columns,
+            "grain": grain,
+            "derived": grain != table_name,
+        }
         candidates.append(
             ContextCandidate(
                 source_ref=f"table:{table_name}",
                 source=content,
                 representations={"table_metadata": content},
-                metadata={"table": table_name},
-                lexical_text=" ".join(
-                    (table_name, *(str(column.get("name") or "") for column in columns))
+                metadata={"table": table_name, "grain": grain},
+                lexical_text=_table_lexical_text(
+                    table_name, columns, derived=grain != table_name
                 ),
             )
         )
@@ -1133,6 +1186,17 @@ def test_generate_scope(
     )
     if row is None:
         raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
+    # The attribute requirements carry the nouns that name a population — "bank
+    # account", "vendor record", "goods receipt" — where the row narrative
+    # often stays at the level of the process. They are what lets the table
+    # selector rank the population a requirement is about above the frame that
+    # merely sorts first.
+    attribute_terms = [
+        str(attribute.get(key) or "")
+        for attribute in row.get("control_attributes") or []
+        if isinstance(attribute, Mapping)
+        for key in ("key", "requirement")
+    ]
     test_generate_query = " ".join(
         str(value or "")
         for value in (
@@ -1140,6 +1204,7 @@ def test_generate_scope(
             row.get("risk"),
             row.get("control"),
             row.get("criteria"),
+            *attribute_terms,
             context.get("objective"),
             context.get("scope"),
         )

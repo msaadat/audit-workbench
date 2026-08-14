@@ -164,10 +164,14 @@ COMPARISON_RECIPES: tuple[ComparisonRecipeDefinition, ...] = (
         comparisons=(
             RecipeComparison(
                 key="party_agreement",
-                label="{source} names the same party as {target}",
+                label="{source} names the same counterparty as {target}",
                 operator="equal_normalized",
-                left=RecipeOperand("source", "parties", "name", "name"),
-                right=RecipeOperand("target", "parties", "name", "name"),
+                # Deliberately the single-valued counterparty rather than
+                # ``parties.name``: a record names several parties, and an
+                # agreement between two *sets* of names is neither expressible
+                # nor meaningful. See ``common.party.counterparty``.
+                left=RecipeOperand("source", "parties", "counterparty", "name"),
+                right=RecipeOperand("target", "parties", "counterparty", "name"),
             ),
         ),
     ),

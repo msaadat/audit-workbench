@@ -69,6 +69,7 @@ def _bundle(
     methodology=(_METHODOLOGY_SECTION,),
     tables=("transactions",),
     table_columns=("invoice", "amount"),
+    table_grains=None,
     documents=("DOC-1",),
     document_categories=None,
     document_vouch_profiles=None,
@@ -115,10 +116,13 @@ def _bundle(
             if isinstance(table_columns, dict)
             else table_columns
         )
+        grain = (table_grains or {}).get(table, table)
         table_content = {
             "table": table,
             "rows": 3,
             "columns": [{"name": column} for column in columns],
+            "grain": grain,
+            "derived": grain != table,
         }
         if table_anchor_candidates is not None:
             table_content["vouch_anchor_candidates"] = list(
@@ -196,6 +200,7 @@ def _data_step(**overrides):
     value = {
         "label": "Find duplicate invoice keys",
         "instruction": "Compare invoice numbers for duplicates.",
+        "population": "transactions",
         "code": "result = transactions.filter(pl.col('invoice').is_duplicated())",
     }
     value.update(overrides)
@@ -547,6 +552,53 @@ def test_generate_worker_refuses_to_leave_a_cycle_attribute_untested():
     assert "five_record_cycle" in guidance
 
 
+def test_a_rejected_cycle_test_is_not_also_reported_as_an_absent_one():
+    """A repair message must carry a defect, not a defect and its consequence.
+
+    A cycle test refused for its own reason never reaches the coverage check,
+    which then reports the attribute as uncovered too. The turn is told both
+    that its test is invalid and that it must add a test referencing the very
+    attribute that test references — and no rewrite satisfies both, so all
+    three attempts returned byte-identical JSON.
+    """
+
+    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cycle = _test_payload(contract)
+    response = {
+        "source": "document",
+        "kind": "cycle_vouch",
+        "title": cycle["title"],
+        "objective": cycle["objective"],
+        "requirement_refs": cycle["requirement_refs"],
+        "procedure_key": cycle["procedure_key"],
+        # A candidate ID the manifest does not carry: rejected for its own
+        # reason, with the requirement_refs it names still on the response.
+        "candidate_id": "CYCLE-CAND-NOTAREALCANDIDATE",
+        "selection_reason": "Selected the highest-ranked candidate.",
+        "selection": {"mode": "evidence_linked"},
+        "recipe_bindings": cycle["definition"]["recipe_bindings"],
+    }
+    bundle = _bundle(
+        rcm_rows=(cycle["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    serialized = json.dumps({"tests": [response]})
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), _Gateway([serialized] * 3))
+
+    message = str(caught.value)
+    assert "is not an exact prevalidated candidate" in message
+    assert "declares transaction_cycle evidence" not in message
+
+
 def test_generate_worker_produces_a_ready_document_vouch_test():
     """The retired narrative cycle branch fails closed."""
 
@@ -593,7 +645,7 @@ def test_generate_worker_keeps_document_fallback_when_cycle_has_no_candidates():
 
 
 def test_generate_worker_bounds_tabular_schema_projection():
-    tables = tuple(f"table_{index}" for index in range(8))
+    tables = tuple(f"table_{index}" for index in range(12))
     bundle = _bundle(
         tables=tables,
         table_columns={table: ("invoice", "amount") for table in tables},
@@ -618,6 +670,7 @@ def test_generate_worker_bounds_tabular_schema_projection():
                         _data_test(
                             steps=[
                                 _data_step(
+                                    population="table_0",
                                     code=(
                                         "result = table_0.filter("
                                         "pl.col('invoice').is_duplicated())"
@@ -634,7 +687,65 @@ def test_generate_worker_bounds_tabular_schema_projection():
     WORKERS.execute(_request(bundle), gateway)
 
     payload = json.loads(gateway.calls[0]["user"])
-    assert len(payload["table_schemas"]) == 6
+    assert len(payload["table_schemas"]) == tests_workers._SCHEMA_LIMIT
+
+
+def test_the_population_a_requirement_names_survives_the_schema_projection():
+    """Ranking alone lets views over a population crowd the population out.
+
+    A join frame's name contains every word of the tables it was built from, so
+    it matches every query they match and sorts above all of them. Six joins
+    *over* the vendor master once filled a vendor-master row's schema list
+    while the vendor master itself never reached the prompt, and the generated
+    test read staff bank accounts instead.
+    """
+    tables = tuple(f"vendor_master_file_join_{index}" for index in range(12))
+    bundle = _bundle(
+        tables=(*tables, "vendor_master_file"),
+        table_columns={
+            table: ("vendor", "bank", "account") for table in (*tables, "vendor_master_file")
+        },
+        table_grains={table: "invoice_data" for table in tables},
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Two vendor master records may share one bank account.",
+            "control": "Vendor master bank account review.",
+            "control_attributes": [
+                {
+                    "key": "vendor_bank_account",
+                    "requirement": "Vendor bank account details are unique.",
+                    "evidence_kind": "tabular_population",
+                }
+            ],
+        },
+    )
+    gateway = _Gateway(
+        [
+            json.dumps(
+                {
+                    "tests": [
+                        _data_test(
+                            steps=[
+                                _data_step(
+                                    population="vendor_master_file",
+                                    code=(
+                                        "result = vendor_master_file.filter("
+                                        "pl.col('account').is_duplicated())"
+                                    )
+                                )
+                            ]
+                        )
+                    ]
+                }
+            )
+        ]
+    )
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    supplied = {schema["table"] for schema in payload["table_schemas"]}
+    assert "vendor_master_file" in supplied
 
 
 def test_generate_worker_bounds_document_projection():
@@ -1181,6 +1292,7 @@ def test_generate_worker_accepts_columns_introduced_by_a_join():
     proposed = _data_test(
         steps=[
             _data_step(
+                population="requisitions",
                 code=(
                     'joined = requisitions.join(po_data, on="REQUISITION_ID", how="inner")\n'
                     'result = joined.filter(pl.col("ITEM_DESCRIPTION") '
@@ -1197,6 +1309,156 @@ def test_generate_worker_accepts_columns_introduced_by_a_join():
     assert result.proposal["tests"][0]["steps"][0]["code"].endswith(
         'pl.col("ITEM_DESCRIPTION_right"))'
     )
+
+
+def test_a_step_may_not_assert_about_a_population_it_is_not_anchored_on():
+    """The grain error that hid the largest approval breach in the population.
+
+    Every materialized join is a left join, so an invoice-grained frame holds
+    only the requisitions that reached an invoice — 93 of 112 on the engagement
+    this rule comes from. The one requisition approved 99M outside a 10M limit
+    never became a purchase order, so the approval-limit test written against
+    that frame returned 22 rows, every one of them a null-join artefact, and
+    the breach itself was unreachable by construction.
+    """
+    bundle = _bundle(
+        tables=("requisitions", "invoice_data_requisitions_joined"),
+        table_columns={
+            "requisitions": ("REQUISITION_ID", "ESTIMATED_TOTAL_COST", "FIN_APPROVED_BY_ID"),
+            "invoice_data_requisitions_joined": (
+                "INVOICE_ID",
+                "REQUISITION_ID",
+                "ESTIMATED_TOTAL_COST",
+                "FIN_APPROVED_BY_ID",
+            ),
+        },
+        table_grains={"invoice_data_requisitions_joined": "invoice_data"},
+    )
+    misanchored = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            population="requisitions",
+                            code=(
+                                "result = invoice_data_requisitions_joined.filter("
+                                'pl.col("FIN_APPROVED_BY_ID").is_null())'
+                            ),
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), _Gateway([misanchored] * 3))
+
+    message = str(caught.value)
+    assert "declares population 'requisitions'" in message
+    assert "grain 'invoice_data'" in message
+    assert "Anchor the step on one of: requisitions" in message
+
+
+def test_a_step_anchored_on_the_population_it_asserts_about_is_accepted():
+    """Joining outward from the population is the shape the rule asks for."""
+    bundle = _bundle(
+        tables=("requisitions", "invoice_data_requisitions_joined"),
+        table_columns={
+            "requisitions": ("REQUISITION_ID", "ESTIMATED_TOTAL_COST", "FIN_APPROVED_BY_ID"),
+            "invoice_data_requisitions_joined": ("INVOICE_ID", "REQUISITION_ID"),
+        },
+        table_grains={"invoice_data_requisitions_joined": "invoice_data"},
+    )
+    proposed = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            population="requisitions",
+                            code=(
+                                "result = requisitions.filter("
+                                'pl.col("FIN_APPROVED_BY_ID").is_null())'
+                            ),
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    result = WORKERS.execute(_request(bundle), _Gateway([proposed]))
+
+    assert result.proposal["tests"][0]["steps"][0]["population"] == "requisitions"
+
+
+def test_a_requirement_naming_a_population_must_produce_a_step_about_it():
+    """The wrong-table failure the anchor rule alone does not catch.
+
+    A vendor-master requirement was answered by a step grouping *staff* names
+    and bank accounts off an invoice-grained frame. It ran, returned 113 rows
+    of a 118-row population, named VENDOR_ID in its output, and tested nothing
+    the requirement asked about — while the vendor master sat unread.
+    """
+    bundle = _bundle(
+        tables=(
+            "vendor_master_file",
+            "invoice_data",
+            "invoice_data_staff_details_joined",
+        ),
+        table_columns={
+            "vendor_master_file": ("VENDOR_ID", "BANK_ACCOUNT_NUMBER"),
+            "invoice_data": ("INVOICE_ID", "VENDOR_ID"),
+            "invoice_data_staff_details_joined": (
+                "INVOICE_ID",
+                "VENDOR_ID",
+                "NAME",
+                "BANK_ACCOUNT_NUMBER",
+            ),
+        },
+        table_grains={"invoice_data_staff_details_joined": "invoice_data"},
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Duplicate vendor master records may share bank details.",
+            "control": "Vendor master review.",
+            "control_attributes": [
+                {
+                    "key": "vendor_duplicate_review",
+                    "requirement": (
+                        "Potential duplicate vendor identities and bank details "
+                        "in the vendor master file are identified."
+                    ),
+                    "evidence_kind": "tabular_population",
+                }
+            ],
+        },
+    )
+    wrong_table = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            population="invoice_data",
+                            code=(
+                                "result = invoice_data_staff_details_joined.filter("
+                                'pl.col("BANK_ACCOUNT_NUMBER").is_duplicated())'
+                            ),
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), _Gateway([wrong_table] * 3))
+
+    message = str(caught.value)
+    assert "names population 'vendor_master_file'" in message
+    assert "at its own grain" in message
 
 
 def test_generate_worker_rejects_an_unknown_document_id():

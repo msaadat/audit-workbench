@@ -1965,6 +1965,34 @@ def _available_selectors(
     return available
 
 
+def _available_multiplicity(
+    record_manifests: Iterable[Mapping[str, object]],
+) -> dict[str, dict[tuple[str, str, str], int]]:
+    """Worst observed value count per selector, per record kind.
+
+    The same signal :func:`_multiplicity_by_selector` reads when it compiles an
+    assertion, keyed the way :func:`eligible_recipe_bindings` needs it so that
+    binding eligibility and assertion compilation cannot disagree about whether
+    a comparison is expressible.
+    """
+
+    observed: dict[str, dict[tuple[str, str, str], int]] = {}
+    for record in record_manifests:
+        record_kind = str(record.get("record_kind") or "")
+        counts = observed.setdefault(record_kind, {})
+        for field in record.get("available_fields") or []:
+            if not isinstance(field, Mapping):
+                continue
+            for attribute, count in (field.get("distinct_value_counts") or {}).items():
+                selector = (
+                    str(field.get("group") or ""),
+                    str(field.get("kind") or ""),
+                    str(attribute),
+                )
+                counts[selector] = max(counts.get(selector, 0), int(count or 0))
+    return observed
+
+
 def _is_bindable(pack_id: str, record_kind: str, registry: CycleRegistry) -> bool:
     try:
         return bool(registry.record_kind(pack_id, record_kind).bindable)
@@ -2006,6 +2034,7 @@ def transaction_evidence_manifest(
         # this manifest, so the manifest must offer all of them.
         record_manifests = [_record_manifest(record, registry) for record in records]
         available_selectors = _available_selectors(record_manifests)
+        available_multiplicity = _available_multiplicity(record_manifests)
         required_kinds = sorted(
             kind
             for kind in available_selectors
@@ -2019,6 +2048,7 @@ def transaction_evidence_manifest(
                     citation["recipe_id"],
                     reference=reference,
                     available_selectors=available_selectors,
+                    available_multiplicity=available_multiplicity,
                 ),
             }
             for attribute in grouped_attributes
@@ -2217,6 +2247,7 @@ def eligible_recipe_bindings(
     *,
     reference: RegistryReference,
     available_selectors: Mapping[str, set[tuple[str, str, str]]],
+    available_multiplicity: Mapping[str, Mapping[tuple[str, str, str], int]] | None = None,
 ) -> list[dict[str, str]]:
     """Every placeholder assignment the supplied evidence can actually answer.
 
@@ -2226,6 +2257,15 @@ def eligible_recipe_bindings(
     share a record kind — a cycle compares distinct records. Offering the
     authoring turn only these removes the mistake the recipe shape cannot catch:
     a quantity agreement bound to invoices that carry no quantity.
+
+    ``available_multiplicity`` removes the other one. A selector the evidence
+    states more than once compiles to a set operand, and a comparison whose
+    *both* sides are sets is refused downstream — rightly, since it has no
+    reading. Offering such a binding cost a live engagement three model calls
+    and the row: the turn chose the only binding the manifest showed it, the
+    expansion failed locally, and the repair message asked for a test the turn
+    had already written. Eligibility is the place to know that, because it is
+    the only place that knows it before the turn happens.
     """
 
     definition = _recipes.recipe(recipe_id)
@@ -2246,8 +2286,105 @@ def eligible_recipe_bindings(
     for combination in itertools.product(*per_role):
         if len(set(combination)) != len(combination):
             continue
-        bindings.append(dict(zip(definition.roles, combination)))
+        binding = dict(zip(definition.roles, combination))
+        if available_multiplicity is not None and _binding_is_set_to_set(
+            definition, binding, available_multiplicity
+        ):
+            continue
+        bindings.append(binding)
     return bindings
+
+
+def unanswerable_cycle_attributes(
+    manifest: Mapping[str, object], rcm_row: Mapping[str, object]
+) -> set[str]:
+    """Attribute keys whose cited recipes the extracted evidence cannot answer.
+
+    A recipe is offerable only where every record kind it reads carries the
+    selectors it reads them on, and where no comparison would end up with a set
+    on both sides. Where a manifest offers a cited recipe no binding at all,
+    the requirement is unanswerable from the evidence in hand however the
+    authoring turn is phrased — so demanding a cycle test for it can only burn
+    the retry budget, and reporting the row as generated can only hide it.
+    """
+
+    options: dict[str, list[object]] = {}
+    for group in manifest.get("groups") or []:
+        if not isinstance(group, Mapping):
+            continue
+        for option in group.get("recipe_options") or []:
+            if not isinstance(option, Mapping):
+                continue
+            recipe_id = str(option.get("recipe_id") or "")
+            options.setdefault(recipe_id, []).extend(
+                option.get("eligible_bindings") or []
+            )
+    unanswerable: set[str] = set()
+    for attribute in rcm_row.get("control_attributes") or []:
+        if not isinstance(attribute, Mapping):
+            continue
+        if attribute.get("evidence_kind") != "transaction_cycle":
+            continue
+        citations = attribute.get("comparison_recipes") or []
+        if citations and any(
+            not options.get(str((citation or {}).get("recipe_id") or ""))
+            for citation in citations
+        ):
+            unanswerable.add(str(attribute.get("key") or ""))
+    return unanswerable
+
+
+def unanswerable_cycle_requirements(
+    workspace, rcm_row: Mapping[str, object]
+) -> list[str]:
+    """Degradation notes for one row's unanswerable transaction-cycle attributes.
+
+    The generation turn stays silent about these because it cannot act on them.
+    The stage must not, or the run reports success over a requirement nothing
+    tested. Same rule as every other bypass warning: degrading from a stronger
+    evidence path to a weaker one is acceptable, degrading silently is not.
+    """
+
+    attributes = rcm_row.get("control_attributes") or []
+    if not any(
+        isinstance(attribute, Mapping)
+        and attribute.get("evidence_kind") == "transaction_cycle"
+        for attribute in attributes
+    ):
+        return []
+    try:
+        manifest = transaction_evidence_manifest(workspace, attributes)
+    except (CycleSchemaError, RegistryError, OSError):
+        return []
+    rcm_id = str(rcm_row.get("id") or "")
+    return [
+        f"{rcm_id} control attribute '{key}' declares transaction_cycle evidence "
+        "but the extracted records answer none of the comparison recipes it "
+        "cites, so no cycle test could be generated for it and the requirement "
+        "is untested."
+        for key in sorted(unanswerable_cycle_attributes(manifest, rcm_row))
+    ]
+
+
+def _binding_is_set_to_set(
+    definition: _recipes.ComparisonRecipeDefinition,
+    binding: Mapping[str, str],
+    multiplicity: Mapping[str, Mapping[tuple[str, str, str], int]],
+) -> bool:
+    """Whether any comparison this binding expands to would have two set operands."""
+
+    for comparison in definition.comparisons:
+        if comparison.right is None:
+            continue
+        sides = []
+        for operand in (comparison.left, comparison.right):
+            record_kind = binding.get(operand.role, "")
+            selector = (operand.group, operand.kind, operand.attribute)
+            counts = multiplicity.get(record_kind) or {}
+            sides.append(counts.get(selector, 1) > 1)
+        if all(sides):
+            return True
+    return False
 
 
 def _expand_comparison_recipes(

@@ -154,12 +154,23 @@ def _model_transaction_manifest(value: object) -> object:
     }
 
 
+#: How many table schemas one generation prompt carries. Eight rather than six
+#: because the join family of a six-table workspace runs to twenty frames, and
+#: a cut at six was spending every slot on frames over one population.
+_SCHEMA_LIMIT = 8
+#: How many of those are held back for undecorated base tables. Three, because
+#: the small shared dimensions — an approval matrix, a staff master — rank
+#: highly on almost every row, and a requirement about a *third* population
+#: still has to see it.
+_BASE_TABLE_RESERVE = 3
+
+
 def _relevant_table_schemas(
     raw_tables: list[object], rcm_row: object, transaction_manifest: object
 ) -> list[object]:
     """Keep a bounded, deterministic set of schemas relevant to one RCM row."""
     if not isinstance(rcm_row, Mapping):
-        return [_plain_json(value) for value in raw_tables[:6]]
+        return [_plain_json(value) for value in raw_tables[:_SCHEMA_LIMIT]]
     attributes = [
         item
         for item in rcm_row.get("control_attributes") or []
@@ -188,7 +199,7 @@ def _relevant_table_schemas(
     ranked = []
     for index, raw in enumerate(raw_tables):
         if not isinstance(raw, Mapping):
-            ranked.append((0, 0, -index, raw))
+            ranked.append((0, 0, -index, raw, False))
             continue
         table = str(raw.get("table") or "")
         table_tokens = relevance_tokens(table)
@@ -201,9 +212,39 @@ def _relevant_table_schemas(
             set(),
         )
         score = 4 * len(query_tokens & table_tokens) + len(query_tokens & column_tokens)
-        ranked.append((1 if table in candidate_tables else 0, score, -index, raw))
+        ranked.append(
+            (
+                1 if table in candidate_tables else 0,
+                score,
+                -index,
+                raw,
+                not raw.get("derived"),
+            )
+        )
     ranked.sort(key=lambda item: (-item[0], -item[1], -item[2]))
-    return [_plain_json(item[3]) for item in ranked[:6]]
+    # A derived frame's name contains every word of the tables it was built
+    # from, so on name score it can never rank below them: the six best-scoring
+    # frames for a vendor-master risk were six *joins over* the vendor master,
+    # and the population itself did not reach the prompt. Reserving the tail
+    # for the best-ranked base tables keeps the frame a test would be written
+    # against and the population it is about both available, without giving up
+    # the ranking for the rest of the list.
+    selected = ranked[:_SCHEMA_LIMIT - _BASE_TABLE_RESERVE]
+    chosen = {id(item[3]) for item in selected}
+    for item in ranked:
+        if len(selected) >= _SCHEMA_LIMIT:
+            break
+        if item[4] and id(item[3]) not in chosen:
+            selected.append(item)
+            chosen.add(id(item[3]))
+    for item in ranked:
+        if len(selected) >= _SCHEMA_LIMIT:
+            break
+        if id(item[3]) not in chosen:
+            selected.append(item)
+            chosen.add(id(item[3]))
+    selected.sort(key=lambda item: (-item[0], -item[1], -item[2]))
+    return [_plain_json(item[3]) for item in selected]
 
 
 def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[object]:
@@ -423,13 +464,26 @@ Generate the complete executable tests for exactly one supplied RCM row.
 Return JSON with a non-empty `tests` array. A test is one of:
 
 1. Data Test: source `data`, title, objective, and non-empty `steps`; each step
-   has label, instruction, and self-contained Polars code assigning exception
-   rows to `result`. Every step runs separately: it cannot use a variable made
-   by another step. When more than one table is supplied, never use `df`; name
-   the exact in-memory table variable or use `tables["exact_table_name"]`. Never
-   import anything: `pl`, the table variables, and `tables['name']` are already
-   available. Do not read files. For duration days use `.dt.total_days()`, not
-   `.dt.days()` or `.dt.day()`.
+   has label, instruction, `population`, and self-contained Polars code
+   assigning exception rows to `result`. Every step runs separately: it cannot
+   use a variable made by another step. When more than one table is supplied,
+   never use `df`; name the exact in-memory table variable or use
+   `tables["exact_table_name"]`. Never import anything: `pl`, the table
+   variables, and `tables['name']` are already available. Do not read files.
+   For duration days use `.dt.total_days()`, not `.dt.days()` or `.dt.day()`.
+
+   `population` names the table the step makes a statement *about* — one of the
+   supplied schemas whose `derived` is false. Each supplied schema carries a
+   `grain`: the population it holds one row of. Every join is a left join, so
+   a frame's grain is its left-most base table and the step reaches only those
+   rows of every other table that frame joins in. A step asserting about
+   population A must therefore read a frame whose `grain` is A. Reading a
+   requisition's approver from an invoice-grained frame tests the requisitions
+   that happen to have an invoice and silently passes the rest, which is how a
+   99M approval outside its limit went unreported: it belonged to a requisition
+   that never became a purchase order, so no invoice-grained frame contained
+   it. Join outward from the population you are asserting about; never anchor
+   on one population to make a claim about another.
 2. Document question: source `document`, title, objective, and non-empty
    question-mode steps using only supplied document ids. A missing-evidence step
    has an empty document_ids array and a specific missing_evidence string.
@@ -501,7 +555,7 @@ GENERATE_DOCUMENT_SOURCE_ID = "documents"
 GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID = "transaction_evidence"
 _GENERATE_SOURCES = {"data", "document"}
 _GENERATE_COMMON_FIELDS = ("source", "title", "objective", "steps")
-_GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "code")
+_GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "population", "code")
 _GENERATE_DOCUMENT_STEP_FIELDS = (
     "label", "instruction", "mode", "document_ids", "question", "checks",
     "missing_evidence", "scope_limitation", "anchor_table", "anchor_key",
@@ -575,6 +629,27 @@ def _generate_supplied_tables(request: WorkerRequest) -> dict[str, dict[str, str
             if isinstance(column, Mapping) and str(column.get("name") or "")
         }
     return tables
+
+
+def _generate_supplied_grains(request: WorkerRequest) -> dict[str, str]:
+    """Each supplied frame's population, defaulting to the frame itself.
+
+    A frame with no declared grain is treated as its own population, so a
+    caller that supplies plain schemas — an older bundle, a fixture — keeps
+    working and simply cannot fail the anchor rule.
+    """
+    grains: dict[str, str] = {}
+    for item in request.context.items:
+        if item.source_id != GENERATE_TABLE_SOURCE_ID:
+            continue
+        content = item.content
+        if not isinstance(content, Mapping):
+            continue
+        name = str(content.get("table") or "").strip()
+        if not name:
+            continue
+        grains[name] = str(content.get("grain") or name).strip() or name
+    return grains
 
 
 def _empty_frame_dtype(dtype: str):
@@ -964,8 +1039,89 @@ def _tables_covering_columns(
     )
 
 
+def _code_frames(code: str, known_tables: Mapping[str, Mapping[str, str]]) -> set[str]:
+    """Supplied frames a step reads, by bare name or ``tables['name']``."""
+    frames = {name for name in _code_loaded_names(code) if name in known_tables}
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return frames
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "tables"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and node.slice.value in known_tables
+        ):
+            frames.add(node.slice.value)
+    return frames
+
+
+def _validate_step_population(
+    path: str,
+    step: Mapping[str, object],
+    code: str,
+    grains: Mapping[str, str],
+    known_tables: Mapping[str, Mapping[str, str]],
+    errors: list[str],
+) -> None:
+    """A step may only assert about the population its frames actually hold.
+
+    The declaration is the model's; the check is arithmetic. A frame's grain is
+    its left-most base table because every materialized join is a left join, so
+    a step reading an invoice-grained frame sees only the requisitions that
+    carry an invoice — 93 of 112 on the engagement this rule comes from, and
+    the largest approval breach in the population was in the other 19.
+    """
+
+    populations = sorted({name for name, grain in grains.items() if grain == name})
+    declared = str(step.get("population") or "").strip()
+    if not declared:
+        errors.append(
+            f"{path}.population must name the table this step makes a statement "
+            f"about; supplied populations: {', '.join(populations) or 'none'}"
+        )
+        return
+    if declared not in known_tables:
+        errors.append(
+            f"{path}.population '{declared}' is not a supplied table; "
+            f"supplied populations: {', '.join(populations) or 'none'}"
+        )
+        return
+    if grains.get(declared, declared) != declared:
+        errors.append(
+            f"{path}.population '{declared}' is a derived frame over "
+            f"'{grains[declared]}'; name the population itself"
+        )
+        return
+    read = _code_frames(code, known_tables)
+    if not read:
+        return
+    matching = sorted(frame for frame in read if grains.get(frame, frame) == declared)
+    if matching:
+        return
+    available = sorted(
+        frame for frame, grain in grains.items() if grain == declared
+    )
+    reached = ", ".join(
+        f"'{frame}' (grain '{grains.get(frame, frame)}')" for frame in sorted(read)
+    )
+    errors.append(
+        f"{path} declares population '{declared}' but reads {reached}, so it "
+        f"asserts about '{declared}' from another population's rows and reaches "
+        f"only those of '{declared}' that the join matched. Anchor the step on "
+        f"one of: {', '.join(available)}"
+    )
+
+
 def _validate_generate_data_step(
-    path: str, raw_step: object, known_tables: Mapping[str, Mapping[str, str]], errors: list[str]
+    path: str,
+    raw_step: object,
+    known_tables: Mapping[str, Mapping[str, str]],
+    grains: Mapping[str, str],
+    errors: list[str],
 ) -> dict | None:
     if not isinstance(raw_step, Mapping):
         errors.append(f"{path} must be an object")
@@ -1056,9 +1212,11 @@ def _validate_generate_data_step(
                             f"{path}.code cannot run against the supplied table "
                             f"schemas: {error}"
                         )
+        _validate_step_population(path, step, code, grains, known_tables, errors)
     return {
         "label": label,
         "instruction": instruction,
+        "population": str(step.get("population") or "").strip(),
         "code": str(code).strip() if isinstance(code, str) else "",
     }
 
@@ -1159,6 +1317,7 @@ def validate_generate_proposal(
     rcm_id = _generate_rcm_id(request)
     methodology_refs = _generate_methodology_refs(request)
     known_tables = _generate_supplied_tables(request)
+    table_grains = _generate_supplied_grains(request)
     known_document_ids = _generate_supplied_document_ids(request)
     available = {
         "data": bool(known_tables),
@@ -1173,6 +1332,7 @@ def validate_generate_proposal(
     # a sibling's defect is not a reason to discard them.
     clean: list[dict] = []
     cycle_identities: set[tuple[str, str, str, str]] = set()
+    attempted_refs: set[str] = set()
     for index, raw in enumerate(values, 1):
         path = f"tests[{index - 1}]"
         errors_before = len(errors)
@@ -1212,6 +1372,15 @@ def validate_generate_proposal(
                     f"'{forbidden[0]}'; local code hydrates registry, population, "
                     "and roles from candidate_id"
                 )
+            # What the response tried to cover, recorded before validation can
+            # reject it. A cycle test refused for its own reason must not also
+            # be reported as an absent one: the repair message then carries a
+            # defect and its own consequence, telling the model to add a test
+            # it has already written, and no rewrite can satisfy both.
+            attempted_refs.update(
+                str(reference).split(":", 1)[-1]
+                for reference in value.get("requirement_refs") or []
+            )
             cycle_test = _validate_generate_cycle_test(
                 path, value, request=request, rcm_id=rcm_id, errors=errors
             )
@@ -1248,7 +1417,9 @@ def validate_generate_proposal(
         if source == "data":
             for step_index, raw_step in enumerate(raw_steps):
                 step_path = f"{path}.steps[{step_index}]"
-                normalized_step = _validate_generate_data_step(step_path, raw_step, known_tables, errors)
+                normalized_step = _validate_generate_data_step(
+                    step_path, raw_step, known_tables, table_grains, errors
+                )
                 if normalized_step is not None:
                     steps.append(normalized_step)
         else:
@@ -1286,23 +1457,86 @@ def validate_generate_proposal(
         normalized.append(entry)
         if len(errors) == errors_before:
             clean.append(entry)
-    coverage = _missing_cycle_coverage(request, rcm_id, normalized)
-    errors.extend(coverage)
+    coverage = _missing_cycle_coverage(
+        request, rcm_id, normalized, attempted=attempted_refs
+    )
+    # Both row-level gaps: a transaction-cycle requirement with no cycle test,
+    # and a population a requirement names with no step about it.
+    row_level = coverage + _untested_named_populations(request, normalized)
+    errors.extend(row_level)
     if errors:
         # A row-level coverage gap is the one failure a partial commit must not
         # absorb: readiness is satisfied by any executable test, so committing
         # the siblings would mark the row done and retire the very unit that
-        # still owes a cycle test. Every other defect is scoped to its own
+        # still owes the missing one. Every other defect is scoped to its own
         # record, and its siblings are durable work worth keeping.
         raise WorkerResponseValidationError(
             errors,
-            partial=({"tests": clean} if clean and not coverage else None),
+            partial=({"tests": clean} if clean and not row_level else None),
         )
     return {"tests": normalized}
 
 
+def _untested_named_populations(
+    request: WorkerRequest, tests: list[dict]
+) -> list[str]:
+    """Populations a tabular requirement names by word that no step asserts about.
+
+    The narrower half of the anchor rule. A step declares which population it
+    is about and is checked against its frames; this checks the other
+    direction — that a requirement naming a population by name produced a step
+    about *that* population, rather than one over a frame that merely carries
+    its columns.
+
+    Deliberately scored on the attribute requirements alone, not the row's risk
+    narrative. The risk sentence names every population the process touches,
+    and demanding a step for each would reject rows whose tabular attributes
+    are legitimately about one of them. A requirement that says "the maintained
+    vendor records" is naming the population it is asserting about.
+    """
+
+    try:
+        row = _generate_rcm_row(request)
+    except WorkerContractError:
+        return []
+    grains = _generate_supplied_grains(request)
+    populations = {name for name, grain in grains.items() if grain == name}
+    if not populations:
+        return []
+    requirement_tokens = set().union(
+        *(
+            relevance_tokens(attribute.get("requirement"))
+            for attribute in row.get("control_attributes") or []
+            if isinstance(attribute, Mapping)
+            and attribute.get("evidence_kind") == "tabular_population"
+        ),
+        set(),
+    )
+    named = {
+        population
+        for population in populations
+        if relevance_tokens(population) & requirement_tokens
+    }
+    asserted = {
+        str(step.get("population") or "")
+        for test in tests
+        if test.get("source") == "data"
+        for step in test.get("steps") or []
+    }
+    return [
+        f"a control attribute names population '{population}' and no data step "
+        f"declares it; test '{population}' at its own grain rather than through "
+        "a frame that only carries its columns"
+        for population in sorted(named - asserted)
+    ]
+
+
 def _missing_cycle_coverage(
-    request: WorkerRequest, rcm_id: str, tests: list[dict]
+    request: WorkerRequest,
+    rcm_id: str,
+    tests: list[dict],
+    *,
+    attempted: set[str] | None = None,
 ) -> list[str]:
     """Name every transaction-cycle attribute the response left untested.
 
@@ -1320,12 +1554,19 @@ def _missing_cycle_coverage(
         return []
     if not _manifest_candidate_ids(manifest):
         return []
+    # An attribute whose cited shapes the evidence cannot answer is not a
+    # response defect and no rewrite will fix it: the recipes come from the
+    # row, the bindings from the manifest, and the turn has no third option.
+    # Demanding a cycle test for it spends the whole retry budget producing the
+    # same response. It is a real coverage gap — the stage reports it as one —
+    # but it belongs to planning or to extraction, not to this turn.
+    unanswerable = cycle_vouching.unanswerable_cycle_attributes(manifest, row)
     covered = {
         str(reference).split(":", 1)[-1]
         for test in tests
         if test.get("kind") == "cycle_vouch"
         for reference in test.get("requirement_refs") or []
-    }
+    } | (attempted or set()) | unanswerable
     missing = [
         str(attribute.get("key") or "")
         for attribute in row.get("control_attributes") or []

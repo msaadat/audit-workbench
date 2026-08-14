@@ -16,7 +16,9 @@ manifest of what the workspace actually holds.
 
 from __future__ import annotations
 
+import itertools
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -553,6 +555,104 @@ def test_a_shape_no_record_kind_can_answer_offers_nothing():
         )
         == []
     )
+
+
+def test_a_binding_whose_comparison_would_have_two_set_operands_is_not_offered():
+    """The other mistake the shape cannot catch, and the turn cannot repair.
+
+    A selector the evidence states more than once compiles to a set operand,
+    and a comparison with a set on both sides is refused — rightly, since
+    "every value here equals every value there" has no reading. The live
+    engagement spent its whole retry budget on one: the manifest offered the
+    only binding there was, expansion failed locally, and the repair message
+    asked for a cycle test the response had already written.
+    """
+    available = _selectors(
+        **{
+            "procure_to_pay.purchase_order": ["parties.name.name"],
+            "procure_to_pay.purchase_requisition": ["parties.name.name"],
+            "procure_to_pay.vendor_invoice": ["parties.name.name"],
+        }
+    )
+    multiplicity = {
+        "procure_to_pay.purchase_order": {("parties", "name", "name"): 2},
+        "procure_to_pay.purchase_requisition": {("parties", "name", "name"): 3},
+        "procure_to_pay.vendor_invoice": {("parties", "name", "name"): 1},
+    }
+    reference = DEFAULT_REGISTRY.reference("procure_to_pay")
+
+    # A recipe reading the multi-valued selector directly. ``party_agreement``
+    # itself reads ``parties.counterparty``, which exists precisely so this
+    # comparison stays scalar; the rule has to hold for any recipe.
+    definition = next(
+        item
+        for item in recipes.COMPARISON_RECIPES
+        if item.id == "common.party_agreement"
+    )
+    patched = replace(
+        definition,
+        comparisons=(
+            replace(
+                definition.comparisons[0],
+                left=recipes.RecipeOperand("source", "parties", "name", "name"),
+                right=recipes.RecipeOperand("target", "parties", "name", "name"),
+            ),
+        ),
+    )
+
+    offered = [
+        binding
+        for binding in itertools.permutations(available, 2)
+        if not cycle_vouching._binding_is_set_to_set(
+            patched, dict(zip(("source", "target"), binding)), multiplicity
+        )
+    ]
+
+    pairs = {frozenset(binding) for binding in offered}
+    # Every pairing with the single-valued invoice survives; the one pairing
+    # where both sides are multi-valued does not.
+    assert (
+        frozenset(
+            {
+                "procure_to_pay.purchase_order",
+                "procure_to_pay.purchase_requisition",
+            }
+        )
+        not in pairs
+    )
+    assert (
+        frozenset(
+            {"procure_to_pay.purchase_order", "procure_to_pay.vendor_invoice"}
+        )
+        in pairs
+    )
+    # And the real recipe, reading the counterparty, is offerable for the pair
+    # the set-to-set rule refused.
+    counterparty = _selectors(
+        **{
+            kind: ["parties.counterparty.name"]
+            for kind in (
+                "procure_to_pay.purchase_order",
+                "procure_to_pay.purchase_requisition",
+            )
+        }
+    )
+    eligible = cycle_vouching.eligible_recipe_bindings(
+        "common.party_agreement",
+        reference=reference,
+        available_selectors=counterparty,
+        available_multiplicity={
+            kind: {("parties", "counterparty", "name"): 1} for kind in counterparty
+        },
+    )
+    assert {frozenset(item.values()) for item in eligible} == {
+        frozenset(
+            {
+                "procure_to_pay.purchase_order",
+                "procure_to_pay.purchase_requisition",
+            }
+        )
+    }
 
 
 def test_one_record_kind_cannot_fill_two_placeholders_of_one_shape():

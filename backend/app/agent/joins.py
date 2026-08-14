@@ -436,6 +436,29 @@ def frame_lineage(workspace: Workspace, name: str, _seen: frozenset = frozenset(
     )
 
 
+def frame_grain(workspace: Workspace, name: str, _seen: frozenset = frozenset()) -> str:
+    """The base table whose rows a frame has one of — itself, for a base table.
+
+    Every materialized join is a left join, so a frame has exactly the rows of
+    the left-most base table in its chain, however many dimensions hang off it.
+    That table is the population a test written against the frame is actually
+    asserting about: a step filtering
+    ``invoice_data_po_data_joined_requisitions_joined`` reaches only the 93 of
+    112 requisitions that carry an invoice, so a requisition-level assertion
+    written there is not a statement about requisitions at all.
+    """
+    if name in _seen:
+        return name
+    if any(str(item.get("name")) == name for item in workspace.tables):
+        return name
+    join = next(
+        (item for item in workspace.joins if str(item.get("name")) == name), None
+    )
+    if join is None:
+        return name
+    return frame_grain(workspace, str(join.get("left")), _seen | {name})
+
+
 def _frame_columns(workspace: Workspace, name: str) -> list[str]:
     """A frame's column names, from the cached profile where one exists.
 

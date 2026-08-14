@@ -934,6 +934,185 @@ def test_step_excepting_nearly_the_whole_population_cannot_conclude():
     assert any("mis-specified predicate" in issue for issue in result["semantic_issues"])
 
 
+def test_a_duplicate_screen_keyed_too_wide_cannot_conclude():
+    """The clean pass that was a property of the key, not of the population.
+
+    A duplicate-payment screen keyed on vendor *and* vendor invoice number
+    reported "no duplicate keys found" over a population holding one invoice
+    number billed under two different vendors — the collision the screen
+    existed to find, excluded by its own definition of identity, under a
+    critical risk.
+    """
+    ws = workspaces.create_workspace("Duplicate key")
+    invoices = pl.DataFrame(
+        {
+            "invoice_id": ["I1", "I2", "I3"],
+            "vendor_id": ["V1", "V2", "V3"],
+            "vendor_invoice_no": ["A-100", "A-100", "B-200"],
+        }
+    )
+    ws.add_table("invoices.csv", invoices.write_csv().encode())
+    row = _rcm_row(ws)
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify an invoice billed more than once.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": _polars_spec(
+                label="Flag duplicate invoice keys",
+                table_refs=["invoices"],
+                code=(
+                    "duplicates = invoices.group_by(['vendor_id', 'vendor_invoice_no'])"
+                    ".agg(pl.len().alias('n')).filter(pl.col('n') > 1)\n"
+                    "result = invoices.join(duplicates.select("
+                    "['vendor_id', 'vendor_invoice_no']), "
+                    "on=['vendor_id', 'vendor_invoice_no'], how='inner')"
+                ),
+            ),
+        },
+    )
+
+    result = data_tests.compute(ws, item["id"])
+
+    assert result["exception_count"] == 0
+    assert result["semantic_valid"] is False
+    assert result["status"] == "review_required"
+    assert any("a property of the key" in issue for issue in result["semantic_issues"])
+
+
+def test_a_duplicate_screen_on_a_key_that_genuinely_holds_still_concludes():
+    """A key nothing collides on, narrower or not, is a real clean result."""
+    ws = workspaces.create_workspace("Sound duplicate key")
+    invoices = pl.DataFrame(
+        {
+            "invoice_id": ["I1", "I2", "I3"],
+            "vendor_id": ["V1", "V2", "V3"],
+            "vendor_invoice_no": ["A-100", "A-200", "B-300"],
+        }
+    )
+    ws.add_table("invoices.csv", invoices.write_csv().encode())
+    row = _rcm_row(ws)
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify an invoice billed more than once.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": _polars_spec(
+                label="Flag duplicate invoice keys",
+                table_refs=["invoices"],
+                code=(
+                    "duplicates = invoices.group_by(['vendor_id', 'vendor_invoice_no'])"
+                    ".agg(pl.len().alias('n')).filter(pl.col('n') > 1)\n"
+                    "result = invoices.join(duplicates.select("
+                    "['vendor_id', 'vendor_invoice_no']), "
+                    "on=['vendor_id', 'vendor_invoice_no'], how='inner')"
+                ),
+            ),
+        },
+    )
+
+    result = data_tests.compute(ws, item["id"])
+
+    assert result["exception_count"] == 0
+    assert result["semantic_valid"] is True
+    assert result["control_conclusion"] == "effective"
+
+
+def test_steps_excepting_the_same_rows_cannot_conclude():
+    """Three authority tests that were one null check wearing three hats.
+
+    A live test read as three separate conditions — an approver was designated,
+    was within the matrix limit, approved before the order — and each returned
+    the same 22 rows, every one a row where the join had produced nulls. Each
+    predicate began with the same null alternative, so it decided every result
+    and the two substantive conditions never ran against a populated row. The
+    counts concealed it: three steps at 22 reads as corroboration.
+    """
+    ws = _workspace_with_population()
+    row = _rcm_row(ws)
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Authority conditions",
+            "objective": "Exercise three conditions over one population.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Approver designated",
+                        "instruction": "Missing approver.",
+                        "table_refs": ["orders"],
+                        "code": (
+                            "result = orders.filter("
+                            "pl.col('buyer_id').is_null() | (pl.col('status') == 'Open'))"
+                        ),
+                    },
+                    {
+                        "label": "Approval within limit",
+                        "instruction": "Approver over limit.",
+                        "table_refs": ["orders"],
+                        "code": (
+                            "result = orders.filter("
+                            "pl.col('buyer_id').is_null() | (pl.col('status') == 'Open'))"
+                            ".select(['order_id', 'status'])"
+                        ),
+                    },
+                ],
+            },
+        },
+    )
+
+    result = data_tests.compute(ws, item["id"])
+
+    assert result["semantic_valid"] is False
+    assert result["status"] == "review_required"
+    assert any(
+        "excepted the same 2 rows" in issue for issue in result["semantic_issues"]
+    )
+
+
+def test_two_steps_that_disagree_on_a_row_are_not_reported_as_one():
+    """The gate must not call every pair of overlapping conditions redundant."""
+    ws = _workspace_with_population()
+    row = _rcm_row(ws)
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Distinct conditions",
+            "objective": "Two conditions that reach different rows.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Open orders",
+                        "instruction": "Open.",
+                        "table_refs": ["orders"],
+                        "code": "result = orders.filter(pl.col('status') == 'Open')",
+                    },
+                    {
+                        "label": "One buyer",
+                        "instruction": "Buyer B000.",
+                        "table_refs": ["orders"],
+                        "code": "result = orders.filter(pl.col('buyer_id') == 'B000')",
+                    },
+                ],
+            },
+        },
+    )
+
+    result = data_tests.compute(ws, item["id"])
+
+    assert not any("excepted the same" in issue for issue in result["semantic_issues"])
+
+
 def test_step_comparing_identifiers_from_different_schemes_cannot_conclude():
     """A segregation-of-duties step whose two sides can never be equal."""
     result = _run_step(

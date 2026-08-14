@@ -118,6 +118,27 @@ FIELD_KINDS = (
         ),
     ),
     FieldKindDefinition(
+        # The one party ``common.party.name`` cannot pick out. Comparing "the
+        # party named here to the party named there" across two records with
+        # several parties each is a set-to-set comparison, which no operator
+        # can express and which would not mean anything if it could: a
+        # purchase order naming a supplier and a contact, against a
+        # requisition naming a department, a requester and a proposed vendor,
+        # has no reading under which every name on one equals every name on
+        # the other. The comparison auditors actually want — did the order go
+        # to the vendor the requisition proposed — needs the counterparty
+        # named as its own single-valued fact, so both operands are scalar and
+        # the agreement is exact.
+        "common.party.counterparty",
+        "Counterparty",
+        "parties",
+        "counterparty",
+        (
+            FieldAttributeDefinition("name", "text"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
+    FieldKindDefinition(
         "common.party.address",
         "Party address",
         "parties",

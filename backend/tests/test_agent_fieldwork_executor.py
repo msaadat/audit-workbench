@@ -11,7 +11,11 @@ import pytest
 
 from app import data_tests, doc_tests, documents, workspaces
 from app.agent.executors import EXECUTORS, ExecutorRequest
-from app.agent.executors.fieldwork import result_ref, roll_up_results
+from app.agent.executors.fieldwork import (
+    result_ref,
+    roll_up_results,
+    untested_populations,
+)
 
 
 def _executed_rcm_row(ws):
@@ -38,6 +42,60 @@ def _executed_rcm_row(ws):
     )
     data_tests.run(ws, data_test["id"])
     return row
+
+
+def test_a_population_no_executed_step_asserts_about_is_reported(workspace_with_data):
+    """The gap no individual test can be blamed for, and so nothing reports.
+
+    Every data test on the engagement this comes from was anchored on the
+    invoice population. Each concluded soundly on what it tested, the roll-up
+    concluded soundly on those, and the requisitions population — nineteen of
+    whose rows no frame in use could even reach — was never mentioned.
+    """
+    ws = workspace_with_data
+    _executed_rcm_row(ws)
+
+    untested = untested_populations(ws)
+
+    # ``transactions`` carries the executed test; ``customers`` carries none.
+    assert untested == ["customers"]
+
+
+def test_a_population_a_step_declares_is_not_reported_as_untested(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = ws.add_rcm(
+        {
+            "process": "Customers",
+            "risk": "Customer records may be duplicated",
+            "control": "Customer master review",
+        }
+    )
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate customers",
+            "objective": "Identify repeated customer identifiers.",
+            "engine": "polars",
+            "rcm_id": row["id"],
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Duplicate ids",
+                        "instruction": "Repeated customer id.",
+                        "table_refs": ["customers"],
+                        "population": "customers",
+                        "code": "result = customers.filter(pl.col('id').is_duplicated())",
+                    }
+                ],
+            },
+        },
+    )
+    data_tests.run(ws, item["id"])
+
+    assert "customers" not in untested_populations(ws)
 
 
 def test_roll_up_results_commits_and_returns_stable_row_refs(workspace_with_data):

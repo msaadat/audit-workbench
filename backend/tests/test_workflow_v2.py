@@ -576,6 +576,7 @@ def test_workflow_test_generate_repair_reports_all_contract_errors(monkeypatch):
                         "label": "Identify duplicates",
                         "instruction": "Identify repeated invoice identifiers.",
                         "table_refs": ["transactions"],
+                        "population": "transactions",
                         "code": (
                             "result = transactions.filter("
                             "transactions['invoice'].is_duplicated())"
@@ -1869,6 +1870,7 @@ _TEST_GENERATE_RESPONSE = {
                     "label": "Identify duplicates",
                     "instruction": "Identify repeated invoice identifiers.",
                     "table_refs": ["private_ledger"],
+                    "population": "private_ledger",
                     "code": (
                         "result = private_ledger.filter("
                         "private_ledger['invoice_id'].is_duplicated())"
@@ -2202,6 +2204,7 @@ def test_stage_units_expand_one_per_uncovered_rcm_row(monkeypatch):
                         "label": "Run duplicate analysis",
                         "instruction": "Identify duplicate payment identifiers.",
                         "table_refs": ["transactions"],
+                        "population": "transactions",
                         "code": (
                             "result = transactions.filter("
                             "transactions['invoice'].is_duplicated())"
@@ -2540,6 +2543,7 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
                                 "label": "Identify duplicates",
                                 "instruction": "Identify repeated invoice identifiers.",
                                 "table_refs": ["transactions"],
+                                "population": "transactions",
                                 "code": (
                                     "result = transactions.filter("
                                     "transactions['invoice'].is_duplicated())"

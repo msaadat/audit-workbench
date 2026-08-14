@@ -1,15 +1,15 @@
 {
   "registry": {
     "pack_id": "procure_to_pay",
-    "pack_version": 6,
-    "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+    "pack_version": 7,
+    "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
   },
   "record_fragments": [
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "chunk_id": "DOC-PR:pages:1-1",
       "page_span": [
@@ -70,8 +70,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "chunk_id": "DOC-PO:pages:1-1",
       "page_span": [
@@ -109,8 +109,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "chunk_id": "DOC-GRN:pages:1-1",
       "page_span": [
@@ -161,8 +161,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "chunk_id": "DOC-INV:pages:1-1",
       "page_span": [
@@ -233,8 +233,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "chunk_id": "DOC-PAY:pages:1-1",
       "page_span": [
@@ -308,15 +308,15 @@
   "reduction": {
     "registry": {
       "pack_id": "procure_to_pay",
-      "pack_version": 6,
-      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+      "pack_version": 7,
+      "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
     },
     "records": [
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 6,
-          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+          "pack_version": 7,
+          "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
         },
         "record_id": "REC-PR",
         "document_id": "DOC-PR",
@@ -365,8 +365,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 6,
-          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+          "pack_version": 7,
+          "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
         },
         "record_id": "REC-PO",
         "document_id": "DOC-PO",
@@ -415,8 +415,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 6,
-          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+          "pack_version": 7,
+          "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
         },
         "record_id": "REC-GRN",
         "document_id": "DOC-GRN",
@@ -465,8 +465,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 6,
-          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+          "pack_version": 7,
+          "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
         },
         "record_id": "REC-INV",
         "document_id": "DOC-INV",
@@ -535,8 +535,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 6,
-          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+          "pack_version": 7,
+          "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
         },
         "record_id": "REC-PAY",
         "document_id": "DOC-PAY",
@@ -607,8 +607,8 @@
       "evidence_kind": "transaction_cycle",
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "comparison_recipes": [
         {
@@ -629,8 +629,8 @@
       "evidence_kind": "transaction_cycle",
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 6,
-        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+        "pack_version": 7,
+        "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
       },
       "comparison_recipes": [
         {
@@ -644,8 +644,8 @@
     "kind": "cycle_vouch",
     "registry": {
       "pack_id": "procure_to_pay",
-      "pack_version": 6,
-      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+      "pack_version": 7,
+      "definition_hash": "sha256:1d1b6afc225dfd1a02eab6b480d86ead1ceeb0ef58fe328e903388c810d08192"
     },
     "rcm_id": "RCM-P2P-01",
     "requirement_refs": [

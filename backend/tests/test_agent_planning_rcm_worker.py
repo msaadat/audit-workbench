@@ -824,7 +824,7 @@ def test_rcm_worker_aggregates_quality_errors_across_rows():
             "has unexpected key 'required_record_kinds'",
         ),
         (
-            {"pack_id": "procure_to_pay", "pack_version": 6},
+            {"pack_id": "procure_to_pay", "pack_version": 7},
             "is stale or inconsistent",
         ),
     ],

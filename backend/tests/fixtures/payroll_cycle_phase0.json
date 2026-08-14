@@ -1,15 +1,15 @@
 {
   "registry": {
     "pack_id": "payroll",
-    "pack_version": 4,
-    "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+    "pack_version": 5,
+    "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
   },
   "record_fragments": [
     {
       "registry": {
         "pack_id": "payroll",
-        "pack_version": 4,
-        "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+        "pack_version": 5,
+        "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
       },
       "chunk_id": "DOC-CONTRACT:pages:1-1",
       "page_span": [
@@ -47,8 +47,8 @@
     {
       "registry": {
         "pack_id": "payroll",
-        "pack_version": 4,
-        "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+        "pack_version": 5,
+        "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
       },
       "chunk_id": "DOC-TIME:pages:1-1",
       "page_span": [
@@ -111,8 +111,8 @@
     {
       "registry": {
         "pack_id": "payroll",
-        "pack_version": 4,
-        "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+        "pack_version": 5,
+        "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
       },
       "chunk_id": "DOC-REGISTER:pages:1-1",
       "page_span": [
@@ -175,8 +175,8 @@
     {
       "registry": {
         "pack_id": "payroll",
-        "pack_version": 4,
-        "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+        "pack_version": 5,
+        "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
       },
       "chunk_id": "DOC-PAYSLIP:pages:1-1",
       "page_span": [
@@ -227,8 +227,8 @@
     {
       "registry": {
         "pack_id": "payroll",
-        "pack_version": 4,
-        "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+        "pack_version": 5,
+        "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
       },
       "chunk_id": "DOC-BANK:pages:1-1",
       "page_span": [
@@ -270,15 +270,15 @@
   "reduction": {
     "registry": {
       "pack_id": "payroll",
-      "pack_version": 4,
-      "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+      "pack_version": 5,
+      "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
     },
     "records": [
       {
         "registry": {
           "pack_id": "payroll",
-          "pack_version": 4,
-          "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+          "pack_version": 5,
+          "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
         },
         "record_id": "REC-CONTRACT",
         "document_id": "DOC-CONTRACT",
@@ -303,8 +303,8 @@
       {
         "registry": {
           "pack_id": "payroll",
-          "pack_version": 4,
-          "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+          "pack_version": 5,
+          "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
         },
         "record_id": "REC-TIME",
         "document_id": "DOC-TIME",
@@ -329,8 +329,8 @@
       {
         "registry": {
           "pack_id": "payroll",
-          "pack_version": 4,
-          "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+          "pack_version": 5,
+          "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
         },
         "record_id": "REC-REGISTER",
         "document_id": "DOC-REGISTER",
@@ -355,8 +355,8 @@
       {
         "registry": {
           "pack_id": "payroll",
-          "pack_version": 4,
-          "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+          "pack_version": 5,
+          "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
         },
         "record_id": "REC-PAYSLIP",
         "document_id": "DOC-PAYSLIP",
@@ -381,8 +381,8 @@
       {
         "registry": {
           "pack_id": "payroll",
-          "pack_version": 4,
-          "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+          "pack_version": 5,
+          "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
         },
         "record_id": "REC-BANK",
         "document_id": "DOC-BANK",
@@ -416,8 +416,8 @@
       "evidence_kind": "transaction_cycle",
       "registry": {
         "pack_id": "payroll",
-        "pack_version": 4,
-        "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+        "pack_version": 5,
+        "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
       },
       "comparison_recipes": [
         {
@@ -437,8 +437,8 @@
     "kind": "cycle_vouch",
     "registry": {
       "pack_id": "payroll",
-      "pack_version": 4,
-      "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
+      "pack_version": 5,
+      "definition_hash": "sha256:4b51d96d6318f1265c6c4cd5594f450664e57790aad2f904bcf3abdacda92327"
     },
     "rcm_id": "RCM-PAY-01",
     "requirement_refs": [
