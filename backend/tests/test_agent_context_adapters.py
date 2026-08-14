@@ -311,6 +311,59 @@ def test_rcm_scope_supplies_small_table_rows_alongside_profiles():
     ]
 
 
+def test_the_observed_period_spans_every_date_typed_column_in_the_workspace():
+    workspace = workspaces.create_workspace("APM observed period")
+    workspace.add_table(
+        "requisitions.csv",
+        pl.DataFrame(
+            {
+                "req_id": ["R1", "R2"],
+                "raised_on": ["2023-01-10", "2024-06-01"],
+                "amount": [10.0, 30.0],
+            }
+        ).write_csv().encode(),
+    )
+    workspace.add_table(
+        "invoices.csv",
+        pl.DataFrame(
+            {
+                "invoice_id": ["I1", "I2"],
+                "invoice_date": ["2024-02-02", "2025-07-30"],
+            }
+        ).write_csv().encode(),
+    )
+
+    (candidate,) = context_adapters.population_summary_candidates(workspace)
+    content = candidate.representations["population_summary"]
+
+    # The widest range across both tables, not either table's own range.
+    assert content["observed_period"]["start"] == "2023-01-10"
+    assert content["observed_period"]["end"] == "2025-07-30"
+    assert content["observed_period"]["basis"] == [
+        "invoices.invoice_date",
+        "requisitions.raised_on",
+    ]
+    assert content["total_rows"] == 4
+
+
+def test_a_workspace_with_no_date_typed_column_reports_no_observed_period():
+    workspace = workspaces.create_workspace("APM undated")
+    workspace.add_table(
+        "ledger.csv",
+        pl.DataFrame(
+            # A period written as text is not one the range can be read off:
+            # min/max would be lexical order, which is only accidentally right.
+            {"entry": ["E1", "E2"], "booked": ["Q1 2024", "Q3 2023"]}
+        ).write_csv().encode(),
+    )
+
+    (candidate,) = context_adapters.population_summary_candidates(workspace)
+    content = candidate.representations["population_summary"]
+
+    assert "observed_period" not in content
+    assert content["tables"][0]["date_columns"] == []
+
+
 def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     monkeypatch,
 ):
@@ -351,14 +404,17 @@ def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     )
 
     assert schema_calls == [True]
-    # Category values are requested, but the table has only 2 rows — well
-    # under MIN_CATEGORY_ROWS — so the gate in apm_table_profile_candidates
-    # strips them before they reach the bundle (checked below).
-    assert profile_calls == [True]
+    # Category values are requested by the profile adapter, but the table has
+    # only 2 rows — well under MIN_CATEGORY_ROWS — so the gate in
+    # apm_table_profile_candidates strips them before they reach the bundle
+    # (checked below). The population summary asks for none: it reports ranges,
+    # never domains.
+    assert profile_calls == [False, True]
     assert [item.representation.kind for item in bundle.items] == [
         "planning_context",
         "artifact_template",
         "current_artifact",
+        "population_summary",
         "table_metadata",
         "table_profile",
     ]
@@ -373,6 +429,7 @@ def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
         "planning_context",
         "apm_template",
         "current_apm",
+        "population_summary",
         "table_metadata",
         "table_profiles",
     ]
@@ -386,6 +443,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
         "apm_template",
         "current_apm",
         "analysis_summary",
+        "population_summary",
         "table_metadata",
         "table_profiles",
         "documents",
@@ -396,6 +454,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
         "templates.current",
         "artifacts.current",
         "analyses.all",
+        "tables.all",
         "tables.all",
         "tables.all",
         "documents.lexical",
@@ -429,6 +488,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     for adapter in (
         context_adapters.apm_table_metadata_candidates,
         context_adapters.apm_table_profile_candidates,
+        context_adapters.population_summary_candidates,
         context_adapters.apm_document_methodology_scope,
     ):
         source = inspect.getsource(adapter)

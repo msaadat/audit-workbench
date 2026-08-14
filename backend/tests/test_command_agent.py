@@ -1431,6 +1431,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         "## Process flow and understanding\n\nRequisition through payment.\n\n"
         "## Prior audit findings\n\nNo information available.\n\n"
         "## Data analytics performed\n\nNo data analysis has been performed.\n\n"
+        "## Fraud risk and management override\n\nManagement override is presumed.\n\n"
         "## Key risks and planned response\n\nTest approval compliance."
     )
 

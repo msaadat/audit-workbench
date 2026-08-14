@@ -30,6 +30,7 @@ PLANNING_RESPONSES = {
             "## Process flow and understanding\nAccounts payable processing.\n\n"
             "## Prior audit findings\nNo information available.\n\n"
             "## Data analytics performed\nNo data analysis has been performed.\n\n"
+            "## Fraud risk and management override\nManagement override is presumed.\n\n"
             "## Key risks and planned response\nTest duplicate payments."
         )
     },
@@ -663,6 +664,7 @@ def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
                 "## Process flow and understanding\n{{process_flow}}\n\n"
                 "## Prior audit findings\n{{prior_audit_findings}}\n\n"
                 "## Data analytics performed\n{{data_analytics}}\n\n"
+                "## Fraud risk and management override\n{{fraud_risk}}\n\n"
                 "## Key risks and planned response\n{{key_risks}}"
             )
         },

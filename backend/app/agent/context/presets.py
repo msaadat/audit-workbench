@@ -46,6 +46,10 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "file_metadata": "allow_file_metadata",
     "table_metadata": "allow_table_metadata",
     "table_profile": "allow_table_profiles",
+    # Derived strictly by aggregating table profiles, so it is the same content
+    # class under a different shape and travels under the same permission. A
+    # context permitted to see per-table ranges is permitted to see their union.
+    "population_summary": "allow_table_profiles",
     "table_aggregate": "allow_table_aggregates",
     "table_rows": "allow_table_rows",
     "table_rows_small": "allow_small_table_rows",
@@ -630,6 +634,18 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=24_000),
                 ),
                 ContextSource(
+                    id="population_summary",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # The aggregate the per-table profiles cannot state: total
+                    # rows received and the observed date range across every
+                    # date-typed column. Planning cites scale and period from
+                    # here rather than deriving them across twelve profiles.
+                    representations=(ContextRepresentation("population_summary"),),
+                    budget=ContextBudget(max_items=1, max_characters=6_000),
+                ),
+                ContextSource(
                     id="table_metadata",
                     source_type="tables",
                     required=False,
@@ -682,7 +698,10 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=45, max_characters=94_000),
+            # 46 = the declared per-source ceilings summed; the population
+            # summary is the one added item and must not cost the last
+            # methodology excerpt its slot.
+            budget=ContextBudget(max_items=46, max_characters=94_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_template_text=True,

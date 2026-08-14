@@ -36,6 +36,7 @@ APM_PLANNING_SOURCE_ID = "planning_context"
 APM_TEMPLATE_SOURCE_ID = "apm_template"
 APM_CURRENT_ARTIFACT_SOURCE_ID = "current_apm"
 APM_SUMMARY_SOURCE_ID = "analysis_summary"
+APM_POPULATION_SOURCE_ID = "population_summary"
 
 
 def _normalized_document_ids(
@@ -371,6 +372,98 @@ def apm_table_profile_candidates(workspace: Workspace) -> tuple[ContextCandidate
     return tuple(candidates)
 
 
+# Per table, per kind. A wide workspace can carry more dated or valued columns
+# than a planning turn has any use for, and an over-budget block is dropped
+# whole rather than trimmed, so the cap is applied here where what it removed
+# can still be counted.
+MAX_SUMMARY_COLUMNS = 12
+
+
+def population_summary_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Expose one derived inventory of the imported populations.
+
+    The per-table profiles already carry every fact this block contains; what
+    they do not carry is the aggregate. A memo that has to derive the
+    engagement's date range by reading twelve profiles and taking a min across
+    them will not do it — the procurement APM declared the period unavailable
+    with 2023-01-10 to 2025-07-30 sitting in the profiles beside it. This
+    aggregates once, deterministically.
+
+    ``observed_period`` is built only from columns whose profile types them as
+    ``date``. A date held as text types as ``text`` and its min/max is lexical
+    order, which is the true range for ISO-8601 and wrong for every other
+    format, so a workspace that stores dates as free text reports no observed
+    period rather than a confident wrong one.
+
+    Read through the same projection the profiles themselves travel under, so
+    the summary can never state a range the profile beside it contradicts. No
+    row-level content is reachable from here, which is why it carries the
+    profile permission rather than one of its own.
+    """
+    tables: list[dict] = []
+    starts: list[tuple[str, str]] = []
+    ends: list[tuple[str, str]] = []
+    total_rows = 0
+    for table_name in workspace.table_names():
+        try:
+            profile = assistant.table_metadata(
+                workspace,
+                table_name,
+                include_category_values=False,
+            )
+        except (OSError, WorkspaceError):
+            continue
+        rows = profile.get("rows")
+        rows = rows if isinstance(rows, int) else 0
+        total_rows += rows
+        dated: list[dict] = []
+        valued: list[dict] = []
+        for column in profile.get("columns") or []:
+            name = str(column.get("name") or "")
+            minimum = column.get("min")
+            maximum = column.get("max")
+            if minimum is None and maximum is None:
+                continue
+            if column.get("type") == "date":
+                dated.append({"column": name, "min": minimum, "max": maximum})
+                if minimum is not None:
+                    starts.append((str(minimum), f"{table_name}.{name}"))
+                if maximum is not None:
+                    ends.append((str(maximum), f"{table_name}.{name}"))
+            elif column.get("type") == "numeric":
+                entry = {"column": name, "min": minimum, "max": maximum}
+                if column.get("mean") is not None:
+                    entry["mean"] = column["mean"]
+                valued.append(entry)
+        entry = {"table": table_name, "rows": rows}
+        for key, columns in (("date_columns", dated), ("numeric_columns", valued)):
+            entry[key] = columns[:MAX_SUMMARY_COLUMNS]
+            if len(columns) > MAX_SUMMARY_COLUMNS:
+                entry[f"{key}_omitted"] = len(columns) - MAX_SUMMARY_COLUMNS
+        tables.append(entry)
+    if not tables:
+        return ()
+    content: dict[str, object] = {"tables": tables, "total_rows": total_rows}
+    if starts and ends:
+        start, start_basis = min(starts)
+        end, end_basis = max(ends)
+        content["observed_period"] = {
+            "start": start,
+            "end": end,
+            "basis": sorted({start_basis, end_basis}),
+            "derived": "observed range of date-typed columns; not an asserted scope",
+        }
+    return (
+        ContextCandidate(
+            source_ref="workspace:populations",
+            source=content,
+            representations={"population_summary": content},
+            metadata={"scope": "workspace"},
+            lexical_text=" ".join(str(item["table"]) for item in tables),
+        ),
+    )
+
+
 # A table this small is one an aggregate profile cannot describe faithfully:
 # min/max/null statistics over a handful of rows lose exactly the correlation
 # (which row holds which value) that a reference or dimension table is for.
@@ -458,6 +551,7 @@ def apm_document_methodology_scope(
                 ),
             ),
             APM_SUMMARY_SOURCE_ID: apm_analysis_summary_candidates(workspace),
+            APM_POPULATION_SOURCE_ID: population_summary_candidates(workspace),
             APM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
             APM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
             APM_DOCUMENT_SOURCE_ID: apm_document_candidates(
@@ -2626,6 +2720,7 @@ __all__ = [
     "APM_TABLE_METADATA_SOURCE_ID",
     "APM_TABLE_PROFILE_SOURCE_ID",
     "APM_PLANNING_SOURCE_ID",
+    "APM_POPULATION_SOURCE_ID",
     "APM_TEMPLATE_SOURCE_ID",
     "APM_CURRENT_ARTIFACT_SOURCE_ID",
     "DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID",
@@ -2664,6 +2759,8 @@ __all__ = [
     "supplied_source_provenance",
     "apm_table_metadata_candidates",
     "apm_table_profile_candidates",
+    "population_summary_candidates",
+    "MAX_SUMMARY_COLUMNS",
     "small_table_row_candidates",
     "MAX_SMALL_TABLE_ROWS",
     "document_chunk_scope",

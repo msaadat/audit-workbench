@@ -44,10 +44,25 @@ Do not repeat the summary wholesale; take from it what bears on planning. Where
 no summary is supplied, say plainly that no data analysis has been performed
 rather than implying coverage that does not exist.
 
+A population summary may be supplied: the row counts of the imported tables and
+the observed range of their date and numeric columns. Where the planning context
+states no audit period and this summary carries an `observed_period`, state that
+range as the proposed period, attributed to the populations received and marked
+for confirmation with the auditee. It is an observation about the data, not an
+asserted scope — say which. Do not report the period as unavailable when a range
+was observed, and do not infer one where no range was supplied.
+
+Every section the template declares must be answered. A consideration that does
+not apply to this engagement is recorded as considered and not applicable, with
+the reason; an empty section is not the same as a dismissed one.
+
 Return the memorandum as Markdown only, without a JSON wrapper or Markdown code
 fence."""
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_UNAVAILABLE = r"\b(?:not available|not defined|undefined)\b"
 
 
 def _sha256_text(value: str) -> str:
@@ -63,6 +78,47 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
             f"Context source '{source_id}' must supply exactly one item."
         )
     return matches[0]
+
+
+def _supplied_items(request: WorkerRequest, source_id: str) -> tuple[object, ...]:
+    return tuple(
+        item.content for item in request.context.items if item.source_id == source_id
+    )
+
+
+def _section_bodies(markdown: str) -> dict[str, str]:
+    """Each heading's body, taken to the next heading of the same or higher level.
+
+    Level-tolerant on both sides, because the template-coverage check is: a
+    template's ``##`` answered by a memo's ``#`` is the same section. Depth-aware
+    so that a section written entirely as subsections is answered rather than
+    empty — a ``##`` body runs through its ``###`` children and stops at the
+    next ``##``.
+    """
+    text = _HTML_COMMENT.sub("", str(markdown or ""))
+    matches = list(_HEADING.finditer(text))
+    bodies: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        level = len(match.group(1))
+        end = len(text)
+        for following in matches[index + 1 :]:
+            if len(following.group(1)) <= level:
+                end = following.start()
+                break
+        bodies.setdefault(
+            match.group(2).strip().casefold(), text[match.end() : end].strip()
+        )
+    return bodies
+
+
+def _observed_period(request: WorkerRequest) -> Mapping[str, Any] | None:
+    """The date range derived from the imported populations, where one exists."""
+    for item in _supplied_items(request, "population_summary"):
+        if isinstance(item, Mapping):
+            observed = item.get("observed_period")
+            if isinstance(observed, Mapping) and observed.get("start"):
+                return observed
+    return None
 
 
 def _context_without_sources(
@@ -150,15 +206,38 @@ def validate_apm_proposal(
         if isinstance(planning.get("context"), dict)
         else planning
     )
+    # A declared section may be answered with an unavailable note — that
+    # mechanism is deliberate and honest. What it may not be is a heading with
+    # nothing under it, which reads as covered and is not.
+    bodies = _section_bodies(markdown)
+    for heading in _section_bodies(template):
+        if not re.search(r"[A-Za-z0-9]", bodies.get(heading, "")):
+            raise WorkerResponseValidationError(
+                f"template section '{heading}' is present but has no content"
+            )
     normalized = re.sub(r"\s+", " ", markdown.casefold())
-    for field_name in ("objective", "scope"):
+    for field_name in ("objective", "scope", "period"):
         if structured.get(field_name) and re.search(
-            rf"\b{field_name}\b.{{0,80}}\b(?:not available|not defined|undefined)\b",
+            rf"\b{field_name}\b.{{0,80}}{_UNAVAILABLE}",
             normalized,
         ):
             raise WorkerResponseValidationError(
                 f"the memorandum says {field_name} is unavailable despite structured context"
             )
+    # The period is the one planning fact the populations can supply when the
+    # context does not. Declaring it unavailable with a range observed in the
+    # data is the specific defect this catches.
+    period_derivable = not structured.get("period") and _observed_period(request)
+    if period_derivable and re.search(
+        rf"\bperiod\b.{{0,80}}{_UNAVAILABLE}",
+        normalized,
+    ):
+        raise WorkerResponseValidationError(
+            "the memorandum reports the audit period as unavailable although the "
+            "supplied population summary carries an observed date range; state it "
+            "as the proposed period, attributed to the populations and subject to "
+            "confirmation"
+        )
     return {"apm_markdown": markdown}
 
 
@@ -1141,12 +1220,6 @@ _PLANNING_CONTEXT_LABELS = {
     "background notes": "background_notes",
 }
 _LABELLED_FACT = re.compile(r"^\s*[-*]?\s*\*\*([^*]+?):\*\*\s*(.+?)\s*$")
-
-
-def _supplied_items(request: WorkerRequest, source_id: str) -> tuple[object, ...]:
-    return tuple(
-        item.content for item in request.context.items if item.source_id == source_id
-    )
 
 
 def _planning_context_response_schema(response: str) -> Mapping[str, Any]:

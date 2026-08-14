@@ -28,7 +28,7 @@ class _Gateway:
         return self.responses.pop(0)
 
 
-def _bundle(*, planning_context=None, template=None, current=""):
+def _bundle(*, planning_context=None, template=None, current="", population=None):
     values = (
         (
             "apm_template",
@@ -47,6 +47,10 @@ def _bundle(*, planning_context=None, template=None, current=""):
                 }
             },
         ),
+    ) + (
+        (("population_summary", "workspace:populations", population),)
+        if population is not None
+        else ()
     )
     items = tuple(
         ContextBundleItem(
@@ -124,6 +128,92 @@ def test_apm_semantic_validation_rejects_structured_context_contradiction():
     with pytest.raises(WorkerRunError, match="objective is unavailable"):
         WORKERS.execute(_request(), gateway)
     assert len(gateway.calls) == 2
+
+
+_OBSERVED = {
+    "tables": [{"table": "invoices", "rows": 118}],
+    "total_rows": 118,
+    "observed_period": {
+        "start": "2023-01-10",
+        "end": "2025-07-30",
+        "basis": ["invoices.invoice_date"],
+    },
+}
+
+
+def test_an_observed_period_forbids_reporting_the_period_as_unavailable():
+    gateway = _Gateway(
+        [
+            "# Engagement\n\nPeriod: not available.\n\n# Scope\n\nCommitments.",
+            "# Engagement\n\nPeriod: undefined.\n\n# Scope\n\nCommitments.",
+        ]
+    )
+    request = _request(
+        _bundle(
+            planning_context={"context": {"objective": "Assess approvals"}},
+            population=_OBSERVED,
+        )
+    )
+
+    with pytest.raises(WorkerRunError, match="observed date range"):
+        WORKERS.execute(request, gateway)
+    assert len(gateway.calls) == 2
+
+
+def test_the_period_may_be_unavailable_when_the_populations_carry_no_range():
+    gateway = _Gateway(
+        ["# Engagement\n\nPeriod: not available.\n\n# Scope\n\nCommitments."]
+    )
+    request = _request(
+        _bundle(
+            planning_context={"context": {"objective": "Assess approvals"}},
+            # The same summary without a derivable range: a workspace whose
+            # dates are held as text has nothing to propose, and saying so is
+            # the correct output rather than a gate failure.
+            population={"tables": [{"table": "invoices", "rows": 118}]},
+        )
+    )
+
+    result = WORKERS.execute(request, gateway)
+
+    assert "not available" in result.proposal["apm_markdown"]
+
+
+def test_a_declared_section_may_not_be_a_heading_with_nothing_under_it():
+    gateway = _Gateway(
+        [
+            "# Engagement\n\nApprovals.\n\n# Fraud risk\n\n# Scope\n\nCommitments.",
+            "# Engagement\n\nApprovals.\n\n"
+            "# Fraud risk\n\nManagement override is presumed.\n\n"
+            "# Scope\n\nCommitments.",
+        ]
+    )
+    request = _request(
+        _bundle(template="# Engagement\n\n# Fraud risk\n\n# Scope\n")
+    )
+
+    result = WORKERS.execute(request, gateway)
+
+    assert result.repaired is True
+    assert "'fraud risk' is present but has no content" in gateway.calls[1]["user"]
+
+
+def test_a_section_answered_only_by_its_subsections_is_answered():
+    gateway = _Gateway(
+        [
+            "# Engagement\n\nApprovals.\n\n"
+            "# Fraud risk\n\n## Management override\n\nPresumed present.\n\n"
+            "# Scope\n\nCommitments."
+        ]
+    )
+    request = _request(
+        _bundle(template="# Engagement\n\n# Fraud risk\n\n# Scope\n")
+    )
+
+    result = WORKERS.execute(request, gateway)
+
+    assert result.repaired is False
+    assert len(gateway.calls) == 1
 
 
 def test_apm_worker_request_detaches_source_content_and_cannot_mutate_it():
