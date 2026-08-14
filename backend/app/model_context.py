@@ -51,6 +51,8 @@ def project_column_profile(
         meta.update(min=profile.get("min"), max=profile.get("max"))
         if profile.get("mean") is not None:
             meta["mean"] = profile["mean"]
+        if profile.get("sum") is not None:
+            meta["sum"] = profile["sum"]
     if (
         include_category_values
         and profile["distinct_count"] <= category_limit

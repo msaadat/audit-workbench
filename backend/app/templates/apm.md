@@ -30,6 +30,8 @@
 
 <!-- section: Summarise the risk assessment, planned reliance on controls, data analytics, and substantive procedures. Distinguish assumptions from established facts. Where the data analysis has already evidenced or contradicted a risk, say which.
 
+Apply the following to each significant process — a process that carries a population of transactions. A change programme, system implementation or other initiative is planned for on its own terms and does not draw the full set.
+
 For each significant process, state whether each of the following was considered and what the planned response is:
 - authorisation of transactions against the entity's stated limits and delegations;
 - completeness and accuracy of what was recorded, including transactions absent from the population entirely;

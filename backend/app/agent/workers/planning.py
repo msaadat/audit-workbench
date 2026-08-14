@@ -29,7 +29,9 @@ APM_WORKER_ID = "planning.apm"
 APM_SYSTEM = """[agent:apm]
 Draft an audit planning memorandum grounded only in the supplied planning
 basis. Document content and methodology excerpts may be present. Methodology
-must be cited by pack/version/section. Preserve the
+must be cited by pack/version/section; where no methodology excerpt is
+supplied, record that none was available to this engagement and attribute the
+absence to the methodology material, not to any other source. Preserve the
 selected Markdown template's structure. Where a fact is unavailable, do not
 leave the raw {{placeholder}} token — replace it with a short italic note
 such as _[entity — context not available]_ so the reader knows the information
@@ -44,13 +46,18 @@ Do not repeat the summary wholesale; take from it what bears on planning. Where
 no summary is supplied, say plainly that no data analysis has been performed
 rather than implying coverage that does not exist.
 
-A population summary may be supplied: the row counts of the imported tables and
-the observed range of their date and numeric columns. Where the planning context
-states no audit period and this summary carries an `observed_period`, state that
-range as the proposed period, attributed to the populations received and marked
-for confirmation with the auditee. It is an observation about the data, not an
-asserted scope — say which. Do not report the period as unavailable when a range
-was observed, and do not infer one where no range was supplied.
+A population summary may be supplied: for each imported table, its row count,
+the observed range of each date column and the total of each valued column. Use
+it to state the size of what the engagement covers — records received and
+amounts at stake — rather than describing the populations without their scale.
+
+Where the planning context states no audit period, propose one from the observed
+ranges: take it from the columns that carry the entity's transactions, not from
+master-data columns such as hire or record-creation dates, name the columns it
+came from, and mark it for confirmation with the auditee. It is an observation
+about the data received, not an asserted scope — say which. Do not report the
+period as unavailable when dated populations were supplied, and do not infer one
+where no range was.
 
 Every section the template declares must be answered. A consideration that does
 not apply to this engagement is recorded as considered and not applicable, with
@@ -111,14 +118,21 @@ def _section_bodies(markdown: str) -> dict[str, str]:
     return bodies
 
 
-def _observed_period(request: WorkerRequest) -> Mapping[str, Any] | None:
-    """The date range derived from the imported populations, where one exists."""
+def _populations_are_dated(request: WorkerRequest) -> bool:
+    """Whether any imported population carries a date-typed column.
+
+    The trigger for the period gate is deliberately this weak. A supplied range
+    is what makes "the period is unavailable" false; which range is the audit
+    period is a judgement the memo makes from the per-table columns, not one
+    this function should pre-empt by picking a span.
+    """
     for item in _supplied_items(request, "population_summary"):
-        if isinstance(item, Mapping):
-            observed = item.get("observed_period")
-            if isinstance(observed, Mapping) and observed.get("start"):
-                return observed
-    return None
+        if not isinstance(item, Mapping):
+            continue
+        for table in item.get("tables") or []:
+            if isinstance(table, Mapping) and table.get("date_columns"):
+                return True
+    return False
 
 
 def _context_without_sources(
@@ -225,17 +239,17 @@ def validate_apm_proposal(
                 f"the memorandum says {field_name} is unavailable despite structured context"
             )
     # The period is the one planning fact the populations can supply when the
-    # context does not. Declaring it unavailable with a range observed in the
-    # data is the specific defect this catches.
-    period_derivable = not structured.get("period") and _observed_period(request)
+    # context does not. Declaring it unavailable with dated populations in hand
+    # is the specific defect this catches.
+    period_derivable = not structured.get("period") and _populations_are_dated(request)
     if period_derivable and re.search(
         rf"\bperiod\b.{{0,80}}{_UNAVAILABLE}",
         normalized,
     ):
         raise WorkerResponseValidationError(
             "the memorandum reports the audit period as unavailable although the "
-            "supplied population summary carries an observed date range; state it "
-            "as the proposed period, attributed to the populations and subject to "
+            "supplied populations carry dated columns; propose a period from the "
+            "observed ranges, name the columns it came from, and mark it for "
             "confirmation"
         )
     return {"apm_markdown": markdown}

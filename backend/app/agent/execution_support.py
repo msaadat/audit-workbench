@@ -28,6 +28,23 @@ class ExecutionHost(Protocol):
 
     def record_model_source(self, source: dict) -> None: ...
 
+    def warn(self, text: str) -> None: ...
+
+
+# The resolver's own phrasing for a source that had candidates and admitted
+# none of them. A source with nothing to offer omits for a different reason
+# ("matched no local candidates"), which is routine and must not warn.
+_STARVED_SOURCE = "supplied no permitted items"
+
+
+def _starved_sources(manifest: ContextManifest) -> list[str]:
+    """Declared sources whose candidates all failed to fit their budget."""
+    return [
+        str(omission.source_id)
+        for omission in (getattr(manifest, "omissions", None) or [])
+        if _STARVED_SOURCE in str(getattr(omission, "reason", "") or "")
+    ]
+
 
 def refresh_workspace(host: ExecutionHost) -> Workspace:
     """Reload the workspace and project its revision onto the durable workflow."""
@@ -71,4 +88,15 @@ def resolve_context(
     manifest, bundle = resolver.resolve(host.ws, capability, unit, scope)
     for source in supplied_source_provenance(host.ws, manifest):
         host.record_model_source(source)
+    # Degradation is acceptable; silent degradation is not. A capability that
+    # declared a source, built candidates for it, and then ran without any of
+    # them has quietly lost evidence it was designed around — which is how a
+    # planning turn came to describe populations it had never been shown. The
+    # omission is already in the manifest and the narration; this raises it to
+    # a run warning so it survives into the record an auditor reads.
+    for source_id in _starved_sources(manifest):
+        host.warn(
+            f"{capability.title}: context source '{source_id}' had candidates "
+            "but none fitted its budget, so the turn ran without it."
+        )
     return manifest, bundle

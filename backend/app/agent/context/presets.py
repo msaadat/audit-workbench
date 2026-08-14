@@ -618,7 +618,11 @@ PRESETS.register(
                     required=False,
                     selector=ContextSelector(selector_id="artifacts.current"),
                     representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=1, max_characters=20_000),
+                    # A revision turn that cannot see the end of what it is
+                    # revising rewrites it. Text truncates rather than drops,
+                    # so the loss is the memo's tail and nothing says so; a
+                    # 28.6k-character memo lost 8.6k of itself at 20_000.
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
                 ),
                 ContextSource(
                     id="analysis_summary",
@@ -743,7 +747,11 @@ PRESETS.register(
                     required=True,
                     selector=ContextSelector(selector_id="artifacts.current"),
                     representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=1, max_characters=24_000),
+                    # The RCM is built from the whole memo. At 24_000 the last
+                    # process sections of a 28.6k-character APM never reached
+                    # the turn, so no row could be proposed for them. Paid for
+                    # by scoping the table sources to imported populations.
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
                 ),
                 ContextSource(
                     id="current_rcm",

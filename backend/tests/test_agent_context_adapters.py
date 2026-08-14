@@ -311,42 +311,100 @@ def test_rcm_scope_supplies_small_table_rows_alongside_profiles():
     ]
 
 
-def test_the_observed_period_spans_every_date_typed_column_in_the_workspace():
-    workspace = workspaces.create_workspace("APM observed period")
+def _dated_workspace(name, *, joined=False):
+    workspace = workspaces.create_workspace(name)
     workspace.add_table(
         "requisitions.csv",
         pl.DataFrame(
             {
                 "req_id": ["R1", "R2"],
+                "staff_id": ["S1", "S2"],
                 "raised_on": ["2023-01-10", "2024-06-01"],
                 "amount": [10.0, 30.0],
             }
         ).write_csv().encode(),
     )
     workspace.add_table(
+        "staff.csv",
+        pl.DataFrame(
+            {"staff_id": ["S1", "S2"], "hire_date": ["2010-01-15", "2019-04-04"]}
+        ).write_csv().encode(),
+    )
+    if joined:
+        workspace.add_join(
+            {
+                "name": "requisitions_staff_joined",
+                "left": "requisitions",
+                "right": "staff",
+                "how": "left",
+                "left_on": ["staff_id"],
+                "right_on": ["staff_id"],
+            }
+        )
+    return workspace
+
+
+def test_the_population_summary_reports_ranges_per_table_and_totals_per_column():
+    workspace = _dated_workspace("APM populations")
+
+    (candidate,) = context_adapters.population_summary_candidates(workspace)
+    content = candidate.representations["population_summary"]
+    by_table = {item["table"]: item for item in content["tables"]}
+
+    assert content["total_rows"] == 4
+    # Each range stays attached to the column it came from. A single span
+    # across the workspace would open this engagement in 2010, on a hire date.
+    assert by_table["requisitions"]["date_columns"] == [
+        {"column": "raised_on", "min": "2023-01-10", "max": "2024-06-01"}
+    ]
+    assert by_table["staff"]["date_columns"] == [
+        {"column": "hire_date", "min": "2010-01-15", "max": "2019-04-04"}
+    ]
+    assert "observed_period" not in content
+    # The number an audit reads a money column by, which no profile carries.
+    assert by_table["requisitions"]["numeric_columns"] == [
+        {"column": "amount", "total": "40"}
+    ]
+
+
+def test_the_population_summary_describes_imported_tables_not_derived_frames():
+    workspace = _dated_workspace("APM derived frames", joined=True)
+    joined = [
+        name for name in workspace.table_names()
+        if name not in {"requisitions", "staff"}
+    ]
+
+    (candidate,) = context_adapters.population_summary_candidates(workspace)
+    content = candidate.representations["population_summary"]
+
+    assert [item["table"] for item in content["tables"]] == ["requisitions", "staff"]
+    # Whatever join inference derived, total_rows counts each record once.
+    assert content["total_rows"] == 4
+    assert all(name not in str(content) for name in joined)
+
+
+def test_a_reference_column_is_counted_but_never_totalled():
+    workspace = workspaces.create_workspace("APM reference columns")
+    workspace.add_table(
         "invoices.csv",
         pl.DataFrame(
             {
-                "invoice_id": ["I1", "I2"],
-                "invoice_date": ["2024-02-02", "2025-07-30"],
+                # A foreign key repeated across the population: too few distinct
+                # values to infer as an id, so only its name rules it out.
+                "approved_by_id": [7, 7, 9, 9],
+                "verified_by": [3, 3, 4, 4],
+                "invoice_amount": [10.0, 20.0, 30.0, 40.0],
             }
         ).write_csv().encode(),
     )
 
     (candidate,) = context_adapters.population_summary_candidates(workspace)
-    content = candidate.representations["population_summary"]
+    (table,) = candidate.representations["population_summary"]["tables"]
 
-    # The widest range across both tables, not either table's own range.
-    assert content["observed_period"]["start"] == "2023-01-10"
-    assert content["observed_period"]["end"] == "2025-07-30"
-    assert content["observed_period"]["basis"] == [
-        "invoices.invoice_date",
-        "requisitions.raised_on",
-    ]
-    assert content["total_rows"] == 4
+    assert table["numeric_columns"] == [{"column": "invoice_amount", "total": "100"}]
 
 
-def test_a_workspace_with_no_date_typed_column_reports_no_observed_period():
+def test_a_workspace_whose_dates_are_text_reports_no_range_to_read():
     workspace = workspaces.create_workspace("APM undated")
     workspace.add_table(
         "ledger.csv",
@@ -360,8 +418,40 @@ def test_a_workspace_with_no_date_typed_column_reports_no_observed_period():
     (candidate,) = context_adapters.population_summary_candidates(workspace)
     content = candidate.representations["population_summary"]
 
-    assert "observed_period" not in content
     assert content["tables"][0]["date_columns"] == []
+
+
+def test_planning_table_sources_are_scoped_to_the_populations_received():
+    workspace = _dated_workspace("APM planning scope", joined=True)
+    derived = {
+        name for name in workspace.table_names()
+        if name not in {"requisitions", "staff"}
+    }
+    assert derived, "the fixture must derive at least one join frame"
+
+    scope = context_adapters.apm_document_methodology_scope(workspace)
+    rcm = context_adapters.rcm_scope(workspace)
+
+    # A derived frame carries the same data under another name, and a budgeted
+    # source fills in candidate-name order — so admitting them crowds the
+    # populations themselves out of the turn.
+    for candidates in (
+        scope.candidates["table_metadata"],
+        scope.candidates["table_profiles"],
+        rcm.candidates["table_metadata"],
+        rcm.candidates["table_profiles"],
+        rcm.candidates["small_table_rows"],
+    ):
+        assert {candidate.metadata["table"] for candidate in candidates} <= {
+            "requisitions",
+            "staff",
+        }
+    # The analysis capability still sees them: a derived frame is what it
+    # analyses.
+    assert derived & {
+        candidate.metadata.get("table")
+        for candidate in context_adapters.apm_table_profile_candidates(workspace)
+    }
 
 
 def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(

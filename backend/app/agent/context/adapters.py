@@ -300,12 +300,33 @@ def apm_analysis_summary_candidates(
     )
 
 
-def apm_table_metadata_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+def _imported_table_names(workspace: Workspace) -> set[str]:
+    """The tables imported from a source file, without the derived join frames.
+
+    ``Workspace.table_names()`` is both: imported tables *and* the frames join
+    inference derived from them. A planning turn describes the populations
+    received, and a derived frame is a downstream analysis artifact carrying
+    the same data under another name. Admitting them is not merely redundant —
+    a budgeted source fills in candidate-name order, so on this workspace 14
+    join frames crowded 4 of the 6 real populations out of the APM turn
+    entirely.
+    """
+    return {str(table.get("name") or "").strip() for table in workspace.tables}
+
+
+def apm_table_metadata_candidates(
+    workspace: Workspace,
+    *,
+    imported_only: bool = False,
+) -> tuple[ContextCandidate, ...]:
     """Expose schema-only table metadata through the existing assistant builder."""
+    imported = _imported_table_names(workspace) if imported_only else None
     candidates = []
     for table in assistant.schema_brief(workspace):
         table_name = str(table.get("table") or "").strip()
         if not table_name or table.get("error"):
+            continue
+        if imported is not None and table_name not in imported:
             continue
         columns = [str(column.get("name") or "") for column in table.get("columns") or []]
         candidates.append(
@@ -320,7 +341,11 @@ def apm_table_metadata_candidates(workspace: Workspace) -> tuple[ContextCandidat
     return tuple(candidates)
 
 
-def apm_table_profile_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+def apm_table_profile_candidates(
+    workspace: Workspace,
+    *,
+    imported_only: bool = False,
+) -> tuple[ContextCandidate, ...]:
     """Expose bounded statistical profiles, plus category values where safe.
 
     A value list is kept on a column only when it is a *category domain*, not
@@ -330,8 +355,11 @@ def apm_table_profile_candidates(workspace: Workspace) -> tuple[ContextCandidate
     underlying frequency list holds one entry per distinct value rather than a
     truncated top-N. Anything narrower carries its distinct count alone.
     """
+    imported = _imported_table_names(workspace) if imported_only else None
     candidates = []
     for table_name in workspace.table_names():
+        if imported is not None and table_name not in imported:
+            continue
         try:
             profile = assistant.table_metadata(
                 workspace,
@@ -374,37 +402,36 @@ def apm_table_profile_candidates(workspace: Workspace) -> tuple[ContextCandidate
 
 # Per table, per kind. A wide workspace can carry more dated or valued columns
 # than a planning turn has any use for, and an over-budget block is dropped
-# whole rather than trimmed, so the cap is applied here where what it removed
-# can still be counted.
+# whole rather than trimmed — which is exactly what happened the first time
+# this shipped — so the cap is applied here where what it removed can still be
+# counted.
 MAX_SUMMARY_COLUMNS = 12
 
 
 def population_summary_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
-    """Expose one derived inventory of the imported populations.
+    """Expose the scale of the imported populations in one block.
 
-    The per-table profiles already carry every fact this block contains; what
-    they do not carry is the aggregate. A memo that has to derive the
-    engagement's date range by reading twelve profiles and taking a min across
-    them will not do it — the procurement APM declared the period unavailable
-    with 2023-01-10 to 2025-07-30 sitting in the profiles beside it. This
-    aggregates once, deterministically.
+    What the per-table profiles cannot state is the engagement's size: how many
+    records were received in total, and what the valued columns add up to. A
+    memo covering billions in payments should be able to say so, and no profile
+    beside it carries a total.
 
-    ``observed_period`` is built only from columns whose profile types them as
-    ``date``. A date held as text types as ``text`` and its min/max is lexical
-    order, which is the true range for ISO-8601 and wrong for every other
-    format, so a workspace that stores dates as free text reports no observed
-    period rather than a confident wrong one.
+    It deliberately computes no overall period. The first version did, and on
+    the procurement workspace it returned 2010-01-15 — a staff hire date, not
+    the start of anything auditable. Spanning every date column conflates
+    master data with transactions, and a single range hides which column it
+    came from. Per-table ranges are supplied instead and the memo proposes the
+    period from them, which is what the model already does well when it can see
+    the columns.
 
     Read through the same projection the profiles themselves travel under, so
-    the summary can never state a range the profile beside it contradicts. No
+    the summary can never state a figure the profile beside it contradicts. No
     row-level content is reachable from here, which is why it carries the
     profile permission rather than one of its own.
     """
     tables: list[dict] = []
-    starts: list[tuple[str, str]] = []
-    ends: list[tuple[str, str]] = []
     total_rows = 0
-    for table_name in workspace.table_names():
+    for table_name in sorted(_imported_table_names(workspace)):
         try:
             profile = assistant.table_metadata(
                 workspace,
@@ -420,21 +447,14 @@ def population_summary_candidates(workspace: Workspace) -> tuple[ContextCandidat
         valued: list[dict] = []
         for column in profile.get("columns") or []:
             name = str(column.get("name") or "")
-            minimum = column.get("min")
-            maximum = column.get("max")
-            if minimum is None and maximum is None:
-                continue
-            if column.get("type") == "date":
-                dated.append({"column": name, "min": minimum, "max": maximum})
-                if minimum is not None:
-                    starts.append((str(minimum), f"{table_name}.{name}"))
-                if maximum is not None:
-                    ends.append((str(maximum), f"{table_name}.{name}"))
-            elif column.get("type") == "numeric":
-                entry = {"column": name, "min": minimum, "max": maximum}
-                if column.get("mean") is not None:
-                    entry["mean"] = column["mean"]
-                valued.append(entry)
+            if column.get("type") == "date" and (
+                column.get("min") is not None or column.get("max") is not None
+            ):
+                dated.append(
+                    {"column": name, "min": column.get("min"), "max": column.get("max")}
+                )
+            elif column.get("type") == "numeric" and column.get("sum") is not None:
+                valued.append({"column": name, "total": column["sum"]})
         entry = {"table": table_name, "rows": rows}
         for key, columns in (("date_columns", dated), ("numeric_columns", valued)):
             entry[key] = columns[:MAX_SUMMARY_COLUMNS]
@@ -444,15 +464,6 @@ def population_summary_candidates(workspace: Workspace) -> tuple[ContextCandidat
     if not tables:
         return ()
     content: dict[str, object] = {"tables": tables, "total_rows": total_rows}
-    if starts and ends:
-        start, start_basis = min(starts)
-        end, end_basis = max(ends)
-        content["observed_period"] = {
-            "start": start,
-            "end": end,
-            "basis": sorted({start_basis, end_basis}),
-            "derived": "observed range of date-typed columns; not an asserted scope",
-        }
     return (
         ContextCandidate(
             source_ref="workspace:populations",
@@ -471,14 +482,21 @@ def population_summary_candidates(workspace: Workspace) -> tuple[ContextCandidat
 MAX_SMALL_TABLE_ROWS = 50
 
 
-def small_table_row_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+def small_table_row_candidates(
+    workspace: Workspace,
+    *,
+    imported_only: bool = False,
+) -> tuple[ContextCandidate, ...]:
     """Expose the complete rows of tables at or under the small-table ceiling.
 
     Row count is read from the cached profile so this never triggers a fresh
     scan; only a table already known to be small loads its frame at all.
     """
+    imported = _imported_table_names(workspace) if imported_only else None
     candidates = []
     for table_name in workspace.table_names():
+        if imported is not None and table_name not in imported:
+            continue
         try:
             profile = workspace.get_profile(table_name)
         except (OSError, WorkspaceError):
@@ -552,8 +570,12 @@ def apm_document_methodology_scope(
             ),
             APM_SUMMARY_SOURCE_ID: apm_analysis_summary_candidates(workspace),
             APM_POPULATION_SOURCE_ID: population_summary_candidates(workspace),
-            APM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
-            APM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
+            APM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
+                workspace, imported_only=True
+            ),
+            APM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(
+                workspace, imported_only=True
+            ),
             APM_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,
@@ -758,9 +780,15 @@ def rcm_scope(
                 ),
             ),
             RCM_CURRENT_ROWS_SOURCE_ID: rcm_current_row_candidates(workspace),
-            RCM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
-            RCM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
-            RCM_SMALL_TABLE_ROWS_SOURCE_ID: small_table_row_candidates(workspace),
+            RCM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
+                workspace, imported_only=True
+            ),
+            RCM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(
+                workspace, imported_only=True
+            ),
+            RCM_SMALL_TABLE_ROWS_SOURCE_ID: small_table_row_candidates(
+                workspace, imported_only=True
+            ),
             RCM_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,

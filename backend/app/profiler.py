@@ -19,7 +19,7 @@ import polars as pl
 # so without this a payload change would keep serving the old shape forever to
 # every workspace that had already been profiled — which is how renaming
 # `estimated_size_mb` left the Profile tab reading "0 bytes".
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 # Profiling runs on a capped sample — enough to characterize, cheap to compute.
 MAX_ROWS = 200_000
@@ -30,6 +30,14 @@ CATEGORICAL_MAX_DISTINCT_PCT = 60.0
 ID_UNIQUENESS_PCT = 95.0
 
 _ID_NAME_RE = re.compile(r"(?i)\b(id|ref|no|code|number|cnic|account|acct)\b|_(id|no)$")
+# Columns whose total states nothing, because they reference a person or a
+# record rather than measuring one. Kept separate from `_ID_NAME_RE` so that
+# ruling a column out of a sum never changes what type it is inferred to be,
+# and widened by `_by$` for the approver/updater columns that convention names
+# that way.
+_UNSUMMABLE_NAME_RE = re.compile(
+    r"(?i)\b(id|ref|no|code|number|cnic|account|acct)\b|_(id|no|by)$"
+)
 
 
 def _fmt(value) -> str | None:
@@ -70,6 +78,13 @@ def profile_column(df: pl.DataFrame, column: str) -> dict:
         "min": None,
         "max": None,
         "mean": None,
+        # The column total. An audit reads a money column by what it adds up
+        # to, and a mean beside a row count is not that number: nulls make the
+        # product wrong and nobody computes it anyway. Withheld from columns
+        # named like references, because the `id` type alone does not catch
+        # them — a foreign key repeated across a population stays `numeric`,
+        # and totalling `VERIFIED_BY_ID` states a figure that means nothing.
+        "sum": None,
         "top_values": [],
     }
 
@@ -82,6 +97,8 @@ def profile_column(df: pl.DataFrame, column: str) -> dict:
         profile["min"] = _fmt(values.min())
         profile["max"] = _fmt(values.max())
         profile["mean"] = _fmt(float(values.mean()))
+        if not _UNSUMMABLE_NAME_RE.search(column):
+            profile["sum"] = _fmt(float(values.sum()))
     elif dtype.is_temporal():
         profile["inferred_type"] = "date"
         profile["min"] = _fmt(values.min())

@@ -130,18 +130,22 @@ def test_apm_semantic_validation_rejects_structured_context_contradiction():
     assert len(gateway.calls) == 2
 
 
-_OBSERVED = {
-    "tables": [{"table": "invoices", "rows": 118}],
+_DATED = {
+    "tables": [
+        {
+            "table": "invoices",
+            "rows": 118,
+            "date_columns": [
+                {"column": "invoice_date", "min": "2023-01-10", "max": "2025-07-30"}
+            ],
+            "numeric_columns": [{"column": "invoice_amount", "total": "3,103,467,230"}],
+        }
+    ],
     "total_rows": 118,
-    "observed_period": {
-        "start": "2023-01-10",
-        "end": "2025-07-30",
-        "basis": ["invoices.invoice_date"],
-    },
 }
 
 
-def test_an_observed_period_forbids_reporting_the_period_as_unavailable():
+def test_dated_populations_forbid_reporting_the_period_as_unavailable():
     gateway = _Gateway(
         [
             "# Engagement\n\nPeriod: not available.\n\n# Scope\n\nCommitments.",
@@ -151,26 +155,28 @@ def test_an_observed_period_forbids_reporting_the_period_as_unavailable():
     request = _request(
         _bundle(
             planning_context={"context": {"objective": "Assess approvals"}},
-            population=_OBSERVED,
+            population=_DATED,
         )
     )
 
-    with pytest.raises(WorkerRunError, match="observed date range"):
+    with pytest.raises(WorkerRunError, match="dated columns"):
         WORKERS.execute(request, gateway)
     assert len(gateway.calls) == 2
 
 
-def test_the_period_may_be_unavailable_when_the_populations_carry_no_range():
+def test_the_period_may_be_unavailable_when_no_population_carries_a_date():
     gateway = _Gateway(
         ["# Engagement\n\nPeriod: not available.\n\n# Scope\n\nCommitments."]
     )
     request = _request(
         _bundle(
             planning_context={"context": {"objective": "Assess approvals"}},
-            # The same summary without a derivable range: a workspace whose
-            # dates are held as text has nothing to propose, and saying so is
-            # the correct output rather than a gate failure.
-            population={"tables": [{"table": "invoices", "rows": 118}]},
+            # A workspace whose dates are held as text has no range to read, and
+            # saying so is the correct output rather than a gate failure.
+            population={
+                "tables": [{"table": "invoices", "rows": 118, "date_columns": []}],
+                "total_rows": 118,
+            },
         )
     )
 
