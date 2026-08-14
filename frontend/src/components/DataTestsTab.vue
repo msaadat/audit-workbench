@@ -64,6 +64,7 @@ const creating = ref(false)
 const saving = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
+const generatingFindings = ref(false)
 const filter = ref<string>('all')
 const search = ref('')
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
@@ -126,6 +127,17 @@ const definitionReady = computed(() => {
 const linkedFindings = computed<AuditFinding[]>(() => {
   const testId = selected.value?.id
   return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
+})
+// The tests that ran, found something, and are still waiting on the finding
+// that says so. Drafting is per RCM row — the same scope the single-test
+// button uses — so the button offers the rows behind these tests at once.
+const findingsPending = computed(() => {
+  const drafted = new Set((planning.value?.findings ?? []).flatMap(finding => finding.test_refs))
+  return tests.value.filter(test =>
+    test.rcm_id
+    && test.last_run
+    && test.status === 'completed_with_exception'
+    && !drafted.has(test.id))
 })
 
 function fail(summary: string, error: unknown) {
@@ -339,6 +351,27 @@ async function draftFinding(regenerate = false) {
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
+async function draftPendingFindings() {
+  const rcmIds = [...new Set(findingsPending.value.map(test => test.rcm_id as string))]
+  if (!rcmIds.length) return
+  generatingFindings.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Draft findings for ${plural(rcmIds.length, 'RCM row')} with undrafted exceptions.`,
+      'act', 'permission',
+      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_ids: rcmIds } },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'success',
+      summary: `Generating findings for ${plural(findingsPending.value.length, 'test')}`,
+      detail: 'Exception observations will be used directly.',
+      life: 3600,
+    })
+  } catch (error) { fail('Could not start the finding-draft workflow', error) }
+  finally { generatingFindings.value = false }
+}
 function openFinding(findingId: string) {
   void nav.replace('findings', { finding: findingId })
 }
@@ -369,6 +402,15 @@ onUnmounted(unsubscribe)
   <div class="data-tests">
     <UiPageHeader title="Data tests">
       <Button label="Run all" icon="pi pi-play" size="small" outlined :loading="runningAll" :disabled="running || runningAll" @click="runAllTests" />
+      <Button
+        v-if="findingsPending.length"
+        :label="`Generate Findings (${findingsPending.length})`"
+        icon="pi pi-sparkles"
+        size="small"
+        outlined
+        :loading="generatingFindings"
+        @click="draftPendingFindings"
+      />
       <Button label="New test" icon="pi pi-plus" size="small" @click="createOpen = true" />
       <Button
         v-if="selected"

@@ -143,7 +143,10 @@ GOAL_TEMPLATES: dict[str, dict] = {
 # rejected: run context is scope, never a routing override.
 TEMPLATE_RUN_CONTEXT_KEYS: dict[str, frozenset[str]] = {
     "planning": frozenset({"document_ids"}),
-    "finding_draft": frozenset({"observation_id", "rcm_id"}),
+    # ``rcm_ids`` is the batch form of ``rcm_id``: a test tab knows every row
+    # whose exceptions are still undrafted, and naming them is what keeps the
+    # button from widening into an unscoped workspace sweep.
+    "finding_draft": frozenset({"observation_id", "rcm_id", "rcm_ids"}),
     "document_analysis": frozenset({"document_ids", "action"}),
     "document_test_preparation": frozenset(),
     "document_test_execution": frozenset({"test_id", "test_ids"}),

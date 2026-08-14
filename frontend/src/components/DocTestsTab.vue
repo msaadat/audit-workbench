@@ -75,6 +75,7 @@ const creating = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
 const runningOutstanding = ref(false)
+const generatingFindings = ref(false)
 const anchorOpen = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 
@@ -129,6 +130,19 @@ const allTestIds = computed(() => {
   const ids = new Set<string>()
   for (const entry of summary.value?.entries ?? []) ids.add(entry.test_id)
   return Array.from(ids)
+})
+// The tests that ran, found something, and are still waiting on the finding
+// that says so. Drafting is per RCM row — the same scope the single-test
+// button uses — so the row behind each test is what the batch names.
+const findingsPending = computed(() => {
+  const drafted = new Set((planning.value?.findings ?? []).flatMap(finding => finding.test_refs))
+  const rows = new Map<string, string>()
+  for (const entry of summary.value?.entries ?? []) {
+    if (entry.test_status !== 'completed_with_exception') continue
+    if (!entry.rcm_id || drafted.has(entry.test_id)) continue
+    rows.set(entry.test_id, entry.rcm_id)
+  }
+  return rows
 })
 const outstandingTestIds = computed(() => {
   const ids = new Set<string>()
@@ -478,6 +492,28 @@ async function generateFinding(regenerate: boolean) {
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
+async function draftPendingFindings() {
+  const count = findingsPending.value.size
+  const rcmIds = [...new Set(findingsPending.value.values())]
+  if (!rcmIds.length) return
+  generatingFindings.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Draft findings for ${rcmIds.length} RCM row${rcmIds.length === 1 ? '' : 's'} with undrafted exceptions.`,
+      'act', launchMode.value,
+      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_ids: rcmIds } },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'success',
+      summary: `Generating findings for ${count} test${count === 1 ? '' : 's'}`,
+      detail: 'Exception observations will be used directly.',
+      life: 3600,
+    })
+  } catch (error) { fail('Could not start the finding-draft workflow', error) }
+  finally { generatingFindings.value = false }
+}
 function openFinding(findingId: string) {
   void nav.replace('findings', { finding: findingId })
 }
@@ -583,6 +619,16 @@ onUnmounted(unsubscribe)
         :loading="runningOutstanding"
         :disabled="assistantUnavailable || !outstandingTestIds.length"
         @click="runOutstandingTests"
+      />
+      <Button
+        v-if="findingsPending.size"
+        :label="`Generate Findings (${findingsPending.size})`"
+        icon="pi pi-sparkles"
+        size="small"
+        outlined
+        :loading="generatingFindings"
+        :disabled="assistantUnavailable"
+        @click="draftPendingFindings"
       />
       <Button label="New test" icon="pi pi-plus" size="small" outlined @click="createOpen = true" />
       <Button

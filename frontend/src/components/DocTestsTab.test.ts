@@ -41,11 +41,13 @@ vi.mock('../composables/useAgentRun', async () => {
   }
 })
 
+const { assistantSend } = vi.hoisted(() => ({ assistantSend: vi.fn() }))
+
 vi.mock('../composables/useAssistantChat', () => ({
   useAssistantChat: () => ({
     state: { busy: false },
     createChat: vi.fn(),
-    send: vi.fn(),
+    send: assistantSend,
   }),
 }))
 
@@ -139,6 +141,7 @@ const detail = {
 afterEach(() => {
   vi.restoreAllMocks()
   navReplace.mockReset()
+  assistantSend.mockReset()
   routeState.query = { test: 'DT-CYCLE' }
 })
 
@@ -258,5 +261,53 @@ describe('DocTestsTab Cycle vouch navigation', () => {
     expect(get.mock.calls.map(([url]) => url)).toContain('/api/workspaces/WS-1/doc-tests/DT-QA')
     expect(get.mock.calls.some(([url]) => url.includes('/grid?'))).toBe(false)
     expect(wrapper.get('.item-detail').text()).toContain('ITEM-QA')
+  })
+})
+
+describe('DocTestsTab finding generation', () => {
+  function mountTab(findings: unknown[]) {
+    vi.spyOn(api, 'get').mockImplementation(async (url: string) => {
+      if (url.endsWith('/doc-tests/summary')) return summary
+      if (url.endsWith('/documents')) return { items: [] }
+      if (url.endsWith('/planning')) return { findings }
+      if (url.endsWith('/doc-tests/meta')) return { document_types: [], cycle_vouch: {} }
+      if (url.includes('/doc-tests/DT-CYCLE/grid?')) return grid
+      if (url.endsWith('/doc-tests/DT-CYCLE')) return detail
+      throw new Error(`Unexpected URL: ${url}`)
+    })
+    return mount(DocTestsTab, {
+      props: { workspace: { id: 'WS-1', name: 'Fixture' } as WorkspaceSummary },
+      global: {
+        provide: {
+          [PrimeVueToastSymbol as symbol]: { add: vi.fn() },
+          [PrimeVueConfirmSymbol as symbol]: { require: vi.fn() },
+        },
+        directives: { tooltip: () => undefined },
+        stubs: { DocTestCreateDialog: true, EvidenceAnchorDialog: true },
+      },
+    })
+  }
+
+  it('offers the exception tests that have no finding yet and drafts their RCM rows', async () => {
+    const wrapper = mountTab([])
+    await flushPromises()
+
+    const button = wrapper.findAll('button').find(item => item.text().includes('Generate Findings'))
+    expect(button?.text()).toContain('Generate Findings (1)')
+
+    await button!.trigger('click')
+    await flushPromises()
+
+    expect(assistantSend.mock.calls[0][3]).toMatchObject({
+      command: 'draft_findings',
+      runContext: { rcm_ids: ['RCM-1'] },
+    })
+  })
+
+  it('hides the button once every exception test has a finding', async () => {
+    const wrapper = mountTab([{ id: 'F-1', test_refs: ['DT-CYCLE'], rcm_refs: ['RCM-1'] }])
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some(item => item.text().includes('Generate Findings'))).toBe(false)
   })
 })

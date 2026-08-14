@@ -635,6 +635,12 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                         not isinstance(value, str) or not value.strip() for value in raw_refs
                     ):
                         raise WorkspaceError("target_refs must be a list of non-empty strings.")
+                if "rcm_ids" in run_context:
+                    raw_ids = run_context.get("rcm_ids")
+                    if not isinstance(raw_ids, list) or any(
+                        not isinstance(value, str) or not value.strip() for value in raw_ids
+                    ):
+                        raise WorkspaceError("rcm_ids must be a list of non-empty strings.")
             outcome = _process_message(
                 workspace, chat_id, user, record, mode, goal_template, run_kind,
                 run_context, requested_outcomes, local_handler,
@@ -717,6 +723,14 @@ def _launch_command(
             target_refs = [f"observation:{observation_id}"]
         elif rcm_id:
             target_refs = [f"rcm:{rcm_id}"]
+        else:
+            # A batch drafts the rows a caller names, one ref each; the
+            # capability's eligible-observation selector narrows to them.
+            target_refs = [
+                f"rcm:{identifier}"
+                for value in (planning_context.get("rcm_ids") or [])
+                if (identifier := str(value or "").strip())
+            ]
     elif goal_template in {"data_analysis", "table_relationships", "analysis_execution"}:
         # The analysis capabilities resolve their scope from target refs, so the
         # tables and procedures a caller names travel as refs rather than as a

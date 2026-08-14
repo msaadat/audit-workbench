@@ -251,6 +251,48 @@ def test_finding_draft_tab_button_keeps_selected_observation_scope(workspace_wit
     assert launched["context"] == {"observation_id": "OBS-1"}
 
 
+def test_finding_draft_tab_button_scopes_a_batch_to_named_rcm_rows(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.update(command=command, context=context)
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    assistant_chats.send_message(ws, chat["id"], {
+        "content": "Draft findings for 2 RCM rows with undrafted exceptions.",
+        "intent": "act", "mode": "auto", "request_id": "request-finding-batch",
+        "source": "tab_button", "goal_template": "finding_draft",
+        "run_context": {"rcm_ids": ["RCM-1", "RCM-2"]},
+    })
+
+    assert launched["command"]["target_refs"] == ["rcm:RCM-1", "rcm:RCM-2"]
+
+
+def test_finding_draft_batch_rejects_a_malformed_row_list(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Draft findings for the rows with undrafted exceptions.",
+        "intent": "act", "mode": "auto", "request_id": "request-finding-batch-bad",
+        "source": "tab_button", "goal_template": "finding_draft",
+        "run_context": {"rcm_ids": "RCM-1"},
+    })
+
+    assert result["outcome"]["kind"] == "error"
+    assert "rcm_ids" in result["outcome"]["message"]
+
+
 def test_run_projection_uses_durable_activity_instead_of_coarse_status(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto",
