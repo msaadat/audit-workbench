@@ -509,7 +509,10 @@ def test_a_requirement_no_executed_test_names_blocks_effective(workspace_with_da
         },
     )
     data_tests.run(ws, item["id"])
-    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+    # Agent-derived: nobody has judged this, so the ceiling still decides.
+    data_tests.update(
+        ws, item["id"], {"control_conclusion": "effective"}, agent=True
+    )
 
     rolled = rcm_execution.rollup(ws)
     (rolled_row,) = [entry for entry in rolled["rows"] if entry["rcm_id"] == row["id"]]
@@ -518,6 +521,71 @@ def test_a_requirement_no_executed_test_names_blocks_effective(workspace_with_da
     # about the bank-account requirement sitting beside it.
     assert rolled_row["control_conclusion"] == "partially_effective"
     assert "bank_account_amendment" in rolled_row["evidence_ceiling"]
+    assert rolled_row["evidence_ceiling_applied"] is True
+
+
+def test_an_auditor_conclusion_is_reported_beside_the_ceiling_not_capped_by_it(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = ws.add_rcm(
+        {
+            "process": "Vendor management",
+            "risk": "Payments are directed to unapproved bank details",
+            "risk_rating": "critical",
+            "control": "Vendor master amendments are independently reviewed.",
+            "control_attributes": [
+                {
+                    "key": "vendor_id_unique",
+                    "assertion": "Completeness",
+                    "requirement": "Vendor identifiers are unique.",
+                    "evidence_kind": "tabular_population",
+                },
+                {
+                    "key": "bank_account_amendment",
+                    "assertion": "Authorization",
+                    "requirement": (
+                        "Changes to vendor bank account details are approved "
+                        "independently of the requester."
+                    ),
+                    "evidence_kind": "tabular_population",
+                },
+            ],
+        }
+    )
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Vendor identifier uniqueness",
+            "objective": "Confirm vendor identifiers are unique.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Unique ids",
+                        "instruction": "Check uniqueness.",
+                        "table_refs": ["transactions"],
+                        "code": "result = transactions.head(0)",
+                    }
+                ],
+            },
+        },
+    )
+    data_tests.run(ws, item["id"])
+    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+
+    rolled = rcm_execution.rollup(ws)
+    (rolled_row,) = [entry for entry in rolled["rows"] if entry["rcm_id"] == row["id"]]
+
+    # The auditor concluded this by hand. The limitation stays on the row as a
+    # disclosure, but the roll-up reports their judgment rather than revising it.
+    assert rolled_row["control_conclusion"] == "effective"
+    assert "bank_account_amendment" in rolled_row["evidence_ceiling"]
+    assert rolled_row["evidence_ceiling_applied"] is False
+    # And it stops reading as an outstanding coverage issue.
+    assert rcm_execution.completion(ws)["evidence_ceilings"] == []
 
 
 def test_a_row_whose_requirements_were_all_tested_still_concludes_effective(

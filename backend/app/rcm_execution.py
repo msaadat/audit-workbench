@@ -709,6 +709,11 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
         "result_summary": item["result_summary"],
         "conclusion": item.get("conclusion") or "",
         "control_conclusion": control_conclusion,
+        # Who reached it. A conclusion the auditor set by hand is a judgment the
+        # roll-up reports rather than revises.
+        "control_conclusion_source": str(
+            item.get("control_conclusion_source") or "none"
+        ),
         "conclusion_eligible": conclusion_eligible,
         "assurance_scope": assurance_scope,
         "assurance_label": detailed_rollup.get("assurance_label"),
@@ -772,11 +777,26 @@ def rollup(
             control_conclusion = "not_applicable"
         else:
             control_conclusion = "no_conclusion"
+        # The ceiling exists to stop an *agent-derived* conclusion outrunning the
+        # evidence class behind it. Where the auditor set that conclusion by
+        # hand, it is their judgment and it stands: the ceiling is still
+        # recorded as a stated limitation on the row, but it no longer rewrites
+        # the answer. Downgrading a conclusion an auditor signed would leave the
+        # file asserting something nobody decided.
         evidence_ceiling = ""
+        ceiling_applied = False
         if control_conclusion == "effective":
             evidence_ceiling = _evidence_ceiling(row, test_rollups)
-            if evidence_ceiling:
+            contributing = [
+                item for item in test_rollups if item["conclusion_eligible"]
+            ]
+            auditor_concluded = bool(contributing) and all(
+                item.get("control_conclusion_source") == "auditor"
+                for item in contributing
+            )
+            if evidence_ceiling and not auditor_concluded:
                 control_conclusion = "partially_effective"
+                ceiling_applied = True
         # The row-level conclusion is this tally: how much of the linked work
         # completed, how much of it passed, and what it produced.
         row_rollup = {
@@ -813,6 +833,9 @@ def rollup(
             ),
             "control_conclusion": control_conclusion,
             "evidence_ceiling": evidence_ceiling,
+            # Whether that ceiling changed the answer, or is recorded beside a
+            # conclusion the auditor owns.
+            "evidence_ceiling_applied": ceiling_applied,
             "findings": len(row.get("finding_refs") or []),
             "review_status": row.get("review_status") or "draft",
             "test_rollups": test_rollups,
@@ -918,7 +941,10 @@ def completion(
     ]
     # A conclusion that was capped rather than earned. Reported separately from
     # the rows that reached no conclusion at all, because "we tested less than
-    # this claims" and "we could not look" are different disclosures.
+    # this claims" and "we could not look" are different disclosures. A ceiling
+    # noted beside a conclusion the auditor set by hand is neither: the judgment
+    # was made deliberately and the limitation stays on the row, so it is not
+    # listed here as something still to resolve.
     evidence_ceilings = [
         {
             "rcm_id": row["id"],
@@ -926,6 +952,7 @@ def completion(
         }
         for row in workspace.rcm
         if (row.get("execution_rollup") or {}).get("evidence_ceiling")
+        and (row.get("execution_rollup") or {}).get("evidence_ceiling_applied", True)
     ]
     pending_cycle_dispositions = [
         {
