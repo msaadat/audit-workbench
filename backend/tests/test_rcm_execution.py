@@ -396,6 +396,26 @@ def test_effective_conclusion_with_open_exception_is_inconsistent(workspace_with
     assert result["inconsistent_conclusions"][0]["test_id"] == item["id"]
 
 
+def test_a_disclosed_scope_limitation_is_not_an_inconsistent_conclusion(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = _row(ws)
+    item = _data_test(ws, row)
+    data_tests.run(ws, item["id"])
+    rcm_execution.rollup(ws)
+    record = data_tests._record(ws, item["id"])
+    record["control_conclusion"] = "effective"
+    record["open_exception_count"] = 0
+    # Disclosing the boundary a conclusion was reached within is what the field
+    # is for; it must not read as a contradiction of the conclusion itself.
+    record["scope_limitations"] = "Vendor master was out of scope this period."
+
+    result = rcm_execution.coverage(ws)
+
+    assert result["inconsistent_conclusions"] == []
+
+
 def _rollup_stub(variant, subject, **overrides):
     return {
         "variant": variant,

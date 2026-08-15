@@ -218,18 +218,20 @@ def coverage(
                     completed_without_durable_result.append(
                         {"rcm_id": row["id"], "test_id": test["id"]}
                     )
+            # An open exception genuinely contradicts "effective". A recorded
+            # scope limitation does not — disclosing the boundary a conclusion
+            # was reached within is what the field is for, and flagging it made
+            # the auditor who documented their scope look worse than the one who
+            # left it blank.
             if (
                 item.get("control_conclusion") == "effective"
-                and (
-                    int(item.get("open_exception_count") or 0) > 0
-                    or str(item.get("scope_limitations") or "").strip()
-                )
+                and int(item.get("open_exception_count") or 0) > 0
             ):
                 inconsistent_conclusions.append(
                     {
                         "rcm_id": row["id"],
                         "test_id": test["id"],
-                        "reason": "Effective conclusion conflicts with open exceptions or limitations.",
+                        "reason": "Effective conclusion conflicts with open exceptions.",
                     }
                 )
             if (

@@ -207,12 +207,30 @@ describe('DocTestItemDetail auditor disposition', () => {
     expect(wrapper.text()).toContain('has not been run yet')
   })
 
-  it('shows the run and the auditor call as two separate readings', () => {
-    const wrapper = mount(itemFirst('failed', { state: 'confirmed', at: '2026-08-09T09:00:00Z', actor: 'auditor' }))
+  it('leads with the run while no call has been made', () => {
+    const wrapper = mount(itemFirst('failed'))
 
     const readings = wrapper.findAll('.reading dt').map(node => node.text())
     expect(readings).toEqual(['Run result', 'Your call'])
+    expect(wrapper.text()).toContain('Not recorded')
+  })
+
+  it('demotes the run to a past-tense note once the auditor has settled it', () => {
+    const wrapper = mount(itemFirst('inconclusive', {
+      state: 'confirmed', at: '2026-08-09T09:00:00Z', actor: 'auditor',
+    }))
+
+    // Your call leads and is the only chip; the run stays on the record as
+    // prose so a settled item cannot still read as unresolved.
+    expect(wrapper.findAll('.reading dt').map(node => node.text())).toEqual(['Your call'])
+    expect(wrapper.find('.reading--muted').text()).toBe('The run could not settle this.')
     expect(wrapper.find('.rail-provenance').text()).toContain('auditor')
+  })
+
+  it('lets the run lead again when the call went stale', () => {
+    const wrapper = mount(itemFirst('failed', { state: 'confirmed', stale: true }))
+
+    expect(wrapper.findAll('.reading dt').map(node => node.text())).toEqual(['Run result', 'Your call'])
   })
 
   it('records a call that contradicts the run on the first click, then asks for a reason', async () => {

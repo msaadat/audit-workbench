@@ -361,6 +361,105 @@ def test_a_disposition_note_requires_an_accompanying_call(workspace_with_data):
         doc_tests.update_item(ws, test_id, item_id, {"disposition_note": "orphan"})
 
 
+def _two_item_qa(ws):
+    """A test the runner leaves half-settled: one exception, one it cannot read."""
+
+    first = documents.add_document(ws, "valuation.txt", b"Valuation support attached.")
+    test = doc_tests.create_test(ws, {
+        "kind": "qa", "title": "Valuation support",
+        "items": [
+            {"label": "Inspect valuation support", "document_ids": [first["id"]],
+             "question": "Is the valuation supported?"},
+            {"label": "Assess documented requirements", "document_ids": [],
+             "question": "Are the requirements documented?"},
+        ],
+    })
+    for item in test["items"]:
+        doc_tests.run_item(ws, test["id"], item["id"])
+    return test["id"], [item["id"] for item in test["items"]]
+
+
+def test_an_auditor_may_conclude_over_unresolved_items_and_it_is_disclosed(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    test_id, item_ids = _two_item_qa(ws)
+    doc_tests.update_item(ws, test_id, item_ids[0], {"state": "confirmed"})
+    before = doc_tests.load_test(ws, test_id)
+    assert doc_tests.result_rollup(before)["conclusion_eligible"] is False
+
+    updated = doc_tests.update_test(ws, test_id, {
+        "control_conclusion": "effective",
+        "conclusion": "The control operated for the population tested.",
+    })
+
+    # The judgment is the auditor's to make; the file records what was open.
+    assert updated["control_conclusion"] == "effective"
+    assert updated["control_conclusion_source"] == "auditor"
+    limitations = updated["scope_limitations"]
+    assert "Concluded with 1 of 2 items unresolved" in limitations
+    assert "Assess documented requirements" in limitations
+    assert updated["conclusion_override"]["unresolved_items"][0]["id"] == item_ids[1]
+
+    # And it survives the rollup, or overriding would achieve nothing downstream.
+    rollup = doc_tests.result_rollup(updated)
+    assert rollup["control_conclusion"] == "effective"
+    assert rollup["conclusion_disclosed"] is True
+    assert rollup["conclusion_eligible"] is False
+
+
+def test_resolving_the_open_items_clears_the_disclosure(workspace_with_data):
+    ws = workspace_with_data
+    test_id, item_ids = _two_item_qa(ws)
+    doc_tests.update_item(ws, test_id, item_ids[0], {"state": "confirmed"})
+    doc_tests.update_test(ws, test_id, {"control_conclusion": "effective"})
+
+    doc_tests.update_item(ws, test_id, item_ids[1], {"state": "exception"})
+    resolved = doc_tests.update_test(ws, test_id, {"control_conclusion": "effective"})
+
+    assert resolved["scope_limitations"] == ""
+    assert "conclusion_override" not in resolved
+    assert doc_tests.result_rollup(resolved)["conclusion_eligible"] is True
+
+
+def test_the_disclosure_never_overwrites_the_auditors_own_scope_text(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    test_id, item_ids = _two_item_qa(ws)
+    doc_tests.update_item(ws, test_id, item_ids[0], {"state": "confirmed"})
+
+    updated = doc_tests.update_test(ws, test_id, {
+        "scope_limitations": "Vendor master was out of scope this period.",
+        "control_conclusion": "effective",
+    })
+    assert updated["scope_limitations"].startswith("Vendor master was out of scope")
+    assert "Concluded with 1 of 2 items unresolved" in updated["scope_limitations"]
+
+    # Saving again rewrites the generated block rather than stacking a copy.
+    again = doc_tests.update_test(ws, test_id, {"control_conclusion": "ineffective"})
+    assert again["scope_limitations"].count("Concluded with") == 1
+    assert again["scope_limitations"].startswith("Vendor master was out of scope")
+
+
+def test_a_conclusion_still_needs_a_run_and_a_population_it_can_speak_for(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    test_id, _item_ids = _two_item_qa(ws)
+    unrun = doc_tests.create_test(ws, {
+        "kind": "qa", "title": "Never run",
+        "items": [{"label": "Ask", "document_ids": [], "question": "Well?"}],
+    })
+    with pytest.raises(workspaces.WorkspaceError, match="Run every item"):
+        doc_tests.update_test(ws, unrun["id"], {"control_conclusion": "effective"})
+
+    # Clearing a conclusion is always allowed, whatever the item state.
+    assert doc_tests.update_test(
+        ws, test_id, {"control_conclusion": "no_conclusion"}
+    )["control_conclusion"] == "no_conclusion"
+
+
 def test_auditor_can_record_a_conclusion_on_a_document_test(workspace_with_data):
     ws = workspace_with_data
     document = documents.add_document(ws, "policy.txt", b"Approval is required.\nEvidence must be retained.")

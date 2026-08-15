@@ -234,6 +234,34 @@ const controlConclusionReason = computed(() => {
     ? 'Targeted evidence is item-specific and cannot support a population control conclusion or projected exception rate.'
     : 'Complete deterministic evaluation and current auditor disposition are required before recording a control conclusion.'
 })
+// Item-first tests let the auditor conclude over open items — that judgment is
+// theirs. Naming the items is what was missing: the save used to fail with a
+// generic error that never said which item was holding it up.
+const openItems = computed(() => {
+  if (isCanonicalCycle.value) return []
+  return (props.test.items ?? []).filter(item => {
+    const disposition = item.disposition as { state?: string; stale?: boolean } | undefined
+    const state = item.state ?? 'pending'
+    return !['confirmed', 'exception'].includes(state) || Boolean(disposition?.stale)
+  })
+})
+const concludedOverOpenItems = computed(() =>
+  Boolean((props.test as { conclusion_override?: unknown }).conclusion_override))
+// "Settled" is a live auditor call. A stale one is not settled — it falls back
+// to the run, so the run leads again.
+const settled = computed(() => dispositionState.value !== 'pending' && !isStale.value)
+// The run's verdict as a past-tense clause, so the demoted line reads as a note
+// about what happened rather than as a second live status.
+const runVerdictPhrase = computed(() => ({
+  passed: 'found no exception',
+  failed: 'flagged an exception',
+  inconclusive: 'could not settle this',
+  agent_checked: 'had not finished settling this',
+  not_run: 'has not been run',
+  incomplete: 'could not complete',
+  needs_review: 'left this for review',
+  stale: 'is out of date',
+}[evaluationState.value] ?? `recorded ${evaluationState.value}`))
 
 function edgeLabel(edge: Record<string, unknown>) {
   return `${String(edge.identifier_kind ?? 'identifier')} = ${String(edge.normalized_value ?? '—')}`
@@ -595,25 +623,30 @@ onMounted(() => { void focusAssertion() })
     <!-- The rail: everything the auditor decides, in one column that stays put
          while the record beside it scrolls. -->
     <aside class="detail-rail" aria-label="Your assessment">
-      <!-- Two readings, never collapsed into one chip. Which of them the
-           worklist is currently showing depends on whether the sign-off is
-           current, and that is exactly what an auditor needs to see. -->
+      <!-- Both readings stay on the record, but they are not equals. Until a
+           call is made the run's verdict *is* the status and leads; once the
+           auditor has settled it, theirs leads and the run demotes to the
+           historical note it has become. Two identical chips read as two
+           competing live statuses, which is what made a signed-off item still
+           look unresolved. -->
       <div class="rail-group rail-status">
-        <dl class="readings">
+        <dl v-if="settled" class="readings readings--settled">
+          <div class="reading">
+            <dt>Your call</dt>
+            <dd><UiTestStatus :status="isStale ? 'stale' : dispositionState" showLabel /></dd>
+          </div>
+          <div class="reading reading--muted">
+            <dd>The run {{ runVerdictPhrase }}.</dd>
+          </div>
+        </dl>
+        <dl v-else class="readings">
           <div class="reading">
             <dt>Run result</dt>
             <dd><UiTestStatus :status="evaluationState" showLabel /></dd>
           </div>
           <div class="reading">
             <dt>Your call</dt>
-            <dd>
-              <UiTestStatus
-                v-if="dispositionState !== 'pending'"
-                :status="isStale ? 'stale' : dispositionState"
-                showLabel
-              />
-              <span v-else class="reading-empty">Not recorded</span>
-            </dd>
+            <dd><span class="reading-empty">Not recorded</span></dd>
           </div>
         </dl>
         <Button
@@ -733,6 +766,24 @@ onMounted(() => { void focusAssertion() })
         <p v-if="controlConclusionReason" class="rail-note assurance-restriction">
           {{ controlConclusionReason }}
         </p>
+        <!-- A warning, not a block. Saving over open items is allowed; the
+             backend appends what was open to this test's scope limitations. -->
+        <div v-if="openItems.length" class="rail-note open-items">
+          <p>
+            <i class="pi pi-exclamation-circle" />
+            {{ openItems.length }} of {{ test.items.length }}
+            {{ test.items.length === 1 ? 'item is' : 'items are' }} unresolved.
+            You can still conclude — it will be recorded as a scope limitation.
+          </p>
+          <ul>
+            <li v-for="item in openItems" :key="item.id">{{ item.label || item.id }}</li>
+          </ul>
+        </div>
+        <p v-else-if="concludedOverOpenItems" class="rail-note open-items-cleared">
+          <i class="pi pi-check" />
+          Every item is resolved. Save the conclusion again to clear the recorded
+          scope limitation.
+        </p>
         <label>
           Conclusion
           <Textarea
@@ -819,6 +870,10 @@ onMounted(() => { void focusAssertion() })
 .reading dt { color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
 .reading dd { margin: 0; min-width: 0; }
 .reading-empty { color: var(--aw-muted); font-size: var(--aw-text-sm); font-style: italic; }
+/* The demoted run verdict: prose, not a chip, so it cannot be mistaken for the
+   item's current status. */
+.readings--settled { gap: 0.2rem; }
+.reading--muted dd { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 
 .rail-note.rail-stale,
 .rail-note.rail-provenance,
@@ -828,6 +883,13 @@ onMounted(() => { void focusAssertion() })
 .rail-note.rail-prompt { color: var(--aw-muted); }
 .rail-note.rail-reason { color: var(--aw-ink); font-style: italic; }
 .rail-note.rail-footnote { font-size: var(--aw-text-xs); }
+
+/* Warn-toned, not danger-toned: this is a disclosure the auditor is entitled to
+   make, not an error they have to clear. */
+.open-items { color: var(--aw-warn); }
+.open-items p { display: flex; align-items: baseline; gap: 0.35rem; margin: 0; }
+.open-items ul { margin: 0.3rem 0 0; padding-left: 1.6rem; color: var(--aw-ink); font-size: var(--aw-text-xs); }
+.open-items-cleared { display: flex; align-items: baseline; gap: 0.35rem; color: var(--aw-ok); }
 .reason-label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 
 /* The call already on the file reads as filled rather than outlined, so the

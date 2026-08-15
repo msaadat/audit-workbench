@@ -1445,14 +1445,11 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
         conclusion = str(changes["control_conclusion"] or "no_conclusion")
         if conclusion not in CONTROL_CONCLUSIONS:
             raise WorkspaceError("Unknown control conclusion.")
-        if conclusion != "no_conclusion" and not conclusion_eligible(test):
-            if assurance_scope(test) == "targeted_evidence_only":
-                raise WorkspaceError(
-                    "Targeted evidence cannot support a population control conclusion."
-                )
-            raise WorkspaceError(
-                "A control conclusion requires current complete execution and auditor disposition."
-            )
+        # An incomplete evidence base no longer refuses the write. Concluding
+        # over open items is the auditor's call to make; what the file needs is
+        # that the call be disclosed, not prevented.
+        if conclusion != "no_conclusion" and (blocked := conclusion_block(test)):
+            raise WorkspaceError(blocked)
         test["control_conclusion"] = conclusion
         test["control_conclusion_source"] = "auditor"
     if "steps" in changes:
@@ -1462,6 +1459,10 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
             test[key] = str(changes[key] or "")
     if "conclusion" in changes:
         test["conclusion_source"] = "auditor"
+    if "control_conclusion" in changes:
+        # After the auditor's own scope text has been applied, so an edit in the
+        # same request is preserved and the disclosure is appended below it.
+        record_conclusion_override(test)
     test["rcm_refs"], test["procedure_refs"] = rcm_refs, procedure_refs
     test["rcm_id"] = rcm_id
     if "spec" in changes:
@@ -2302,9 +2303,16 @@ def result_rollup(test: dict) -> dict:
             else None
         ),
         "conclusion_eligible": conclusion_eligible,
+        # `conclusion_eligible` still means "clean": every item resolved and
+        # every check usable. Reporting the conclusion is a weaker test — an
+        # auditor may conclude over open items, and that conclusion has to reach
+        # the RCM rollup, the working paper, and the report, or overriding would
+        # silently achieve nothing. What travels with it is the disclosure.
+        "conclusion_disclosed": bool(test.get("conclusion_override")),
+        "unresolved_items": unresolved_items(test),
         "control_conclusion": (
             str(test.get("control_conclusion") or "no_conclusion")
-            if conclusion_eligible
+            if not conclusion_block(test)
             else "no_conclusion"
         ),
     }
@@ -2328,6 +2336,120 @@ def assurance_scope(test: dict) -> str | None:
     if method in {"random", "interval", "stratified"}:
         return "sampled_population"
     return None
+
+
+# The auto-written half of ``scope_limitations``. Everything above the marker is
+# the auditor's own text and is never touched; the block below it is rewritten
+# from the current item state each time a conclusion is saved.
+_OVERRIDE_MARKER = "[Concluded over unresolved items]"
+_UNRESOLVED_READING = {
+    "manual_review": "unresolved",
+    "pending": "not run",
+    "agent_checked": "still running",
+}
+
+
+def unresolved_items(test: dict) -> list[dict]:
+    """Items that carry no settled reading, with why each one is open."""
+
+    if is_cycle_test(test):
+        return []
+    open_items = []
+    for item in test.get("items") or []:
+        state = project_item_state(item)
+        disposition = item.get("disposition") or {}
+        evaluation = item.get("evaluation") or {}
+        if state in {"confirmed", "exception"} and not disposition.get("stale"):
+            continue
+        if disposition.get("stale"):
+            reason = "signed off against evidence that has since changed"
+        elif str(disposition.get("state") or "pending") == "needs_review":
+            reason = "parked for review"
+        else:
+            reason = (
+                f"runner: {evaluation.get('state') or 'not_run'}"
+                if state == "manual_review"
+                else _UNRESOLVED_READING.get(state, state)
+            )
+        open_items.append({
+            "id": str(item.get("id") or ""),
+            "label": str(item.get("label") or item.get("id") or "Test item"),
+            "reason": reason,
+        })
+    return open_items
+
+
+def incomplete_checks(test: dict) -> int:
+    return sum(
+        any(
+            check.get("verdict") in {"missing", "invalid"}
+            for check in item.get("checks") or []
+        )
+        for item in test.get("items") or []
+    )
+
+
+def conclusion_block(test: dict) -> str:
+    """Why this test structurally cannot carry a conclusion, or an empty string.
+
+    Only two things are genuinely not the auditor's call: projecting a
+    population conclusion from evidence that was not sampled for it, and
+    concluding on a test that has not run. An incomplete evidence base is a
+    different matter — that is a judgment the auditor is entitled to make and
+    disclose, which is what :func:`record_conclusion_override` writes down.
+    """
+
+    if assurance_scope(test) == "targeted_evidence_only":
+        return "Targeted evidence cannot support a population control conclusion."
+    if is_cycle_test(test):
+        return (
+            ""
+            if result_rollup(test).get("conclusion_eligible")
+            else "Complete deterministic evaluation and current auditor "
+            "disposition are required before recording a control conclusion."
+        )
+    items = test.get("items") or []
+    if not items or not all(item_execution_current(test, item) for item in items):
+        return "Run every item before recording a control conclusion."
+    return ""
+
+
+def record_conclusion_override(test: dict) -> None:
+    """Keep ``scope_limitations`` telling the truth about what was still open.
+
+    Rewritten on every conclusion save, so resolving the items later clears the
+    disclosure rather than leaving a stale one on the file.
+    """
+
+    existing = str(test.get("scope_limitations") or "")
+    auditor_text = existing.split(_OVERRIDE_MARKER)[0].rstrip()
+    open_items = unresolved_items(test)
+    incomplete = incomplete_checks(test)
+    concluded = str(test.get("control_conclusion") or "no_conclusion") != "no_conclusion"
+    if not concluded or (not open_items and not incomplete):
+        test["scope_limitations"] = auditor_text
+        test.pop("conclusion_override", None)
+        return
+    lines = [_OVERRIDE_MARKER]
+    if open_items:
+        total = len(test.get("items") or [])
+        lines.append(
+            f"Concluded with {len(open_items)} of {counted(total, 'item')} unresolved:"
+        )
+        lines.extend(f"- {item['label']} ({item['reason']})" for item in open_items)
+    if incomplete:
+        lines.append(
+            f"{counted(incomplete, 'item')} {verb(incomplete, 'carries', 'carry')} "
+            "a check that returned no usable result."
+        )
+    test["scope_limitations"] = "\n".join(
+        ([auditor_text, ""] if auditor_text else []) + lines
+    )
+    test["conclusion_override"] = {
+        "unresolved_items": open_items,
+        "incomplete_check_items": incomplete,
+        "recorded_at": utcnow(),
+    }
 
 
 def conclusion_eligible(test: dict) -> bool:
