@@ -88,7 +88,8 @@ const selected = computed(() => tests.value.find(item => item.id === selectedId.
 function conclusionLabel(value: string) {
   return controlConclusions.find(item => item.value === value)?.label ?? value
 }
-// Mirrors the backend guard so the refusal shows before the click, not after.
+// A prompt, not a gate: the save goes through either way, and this is what
+// tells the auditor the working paper will be thin until they write it up.
 const departsWithoutReason = computed(() => {
   const item = selected.value
   if (!item) return false
@@ -619,15 +620,15 @@ onUnmounted(unsubscribe)
                 Conclusion
                 <Textarea v-model="selected.conclusion" rows="3" autoResize placeholder="What this result means for the control, in your own words." />
               </label>
-              <!-- Departing from the run is the judgement a working paper has
-                   to show. The backend refuses it without one; saying so here
-                   beats surfacing it as an error after the click. -->
+              <!-- Departing from the run is the judgement a working paper most
+                   wants to show, so the prompt stays. It no longer blocks the
+                   save: deciding and writing up are separate acts. -->
               <small v-if="departsWithoutReason" class="needs-reason">
-                Departing from the run needs a written reason above.
+                This departs from the run — a written reason above is worth having.
               </small>
               <Button
                 label="Save conclusion" icon="pi pi-check" size="small" outlined
-                :loading="saving" :disabled="departsWithoutReason" @click="saveConclusion"
+                :loading="saving" @click="saveConclusion"
               />
             </div>
 

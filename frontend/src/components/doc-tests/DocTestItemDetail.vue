@@ -133,21 +133,21 @@ const machineEquivalent = computed<DocTestDispositionState | null>(() =>
     evaluationState.value
   ] ?? null)
 const noteDraft = ref('')
-const pendingChoice = ref<DocTestDispositionState | null>(null)
+const editingNote = ref(false)
 const reasonBox = ref<HTMLElement | null>(null)
-// A call that contradicts the run is the one an audit file has to justify, so
-// that one — and only that one — stops to collect a reason. Agreeing with the
-// run, or settling an item the run could not, records on the first click.
-function needsReason(value: DocTestDispositionState | null) {
-  return Boolean(value)
-    && Boolean(machineEquivalent.value)
-    && value !== machineEquivalent.value
-    && value !== 'pending'
-}
-const contradictsRun = computed(() => needsReason(pendingChoice.value))
-const canSubmit = computed(() =>
-  Boolean(pendingChoice.value) && (!contradictsRun.value || Boolean(noteDraft.value.trim())),
+// Whether the call on the file disagrees with what the run found. Worth saying
+// so, and worth a written reason — but recording the call and writing up why
+// are two acts, and making the first wait on the second only lost decisions.
+const departsFromRun = computed(() =>
+  Boolean(machineEquivalent.value)
+  && dispositionState.value !== 'pending'
+  && dispositionState.value !== machineEquivalent.value
+  && !isStale.value,
 )
+// Offered only against a current call: re-recording one re-affirms it against
+// today's evidence, which writing a note is not. A stale sign-off is re-made,
+// not annotated.
+const canNote = computed(() => dispositionState.value !== 'pending' && !isStale.value)
 const canClearSignOff = computed(() => dispositionState.value !== 'pending')
 // A finding drafted from a test nobody resolved is a finding about nothing. The
 // backend now leaves such a test in `review_required` rather than `completed`,
@@ -160,32 +160,31 @@ const findingBlockedReason = computed(() => {
     : 'Run this test before drafting a finding from it.'
 })
 
-function cancelDisposition() {
-  pendingChoice.value = null
+function cancelNote() {
+  editingNote.value = false
   noteDraft.value = ''
 }
-async function choose(value: DocTestDispositionState) {
-  if (pendingChoice.value === value) return cancelDisposition()
-  // The ordinary case is one click. Only a call that has to be justified opens
-  // the reason step — and it scrolls itself into view and takes focus, because
-  // a second step nobody can see reads as a button that did nothing.
-  if (!needsReason(value)) {
-    cancelDisposition()
-    emit('setState', value)
-    return
-  }
-  pendingChoice.value = value
+/** Every call is one click. The reason, if there is one, comes after. */
+function choose(value: DocTestDispositionState) {
+  cancelNote()
+  emit('setState', value)
+}
+async function beginNote() {
+  editingNote.value = true
+  noteDraft.value = String(disposition.value.note ?? '')
   await nextTick()
   const box = reasonBox.value
-  // Guarded: jsdom has no scrollIntoView, and focus alone still gets the step
-  // in front of the auditor in any browser that does.
-  box?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  // Focus first, then scroll: a smooth scroll started before focus gets
+  // cancelled by it, which left the box open below the fold on a short window.
+  // Instant, so it has landed by the time the auditor looks. Optional-chained
+  // because jsdom implements neither.
   box?.querySelector('textarea')?.focus({ preventScroll: true })
+  box?.scrollIntoView?.({ block: 'center' })
 }
-function submitDisposition() {
-  if (!pendingChoice.value || !canSubmit.value) return
-  emit('setState', pendingChoice.value, noteDraft.value.trim() || undefined)
-  cancelDisposition()
+function saveNote() {
+  // Re-records the same call carrying the note; the state itself is unchanged.
+  emit('setState', dispositionState.value, noteDraft.value.trim() || undefined)
+  cancelNote()
 }
 function signedOffLine(value: Partial<DocTestDisposition>) {
   const parts = [value.actor || 'auditor']
@@ -648,7 +647,7 @@ onMounted(() => { void focusAssertion() })
         </p>
         <p v-else class="rail-note">
           {{ machineEquivalent
-            ? 'The run reached a verdict. Agree with it, or record a different call and say why.'
+            ? 'The run reached a verdict. Agree with it, or record a different call.'
             : 'The run could not settle this item — it is yours to decide.' }}
         </p>
 
@@ -662,37 +661,47 @@ onMounted(() => { void focusAssertion() })
             :icon="choice.icon"
             size="small"
             :severity="choice.tone"
-            :outlined="pendingChoice !== choice.value"
+            :outlined="dispositionState !== choice.value || isStale"
             :disabled="busy"
             :class="{ 'is-current': dispositionState === choice.value && !isStale }"
-            :aria-pressed="pendingChoice === choice.value"
+            :aria-pressed="dispositionState === choice.value && !isStale"
             @click="choose(choice.value)"
           />
         </div>
 
-        <template v-if="pendingChoice">
+        <!-- The reason is prompted where it is missed, and written whenever the
+             auditor gets to it — never as a toll on recording the call. -->
+        <p v-if="departsFromRun && !disposition.note" class="rail-note rail-prompt">
+          <i class="pi pi-pencil" />
+          This departs from the run. A written reason is worth having on the file.
+        </p>
+
+        <template v-if="editingNote">
           <label ref="reasonBox" class="reason-label">
-            {{ contradictsRun ? 'Why you disagree with the run (required)' : 'Note (optional)' }}
+            {{ departsFromRun ? 'Why you disagree with the run' : 'Note' }} (optional)
             <Textarea
               v-model="noteDraft"
               rows="2"
               autoResize
-              :placeholder="contradictsRun
+              :placeholder="departsFromRun
                 ? 'The run says otherwise — record what you saw that it did not.'
                 : 'Anything worth leaving on the file.'"
             />
           </label>
           <div class="dispositions">
-            <Button
-              :label="`Record ${pendingChoice.replace('_', ' ')}`"
-              icon="pi pi-save"
-              size="small"
-              :disabled="busy || !canSubmit"
-              @click="submitDisposition"
-            />
-            <Button label="Cancel" size="small" text :disabled="busy" @click="cancelDisposition" />
+            <Button label="Save reason" icon="pi pi-save" size="small" :disabled="busy" @click="saveNote" />
+            <Button label="Cancel" size="small" text :disabled="busy" @click="cancelNote" />
           </div>
         </template>
+        <Button
+          v-else-if="canNote"
+          :label="disposition.note ? 'Edit reason' : 'Add a reason'"
+          icon="pi pi-pencil"
+          size="small"
+          text
+          :disabled="busy"
+          @click="beginNote"
+        />
 
         <Button
           label="Clear my call"
@@ -813,8 +822,10 @@ onMounted(() => { void focusAssertion() })
 
 .rail-note.rail-stale,
 .rail-note.rail-provenance,
+.rail-note.rail-prompt,
 .rail-note.rail-reason { display: flex; align-items: baseline; gap: 0.35rem; }
 .rail-note.rail-stale { color: var(--aw-warn); }
+.rail-note.rail-prompt { color: var(--aw-muted); }
 .rail-note.rail-reason { color: var(--aw-ink); font-style: italic; }
 .rail-note.rail-footnote { font-size: var(--aw-text-xs); }
 .reason-label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }

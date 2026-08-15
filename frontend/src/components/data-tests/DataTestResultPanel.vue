@@ -85,15 +85,15 @@ const runVerdict = computed(() => RUN_VERDICTS[props.test.evaluation.state] ?? '
 const openCount = computed(() => props.test.open_exception_count)
 const foundCount = computed(() => props.test.evaluation.exception_count)
 const settled = computed(() => Boolean(foundCount.value) && openCount.value === 0)
-// Semantic issues are what block a conclusion. Once somebody has read them and
-// said why they are survivable, that note is part of the record.
+// Semantic issues are what block a conclusion. Recording that somebody read
+// them is what releases the test; the note explaining why is welcome but not
+// the price of releasing it.
 const needsSemanticReview = computed(
   () => props.test.evaluation.state === 'inconclusive' && !props.test.semantic_review,
 )
 const reviewing = ref(false)
 const reviewNote = ref('')
 function commitReview() {
-  if (!reviewNote.value.trim()) return
   emit('review-semantics', reviewNote.value.trim())
   reviewing.value = false
   reviewNote.value = ''
@@ -161,11 +161,11 @@ function commitReview() {
         </button>
         <form v-else class="review" @submit.prevent="commitReview">
           <label>
-            Why these issues do not invalidate the result
-            <textarea v-model="reviewNote" rows="2" required />
+            Why these issues do not invalidate the result <span class="optional">(optional)</span>
+            <textarea v-model="reviewNote" rows="2" />
           </label>
           <span class="review-actions">
-            <button type="submit" class="link" :disabled="busy || !reviewNote.trim()">
+            <button type="submit" class="link" :disabled="busy">
               Record review
             </button>
             <button type="button" class="link" @click="reviewing = false">Cancel</button>
@@ -279,6 +279,7 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
   font-size: var(--aw-text-sm);
   resize: vertical;
 }
+.optional { color: var(--aw-muted); font-weight: 400; }
 .review-actions { display: flex; gap: 0.7rem; }
 .reviewed { margin: 0.4rem 0 0; font-size: var(--aw-text-xs); line-height: 1.5; }
 

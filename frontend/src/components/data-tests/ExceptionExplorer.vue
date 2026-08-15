@@ -122,7 +122,7 @@ function beginAccept(label: string) {
   note.value = ruling(label)?.note ?? ''
 }
 function commitAccept() {
-  if (!noting.value || !note.value.trim()) return
+  if (!noting.value) return
   emit('rule', { key: noting.value, state: 'accepted', note: note.value.trim() })
   noting.value = null
   note.value = ''
@@ -225,15 +225,16 @@ function rule(label: string, next: DataTestDispositionState) {
           </span>
         </div>
 
-        <!-- Accepting retires exceptions from the control conclusion, so it is
-             the one ruling that cannot be a bare click. -->
+        <!-- Accepting retires exceptions from the control conclusion, so the
+             note is worth asking for. Asked for, not required: an auditor who
+             has decided can record it and write the reasoning up afterwards. -->
         <form v-if="noting === reason.label" class="accept" @submit.prevent="commitAccept">
           <label>
-            Why these are not a control failure
-            <textarea v-model="note" rows="2" required />
+            Why these are not a control failure <span class="optional">(optional)</span>
+            <textarea v-model="note" rows="2" />
           </label>
           <span class="accept-actions">
-            <button type="submit" class="link" :disabled="busy || !note.trim()">Accept group</button>
+            <button type="submit" class="link" :disabled="busy">Accept group</button>
             <button type="button" class="link" @click="noting = null">Cancel</button>
           </span>
         </form>
@@ -340,6 +341,7 @@ function rule(label: string, next: DataTestDispositionState) {
   font-size: var(--aw-text-sm);
   resize: vertical;
 }
+.optional { color: var(--aw-muted); font-weight: 400; text-transform: none; }
 .accept-actions { display: flex; gap: 0.7rem; }
 .accept-actions .link { font-size: var(--aw-text-xs); font-weight: 700; }
 .reason-label { min-width: 0; overflow-wrap: anywhere; }

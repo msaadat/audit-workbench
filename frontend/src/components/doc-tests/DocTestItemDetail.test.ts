@@ -215,23 +215,51 @@ describe('DocTestItemDetail auditor disposition', () => {
     expect(wrapper.find('.rail-provenance').text()).toContain('auditor')
   })
 
-  it('requires a reason before recording a call that contradicts the run', async () => {
+  it('records a call that contradicts the run on the first click, then asks for a reason', async () => {
     const wrapper = mount(itemFirst('failed'))
 
     await wrapper.findAll('.dispositions button')[0].trigger('click')
-    expect(wrapper.text()).toContain('Why you disagree with the run (required)')
-    const record = () => wrapper.findAll('.dispositions button').find(node =>
-      node.text().startsWith('Record'))
-    expect(record()?.attributes('disabled')).toBeDefined()
-    await record()?.trigger('click')
-    expect(wrapper.emitted('setState')).toBeUndefined()
 
+    // Deciding and writing up are separate acts: the call lands immediately and
+    // carries no note, rather than being held back until prose exists.
+    expect(wrapper.emitted('setState')?.[0]).toEqual(['confirmed'])
+    expect(wrapper.find('.reason-label').exists()).toBe(false)
+  })
+
+  it('prompts for a reason on a departure already on the file, without blocking', async () => {
+    const wrapper = mount(itemFirst('failed', { state: 'confirmed', at: '2026-08-09T09:00:00Z' }))
+
+    expect(wrapper.find('.rail-prompt').text()).toContain('departs from the run')
+
+    const addReason = wrapper.findAll('button').find(node => node.text() === 'Add a reason')
+    await addReason?.trigger('click')
     await wrapper.find('.reason-label textarea').setValue('Vendor reissued the invoice.')
-    expect(record()?.attributes('disabled')).toBeUndefined()
-    await record()?.trigger('click')
+    const save = wrapper.findAll('button').find(node => node.text() === 'Save reason')
+    await save?.trigger('click')
+
+    // The note rides along with the call it belongs to, which is unchanged.
     expect(wrapper.emitted('setState')?.[0]).toEqual([
       'confirmed', 'Vendor reissued the invoice.',
     ])
+  })
+
+  it('drops the reason prompt once one is on the file', () => {
+    const wrapper = mount(itemFirst('failed', {
+      state: 'confirmed', at: '2026-08-09T09:00:00Z', note: 'Vendor reissued the invoice.',
+    }))
+
+    expect(wrapper.find('.rail-prompt').exists()).toBe(false)
+    expect(wrapper.find('.rail-reason').text()).toContain('Vendor reissued')
+    expect(wrapper.findAll('button').some(node => node.text() === 'Edit reason')).toBe(true)
+  })
+
+  it('offers no note editor against a stale call, which has to be re-made', () => {
+    const wrapper = mount(itemFirst('not_run', {
+      state: 'confirmed', stale: true, at: '2026-08-09T09:00:00Z',
+    }))
+
+    expect(wrapper.findAll('button').some(node =>
+      ['Add a reason', 'Edit reason'].includes(node.text()))).toBe(false)
   })
 
   it('records agreement with the run on the first click', async () => {

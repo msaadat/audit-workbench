@@ -753,19 +753,10 @@ def update(
     )
     if conclusion not in CONTROL_CONCLUSIONS:
         raise WorkspaceError("Unknown control conclusion.")
-    prose = str(changes.get("conclusion", item.get("conclusion") or ""))
-    if (
-        "control_conclusion" in changes
-        and conclusion != "no_conclusion"
-        and conclusion != str(item["evaluation"]["suggested_control_conclusion"])
-        and not prose.strip()
-    ):
-        # Agreeing with the run needs no argument. Departing from it is the
-        # judgement the working paper has to be able to show, so it cannot be
-        # recorded as a bare enum change.
-        raise WorkspaceError(
-            "A control conclusion that departs from the run needs a written reason."
-        )
+    # Departing from the run is the judgement a working paper most wants to be
+    # able to show, and the UI asks for it — but it is asked for, not demanded.
+    # Refusing the enum change until prose exists stopped an auditor recording
+    # what they had decided just because they had not yet written up why.
     item.update(
         title=title,
         objective=objective,
@@ -1473,10 +1464,9 @@ def record_exception_disposition(
     known = {reason["label"] for reason in item["evaluation"]["reasons"]}
     if key not in known:
         raise WorkspaceError(f"This test has no exception group '{key}'.")
-    if state == "accepted" and not str(note or "").strip():
-        # Retiring an exception is the ruling that changes the control
-        # conclusion, so it is the one that has to carry its reasoning.
-        raise WorkspaceError("Accepting an exception group needs a written reason.")
+    # Retiring an exception is the ruling that moves the control conclusion, so
+    # the note is worth having — but an empty one is a thin working paper, not a
+    # reason to refuse the ruling itself.
     reason = next(item_ for item_ in item["evaluation"]["reasons"] if item_["label"] == key)
     replacement = (
         new_disposition(key, "pending", note, rows=reason["rows"], records=reason["records"])
@@ -1513,17 +1503,17 @@ def record_exception_disposition(
 
 
 def record_semantic_review(
-    workspace: Workspace, data_test_id: str, note: str, *, actor: str = "auditor"
+    workspace: Workspace, data_test_id: str, note: str = "", *, actor: str = "auditor"
 ) -> dict:
     """Record that somebody read the semantic issues and judged them survivable.
 
     Without this a test the runner could not vouch for is stranded outside
-    completion forever, whatever an auditor makes of the warning.
+    completion forever, whatever an auditor makes of the warning — which is why
+    the record releasing it is the act, and the note on it is optional. Making
+    prose the price of admission put an essay on the only unblocking path.
     """
-    if not str(note or "").strip():
-        raise WorkspaceError("Reviewing the semantic issues needs a written reason.")
     item = _record(workspace, data_test_id)
-    item["semantic_review"] = {"at": utcnow(), "actor": actor, "note": str(note)}
+    item["semantic_review"] = {"at": utcnow(), "actor": actor, "note": str(note or "")}
     _normalize_marking(item)
     item["updated"] = utcnow()
     workspace.save()

@@ -121,16 +121,26 @@ def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspa
         data_tests.update(ws, item["id"], {"control_conclusion": "bogus"})
 
 
-def test_departing_from_the_run_without_a_reason_is_refused(workspace_with_data):
+def test_departing_from_the_run_records_without_a_written_reason(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
     item = data_tests.create(ws, _analytics_payload(row))
     data_tests.run(ws, item["id"])
 
     # The run read this as ineffective. Overriding it is the judgement a working
-    # paper has to be able to show, so it cannot be a bare enum change.
-    with pytest.raises(workspaces.WorkspaceError, match="written reason"):
-        data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+    # paper wants to show, and the UI asks for it — but deciding and writing up
+    # are separate acts, so the enum change is not held back until prose exists.
+    departed = data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+    assert departed["control_conclusion"] == "effective"
+    assert departed["control_conclusion_source"] == "auditor"
+    assert departed["conclusion"].strip() == ""
+
+    # The reason lands later, against the call already on the file.
+    explained = data_tests.update(
+        ws, item["id"], {"conclusion": "Both exceptions were reissued under new references."},
+    )
+    assert explained["conclusion_source"] == "auditor"
+    assert explained["control_conclusion"] == "effective"
 
     agreed = data_tests.update(ws, item["id"], {"control_conclusion": "ineffective"})
     assert agreed["control_conclusion_source"] == "auditor"
@@ -268,16 +278,31 @@ def test_a_group_is_rulable_without_a_placeholder_row(workspace_with_data):
     assert ruled["status"] == "completed_no_exception"
 
 
-def test_accepting_an_exception_group_needs_a_reason(workspace_with_data):
+def test_accepting_an_exception_group_takes_an_optional_reason(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
     item = data_tests.create(ws, _analytics_payload(row))
     data_tests.run(ws, item["id"])
     group = data_tests._record(ws, item["id"])["evaluation"]["reasons"][0]["label"]
 
-    with pytest.raises(workspaces.WorkspaceError, match="written reason"):
-        data_tests.record_exception_disposition(ws, item["id"], group, "accepted")
+    # The note is asked for, not demanded: a ruling an auditor has made is
+    # recorded now and written up when they get to it.
+    accepted = data_tests.record_exception_disposition(ws, item["id"], group, "accepted")
+    ruling = next(
+        value for value in accepted["exception_dispositions"] if value["key"] == group
+    )
+    assert ruling["state"] == "accepted"
+    assert ruling["note"] == ""
 
+    explained = data_tests.record_exception_disposition(
+        ws, item["id"], group, "accepted", note="Reissued under a new reference.",
+    )
+    ruling = next(
+        value for value in explained["exception_dispositions"] if value["key"] == group
+    )
+    assert ruling["note"] == "Reissued under a new reference."
+
+    # The group still has to exist; that is a different kind of refusal.
     with pytest.raises(workspaces.WorkspaceError, match="no exception group"):
         data_tests.record_exception_disposition(
             ws, item["id"], "Not a real group", "accepted", note="x",
