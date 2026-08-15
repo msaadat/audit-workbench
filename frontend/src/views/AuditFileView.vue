@@ -22,7 +22,7 @@ import ReportTab from '../components/ReportTab.vue'
 const props = defineProps<{ id: string; section: string }>()
 const router = useRouter()
 const nav = useWorkspaceNav()
-const { workspace, phaseById, reload, reloadStatus, requestImport } = inject(workspaceContextKey)!
+const { workspace, phaseById, sectionById, reload, reloadStatus, requestImport } = inject(workspaceContextKey)!
 const agent = useAgentRun(props.id)
 const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
 
@@ -66,10 +66,18 @@ const phaseStateLabel: Record<DashboardPhase['state'], string> = {
   complete: 'Complete',
   attention: 'Needs attention',
 }
-function phaseFor(entry: RailEntry) { return entry.phase ? phaseById.value[entry.phase] : undefined }
+// A section state, where one exists, answers for the tab the badge sits on. The
+// phase behind it is broader — "Fieldwork" spans data tests and RCM coverage —
+// so badging the phase on Document tests reported work that lives elsewhere.
+function statusFor(entry: RailEntry) {
+  return sectionById.value[entry.section]
+    ?? (entry.phase ? phaseById.value[entry.phase] : undefined)
+}
 function statusLabel(entry: RailEntry) {
-  const phase = phaseFor(entry)
-  return phase ? `${phase.label}: ${phaseStateLabel[phase.state]}` : entry.label
+  const status = statusFor(entry)
+  if (!status) return entry.label
+  const detail = status.issues?.[0]
+  return `${status.label}: ${phaseStateLabel[status.state]}${detail ? ` — ${detail}` : ''}`
 }
 
 // The dashboard is a projection of committed work, so an agent commit has to
@@ -97,10 +105,10 @@ onUnmounted(unsubscribe)
         <span>{{ entry.label }}</span>
         <small v-if="entry.count && entry.count()">{{ entry.count() }}</small>
         <i
-          v-else-if="phaseFor(entry)"
+          v-else-if="statusFor(entry)"
           class="phase-status"
-          :class="phaseStateIcon[phaseFor(entry)!.state]"
-          :data-state="phaseFor(entry)!.state"
+          :class="phaseStateIcon[statusFor(entry)!.state]"
+          :data-state="statusFor(entry)!.state"
           aria-hidden="true"
         />
       </router-link>

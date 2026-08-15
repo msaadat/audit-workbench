@@ -380,6 +380,53 @@ def _engagement_state(workspace: Workspace) -> dict:
         if report_complete else f"{counted(len(workspace.findings), 'finding')}, {counted(quality['counts']['error'], 'quality error')}."
     )
 
+    # The rail badges a phase against the tab that opens it, so "Fieldwork"
+    # landed on Document tests and a data-test gap or an untested RCM row lit a
+    # warning there. A section state answers the narrower question the badge
+    # appears to be asking: is there document-test work outstanding?
+    doc_test_issues: list[str] = []
+    unresolved_doc_items = state_counts["manual_review"]
+    doc_tests_needing_review = [
+        test for test in tests
+        if str(test.get("status") or "") in {"blocked", "review_required"}
+    ]
+    doc_tests_unconcluded = [
+        test for test in tests
+        if str(test.get("status") or "") in _TERMINAL_TEST_STATUSES
+        and test.get("control_conclusion") not in rcm_execution.CONCLUDED_CONTROL_CONCLUSIONS
+    ]
+    if unresolved_doc_items:
+        doc_test_issues.append(
+            f"{counted(unresolved_doc_items, 'test item')} "
+            f"{verb(unresolved_doc_items, 'is', 'are')} unresolved."
+        )
+    if doc_tests_needing_review:
+        doc_test_issues.append(
+            f"{counted(len(doc_tests_needing_review), 'document test')} "
+            f"{verb(len(doc_tests_needing_review), 'is', 'are')} blocked or awaiting review."
+        )
+    if doc_tests_unconcluded:
+        doc_test_issues.append(
+            f"{counted(len(doc_tests_unconcluded), 'document test')} "
+            f"{verb(len(doc_tests_unconcluded), 'has', 'have')} no control conclusion."
+        )
+    doc_tests_running = state_counts["pending"] + state_counts["agent_checked"]
+    doc_test_state = (
+        "not_started" if not tests
+        else "attention" if doc_test_issues
+        else "in_progress" if doc_tests_running
+        else "complete"
+    )
+    sections = {
+        "doc-tests": {
+            "id": "doc-tests",
+            "label": "Document tests",
+            "state": doc_test_state,
+            "complete": doc_test_state == "complete",
+            "issues": doc_test_issues,
+        },
+    }
+
     phases = [
         _phase("planning", planning_state, planning_complete, planning_summary,
                {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues,
@@ -418,11 +465,13 @@ def _engagement_state(workspace: Workspace) -> dict:
         "report_errors": report_errors,
         "completion": completion,
         "phases": phases,
+        "sections": sections,
     }
 
 
 def engagement_status_payload(workspace: Workspace) -> dict:
-    return {"phases": _engagement_state(workspace)["phases"]}
+    state = _engagement_state(workspace)
+    return {"phases": state["phases"], "sections": state["sections"]}
 
 
 def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:

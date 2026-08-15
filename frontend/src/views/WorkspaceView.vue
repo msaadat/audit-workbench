@@ -6,7 +6,7 @@ import Button from 'primevue/button'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import type { DashboardPhase, EngagementStatusPayload, WorkspaceSummary } from '../types'
+import type { DashboardPhase, DashboardSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
@@ -32,6 +32,7 @@ const dropActive = ref(false)
 let dragDepth = 0
 const phases = ref<DashboardPhase[]>([])
 const phaseById = computed(() => Object.fromEntries(phases.value.map(phase => [phase.id, phase])) as Partial<Record<DashboardPhase['id'], DashboardPhase>>)
+const sectionById = ref<Record<string, DashboardSection>>({})
 
 const agent = useAgentRun(props.id)
 
@@ -48,8 +49,10 @@ async function loadEngagementStatus() {
   try {
     const payload = await api.get<EngagementStatusPayload>(`/api/workspaces/${props.id}/dashboard/status`)
     phases.value = payload.phases
+    sectionById.value = payload.sections ?? {}
   } catch {
     phases.value = []
+    sectionById.value = {}
   }
 }
 
@@ -75,6 +78,7 @@ provide(workspaceContextKey, {
   workspace: workspace as unknown as import('vue').Ref<WorkspaceSummary>,
   phases,
   phaseById,
+  sectionById,
   reload,
   reloadStatus: loadEngagementStatus,
   requestImport: () => { folderImportOpen.value = true },

@@ -1595,8 +1595,19 @@ export interface DashboardPhase {
   sub: DashboardSubPhase[]
 }
 
+/** A rail entry's own state, where a phase is broader than the tab it opens.
+ *  Keyed by rail section id. */
+export interface DashboardSection {
+  id: string
+  label: string
+  state: DashboardPhase['state']
+  complete: boolean
+  issues: string[]
+}
+
 export interface EngagementStatusPayload {
   phases: DashboardPhase[]
+  sections?: Record<string, DashboardSection>
 }
 
 export interface DashboardAction {

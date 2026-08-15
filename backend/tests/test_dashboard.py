@@ -3,7 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import data_tests, doc_tests, findings, llm, rcm_execution, workspaces
+from app import data_tests, doc_tests, documents, findings, llm, rcm_execution, workspaces
 from app.dashboard import (
     curate_rcm_tiles,
     dashboard_payload,
@@ -190,6 +190,51 @@ def test_planned_rcm_without_tests_is_not_complete_fieldwork(workspace_with_data
     assert fieldwork["complete"] is False
     assert fieldwork["summary"] == "No tests have been planned yet."
     assert fieldwork["state"] != "not_started"
+
+
+def test_the_document_tests_section_answers_only_for_document_tests(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    # An RCM row with no test at all puts the broad fieldwork phase into
+    # attention. That is real work, but it is not document-test work, and the
+    # rail badges this section against the Document tests tab.
+    ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    document = documents.add_document(ws, "policy.txt", b"Approval is required.")
+    test = doc_tests.build_review(
+        ws, {"title": "Policy review", "document_id": document["id"]}
+    )
+    doc_tests.run_item(ws, test["id"], test["items"][0]["id"])
+
+    payload = engagement_status_payload(ws)
+    fieldwork = next(p for p in payload["phases"] if p["id"] == "fieldwork")
+    section = payload["sections"]["doc-tests"]
+
+    assert fieldwork["state"] == "attention"
+    # The runner could not settle the review item, so this section is in
+    # attention on its own merits — and says which item, not which RCM row.
+    assert section["state"] == "attention"
+    assert any("unresolved" in issue for issue in section["issues"])
+
+    # Resolving the document-test work clears this badge even though the
+    # untested RCM row keeps the fieldwork phase in attention.
+    doc_tests.update_item(
+        ws, test["id"], test["items"][0]["id"], {"state": "confirmed"}
+    )
+    doc_tests.update_test(ws, test["id"], {"control_conclusion": "effective"})
+
+    payload = engagement_status_payload(ws)
+    assert next(
+        p for p in payload["phases"] if p["id"] == "fieldwork"
+    )["state"] == "attention"
+    assert payload["sections"]["doc-tests"]["state"] == "complete"
+    assert payload["sections"]["doc-tests"]["issues"] == []
+
+
+def test_the_document_tests_section_is_not_started_without_any(workspace_with_data):
+    assert engagement_status_payload(workspace_with_data)["sections"]["doc-tests"][
+        "state"
+    ] == "not_started"
 
 
 def test_dashboard_apm_status_rechecks_current_content(workspace_with_data):
