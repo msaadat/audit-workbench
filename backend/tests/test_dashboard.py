@@ -237,6 +237,48 @@ def test_the_document_tests_section_is_not_started_without_any(workspace_with_da
     ] == "not_started"
 
 
+def test_the_data_tests_section_answers_only_for_data_tests(workspace_with_data):
+    ws = workspace_with_data
+    # An untested RCM row keeps the broad fieldwork phase in attention without
+    # saying anything about data-test work, which is what this badge reports.
+    ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    row = ws.add_rcm({"process": "Revenue", "risk": "Duplicates may be recorded"})
+    test = data_tests.create(ws, {
+        "title": "Duplicate invoice check", "objective": "Identify duplicates.",
+        "engine": "analytics", "table_refs": ["transactions"],
+        "rcm_id": row["id"],
+        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    })
+
+    # Defined but never run.
+    assert engagement_status_payload(
+        workspaces.load_workspace(ws.id)
+    )["sections"]["data-tests"]["state"] == "in_progress"
+
+    ws = workspaces.load_workspace(ws.id)
+    data_tests.run(ws, test["id"])
+    rcm_execution.rollup(ws)
+
+    section = engagement_status_payload(ws)["sections"]["data-tests"]
+    assert section["state"] == "attention"
+    assert any("no control conclusion" in issue for issue in section["issues"])
+
+    data_tests.update(ws, test["id"], {"control_conclusion": "ineffective"})
+
+    payload = engagement_status_payload(ws)
+    assert next(
+        p for p in payload["phases"] if p["id"] == "fieldwork"
+    )["state"] == "attention"
+    assert payload["sections"]["data-tests"]["state"] == "complete"
+    assert payload["sections"]["data-tests"]["issues"] == []
+
+
+def test_the_data_tests_section_is_not_started_without_any(workspace_with_data):
+    assert engagement_status_payload(workspace_with_data)["sections"]["data-tests"][
+        "state"
+    ] == "not_started"
+
+
 def test_dashboard_apm_status_rechecks_current_content(workspace_with_data):
     ws = workspace_with_data
     ws.update_planning({

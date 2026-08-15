@@ -417,7 +417,57 @@ def _engagement_state(workspace: Workspace) -> dict:
         else "in_progress" if doc_tests_running
         else "complete"
     )
+    # The same narrowing for the Data tests tab: what it badges is data-test
+    # work, not the whole of fieldwork.
+    data_test_issues: list[str] = []
+    data_tests_needing_review = [
+        item for item in workspace.data_tests
+        if str(item.get("status") or "") == "review_required"
+    ]
+    data_tests_unconcluded = [
+        item for item in workspace.data_tests
+        if str(item.get("status") or "") in _TERMINAL_TEST_STATUSES
+        and item.get("control_conclusion") not in rcm_execution.CONCLUDED_CONTROL_CONCLUSIONS
+    ]
+    # A run that no longer describes its basis is evidence going out from under
+    # a conclusion, which is exactly what this badge should catch early.
+    stale_data_tests = [
+        item for item in workspace.data_tests
+        if data_tests.result_stale(workspace, item)
+    ]
+    if data_tests_needing_review:
+        data_test_issues.append(
+            f"{counted(len(data_tests_needing_review), 'data test')} "
+            f"{verb(len(data_tests_needing_review), 'requires', 'require')} review."
+        )
+    if data_tests_unconcluded:
+        data_test_issues.append(
+            f"{counted(len(data_tests_unconcluded), 'data test')} "
+            f"{verb(len(data_tests_unconcluded), 'has', 'have')} no control conclusion."
+        )
+    if stale_data_tests:
+        data_test_issues.append(
+            f"{counted(len(stale_data_tests), 'data test result')} "
+            f"{verb(len(stale_data_tests), 'is', 'are')} stale."
+        )
+    data_tests_unrun = [
+        item for item in workspace.data_tests
+        if str(item.get("status") or "") in {"draft", "ready"}
+    ]
+    data_test_state = (
+        "not_started" if not workspace.data_tests
+        else "attention" if data_test_issues
+        else "in_progress" if data_tests_unrun
+        else "complete"
+    )
     sections = {
+        "data-tests": {
+            "id": "data-tests",
+            "label": "Data tests",
+            "state": data_test_state,
+            "complete": data_test_state == "complete",
+            "issues": data_test_issues,
+        },
         "doc-tests": {
             "id": "doc-tests",
             "label": "Document tests",
