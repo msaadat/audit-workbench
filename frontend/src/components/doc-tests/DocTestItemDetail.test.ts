@@ -19,6 +19,19 @@ vi.mock('primevue/button', () => ({
   default: { name: 'Button', template: '<button />' },
 }))
 
+// shallowMount auto-stubs child components, so the disposition controls need
+// real DOM to be clicked. These explicit stubs override the auto-stub.
+const CLICKABLE_BUTTON = {
+  props: ['label', 'disabled'],
+  emits: ['click'],
+  template: '<button :disabled="disabled || undefined" @click="$emit(\'click\')">{{ label }}</button>',
+}
+const BOUND_TEXTAREA = {
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template: '<textarea :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+}
+
 import type { DocTest, DocTestItem } from '../../types'
 import DocTestItemDetail from './DocTestItemDetail.vue'
 
@@ -84,8 +97,7 @@ function cycle(selectionMode: 'evidence_linked' | 'sample') {
   return { test, item }
 }
 
-function render(selectionMode: 'evidence_linked' | 'sample') {
-  const props = cycle(selectionMode)
+function mount(props: { test: DocTest; item: DocTestItem }) {
   return shallowMount(DocTestItemDetail, {
     props: {
       ...props,
@@ -97,15 +109,64 @@ function render(selectionMode: 'evidence_linked' | 'sample') {
     global: {
       directives: { tooltip: () => undefined },
       stubs: {
-        Button: true,
+        Button: CLICKABLE_BUTTON,
+        Textarea: BOUND_TEXTAREA,
         InputText: true,
         Select: true,
-        Textarea: true,
         UiAdvancedSection: true,
         UiTestStatus: true,
       },
     },
   })
+}
+
+function render(selectionMode: 'evidence_linked' | 'sample') {
+  return mount(cycle(selectionMode))
+}
+
+/** An item-first test whose run reached `evaluationState`. */
+function itemFirst(
+  evaluationState: string,
+  disposition: Record<string, unknown> = {},
+) {
+  const item = {
+    id: 'ITEM-1',
+    label: 'Invoice 1001',
+    instruction: 'Agree the invoice to the ledger.',
+    document_ids: [],
+    evidence_refs: [],
+    checks: [],
+    attributes: [],
+    evaluation: {
+      state: evaluationState,
+      note: 'Deterministic local comparison completed.',
+      input_sha1: 'sha1:inputs',
+      ran_at: '2026-08-09T00:00:00Z',
+    },
+    disposition: {
+      state: 'pending', note: '', actor: null, at: null,
+      evaluated_input_sha1: null, stale: false,
+      ...disposition,
+    },
+  } as unknown as DocTestItem
+  const test = {
+    id: 'DT-1',
+    title: 'Invoice support',
+    kind: 'vouching',
+    status: 'completed',
+    control_conclusion: 'no_conclusion',
+    conclusion: '',
+    items: [item],
+    rcm_refs: [],
+    procedure_refs: [],
+    evidence_requests: [],
+    spec: {},
+  } as unknown as DocTest
+  return { test, item }
+}
+
+function dispositionButtons(wrapper: ReturnType<typeof mount>) {
+  return wrapper.findAll('.dispositions button').map(node => node.text())
 }
 
 describe('DocTestItemDetail Cycle-vouch assurance', () => {
@@ -125,5 +186,87 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
     expect(wrapper.findComponent(Select).props('disabled')).toBe(false)
     expect(wrapper.find('.assurance-restriction').exists()).toBe(false)
     expect(wrapper.text()).toContain('Sampled population')
+  })
+})
+
+describe('DocTestItemDetail auditor disposition', () => {
+  it('offers every call on an item the runner already marked an exception', () => {
+    const wrapper = mount(itemFirst('failed'))
+
+    // The regression this replaces: a runner verdict used to hide the very
+    // controls that would overturn it.
+    expect(dispositionButtons(wrapper)).toEqual(['Confirm', 'Exception', 'Needs review'])
+    expect(wrapper.findAll('.dispositions button').every(node =>
+      node.attributes('disabled') === undefined)).toBe(true)
+  })
+
+  it('offers every call on an item nothing has run yet', () => {
+    const wrapper = mount(itemFirst('not_run'))
+
+    expect(dispositionButtons(wrapper)).toEqual(['Confirm', 'Exception', 'Needs review'])
+    expect(wrapper.text()).toContain('has not been run yet')
+  })
+
+  it('shows the run and the auditor call as two separate readings', () => {
+    const wrapper = mount(itemFirst('failed', { state: 'confirmed', at: '2026-08-09T09:00:00Z', actor: 'auditor' }))
+
+    const readings = wrapper.findAll('.reading dt').map(node => node.text())
+    expect(readings).toEqual(['Run result', 'Your call'])
+    expect(wrapper.find('.rail-provenance').text()).toContain('auditor')
+  })
+
+  it('requires a reason before recording a call that contradicts the run', async () => {
+    const wrapper = mount(itemFirst('failed'))
+
+    await wrapper.findAll('.dispositions button')[0].trigger('click')
+    expect(wrapper.text()).toContain('Why you disagree with the run (required)')
+    const record = () => wrapper.findAll('.dispositions button').find(node =>
+      node.text().startsWith('Record'))
+    expect(record()?.attributes('disabled')).toBeDefined()
+    await record()?.trigger('click')
+    expect(wrapper.emitted('setState')).toBeUndefined()
+
+    await wrapper.find('.reason-label textarea').setValue('Vendor reissued the invoice.')
+    expect(record()?.attributes('disabled')).toBeUndefined()
+    await record()?.trigger('click')
+    expect(wrapper.emitted('setState')?.[0]).toEqual([
+      'confirmed', 'Vendor reissued the invoice.',
+    ])
+  })
+
+  it('records agreement with the run on the first click', async () => {
+    const wrapper = mount(itemFirst('failed'))
+
+    await wrapper.findAll('.dispositions button')[1].trigger('click')
+
+    // No second step to hunt for: agreeing needs no justification, so the
+    // click that used to only arm the control now records it.
+    expect(wrapper.emitted('setState')?.[0]).toEqual(['exception'])
+    expect(wrapper.find('.reason-label').exists()).toBe(false)
+  })
+
+  it('records a call on an item the run could not settle on the first click', async () => {
+    const wrapper = mount(itemFirst('inconclusive'))
+
+    await wrapper.findAll('.dispositions button')[0].trigger('click')
+
+    expect(wrapper.emitted('setState')?.[0]).toEqual(['confirmed'])
+    expect(wrapper.find('.reason-label').exists()).toBe(false)
+  })
+
+  it('warns that a sign-off went stale rather than hiding it', () => {
+    const wrapper = mount(itemFirst('not_run', {
+      state: 'confirmed', stale: true, note: 'Agreed.', at: '2026-08-09T09:00:00Z',
+    }))
+
+    expect(wrapper.find('.rail-stale').text()).toContain('no longer counts as current')
+    // The decision itself is still on the record.
+    expect(wrapper.find('.rail-reason').text()).toContain('Agreed.')
+  })
+
+  it('omits parking from a cycle item, whose disposition stays binary', () => {
+    const wrapper = render('sample')
+
+    expect(dispositionButtons(wrapper)).toEqual(['Confirm', 'Exception'])
   })
 })

@@ -215,6 +215,11 @@ describe('DocTestsTab Cycle vouch navigation', () => {
         entry_type: 'item', test_id: 'DT-QA', test_title: 'Contract questions', test_kind: 'qa',
         test_status: 'ready', rcm_id: null, item_id: 'ITEM-QA', label: 'Approval clause',
         instruction: 'Read the approval clause', state: 'pending', classification: 'not_run',
+        evaluation: { state: 'not_run', note: '', input_sha1: null, ran_at: null },
+        disposition: {
+          state: 'pending', note: '', actor: null, at: null,
+          evaluated_input_sha1: null, stale: false,
+        },
         question: 'Was approval required?', response: '', runner_note: '', document_count: 1,
         citation_count: 0, evidence_count: 1, checks_total: 0, checks_matched: 0, checks_failed: 0,
         missing_document_types: [], image_only: false, evidence_request_count: 0, has_conflict: false,

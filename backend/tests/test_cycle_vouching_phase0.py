@@ -499,15 +499,37 @@ def test_fifth_kind_meta_and_legacy_mutations_fail_closed(procurement_contract):
         doc_tests.update_item(ws, test["id"], item_id, {"summary": "legacy write"})
 
 
-def test_legacy_state_accessors_preserve_the_four_existing_kinds():
+def test_state_accessors_read_the_split_fields_for_the_four_existing_kinds():
+    # Item-first tests carry the same evaluation/disposition pair as cycle
+    # items, so these accessors read one shape for both.
     for kind in ("vouching", "attribute", "review", "qa"):
         test = {"kind": kind}
-        assert doc_tests.item_execution_pending(test, {"state": "pending"})
-        assert doc_tests.item_execution_current(test, {"state": "agent_checked"})
-        assert not doc_tests.item_disposition_current(test, {"state": "agent_checked"})
-        for state in ("confirmed", "exception", "manual_review"):
-            assert doc_tests.item_execution_current(test, {"state": state})
-            assert doc_tests.item_disposition_current(test, {"state": state})
+        assert doc_tests.item_execution_pending(
+            test, {"evaluation": doc_tests.new_evaluation("not_run")}
+        )
+        for state in ("agent_checked", "passed", "failed", "inconclusive"):
+            item = {"evaluation": doc_tests.new_evaluation(state)}
+            assert doc_tests.item_execution_current(test, item)
+            # A runner verdict is never itself an auditor disposition.
+            assert not doc_tests.item_disposition_current(test, item)
+        for state in ("confirmed", "exception"):
+            item = {
+                "evaluation": doc_tests.new_evaluation("passed"),
+                "disposition": doc_tests.new_disposition(state),
+            }
+            assert doc_tests.item_disposition_current(test, item)
+            assert not doc_tests.item_disposition_current(
+                test,
+                {**item, "disposition": doc_tests.new_disposition(state, stale=True)},
+            )
+        # Parking an item defers the decision rather than settling it.
+        assert not doc_tests.item_disposition_current(
+            test,
+            {
+                "evaluation": doc_tests.new_evaluation("passed"),
+                "disposition": doc_tests.new_disposition("needs_review"),
+            },
+        )
 
 
 def test_standalone_workflow_v2_declares_execution_then_auditor_disposition():

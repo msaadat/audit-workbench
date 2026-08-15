@@ -122,10 +122,15 @@ def test_run_document_test_completes_a_local_review_without_a_model(
 
     outcome = run_document_test(ws, test["id"], unit_id="unit-1", run_id="run-local")
 
-    # A review-kind item is deterministically marked for auditor judgment.
+    # A review-kind item is deterministically marked for auditor judgment, and
+    # the test says so rather than reporting itself complete over an item the
+    # runner could not settle.
     assert outcome.status == "succeeded"
     assert outcome.artifact_ref == document_test_ref(test["id"])
-    assert doc_tests.load_test(ws, test["id"])["status"] == "completed"
+    saved = doc_tests.load_test(ws, test["id"])
+    assert saved["status"] == "review_required"
+    assert saved["items"][0]["evaluation"]["state"] == "inconclusive"
+    assert saved["items"][0]["disposition"]["state"] == "pending"
 
 
 def test_run_document_test_registers_the_blocked_unit_on_open_evidence_requests(

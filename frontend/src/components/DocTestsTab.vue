@@ -17,9 +17,11 @@ import type {
   AuditFinding,
   DocTest,
   DocTestClassification,
+  DocTestDispositionState,
   DocTestItem,
   DocTestKind,
   DocTestSummaryEntry,
+  DocTestSummaryItem,
   DocTestSummaryCycleTest,
   DocTestSummaryPayload,
   EvidenceRef,
@@ -78,6 +80,10 @@ const runningOutstanding = ref(false)
 const generatingFindings = ref(false)
 const anchorOpen = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
+// Bulk sign-off. A sampled test is 25 items the runner mostly got right, and
+// opening each one to agree with it is the slowest part of the worklist.
+const selectedIds = ref<string[]>([])
+const bulkBusy = ref(false)
 
 // The triage cards are the only filter. "Needs action" used to be a second
 // control over the same axis, and it was exactly the union of the three cards
@@ -108,6 +114,23 @@ const visibleItems = computed(() => {
 })
 const activeFilterLabel = computed(() =>
   triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items')
+// Cycle tests are dispositioned in their own grid, so only item rows are
+// selectable here — a mixed selection would need two different mutations.
+const selectableItems = computed<DocTestSummaryItem[]>(() =>
+  visibleItems.value.filter((entry): entry is DocTestSummaryItem => entry.entry_type === 'item'))
+const selectedItems = computed<DocTestSummaryItem[]>(() =>
+  selectableItems.value.filter(entry => selectedIds.value.includes(entry.item_id)))
+const allSelected = computed(() =>
+  selectableItems.value.length > 0 && selectedItems.value.length === selectableItems.value.length)
+
+function toggleSelected(itemId: string) {
+  selectedIds.value = selectedIds.value.includes(itemId)
+    ? selectedIds.value.filter(value => value !== itemId)
+    : [...selectedIds.value, itemId]
+}
+function toggleSelectAll() {
+  selectedIds.value = allSelected.value ? [] : selectableItems.value.map(entry => entry.item_id)
+}
 const currentItem = computed<DocTestItem | null>(() =>
   currentTest.value?.items.find(item => item.id === selectedItemId.value) ?? null)
 const selectedCycleEntry = computed<DocTestSummaryCycleTest | null>(() => {
@@ -400,16 +423,42 @@ async function saveAttributes() {
     toast.add({ severity: 'success', summary: 'Attribute notes saved', life: 1800 })
   } catch (error) { fail('Could not save the attribute notes', error) }
 }
-async function setItemState(state: 'confirmed' | 'exception' | 'pending') {
+async function setItemState(state: DocTestDispositionState, note?: string) {
   if (!currentTest.value || !currentItem.value) return
   try {
     await api.patch(
       `/api/workspaces/${props.workspace.id}/doc-tests/${currentTest.value.id}/items/${currentItem.value.id}`,
-      { state },
+      { state, ...(note ? { disposition_note: note } : {}) },
     )
     await refresh()
-    toast.add({ severity: 'success', summary: 'Auditor sign-off saved', life: 1800 })
-  } catch (error) { fail('Could not save the auditor sign-off', error) }
+    toast.add({
+      severity: 'success',
+      summary: state === 'pending' ? 'Your call cleared' : 'Your call recorded',
+      life: 1800,
+    })
+  } catch (error) { fail('Could not record your call', error) }
+}
+
+async function setSelectedStates(state: DocTestDispositionState) {
+  const dispositions = selectedItems.value.map(entry => ({
+    test_id: entry.test_id, item_id: entry.item_id, state,
+  }))
+  if (!dispositions.length) return
+  bulkBusy.value = true
+  try {
+    await api.post(
+      `/api/workspaces/${props.workspace.id}/doc-tests/dispositions`,
+      { dispositions },
+    )
+    selectedIds.value = []
+    await refresh()
+    toast.add({
+      severity: 'success',
+      summary: `Recorded on ${dispositions.length} item${dispositions.length > 1 ? 's' : ''}`,
+      life: 1800,
+    })
+  } catch (error) { fail('Could not record your call on the selected items', error) }
+  finally { bulkBusy.value = false }
 }
 async function saveConclusion() {
   if (!currentTest.value) return
@@ -654,6 +703,56 @@ onUnmounted(unsubscribe)
         <span class="muted">
           {{ visibleItems.length }} of {{ summary?.entries.length ?? 0 }} · {{ activeFilterLabel }}
         </span>
+        <Button
+          v-if="selectableItems.length"
+          :label="allSelected ? 'Clear selection' : `Select all ${selectableItems.length}`"
+          size="small"
+          text
+          @click="toggleSelectAll"
+        />
+      </div>
+
+      <!-- One call across a selection. It appears only when rows are ticked, so
+           the ordinary single-item path is unchanged. -->
+      <div v-if="!selectedCycleTestId && selectedItems.length" class="bulk-bar" role="group" aria-label="Bulk sign-off">
+        <span class="bulk-count">
+          {{ selectedItems.length }} item{{ selectedItems.length > 1 ? 's' : '' }} selected
+        </span>
+        <Button
+          label="Confirm"
+          icon="pi pi-check"
+          size="small"
+          severity="success"
+          outlined
+          :disabled="bulkBusy || agent.isActive.value"
+          @click="setSelectedStates('confirmed')"
+        />
+        <Button
+          label="Exception"
+          icon="pi pi-exclamation-triangle"
+          size="small"
+          severity="danger"
+          outlined
+          :disabled="bulkBusy || agent.isActive.value"
+          @click="setSelectedStates('exception')"
+        />
+        <Button
+          label="Needs review"
+          icon="pi pi-eye"
+          size="small"
+          severity="warn"
+          outlined
+          :disabled="bulkBusy || agent.isActive.value"
+          @click="setSelectedStates('needs_review')"
+        />
+        <Button
+          label="Clear calls"
+          icon="pi pi-refresh"
+          size="small"
+          text
+          :disabled="bulkBusy || agent.isActive.value"
+          @click="setSelectedStates('pending')"
+        />
       </div>
 
       <div v-if="selectedCycleTestId" class="cycle-review">
@@ -705,7 +804,13 @@ onUnmounted(unsubscribe)
            the width it gives back is what makes room for the action rail. -->
       <UiMasterDetail v-else railWidth="20rem" class="layout">
         <template #rail>
-          <DocTestItemList :items="visibleItems" :selectedId="selectedEntryId" @select="select" />
+          <DocTestItemList
+            :items="visibleItems"
+            :selectedId="selectedEntryId"
+            :checkedIds="selectedIds"
+            @select="select"
+            @toggle="toggleSelected"
+          />
         </template>
         <DocTestItemDetail
           v-if="currentTest && currentItem"
@@ -769,6 +874,18 @@ onUnmounted(unsubscribe)
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 16rem; min-width: 0; max-width: 26rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--aw-teal);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-teal-soft);
+}
+.bulk-count { margin-right: auto; font-size: var(--aw-text-sm); font-weight: 600; }
 .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); white-space: nowrap; }
 .layout { min-height: 32rem; }
 .cycle-review { min-width: 0; }

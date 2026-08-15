@@ -209,6 +209,15 @@ async def patch_document_test_item(workspace_id: str, test_id: str, item_id: str
     return doc_tests.update_item(_ws(workspace_id), test_id, item_id, payload)
 
 
+@router.post("/doc-tests/dispositions")
+async def post_document_test_dispositions(workspace_id: str, payload: dict = Body(...)):
+    """Record one auditor call across a selection spanning several tests."""
+
+    return doc_tests.update_dispositions(
+        _ws(workspace_id), list(payload.get("dispositions") or [])
+    )
+
+
 def _execution_command(ws, test_id: str, mode: str, context: dict) -> dict:
     """Start the declared document-test workflow for one named Document Test.
 

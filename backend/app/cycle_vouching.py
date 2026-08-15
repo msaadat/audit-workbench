@@ -5535,13 +5535,22 @@ def normalize_cycle_item(
     return item
 
 
+# Item-first tests now carry the same two fields as cycle items, so both sides
+# of these predicates read the same shape; only the state vocabularies differ.
+_ITEM_PENDING_EVALUATIONS = {"not_run"}
+_ITEM_CURRENT_EVALUATIONS = {"agent_checked", "passed", "failed", "inconclusive"}
+
+
 def execution_pending(item: Mapping[str, object], *, cycle: bool) -> bool:
     if cycle:
         return str((item.get("evaluation") or {}).get("state") or "not_run") in {
             "not_run",
             "stale",
         }
-    return str(item.get("state") or "pending") == "pending"
+    return (
+        str((item.get("evaluation") or {}).get("state") or "not_run")
+        in _ITEM_PENDING_EVALUATIONS
+    )
 
 
 def execution_current(item: Mapping[str, object], *, cycle: bool) -> bool:
@@ -5550,27 +5559,26 @@ def execution_current(item: Mapping[str, object], *, cycle: bool) -> bool:
             str((item.get("evaluation") or {}).get("state") or "not_run")
             in CURRENT_EVALUATION_STATES
         )
-    return str(item.get("state") or "pending") in {
-        "agent_checked",
-        "confirmed",
-        "exception",
-        "manual_review",
-    }
+    return (
+        str((item.get("evaluation") or {}).get("state") or "not_run")
+        in _ITEM_CURRENT_EVALUATIONS
+    )
 
 
 def disposition_current(item: Mapping[str, object], *, cycle: bool) -> bool:
-    if cycle:
-        disposition = item.get("disposition") or {}
-        return (
-            str(disposition.get("state") or "pending")
-            in {"confirmed", "exception"}
-            and not bool(disposition.get("stale"))
-        )
-    return str(item.get("state") or "pending") in {
+    """Whether a live auditor decision stands against the current inputs.
+
+    An auditor's ``needs_review`` is a decision to defer, not to settle, so it
+    reads as not-current here for both shapes — the same way an unsigned item
+    does. That is what keeps "everything is dispositioned" from being true of a
+    test whose items are all still parked.
+    """
+
+    disposition = item.get("disposition") or {}
+    return str(disposition.get("state") or "pending") in {
         "confirmed",
         "exception",
-        "manual_review",
-    }
+    } and not bool(disposition.get("stale"))
 
 
 def disposition_pending(item: Mapping[str, object], *, cycle: bool) -> bool:

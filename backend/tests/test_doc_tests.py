@@ -126,13 +126,195 @@ def test_auditor_can_sign_off_an_item_stuck_in_manual_review(workspace_with_data
 
     excepted = doc_tests.update_item(ws, review["id"], item_id, {"state": "exception"})
     assert excepted["items"][0]["state"] == "exception"
+    # Signing off never rewrites what the runner found.
+    assert excepted["items"][0]["evaluation"]["state"] == "inconclusive"
 
+    # Clearing a sign-off drops the auditor's call and falls back to the
+    # runner's verdict; it does not pretend the run never happened.
     reset = doc_tests.update_item(ws, review["id"], item_id, {"state": "pending"})
-    assert reset["items"][0]["state"] == "pending"
-    assert reset["status"] == "in_progress"
+    assert reset["items"][0]["disposition"]["state"] == "pending"
+    assert reset["items"][0]["state"] == "manual_review"
+    assert reset["items"][0]["evaluation"]["state"] == "inconclusive"
+    assert reset["status"] == "review_required"
+
+    # Parking an item for a second pair of eyes is an auditor's call to make.
+    parked = doc_tests.update_item(
+        ws, review["id"], item_id,
+        {"state": "needs_review", "disposition_note": "Ask the engagement manager."},
+    )
+    assert parked["items"][0]["disposition"]["state"] == "needs_review"
+    assert parked["items"][0]["disposition"]["note"] == "Ask the engagement manager."
+    assert parked["status"] == "review_required"
+
+    # Runner-owned outcomes stay runner-owned.
+    for state in ("manual_review", "agent_checked"):
+        with pytest.raises(workspaces.WorkspaceError):
+            doc_tests.update_item(ws, review["id"], item_id, {"state": state})
+
+
+_MATCHING_CHECK = {"field": "invoice", "expected": 1001, "method": "normalized"}
+
+
+def _vouching_with_result(ws, checks=None):
+    document = documents.add_document(
+        ws,
+        f"invoice-{len(ws.documents) + 1}.txt",
+        b"Invoice 1001\nAmount 150.00\nApproved by the controller.",
+    )
+    test = doc_tests.create_test(ws, {
+        "kind": "vouching", "title": "Invoice support",
+        "items": [{
+            "label": "Invoice 1001",
+            "document_ids": [document["id"]],
+            "checks": list(checks or [_MATCHING_CHECK]),
+        }],
+    })
+    item_id = test["items"][0]["id"]
+    doc_tests.run_item(ws, test["id"], item_id)
+    return document, test["id"], item_id
+
+
+def test_an_auditor_may_overturn_a_runner_verdict_and_both_stay_on_the_record(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    # One check matches, so the evidence is usable; the other does not, which is
+    # a deterministic failure rather than an item the runner could not read.
+    _document, test_id, item_id = _vouching_with_result(ws, [
+        _MATCHING_CHECK,
+        {"field": "amount", "expected": 999, "method": "numeric_tolerance"},
+    ])
+    ran = doc_tests.load_test(ws, test_id)["items"][0]
+    assert ran["evaluation"]["state"] == "failed"
+    assert ran["state"] == "exception"
+
+    overturned = doc_tests.update_item(
+        ws, test_id, item_id,
+        {
+            "state": "confirmed",
+            "disposition_note": "Vendor reissued the invoice under a new number.",
+        },
+    )
+    item = overturned["items"][0]
+    # The auditor's call wins the joint reading without erasing the disagreement.
+    assert item["state"] == "confirmed"
+    assert item["evaluation"]["state"] == "failed"
+    assert item["disposition"]["state"] == "confirmed"
+    assert item["disposition"]["note"].startswith("Vendor reissued")
+    assert item["disposition"]["actor"] == "auditor"
+    assert item["disposition"]["at"]
+    assert overturned["status"] == "completed"
+
+
+def test_new_evidence_makes_a_sign_off_stale_instead_of_discarding_it(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    _document, test_id, item_id = _vouching_with_result(ws)
+    doc_tests.update_item(
+        ws, test_id, item_id, {"state": "confirmed", "disposition_note": "Agreed."}
+    )
+
+    second = documents.add_document(ws, "credit-note.txt", b"Credit note 55 against 1001.")
+    doc_tests.attach_document(ws, test_id, item_id, second["id"])
+
+    item = doc_tests.load_test(ws, test_id)["items"][0]
+    # The sign-off is still on the record — it just no longer counts as current.
+    assert item["disposition"]["state"] == "confirmed"
+    assert item["disposition"]["note"] == "Agreed."
+    assert item["disposition"]["stale"] is True
+    assert item["evaluation"]["state"] == "not_run"
+    assert item["state"] == "pending"
+    assert doc_tests.load_test(ws, test_id)["status"] == "in_progress"
+
+    # Re-running against the new evidence and re-signing clears the staleness.
+    doc_tests.run_item(ws, test_id, item_id)
+    resigned = doc_tests.update_item(ws, test_id, item_id, {"state": "confirmed"})
+    assert resigned["items"][0]["disposition"]["stale"] is False
+    assert resigned["status"] == "completed"
+
+
+def test_editing_matching_rules_retires_the_run_behind_a_sign_off(workspace_with_data):
+    ws = workspace_with_data
+    _document, test_id, item_id = _vouching_with_result(ws)
+    doc_tests.update_item(ws, test_id, item_id, {"state": "confirmed"})
+
+    doc_tests.update_comparisons(
+        ws, test_id, item_id,
+        [{"field": "amount", "expected": 150, "method": "numeric_tolerance"}],
+    )
+
+    item = doc_tests.load_test(ws, test_id)["items"][0]
+    assert item["evaluation"]["state"] == "not_run"
+    assert item["disposition"]["stale"] is True
+
+
+def test_a_parked_item_keeps_its_test_out_of_completed(workspace_with_data):
+    ws = workspace_with_data
+    _document, test_id, item_id = _vouching_with_result(ws)
+    assert doc_tests.load_test(ws, test_id)["status"] == "completed"
+
+    parked = doc_tests.update_item(
+        ws, test_id, item_id,
+        {"state": "needs_review", "disposition_note": "Second reviewer to confirm."},
+    )
+    assert parked["status"] == "review_required"
+    assert parked["items"][0]["state"] == "manual_review"
+    # A parked item is not a settled one, so it cannot carry a conclusion.
+    assert doc_tests.result_rollup(parked)["conclusion_eligible"] is False
+
+
+def test_one_call_dispositions_a_selection_spanning_several_tests(workspace_with_data):
+    ws = workspace_with_data
+    _first_doc, first_test, first_item = _vouching_with_result(ws)
+    _second_doc, second_test, second_item = _vouching_with_result(ws)
+
+    result = doc_tests.update_dispositions(ws, [
+        {"test_id": first_test, "item_id": first_item, "state": "confirmed"},
+        {
+            "test_id": second_test, "item_id": second_item,
+            "state": "exception", "disposition_note": "Amount disagrees.",
+        },
+    ])
+
+    assert result["items"] == 2
+    first = doc_tests.load_test(ws, first_test)["items"][0]
+    second = doc_tests.load_test(ws, second_test)["items"][0]
+    assert first["disposition"]["state"] == "confirmed"
+    assert second["disposition"]["state"] == "exception"
+    assert second["disposition"]["note"] == "Amount disagrees."
 
     with pytest.raises(workspaces.WorkspaceError):
-        doc_tests.update_item(ws, review["id"], item_id, {"state": "manual_review"})
+        doc_tests.update_dispositions(
+            ws, [{"test_id": first_test, "item_id": first_item, "state": "agent_checked"}]
+        )
+
+
+def test_signing_off_keeps_a_refined_completed_status(workspace_with_data):
+    ws = workspace_with_data
+    _document, test_id, item_id = _vouching_with_result(ws, [
+        _MATCHING_CHECK,
+        {"field": "amount", "expected": 999, "method": "numeric_tolerance"},
+    ])
+    # RCM execution refines a completed test; a later sign-off must not flatten it.
+    doc_tests.update_test(ws, test_id, {"status": "completed_with_exception"})
+
+    agreed = doc_tests.update_item(ws, test_id, item_id, {"state": "exception"})
+    assert agreed["status"] == "completed_with_exception"
+
+    # Once the items stop bearing that reading out, it is dropped rather than kept.
+    overturned = doc_tests.update_item(
+        ws, test_id, item_id,
+        {"state": "confirmed", "disposition_note": "Reference mismatch only."},
+    )
+    assert overturned["status"] == "completed"
+
+
+def test_a_disposition_note_requires_an_accompanying_call(workspace_with_data):
+    ws = workspace_with_data
+    _document, test_id, item_id = _vouching_with_result(ws)
+    with pytest.raises(workspaces.WorkspaceError):
+        doc_tests.update_item(ws, test_id, item_id, {"disposition_note": "orphan"})
 
 
 def test_auditor_can_record_a_conclusion_on_a_document_test(workspace_with_data):
@@ -140,6 +322,11 @@ def test_auditor_can_record_a_conclusion_on_a_document_test(workspace_with_data)
     document = documents.add_document(ws, "policy.txt", b"Approval is required.\nEvidence must be retained.")
     review = doc_tests.build_review(ws, {"title": "Policy review", "document_id": document["id"]})
     doc_tests.run_item(ws, review["id"], review["items"][0]["id"])
+    # A review item the runner could not settle has to be resolved before the
+    # test can carry a control conclusion over it.
+    doc_tests.update_item(
+        ws, review["id"], review["items"][0]["id"], {"state": "confirmed"}
+    )
     loaded = doc_tests.load_test(ws, review["id"])
     before_status = loaded["status"]
     assert loaded["conclusion"] == ""

@@ -440,9 +440,11 @@ def test_generate_executor_rejects_regenerating_a_settled_document_test():
             ],
         },
     )
-    # A model-settled result is immutable; there is no separate auditor
-    # disposition layer to write.
-    existing["items"][0]["state"] = "confirmed"
+    # An executed test is never silently re-specified, whether or not an auditor
+    # has signed the runner's verdict off.
+    existing["items"][0]["evaluation"] = doc_tests.new_evaluation(
+        "passed", "Model assessment outcome: accepted."
+    )
     doc_tests.save_test(workspace, existing)
     request = _request(workspace, rcm_id, [_document_test(doc_id)])
     target = TestGenerateExecutorTarget(workspace, "run-settled", rcm_id)

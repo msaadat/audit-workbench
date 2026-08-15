@@ -38,7 +38,14 @@ from .workspaces import (
 
 KINDS = {"vouching", "attribute", "review", "qa", "cycle_vouch"}
 DIRECTIONS = {"vouching", "tracing"}
+# What the runner found and what the auditor decided about it are two separate
+# facts, and an audit file needs both on the record. Item-first tests keep
+# ``item.state`` as their joint projection so every existing counter, rollup,
+# and worklist reader carries on working, but these two vocabularies below are
+# what actually gets written. Cycle tests have always been split this way.
 STATES = {"pending", "agent_checked", "confirmed", "exception", "manual_review"}
+EVALUATION_STATES = {"not_run", "agent_checked", "passed", "failed", "inconclusive"}
+DISPOSITION_STATES = {"pending", "confirmed", "exception", "needs_review"}
 METHODS = {
     "exact",
     "normalized",
@@ -135,16 +142,300 @@ def item_disposition_pending(test: dict, item: dict) -> bool:
 
 
 def item_state_projection(test: dict, item: dict) -> str:
-    """Project clean cycle state into legacy list counters without persisting it."""
+    """Project the split cycle/item state into joint list counters."""
 
     if not is_cycle_test(test):
-        return str(item.get("state") or "pending")
+        return project_item_state(item)
     disposition = item.get("disposition") or {}
     if item_disposition_current(test, item):
         return str(disposition.get("state"))
     if item_execution_current(test, item):
         return "agent_checked"
     return "pending"
+
+
+# The joint reading each side projects into. An auditor's `needs_review` and a
+# runner's `inconclusive` both surface as `manual_review` because that is the
+# one bucket the worklist has for "somebody still has to look at this"; which of
+# the two it was stays readable on the item itself.
+_EVALUATION_PROJECTION = {
+    "not_run": "pending",
+    "agent_checked": "agent_checked",
+    "passed": "confirmed",
+    "failed": "exception",
+    "inconclusive": "manual_review",
+}
+_DISPOSITION_PROJECTION = {
+    "confirmed": "confirmed",
+    "exception": "exception",
+    "needs_review": "manual_review",
+}
+_STATE_EVALUATION = {
+    joint: state for state, joint in _EVALUATION_PROJECTION.items()
+}
+
+
+def new_evaluation(
+    state: str = "not_run",
+    note: str = "",
+    *,
+    input_sha1: str | None = None,
+    ran_at: str | None = None,
+) -> dict:
+    """What the runner found, and against which evidence it found it."""
+
+    if state not in EVALUATION_STATES:
+        raise WorkspaceError("Unknown document-test evaluation state.")
+    return {
+        "state": state,
+        "note": str(note or ""),
+        "input_sha1": input_sha1,
+        "ran_at": ran_at,
+    }
+
+
+def new_disposition(
+    state: str = "pending",
+    note: str = "",
+    *,
+    actor: str | None = None,
+    at: str | None = None,
+    evaluated_input_sha1: str | None = None,
+    stale: bool = False,
+) -> dict:
+    """What the auditor decided, by whom, when, and against which evidence."""
+
+    if state not in DISPOSITION_STATES:
+        raise WorkspaceError("Unknown document-test disposition state.")
+    return {
+        "state": state,
+        "note": str(note or ""),
+        "actor": actor,
+        "at": at,
+        "evaluated_input_sha1": evaluated_input_sha1,
+        "stale": bool(stale),
+    }
+
+
+def project_item_state(item: dict) -> str:
+    """Read one item jointly: the auditor's call when current, else the runner's.
+
+    A stale disposition falls back to the runner's verdict rather than standing
+    in for a decision that was made against evidence which has since changed.
+    """
+
+    disposition = item.get("disposition") or {}
+    state = str(disposition.get("state") or "pending")
+    if state != "pending" and not disposition.get("stale"):
+        return _DISPOSITION_PROJECTION[state]
+    evaluation = item.get("evaluation") or {}
+    return _EVALUATION_PROJECTION[str(evaluation.get("state") or "not_run")]
+
+
+def _normalize_marking(item: dict) -> None:
+    """Validate one item's runner verdict and auditor call, then re-project."""
+
+    evaluation = item.get("evaluation")
+    item["evaluation"] = new_evaluation(
+        str((evaluation or {}).get("state") or "not_run"),
+        str((evaluation or {}).get("note") or ""),
+        input_sha1=(evaluation or {}).get("input_sha1"),
+        ran_at=(evaluation or {}).get("ran_at"),
+    )
+    disposition = item.get("disposition")
+    item["disposition"] = new_disposition(
+        str((disposition or {}).get("state") or "pending"),
+        str((disposition or {}).get("note") or ""),
+        actor=(disposition or {}).get("actor"),
+        at=(disposition or {}).get("at"),
+        evaluated_input_sha1=(disposition or {}).get("evaluated_input_sha1"),
+        stale=bool((disposition or {}).get("stale")),
+    )
+    item["state"] = project_item_state(item)
+    # ``runner_note`` is the single note older readers (the agent context
+    # adapter, the report) still read. Keep it pointing at whichever side the
+    # joint state currently reflects.
+    current = item["disposition"]
+    item["runner_note"] = (
+        current["note"]
+        if item["state"] == _DISPOSITION_PROJECTION.get(current["state"])
+        and not current["stale"]
+        and current["note"]
+        else item["evaluation"]["note"]
+    )
+
+
+def _document_sha1_index(workspace: Workspace) -> dict[str, str]:
+    return {
+        str(document.get("id")): str(document.get("sha1") or "")
+        for document in workspace.documents
+    }
+
+
+def item_input_sha1(
+    test: dict, item: dict, sha1_by_document: Mapping[str, str]
+) -> str:
+    """Hash everything one run consumes for this item.
+
+    Evidence and procedure both feed it, so attaching a document, swapping a
+    file behind an id, or editing a matching rule all change the hash — which is
+    what makes a prior sign-off detectably stale instead of silently wrong.
+    """
+
+    document_ids = [str(value) for value in item.get("document_ids") or []]
+    return _sha1(
+        {
+            "kind": str(test.get("kind") or ""),
+            "documents": [
+                [document_id, sha1_by_document.get(document_id, "")]
+                for document_id in document_ids
+            ],
+            "checks": [
+                {
+                    "field": _json_value(check.get("field")),
+                    "expected": _json_value(check.get("expected")),
+                    "method": _json_value(check.get("method")),
+                    "tolerance": _json_value(check.get("tolerance")),
+                }
+                for check in item.get("checks") or []
+            ],
+            "attributes": [
+                {
+                    "name": _json_value(attribute.get("name")),
+                    "expected": _json_value(attribute.get("expected")),
+                }
+                for attribute in item.get("attributes") or []
+            ],
+            "question": str(item.get("question") or ""),
+            "page": _json_value(item.get("page")),
+            "pages": [_json_value(value) for value in item.get("pages") or []],
+        }
+    )
+
+
+def _refresh_staleness(test: dict, sha1_by_document: Mapping[str, str]) -> None:
+    """Mark a run and a sign-off stale when their inputs no longer match."""
+
+    for item in test.get("items") or []:
+        current = item_input_sha1(test, item, sha1_by_document)
+        disposition = item["disposition"]
+        signed = disposition["evaluated_input_sha1"]
+        disposition["stale"] = bool(
+            disposition["state"] != "pending" and signed is not None and signed != current
+        )
+        evaluation = item["evaluation"]
+        if (
+            evaluation["state"] != "not_run"
+            and evaluation["input_sha1"] is not None
+            and evaluation["input_sha1"] != current
+        ):
+            # The run no longer describes the evidence in front of the auditor.
+            item["evaluation"] = new_evaluation(
+                "not_run",
+                "Evidence or procedure changed after this run; re-run the item.",
+            )
+        _normalize_marking(item)
+
+
+def record_evaluation(
+    workspace: Workspace, test: dict, item: dict, state: str, note: str
+) -> dict:
+    """Persist what the runner found without touching the auditor's call."""
+
+    item["evaluation"] = new_evaluation(
+        state,
+        note,
+        input_sha1=item_input_sha1(test, item, _document_sha1_index(workspace)),
+        ran_at=utcnow(),
+    )
+    _normalize_marking(item)
+    return item
+
+
+def record_disposition(
+    workspace: Workspace,
+    test: dict,
+    item: dict,
+    state: str,
+    *,
+    note: str = "",
+    actor: str = "auditor",
+) -> dict:
+    """Persist the auditor's call without touching what the runner found."""
+
+    if state == "pending":
+        item["disposition"] = new_disposition("pending", note)
+    else:
+        item["disposition"] = new_disposition(
+            state,
+            note,
+            actor=actor,
+            at=utcnow(),
+            evaluated_input_sha1=item_input_sha1(
+                test, item, _document_sha1_index(workspace)
+            ),
+        )
+    _normalize_marking(item)
+    return item
+
+
+def invalidate_evaluation(test: dict, item: dict, reason: str) -> dict:
+    """Retire a run whose evidence or procedure just changed.
+
+    A sign-off made against the old inputs is marked stale rather than deleted:
+    the fact that an auditor signed remains part of the record, it just stops
+    counting as a current decision.
+    """
+
+    item["evaluation"] = new_evaluation("not_run", reason)
+    disposition = item.get("disposition") or {}
+    if str(disposition.get("state") or "pending") != "pending":
+        disposition["stale"] = True
+    _normalize_marking(item)
+    return item
+
+
+def refresh_test_status(test: dict) -> str:
+    """Roll item markings into the test's status, without flattering the result.
+
+    An item the runner could not settle, or one whose sign-off went stale,
+    leaves the test in ``review_required``. Reporting that as ``completed`` was
+    what let a test nobody had resolved unlock finding generation.
+    """
+
+    items = test.get("items") or []
+    if not items:
+        return str(test.get("status") or "draft")
+    states = [project_item_state(item) for item in items]
+    if any(state in {"pending", "agent_checked"} for state in states):
+        test["status"] = "in_progress"
+    elif any(state == "manual_review" for state in states) or any(
+        (item.get("disposition") or {}).get("stale") for item in items
+    ):
+        test["status"] = "review_required"
+    else:
+        # RCM execution refines a completed test into with/without exception.
+        # Keep that reading when the items still bear it out, so recording a
+        # sign-off does not flatten what a completed run already established.
+        refined = str(test.get("status") or "")
+        has_exception = any(state == "exception" for state in states)
+        test["status"] = (
+            refined
+            if refined == ("completed_with_exception" if has_exception else "completed_no_exception")
+            else "completed"
+        )
+    return test["status"]
+
+
+def execution_settled(test: dict) -> bool:
+    """Whether every item has a runner verdict, signed off or not."""
+
+    items = test.get("items") or []
+    return bool(items) and all(
+        str((item.get("evaluation") or {}).get("state") or "not_run")
+        in {"passed", "failed", "inconclusive"}
+        for item in items
+    )
 
 
 def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
@@ -209,7 +500,7 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
                 raise WorkspaceError(str(error)) from error
             test["items"][index] = item
         else:
-            item.setdefault("state", "pending")
+            _normalize_marking(item)
         item.setdefault("document_ids", [])
         item.setdefault("evidence_refs", [])
         item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
@@ -217,6 +508,15 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
             check.setdefault("verdict", "pending")
             check.setdefault("comparisons", [])
             check["evidence_refs"] = normalize_many(check.get("evidence_refs") or [])
+    if kind != "cycle_vouch" and workspace is not None and test["items"]:
+        _refresh_staleness(test, _document_sha1_index(workspace))
+        # A read may discover that evidence moved under a signed-off test, but
+        # it must not promote a test nobody has touched. Only the downgrade is
+        # safe to apply here; the write paths own the full roll-up.
+        if str(test.get("status") or "") == "completed" and refresh_test_status(
+            copy.deepcopy(test)
+        ) != "completed":
+            test["status"] = "review_required"
     test["kind"] = kind
     test["evidence_refs"] = normalize_many(test.get("evidence_refs") or [])
     test["steps"] = _normalize_steps(test.get("steps"))
@@ -485,18 +785,30 @@ def _base_test(workspace: Workspace, payload: dict, kind: str | None) -> dict:
     }
 
 
-def _new_item(payload: dict | None = None) -> dict:
+def _new_item(payload: dict | None = None, *, cycle: bool = False) -> dict:
     payload = dict(payload or {})
+    state = str(payload.get("state") or "pending")
+    if state not in STATES:
+        raise WorkspaceError("Unknown document-test item state.")
     item = {
         "id": str(payload.get("id") or f"ITEM-{uuid.uuid4().hex[:8].upper()}"),
         "label": str(payload.get("label") or "Test item"),
         "instruction": str(payload.get("instruction") or ""),
-        "state": str(payload.get("state") or "pending"),
         "document_ids": [str(value) for value in (payload.get("document_ids") or [])],
         "evidence_refs": normalize_many(payload.get("evidence_refs") or []),
     }
-    if item["state"] not in STATES:
-        raise WorkspaceError("Unknown document-test item state.")
+    if cycle:
+        # A cycle item's evaluation and disposition are typed against the
+        # registry definition, so its own normalizer owns both fields.
+        return item
+    # A payload may carry the split fields directly, or the joint ``state`` as
+    # shorthand — which reads as a runner verdict, because a caller building an
+    # item is describing what a check found, not signing it off.
+    item["evaluation"] = payload.get("evaluation") or new_evaluation(
+        _STATE_EVALUATION[state], str(payload.get("runner_note") or "")
+    )
+    item["disposition"] = payload.get("disposition") or new_disposition()
+    _normalize_marking(item)
     return item
 
 
@@ -505,7 +817,7 @@ def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
     kind = test["kind"]
     known_documents = {str(item.get("id")) for item in workspace.documents}
     for raw in raw_items or []:
-        item = _new_item(raw)
+        item = _new_item(raw, cycle=kind == "cycle_vouch")
         missing_documents = [
             document_id
             for document_id in item.get("document_ids") or []
@@ -651,9 +963,11 @@ def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
     has been executed must be re-drafted rather than silently re-specified.
     """
     test = load_test(workspace, test_id)
+    # "Final result" is about the run having produced one, not about anybody
+    # having signed it off — an executed test must be re-drafted either way.
     settled = [
         item for item in test.get("items") or []
-        if item_disposition_current(test, item)
+        if item_execution_current(test, item)
     ]
     if settled:
         raise WorkspaceError(
@@ -1184,7 +1498,7 @@ def attach_document(workspace: Workspace, test_id: str, item_id: str, document_i
         raise WorkspaceError(f"Document '{document_id}' not found.")
     if document_id not in item["document_ids"]:
         item["document_ids"].append(document_id)
-    item["state"] = "pending"
+    invalidate_evaluation(test, item, "New evidence attached; re-run the item.")
     request_ids = {str(value) for value in item.get("evidence_request_ids") or []}
     for request in workspace.evidence_requests:
         if str(request.get("id")) in request_ids and request.get("status") == "open":
@@ -1205,7 +1519,7 @@ def detach_document(workspace: Workspace, test_id: str, item_id: str, document_i
         )
     item = _item(test, item_id)
     item["document_ids"] = [value for value in item["document_ids"] if value != document_id]
-    item["state"] = "pending"
+    invalidate_evaluation(test, item, "Evidence detached; re-run the item.")
     return save_test(workspace, test)
 
 
@@ -1215,7 +1529,7 @@ def update_comparisons(workspace: Workspace, test_id: str, item_id: str, checks:
         raise WorkspaceError("Comparison settings apply only to vouching/tracing tests.")
     item = _item(test, item_id)
     item["checks"] = [_normalize_check(check) for check in checks]
-    item["state"] = "pending"
+    invalidate_evaluation(test, item, "Matching rules changed; re-run the item.")
     return save_test(workspace, test)
 
 
@@ -1265,10 +1579,14 @@ def append_cycle_assertions(
         return {"test": mutated, "mutation": mutation}
 
 
-# The only transitions an auditor may make by hand: sign off a result either
-# way, or send it back for re-run. ``agent_checked``/``manual_review`` are
-# outcomes the runner produces, never a state a person picks.
-MANUAL_SIGNOFF_STATES = frozenset({"confirmed", "exception", "pending"})
+# The calls an auditor may make by hand. These write the disposition and never
+# the evaluation: disagreeing with the runner records the disagreement, it does
+# not rewrite what the runner found. ``needs_review`` is how an auditor parks an
+# item for a second pair of eyes — distinct from the runner's ``inconclusive``,
+# which says the machine could not settle it.
+MANUAL_SIGNOFF_STATES = frozenset({"confirmed", "exception", "needs_review", "pending"})
+# Cycle dispositions stay binary; parking is an item-first affordance.
+CYCLE_SIGNOFF_STATES = frozenset({"confirmed", "exception", "pending"})
 
 
 def update_item(
@@ -1286,7 +1604,7 @@ def update_item(
                 "Cycle items accept only the typed auditor disposition mutation."
             )
         state = str(changes.get("state") or "")
-        if state not in MANUAL_SIGNOFF_STATES:
+        if state not in CYCLE_SIGNOFF_STATES:
             raise WorkspaceError(
                 "An auditor may only set a cycle disposition to confirmed, "
                 "exception, or pending."
@@ -1325,34 +1643,76 @@ def update_item(
     item = _item(test, item_id)
     allowed = {
         "attributes",
-        "summary", "excerpt", "response", "citations", "state",
+        "summary", "excerpt", "response", "citations", "state", "disposition_note",
     }
     if set(changes) - allowed:
         raise WorkspaceError("Unknown document-test item field.")
+    if "disposition_note" in changes and "state" not in changes:
+        raise WorkspaceError("A disposition note accompanies an auditor's call.")
     for key, value in changes.items():
         if key == "attributes":
             item[key] = [_normalize_attribute(entry) for entry in (value or [])]
         elif key == "citations":
             item[key] = normalize_many(value or [], require_hash=True)
-        elif key == "state":
-            state = str(value or "")
+        elif key in {"state", "disposition_note"}:
+            continue
+        else:
+            item[key] = value
+    if "state" in changes:
+        state = str(changes["state"] or "")
+        if state not in MANUAL_SIGNOFF_STATES:
+            raise WorkspaceError(
+                "An auditor may only set a document-test item to confirmed, "
+                "exception, needs_review, or pending."
+            )
+        note = str(changes.get("disposition_note") or "").strip()
+        record_disposition(workspace, test, item, state, note=note)
+        refresh_test_status(test)
+    if runner_note is not None:
+        item["runner_note"] = runner_note
+    return save_test(workspace, test)
+
+
+def update_dispositions(workspace: Workspace, entries: list[dict]) -> dict:
+    """Record one auditor call across many items, grouped by test.
+
+    A 25-item sample where the runner got 23 right is the ordinary case, and
+    signing those off one request at a time is the slowest part of the worklist.
+    Each test is loaded and saved once so the revision advances per test rather
+    than per item.
+    """
+
+    by_test: dict[str, list[dict]] = {}
+    for entry in entries or []:
+        test_id = str(entry.get("test_id") or "")
+        item_id = str(entry.get("item_id") or "")
+        if not test_id or not item_id:
+            raise WorkspaceError("Each disposition needs a test and an item.")
+        by_test.setdefault(test_id, []).append(entry)
+    updated: list[dict] = []
+    for test_id, group in by_test.items():
+        test = load_test(workspace, test_id)
+        if is_cycle_test(test):
+            raise WorkspaceError(
+                "Cycle dispositions are recorded through the cycle grid."
+            )
+        for entry in group:
+            state = str(entry.get("state") or "")
             if state not in MANUAL_SIGNOFF_STATES:
                 raise WorkspaceError(
                     "An auditor may only set a document-test item to confirmed, "
-                    "exception, or pending."
+                    "exception, needs_review, or pending."
                 )
-            item["state"] = state
-            item["runner_note"] = "Auditor sign-off." if state != "pending" else "Reset for re-run by the auditor."
-        else:
-            item[key] = value
-    if runner_note is not None:
-        item["runner_note"] = runner_note
-    if "state" in changes:
-        states = [value.get("state") for value in test["items"]]
-        test["status"] = "completed" if states and all(
-            state in {"confirmed", "exception", "manual_review"} for state in states
-        ) else "in_progress"
-    return save_test(workspace, test)
+            record_disposition(
+                workspace,
+                test,
+                _item(test, str(entry["item_id"])),
+                state,
+                note=str(entry.get("disposition_note") or "").strip(),
+            )
+        refresh_test_status(test)
+        updated.append(save_test(workspace, test))
+    return {"tests": updated, "items": sum(len(group) for group in by_test.values())}
 
 
 def _refresh_agent_conclusion(test: dict) -> None:
@@ -1362,7 +1722,10 @@ def _refresh_agent_conclusion(test: dict) -> None:
     Document Test. This deterministic roll-up needs no extra model turn and
     never overwrites an explicit auditor conclusion.
     """
-    if test.get("status") != "completed" or test.get("conclusion_source") == "auditor":
+    # Gated on the run having produced every answer, not on the test being
+    # signed off: this rolls up what the worker concluded, which is complete the
+    # moment the last item is evaluated, whether or not an auditor has looked.
+    if not execution_settled(test) or test.get("conclusion_source") == "auditor":
         return
     answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
     item_conclusions: list[tuple[str, str]] = []
@@ -1393,7 +1756,7 @@ def _refresh_agent_conclusion(test: dict) -> None:
 def _refresh_agent_control_conclusion(test: dict) -> None:
     """Conservatively combine every settled worker control conclusion."""
     if (
-        test.get("status") != "completed"
+        not execution_settled(test)
         or test.get("control_conclusion_source") == "auditor"
     ):
         return
@@ -1442,7 +1805,7 @@ def settle_llm_assessment(
     answers = item.get(answer_key) or {}
     document_ids = list(item.get("document_ids") or [])
     if (
-        item.get("state") != "agent_checked"
+        str((item.get("evaluation") or {}).get("state") or "not_run") != "agent_checked"
         or not document_ids
         or any(document_id not in answers for document_id in document_ids)
     ):
@@ -1457,16 +1820,16 @@ def settle_llm_assessment(
         assessment_outcome = "needs_manual_check"
     else:
         assessment_outcome = "accepted"
-    item["state"] = (
-        "exception" if assessment_outcome == "exception"
-        else "manual_review" if assessment_outcome == "needs_manual_check"
-        else "confirmed"
+    record_evaluation(
+        workspace,
+        test,
+        item,
+        "failed" if assessment_outcome == "exception"
+        else "inconclusive" if assessment_outcome == "needs_manual_check"
+        else "passed",
+        f"Model assessment outcome: {assessment_outcome}.",
     )
-    item["runner_note"] = f"Model assessment outcome: {assessment_outcome}."
-    states = [value.get("state") for value in test["items"]]
-    test["status"] = "completed" if states and all(
-        state in {"confirmed", "exception", "manual_review"} for state in states
-    ) else "in_progress"
+    refresh_test_status(test)
     _refresh_agent_conclusion(test)
     _refresh_agent_control_conclusion(test)
     return save_test(workspace, test)
@@ -1605,7 +1968,11 @@ def run_item(
     item = _item(test, item_id)
     if test["kind"] == "qa":
         if not item.get("document_ids") or not str(item.get("question") or "").strip():
-            item.update(state="manual_review", runner_note="Attach evidence and record a question before running this item.")
+            record_evaluation(
+                workspace, test, item, "inconclusive",
+                "Attach evidence and record a question before running this item.",
+            )
+            refresh_test_status(test)
             save_test(workspace, test)
             return item
         try:
@@ -1618,24 +1985,34 @@ def run_item(
                 answers.append(str(answer.get("answer") or ""))
                 citations.extend(answer.get("citations") or [])
             item.update(
-                response="\n\n".join(value for value in answers if value), citations=citations,
-                evidence_refs=citations, state="confirmed",
-                runner_note="Cited answer generated from the attached pages.",
+                response="\n\n".join(value for value in answers if value),
+                citations=citations, evidence_refs=citations,
+            )
+            record_evaluation(
+                workspace, test, item, "passed",
+                "Cited answer generated from the attached pages.",
             )
         except Exception as error:
-            item.update(
-                state="manual_review",
-                runner_note=f"Manual fallback: {error}",
+            record_evaluation(
+                workspace, test, item, "inconclusive", f"Manual fallback: {error}"
             )
+        refresh_test_status(test)
         save_test(workspace, test)
         return item
     if test["kind"] != "vouching":
-        item["state"] = "manual_review"
-        item["runner_note"] = "This test kind requires auditor input in the current runner."
+        record_evaluation(
+            workspace, test, item, "inconclusive",
+            "This test kind requires auditor input in the current runner.",
+        )
+        refresh_test_status(test)
         save_test(workspace, test)
         return item
     if not item.get("document_ids"):
-        item.update(state="manual_review", runner_note="Attach at least one document before running this item.")
+        record_evaluation(
+            workspace, test, item, "inconclusive",
+            "Attach at least one document before running this item.",
+        )
+        refresh_test_status(test)
         save_test(workspace, test)
         return item
     conflicts = _document_conflicts(workspace, item["document_ids"])
@@ -1681,15 +2058,23 @@ def run_item(
     item["evidence_refs"] = all_anchors
     has_conflict = bool(conflicts["duplicate_documents"])
     if not any_usable or has_conflict:
-        item["state"] = "manual_review"
-        item["runner_note"] = "Manual check required because evidence could not be matched or duplicate documents are attached."
-    else:
-        item["state"] = (
-            "exception"
-            if any(check.get("verdict") in {"mismatch", "missing", "invalid"} for check in item.get("checks") or [])
-            else "confirmed"
+        record_evaluation(
+            workspace, test, item, "inconclusive",
+            "Manual check required because evidence could not be matched or "
+            "duplicate documents are attached.",
         )
-        item["runner_note"] = "Deterministic local comparison completed."
+    else:
+        record_evaluation(
+            workspace, test, item,
+            "failed"
+            if any(
+                check.get("verdict") in {"mismatch", "missing", "invalid"}
+                for check in item.get("checks") or []
+            )
+            else "passed",
+            "Deterministic local comparison completed.",
+        )
+    refresh_test_status(test)
     save_test(workspace, test)
     return item
 
@@ -1736,8 +2121,10 @@ def commit_qa_answer(
         response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
         citations=[citation for value in ordered for citation in value["citations"]],
         evidence_refs=[citation for value in ordered for citation in value["citations"]],
-        state="agent_checked",
-        runner_note="Cited answers were generated from the attached pages in stable document order.",
+    )
+    record_evaluation(
+        workspace, test, item, "agent_checked",
+        "Cited answers were generated from the attached pages in stable document order.",
     )
     save_test(workspace, test)
     settle_llm_assessment(workspace, test_id, item_id)
@@ -1769,8 +2156,10 @@ def commit_llm_assessment(
         response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
         citations=[citation for value in ordered for citation in value["citations"]],
         evidence_refs=[citation for value in ordered for citation in value["citations"]],
-        state="agent_checked",
-        runner_note="Cited LLM assessment generated from the attached pages.",
+    )
+    record_evaluation(
+        workspace, test, item, "agent_checked",
+        "Cited LLM assessment generated from the attached pages.",
     )
     save_test(workspace, test)
     settle_llm_assessment(workspace, test_id, item_id)
@@ -1845,8 +2234,15 @@ def result_rollup(test: dict) -> dict:
         for item in items
     )
     scope = assurance_scope(test)
+    # An item-first test concludes on resolved items. The runner's own verdict
+    # resolves one unless the auditor overrode it; what blocks a conclusion is
+    # an item nobody settled — parked, inconclusive, or signed against evidence
+    # that has since moved. (Cycle tests keep the stricter rule that every item
+    # carries an explicit, current auditor disposition.)
     dispositions_current = bool(items) and all(
-        item_disposition_current(test, item) for item in items
+        project_item_state(item) in {"confirmed", "exception"}
+        and not (item.get("disposition") or {}).get("stale")
+        for item in items
     )
     executions_current = bool(items) and all(
         item_execution_current(test, item) for item in items
@@ -1875,6 +2271,28 @@ def result_rollup(test: dict) -> dict:
         "open_exceptions": sum(item.get("state") == "exception" for item in items),
         "manual_review": sum(item.get("state") == "manual_review" for item in items),
         "pending": sum(item.get("state") in {"pending", "agent_checked"} for item in items),
+        # The two sides behind that joint reading, so a caller can tell "the
+        # runner failed it" from "the auditor called it an exception".
+        "evaluation_counts": {
+            state: sum(
+                str((item.get("evaluation") or {}).get("state") or "not_run") == state
+                for item in items
+            )
+            for state in sorted(EVALUATION_STATES)
+        },
+        "disposition_counts": {
+            state: sum(
+                str((item.get("disposition") or {}).get("state") or "pending") == state
+                for item in items
+            )
+            for state in sorted(DISPOSITION_STATES)
+        },
+        "stale_dispositions": sum(
+            bool((item.get("disposition") or {}).get("stale")) for item in items
+        ),
+        "pending_dispositions": sum(
+            item_disposition_pending(test, item) for item in items
+        ),
         "assurance_scope": scope,
         "assurance_label": (
             "Targeted evidence - not a sample"
@@ -2105,6 +2523,10 @@ def summary_payload(workspace: Workspace) -> dict:
                 "instruction": item.get("instruction") or "",
                 "state": state,
                 "classification": classification,
+                # Both readings travel with the worklist row so triage can show
+                # "the runner failed it, you confirmed it" without a second load.
+                "evaluation": dict(item.get("evaluation") or {}),
+                "disposition": dict(item.get("disposition") or {}),
                 "question": item.get("question") or "",
                 "response": item.get("response") or "",
                 "runner_note": item.get("runner_note") or "",

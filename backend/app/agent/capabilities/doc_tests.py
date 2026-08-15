@@ -103,14 +103,26 @@ def _execution_projection(workspace: Workspace | None, test: dict) -> dict:
 
 
 def _outstanding(workspace: Workspace, test: dict) -> bool:
-    """Whether this test still owes execution or auditor disposition."""
+    """Whether this test still owes execution or auditor disposition.
+
+    Read through the joint projection rather than the disposition alone. On an
+    item-first test the runner's own ``passed``/``failed`` verdict resolves an
+    item, so a cleanly executed test is not re-selected forever merely because
+    nobody countersigned it; what stays outstanding is an item left unresolved
+    — never run, parked by an auditor, inconclusive to the runner, or signed off
+    against evidence that has since changed. A cycle item projects to
+    ``agent_checked`` until it is dispositioned, so cycle tests keep owing an
+    explicit sign-off.
+    """
 
     test = _execution_projection(workspace, test)
     if doc_test_service.is_cycle_test(test) and not test.get("items"):
         return True
     return any(
         doc_test_service.item_execution_pending(test, item)
-        or not doc_test_service.item_disposition_current(test, item)
+        or doc_test_service.item_state_projection(test, item)
+        not in {"confirmed", "exception"}
+        or bool((item.get("disposition") or {}).get("stale"))
         for item in test.get("items") or []
     )
 

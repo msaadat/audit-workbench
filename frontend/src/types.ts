@@ -361,7 +361,32 @@ export interface KnowledgePack {
 }
 
 export type DocTestKind = 'vouching' | 'attribute' | 'review' | 'qa' | 'cycle_vouch'
+/** The joint reading of an item: the auditor's call when it is current, the
+ *  runner's verdict otherwise. Derived — never written directly. */
 export type DocTestItemState = 'pending' | 'agent_checked' | 'confirmed' | 'exception' | 'manual_review'
+/** What the runner found. Only the runner writes this. */
+export type DocTestEvaluationState = 'not_run' | 'agent_checked' | 'passed' | 'failed' | 'inconclusive'
+/** What the auditor decided. Only the auditor writes this. */
+export type DocTestDispositionState = 'pending' | 'confirmed' | 'exception' | 'needs_review'
+
+export interface DocTestEvaluation {
+  state: DocTestEvaluationState
+  note: string
+  /** Hash of the evidence and procedure this run consumed. */
+  input_sha1: string | null
+  ran_at: string | null
+}
+
+export interface DocTestDisposition {
+  state: DocTestDispositionState
+  note: string
+  actor: string | null
+  at: string | null
+  evaluated_input_sha1: string | null
+  /** The evidence moved after sign-off; the decision stands on the record but
+   *  no longer counts as current. */
+  stale: boolean
+}
 export type CycleEvaluationState = 'not_run' | 'passed' | 'failed' | 'incomplete' | 'needs_review' | 'stale'
 export type CycleDispositionState = 'pending' | 'confirmed' | 'exception'
 export type CycleAssertionVerdict = 'match' | 'mismatch' | 'missing_evidence' | 'invalid_extraction' | 'ambiguous' | 'not_run'
@@ -542,7 +567,8 @@ export interface DocTestItem {
   label: string
   /** The procedure being performed on this item, always populated. */
   instruction: string
-  /** Legacy worklist state. cycle_vouch uses evaluation + disposition instead. */
+  /** The joint reading of `evaluation` and `disposition`, derived by the
+   *  backend. Read it for a one-word status; never send it back as a mutation. */
   state?: DocTestItemState
   document_ids: string[]
   evidence_refs: EvidenceRef[]
@@ -606,12 +632,18 @@ export interface DocTestItem {
     stale?: boolean
     result_sha1?: string | null
   }>
-  evaluation?: { state: CycleEvaluationState; definition_sha1: string; result_sha1?: string | null }
-  disposition?: {
-    state: CycleDispositionState
-    evaluated_definition_sha1: string | null
-    stale: boolean
-  }
+  /** Item-first tests carry `DocTestEvaluation`; cycle items carry the typed
+   *  registry-hashed variant. Narrow on `test.kind === 'cycle_vouch'`. */
+  evaluation?:
+    | DocTestEvaluation
+    | { state: CycleEvaluationState; definition_sha1: string; result_sha1?: string | null }
+  disposition?:
+    | DocTestDisposition
+    | {
+      state: CycleDispositionState
+      evaluated_definition_sha1: string | null
+      stale: boolean
+    }
   disposition_history?: Array<{
     state: CycleDispositionState
     evaluated_definition_sha1: string | null
@@ -690,6 +722,10 @@ export interface DocTestSummaryItem {
   instruction: string
   state: DocTestItemState
   classification: DocTestClassification
+  /** Both sides behind `state`, so the worklist can show what the runner found
+   *  next to what the auditor decided without loading the test. */
+  evaluation: DocTestEvaluation
+  disposition: DocTestDisposition
   question: string
   response: string
   runner_note: string

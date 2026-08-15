@@ -104,6 +104,34 @@ function dispositionStatus(row: CycleVouchGridPayload['rows'][number]): string {
   return row.disposition_stale ? 'stale' : row.disposition_state
 }
 
+// Dispositioning from the grid. The column already showed the decision; opening
+// each row to change it was the only thing standing between a 40-row cycle test
+// and signing it off in one pass.
+const dispositioning = ref<string | null>(null)
+
+function canDisposition(row: CycleVouchGridPayload['rows'][number]): boolean {
+  return !['not_run', 'stale'].includes(String(row.evaluation_state ?? 'not_run'))
+}
+
+async function setDisposition(
+  row: CycleVouchGridPayload['rows'][number],
+  state: 'confirmed' | 'exception' | 'pending',
+) {
+  dispositioning.value = row.item_id
+  try {
+    await api.patch(
+      `/api/workspaces/${props.workspaceId}/doc-tests/${props.testId}/items/${row.item_id}`,
+      { state },
+    )
+    await loadGrid()
+    emit('changed')
+  } catch (error) {
+    emit('error', 'Could not record the disposition', error)
+  } finally {
+    dispositioning.value = null
+  }
+}
+
 function selectCell(itemId: string, assertionKey: string) {
   const selected = selectedCell.value
   selectedCell.value = selected?.itemId === itemId && selected.assertionKey === assertionKey
@@ -332,7 +360,45 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
               <small v-if="row.missing_roles.length" class="missing-role-text">Missing {{ row.missing_roles.map(label).join(', ') }}</small>
             </th>
             <td class="sticky evaluation-column"><UiTestStatus :status="row.evaluation_state" showLabel /></td>
-            <td class="sticky disposition-column"><UiTestStatus :status="dispositionStatus(row)" showLabel /></td>
+            <td class="sticky disposition-column">
+              <UiTestStatus :status="dispositionStatus(row)" showLabel />
+              <span v-if="canDisposition(row)" class="disposition-actions">
+                <Button
+                  icon="pi pi-check"
+                  text
+                  rounded
+                  size="small"
+                  :aria-label="`Confirm ${row.label || row.item_id}`"
+                  v-tooltip.top="'Confirm'"
+                  :disabled="busy || dispositioning === row.item_id"
+                  :class="{ 'is-current': row.disposition_state === 'confirmed' && !row.disposition_stale }"
+                  @click="setDisposition(row, 'confirmed')"
+                />
+                <Button
+                  icon="pi pi-exclamation-triangle"
+                  text
+                  rounded
+                  size="small"
+                  severity="danger"
+                  :aria-label="`Mark ${row.label || row.item_id} an exception`"
+                  v-tooltip.top="'Exception'"
+                  :disabled="busy || dispositioning === row.item_id"
+                  :class="{ 'is-current': row.disposition_state === 'exception' && !row.disposition_stale }"
+                  @click="setDisposition(row, 'exception')"
+                />
+                <Button
+                  icon="pi pi-refresh"
+                  text
+                  rounded
+                  size="small"
+                  severity="secondary"
+                  :aria-label="`Clear the disposition on ${row.label || row.item_id}`"
+                  v-tooltip.top="'Clear'"
+                  :disabled="busy || dispositioning === row.item_id || row.disposition_state === 'pending'"
+                  @click="setDisposition(row, 'pending')"
+                />
+              </span>
+            </td>
             <td
               v-for="column in payload.columns"
               :key="column.key"
@@ -427,7 +493,13 @@ thead th > small { margin-top: .2rem; color: var(--aw-muted); font-size: var(--a
 .sticky { position: sticky; z-index: 3; }
 .transaction-column { left: 0; width: 14rem; min-width: 14rem; max-width: 14rem; }
 .evaluation-column { left: 14rem; width: 7.5rem; min-width: 7.5rem; max-width: 7.5rem; }
-.disposition-column { left: 21.5rem; width: 7.5rem; min-width: 7.5rem; max-width: 7.5rem; box-shadow: .35rem 0 .45rem -.45rem rgba(13, 35, 64, .45); }
+/* Widened from 7.5rem to fit the three inline controls under the chip; the
+   column is sticky, so this is width taken from the assertion cells that
+   scroll, not from the transaction label. */
+.disposition-column { left: 21.5rem; width: 10rem; min-width: 10rem; max-width: 10rem; box-shadow: .35rem 0 .45rem -.45rem rgba(13, 35, 64, .45); }
+.disposition-actions { display: flex; gap: .1rem; margin-top: .2rem; }
+.disposition-actions :deep(.p-button) { width: 1.9rem; height: 1.9rem; }
+.disposition-actions :deep(.p-button.is-current) { background: var(--aw-teal-soft); }
 thead .sticky { z-index: 7; background: var(--aw-raised); }
 tbody .sticky { background: var(--aw-panel); }
 .assertion-column, .assertion-cell { width: 15rem; min-width: 15rem; max-width: 15rem; }

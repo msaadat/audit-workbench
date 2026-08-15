@@ -200,7 +200,9 @@ def test_unscoped_readiness_selects_only_tests_with_unchecked_items():
     _document, complete = _vouching(ws, title="Completed")
     _document, pending = _vouching(ws, title="Pending")
     stored = doc_tests.load_test(ws, complete["id"])
-    stored["items"][0]["state"] = "confirmed"
+    stored["items"][0]["evaluation"] = doc_tests.new_evaluation(
+        "passed", "Deterministic local comparison completed."
+    )
     stored["status"] = "completed"
     doc_tests.save_test(ws, stored)
 
@@ -217,7 +219,9 @@ def test_a_final_result_item_is_not_re_run():
     ws = _workspace("Doc test disposition resume")
     _document, test = _vouching(ws)
     stored = doc_tests.load_test(ws, test["id"])
-    stored["items"][0]["state"] = "confirmed"
+    stored["items"][0]["evaluation"] = doc_tests.new_evaluation(
+        "passed", "Deterministic local comparison completed."
+    )
     stored["status"] = "completed"
     doc_tests.save_test(ws, stored)
 

@@ -29,6 +29,9 @@ const meta: Record<string, { icon: string; tone: string; label: string }> = {
   incomplete: { icon: 'pi-inbox', tone: 'warn', label: 'Incomplete' },
   needs_review: { icon: 'pi-eye', tone: 'warn', label: 'Needs review' },
   stale: { icon: 'pi-history', tone: 'warn', label: 'Stale' },
+  // The runner could run the check but not settle it — distinct from an
+  // auditor's 'needs_review', which is a decision to defer.
+  inconclusive: { icon: 'pi-question-circle', tone: 'warn', label: 'Inconclusive' },
   match: { icon: 'pi-check', tone: 'success', label: 'Match' },
   mismatch: { icon: 'pi-times', tone: 'danger', label: 'Mismatch' },
   missing_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Missing evidence' },

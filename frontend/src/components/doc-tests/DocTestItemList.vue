@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import type { DocTestSummaryEntry } from '../../types'
+import type { DocTestSummaryEntry, DocTestSummaryItem } from '../../types'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 
-defineProps<{ items: DocTestSummaryEntry[]; selectedId: string | null }>()
-defineEmits<{ select: [item: DocTestSummaryEntry] }>()
+defineProps<{
+  items: DocTestSummaryEntry[]
+  selectedId: string | null
+  /** Item ids ticked for bulk sign-off. Cycle rows are never selectable. */
+  checkedIds?: string[]
+}>()
+defineEmits<{
+  select: [item: DocTestSummaryEntry]
+  toggle: [itemId: string]
+}>()
 
 function entryId(entry: DocTestSummaryEntry) {
   return entry.entry_type === 'cycle_test' ? entry.test_id : entry.item_id
@@ -20,6 +28,23 @@ const kindLabel: Record<string, string> = {
   qa: 'Cited Q&A',
   cycle_vouch: 'Cycle vouch',
 }
+const runLabel: Record<string, string> = {
+  passed: 'no exception',
+  failed: 'exception',
+  inconclusive: 'it could not settle this',
+  agent_checked: 'it is still settling this',
+  not_run: 'nothing yet',
+}
+
+/** Whether a live auditor call disagrees with the verdict the run reached. */
+function overturned(entry: DocTestSummaryItem) {
+  const run = entry.evaluation?.state
+  const call = entry.disposition?.state
+  if (!run || !call || call === 'pending' || entry.disposition?.stale) return false
+  if (run === 'passed') return call !== 'confirmed'
+  if (run === 'failed') return call !== 'exception'
+  return false
+}
 </script>
 
 <template>
@@ -27,34 +52,52 @@ const kindLabel: Record<string, string> = {
     <!-- Flat, severity-ordered, one row per worklist item. Tests carry one or
          two items each, so grouping by test only added a level to click
          through without adding information. -->
-    <button
+    <div
       v-for="item in items"
       :key="`${item.entry_type}:${entryId(item)}`"
-      type="button"
       class="row"
       :data-classification="item.classification"
       :class="{ active: entryId(item) === selectedId }"
-      @click="$emit('select', item)"
     >
-      <!-- Status leads as an eyebrow beside the RCM reference; sharing a flex
-           row with the title squeezed it to roughly seventeen characters, so
-           labels wrapped to five or six lines and card heights were uneven. -->
-      <span class="row-head">
-        <UiTestStatus :status="item.classification" showLabel />
-        <small v-if="item.rcm_id" class="row-rcm">{{ item.rcm_id }}</small>
-        <small v-else class="row-rcm row-rcm--none">Unlinked</small>
-      </span>
-      <strong class="row-title">{{ entryLabel(item) }}</strong>
-      <small class="row-test">
-        {{ item.entry_type === 'cycle_test'
-          ? `${item.tested_item_count} of ${item.item_count} items tested`
-          : item.test_title }}
-      </small>
-      <small class="row-meta">{{ kindLabel[item.test_kind ?? ''] ?? 'Document work' }}</small>
-      <small v-if="item.entry_type === 'cycle_test'" class="row-scope">
-        {{ item.assurance_label }} · {{ item.assertion_columns }} assertion columns
-      </small>
-    </button>
+      <!-- The tick sits outside the navigation button so selecting rows for a
+           bulk sign-off never moves the detail pane out from under you. -->
+      <input
+        v-if="item.entry_type === 'item'"
+        type="checkbox"
+        class="row-check"
+        :checked="checkedIds?.includes(item.item_id)"
+        :aria-label="`Select ${entryLabel(item)} for bulk sign-off`"
+        @change="$emit('toggle', item.item_id)"
+      >
+      <button type="button" class="row-body" @click="$emit('select', item)">
+        <!-- Status leads as an eyebrow beside the RCM reference; sharing a flex
+             row with the title squeezed it to roughly seventeen characters, so
+             labels wrapped to five or six lines and card heights were uneven. -->
+        <span class="row-head">
+          <UiTestStatus :status="item.classification" showLabel />
+          <small v-if="item.rcm_id" class="row-rcm">{{ item.rcm_id }}</small>
+          <small v-else class="row-rcm row-rcm--none">Unlinked</small>
+        </span>
+        <strong class="row-title">{{ entryLabel(item) }}</strong>
+        <small class="row-test">
+          {{ item.entry_type === 'cycle_test'
+            ? `${item.tested_item_count} of ${item.item_count} items tested`
+            : item.test_title }}
+        </small>
+        <small class="row-meta">{{ kindLabel[item.test_kind ?? ''] ?? 'Document work' }}</small>
+        <!-- Where the two readings differ, the row says so: the joint chip
+             above shows your call, and this says what the run had found. -->
+        <small
+          v-if="item.entry_type === 'item' && overturned(item)"
+          class="row-overturned"
+        >
+          <i class="pi pi-flag" />Run said {{ runLabel[item.evaluation?.state ?? 'not_run'] }}
+        </small>
+        <small v-if="item.entry_type === 'cycle_test'" class="row-scope">
+          {{ item.assurance_label }} · {{ item.assertion_columns }} assertion columns
+        </small>
+      </button>
+    </div>
     <p v-if="!items.length" class="empty">No worklist items match this filter.</p>
   </div>
 </template>
@@ -63,14 +106,25 @@ const kindLabel: Record<string, string> = {
 .item-list { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.55rem; min-width: 0; }
 .row {
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  align-items: flex-start;
+  gap: 0.45rem;
   min-width: 0;
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--aw-border);
   border-left: 3px solid var(--aw-muted);
   border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
+}
+.row-check { flex: 0 0 auto; margin-top: 0.3rem; accent-color: var(--aw-teal); cursor: pointer; }
+.row-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   color: inherit;
   font: inherit;
   text-align: left;
@@ -78,6 +132,7 @@ const kindLabel: Record<string, string> = {
 }
 .row:hover { background: var(--aw-raised); }
 .row.active { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
+.row-overturned { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--aw-warn); font-size: var(--aw-text-xs); font-weight: 600; }
 .row-head { display: flex; align-items: center; gap: 0.35rem; min-width: 0; margin-bottom: 0.1rem; }
 .row-rcm { flex: 0 0 auto; margin-left: auto; overflow: hidden; color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); text-overflow: ellipsis; white-space: nowrap; }
 .row-rcm--none { font-family: inherit; font-style: italic; }

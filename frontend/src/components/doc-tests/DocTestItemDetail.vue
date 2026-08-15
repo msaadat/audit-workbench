@@ -9,6 +9,9 @@ import type {
   AuditDocument,
   AuditFinding,
   DocTest,
+  DocTestDisposition,
+  DocTestDispositionState,
+  DocTestEvaluation,
   DocTestItem,
   EvidenceRef,
 } from '../../types'
@@ -30,7 +33,7 @@ const emit = defineEmits<{
   attach: [documentId: string]
   saveChecks: []
   saveAttributes: []
-  setState: [value: 'confirmed' | 'exception' | 'pending']
+  setState: [value: DocTestDispositionState, note?: string]
   saveConclusion: []
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
@@ -75,13 +78,11 @@ const machineNotePrefixes = [
 ]
 // The runner stamps `Model assessment outcome: <state>.` onto every LLM item —
 // the same fact the status chip already carries, in the runner's vocabulary
-// rather than the auditor's, and it was printed twice over: once as the banner
-// above Procedure and again as the sign-off note in the rail. Matching the
-// prefixes the runner itself writes (doc_tests.py:1464 and the cited-answer
-// paths) leaves a genuine note — a manual fallback, an OCR gap, an auditor
-// sign-off — untouched.
-const auditorNote = computed(() => {
-  const note = (props.item.runner_note ?? '').trim()
+// rather than the auditor's. Matching the prefixes the runner itself writes
+// leaves a genuine note — a manual fallback, an OCR gap — untouched.
+const runnerNote = computed(() => {
+  const note = String((props.item.evaluation as { note?: string } | undefined)?.note
+    ?? props.item.runner_note ?? '').trim()
   if (!note) return ''
   return machineNotePrefixes.some(prefix => note.startsWith(prefix)) ? '' : note
 })
@@ -97,23 +98,100 @@ const duplicates = computed(() => props.item.document_conflicts?.duplicate_docum
 const evidenceRequests = computed(() =>
   (props.test.evidence_requests ?? []).filter(request => request.item_id === props.item.id),
 )
-// 'confirmed'/'exception' are already a direct read of the model's (or the
-// deterministic comparison's) own outcome — nothing for an auditor to settle.
-// Only 'manual_review'/'agent_checked' mean the result itself is unresolved.
 const isCanonicalCycle = computed(() => props.test.kind === 'cycle_vouch')
-const needsSignOff = computed(() => {
-  if (isCanonicalCycle.value) {
-    return Boolean(
-      props.item.evaluation
-      && !['not_run', 'stale'].includes(props.item.evaluation.state)
-      && (props.item.disposition?.state === 'pending' || props.item.disposition?.stale),
-    )
+// The two readings the rail keeps apart: what the run found, and what the
+// auditor decided about it. Only the second is ever editable here.
+const evaluation = computed(() => (props.item.evaluation ?? {}) as Partial<DocTestEvaluation>)
+const disposition = computed(() => (props.item.disposition ?? {}) as Partial<DocTestDisposition>)
+const evaluationState = computed(() => String(evaluation.value.state ?? 'not_run'))
+const dispositionState = computed<DocTestDispositionState>(
+  () => (disposition.value.state ?? 'pending') as DocTestDispositionState,
+)
+const isStale = computed(() => Boolean(disposition.value.stale))
+const hasRun = computed(() => !['not_run', 'stale'].includes(evaluationState.value))
+
+// Every call stays available at all times. Gating them on the runner's verdict
+// was what made a model-marked exception unchangeable: the buttons that would
+// have overturned it were the ones hidden because it had a verdict at all.
+const dispositionChoices = computed(() => {
+  const choices: Array<{ value: DocTestDispositionState; label: string; icon: string; tone: string }> = [
+    { value: 'confirmed', label: 'Confirm', icon: 'pi pi-check', tone: 'success' },
+    { value: 'exception', label: 'Exception', icon: 'pi pi-exclamation-triangle', tone: 'danger' },
+  ]
+  // Parking is an item-first affordance; a cycle disposition stays binary.
+  if (!isCanonicalCycle.value) {
+    choices.push({ value: 'needs_review', label: 'Needs review', icon: 'pi pi-eye', tone: 'warn' })
   }
-  return ['manual_review', 'agent_checked'].includes(props.item.state ?? 'pending')
+  return choices
 })
-const canClearSignOff = computed(() => isCanonicalCycle.value
-  ? props.item.disposition?.state !== 'pending'
-  : (props.item.state ?? 'pending') !== 'pending')
+// The runner's verdict read as the call an auditor would be making by agreeing
+// with it — so we can tell agreement from disagreement without asking.
+// Both shapes agree on these two; every other evaluation state is the runner
+// declining to settle, which no disposition agrees or disagrees with.
+const machineEquivalent = computed<DocTestDispositionState | null>(() =>
+  ({ passed: 'confirmed', failed: 'exception' } as Record<string, DocTestDispositionState>)[
+    evaluationState.value
+  ] ?? null)
+const noteDraft = ref('')
+const pendingChoice = ref<DocTestDispositionState | null>(null)
+const reasonBox = ref<HTMLElement | null>(null)
+// A call that contradicts the run is the one an audit file has to justify, so
+// that one — and only that one — stops to collect a reason. Agreeing with the
+// run, or settling an item the run could not, records on the first click.
+function needsReason(value: DocTestDispositionState | null) {
+  return Boolean(value)
+    && Boolean(machineEquivalent.value)
+    && value !== machineEquivalent.value
+    && value !== 'pending'
+}
+const contradictsRun = computed(() => needsReason(pendingChoice.value))
+const canSubmit = computed(() =>
+  Boolean(pendingChoice.value) && (!contradictsRun.value || Boolean(noteDraft.value.trim())),
+)
+const canClearSignOff = computed(() => dispositionState.value !== 'pending')
+// A finding drafted from a test nobody resolved is a finding about nothing. The
+// backend now leaves such a test in `review_required` rather than `completed`,
+// and this reads that rather than the old prefix check.
+const canGenerateFinding = computed(() => props.test.status.startsWith('completed'))
+const findingBlockedReason = computed(() => {
+  if (canGenerateFinding.value || !props.test.rcm_id) return ''
+  return props.test.status === 'review_required'
+    ? 'Resolve every item on this test before drafting a finding from it.'
+    : 'Run this test before drafting a finding from it.'
+})
+
+function cancelDisposition() {
+  pendingChoice.value = null
+  noteDraft.value = ''
+}
+async function choose(value: DocTestDispositionState) {
+  if (pendingChoice.value === value) return cancelDisposition()
+  // The ordinary case is one click. Only a call that has to be justified opens
+  // the reason step — and it scrolls itself into view and takes focus, because
+  // a second step nobody can see reads as a button that did nothing.
+  if (!needsReason(value)) {
+    cancelDisposition()
+    emit('setState', value)
+    return
+  }
+  pendingChoice.value = value
+  await nextTick()
+  const box = reasonBox.value
+  // Guarded: jsdom has no scrollIntoView, and focus alone still gets the step
+  // in front of the auditor in any browser that does.
+  box?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  box?.querySelector('textarea')?.focus({ preventScroll: true })
+}
+function submitDisposition() {
+  if (!pendingChoice.value || !canSubmit.value) return
+  emit('setState', pendingChoice.value, noteDraft.value.trim() || undefined)
+  cancelDisposition()
+}
+function signedOffLine(value: Partial<DocTestDisposition>) {
+  const parts = [value.actor || 'auditor']
+  if (value.at) parts.push(new Date(value.at).toLocaleString())
+  return parts.join(' · ')
+}
 const cycleResults = computed(() => Object.entries(props.item.result_by_assertion ?? {}))
 
 const cycleSpec = computed(() => (props.test.spec ?? {}) as Record<string, any>)
@@ -221,7 +299,7 @@ onMounted(() => { void focusAssertion() })
 
     <!-- The record: what the procedure was and what the run found. -->
     <div class="detail-main">
-    <p v-if="auditorNote" class="runner-note"><i class="pi pi-info-circle" />{{ auditorNote }}</p>
+    <p v-if="runnerNote" class="runner-note"><i class="pi pi-info-circle" />{{ runnerNote }}</p>
 
     <!-- `instruction` and `question` are one planned step written twice: the
          runner emits an imperative and an interrogative form of the same
@@ -518,8 +596,27 @@ onMounted(() => { void focusAssertion() })
     <!-- The rail: everything the auditor decides, in one column that stays put
          while the record beside it scrolls. -->
     <aside class="detail-rail" aria-label="Your assessment">
+      <!-- Two readings, never collapsed into one chip. Which of them the
+           worklist is currently showing depends on whether the sign-off is
+           current, and that is exactly what an auditor needs to see. -->
       <div class="rail-group rail-status">
-        <UiTestStatus :status="item.disposition?.stale ? 'stale' : item.state ?? item.evaluation?.state ?? 'pending'" showLabel />
+        <dl class="readings">
+          <div class="reading">
+            <dt>Run result</dt>
+            <dd><UiTestStatus :status="evaluationState" showLabel /></dd>
+          </div>
+          <div class="reading">
+            <dt>Your call</dt>
+            <dd>
+              <UiTestStatus
+                v-if="dispositionState !== 'pending'"
+                :status="isStale ? 'stale' : dispositionState"
+                showLabel
+              />
+              <span v-else class="reading-empty">Not recorded</span>
+            </dd>
+          </div>
+        </dl>
         <Button
           label="Run test"
           icon="pi pi-play"
@@ -528,6 +625,87 @@ onMounted(() => { void focusAssertion() })
           :disabled="busy"
           @click="emit('run')"
         />
+      </div>
+
+      <!-- The auditor's call is always available, whatever the runner found.
+           Disagreeing with a verdict is a normal audit act; it records the
+           disagreement rather than rewriting the run. -->
+      <div class="rail-group">
+        <h4>Your call</h4>
+
+        <p v-if="isStale" class="rail-note rail-stale">
+          <i class="pi pi-history" />
+          The evidence or procedure changed after this sign-off, so it no longer
+          counts as current. Re-run the item, then record your call again.
+        </p>
+        <p v-else-if="dispositionState !== 'pending'" class="rail-note rail-provenance">
+          <i class="pi pi-user" />
+          {{ signedOffLine(disposition) }}
+        </p>
+        <p v-else-if="!hasRun" class="rail-note">
+          This item has not been run yet. You can still record a call, but there
+          is no result behind it.
+        </p>
+        <p v-else class="rail-note">
+          {{ machineEquivalent
+            ? 'The run reached a verdict. Agree with it, or record a different call and say why.'
+            : 'The run could not settle this item — it is yours to decide.' }}
+        </p>
+
+        <p v-if="disposition.note" class="rail-note rail-reason">“{{ disposition.note }}”</p>
+
+        <div class="dispositions">
+          <Button
+            v-for="choice in dispositionChoices"
+            :key="choice.value"
+            :label="choice.label"
+            :icon="choice.icon"
+            size="small"
+            :severity="choice.tone"
+            :outlined="pendingChoice !== choice.value"
+            :disabled="busy"
+            :class="{ 'is-current': dispositionState === choice.value && !isStale }"
+            :aria-pressed="pendingChoice === choice.value"
+            @click="choose(choice.value)"
+          />
+        </div>
+
+        <template v-if="pendingChoice">
+          <label ref="reasonBox" class="reason-label">
+            {{ contradictsRun ? 'Why you disagree with the run (required)' : 'Note (optional)' }}
+            <Textarea
+              v-model="noteDraft"
+              rows="2"
+              autoResize
+              :placeholder="contradictsRun
+                ? 'The run says otherwise — record what you saw that it did not.'
+                : 'Anything worth leaving on the file.'"
+            />
+          </label>
+          <div class="dispositions">
+            <Button
+              :label="`Record ${pendingChoice.replace('_', ' ')}`"
+              icon="pi pi-save"
+              size="small"
+              :disabled="busy || !canSubmit"
+              @click="submitDisposition"
+            />
+            <Button label="Cancel" size="small" text :disabled="busy" @click="cancelDisposition" />
+          </div>
+        </template>
+
+        <Button
+          label="Clear my call"
+          icon="pi pi-refresh"
+          size="small"
+          text
+          :disabled="busy || !canClearSignOff"
+          @click="emit('setState', 'pending')"
+        />
+        <p class="rail-note rail-footnote">
+          Clearing your call leaves the run's own verdict standing; it does not
+          discard the result.
+        </p>
       </div>
 
       <div class="rail-group">
@@ -577,62 +755,16 @@ onMounted(() => { void focusAssertion() })
             outlined
             @click="emit('openFinding', finding.id)"
           />
-          <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', true)" />
+          <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="busy || !test.rcm_id || !canGenerateFinding" @click="emit('generateFinding', true)" />
         </template>
         <template v-else>
-          <p class="rail-note">Generate a draft from this test’s exception observations.</p>
-          <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', false)" />
+          <p class="rail-note">
+            {{ findingBlockedReason || 'Generate a draft from this test’s exception observations.' }}
+          </p>
+          <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="busy || !test.rcm_id || !canGenerateFinding" @click="emit('generateFinding', false)" />
         </template>
       </div>
 
-      <!-- Confirm/exception only apply while the result is unresolved — once it
-           is 'confirmed' or 'exception' that is already a direct read of the
-           model's (or the deterministic comparison's) own outcome, not
-           something to settle by hand. 'Reset to pending' stays available
-           regardless: it is the only way to force a re-check once new evidence
-           makes the settled result stale. -->
-      <div class="rail-group">
-        <h4>Sign-off</h4>
-        <p class="rail-note">
-          {{ needsSignOff
-            ? (isCanonicalCycle
-                ? 'The deterministic evaluation is complete. Confirm it or record an exception against the current definition and evidence hashes.'
-                : 'The model could not settle this item on its own — confirm the result or mark an exception.')
-            : (isCanonicalCycle
-                ? (item.disposition?.stale ? 'The prior disposition is stale and cannot satisfy audit verification.' : 'The current evaluation and auditor disposition are recorded separately.')
-                : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.') }}
-        </p>
-        <div class="dispositions">
-          <template v-if="needsSignOff">
-            <Button
-              label="Confirm result"
-              icon="pi pi-check"
-              size="small"
-              severity="success"
-              outlined
-              :disabled="busy"
-              @click="emit('setState', 'confirmed')"
-            />
-            <Button
-              label="Mark exception"
-              icon="pi pi-exclamation-triangle"
-              size="small"
-              severity="danger"
-              outlined
-              :disabled="busy"
-              @click="emit('setState', 'exception')"
-            />
-          </template>
-          <Button
-            :label="isCanonicalCycle ? 'Clear sign-off' : 'Reset to pending'"
-            icon="pi pi-refresh"
-            size="small"
-            text
-            :disabled="busy || !canClearSignOff"
-            @click="emit('setState', 'pending')"
-          />
-        </div>
-      </div>
     </aside>
   </div>
 </template>
@@ -670,6 +802,26 @@ onMounted(() => { void focusAssertion() })
 .rail-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.4; }
 .detail-rail :deep(.p-button) { width: 100%; justify-content: center; }
 .dispositions { display: flex; flex-direction: column; gap: 0.4rem; }
+
+/* Run result above your call, each with its own label: the pair is the whole
+   point of the rail, so neither reading is allowed to stand for the other. */
+.readings { display: flex; flex-direction: column; gap: 0.45rem; width: 100%; margin: 0; }
+.reading { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.reading dt { color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.reading dd { margin: 0; min-width: 0; }
+.reading-empty { color: var(--aw-muted); font-size: var(--aw-text-sm); font-style: italic; }
+
+.rail-note.rail-stale,
+.rail-note.rail-provenance,
+.rail-note.rail-reason { display: flex; align-items: baseline; gap: 0.35rem; }
+.rail-note.rail-stale { color: var(--aw-warn); }
+.rail-note.rail-reason { color: var(--aw-ink); font-style: italic; }
+.rail-note.rail-footnote { font-size: var(--aw-text-xs); }
+.reason-label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+
+/* The call already on the file reads as filled rather than outlined, so the
+   current decision is visible without opening the note. */
+.dispositions :deep(.p-button.is-current) { box-shadow: inset 0 0 0 2px currentColor; }
 
 /* 42rem, measured: at a 1440 window with the assistant docked the detail
    column is ~44rem, so a higher threshold never engaged where it matters. */
