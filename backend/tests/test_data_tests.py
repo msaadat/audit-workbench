@@ -78,7 +78,7 @@ def test_analytics_run_replaces_the_current_durable_result(workspace_with_data):
 
     assert first["status"] == "completed_with_exception"
     assert first["exception_count"] == 2
-    assert first["control_conclusion"] == "ineffective"
+    assert first["suggested_control_conclusion"] == "ineffective"
     assert first["dataset_fingerprints"]["transactions"]
     assert first["result_sha1"]
     assert data_tests.load_result(ws, item["id"], first["id"]) == first
@@ -100,7 +100,11 @@ def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspa
     result = data_tests.run(ws, item["id"])
     assert result["status"] == "completed_with_exception"
     assert item["conclusion"] == ""
-    assert item["control_conclusion"] == "ineffective"
+    # Running reads the data; it does not conclude on the control. The run's own
+    # reading is offered as a suggestion for whoever does.
+    assert item["control_conclusion"] == "no_conclusion"
+    assert item["control_conclusion_source"] == "none"
+    assert result["suggested_control_conclusion"] == "ineffective"
 
     updated = data_tests.update(
         ws, item["id"],
@@ -108,6 +112,7 @@ def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspa
          "control_conclusion": "effective"},
     )
     assert updated["control_conclusion"] == "effective"
+    assert updated["control_conclusion_source"] == "auditor"
     assert updated["conclusion"].startswith("Exceptions were investigated")
     # The engine's own read of the run is untouched by the auditor's conclusion.
     assert updated["status"] == "completed_with_exception"
@@ -116,7 +121,195 @@ def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspa
         data_tests.update(ws, item["id"], {"control_conclusion": "bogus"})
 
 
-def test_deterministic_run_marks_no_exception_as_effective(workspace_with_data):
+def test_departing_from_the_run_without_a_reason_is_refused(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+
+    # The run read this as ineffective. Overriding it is the judgement a working
+    # paper has to be able to show, so it cannot be a bare enum change.
+    with pytest.raises(workspaces.WorkspaceError, match="written reason"):
+        data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+
+    agreed = data_tests.update(ws, item["id"], {"control_conclusion": "ineffective"})
+    assert agreed["control_conclusion_source"] == "auditor"
+
+
+def test_auto_disposition_concludes_an_unattended_run_and_signs_it_agent(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+
+    concluded = data_tests.auto_disposition(ws, item["id"])
+
+    assert concluded["control_conclusion"] == "ineffective"
+    # The file says a machine decided this. That is the difference between an
+    # unattended conclusion and an unattributed one.
+    assert concluded["control_conclusion_source"] == "agent"
+    assert concluded["status"] == "completed_with_exception"
+    assert [value["state"] for value in concluded["exception_dispositions"]] == ["exception"]
+    assert {value["source"] for value in concluded["exception_dispositions"]} == {"agent"}
+
+
+def test_auto_disposition_declines_a_run_it_cannot_vouch_for(workspace_with_data):
+    ws = workspace_with_data
+    item = data_tests.create(ws, {
+        "title": "Impossible filter",
+        "objective": "Screen on a value the column never holds.",
+        "engine": "polars",
+        "table_refs": ["transactions"],
+        "spec": _polars_spec(
+            table_refs=["transactions"],
+            code="result = transactions.filter(pl.col('currency') == 'ZZZ')",
+        ),
+    })
+    result = data_tests.run(ws, item["id"])
+    assert result["semantic_valid"] is False
+
+    unchanged = data_tests.auto_disposition(ws, item["id"])
+
+    # Unreliable evidence is the one thing an unattended run must not conclude
+    # over, however deterministic the machinery underneath it is.
+    assert unchanged["control_conclusion"] == "no_conclusion"
+    assert unchanged["control_conclusion_source"] == "none"
+    assert unchanged["status"] == "review_required"
+
+
+def test_auto_disposition_stands_aside_for_the_auditor(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+    record = data_tests._record(ws, item["id"])
+    group = record["evaluation"]["reasons"][0]["label"]
+    data_tests.record_exception_disposition(
+        ws, item["id"], group, "accepted", note="Duplicates are re-issued credit notes.",
+    )
+    data_tests.update(
+        ws,
+        item["id"],
+        {
+            "control_conclusion": "effective",
+            "conclusion": "The duplicates carry a documented business reason.",
+        },
+    )
+
+    data_tests.run(ws, item["id"])
+    concluded = data_tests.auto_disposition(ws, item["id"])
+
+    assert concluded["control_conclusion"] == "effective"
+    assert concluded["control_conclusion_source"] == "auditor"
+    (disposition,) = concluded["exception_dispositions"]
+    assert disposition["state"] == "accepted"
+    assert disposition["source"] == "auditor"
+    assert concluded["open_exception_count"] == 0
+
+
+def test_a_changed_definition_makes_a_ruling_stale_without_erasing_it(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+    group = data_tests._record(ws, item["id"])["evaluation"]["reasons"][0]["label"]
+    data_tests.record_exception_disposition(
+        ws, item["id"], group, "accepted", note="Investigated; all re-issues.",
+    )
+    data_tests.update(
+        ws, item["id"],
+        {"control_conclusion": "effective", "conclusion": "Control operated."},
+    )
+    assert data_tests._record(ws, item["id"])["open_exception_count"] == 0
+
+    data_tests.update(
+        ws, item["id"],
+        {"spec": {"test_id": "duplicates", "params": {"columns": ["cust_id"]}}},
+    )
+    record = data_tests._record(ws, item["id"])
+
+    # That somebody signed stays on the record; it just stops counting.
+    (disposition,) = record["exception_dispositions"]
+    assert disposition["state"] == "accepted"
+    assert disposition["stale"] is True
+    assert disposition["note"] == "Investigated; all re-issues."
+    assert record["control_conclusion"] == "effective"
+    assert record["control_conclusion_stale"] is True
+    assert record["status"] == "ready"
+
+
+def test_a_group_is_rulable_without_a_placeholder_row(workspace_with_data):
+    """A record carrying the inventory but no rows must still take a ruling.
+
+    That is the shape of any test not re-run since the marking model landed.
+    Replacing in place only would have dropped the ruling and still succeeded.
+    """
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+    record = data_tests._record(ws, item["id"])
+    group = record["evaluation"]["reasons"][0]["label"]
+    record["exception_dispositions"] = []
+    ws.save()
+
+    ruled = data_tests.record_exception_disposition(
+        ws, item["id"], group, "accepted", note="Investigated; all re-issues.",
+    )
+
+    assert [(d["key"], d["state"]) for d in ruled["exception_dispositions"]] == [
+        (group, "accepted")
+    ]
+    assert ruled["open_exception_count"] == 0
+    assert ruled["status"] == "completed_no_exception"
+
+
+def test_accepting_an_exception_group_needs_a_reason(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+    group = data_tests._record(ws, item["id"])["evaluation"]["reasons"][0]["label"]
+
+    with pytest.raises(workspaces.WorkspaceError, match="written reason"):
+        data_tests.record_exception_disposition(ws, item["id"], group, "accepted")
+
+    with pytest.raises(workspaces.WorkspaceError, match="no exception group"):
+        data_tests.record_exception_disposition(
+            ws, item["id"], "Not a real group", "accepted", note="x",
+        )
+
+
+def test_semantic_review_releases_a_test_the_runner_could_not_vouch_for(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    item = data_tests.create(ws, {
+        "title": "Impossible filter",
+        "objective": "Screen on a value the column never holds.",
+        "engine": "polars",
+        "table_refs": ["transactions"],
+        "spec": _polars_spec(
+            table_refs=["transactions"],
+            code="result = transactions.filter(pl.col('currency') == 'ZZZ')",
+        ),
+    })
+    data_tests.run(ws, item["id"])
+    assert data_tests._record(ws, item["id"])["status"] == "review_required"
+
+    reviewed = data_tests.record_semantic_review(
+        ws, item["id"], "ZZZ is a valid settlement code that is simply unused this period.",
+    )
+
+    assert reviewed["status"] == "completed_no_exception"
+    assert reviewed["semantic_review"]["note"].startswith("ZZZ is a valid")
+
+
+def test_deterministic_run_suggests_effective_but_does_not_conclude(workspace_with_data):
     ws = workspace_with_data
     item = data_tests.create(ws, {
         "title": "No exception test",
@@ -133,8 +326,10 @@ def test_deterministic_run_marks_no_exception_as_effective(workspace_with_data):
 
     assert result["status"] == "completed_no_exception"
     assert result["exception_count"] == 0
-    assert result["control_conclusion"] == "effective"
-    assert item["control_conclusion"] == "effective"
+    assert result["suggested_control_conclusion"] == "effective"
+    # A clean run is still nobody's conclusion until somebody makes it one.
+    assert item["control_conclusion"] == "no_conclusion"
+    assert item["evaluation"]["state"] == "passed"
 
 
 def test_run_all_includes_exploratory_and_rcm_tests(workspace_with_data):
@@ -349,7 +544,7 @@ def test_null_exception_field_with_populated_identifier_is_valid(workspace_with_
     assert result["semantic_valid"] is True
     assert result["status"] == "completed_with_exception"
     assert result["exception_count"] > 0
-    assert result["control_conclusion"] == "ineffective"
+    assert result["suggested_control_conclusion"] == "ineffective"
     assert not any("entirely null" in issue for issue in result["semantic_issues"])
 
 
@@ -917,7 +1112,7 @@ def test_step_filtering_on_a_value_the_column_never_holds_cannot_conclude():
     assert result["exception_count"] == 0
     assert result["semantic_valid"] is False
     assert result["status"] == "review_required"
-    assert result["control_conclusion"] == "no_conclusion"
+    assert result["suggested_control_conclusion"] == "no_conclusion"
     assert any("cannot match the rows it describes" in issue for issue in result["semantic_issues"])
 
 
@@ -1019,7 +1214,7 @@ def test_a_duplicate_screen_on_a_key_that_genuinely_holds_still_concludes():
 
     assert result["exception_count"] == 0
     assert result["semantic_valid"] is True
-    assert result["control_conclusion"] == "effective"
+    assert result["suggested_control_conclusion"] == "effective"
 
 
 def test_steps_excepting_the_same_rows_cannot_conclude():
@@ -1136,7 +1331,7 @@ def test_a_sound_step_that_finds_no_exception_still_concludes():
     assert result["exception_count"] == 0
     assert result["semantic_valid"] is True
     assert result["status"] == "completed_no_exception"
-    assert result["control_conclusion"] == "effective"
+    assert result["suggested_control_conclusion"] == "effective"
 
 
 def test_a_sound_step_that_finds_real_exceptions_still_concludes():
@@ -1147,4 +1342,4 @@ def test_a_sound_step_that_finds_real_exceptions_still_concludes():
 
     assert result["exception_count"] == 2
     assert result["semantic_valid"] is True
-    assert result["control_conclusion"] == "ineffective"
+    assert result["suggested_control_conclusion"] == "ineffective"

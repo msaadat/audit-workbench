@@ -80,6 +80,19 @@ const controlConclusions = [
   { label: 'Not applicable', value: 'not_applicable' },
 ]
 const selected = computed(() => tests.value.find(item => item.id === selectedId.value) ?? null)
+function conclusionLabel(value: string) {
+  return controlConclusions.find(item => item.value === value)?.label ?? value
+}
+// Mirrors the backend guard so the refusal shows before the click, not after.
+const departsWithoutReason = computed(() => {
+  const item = selected.value
+  if (!item) return false
+  return (
+    item.control_conclusion !== 'no_conclusion'
+    && item.control_conclusion !== item.evaluation.suggested_control_conclusion
+    && !item.conclusion.trim()
+  )
+})
 const rcmRows = computed(() => planning.value?.rcm ?? [])
 const rcmOptions = computed(() => rcmRows.value.map(row => ({ label: `${row.id} · ${row.risk}`, value: row.id })))
 const tableOptions = computed(() => props.workspace.tables.map(item => ({ label: item.name, value: item.name })))
@@ -277,15 +290,75 @@ async function saveConclusion() {
   } catch (error) { fail('Could not save the conclusion', error) }
   finally { saving.value = false }
 }
-async function runTest() {
+// One click for the commonest case: the run read it one way and the auditor
+// agrees. It still records an auditor conclusion, because agreeing is a
+// decision somebody made.
+async function acceptRunReading() {
   if (!selected.value) return
+  selected.value.control_conclusion = selected.value.evaluation.suggested_control_conclusion
+  await saveConclusion()
+}
+async function ruleExceptionGroup(
+  payload: { key: string; state: string; note: string },
+) {
+  if (!selected.value) return
+  saving.value = true
+  try {
+    await api.post(
+      `/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}/exception-dispositions`,
+      payload,
+    )
+    await load()
+    emit('changed')
+  } catch (error) { fail('Could not record the ruling', error) }
+  finally { saving.value = false }
+}
+async function reviewSemantics(note: string) {
+  if (!selected.value) return
+  saving.value = true
+  try {
+    await api.post(
+      `/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}/semantic-review`,
+      { note },
+    )
+    await load()
+    emit('changed')
+    toast.add({ severity: 'success', summary: 'Review recorded', life: 1800 })
+  } catch (error) { fail('Could not record the review', error) }
+  finally { saving.value = false }
+}
+async function execute(id: string) {
   running.value = true
   try {
-    result.value = await api.post<DataTestResult>(`/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}/run`)
+    result.value = await api.post<DataTestResult>(`/api/workspaces/${props.workspace.id}/data-tests/${id}/run`)
     await load()
     emit('changed')
   } catch (error) { fail('Could not run the data test', error) }
   finally { running.value = false }
+}
+async function runTest() {
+  const item = selected.value
+  if (!item) return
+  // A re-run no longer overwrites a conclusion, but it does replace the
+  // evidence one was reached against, which can leave it stale. Say so before
+  // it happens rather than showing a warning afterwards.
+  if (item.control_conclusion_source === 'auditor' || item.exception_dispositions.some(
+    value => value.source === 'auditor' && value.state !== 'pending',
+  )) {
+    confirm.require({
+      header: 'Run again?',
+      message:
+        'This replaces the result your conclusion was recorded against. The '
+        + 'conclusion is kept, but it will be flagged as out of date if the '
+        + 'definition or the data has changed since.',
+      icon: 'pi pi-refresh',
+      acceptProps: { label: 'Run again' },
+      rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+      accept: () => { void execute(item.id) },
+    })
+    return
+  }
+  await execute(item.id)
 }
 async function runAllTests() {
   runningAll.value = true
@@ -462,7 +535,14 @@ onUnmounted(unsubscribe)
           </header>
 
           <div class="detail-main">
-            <DataTestResultPanel :test="selected" :result="result" />
+            <DataTestResultPanel
+              :test="selected"
+              :result="result"
+              :busy="saving"
+              @rule="ruleExceptionGroup"
+              @review-semantics="reviewSemantics"
+              @run="runTest"
+            />
           </div>
 
           <!-- The rail: run it, and record what it means. -->
@@ -476,6 +556,26 @@ onUnmounted(unsubscribe)
 
             <div class="rail-group">
               <h4>Your conclusion</h4>
+
+              <!-- What the run reads as, stated before the control that departs
+                   from it. Accepting is still an auditor conclusion; the run
+                   only ever suggests. -->
+              <p v-if="selected.evaluation.state !== 'not_run'" class="run-reading">
+                The run reads this as
+                <strong>{{ conclusionLabel(selected.evaluation.suggested_control_conclusion) }}</strong>.
+                <Button
+                  v-if="selected.control_conclusion !== selected.evaluation.suggested_control_conclusion
+                    || selected.control_conclusion_source !== 'auditor'"
+                  label="Accept" link size="small" :loading="saving" @click="acceptRunReading"
+                />
+              </p>
+              <p v-if="selected.control_conclusion_source === 'agent'" class="by-agent">
+                Concluded by an unattended run. No auditor has reviewed it.
+              </p>
+              <p v-else-if="selected.control_conclusion_stale" class="is-stale">
+                Recorded against evidence that has since changed — re-save to re-affirm it.
+              </p>
+
               <label>
                 Control conclusion
                 <Select
@@ -489,7 +589,16 @@ onUnmounted(unsubscribe)
                 Conclusion
                 <Textarea v-model="selected.conclusion" rows="3" autoResize placeholder="What this result means for the control, in your own words." />
               </label>
-              <Button label="Save conclusion" icon="pi pi-check" size="small" outlined :loading="saving" @click="saveConclusion" />
+              <!-- Departing from the run is the judgement a working paper has
+                   to show. The backend refuses it without one; saying so here
+                   beats surfacing it as an error after the click. -->
+              <small v-if="departsWithoutReason" class="needs-reason">
+                Departing from the run needs a written reason above.
+              </small>
+              <Button
+                label="Save conclusion" icon="pi pi-check" size="small" outlined
+                :loading="saving" :disabled="departsWithoutReason" @click="saveConclusion"
+              />
             </div>
 
             <div class="rail-group">
@@ -649,7 +758,17 @@ onUnmounted(unsubscribe)
 @container master-detail-content (min-width: 42rem) {
   .detail { grid-template-columns: minmax(0, 1fr) 13rem; }
   .detail-head { grid-column: 1 / -1; }
-  .detail-rail { position: sticky; top: 0; align-self: start; }
+  /* A pinned rail taller than the window puts its own last control out of
+     reach: it sticks at the top and the overflow below cannot be scrolled to.
+     Measured at 695px against a 700px viewport, so the conclusion state lines
+     were one sentence away from stranding the Save button. */
+  .detail-rail {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+  }
 }
 
 /* The definition editor now lives in a drawer, which PrimeVue teleports to the

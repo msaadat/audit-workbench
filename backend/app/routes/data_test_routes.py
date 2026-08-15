@@ -47,6 +47,32 @@ async def delete_data_test(workspace_id: str, data_test_id: str):
     return {"ok": True}
 
 
+@router.post("/data-tests/{data_test_id}/exception-dispositions")
+async def post_data_test_exception_disposition(
+    workspace_id: str, data_test_id: str, payload: dict = Body(...)
+):
+    """Rule on one group of this test's exceptions."""
+
+    return data_tests.record_exception_disposition(
+        _ws(workspace_id),
+        data_test_id,
+        str(payload.get("key") or ""),
+        str(payload.get("state") or "pending"),
+        note=str(payload.get("note") or ""),
+    )
+
+
+@router.post("/data-tests/{data_test_id}/semantic-review")
+async def post_data_test_semantic_review(
+    workspace_id: str, data_test_id: str, payload: dict = Body(...)
+):
+    """Record that the run's semantic issues were read and judged survivable."""
+
+    return data_tests.record_semantic_review(
+        _ws(workspace_id), data_test_id, str(payload.get("note") or "")
+    )
+
+
 @router.post("/data-tests/{data_test_id}/run")
 async def run_data_test(workspace_id: str, data_test_id: str):
     return await asyncio.to_thread(data_tests.run, _ws(workspace_id), data_test_id)

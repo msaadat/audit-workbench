@@ -264,6 +264,34 @@ def rcm_material_projection(row: dict | None) -> dict | None:
     return {field: row.get(field) for field in _RCM_MATERIAL_FIELDS}
 
 
+# A Data Test's marking is derived from its runs and its rulings, and is
+# re-projected on every read. Hashing it would make reading a test change its
+# own parent hash, and would let recording a disposition abort a run already in
+# flight against the definition it was recorded on.
+_DATATEST_DERIVED_FIELDS = frozenset({
+    "status",
+    "evaluation",
+    "exception_dispositions",
+    "semantic_review",
+    "conclusion_source",
+    "control_conclusion_source",
+    "control_conclusion_input_sha1",
+    "control_conclusion_stale",
+    "open_exception_count",
+})
+
+
+def datatest_material_projection(item: dict | None) -> dict | None:
+    """Return the basis of a Data Test, without what its runs derived from it."""
+    if item is None:
+        return None
+    return {
+        key: value
+        for key, value in item.items()
+        if key not in _DATATEST_DERIVED_FIELDS
+    }
+
+
 def artifact_projection(workspace: Workspace, ref: str) -> object:
     kind, separator, item_id = str(ref).partition(":")
     if not separator:
@@ -322,7 +350,9 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
 
         return material_projection(generated_projection(workspace, item_id))
     if kind == "datatest":
-        return next((item for item in workspace.data_tests if item.get("id") == item_id), None)
+        return datatest_material_projection(
+            next((item for item in workspace.data_tests if item.get("id") == item_id), None)
+        )
     if kind == "doctest":
         # Document tests live in their own sidecars, so the projection is the
         # summary the workspace itself indexes; the import is local because

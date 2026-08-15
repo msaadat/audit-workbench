@@ -134,24 +134,7 @@ def test_manifest(workspace: Workspace) -> list[dict]:
             item = test["item"]
             if test["kind"] == "datatest":
                 has_result = bool(item.get("last_run"))
-                execution_refs = data_tests._execution_table_refs(workspace, item)
-                current_source_sha1 = data_tests._sha1(
-                    {
-                        "engine": item.get("engine"),
-                        "table_refs": execution_refs,
-                        "spec": item.get("spec") or {},
-                    }
-                )
-                current_fingerprints = data_tests._dataset_fingerprints(
-                    workspace, execution_refs
-                )
-                result_stale = bool(
-                    item.get("last_run")
-                    and (
-                        item["last_run"].get("source_sha1") != current_source_sha1
-                        or item["last_run"].get("dataset_fingerprints") != current_fingerprints
-                    )
-                )
+                result_stale = data_tests.result_stale(workspace, item)
             else:
                 current_items = bool(item.get("items")) and all(
                     doc_tests.item_execution_current(item, test_item)
@@ -306,7 +289,13 @@ def _observation(
     observation_key: str | None = None,
     details: dict | None = None,
     evidence_refs: list[dict] | None = None,
+    outcome: str | None = None,
 ) -> dict:
+    # Where the caller knows what was decided about these exceptions, that is
+    # the outcome. Only a caller with no disposition layer falls back to reading
+    # it off the count, which cannot tell "nobody has looked" from "looked and
+    # confirmed".
+    outcome = outcome or ("exception" if exception_count else "needs_manual_check")
     key = observation_key or execution_ref
     existing = next(
         (
@@ -348,7 +337,7 @@ def _observation(
             "exception_count": exception_count,
             "summary": summary,
             "classification": classification,
-            "outcome": "exception" if exception_count else "needs_manual_check",
+            "outcome": outcome,
             "created": workspace._updated_now(),
             "updated": workspace._updated_now(),
         }
@@ -359,7 +348,7 @@ def _observation(
             exception_count=exception_count,
             summary=summary,
             classification=classification,
-            outcome="exception" if exception_count else "needs_manual_check",
+            outcome=outcome,
             updated=workspace._updated_now(),
         )
     existing["observation_key"] = key
@@ -374,7 +363,8 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
     """Fold one Data Test's latest run into its own record."""
     last_run = item.get("last_run")
     exceptions = int((last_run or {}).get("exception_count") or 0)
-    open_exceptions = 0
+    # What still stands after the rulings, not simply what the run turned up.
+    open_exceptions = data_tests.open_exception_count(item)
     executed = 0
     if last_run:
         executed = 1
@@ -387,7 +377,7 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
                 if any("Screening result" in issue for issue in run.get("semantic_issues") or [])
                 else "draft_finding_candidate"
             )
-            observation = _observation(
+            _observation(
                 workspace,
                 rcm_id=row["id"],
                 test_id=item["id"],
@@ -395,9 +385,17 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
                 exception_count=exceptions,
                 classification=suggestion,
                 summary=run.get("verdict_text") or item["title"],
+                # An exception every ruling has accepted is no longer a finding
+                # candidate. Saying so here is what stops the drafting workflow
+                # re-raising work an auditor has already closed.
+                outcome=(
+                    "resolved"
+                    if exceptions and not open_exceptions
+                    else "exception"
+                    if open_exceptions
+                    else "needs_manual_check"
+                ),
             )
-            if observation.get("outcome") == "exception":
-                open_exceptions = exceptions
     status = str(item.get("status") or "draft")
     return status, exceptions, open_exceptions, executed
 
@@ -867,7 +865,12 @@ def completion(
             test["kind"] != "doctest"
             or doc_tests.conclusion_eligible(test["item"])
         )
-        and test["item"].get("control_conclusion") not in CONCLUDED_CONTROL_CONCLUSIONS
+        and (
+            test["item"].get("control_conclusion") not in CONCLUDED_CONTROL_CONCLUSIONS
+            # A conclusion reached against evidence that has since moved is a
+            # record of what somebody once thought, not a current conclusion.
+            or test["item"].get("control_conclusion_stale")
+        )
     ]
     blocked_without_plan = [
         {
@@ -955,6 +958,16 @@ def completion(
         "coverage": cov,
         "incomplete_outcomes": incomplete_outcomes,
         "blank_conclusions": blank_conclusions,
+        # An unattended run concludes on its own so the engagement can finish
+        # without an auditor, which is what auto mode is for. This says how much
+        # of the file that accounts for. Deliberately a disclosure and not a
+        # gate: it does not hold completion, it just stops "completed" from
+        # implying somebody read it.
+        "unreviewed_agent_conclusions": [
+            {"rcm_id": row["id"], "test_id": test["id"]}
+            for row, test in linked
+            if test["item"].get("control_conclusion_source") == "agent"
+        ],
         "blocked_without_plan": blocked_without_plan,
         "rcm_without_conclusion": rcm_without_conclusion,
         "assurance_gaps": assurance_gaps,

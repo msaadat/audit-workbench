@@ -177,6 +177,11 @@ def run_data_test(workspace: Workspace, data_test_id: str) -> ExecutionOutcome:
 
     result = data_tests.run(workspace, data_test_id)
     if result.get("semantic_valid"):
+        # An unattended run has to conclude or nothing downstream can proceed,
+        # and the evaluation is deterministic enough to support one. It is a
+        # separate act from the run, stamped ``agent``, and it stands aside for
+        # anything an auditor has already decided.
+        data_tests.auto_disposition(workspace, data_test_id)
         return ExecutionOutcome(
             data_test_result_ref(data_test_id, str(result["id"])), "succeeded"
         )

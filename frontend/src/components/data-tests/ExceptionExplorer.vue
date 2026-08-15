@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import type { DataTestExceptionProfile, FramePayload } from '../../types'
+import type {
+  DataTestExceptionDisposition,
+  DataTestExceptionProfile,
+  DataTestDispositionState,
+  FramePayload,
+} from '../../types'
 import FrameTable from '../FrameTable.vue'
 import { plural } from '../../format'
 
 const props = defineProps<{
   profile: DataTestExceptionProfile
   frame: FramePayload
+  dispositions: DataTestExceptionDisposition[]
+  busy?: boolean
+}>()
+const emit = defineEmits<{
+  (event: 'rule', payload: { key: string; state: DataTestDispositionState; note: string }): void
 }>()
 
 // Provenance columns. They describe where a row came from, not what failed, and
@@ -31,8 +41,9 @@ const scale = computed(() =>
   Math.max(1, ...props.profile.reasons.map(reason => reason.records)),
 )
 // One reason is not a breakdown, and a bar at full width says only that it is
-// the only one. Reasons that are step labels are already listed as steps.
-const showReasons = computed(
+// the only one. The rows themselves always show, because each one is now what
+// an auditor rules on — hiding them would hide the only control there is.
+const showBars = computed(
   () => props.profile.reason_source === 'predicate' && props.profile.reasons.length > 1,
 )
 
@@ -85,6 +96,41 @@ const unit = computed(() =>
 function pick(label: string) {
   selected.value = selected.value === label ? null : label
 }
+
+const byKey = computed(
+  () => new Map(props.dispositions.map(item => [item.key, item])),
+)
+function ruling(label: string): DataTestExceptionDisposition | null {
+  return byKey.value.get(label) ?? null
+}
+/** A stale ruling reads as undecided, because that is how it now counts. */
+function state(label: string): DataTestDispositionState {
+  const value = ruling(label)
+  return !value || value.stale ? 'pending' : value.state
+}
+const openGroups = computed(
+  () => props.profile.reasons.filter(reason => state(reason.label) !== 'accepted').length,
+)
+
+// Retiring an exception is the ruling that moves the control conclusion, so it
+// is the one that has to carry its reasoning. Confirming what the run already
+// found needs no argument.
+const noting = ref<string | null>(null)
+const note = ref('')
+function beginAccept(label: string) {
+  noting.value = label
+  note.value = ruling(label)?.note ?? ''
+}
+function commitAccept() {
+  if (!noting.value || !note.value.trim()) return
+  emit('rule', { key: noting.value, state: 'accepted', note: note.value.trim() })
+  noting.value = null
+  note.value = ''
+}
+function rule(label: string, next: DataTestDispositionState) {
+  noting.value = null
+  emit('rule', { key: label, state: next, note: ruling(label)?.note ?? '' })
+}
 </script>
 
 <template>
@@ -107,29 +153,91 @@ function pick(label: string) {
       </p>
     </header>
 
-    <!-- Only conditions earn this block. Where the reasons are just the steps,
-         the step list below already says it, and saying it twice is the noise
-         this view exists to remove. -->
-    <div v-if="showReasons" class="reasons">
-      <p class="block-head">Why they failed</p>
-      <button
+    <!-- Each group is both the breakdown and the unit an auditor rules on. -->
+    <div v-if="profile.reasons.length" class="reasons">
+      <p class="block-head">
+        Why they failed
+        <span v-if="openGroups" class="open-tally">{{ openGroups }} still open</span>
+        <span v-else class="open-tally settled">all accepted</span>
+      </p>
+      <div
         v-for="reason in profile.reasons"
         :key="reason.label"
-        type="button"
-        class="reason"
-        :class="{ active: selected === reason.label }"
-        :aria-pressed="selected === reason.label"
-        @click="pick(reason.label)"
+        class="reason-row"
+        :data-state="state(reason.label)"
       >
-        <span class="reason-label">{{ reason.label }}</span>
-        <span class="bar" aria-hidden="true">
-          <span class="fill" :style="{ width: `${(reason.records / scale) * 100}%` }" />
-        </span>
-        <span class="count aw-figure">
-          {{ reason.records }}
-          <small v-if="reason.rows !== reason.records">/ {{ reason.rows }} rows</small>
-        </span>
-      </button>
+        <button
+          type="button"
+          class="reason"
+          :class="{ active: selected === reason.label, bars: showBars }"
+          :aria-pressed="selected === reason.label"
+          @click="pick(reason.label)"
+        >
+          <span class="reason-label">{{ reason.label }}</span>
+          <span v-if="showBars" class="bar" aria-hidden="true">
+            <span class="fill" :style="{ width: `${(reason.records / scale) * 100}%` }" />
+          </span>
+          <span class="count aw-figure">
+            {{ reason.records }}
+            <small v-if="reason.rows !== reason.records">/ {{ reason.rows }} rows</small>
+          </span>
+        </button>
+
+        <div class="ruling">
+          <span class="verdict" :data-state="state(reason.label)">
+            {{
+              state(reason.label) === 'accepted' ? 'Accepted'
+              : state(reason.label) === 'exception' ? 'Exception'
+              : state(reason.label) === 'needs_review' ? 'Needs review'
+              : 'Not ruled on'
+            }}
+          </span>
+          <small v-if="ruling(reason.label)?.stale" class="stale">
+            Ruled against evidence that has since changed.
+          </small>
+          <small
+            v-else-if="ruling(reason.label)?.source === 'agent' && state(reason.label) !== 'pending'"
+            class="by-agent"
+          >
+            Recorded by an unattended run; no auditor has reviewed it.
+          </small>
+          <small v-else-if="ruling(reason.label)?.note" class="note-text">
+            “{{ ruling(reason.label)?.note }}”
+          </small>
+          <span class="actions">
+            <button
+              type="button" class="link" :disabled="busy"
+              @click="beginAccept(reason.label)"
+            >Accept</button>
+            <button
+              type="button" class="link" :disabled="busy"
+              @click="rule(reason.label, 'exception')"
+            >Confirm exception</button>
+            <button
+              type="button" class="link" :disabled="busy"
+              @click="rule(reason.label, 'needs_review')"
+            >Needs review</button>
+            <button
+              v-if="state(reason.label) !== 'pending'"
+              type="button" class="link" :disabled="busy"
+              @click="rule(reason.label, 'pending')"
+            >Clear</button>
+          </span>
+        </div>
+
+        <!-- Accepting retires exceptions from the control conclusion, so it is
+             the one ruling that cannot be a bare click. -->
+        <form v-if="noting === reason.label" class="accept" @submit.prevent="commitAccept">
+          <label>
+            Why these are not a control failure
+            <textarea v-model="note" rows="2" required />
+          </label>
+          <span class="accept-actions">
+            <button type="submit" class="link" :disabled="busy || !note.trim()">Accept group</button>
+            <button type="button" class="link" @click="noting = null">Cancel</button>
+          </span>
+        </form>
+      </div>
       <p v-if="selected" class="filtered">
         Showing the {{ plural(rows.length, 'row') }} that failed on “{{ selected }}”.
         <button type="button" class="link" @click="selected = null">Show all</button>
@@ -175,11 +283,24 @@ function pick(label: string) {
 .explorer :deep(th) { font-size: var(--aw-text-sm); }
 
 .reasons { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.7rem; }
+.open-tally { color: var(--aw-danger); font-weight: 700; }
+.open-tally.settled { color: var(--aw-ok); }
+
+/* The left rule is the ruling: it is the one thing worth seeing when scanning a
+   column of groups for what still needs a decision. */
+.reason-row { min-width: 0; padding-left: 0.55rem; border-left: 3px solid var(--aw-border-strong); }
+.reason-row + .reason-row { margin-top: 0.35rem; }
+.reason-row[data-state='accepted'] { border-left-color: var(--aw-ok); }
+.reason-row[data-state='exception'] { border-left-color: var(--aw-danger); }
+.reason-row[data-state='needs_review'] { border-left-color: var(--aw-warn); }
+
 .reason {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 8rem auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.7rem;
+  width: 100%;
   padding: 0.35rem 0.5rem;
   border: 1px solid transparent;
   border-radius: var(--aw-radius-control);
@@ -190,8 +311,37 @@ function pick(label: string) {
   text-align: left;
   cursor: pointer;
 }
+.reason.bars { grid-template-columns: minmax(0, 1fr) 8rem auto; }
 .reason:hover { background: var(--aw-raised); }
 .reason.active { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
+
+.ruling { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.35rem 0.6rem; padding: 0 0.5rem 0.3rem; min-width: 0; }
+.verdict { font-size: var(--aw-text-xs); font-weight: 700; }
+.verdict[data-state='pending'] { color: var(--aw-muted); }
+.verdict[data-state='accepted'] { color: var(--aw-ok); }
+.verdict[data-state='exception'] { color: var(--aw-danger); }
+.verdict[data-state='needs_review'] { color: var(--aw-warn); }
+.ruling small { min-width: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); overflow-wrap: anywhere; }
+.ruling .stale { color: var(--aw-warn); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-left: auto; }
+.actions .link { font-size: var(--aw-text-xs); }
+.link[disabled] { color: var(--aw-muted); cursor: default; text-decoration: none; }
+
+.accept { display: flex; flex-direction: column; gap: 0.4rem; padding: 0 0.5rem 0.5rem; }
+.accept label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.accept textarea {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-panel);
+  color: inherit;
+  font: inherit;
+  font-size: var(--aw-text-sm);
+  resize: vertical;
+}
+.accept-actions { display: flex; gap: 0.7rem; }
+.accept-actions .link { font-size: var(--aw-text-xs); font-weight: 700; }
 .reason-label { min-width: 0; overflow-wrap: anywhere; }
 .bar { height: 0.5rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); }
 .reason.active .bar { background: var(--aw-panel); }
@@ -204,7 +354,8 @@ function pick(label: string) {
 .note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.5; }
 
 @container master-detail-content (max-width: 32rem) {
-  .reason { grid-template-columns: minmax(0, 1fr) auto; }
+  .reason, .reason.bars { grid-template-columns: minmax(0, 1fr) auto; }
   .bar { display: none; }
+  .actions { margin-left: 0; }
 }
 </style>

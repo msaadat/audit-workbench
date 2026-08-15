@@ -368,7 +368,14 @@ def test_dashboard_links_conclusion_conflicts_to_the_owning_test(
     })
     data_tests.run(ws, test["id"])
     rcm_execution.rollup(ws)
-    data_tests.update(ws, test["id"], {"control_conclusion": "effective"})
+    data_tests.update(
+        ws,
+        test["id"],
+        {
+            "control_conclusion": "effective",
+            "conclusion": "Departing from the run so the conflict has something to flag.",
+        },
+    )
 
     attention = dashboard_payload(ws)["attention"]
     item = next(value for value in attention if value["id"] == f"coverage:{test['id']}")

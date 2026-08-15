@@ -1,19 +1,53 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Message from 'primevue/message'
 
-import type { DataTest, DataTestResult } from '../../types'
+import type { DataTest, DataTestDispositionState, DataTestResult } from '../../types'
 import ExceptionExplorer from './ExceptionExplorer.vue'
 import FrameTable from '../FrameTable.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 import { plural } from '../../format'
 
-const props = defineProps<{ test: DataTest; result: DataTestResult | null }>()
+const props = defineProps<{ test: DataTest; result: DataTestResult | null; busy?: boolean }>()
+const emit = defineEmits<{
+  (event: 'rule', payload: { key: string; state: DataTestDispositionState; note: string }): void
+  (event: 'review-semantics', note: string): void
+  (event: 'run'): void
+}>()
 
-// Results stored before the profile existed still render the plain frame.
-const profile = computed(() =>
-  props.result?.exception_profile?.reasons?.length ? props.result.exception_profile : null,
-)
+/**
+ * The record-level reading of the exceptions, and the groups an auditor rules
+ * on.
+ *
+ * The rulable set is always `evaluation.reasons` — the backend refuses a ruling
+ * on any label it does not hold, so offering one from anywhere else is an
+ * action that cannot succeed. The stored result's profile is richer (it knows
+ * the entity key, the population, and which columns each condition reads), so
+ * it is used to enrich those groups, never to define them.
+ */
+const profile = computed(() => {
+  const reasons = props.test.evaluation.reasons
+  if (!reasons.length) return null
+  const stored = props.result?.exception_profile ?? null
+  const columnsFor = new Map(
+    (stored?.reasons ?? []).map(reason => [reason.label, reason.columns]),
+  )
+  const fallbackColumns = (props.result?.exception_frame?.columns ?? []).filter(
+    column => !column.startsWith('_'),
+  )
+  return {
+    entity_key: stored?.entity_key ?? null,
+    record_count: stored?.record_count ?? props.test.evaluation.exception_count,
+    row_count: stored?.row_count ?? props.test.evaluation.exception_count,
+    population: stored?.population ?? null,
+    population_table: stored?.population_table ?? null,
+    reason_source: stored?.reason_source ?? ('step' as const),
+    reasons: reasons.map(reason => ({
+      ...reason,
+      columns: columnsFor.get(reason.label) ?? fallbackColumns,
+    })),
+  }
+})
 
 const headline = computed(() => {
   if (props.result?.error) return props.result.error
@@ -37,6 +71,33 @@ const ranAt = computed(() => {
 // panel, so echoing them read-only here just showed the same words twice.
 // What the runner produced and the auditor cannot edit still belongs here.
 const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.scope_limitations))
+
+// What the run found, said in the run's own voice. The status chip beside it is
+// the joint reading of the run and the rulings, which is a different sentence
+// once somebody has ruled — showing only one of the two was the whole defect.
+const RUN_VERDICTS: Record<string, string> = {
+  not_run: 'Not run',
+  passed: 'The run found no exceptions',
+  failed: 'The run found exceptions',
+  inconclusive: 'The run could not produce reliable evidence',
+}
+const runVerdict = computed(() => RUN_VERDICTS[props.test.evaluation.state] ?? 'Not run')
+const openCount = computed(() => props.test.open_exception_count)
+const foundCount = computed(() => props.test.evaluation.exception_count)
+const settled = computed(() => Boolean(foundCount.value) && openCount.value === 0)
+// Semantic issues are what block a conclusion. Once somebody has read them and
+// said why they are survivable, that note is part of the record.
+const needsSemanticReview = computed(
+  () => props.test.evaluation.state === 'inconclusive' && !props.test.semantic_review,
+)
+const reviewing = ref(false)
+const reviewNote = ref('')
+function commitReview() {
+  if (!reviewNote.value.trim()) return
+  emit('review-semantics', reviewNote.value.trim())
+  reviewing.value = false
+  reviewNote.value = ''
+}
 </script>
 
 <template>
@@ -47,18 +108,74 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
          it said the same thing twice in two different voices. -->
     <header>
       <div class="headline">
-        <UiTestStatus :status="result?.status ?? test.status" showLabel />
+        <UiTestStatus :status="test.status" showLabel />
         <p v-if="!profile" :class="{ failed: Boolean(result?.error) }">{{ headline }}</p>
       </div>
       <small v-if="ranAt" class="muted">Run {{ ranAt }}</small>
       <small v-else class="muted">Never run</small>
     </header>
 
+    <!-- The run itself is out of date. This qualifies everything below it, so
+         it goes first: the readings, the rulings, and the conclusion all
+         describe a state of the workspace that no longer holds. -->
+    <Message v-if="test.result_stale" severity="warn" :closable="false">
+      <strong>This result is out of date</strong>
+      <p class="stale-body">
+        The definition or the data has changed since this run. Everything below
+        describes the earlier state.
+        <button type="button" class="link" :disabled="busy" @click="emit('run')">
+          Run it again
+        </button>
+      </p>
+    </Message>
+
+    <!-- Two readings, never one. The run's verdict is a fact about the data and
+         does not change when somebody rules on it; the status above is the
+         joint reading and does. -->
+    <p class="two-readings" :data-stale="test.result_stale">
+      <span class="run-said">{{ runVerdict }}<template v-if="foundCount">: {{ plural(foundCount, 'exception row') }}</template>.</span>
+      <span v-if="foundCount" class="still-open" :data-settled="settled">
+        <template v-if="settled">All accepted on review; none stand against the control.</template>
+        <template v-else>{{ openCount }} still open.</template>
+      </span>
+    </p>
+
+    <Message v-if="test.control_conclusion_stale" severity="warn" :closable="false">
+      <strong>The conclusion on this test is out of date</strong>
+      <p class="stale-body">
+        It was recorded against a different definition or a different state of the
+        data. Re-affirm it, or change it, in the conclusion panel.
+      </p>
+    </Message>
+
     <Message v-if="issues.length" severity="warn" :closable="false">
       <strong>Review these before relying on the result</strong>
       <ul class="issues">
         <li v-for="issue in issues" :key="issue">{{ issue }}</li>
       </ul>
+      <!-- Without this the test is stranded: the runner will not conclude over
+           evidence it cannot vouch for, and nobody could say why it is fine. -->
+      <template v-if="needsSemanticReview">
+        <button v-if="!reviewing" type="button" class="link" @click="reviewing = true">
+          I have reviewed these and they do not invalidate the result
+        </button>
+        <form v-else class="review" @submit.prevent="commitReview">
+          <label>
+            Why these issues do not invalidate the result
+            <textarea v-model="reviewNote" rows="2" required />
+          </label>
+          <span class="review-actions">
+            <button type="submit" class="link" :disabled="busy || !reviewNote.trim()">
+              Record review
+            </button>
+            <button type="button" class="link" @click="reviewing = false">Cancel</button>
+          </span>
+        </form>
+      </template>
+      <p v-else-if="test.semantic_review" class="reviewed">
+        Reviewed {{ new Date(test.semantic_review.at).toLocaleDateString() }}:
+        “{{ test.semantic_review.note }}”
+      </p>
     </Message>
     <Message v-if="warnings.length" severity="warn" :closable="false">
       <ul class="issues">
@@ -70,6 +187,9 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
       v-if="profile && result?.exception_frame"
       :profile="profile"
       :frame="result.exception_frame"
+      :dispositions="test.exception_dispositions"
+      :busy="busy"
+      @rule="emit('rule', $event)"
     />
 
     <!-- Statistics are the engine's own figures. Where the exception profile
@@ -133,6 +253,34 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 
 .block-head { margin: 0 0 0.35rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .issues { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+
+/* What the run found, and what is left of it. Two facts on one line because
+   they are read together and mean different things. */
+.two-readings { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; margin: 0; font-size: var(--aw-text-sm); line-height: 1.5; }
+/* Figures the banner above has just said are about an earlier state. */
+.two-readings[data-stale='true'] { opacity: 0.65; }
+.run-said { color: var(--aw-muted); }
+.still-open { font-weight: 700; color: var(--aw-danger); }
+.still-open[data-settled='true'] { color: var(--aw-ok); }
+.stale-body { margin: 0.25rem 0 0; font-size: var(--aw-text-sm); line-height: 1.5; }
+
+.link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-sm); text-decoration: underline; cursor: pointer; }
+.link[disabled] { color: var(--aw-muted); cursor: default; text-decoration: none; }
+.review { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem; }
+.review label { display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--aw-text-xs); font-weight: 700; }
+.review textarea {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-panel);
+  color: inherit;
+  font: inherit;
+  font-size: var(--aw-text-sm);
+  resize: vertical;
+}
+.review-actions { display: flex; gap: 0.7rem; }
+.reviewed { margin: 0.4rem 0 0; font-size: var(--aw-text-xs); line-height: 1.5; }
 
 .stats { display: flex; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
 .stats span { display: flex; flex: 1 1 7rem; flex-direction: column; min-width: 0; padding: 0.5rem 0.6rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }

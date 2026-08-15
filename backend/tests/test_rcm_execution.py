@@ -260,7 +260,7 @@ def test_row_rollup_reports_a_passed_and_failed_tally(workspace_with_data):
     assert row_rollup["passed"] == 1
 
 
-def test_exception_observation_is_final_without_a_disposition(workspace_with_data):
+def test_an_undispositioned_exception_stays_open_across_rollups(workspace_with_data):
     ws = workspace_with_data
     row = _row(ws)
     item = _data_test(ws, row)
@@ -272,6 +272,80 @@ def test_exception_observation_is_final_without_a_disposition(workspace_with_dat
 
     assert observation["outcome"] == "exception"
     assert data_tests._record(ws, item["id"])["open_exception_count"] > 0
+
+
+def test_accepting_every_exception_group_closes_the_observation(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    item = _data_test(ws, row)
+    data_tests.run(ws, item["id"])
+    rcm_execution.rollup(ws)
+    record = data_tests._record(ws, item["id"])
+    assert record["open_exception_count"] > 0
+
+    for reason in record["evaluation"]["reasons"]:
+        data_tests.record_exception_disposition(
+            ws, item["id"], reason["label"], "accepted",
+            note="Pre-approved emergency purchases; supported on inspection.",
+        )
+
+    rcm_execution.rollup(ws)
+    record = data_tests._record(ws, item["id"])
+
+    # The run still says what it found; the rulings say what still stands.
+    assert record["exception_count"] > 0
+    assert record["open_exception_count"] == 0
+    assert record["status"] == "completed_no_exception"
+    # An exception nobody is carrying forward is not a finding candidate.
+    assert ws.observations[0]["outcome"] == "resolved"
+
+
+def test_completion_discloses_conclusions_no_auditor_reviewed(workspace_with_data):
+    ws = workspace_with_data
+    ws.update_planning(
+        {"context": {"objective": "Test procurement controls.", "scope": "Invoice population."}}
+    )
+    row = _row(ws)
+    item = _data_test(ws, row)
+    data_tests.run(ws, item["id"])
+    data_tests.auto_disposition(ws, item["id"])
+
+    completion = rcm_execution.completion(ws)
+
+    # The unattended conclusion closes the gate — that is what lets an auto run
+    # finish — but the file still records that nobody read it.
+    assert completion["blank_conclusions"] == []
+    assert completion["unreviewed_agent_conclusions"] == [
+        {"rcm_id": row["id"], "test_id": item["id"]}
+    ]
+
+    data_tests.update(ws, item["id"], {"control_conclusion": "ineffective"})
+    assert rcm_execution.completion(ws)["unreviewed_agent_conclusions"] == []
+
+
+def test_a_rerun_does_not_disturb_the_auditors_conclusion(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    item = _data_test(ws, row)
+    data_tests.run(ws, item["id"])
+    data_tests.update(
+        ws,
+        item["id"],
+        {
+            "control_conclusion": "effective",
+            "conclusion": "Exceptions are pre-approved emergency buys; the control operated.",
+        },
+    )
+
+    data_tests.run(ws, item["id"])
+    record = data_tests._record(ws, item["id"])
+
+    # Re-running the same definition over the same data re-reads the evidence.
+    # It is not a second opinion about the control.
+    assert record["control_conclusion"] == "effective"
+    assert record["control_conclusion_source"] == "auditor"
+    assert record["control_conclusion_stale"] is False
+    assert record["conclusion"].startswith("Exceptions are pre-approved")
 
 
 def test_rollup_reconciles_a_legacy_data_test_observation_reference(workspace_with_data):
@@ -448,7 +522,14 @@ def test_a_row_whose_requirements_were_all_tested_still_concludes_effective(
     )
     item = _data_test(ws, row)
     data_tests.run(ws, item["id"])
-    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+    data_tests.update(
+        ws,
+        item["id"],
+        {
+            "control_conclusion": "effective",
+            "conclusion": "The screened purchases were all approved on review.",
+        },
+    )
 
     rolled = rcm_execution.rollup(ws)
     (rolled_row,) = [entry for entry in rolled["rows"] if entry["rcm_id"] == row["id"]]
@@ -525,7 +606,9 @@ def test_completion_uses_control_conclusion_without_free_text(
     data_tests.run(ws, item["id"])
     rcm_execution.rollup(ws)
 
-    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+    # Agreeing with the run needs no argument, which is what lets this record a
+    # control conclusion and no prose at all.
+    data_tests.update(ws, item["id"], {"control_conclusion": "ineffective"})
 
     completion = rcm_execution.completion(ws)
     assert completion["blank_conclusions"] == []

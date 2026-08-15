@@ -1104,6 +1104,45 @@ export interface DataTestRunSummary {
   result_sha1: string
 }
 
+/** What the run found. Only the runner writes this. */
+export type DataTestEvaluationState = 'not_run' | 'passed' | 'failed' | 'inconclusive'
+/** How one group of exceptions was ruled on. Only a decider writes this. */
+export type DataTestDispositionState = 'pending' | 'accepted' | 'exception' | 'needs_review'
+/** Who decided. `agent` is an unattended run's own conclusion — real, recorded,
+ *  and overridable; `auditor` outranks it and is never overwritten. */
+export type DataTestConclusionSource = 'none' | 'agent' | 'auditor'
+
+export interface DataTestEvaluation {
+  state: DataTestEvaluationState
+  note: string
+  exception_count: number
+  /** The groups an auditor can rule on, carried so a reader never has to open
+   *  the result document to know what is outstanding. */
+  reasons: DataTestExceptionReason[]
+  /** What the run reads as, offered to whoever concludes. Not a conclusion. */
+  suggested_control_conclusion: ControlConclusion
+  /** Hash of the definition and the data this run consumed. */
+  input_sha1: string | null
+  ran_at: string | null
+}
+
+export interface DataTestExceptionDisposition {
+  scope: 'reason'
+  /** The reason label this ruling covers. */
+  key: string
+  state: DataTestDispositionState
+  note: string
+  rows: number
+  records: number
+  actor: string | null
+  source: DataTestConclusionSource
+  at: string | null
+  evaluated_input_sha1: string | null
+  /** The evidence moved after the ruling; it stands on the record but no
+   *  longer counts as current. */
+  stale: boolean
+}
+
 export interface DataTest extends TestPlan, TestOutcome {
   id: string
   semantic_id: string
@@ -1114,8 +1153,21 @@ export interface DataTest extends TestPlan, TestOutcome {
   table_refs: string[]
   steps: DataTestStep[]
   spec: Record<string, unknown>
+  /** The joint reading of `evaluation` and the dispositions, derived by the
+   *  backend. Read it for a one-word status; never send it back as a mutation. */
   status: TestStatus
   semantic_warnings: string[]
+  evaluation: DataTestEvaluation
+  exception_dispositions: DataTestExceptionDisposition[]
+  conclusion_source: DataTestConclusionSource
+  control_conclusion_source: DataTestConclusionSource
+  control_conclusion_input_sha1: string | null
+  /** The conclusion was reached against evidence that has since moved. */
+  control_conclusion_stale: boolean
+  /** The stored result no longer describes the current definition or data —
+   *  a statement about the workspace now, not about any decision on it. */
+  result_stale: boolean
+  semantic_review: { at: string; actor: string; note: string } | null
   last_run: DataTestRunSummary | null
   evidence_refs: EvidenceRef[]
   created_by: 'agent' | 'user'
@@ -1148,6 +1200,11 @@ export interface DataTestExceptionProfile {
 export interface DataTestResult extends DataTestRunSummary {
   data_test_id: string
   rcm_id: string | null
+  /** What the run reads as. A suggestion for whoever concludes, never itself
+   *  a conclusion — nothing signs the file by running. */
+  suggested_control_conclusion: ControlConclusion
+  /** Hash of the definition and the data this run consumed. */
+  input_sha1: string
   verdict_text: string
   statistics: Array<{ label: string; value: string }>
   viz: Record<string, unknown> | null

@@ -36,6 +36,20 @@ CURRENT_RESULT_ID = "DTR-CURRENT"
 SUMMARY_ROWS = 500
 EXCEPTION_ROWS = 200
 
+# What the run found and what somebody decided about it are two separate facts.
+# ``status`` survives as the joint projection of the two so every existing
+# rollup, dashboard, and report reader carries on working, but these are the
+# vocabularies that actually get written.
+EVALUATION_STATES = {"not_run", "passed", "failed", "inconclusive"}
+DISPOSITION_STATES = {"pending", "accepted", "exception", "needs_review"}
+# Who concluded. An auto run concludes without an auditor, which is the point of
+# auto mode — but the file has to say that is what happened, and the auditor has
+# to be able to win. Both need the conclusion to carry its author.
+CONCLUSION_SOURCES = {"none", "agent", "auditor"}
+# Where the exception frame cannot be attributed to named conditions, the whole
+# frame is still one thing an auditor can rule on.
+ALL_EXCEPTIONS = "All exceptions"
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -60,6 +74,288 @@ def _normalize_steps(values: object) -> list[dict]:
             raise WorkspaceError("Each test step must be an object.")
         steps.append(dict(value))
     return steps
+
+
+def new_evaluation(
+    state: str = "not_run",
+    note: str = "",
+    *,
+    exception_count: int = 0,
+    reasons: list[dict] | None = None,
+    suggested_control_conclusion: str = "no_conclusion",
+    input_sha1: str | None = None,
+    ran_at: str | None = None,
+) -> dict:
+    """What the run found, and against which definition and data it found it."""
+    if state not in EVALUATION_STATES:
+        raise WorkspaceError("Unknown Data Test evaluation state.")
+    if suggested_control_conclusion not in CONTROL_CONCLUSIONS:
+        raise WorkspaceError("Unknown control conclusion.")
+    return {
+        "state": state,
+        "note": str(note or ""),
+        "exception_count": max(0, int(exception_count or 0)),
+        # The inventory of dispositionable groups, carried on the record so the
+        # rollup, the dashboard, and the completion gate never have to open the
+        # result document to know what is outstanding.
+        "reasons": [dict(reason) for reason in reasons or []],
+        # What the run reads as, offered to whoever concludes. Never a
+        # conclusion in itself: nothing signs the file by running.
+        "suggested_control_conclusion": suggested_control_conclusion,
+        "input_sha1": input_sha1,
+        "ran_at": ran_at,
+    }
+
+
+def new_disposition(
+    key: str,
+    state: str = "pending",
+    note: str = "",
+    *,
+    rows: int = 0,
+    records: int = 0,
+    actor: str | None = None,
+    source: str = "none",
+    at: str | None = None,
+    evaluated_input_sha1: str | None = None,
+    stale: bool = False,
+) -> dict:
+    """One ruling on one group of exceptions: what, by whom, against what."""
+    if state not in DISPOSITION_STATES:
+        raise WorkspaceError("Unknown Data Test disposition state.")
+    if source not in CONCLUSION_SOURCES:
+        raise WorkspaceError("Unknown Data Test disposition source.")
+    return {
+        "scope": "reason",
+        "key": str(key),
+        "state": state,
+        "note": str(note or ""),
+        # What the group covered when the ruling was made. Kept so a stale
+        # ruling can still say how much it once spoke for.
+        "rows": max(0, int(rows or 0)),
+        "records": max(0, int(records or 0)),
+        "actor": actor,
+        "source": source,
+        "at": at,
+        "evaluated_input_sha1": evaluated_input_sha1,
+        "stale": bool(stale),
+    }
+
+
+def evaluation_input_sha1(source_sha1: str, dataset_fingerprints: dict) -> str:
+    """Hash the definition and the data one run consumed.
+
+    Deliberately not the result hash: ``run_at`` is inside that, so it changes
+    on every run and would mark every ruling stale for no reason. The definition
+    and the tables are the two things whose change actually invalidates a
+    ruling.
+    """
+    return _sha1({"source": source_sha1, "data": dataset_fingerprints})
+
+
+def reason_inventory(exception_profile: dict | None, exception_count: int) -> list[dict]:
+    """The exception groups an auditor can rule on, one row each.
+
+    Only the Polars engine reconstructs named conditions. Everything else — and
+    any frame whose predicate could not be attributed — still has to be
+    rulable, so its exceptions stand as one group rather than none.
+    """
+    reasons = (exception_profile or {}).get("reasons") or []
+    if reasons:
+        return [
+            {
+                "label": str(reason.get("label") or ALL_EXCEPTIONS),
+                "rows": max(0, int(reason.get("rows") or 0)),
+                "records": max(0, int(reason.get("records") or 0)),
+            }
+            for reason in reasons
+        ]
+    if exception_count > 0:
+        return [
+            {"label": ALL_EXCEPTIONS, "rows": exception_count, "records": exception_count}
+        ]
+    return []
+
+
+def current_dispositions(item: dict) -> list[dict]:
+    """Rulings that still stand: decided, and made against the current inputs."""
+    return [
+        disposition
+        for disposition in item.get("exception_dispositions") or []
+        if disposition.get("state") != "pending" and not disposition.get("stale")
+    ]
+
+
+def open_exception_count(item: dict) -> int:
+    """Exceptions that still stand against the control.
+
+    Accepting a group is what retires its exceptions; everything else — ruled an
+    exception, flagged for review, or never looked at — stays open. Counting the
+    residual rather than the ruled groups keeps this honest when the reasons do
+    not partition the frame exactly.
+    """
+    evaluation = item.get("evaluation") or {}
+    total = max(0, int(evaluation.get("exception_count") or 0))
+    accepted = sum(
+        disposition["rows"]
+        for disposition in current_dispositions(item)
+        if disposition["state"] == "accepted"
+    )
+    return max(0, total - accepted)
+
+
+def project_status(item: dict) -> str:
+    """Read one test jointly: the ruling where there is one, else the run.
+
+    A ruling wins because somebody looked; that is the whole point of having a
+    disposition layer. What the run found is not erased by it — ``evaluation``
+    and ``exception_count`` both stay on the record — so a working paper can
+    still say how many exceptions were found alongside how many still stand.
+    """
+    if not item.get("engine") or str(item.get("status") or "") == "draft":
+        return "draft"
+    if (
+        str(item.get("control_conclusion") or "") == "not_applicable"
+        and str(item.get("control_conclusion_source") or "none") != "none"
+    ):
+        # Retiring a test is a conclusion about the control, not a run outcome.
+        return "not_applicable"
+    evaluation = item.get("evaluation") or {}
+    state = str(evaluation.get("state") or "not_run")
+    if state == "not_run":
+        return "ready"
+    standing = current_dispositions(item)
+    if any(disposition["state"] == "needs_review" for disposition in standing):
+        return "review_required"
+    if state == "inconclusive" and not (item.get("semantic_review") or {}).get("at"):
+        # Unreliable evidence stays unreliable until somebody says why it is not.
+        return "review_required"
+    if state == "passed":
+        return "completed_no_exception"
+    if any(disposition["state"] == "exception" for disposition in standing):
+        return "completed_with_exception"
+    return (
+        "completed_no_exception"
+        if open_exception_count(item) == 0
+        else "completed_with_exception"
+    )
+
+
+def result_stale(workspace: Workspace, item: dict) -> bool:
+    """Whether the stored result no longer describes the current basis.
+
+    Distinct from a stale *ruling*, which compares a decision against the run it
+    was made on. This compares the run against the workspace as it stands now,
+    so evidence moving under a test surfaces before anyone re-runs it rather
+    than only afterwards.
+    """
+    last_run = item.get("last_run")
+    if not last_run:
+        return False
+    refs = _execution_table_refs(workspace, item)
+    return bool(
+        last_run.get("source_sha1")
+        != _sha1({"engine": item.get("engine"), "table_refs": refs, "spec": item.get("spec") or {}})
+        or last_run.get("dataset_fingerprints") != _dataset_fingerprints(workspace, refs)
+    )
+
+
+def _evaluation_from_last_run(last_run: dict) -> dict:
+    """Read the evaluation off a record that predates the field.
+
+    Everything it needs is already on ``last_run`` — what the run concluded,
+    how many exceptions it found, and the definition and data it read. Only the
+    reason breakdown is unrecoverable, so those exceptions stand as one group
+    until the test is run again.
+    """
+    status = str(last_run.get("status") or "")
+    exceptions = int(last_run.get("exception_count") or 0)
+    return new_evaluation(
+        _RESULT_EVALUATION_STATES.get(status, "inconclusive"),
+        exception_count=exceptions,
+        reasons=reason_inventory(None, exceptions),
+        suggested_control_conclusion=(
+            "ineffective"
+            if status == "completed_with_exception"
+            else "effective"
+            if status == "completed_no_exception"
+            else "no_conclusion"
+        ),
+        input_sha1=evaluation_input_sha1(
+            str(last_run.get("source_sha1") or ""),
+            dict(last_run.get("dataset_fingerprints") or {}),
+        ),
+        ran_at=str(last_run.get("run_at") or "") or None,
+    )
+
+
+def _normalize_marking(item: dict) -> None:
+    """Validate one test's run verdict and rulings, then re-project its status."""
+    evaluation = item.get("evaluation") or {}
+    if not evaluation and item.get("last_run"):
+        evaluation = _evaluation_from_last_run(item["last_run"])
+    item["evaluation"] = new_evaluation(
+        str(evaluation.get("state") or "not_run"),
+        str(evaluation.get("note") or ""),
+        exception_count=evaluation.get("exception_count") or 0,
+        reasons=evaluation.get("reasons") or [],
+        suggested_control_conclusion=str(
+            evaluation.get("suggested_control_conclusion") or "no_conclusion"
+        ),
+        input_sha1=evaluation.get("input_sha1"),
+        ran_at=evaluation.get("ran_at"),
+    )
+    current = item["evaluation"]["input_sha1"]
+    dispositions = []
+    for raw in item.get("exception_dispositions") or []:
+        signed = raw.get("evaluated_input_sha1")
+        dispositions.append(
+            new_disposition(
+                str(raw.get("key") or ALL_EXCEPTIONS),
+                str(raw.get("state") or "pending"),
+                str(raw.get("note") or ""),
+                rows=raw.get("rows") or 0,
+                records=raw.get("records") or 0,
+                actor=raw.get("actor"),
+                source=str(raw.get("source") or "none"),
+                at=raw.get("at"),
+                evaluated_input_sha1=signed,
+                # A ruling made against inputs that have since changed stays on
+                # the record — somebody did decide this — but stops counting.
+                # A retired run counts as a change: there is nothing left for
+                # the ruling to be current against.
+                stale=bool(
+                    str(raw.get("state") or "pending") != "pending"
+                    and signed is not None
+                    and signed != current
+                ),
+            )
+        )
+    item["exception_dispositions"] = dispositions
+    for key in ("conclusion_source", "control_conclusion_source"):
+        if str(item.get(key) or "none") not in CONCLUSION_SOURCES:
+            raise WorkspaceError("Unknown Data Test conclusion source.")
+        item[key] = str(item.get(key) or "none")
+    if str(item.get("control_conclusion") or "no_conclusion") not in CONTROL_CONCLUSIONS:
+        raise WorkspaceError("Unknown control conclusion.")
+    signed = item.get("control_conclusion_input_sha1")
+    item["control_conclusion_stale"] = bool(
+        item["control_conclusion_source"] != "none"
+        and signed is not None
+        and signed != current
+    )
+    item["open_exception_count"] = open_exception_count(item)
+    item["status"] = project_status(item)
+
+
+def _invalidate_evaluation(item: dict, reason: str) -> None:
+    """Retire a run whose definition just changed.
+
+    Rulings made against it are left in place for :func:`_normalize_marking` to
+    mark stale rather than dropped: that somebody decided remains part of the
+    record, it just stops counting as current.
+    """
+    item["evaluation"] = new_evaluation("not_run", reason)
 
 
 def results_dir(workspace: Workspace, data_test_id: str | None = None) -> Path:
@@ -117,12 +413,19 @@ def _record(workspace: Workspace, data_test_id: str) -> dict:
     item.setdefault("methodology_refs", [])
     item.setdefault("conclusion", "")
     item.setdefault("control_conclusion", "no_conclusion")
+    item.setdefault("conclusion_source", "none")
+    item.setdefault("control_conclusion_source", "none")
+    item.setdefault("control_conclusion_input_sha1", None)
+    item.setdefault("evaluation", new_evaluation())
+    item.setdefault("exception_dispositions", [])
+    item.setdefault("semantic_review", None)
     item.setdefault("result_summary", "")
     item.setdefault("scope_limitations", "")
     item.setdefault("next_action", "")
     item.setdefault("exception_count", 0)
     item.setdefault("open_exception_count", 0)
     item.setdefault("finding_refs", [])
+    _normalize_marking(item)
     return item
 
 
@@ -261,9 +564,16 @@ def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -
         "criteria": str(payload.get("criteria") or ""),
         "steps": _normalize_steps(payload.get("steps")),
         "methodology_refs": list(payload.get("methodology_refs") or []),
-        # Outcome.
+        # Outcome. What the run found lives in ``evaluation``; what somebody
+        # decided about it lives in the conclusion fields and the dispositions.
         "conclusion": "",
+        "conclusion_source": "none",
         "control_conclusion": "no_conclusion",
+        "control_conclusion_source": "none",
+        "control_conclusion_input_sha1": None,
+        "evaluation": new_evaluation(),
+        "exception_dispositions": [],
+        "semantic_review": None,
         "result_summary": "",
         "scope_limitations": "",
         "next_action": "",
@@ -443,6 +753,19 @@ def update(
     )
     if conclusion not in CONTROL_CONCLUSIONS:
         raise WorkspaceError("Unknown control conclusion.")
+    prose = str(changes.get("conclusion", item.get("conclusion") or ""))
+    if (
+        "control_conclusion" in changes
+        and conclusion != "no_conclusion"
+        and conclusion != str(item["evaluation"]["suggested_control_conclusion"])
+        and not prose.strip()
+    ):
+        # Agreeing with the run needs no argument. Departing from it is the
+        # judgement the working paper has to be able to show, so it cannot be
+        # recorded as a bare enum change.
+        raise WorkspaceError(
+            "A control conclusion that departs from the run needs a written reason."
+        )
     item.update(
         title=title,
         objective=objective,
@@ -467,11 +790,20 @@ def update(
     )
     if not agent and item.get("created_by") == "agent":
         item["created_by"] = "user"
+    source = "agent" if agent else "auditor"
+    if "control_conclusion" in changes:
+        item["control_conclusion_source"] = source
+        item["control_conclusion_input_sha1"] = item["evaluation"]["input_sha1"]
+    if "conclusion" in changes:
+        item["conclusion_source"] = source
     # A changed *definition* must be executed again; history remains immutable.
     # Editing the plan or recording an outcome is not a definition change, so it
-    # must not discard the status the current result established.
+    # must not discard the result the current run established.
     if any(key in changes for key in ("engine", "table_refs", "spec")):
-        item["status"] = "ready"
+        _invalidate_evaluation(
+            item, "The definition changed after this run; run the test again."
+        )
+    _normalize_marking(item)
     _link(workspace, item)
     workspace.save()
     return item
@@ -1024,7 +1356,9 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
             if exception_count or output["verdict"] in {"warn", "fail"}
             else "completed_no_exception"
         )
-        control_conclusion = (
+        # What the run reads as, for whoever concludes to accept or depart from.
+        # It is a suggestion on the result, never a conclusion on the test.
+        suggested_control_conclusion = (
             "ineffective"
             if status == "completed_with_exception"
             else "effective"
@@ -1039,7 +1373,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         semantic_issues = list(dict.fromkeys([*join_issues, str(exc)]))
         semantic_valid = False
         status = "review_required"
-        control_conclusion = "no_conclusion"
+        suggested_control_conclusion = "no_conclusion"
         error = str(exc)
     result = {
         "id": run_id,
@@ -1047,7 +1381,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         "rcm_id": item["rcm_id"],
         "run_at": run_at,
         "status": status,
-        "control_conclusion": control_conclusion,
+        "suggested_control_conclusion": suggested_control_conclusion,
         "verdict": output["verdict"],
         "verdict_text": output.get("verdict_text") or "",
         "statistics": output.get("statistics") or [],
@@ -1059,6 +1393,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         "exception_frame": explore.frame_payload(exceptions, EXCEPTION_ROWS) if exceptions is not None else None,
         "exception_count": exception_count,
         "exception_profile": output.get("exception_profile"),
+        "input_sha1": evaluation_input_sha1(source_sha1, fingerprints),
         "semantic_valid": semantic_valid,
         "semantic_issues": semantic_issues,
         "join_diagnostics": diagnostics,
@@ -1067,6 +1402,183 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
     }
     result["result_sha1"] = _sha1(result)
     return result
+
+
+_RESULT_EVALUATION_STATES = {
+    "completed_no_exception": "passed",
+    "completed_with_exception": "failed",
+    "review_required": "inconclusive",
+}
+
+
+def record_evaluation(item: dict, result: dict) -> dict:
+    """Persist what one run found, leaving every ruling to its own author.
+
+    Rulings survive the run that they were made against. Reconciling them here
+    rather than dropping them is what lets an auditor's acceptance of "rounding
+    under 1.00" stand through a re-run that finds the same rounding again.
+    """
+    reasons = reason_inventory(
+        result.get("exception_profile"), int(result.get("exception_count") or 0)
+    )
+    item["evaluation"] = new_evaluation(
+        _RESULT_EVALUATION_STATES.get(str(result.get("status") or ""), "inconclusive"),
+        str(result.get("verdict_text") or ""),
+        exception_count=int(result.get("exception_count") or 0),
+        reasons=reasons,
+        suggested_control_conclusion=str(
+            result.get("suggested_control_conclusion") or "no_conclusion"
+        ),
+        input_sha1=str(result.get("input_sha1") or "") or None,
+        ran_at=str(result.get("run_at") or "") or None,
+    )
+    labels = [reason["label"] for reason in reasons]
+    by_key = {
+        str(disposition.get("key")): disposition
+        for disposition in item.get("exception_dispositions") or []
+    }
+    dispositions = []
+    for reason in reasons:
+        existing = by_key.get(reason["label"])
+        if existing is None:
+            dispositions.append(new_disposition(reason["label"], rows=reason["rows"], records=reason["records"]))
+            continue
+        # A group that is still there keeps its ruling; ``_normalize_marking``
+        # decides whether the changed inputs made that ruling stale.
+        dispositions.append({**existing, "rows": reason["rows"], "records": reason["records"]})
+    # A reason the run no longer produces keeps a decided ruling as history and
+    # drops an undecided one, which was only ever a prompt to look.
+    dispositions.extend(
+        disposition
+        for key, disposition in by_key.items()
+        if key not in labels and disposition.get("state") != "pending"
+    )
+    item["exception_dispositions"] = dispositions
+    _normalize_marking(item)
+    return item
+
+
+def record_exception_disposition(
+    workspace: Workspace,
+    data_test_id: str,
+    key: str,
+    state: str,
+    *,
+    note: str = "",
+    actor: str = "auditor",
+    source: str = "auditor",
+) -> dict:
+    """Rule on one group of exceptions without touching what the run found."""
+    item = _record(workspace, data_test_id)
+    known = {reason["label"] for reason in item["evaluation"]["reasons"]}
+    if key not in known:
+        raise WorkspaceError(f"This test has no exception group '{key}'.")
+    if state == "accepted" and not str(note or "").strip():
+        # Retiring an exception is the ruling that changes the control
+        # conclusion, so it is the one that has to carry its reasoning.
+        raise WorkspaceError("Accepting an exception group needs a written reason.")
+    reason = next(item_ for item_ in item["evaluation"]["reasons"] if item_["label"] == key)
+    replacement = (
+        new_disposition(key, "pending", note, rows=reason["rows"], records=reason["records"])
+        if state == "pending"
+        else new_disposition(
+            key,
+            state,
+            note,
+            rows=reason["rows"],
+            records=reason["records"],
+            actor=actor,
+            source=source,
+            at=utcnow(),
+            evaluated_input_sha1=item["evaluation"]["input_sha1"],
+        )
+    )
+    # A group is rulable as soon as the evaluation lists it, whether or not a
+    # placeholder row was ever written for it — a record that has not been
+    # re-run since the marking model landed has the inventory but no rows.
+    # Replacing in place only would drop the ruling and still answer 200.
+    existing_keys = {str(value.get("key")) for value in item["exception_dispositions"]}
+    item["exception_dispositions"] = (
+        [
+            replacement if str(value.get("key")) == key else value
+            for value in item["exception_dispositions"]
+        ]
+        if key in existing_keys
+        else [*item["exception_dispositions"], replacement]
+    )
+    _normalize_marking(item)
+    item["updated"] = utcnow()
+    workspace.save()
+    return item
+
+
+def record_semantic_review(
+    workspace: Workspace, data_test_id: str, note: str, *, actor: str = "auditor"
+) -> dict:
+    """Record that somebody read the semantic issues and judged them survivable.
+
+    Without this a test the runner could not vouch for is stranded outside
+    completion forever, whatever an auditor makes of the warning.
+    """
+    if not str(note or "").strip():
+        raise WorkspaceError("Reviewing the semantic issues needs a written reason.")
+    item = _record(workspace, data_test_id)
+    item["semantic_review"] = {"at": utcnow(), "actor": actor, "note": str(note)}
+    _normalize_marking(item)
+    item["updated"] = utcnow()
+    workspace.save()
+    return item
+
+
+def auto_disposition(
+    workspace: Workspace, data_test_id: str, *, actor: str = "agent"
+) -> dict:
+    """Conclude one Data Test without an auditor, and say so on the record.
+
+    This is what makes an auto run complete: the evaluation is deterministic, so
+    the ruling that follows from it is too. Three things keep that honest — it
+    is a separate act from running, it stamps ``agent`` as its author, and it
+    never touches anything an auditor has already decided.
+
+    An evaluation the runner could not vouch for is the one case it declines.
+    Unreliable evidence is exactly what ``semantic_valid`` exists to detect, and
+    concluding over it unattended is how a wrong literal becomes an audit
+    opinion.
+    """
+    item = _record(workspace, data_test_id)
+    evaluation = item["evaluation"]
+    if evaluation["state"] in {"not_run", "inconclusive"}:
+        return item
+    for disposition in item["exception_dispositions"]:
+        if disposition["source"] == "auditor":
+            continue
+        item["exception_dispositions"] = [
+            new_disposition(
+                disposition["key"],
+                "exception",
+                "Recorded by the unattended run; no auditor has reviewed it.",
+                rows=disposition["rows"],
+                records=disposition["records"],
+                actor=actor,
+                source="agent",
+                at=utcnow(),
+                evaluated_input_sha1=evaluation["input_sha1"],
+            )
+            if existing is disposition
+            else existing
+            for existing in item["exception_dispositions"]
+        ]
+    if item["control_conclusion_source"] != "auditor":
+        item["control_conclusion"] = evaluation["suggested_control_conclusion"]
+        item["control_conclusion_source"] = "agent"
+        item["control_conclusion_input_sha1"] = evaluation["input_sha1"]
+    if item["conclusion_source"] != "auditor" and not str(item.get("conclusion") or "").strip():
+        item["conclusion"] = evaluation["note"]
+        item["conclusion_source"] = "agent"
+    _normalize_marking(item)
+    item["updated"] = utcnow()
+    workspace.save()
+    return item
 
 
 def commit_result(
@@ -1080,6 +1592,7 @@ def commit_result(
     from .workspace_transactions import (
         canonical_sha1,
         complete_linked_write,
+        datatest_material_projection,
         material_projection,
         mutate,
         parent_hashes,
@@ -1100,7 +1613,7 @@ def commit_result(
         actual_sha1 = _sha1({key: value for key, value in candidate.items() if key != "result_sha1"})
         if supplied_sha1 != actual_sha1:
             raise WorkspaceError("The Data Test result candidate failed its integrity check.")
-        if canonical_sha1(material_projection(item)) != expected:
+        if canonical_sha1(material_projection(datatest_material_projection(item))) != expected:
             # ``mutate`` normally catches this first. Keep the check next to
             # the file write so future direct callers cannot bypass it.
             raise WorkspaceError("The Data Test definition changed before its result could be committed.")
@@ -1120,13 +1633,10 @@ def commit_result(
         for tile in fresh.tiles:
             if tile.get("data_test_id") == data_test_id:
                 tile["result_ref"] = f"datatest:{data_test_id}:{candidate['id']}"
-        item["status"] = candidate["status"]
-        # Deterministic execution has an unambiguous control conclusion for a
-        # semantically valid result. A review-required run is deliberately left
-        # without a conclusion because its evidence is not reliable enough.
-        item["control_conclusion"] = str(
-            candidate.get("control_conclusion") or "no_conclusion"
-        )
+        # Running records what the run found and nothing else. Concluding is a
+        # separate act with its own author — see :func:`auto_disposition` for
+        # the unattended path and :func:`update` for the auditor's.
+        record_evaluation(item, candidate)
         item["updated"] = candidate["run_at"]
         return candidate
 
@@ -1275,7 +1785,19 @@ def spec_as_python_code(spec: dict) -> str:
 
 
 def list_payload(workspace: Workspace) -> list[dict]:
+    # Hydrate on read the way ``_record`` does for a single test, so every
+    # reader sees the full marking whether or not the stored record predates it.
+    # In-memory only: a GET must not advance the workspace revision.
+    for item in workspace.data_tests:
+        _normalize_marking(item)
     return [
-        {key: value for key, value in item.items() if key != "runs"}
+        {
+            **{key: value for key, value in item.items() if key != "runs"},
+            # Derived against the live workspace rather than stored, because it
+            # is a statement about now. The table signatures behind it are
+            # cached per workspace, which is what keeps this affordable on a
+            # list read.
+            "result_stale": result_stale(workspace, item),
+        }
         for item in sorted(workspace.data_tests, key=lambda item: item.get("updated") or "", reverse=True)
     ]
