@@ -1105,6 +1105,105 @@ def test_data_test_api_runs_all_rcm_linked_tests_and_skips_exploratory(workspace
     assert persisted_exploratory["last_run"] is None
 
 
+def test_run_all_narrows_to_requested_tests_and_ignores_a_stale_id(workspace_with_data):
+    """`test_ids` scopes the whole-workspace batch the status bar drives.
+
+    The Data Tests bar offers "run the ones that have not run", so re-running
+    everything is the wrong default for it even though it stays the header's.
+    """
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    first = data_tests.create(ws, _analytics_payload(row))
+    second = data_tests.create(
+        ws,
+        {**_analytics_payload(row), "title": "Duplicate purchase orders"},
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        f"/api/workspaces/{ws.id}/data-tests/run-all",
+        json={"test_ids": [second["id"], "DAT-GONE"]},
+    )
+
+    assert response.status_code == 200
+    batch = response.json()
+    assert batch["total"] == 1
+    assert [item["data_test_id"] for item in batch["completed"]] == [second["id"]]
+    persisted = {item["id"]: item for item in workspaces.load_workspace(ws.id).data_tests}
+    assert persisted[second["id"]]["last_run"] is not None
+    assert persisted[first["id"]]["last_run"] is None
+
+
+def test_run_all_without_a_scope_still_runs_every_test(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    linked = data_tests.create(ws, _analytics_payload(row))
+    exploratory = data_tests.create(
+        ws,
+        {
+            "title": "Exploratory duplicates",
+            "objective": "Inspect duplicates without RCM coverage.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+        },
+    )
+    client = TestClient(create_app())
+
+    response = client.post(f"/api/workspaces/{ws.id}/data-tests/run-all")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    persisted = {item["id"]: item for item in workspaces.load_workspace(ws.id).data_tests}
+    assert persisted[linked["id"]]["last_run"] is not None
+    assert persisted[exploratory["id"]]["last_run"] is not None
+
+
+def test_run_all_rcm_linked_narrows_to_requested_tests_without_reaching_exploratory(
+    workspace_with_data,
+):
+    """`test_ids` scopes the batch; it can never widen it past the RCM link.
+
+    The RCM status bar offers "run the ones that have not run", so the batch has
+    to be narrowable.  Intersecting rather than overriding keeps that from
+    becoming a way to reach an unlinked test through the RCM endpoint.
+    """
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    first = data_tests.create(ws, _analytics_payload(row))
+    second = data_tests.create(
+        ws,
+        {**_analytics_payload(row), "title": "Duplicate purchase orders"},
+    )
+    exploratory = data_tests.create(
+        ws,
+        {
+            "title": "Exploratory duplicates",
+            "objective": "Inspect duplicates without RCM coverage.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+        },
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        f"/api/workspaces/{ws.id}/data-tests/run-all-rcm",
+        json={"test_ids": [second["id"], exploratory["id"], "DAT-GONE"]},
+    )
+
+    assert response.status_code == 200
+    batch = response.json()
+    assert batch["total"] == 1
+    assert [item["data_test_id"] for item in batch["completed"]] == [second["id"]]
+    persisted = {item["id"]: item for item in workspaces.load_workspace(ws.id).data_tests}
+    assert persisted[second["id"]]["last_run"] is not None
+    # Neither the linked test the caller left out nor the unlinked one it asked
+    # for was run, and a stale id did not stop the rest of the batch.
+    assert persisted[first["id"]]["last_run"] is None
+    assert persisted[exploratory["id"]]["last_run"] is None
+
+
 # ------------------------------------------------------------------ reality gate
 def _workspace_with_population() -> workspaces.Workspace:
     """A workspace whose tables are wide enough for a population-level signal."""

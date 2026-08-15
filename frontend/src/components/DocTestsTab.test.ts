@@ -396,8 +396,11 @@ describe('DocTestsTab finding generation', () => {
     const wrapper = mountTab([])
     await flushPromises()
 
-    const button = wrapper.findAll('button').find(item => item.text().includes('Generate Findings'))
-    expect(button?.text()).toContain('Generate Findings (1)')
+    // The offer lives in the findings lane, which counts the gap rather than
+    // sitting in the header whether or not there is one.
+    const button = wrapper.findAll('.lane-actions button')
+      .find(item => item.text().includes('Draft findings'))
+    expect(button?.text()).toContain('Draft findings (1)')
 
     await button!.trigger('click')
     await flushPromises()
@@ -408,10 +411,11 @@ describe('DocTestsTab finding generation', () => {
     })
   })
 
-  it('hides the button once every exception test has a finding', async () => {
+  it('rests the findings lane once every exception test has a finding', async () => {
     const wrapper = mountTab([{ id: 'F-1', test_refs: ['DT-CYCLE'], rcm_refs: ['RCM-1'] }])
     await flushPromises()
 
-    expect(wrapper.findAll('button').some(item => item.text().includes('Generate Findings'))).toBe(false)
+    expect(wrapper.findAll('button').some(item => item.text().includes('Draft findings'))).toBe(false)
+    expect(wrapper.text()).toContain('Every exception is written up')
   })
 })

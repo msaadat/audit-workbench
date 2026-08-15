@@ -1728,28 +1728,45 @@ def _run_all(workspace: Workspace, test_ids: list[str]) -> dict:
     }
 
 
-def run_all(workspace: Workspace) -> dict:
-    """Run every Data Test in the workspace, including exploratory tests."""
-    return _run_all(
-        workspace,
-        [str(item["id"]) for item in workspace.data_tests],
-    )
+def run_all(workspace: Workspace, test_ids: list[str] | None = None) -> dict:
+    """Run Data Tests in the workspace, including exploratory tests.
+
+    ``test_ids`` restricts the batch to a subset, which is how the status bar
+    offers "run the four that have not run" without re-running the rest.  An id
+    that no longer resolves is dropped rather than raising: the caller's view of
+    the workspace can be a moment behind, and a stale id is not a reason to run
+    nothing.
+    """
+    known = [str(item["id"]) for item in workspace.data_tests]
+    if test_ids is not None:
+        requested = {str(value) for value in test_ids}
+        known = [test_id for test_id in known if test_id in requested]
+    return _run_all(workspace, known)
 
 
-def run_all_rcm_linked(workspace: Workspace) -> dict:
-    """Run every Data Test linked to an RCM row, one at a time.
+def run_all_rcm_linked(
+    workspace: Workspace, test_ids: list[str] | None = None
+) -> dict:
+    """Run Data Tests linked to an RCM row, one at a time.
 
     Each test has its own durable result and guarded commit, so a bad or
     incomplete definition must not prevent the other RCM-linked tests from
     running.  The returned payload is intentionally a compact batch summary;
     callers can open individual results through the normal test endpoint.
+
+    ``test_ids`` restricts the batch to a subset of the RCM-linked tests.  The
+    filter is an intersection rather than an override, so a caller can never
+    reach an unlinked test through this path.
     """
-    test_ids = [
+    linked = [
         str(item["id"])
         for item in workspace.data_tests
         if item.get("rcm_id")
     ]
-    return _run_all(workspace, test_ids)
+    if test_ids is not None:
+        requested = {str(value) for value in test_ids}
+        linked = [test_id for test_id in linked if test_id in requested]
+    return _run_all(workspace, linked)
 
 
 def load_result(workspace: Workspace, data_test_id: str, run_id: str) -> dict:

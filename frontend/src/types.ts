@@ -1096,6 +1096,14 @@ export interface RcmExecutionRollup {
   supplemental_tests?: number
   assurance_scopes?: CycleAssuranceScope[]
   control_conclusion?: string
+  /** Why the conclusion could not go higher than the evidence class allows. */
+  evidence_ceiling?: string
+  /** False when the ceiling is recorded beside a conclusion the auditor owns. */
+  evidence_ceiling_applied?: boolean
+  /**
+   * Counts `finding_refs`, which nothing currently populates — read
+   * `FindingRollups.by_rcm` for the findings actually attached to a row.
+   */
   findings?: number
   review_status?: string
   test_rollups?: TestRollup[]
@@ -1258,6 +1266,40 @@ export interface PlanningPayload {
   document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status' | 'rcm_id' | 'rcm_refs'>>
   findings: AuditFinding[]
   finding_rollups: FindingRollups
+}
+
+export interface RcmCoverage {
+  ok: boolean
+  issue_count: number
+  rows_without_tests: string[]
+  unspecified_tests: Array<{ rcm_id: string; test_id: string }>
+  invalid_test_parents: Array<{ id: string; reason: string }>
+  high_risks_without_executable_work: string[]
+  completed_without_durable_result: Array<{ rcm_id: string; test_id: string }>
+  inconsistent_conclusions: Array<{ rcm_id: string; test_id: string; reason: string }>
+}
+
+/**
+ * `GET /rcm/completion`. The gates the backend already computes over the whole
+ * matrix, which is what the RCM status bar reports rather than re-deriving them
+ * row by row in the browser.
+ */
+export interface RcmCompletion {
+  status: 'completed' | 'completed_with_open_items' | 'completed_with_issues'
+  coverage: RcmCoverage
+  incomplete_outcomes: Array<{ rcm_id: string; test_id: string; status?: string }>
+  blank_conclusions: Array<{ rcm_id: string; test_id: string }>
+  /** A disclosure, not a gate: nobody read what the agent concluded. */
+  unreviewed_agent_conclusions: Array<{ rcm_id: string; test_id: string }>
+  blocked_without_plan: Array<{ rcm_id: string; test_id: string; missing: string[] }>
+  rcm_without_conclusion: string[]
+  assurance_gaps: Array<{ rcm_id: string; reason: string }>
+  /** Conclusions capped by their evidence class rather than earned. */
+  evidence_ceilings: Array<{ rcm_id: string; reason: string }>
+  pending_cycle_dispositions: Array<{ rcm_id: string; test_id: string; item_id: string | null }>
+  untested_columns: Array<{ table: string; column_count: number; untested_count: number; flagged_count: number }>
+  undispositioned_analyses: number
+  declined_analyses: number
 }
 
 export interface AuditObservation {

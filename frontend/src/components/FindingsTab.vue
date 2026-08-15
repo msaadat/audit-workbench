@@ -21,6 +21,10 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiStatusLanes from './ui/UiStatusLanes.vue'
+import type { StatusAction } from './ui/statusLanes'
+import { FINDINGS_FILTER_LABELS, filterFindings, findingsStatus } from './findings/findingsStatus'
+import type { FindingsActionKey, FindingsFilter } from './findings/findingsStatus'
 import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -42,17 +46,24 @@ const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
 const search = ref('')
 const severityFilter = ref<string>('all')
+// What the status bar has asked the rail to show. A view over the same list the
+// lanes counted, so the counts above and the rail below cannot disagree.
+const statusFilter = ref<FindingsFilter | null>(null)
 const template = ref<{ markdown: string; source: string } | null>(null)
 const templateOpen = ref(false)
 
 const severities: FindingSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 const severityOptions = ['all', ...severities]
 const selected = computed(() => data.value?.items.find(item => item.id === selectedId.value) ?? null)
-const filtered = computed(() => (data.value?.items ?? []).filter(item => {
+const filtered = computed(() => filterFindings(data.value?.items ?? [], statusFilter.value).filter(item => {
   const matchesSeverity = severityFilter.value === 'all' || item.severity === severityFilter.value
   const needle = search.value.trim().toLowerCase()
   return matchesSeverity && (!needle || `${item.id} ${item.title} ${item.narrative}`.toLowerCase().includes(needle))
 }))
+// The lanes count the whole file, not the filtered rail: a count that shrank as
+// you filtered by it could never be clicked back out of.
+const status = computed(() => findingsStatus(data.value?.items ?? []))
+const statusFilterLabel = computed(() => (statusFilter.value ? FINDINGS_FILTER_LABELS[statusFilter.value] : ''))
 const rcmOptions = computed(() => (data.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
 const testOptions = computed(() => [
   ...(data.value?.data_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: item.id })),
@@ -149,6 +160,18 @@ function remove() {
   })
 }
 
+/**
+ * The bar names what it wants done; the tab still owns how. Both actions
+ * already existed as header buttons — the lane that counts the gap is simply a
+ * better place to offer them than a row that is there whether or not it applies.
+ */
+function runStatusAction(action: StatusAction) {
+  switch (action.key as FindingsActionKey) {
+    case 'generate_findings': return void generateAllFindings()
+    case 'confirm_all': return confirmAll()
+  }
+}
+
 function confirmAll() {
   const targets = unconfirmed.value
   if (!targets.length) return
@@ -239,29 +262,20 @@ function openEvidence(value: EvidenceRef) {
 <template>
   <div class="findings-tab">
     <UiPageHeader title="Findings">
-      <Button
-        label="Generate all findings"
-        icon="pi pi-sparkles"
-        severity="secondary"
-        outlined
-        size="small"
-        :disabled="agentBusy"
-        :loading="generatingFindings"
-        @click="generateAllFindings"
-      />
-      <Button
-        v-if="unconfirmed.length"
-        label="Confirm all findings"
-        icon="pi pi-check-square"
-        severity="secondary"
-        outlined
-        size="small"
-        :loading="confirmingAll"
-        @click="confirmAll"
-      />
       <Button label="Finding template" icon="pi pi-file-edit" severity="secondary" outlined size="small" @click="openTemplate" />
       <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
     </UiPageHeader>
+    <UiStatusLanes
+      v-if="data"
+      :lanes="status.lanes"
+      :disclosures="status.disclosures"
+      :filter="statusFilter"
+      :filterLabel="statusFilterLabel"
+      :busy="generatingFindings || confirmingAll"
+      :canRunAgent="!agentBusy"
+      @filter="statusFilter = ($event as FindingsFilter | null)"
+      @action="runStatusAction"
+    />
     <div v-if="data?.items.length" class="findings-layout">
       <aside class="finding-rail card">
         <div class="rail-filters"><InputText v-model="search" placeholder="Search findings" /><Select v-model="severityFilter" :options="severityOptions" /></div>
@@ -318,7 +332,7 @@ function openEvidence(value: EvidenceRef) {
 </template>
 
 <style scoped>
-.findings-tab { min-width:0 }.findings-head,.detail-toolbar,.provenance,.rail-title { display:flex; align-items:center }.findings-head { justify-content:space-between; gap:1rem; margin-bottom:1rem }.findings-head h2 { margin:.1rem 0 }.findings-layout { display:grid; grid-template-columns:18rem minmax(0,1fr); gap: var(--aw-section-gap) }.finding-rail { padding:.55rem; align-self:start; max-height:42rem; overflow:auto }.rail-filters { display:grid; grid-template-columns:1fr 6.5rem; gap:.4rem; padding:.2rem .15rem .6rem }.rail-filters :deep(.p-inputtext),.rail-filters :deep(.p-select) { width:100%; font-size:var(--aw-text-sm) }.finding-rail > button { width:100%; display:flex; flex-direction:column; gap:.3rem; text-align:left; border:0; border-radius:var(--aw-radius-control); background:transparent; padding:.7rem; color:var(--aw-ink); cursor:pointer }.finding-rail > button:hover,.finding-rail > button.active { background:var(--aw-teal-soft) }.rail-title { width:100%; justify-content:space-between }.finding-rail small { color:var(--aw-muted); text-transform:capitalize }.finding-detail { padding:1rem; min-width:0 }.detail-toolbar { gap:.45rem; padding-bottom:.8rem; border-bottom:1px solid var(--aw-border) }.provenance { gap:.45rem; flex-wrap:wrap }.grow { flex:1 }.top-fields { display:grid; grid-template-columns:minmax(0,1fr) 9rem 8rem; gap:.75rem; margin:1rem 0 }.link-grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }.link-grid .wide { grid-column:1/-1 } label { display:flex; flex-direction:column; gap:.35rem; font-size:var(--aw-text-sm); font-weight:700; color:var(--aw-muted) } label :deep(.p-inputtext),label :deep(.p-textarea),label :deep(.p-select),label :deep(.p-multiselect) { width:100%; font-size:var(--aw-text-sm); color:var(--aw-ink); font-weight:400 }.link-grid { margin-top:.9rem }.source-links { margin-top:1rem; padding-top:.8rem; border-top:1px solid var(--aw-border) }.source-links h3 { margin:0 0 .6rem; font-size:var(--aw-text-base) }.chips,.evidence-list { display:flex; flex-wrap:wrap; gap:.4rem }.chips button,.evidence-list button { border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.3rem .6rem; cursor:pointer }.evidence-list { flex-direction:column }.evidence-list > div { display:flex; align-items:center; gap:.3rem }.evidence-list > div > button:first-child { flex:1; display:flex; align-items:center; text-align:left; border-radius:var(--aw-radius-control); gap:.55rem }.evidence-list button span { display:flex; flex-direction:column; flex:1 }.evidence-list small,.evidence-list code { color:var(--aw-muted) }.evidence-picker { margin-top:.6rem; padding:.6rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.evidence-picker summary { cursor:pointer; color:var(--aw-teal); font-weight:700; font-size:var(--aw-text-sm) }.evidence-picker > button { display:block; width:100%; margin-top:.35rem; padding:.45rem; border:0; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); text-align:left; cursor:pointer }.warning { padding:.7rem; background:var(--aw-warn-soft); color:var(--aw-warn-ink); border-radius:var(--aw-radius-control) }.empty,.empty-detail { color:var(--aw-muted); text-align:center }.empty-detail { min-height:20rem; display:grid; place-content:center }.empty-detail i { font-size:var(--aw-text-3xl) }.muted { color:var(--aw-muted) }
+.findings-tab { display:flex; flex-direction:column; gap:var(--aw-section-gap); min-width:0 }.findings-head,.detail-toolbar,.provenance,.rail-title { display:flex; align-items:center }.findings-head { justify-content:space-between; gap:1rem; margin-bottom:1rem }.findings-head h2 { margin:.1rem 0 }.findings-layout { display:grid; grid-template-columns:18rem minmax(0,1fr); gap: var(--aw-section-gap) }.finding-rail { padding:.55rem; align-self:start; max-height:42rem; overflow:auto }.rail-filters { display:grid; grid-template-columns:1fr 6.5rem; gap:.4rem; padding:.2rem .15rem .6rem }.rail-filters :deep(.p-inputtext),.rail-filters :deep(.p-select) { width:100%; font-size:var(--aw-text-sm) }.finding-rail > button { width:100%; display:flex; flex-direction:column; gap:.3rem; text-align:left; border:0; border-radius:var(--aw-radius-control); background:transparent; padding:.7rem; color:var(--aw-ink); cursor:pointer }.finding-rail > button:hover,.finding-rail > button.active { background:var(--aw-teal-soft) }.rail-title { width:100%; justify-content:space-between }.finding-rail small { color:var(--aw-muted); text-transform:capitalize }.finding-detail { padding:1rem; min-width:0 }.detail-toolbar { gap:.45rem; padding-bottom:.8rem; border-bottom:1px solid var(--aw-border) }.provenance { gap:.45rem; flex-wrap:wrap }.grow { flex:1 }.top-fields { display:grid; grid-template-columns:minmax(0,1fr) 9rem 8rem; gap:.75rem; margin:1rem 0 }.link-grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }.link-grid .wide { grid-column:1/-1 } label { display:flex; flex-direction:column; gap:.35rem; font-size:var(--aw-text-sm); font-weight:700; color:var(--aw-muted) } label :deep(.p-inputtext),label :deep(.p-textarea),label :deep(.p-select),label :deep(.p-multiselect) { width:100%; font-size:var(--aw-text-sm); color:var(--aw-ink); font-weight:400 }.link-grid { margin-top:.9rem }.source-links { margin-top:1rem; padding-top:.8rem; border-top:1px solid var(--aw-border) }.source-links h3 { margin:0 0 .6rem; font-size:var(--aw-text-base) }.chips,.evidence-list { display:flex; flex-wrap:wrap; gap:.4rem }.chips button,.evidence-list button { border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.3rem .6rem; cursor:pointer }.evidence-list { flex-direction:column }.evidence-list > div { display:flex; align-items:center; gap:.3rem }.evidence-list > div > button:first-child { flex:1; display:flex; align-items:center; text-align:left; border-radius:var(--aw-radius-control); gap:.55rem }.evidence-list button span { display:flex; flex-direction:column; flex:1 }.evidence-list small,.evidence-list code { color:var(--aw-muted) }.evidence-picker { margin-top:.6rem; padding:.6rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.evidence-picker summary { cursor:pointer; color:var(--aw-teal); font-weight:700; font-size:var(--aw-text-sm) }.evidence-picker > button { display:block; width:100%; margin-top:.35rem; padding:.45rem; border:0; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); text-align:left; cursor:pointer }.warning { padding:.7rem; background:var(--aw-warn-soft); color:var(--aw-warn-ink); border-radius:var(--aw-radius-control) }.empty,.empty-detail { color:var(--aw-muted); text-align:center }.empty-detail { min-height:20rem; display:grid; place-content:center }.empty-detail i { font-size:var(--aw-text-3xl) }.muted { color:var(--aw-muted) }
 .findings-layout { grid-template-columns:17rem minmax(0,1fr) }
 .finding-rail { max-height:42rem }
 .detail-toolbar { position:sticky; top:-1rem; z-index:3; margin:-1rem -1rem .8rem; padding:.65rem 1rem; background:var(--aw-panel) }

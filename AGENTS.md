@@ -224,6 +224,16 @@ frontend/src/
    |- ReportReconcileDialog.vue - prevents silent report overwrites
    |- ChartView.vue / FrameTable.vue / PinDialog.vue / JoinDialog.vue
    |- planning/RcmGrid.vue     - RCM grid
+   |- ui/UiStatusLanes.vue     - the status bar every fieldwork surface sits
+   |                             under: three lanes saying what has run, what
+   |                             it concludes, and what is written up, each
+   |                             carrying the action it still owes. Purely
+   |                             presentational — one `*Status.ts` module per
+   |                             page derives the lanes and owns the filter
+   |                             predicates its counts stand for
+   |                             (planning/rcmStatus, findings/findingsStatus,
+   |                             data-tests/dataTestStatus,
+   |                             doc-tests/docTestStatus)
    |- validation/*             - validation authoring and run results
    |- analysis/*               - analysis list, recorded-outcome banner,
    |                             classification vocabulary, and the three

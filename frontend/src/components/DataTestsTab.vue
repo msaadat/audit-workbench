@@ -35,6 +35,12 @@ import { emptyPolarsStep, polarsStepsValid } from './data-tests/steps'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiStatusLanes from './ui/UiStatusLanes.vue'
+import type { StatusAction } from './ui/statusLanes'
+import {
+  DATA_TEST_FILTER_LABELS, dataTestStatus, filterDataTests,
+} from './data-tests/dataTestStatus'
+import type { DataTestActionKey, DataTestFilter } from './data-tests/dataTestStatus'
 import UiTriageCounts from './ui/UiTriageCounts.vue'
 import type { TriageCount } from './ui/UiTriageCounts.vue'
 import { plural } from '../format'
@@ -68,6 +74,10 @@ const running = ref(false)
 const runningAll = ref(false)
 const generatingFindings = ref(false)
 const filter = ref<string>('all')
+// What the status bar has asked the list to show. It composes with the triage
+// chips rather than replacing them: the lanes narrow by state of work, the
+// chips by outcome, and both are views over the same array.
+const statusFilter = ref<DataTestFilter | null>(null)
 // A second axis over the same tests, not a sixth status: "exceptions nobody
 // has concluded on" needs both halves at once.
 const conclusionFilter = ref<'all' | TestConclusionState>('all')
@@ -126,7 +136,14 @@ const filterRcm = ref<string | null>(null)
 // The status chips stay a whole-tab tally, so the conclusion row is counted
 // within everything else already applied — the number on a conclusion chip is
 // what clicking it would leave, not a separate total.
-const conclusionScope = computed(() => tests.value.filter(test => {
+// The lanes count every test, not the filtered list: a count that shrank as you
+// filtered by it could never be clicked back out of.
+const status = computed(() => dataTestStatus(tests.value, planning.value?.findings ?? []))
+const statusFilterLabel = computed(() =>
+  (statusFilter.value ? DATA_TEST_FILTER_LABELS[statusFilter.value] : ''))
+const statusScope = computed(() =>
+  filterDataTests(tests.value, statusFilter.value, planning.value?.findings ?? []))
+const conclusionScope = computed(() => statusScope.value.filter(test => {
   if (filterRcm.value && test.rcm_id !== filterRcm.value) return false
   if (filter.value === 'not_run' && test.last_run) return false
   if (filter.value !== 'all' && filter.value !== 'not_run' && test.status !== filter.value) return false
@@ -380,14 +397,15 @@ async function runTest() {
   }
   await execute(item.id)
 }
-async function runAllTests() {
+/** `testIds` runs that subset; omitted, it re-runs every test in the tab. */
+async function runAllTests(testIds?: string[]) {
   runningAll.value = true
   try {
     const batch = await api.post<{
       total: number
       completed: Array<{ data_test_id: string; status: string; exception_count: number }>
       failed: Array<{ data_test_id: string; error: string }>
-    }>(`/api/workspaces/${props.workspace.id}/data-tests/run-all`)
+    }>(`/api/workspaces/${props.workspace.id}/data-tests/run-all`, testIds ? { test_ids: testIds } : {})
     await load()
     emit('changed')
     toast.add({
@@ -444,8 +462,11 @@ async function draftFinding(regenerate = false) {
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
-async function draftPendingFindings() {
-  const rcmIds = [...new Set(findingsPending.value.map(test => test.rcm_id as string))]
+async function draftPendingFindings(testIds?: string[]) {
+  const scope = testIds?.length
+    ? findingsPending.value.filter(test => testIds.includes(test.id))
+    : findingsPending.value
+  const rcmIds = [...new Set(scope.map(test => test.rcm_id as string))]
   if (!rcmIds.length) return
   generatingFindings.value = true
   try {
@@ -458,7 +479,7 @@ async function draftPendingFindings() {
     if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({
       severity: 'success',
-      summary: `Generating findings for ${plural(findingsPending.value.length, 'test')}`,
+      summary: `Generating findings for ${plural(scope.length, 'test')}`,
       detail: 'Exception observations will be used directly.',
       life: 3600,
     })
@@ -471,6 +492,18 @@ function openFinding(findingId: string) {
 function openRcm() {
   if (!selected.value?.rcm_id) return
   void nav.replace('rcm', { rcm: selected.value.rcm_id })
+}
+/**
+ * The lanes name what they want done; the tab still owns how. Both runs go
+ * through the same batch endpoint the header's "Run all" uses, scoped to the
+ * tests the lane counted.
+ */
+function runStatusAction(action: StatusAction) {
+  switch (action.key as DataTestActionKey) {
+    case 'run_tests':
+    case 'rerun_stale': return void runAllTests(action.ids)
+    case 'draft_findings': return void draftPendingFindings(action.ids)
+  }
 }
 function pickFilter(key: string) {
   filter.value = key
@@ -497,16 +530,7 @@ onUnmounted(unsubscribe)
 <template>
   <div class="data-tests">
     <UiPageHeader title="Data tests">
-      <Button label="Run all" icon="pi pi-play" size="small" outlined :loading="runningAll" :disabled="running || runningAll" @click="runAllTests" />
-      <Button
-        v-if="findingsPending.length"
-        :label="`Generate Findings (${findingsPending.length})`"
-        icon="pi pi-sparkles"
-        size="small"
-        outlined
-        :loading="generatingFindings"
-        @click="draftPendingFindings"
-      />
+      <Button label="Run all" icon="pi pi-play" size="small" outlined :loading="runningAll" :disabled="running || runningAll" @click="runAllTests()" />
       <Button label="New test" icon="pi pi-plus" size="small" @click="createOpen = true" />
       <Button
         v-if="selected"
@@ -519,6 +543,18 @@ onUnmounted(unsubscribe)
         @click="deleteTest"
       />
     </UiPageHeader>
+
+    <UiStatusLanes
+      v-if="tests.length"
+      :lanes="status.lanes"
+      :disclosures="status.disclosures"
+      :filter="statusFilter"
+      :filterLabel="statusFilterLabel"
+      :busy="running || runningAll || generatingFindings"
+      :canRunAgent="!agent.isActive.value"
+      @filter="statusFilter = ($event as DataTestFilter | null)"
+      @action="runStatusAction"
+    />
 
     <template v-if="tests.length">
       <div class="facets">

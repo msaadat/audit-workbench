@@ -41,6 +41,12 @@ import DocTestItemList from './doc-tests/DocTestItemList.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiStatusLanes from './ui/UiStatusLanes.vue'
+import type { StatusAction } from './ui/statusLanes'
+import {
+  DOC_TEST_FILTER_LABELS, docTestStatus, filterDocTestEntries,
+} from './doc-tests/docTestStatus'
+import type { DocTestActionKey, DocTestFilter } from './doc-tests/docTestStatus'
 import UiTriageCounts from './ui/UiTriageCounts.vue'
 import type { TriageCount } from './ui/UiTriageCounts.vue'
 
@@ -73,6 +79,10 @@ const requestedTestId = ref<string | null>(String(route.query.test || '') || nul
 const createRequested = route.query.create === '1'
 const requestedRcmId = String(route.query.rcm || '')
 const filter = ref<'all' | DocTestClassification>('all')
+// What the status bar has asked the worklist to show. It composes with the
+// outcome chips rather than replacing them: the lanes narrow by state of work,
+// the chips by outcome, and both are views over the same entries.
+const statusFilter = ref<DocTestFilter | null>(null)
 // A second axis over the same rows, not a sixth outcome: "exceptions nobody
 // has concluded on" needs both halves at once.
 const conclusionFilter = ref<'all' | TestConclusionState>('all')
@@ -107,7 +117,15 @@ const triage = computed<TriageCount[]>(() => {
 // The outcome chips stay an engagement-wide tally, so the conclusion row is
 // counted within the outcome the auditor is standing in — the number on
 // "Not concluded" is what the click would leave, not a separate total.
-const outcomeMatches = computed(() => (summary.value?.entries ?? []).filter(
+// The lanes count every entry, not the filtered worklist: a count that shrank
+// as you filtered by it could never be clicked back out of.
+const status = computed(() => docTestStatus(summary.value, planning.value?.findings ?? []))
+const statusFilterLabel = computed(() =>
+  (statusFilter.value ? DOC_TEST_FILTER_LABELS[statusFilter.value] : ''))
+const statusScope = computed(() => filterDocTestEntries(
+  summary.value?.entries ?? [], statusFilter.value, planning.value?.findings ?? [],
+))
+const outcomeMatches = computed(() => statusScope.value.filter(
   entry => filter.value === 'all' || entry.classification === filter.value))
 const conclusionFacets = computed(() =>
   conclusionCounts(outcomeMatches.value.map(entry => entry.conclusion_state)))
@@ -326,6 +344,32 @@ async function closeCycleGrid() {
   await syncUrl()
 }
 
+/**
+ * The lanes name what they want done; the tab still owns how. Both routes reuse
+ * the batch paths the header buttons already use, scoped to what the lane
+ * counted rather than to everything outstanding.
+ */
+/**
+ * The chips narrow the worklist, so applying one from inside a cycle grid has
+ * to go back to the list it narrows — otherwise the click lands on a view that
+ * cannot show the result and appears to do nothing.
+ */
+function pickStatusFilter(value: DocTestFilter | null) {
+  statusFilter.value = value
+  if (value && selectedCycleTestId.value) {
+    selectedCycleTestId.value = null
+    selectedItemId.value = null
+    currentTest.value = null
+    focusedAssertionKey.value = null
+  }
+}
+function runStatusAction(action: StatusAction) {
+  switch (action.key as DocTestActionKey) {
+    case 'run_tests':
+      return void runTestIds(action.ids ?? [], runningOutstanding, 'Could not start the document tests')
+    case 'draft_findings': return void draftPendingFindings(action.ids)
+  }
+}
 function pickFilter(key: string) {
   filter.value = key as 'all' | DocTestClassification
 }
@@ -566,9 +610,12 @@ async function generateFinding(regenerate: boolean) {
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
-async function draftPendingFindings() {
-  const count = findingsPending.value.size
-  const rcmIds = [...new Set(findingsPending.value.values())]
+async function draftPendingFindings(testIds?: string[]) {
+  const scope = testIds?.length
+    ? [...findingsPending.value].filter(([testId]) => testIds.includes(testId))
+    : [...findingsPending.value]
+  const count = scope.length
+  const rcmIds = [...new Set(scope.map(([, rcmId]) => rcmId))]
   if (!rcmIds.length) return
   generatingFindings.value = true
   try {
@@ -694,16 +741,6 @@ onUnmounted(unsubscribe)
         :disabled="assistantUnavailable || !outstandingTestIds.length"
         @click="runOutstandingTests"
       />
-      <Button
-        v-if="findingsPending.size"
-        :label="`Generate Findings (${findingsPending.size})`"
-        icon="pi pi-sparkles"
-        size="small"
-        outlined
-        :loading="generatingFindings"
-        :disabled="assistantUnavailable"
-        @click="draftPendingFindings"
-      />
       <Button label="New test" icon="pi pi-plus" size="small" outlined @click="createOpen = true" />
       <Button
         v-if="currentTest || selectedCycleEntry"
@@ -716,6 +753,18 @@ onUnmounted(unsubscribe)
         @click="deleteTest"
       />
     </UiPageHeader>
+
+    <UiStatusLanes
+      v-if="hasTests"
+      :lanes="status.lanes"
+      :disclosures="status.disclosures"
+      :filter="statusFilter"
+      :filterLabel="statusFilterLabel"
+      :busy="runningAll || runningOutstanding || generatingFindings"
+      :canRunAgent="!assistantUnavailable"
+      @filter="pickStatusFilter($event as DocTestFilter | null)"
+      @action="runStatusAction"
+    />
 
     <template v-if="hasTests">
       <div v-if="!selectedCycleTestId" class="facets">

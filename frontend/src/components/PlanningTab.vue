@@ -15,10 +15,13 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditObservation, CycleVouchMetadata, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditObservation, CycleVouchMetadata, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
-import CoverageBoard from './planning/CoverageBoard.vue'
+import UiStatusLanes from './ui/UiStatusLanes.vue'
+import type { StatusAction } from './ui/statusLanes'
+import { FILTER_LABELS, filterRows, rcmStatus } from './planning/rcmStatus'
+import type { RcmActionKey, RcmFilter } from './planning/rcmStatus'
 import RcmGrid from './planning/RcmGrid.vue'
 import RcmControlAttributesEditor from './planning/RcmControlAttributesEditor.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
@@ -55,27 +58,26 @@ const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
-// Board and grid render the same `data.rcm` array, so the toggle is a view
-// preference and nothing more. It is remembered because an auditor mid-fieldwork
-// and an auditor mid-review want different defaults.
-const VIEW_KEY = `audit-workbench:rcm-view:${props.workspace.id}`
-const rcmView = ref<'board' | 'grid'>(
-  (() => {
-    try { return window.localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'board' }
-    catch { return 'board' }
-  })(),
-)
+// The completion gates the status bar reports. Fetched beside the planning
+// payload rather than derived here: the backend already owns what counts as an
+// unreviewed conclusion or a capped one, and two definitions would drift.
+const completion = ref<RcmCompletion | null>(null)
+// Which subset of the matrix the bar has asked the grid to show. A view over
+// one array, so the counts above and the rows below can never disagree.
+const rcmFilter = ref<RcmFilter | null>(null)
 // Provenance is a reviewer's question, not an author's, so it stays closed
 // until asked for rather than taking a column from the editor by default.
 const apmProvenanceOpen = ref(false)
-function setRcmView(value: 'board' | 'grid') {
-  rcmView.value = value
-  try { window.localStorage.setItem(VIEW_KEY, value) }
-  catch { /* storage can be unavailable in hardened browser contexts */ }
-}
 const workingPaper = ref<WorkingPaper | null>(null)
 const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
+const visibleRcm = computed(() => filterRows(
+  data.value?.rcm ?? [], rcmFilter.value, data.value?.finding_rollups, completion.value,
+))
+const rcmStatusModel = computed(() => rcmStatus(
+  data.value?.rcm ?? [], data.value?.finding_rollups, completion.value,
+))
+const rcmFilterLabel = computed(() => (rcmFilter.value ? FILTER_LABELS[rcmFilter.value] : ''))
 const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
 const rowsWithoutTests = computed(() => (data.value?.rcm ?? []).filter(row => (row.execution_rollup.tests ?? row.test_refs.length) === 0))
 const linkedDataTestCount = computed(() => (data.value?.data_tests ?? []).filter(test => test.rcm_id).length)
@@ -88,6 +90,11 @@ function fail(summary: string, error: unknown) {
 }
 async function reload() {
   data.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
+  // The gates only feed the bar's disclosures. A matrix that loads is more use
+  // than an error toast, so losing them costs the disclosures and nothing else.
+  api.get<RcmCompletion>(`/api/workspaces/${props.workspace.id}/rcm/completion`)
+    .then(payload => { completion.value = payload })
+    .catch(() => { completion.value = null })
   if (!cycleMeta.value) {
     cycleMeta.value = (await api.get<{ cycle_vouch: CycleVouchMetadata }>(
       `/api/workspaces/${props.workspace.id}/doc-tests/meta`,
@@ -168,6 +175,9 @@ async function addRcm() {
       process: 'New process', risk: 'Describe the audit risk', risk_rating: 'medium',
       control_attributes: [{ key: 'manual_inspection', assertion: 'Operational', requirement: 'Describe the control requirement', evidence_kind: 'manual_inspection' }],
     })
+    // A new row rarely matches the filter that was on, and a risk that is added
+    // and immediately invisible reads as a failure to add it.
+    rcmFilter.value = null
     await reload(); openRcm(row); emit('changed')
   } catch (error) { fail('Could not add the risk', error) }
 }
@@ -316,11 +326,13 @@ async function generateAllFindings() {
   } catch (error) { fail('Could not start finding generation', error) }
   finally { generatingFindings.value = false }
 }
-async function runAllDataTests() {
+/** `testIds` runs the outstanding subset; omitted, it re-runs every linked test. */
+async function runAllDataTests(testIds?: string[]) {
   runningAllDataTests.value = true
   try {
     const result = await api.post<{ total: number; completed: Array<Record<string, unknown>>; failed: Array<{ data_test_id: string; error: string }> }>(
       `/api/workspaces/${props.workspace.id}/data-tests/run-all-rcm`,
+      testIds ? { test_ids: testIds } : {},
     )
     await reload()
     emit('changed')
@@ -333,8 +345,8 @@ async function runAllDataTests() {
   } catch (error) { fail('Could not run RCM Data Tests', error) }
   finally { runningAllDataTests.value = false }
 }
-async function runAllDocumentTests() {
-  const testIds = linkedDocumentTestIds.value
+async function runAllDocumentTests(only?: string[]) {
+  const testIds = only?.length ? only : linkedDocumentTestIds.value
   if (!testIds.length) return
   runningAllDocumentTests.value = true
   try {
@@ -358,6 +370,22 @@ async function runAllDocumentTests() {
   } catch (error) { fail('Could not start RCM Document Tests', error) }
   finally { runningAllDocumentTests.value = false }
 }
+/**
+ * The status bar names what it wants done; the tab still owns how. Each key
+ * routes to the handler that already existed for it, scoped to the rows or
+ * tests the lane counted rather than to the whole matrix.
+ */
+function runStatusAction(action: StatusAction) {
+  switch (action.key as RcmActionKey) {
+    case 'generate_tests':
+      return void generatePlannedTests(action.ids?.length ? action.ids : undefined)
+    case 'run_data_tests': return void runAllDataTests(action.ids)
+    case 'run_document_tests': return void runAllDocumentTests(action.ids)
+    case 'refresh_rollup': return void refreshRollup()
+    case 'draft_findings': return void generateAllFindings()
+  }
+}
+
 async function openWorkingPaper() {
   if (!selectedRcm.value) return
   try { workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/working-paper`); paperOpen.value = true }
@@ -377,6 +405,12 @@ const copyOptions = [
 // the missing tests is frequent enough to earn a place in the header; the rest
 // are occasional, so they live behind one menu instead of seven controls.
 const agentBusy = computed(() => isActive.value || !agent.state.status?.configured)
+// What the status bar's actions wait on. Deliberately not `agentBusy`: running
+// Data Tests is deterministic and stays available on a workspace with no agent
+// configured, so only work actually in flight disables the lane.
+const rcmBusy = computed(() => isActive.value
+  || generatingTests.value || generatingFindings.value
+  || runningAllDataTests.value || runningAllDocumentTests.value)
 // An untouched memorandum gets an empty state rather than a blank editor: there
 // is nothing to attribute, nothing to save, and no reason to show a formatting
 // toolbar above nothing.
@@ -443,18 +477,9 @@ const rcmActions = computed(() => [
         :disabled="agentBusy"
         @click="generate"
       />
-      <template v-else>
-        <Button
-          v-if="rowsWithoutTests.length"
-          :label="`Generate planned tests (${rowsWithoutTests.length})`"
-          icon="pi pi-sparkles"
-          size="small"
-          :disabled="agentBusy"
-          :loading="generatingTests"
-          @click="generatePlannedTests()"
-        />
-        <UiOverflowMenu :items="rcmActions" tooltip="More RCM actions" />
-      </template>
+      <!-- The status bar owns every action that depends on where the file
+           stands, so the header keeps only the occasional ones. -->
+      <UiOverflowMenu v-else :items="rcmActions" tooltip="More RCM actions" />
     </UiPageHeader>
     <section v-if="section === 'apm'" class="apm-view">
       <!-- Provenance describes a document that exists. On an untouched
@@ -478,15 +503,23 @@ const rcmActions = computed(() => [
         <ProvenanceRail v-if="apmProvenanceOpen" :workspaceId="workspace.id" artifactRef="planning:apm"/>
       </div>
     </section>
-    <section v-else>
+    <section v-else class="rcm-view">
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
-      <div class="view-toggle" role="group" aria-label="RCM view">
-        <button :class="{ on: rcmView === 'board' }" :aria-pressed="rcmView === 'board'" @click="setRcmView('board')"><i class="pi pi-th-large"/>Board</button>
-        <button :class="{ on: rcmView === 'grid' }" :aria-pressed="rcmView === 'grid'" @click="setRcmView('grid')"><i class="pi pi-table"/>Grid</button>
-        <span class="view-hint">{{ plural(data.rcm.length, 'risk') }} · {{ rcmView === 'board' ? 'grouped by state of assurance; switch to the grid to edit in bulk' : 'edit, import, and export from here' }}</span>
-      </div>
-      <CoverageBoard v-if="rcmView === 'board'" :rows="data.rcm" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @open="openRcm" @generate="generatePlannedTests"/>
-      <RcmGrid v-else :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
+      <UiStatusLanes
+        :lanes="rcmStatusModel.lanes"
+        :disclosures="rcmStatusModel.disclosures"
+        :filter="rcmFilter"
+        :filterLabel="rcmFilterLabel"
+        :busy="rcmBusy"
+        :canRunAgent="!isActive && Boolean(agent.state.status?.configured)"
+        @filter="rcmFilter = ($event as RcmFilter | null)"
+        @action="runStatusAction"
+      />
+      <RcmGrid :rows="visibleRcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
+      <!-- A filter that hides every row would otherwise read as an empty RCM. -->
+      <p v-if="data.rcm.length && !visibleRcm.length" class="empty">
+        No row matches this filter. It was counted against the whole matrix, which may have moved since.
+      </p>
     </section>
 
     <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
@@ -521,11 +554,6 @@ const rcmActions = computed(() => [
 .apm-body.with-rail { grid-template-columns:minmax(0,1fr) 20rem }
 @container workspace-panel (max-width: 60rem) { .apm-body.with-rail { grid-template-columns:minmax(0,1fr) } }
 .detail-provenance { max-width:34rem }
-.view-toggle { display:flex; align-items:center; gap:.3rem; margin-bottom:.85rem }
-.view-toggle button { display:inline-flex; align-items:center; gap:.35rem; padding:.3rem .65rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); color:var(--aw-ink-soft); font-size:var(--aw-text-xs); font-weight:600; cursor:pointer }
-.view-toggle button:hover:not(.on) { border-color:var(--aw-border-strong) }
-.view-toggle button.on { border-color:var(--aw-navy-900); background:var(--aw-navy-900); color:var(--aw-on-dark) }
-.view-toggle button i { font-size:var(--aw-text-xs) }
-.view-hint { margin-left:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs) }
+.rcm-view { display:flex; flex-direction:column; gap:.85rem }
 .planning-tab { display:flex; flex-direction:column; gap: var(--aw-section-gap); min-height:100% }.muted { color:var(--aw-muted); font-size:var(--aw-text-sm) }.section-toolbar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span { flex:1 }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:var(--aw-text-sm) }.rcm-detail { display:flex; flex-direction:column; gap: var(--aw-section-gap) }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:var(--aw-ink-soft); font-size:var(--aw-text-sm); font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel) }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:var(--aw-text-sm) }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:var(--aw-panel); border-radius:var(--aw-radius-pill); padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control) }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
 </style>
