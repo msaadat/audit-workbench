@@ -73,10 +73,13 @@ function statusFor(entry: RailEntry) {
   return sectionById.value[entry.section]
     ?? (entry.phase ? phaseById.value[entry.phase] : undefined)
 }
+// Every issue, not the first one. A tooltip that showed one of five said the
+// same thing whether one thing or five were outstanding, and the rail badge it
+// explains is the only warning some of them ever get.
 function statusLabel(entry: RailEntry) {
   const status = statusFor(entry)
   if (!status) return entry.label
-  const detail = status.issues?.[0]
+  const detail = (status.issues ?? []).join(' ')
   return `${status.label}: ${phaseStateLabel[status.state]}${detail ? ` — ${detail}` : ''}`
 }
 

@@ -1613,7 +1613,10 @@ export interface DashboardTile {
 }
 
 export interface DashboardTarget {
-  tab: 'dashboard' | 'planning' | 'documents' | 'doc-tests' | 'data' | 'query' | 'validation' | 'analysis' | 'findings' | 'report'
+  // `data-tests` is in the backend's `ALLOWED_ACTION_TABS` and resolves through
+  // `useWorkspaceNavigation`; it was missing here only because no payload had
+  // named it yet.
+  tab: 'dashboard' | 'planning' | 'documents' | 'doc-tests' | 'data-tests' | 'data' | 'query' | 'validation' | 'analysis' | 'findings' | 'report'
   query: Record<string, string>
 }
 
@@ -1645,6 +1648,13 @@ export interface DashboardSection {
   state: DashboardPhase['state']
   complete: boolean
   issues: string[]
+  /** `total` and `concluded`, so a chip reads "36/39" without recounting the
+   *  population and reaching a different answer than the state beside it. */
+  counts?: Record<string, number>
+  /** Data tests that have never run. Present on `data-tests` only. */
+  unrun_test_ids?: string[]
+  /** Data tests whose result no longer describes its basis. `data-tests` only. */
+  stale_test_ids?: string[]
 }
 
 export interface EngagementStatusPayload {

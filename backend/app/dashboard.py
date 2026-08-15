@@ -363,6 +363,15 @@ def _engagement_state(workspace: Workspace) -> dict:
 
     report_started = bool(current_report.get("markdown") or workspace.findings)
     report_errors = [issue for issue in quality["issues"] if issue["severity"] == "error"]
+    # Neither an open root cause nor a missing management response is a quality
+    # error, so a file can pass every report gate with the follow-up on every
+    # finding still outstanding. The rail says so beside the tick rather than
+    # withholding it — moving the gate is a separate decision.
+    findings_awaiting_followup = [
+        item for item in workspace.findings
+        if item.get("cause_pending")
+        or not str(item.get("management_response") or "").strip()
+    ]
     report_issues = []
     if not str(current_report.get("markdown") or "").strip():
         report_issues.append("The report has not been drafted yet.")
@@ -410,6 +419,11 @@ def _engagement_state(workspace: Workspace) -> dict:
             f"{counted(len(doc_tests_unconcluded), 'document test')} "
             f"{verb(len(doc_tests_unconcluded), 'has', 'have')} no control conclusion."
         )
+    doc_tests_concluded = [
+        test for test in tests
+        if str(test.get("status") or "") in _TERMINAL_TEST_STATUSES
+        and test.get("control_conclusion") in rcm_execution.CONCLUDED_CONTROL_CONCLUSIONS
+    ]
     doc_tests_running = state_counts["pending"] + state_counts["agent_checked"]
     doc_test_state = (
         "not_started" if not tests
@@ -454,12 +468,20 @@ def _engagement_state(workspace: Workspace) -> dict:
         item for item in workspace.data_tests
         if str(item.get("status") or "") in {"draft", "ready"}
     ]
+    data_tests_concluded = [
+        item for item in workspace.data_tests
+        if str(item.get("status") or "") in _TERMINAL_TEST_STATUSES
+        and item.get("control_conclusion") in rcm_execution.CONCLUDED_CONTROL_CONCLUSIONS
+    ]
     data_test_state = (
         "not_started" if not workspace.data_tests
         else "attention" if data_test_issues
         else "in_progress" if data_tests_unrun
         else "complete"
     )
+    # `concluded` and `total` are what a rail chip needs to read "36/39" without
+    # counting the same population a second time in the browser and reaching a
+    # different answer than the section state it sits beside.
     sections = {
         "data-tests": {
             "id": "data-tests",
@@ -467,6 +489,15 @@ def _engagement_state(workspace: Workspace) -> dict:
             "state": data_test_state,
             "complete": data_test_state == "complete",
             "issues": data_test_issues,
+            "counts": {
+                "total": len(workspace.data_tests),
+                "concluded": len(data_tests_concluded),
+            },
+            # The rail runs these itself through the scoped `run-all`, so it
+            # needs the ids rather than a number it would have to go and resolve.
+            # Both populations are deterministic work: no agent is involved.
+            "unrun_test_ids": [str(item["id"]) for item in data_tests_unrun],
+            "stale_test_ids": [str(item["id"]) for item in stale_data_tests],
         },
         "doc-tests": {
             "id": "doc-tests",
@@ -474,6 +505,10 @@ def _engagement_state(workspace: Workspace) -> dict:
             "state": doc_test_state,
             "complete": doc_test_state == "complete",
             "issues": doc_test_issues,
+            "counts": {
+                "total": len(tests),
+                "concluded": len(doc_tests_concluded),
+            },
         },
     }
 
@@ -490,9 +525,17 @@ def _engagement_state(workspace: Workspace) -> dict:
                 "exception_observations": sum(
                     item.get("outcome") == "exception"
                     for item in workspace.observations
+                ),
+                # The RCM bar's denominator, so the rail and the page it links to
+                # never disagree about how much fieldwork is left.
+                "tests_linked": len(linked_tests),
+                "tests_concluded": len(linked_tests) - len(incomplete_linked_tests),
+                "unreviewed_agent_conclusions": len(
+                    completion["unreviewed_agent_conclusions"]
                 )}, fieldwork_issues),
         _phase("report", report_state, report_complete, report_summary,
-               {"findings": len(workspace.findings), "quality_errors": len(report_errors)},
+               {"findings": len(workspace.findings), "quality_errors": len(report_errors),
+                "findings_awaiting_followup": len(findings_awaiting_followup)},
                report_issues),
     ]
 

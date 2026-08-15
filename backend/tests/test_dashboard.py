@@ -347,6 +347,65 @@ def test_derived_phases_can_reach_complete(workspace_with_data):
     assert all(phase["complete"] for phase in status["phases"])
 
 
+def test_status_counts_carry_the_denominators_the_console_rail_reads(workspace_with_data):
+    ws = workspace_with_data
+    row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    concluded = data_tests.create(ws, {
+        "title": "Required transaction identifiers", "objective": "Identify missing IDs.",
+        "engine": "analytics", "table_refs": ["transactions"], "rcm_id": row["id"],
+        "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+    })
+    unrun = data_tests.create(ws, {
+        "title": "Duplicate invoices", "objective": "Identify duplicates.",
+        "engine": "analytics", "table_refs": ["transactions"], "rcm_id": row["id"],
+        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    })
+    data_tests.run(ws, concluded["id"])
+    rcm_execution.rollup(ws)
+    data_tests.update(ws, concluded["id"], {"control_conclusion": "effective"})
+
+    payload = engagement_status_payload(ws)
+    fieldwork = next(phase for phase in payload["phases"] if phase["id"] == "fieldwork")
+    section = payload["sections"]["data-tests"]
+
+    # One of two linked tests has both run and concluded, which is the fraction
+    # the rail leads with and the same one the RCM bar computes.
+    assert fieldwork["counts"]["tests_linked"] == 2
+    assert fieldwork["counts"]["tests_concluded"] == 1
+    assert section["counts"] == {"total": 2, "concluded": 1}
+    # The rail runs the outstanding test itself, so it is handed the id.
+    assert section["unrun_test_ids"] == [unrun["id"]]
+    assert section["stale_test_ids"] == []
+
+
+def test_status_counts_findings_whose_follow_up_no_gate_covers(workspace_with_data):
+    ws = workspace_with_data
+    row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    findings.add(ws, {
+        "title": "Duplicate payments were made",
+        "narrative": "Two invoices were paid twice.",
+        "severity": "high", "rcm_refs": [row["id"]],
+        "cause_pending": True, "management_response": "",
+    })
+    settled = findings.add(ws, {
+        "title": "Approval limits were exceeded",
+        "narrative": "Three payments exceeded the approver's limit.",
+        "severity": "medium", "rcm_refs": [row["id"]],
+    })
+    findings.update(ws, settled["id"], {
+        "cause_pending": False,
+        "management_response": "Management accepts the point and will retrain approvers.",
+    })
+
+    report_phase = next(
+        phase for phase in engagement_status_payload(ws)["phases"] if phase["id"] == "report"
+    )
+    # Neither an open cause nor a missing response is a quality error, so the
+    # count exists precisely to be said beside a tick the gates still allow.
+    assert report_phase["counts"]["findings"] == 2
+    assert report_phase["counts"]["findings_awaiting_followup"] == 1
+
+
 def test_rcm_dashboard_curation_scores_and_pins_four_to_six_results(workspace_with_data):
     ws = workspace_with_data
     for index in range(6):

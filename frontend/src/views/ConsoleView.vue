@@ -2,11 +2,15 @@
 import { inject, ref } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
+import { useToast } from 'primevue/usetoast'
 
+import { api } from '../api'
 import ChatHistoryPanel from '../components/agent/ChatHistoryPanel.vue'
 import ConsoleThread from '../components/agent/ConsoleThread.vue'
 import EngagementState from '../components/agent/EngagementState.vue'
+import type { PhaseAction } from '../components/agent/engagementStatus'
 import PlanSpine from '../components/agent/PlanSpine.vue'
+import { plural } from '../format'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 
@@ -17,11 +21,48 @@ import { workspaceContextKey } from '../composables/useWorkspaceContext'
  * than either.
  */
 
-const { workspace, phases } = inject(workspaceContextKey)!
+const { workspace, phases, sectionById, reload, requestImport } = inject(workspaceContextKey)!
 const chats = useAssistantChat(workspace.value.id)
+const toast = useToast()
 const planOpen = ref(false)
 const historyOpen = ref(false)
 const threadRef = ref<InstanceType<typeof ConsoleThread> | null>(null)
+const running = ref(false)
+
+/**
+ * The rail only offers work it can finish here. Running data tests is
+ * deterministic and synchronous, so the console can do it without handing the
+ * reader to another surface; anything needing the assistant or per-row context
+ * stays a link to the page whose bar owns it.
+ */
+async function runStatusAction(action: PhaseAction) {
+  if (action.key === 'import') return requestImport()
+  running.value = true
+  try {
+    const batch = await api.post<{
+      total: number
+      failed: Array<{ data_test_id: string; error: string }>
+    }>(`/api/workspaces/${workspace.value.id}/data-tests/run-all`, { test_ids: action.ids ?? [] })
+    // Counts, conclusions and phase gates all move on a run, so the rail has to
+    // come back from the server rather than guess at its own new state.
+    await reload()
+    toast.add({
+      severity: batch.failed.length ? 'warn' : 'success',
+      summary: `Ran ${batch.total - batch.failed.length} of ${plural(batch.total, 'test')}`,
+      detail: batch.failed.length
+        ? `${plural(batch.failed.length, 'test')} could not run.`
+        : undefined,
+      life: 6000,
+    })
+  } catch (error) {
+    toast.add({
+      severity: 'error',
+      summary: 'Could not run the tests',
+      detail: error instanceof Error ? error.message : String(error),
+      life: 8000,
+    })
+  } finally { running.value = false }
+}
 </script>
 
 <template>
@@ -44,7 +85,12 @@ const threadRef = ref<InstanceType<typeof ConsoleThread> | null>(null)
       </template>
     </ConsoleThread>
     <aside class="right-rail">
-      <EngagementState :phases="phases" />
+      <EngagementState
+        :phases="phases"
+        :sections="sectionById"
+        :busy="running"
+        @action="runStatusAction"
+      />
       <PlanSpine :workspaceId="workspace.id" />
     </aside>
     <Dialog v-model:visible="historyOpen" modal header="Chats" :style="{ width: 'min(92vw, 24rem)' }">

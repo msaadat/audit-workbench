@@ -241,6 +241,15 @@ frontend/src/
    |- agent/*                  - persistent right-side assistant drawer:
    |                             chats, transcript, composer, approvals,
    |                             interactions, artifacts, run cards/history
+   |- agent/EngagementState.vue - the console rail's Progress column: the same
+   |                             vocabulary as the lanes above, one 17rem
+   |                             column instead of a grid. Finished phases
+   |                             collapse to their totals and reopen on click;
+   |                             the phase in flight leads with the RCM bar's
+   |                             fraction and the action scoped to its gap.
+   |                             `agent/engagementStatus.ts` derives it, and
+   |                             its disclosures qualify the backend's phase
+   |                             ticks rather than moving them
    `- debug/JsonTree.vue       - debug JSON inspector
 ```
 
