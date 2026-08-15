@@ -17,7 +17,6 @@ from the observation itself.
 from __future__ import annotations
 
 import hashlib
-import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -471,8 +470,6 @@ def reconcile_finding(
 
 FINDING_EXECUTOR = ExecutorDefinition(
     executor_id=FINDING_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_finding)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_finding)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_finding,
     reconciler=reconcile_finding,

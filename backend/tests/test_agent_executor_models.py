@@ -69,8 +69,6 @@ def _result(
 def _definition(implementation=None, reconciler=None, **overrides):
     values = {
         "executor_id": "planning.apm",
-        "implementation_hash": HASH_A,
-        "reconciliation_hash": HASH_B,
         "concurrency": ExecutorConcurrency("parent_hashes"),
         "implementation": implementation or (lambda request, target: _result(request)),
         "reconciler": reconciler
@@ -166,8 +164,6 @@ def test_executor_metadata_is_hash_identified_and_definition_hash_is_stable():
     assert first.definition_hash != changed.definition_hash
     assert first.to_dict() == {
         "executor_id": "planning.apm",
-        "implementation_hash": HASH_A,
-        "reconciliation_hash": HASH_B,
         "concurrency": {"mode": "parent_hashes"},
     }
 
@@ -175,14 +171,6 @@ def test_executor_metadata_is_hash_identified_and_definition_hash_is_stable():
 @pytest.mark.parametrize(
     "factory, message",
     [
-        (
-            lambda: _definition(implementation_hash="v1"),
-            "implementation_hash must be a sha256 hash",
-        ),
-        (
-            lambda: _definition(reconciliation_hash="v1"),
-            "reconciliation_hash must be a sha256 hash",
-        ),
         (
             lambda: ExecutorConcurrency("last_write_wins"),
             "mode must be one of",

@@ -20,7 +20,6 @@ commit is classified rather than repeated.
 from __future__ import annotations
 
 import hashlib
-import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1217,10 +1216,6 @@ def reconcile_analysis_promotion(
 
 PROMOTION_EXECUTOR = ExecutorDefinition(
     executor_id=PROMOTION_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_analysis_promotion)),
-    reconciliation_hash=_sha256_text(
-        inspect.getsource(reconcile_analysis_promotion)
-    ),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_analysis_promotion,
     reconciler=reconcile_analysis_promotion,
@@ -1229,26 +1224,18 @@ PROMOTION_EXECUTOR = ExecutorDefinition(
 
 JOIN_EXECUTOR = ExecutorDefinition(
     executor_id=JOIN_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_join)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_join)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_join,
     reconciler=reconcile_join,
 )
 DEFINITIONS_EXECUTOR = ExecutorDefinition(
     executor_id=DEFINITIONS_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_analysis_definitions)),
-    reconciliation_hash=_sha256_text(
-        inspect.getsource(reconcile_analysis_definitions)
-    ),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_analysis_definitions,
     reconciler=reconcile_analysis_definitions,
 )
 EXECUTION_EXECUTOR = ExecutorDefinition(
     executor_id=EXECUTION_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_analysis_run)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_analysis_run)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_analysis_run,
     reconciler=reconcile_analysis_run,
@@ -1256,8 +1243,6 @@ EXECUTION_EXECUTOR = ExecutorDefinition(
 
 SUMMARY_EXECUTOR = ExecutorDefinition(
     executor_id=SUMMARY_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_analysis_summary)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_analysis_summary)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_analysis_summary,
     reconciler=reconcile_analysis_summary,

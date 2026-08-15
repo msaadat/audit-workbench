@@ -9,7 +9,6 @@ support validation, and the durable write belong to the registered executor.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -236,7 +235,6 @@ FINDING_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 FINDING_WORKER = WorkerDefinition(
     worker_id=FINDING_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_finding_worker)),
     prompt_hash=_sha256_text(FINDING_SYSTEM),
     response_schema=FINDING_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -246,7 +244,6 @@ FINDING_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_finding_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_finding_proposal)),
     semantic_validator=validate_finding_proposal,
 )
 

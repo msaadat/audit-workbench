@@ -22,7 +22,6 @@ executor below.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -537,8 +536,6 @@ def reconcile_document_qa(
 
 DOCUMENT_QA_EXECUTOR = ExecutorDefinition(
     executor_id=DOCUMENT_QA_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_document_qa)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_document_qa)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_document_qa,
     reconciler=reconcile_document_qa,

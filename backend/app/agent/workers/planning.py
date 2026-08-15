@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -310,7 +309,6 @@ APM_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 APM_WORKER = WorkerDefinition(
     worker_id=APM_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_apm_worker)),
     prompt_hash=_sha256_text(APM_SYSTEM),
     response_schema=APM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -320,7 +318,6 @@ APM_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_apm_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_apm_proposal)),
     semantic_validator=validate_apm_proposal,
 )
 
@@ -1616,23 +1613,6 @@ RCM_WORKER = WorkerDefinition(
     # The implementation is now the two-pass sequence plus the local merges, so
     # every part of it that decides what reaches the model is in the identity a
     # persisted proposal is reused against.
-    implementation_hash=_sha256_text(
-        "".join(
-            inspect.getsource(function)
-            for function in (
-                run_rcm_worker,
-                _contracted_document,
-                _rcm_document,
-                _with_evidence_contracts,
-                _repaired_rcm,
-                _rcm_judgment_user,
-                _cycle_attribute_requests,
-                _merge_evidence_contracts,
-                _repair_scoped_rows,
-                _first_json_object,
-            )
-        )
-    ),
     prompt_hash=_sha256_text(RCM_SYSTEM + RCM_EVIDENCE_SYSTEM),
     response_schema=RCM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -1649,14 +1629,6 @@ RCM_WORKER = WorkerDefinition(
         max_guidance_characters=4_000,
     ),
     implementation=run_rcm_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_rcm_proposal)
-        + inspect.getsource(_partition_rcm_rows)
-        + inspect.getsource(_normalized_rcm_row)
-        + inspect.getsource(cycle_vouching.validate_control_attributes)
-        + inspect.getsource(cycle_vouching._validate_control_attribute)
-        + inspect.getsource(cycle_vouching._validate_required_comparisons)
-    ),
     semantic_validator=validate_rcm_proposal,
 )
 
@@ -1825,7 +1797,6 @@ PLANNING_CONTEXT_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 PLANNING_CONTEXT_WORKER = WorkerDefinition(
     worker_id=PLANNING_CONTEXT_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_planning_context_worker)),
     prompt_hash=_sha256_text(PLANNING_CONTEXT_SYSTEM),
     response_schema=PLANNING_CONTEXT_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -1835,9 +1806,6 @@ PLANNING_CONTEXT_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_planning_context_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_planning_context_proposal)
-    ),
     semantic_validator=validate_planning_context_proposal,
 )
 

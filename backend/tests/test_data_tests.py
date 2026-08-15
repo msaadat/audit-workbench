@@ -869,10 +869,14 @@ def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
     item = data_tests.create(ws, _analytics_payload(row))
     result = data_tests.run(ws, item["id"])
     source_id = f"{item['id']}:{result['id']}"
+    # An anchor pins the result's evidentiary basis, not its file-integrity
+    # hash: ``result_sha1`` covers ``run_at``, so anchoring on it made an
+    # unchanged re-run read as changed evidence.
+    evidence_sha1 = data_tests.result_evidence_sha1(result)
     anchor = {
         "source_kind": "datatest",
         "source_id": source_id,
-        "source_sha1": result["result_sha1"],
+        "source_sha1": evidence_sha1,
     }
 
     created = findings.add(
@@ -896,7 +900,23 @@ def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
         },
     )
 
-    assert created["evidence_refs"][0]["source_sha1"] == result["result_sha1"]
+    assert created["evidence_refs"][0]["source_sha1"] == evidence_sha1
+
+    # A re-run over the same definition and data must leave the anchor intact,
+    # and so must recording a conclusion on the result. Both change
+    # ``result_sha1``; neither changes what the finding rests on.
+    data_tests.run(ws, item["id"])
+    assert findings.artifact(ws, "datatest", source_id)["sha1"] == evidence_sha1
+    assert findings.evidence_warnings(ws, created) == []
+
+    stamped = {**result, "run_at": "2099-01-01T00:00:00+00:00", "viz": {"other": 1}}
+    assert data_tests.result_evidence_sha1(stamped) == evidence_sha1
+
+    # A changed outcome is still a changed anchor.
+    assert (
+        data_tests.result_evidence_sha1({**result, "exception_count": 99})
+        != evidence_sha1
+    )
 
 
 def test_exploratory_data_test_runs_without_counting_as_rcm_execution(workspace_with_data):

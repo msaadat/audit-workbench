@@ -306,19 +306,25 @@ class UnitPipelineOutcome:
 
 @dataclass(frozen=True)
 class ProposalExecutionIdentity:
-    """Exact identity of one uncommitted model proposal execution."""
+    """Exact identity of one uncommitted model proposal execution.
+
+    Every field here is an independent chance to reject a reusable proposal and
+    re-bill the provider, so the set is kept to what carries information the
+    others do not. Four fields were dropped as provably contained in
+    ``context_manifest_hash``, which is the hash of the manifest JSON:
+    ``context_spec_hash`` and ``resolver_hash`` are manifest members (and are
+    still checked against the manifest in :meth:`UnitPipeline.run`), and
+    ``selector_definition_hashes`` and ``selected_source_hashes`` are carried
+    per selection inside it. Three more were dropped as contained in
+    ``worker_definition_hash``, which hashes a dict holding the prompt hash,
+    the response-schema hash, and — before it was removed entirely — the
+    implementation hash.
+    """
 
     capability_definition_hash: str
     unit_input_hash: str
     context_manifest_hash: str
-    context_spec_hash: str
-    resolver_hash: str
-    selector_definition_hashes: tuple[str, ...]
-    selected_source_hashes: tuple[str, ...]
     worker_definition_hash: str
-    worker_implementation_hash: str
-    prompt_hash: str
-    response_schema_hash: str
     model_profile_hash: str = field(
         default_factory=lambda: _sha256({"profile": "unspecified"})
     )
@@ -333,22 +339,13 @@ class ProposalExecutionIdentity:
             "capability_definition_hash",
             "unit_input_hash",
             "context_manifest_hash",
-            "context_spec_hash",
-            "resolver_hash",
             "worker_definition_hash",
-            "worker_implementation_hash",
-            "prompt_hash",
-            "response_schema_hash",
             "model_profile_hash",
             "media_policy_hash",
         )
         for name in scalar_fields:
             object.__setattr__(self, name, _require_hash(getattr(self, name), name))
-        for name in (
-            "selector_definition_hashes",
-            "selected_source_hashes",
-            "prepared_media_hashes",
-        ):
+        for name in ("prepared_media_hashes",):
             values = tuple(_require_hash(value, name) for value in getattr(self, name))
             if tuple(sorted(set(values))) != values:
                 raise ValueError(f"{name} must be unique and sorted.")
@@ -363,14 +360,7 @@ class ProposalExecutionIdentity:
             "capability_definition_hash": self.capability_definition_hash,
             "unit_input_hash": self.unit_input_hash,
             "context_manifest_hash": self.context_manifest_hash,
-            "context_spec_hash": self.context_spec_hash,
-            "resolver_hash": self.resolver_hash,
-            "selector_definition_hashes": list(self.selector_definition_hashes),
-            "selected_source_hashes": list(self.selected_source_hashes),
             "worker_definition_hash": self.worker_definition_hash,
-            "worker_implementation_hash": self.worker_implementation_hash,
-            "prompt_hash": self.prompt_hash,
-            "response_schema_hash": self.response_schema_hash,
             "model_profile_hash": self.model_profile_hash,
             "input_modalities": list(self.input_modalities),
             "prepared_media_hashes": list(self.prepared_media_hashes),
@@ -389,14 +379,7 @@ class ProposalExecutionIdentity:
             "capability_definition_hash",
             "unit_input_hash",
             "context_manifest_hash",
-            "context_spec_hash",
-            "resolver_hash",
-            "selector_definition_hashes",
-            "selected_source_hashes",
             "worker_definition_hash",
-            "worker_implementation_hash",
-            "prompt_hash",
-            "response_schema_hash",
             "model_profile_hash",
             "input_modalities",
             "prepared_media_hashes",
@@ -407,10 +390,6 @@ class ProposalExecutionIdentity:
         return cls(
             **{
                 **dict(value),
-                "selector_definition_hashes": tuple(
-                    value["selector_definition_hashes"]
-                ),
-                "selected_source_hashes": tuple(value["selected_source_hashes"]),
                 "input_modalities": tuple(value["input_modalities"]),
                 "prepared_media_hashes": tuple(value["prepared_media_hashes"]),
             }
@@ -424,14 +403,7 @@ class ProposalExecutionIdentity:
             ("capability_definition_hash", "capability_definition_changed"),
             ("unit_input_hash", "unit_input_changed"),
             ("context_manifest_hash", "exact_context_changed"),
-            ("context_spec_hash", "context_spec_changed"),
-            ("resolver_hash", "resolver_changed"),
-            ("selector_definition_hashes", "selector_definitions_changed"),
-            ("selected_source_hashes", "selected_sources_changed"),
             ("worker_definition_hash", "worker_definition_changed"),
-            ("worker_implementation_hash", "worker_implementation_changed"),
-            ("prompt_hash", "prompt_changed"),
-            ("response_schema_hash", "response_schema_changed"),
             ("model_profile_hash", "model_profile_changed"),
             ("input_modalities", "input_modalities_changed"),
             ("prepared_media_hashes", "prepared_media_changed"),
@@ -663,25 +635,15 @@ class UnitPipeline:
             raise UnitPipelineError("Context execution identity spec hash is invalid.")
         if context_identity.get("resolver_hash") != manifest.resolver_hash:
             raise UnitPipelineError("Context execution identity resolver hash is invalid.")
-        raw_selector_identities = context_identity.get("selector_definition_hashes") or []
-        selector_hashes = tuple(
-            sorted(
-                {
-                    _require_hash(
-                        (
-                            value.get("definition_hash")
-                            if isinstance(value, Mapping)
-                            else value
-                        ),
-                        "selector_definition_hashes",
-                    )
-                    for value in raw_selector_identities
-                }
+        # Selector definitions and selected sources are still validated as
+        # well-formed hashes, but they are not carried on the identity: both are
+        # recorded per selection inside the manifest, so ``context_manifest_hash``
+        # already commits to them.
+        for value in context_identity.get("selector_definition_hashes") or []:
+            _require_hash(
+                value.get("definition_hash") if isinstance(value, Mapping) else value,
+                "selector_definition_hashes",
             )
-        )
-        selected_source_hashes = tuple(
-            sorted({selection.source_hash for selection in manifest.selections})
-        )
         image_handles = [
             item.content
             for item in bundle.items
@@ -760,14 +722,7 @@ class UnitPipeline:
             capability_definition_hash=request.capability_definition_hash,
             unit_input_hash=_sha256(dict(request.unit_input)),
             context_manifest_hash=manifest.manifest_hash,
-            context_spec_hash=manifest.context_spec_hash,
-            resolver_hash=manifest.resolver_hash,
-            selector_definition_hashes=selector_hashes,
-            selected_source_hashes=selected_source_hashes,
             worker_definition_hash=worker_definition.definition_hash,
-            worker_implementation_hash=worker_definition.implementation_hash,
-            prompt_hash=worker_definition.prompt_hash,
-            response_schema_hash=worker_definition.response_schema.schema_hash,
             model_profile_hash=model_profile_hash,
             input_modalities=input_modalities,
             prepared_media_hashes=prepared_media_hashes,

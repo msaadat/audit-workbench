@@ -426,16 +426,23 @@ WorkerImplementation = Callable[[WorkerRequest, ModelGateway, WorkerAttempt], st
 
 @dataclass(frozen=True)
 class WorkerDefinition:
-    """Hash-identified metadata and implementation for one model worker."""
+    """Hash-identified metadata and implementation for one model worker.
+
+    The identity is *authored*, not derived from source text. An earlier design
+    hashed ``inspect.getsource`` of the implementation and the semantic
+    validator; that made comments and whitespace part of the worker's identity,
+    so reformatting a docstring invalidated persisted proposals and forced a
+    re-billed model call. What actually changes a worker's behaviour is its
+    prompt, its response schema, and its repair policy — all of which are
+    hashed below.
+    """
 
     worker_id: str
-    implementation_hash: str
     prompt_hash: str
     response_schema: WorkerResponseSchema
     repair_policy: WorkerRepairPolicy
     implementation: WorkerImplementation = field(repr=False, compare=False)
     required_model_capabilities: tuple[str, ...] = ()
-    semantic_validation_hash: str | None = None
     semantic_validator: SemanticValidator | None = field(
         default=None, repr=False, compare=False
     )
@@ -444,7 +451,6 @@ class WorkerDefinition:
         object.__setattr__(
             self, "worker_id", _normalized_id(self.worker_id, "worker_definition.worker_id")
         )
-        _require_hash(self.implementation_hash, "worker_definition.implementation_hash")
         _require_hash(self.prompt_hash, "worker_definition.prompt_hash")
         if not isinstance(self.response_schema, WorkerResponseSchema):
             raise ValueError(
@@ -473,30 +479,19 @@ class WorkerDefinition:
                 f"Unknown required model capability '{unknown[0]}'."
             )
         object.__setattr__(self, "required_model_capabilities", capabilities)
-        if self.semantic_validator is None:
-            if self.semantic_validation_hash is not None:
-                raise ValueError(
-                    "worker_definition.semantic_validation_hash requires a validator."
-                )
-        else:
-            if not callable(self.semantic_validator):
-                raise ValueError(
-                    "worker_definition.semantic_validator must be callable."
-                )
-            _require_hash(
-                self.semantic_validation_hash,
-                "worker_definition.semantic_validation_hash",
-            )
+        if self.semantic_validator is not None and not callable(
+            self.semantic_validator
+        ):
+            raise ValueError("worker_definition.semantic_validator must be callable.")
         self.definition_hash
 
     def to_dict(self) -> dict[str, object]:
         return {
             "worker_id": self.worker_id,
-            "implementation_hash": self.implementation_hash,
             "prompt_hash": self.prompt_hash,
             "response_schema_id": self.response_schema.schema_id,
             "response_schema_hash": self.response_schema.schema_hash,
-            "semantic_validation_hash": self.semantic_validation_hash,
+            "semantic_validation": self.semantic_validator is not None,
             "required_model_capabilities": list(
                 self.required_model_capabilities
             ),

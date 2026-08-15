@@ -17,7 +17,6 @@ generated artifact behind.
 from __future__ import annotations
 
 import hashlib
-import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -367,8 +366,6 @@ def reconcile_document_analysis(
 
 ANALYSIS_EXECUTOR = ExecutorDefinition(
     executor_id=ANALYSIS_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_document_analysis)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_document_analysis)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_document_analysis,
     reconciler=reconcile_document_analysis,

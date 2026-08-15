@@ -11,7 +11,6 @@ evidence links) into a committed test. Replaces the retired two-pass
 from __future__ import annotations
 
 import hashlib
-import inspect
 import re
 import uuid
 from collections.abc import Mapping
@@ -636,13 +635,6 @@ def reconcile_test_generation(
 
 GENERATE_EXECUTOR = ExecutorDefinition(
     executor_id=GENERATE_EXECUTOR_ID,
-    implementation_hash=_sha256_text(
-        inspect.getsource(execute_test_generation)
-        + inspect.getsource(_validated_generation)
-        + inspect.getsource(_commit_document_test)
-        + inspect.getsource(cycle_vouching.build_cycle_vouch_test)
-    ),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_test_generation)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_test_generation,
     reconciler=reconcile_test_generation,

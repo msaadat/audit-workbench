@@ -81,7 +81,6 @@ def _json_validator(response):
 def _definition(implementation, **overrides):
     values = {
         "worker_id": "planning.apm",
-        "implementation_hash": HASH_A,
         "prompt_hash": HASH_B,
         "response_schema": WorkerResponseSchema(
             "planning.apm.response", HASH_C, _json_validator
@@ -141,11 +140,10 @@ def test_worker_metadata_is_hash_identified_and_definition_hash_is_stable():
     assert first.definition_hash != changed.definition_hash
     assert first.to_dict() == {
         "worker_id": "planning.apm",
-        "implementation_hash": HASH_A,
         "prompt_hash": HASH_B,
         "response_schema_id": "planning.apm.response",
         "response_schema_hash": HASH_C,
-        "semantic_validation_hash": None,
+        "semantic_validation": False,
         "required_model_capabilities": [],
         "repair_policy": WorkerRepairPolicy(1, HASH_A).to_dict(),
     }

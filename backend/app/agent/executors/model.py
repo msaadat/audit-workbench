@@ -359,11 +359,15 @@ ExecutorReconciler = Callable[[ExecutorRequest, object], ExecutorReconciliation]
 
 @dataclass(frozen=True)
 class ExecutorDefinition:
-    """Hash-identified metadata and callables for one deterministic executor."""
+    """Hash-identified metadata and callables for one deterministic executor.
+
+    As with :class:`~..workers.model.WorkerDefinition`, the identity is authored
+    rather than derived from ``inspect.getsource``. An executor's contract is
+    its id and its concurrency mode; hashing its source text only made every
+    refactor look like a contract change to a resuming run.
+    """
 
     executor_id: str
-    implementation_hash: str
-    reconciliation_hash: str
     concurrency: ExecutorConcurrency
     implementation: ExecutorImplementation = field(repr=False, compare=False)
     reconciler: ExecutorReconciler = field(repr=False, compare=False)
@@ -373,12 +377,6 @@ class ExecutorDefinition:
             self,
             "executor_id",
             _normalized_id(self.executor_id, "executor_definition.executor_id"),
-        )
-        _require_sha256(
-            self.implementation_hash, "executor_definition.implementation_hash"
-        )
-        _require_sha256(
-            self.reconciliation_hash, "executor_definition.reconciliation_hash"
         )
         if not isinstance(self.concurrency, ExecutorConcurrency):
             raise ValueError(
@@ -393,8 +391,6 @@ class ExecutorDefinition:
     def to_dict(self) -> dict[str, object]:
         return {
             "executor_id": self.executor_id,
-            "implementation_hash": self.implementation_hash,
-            "reconciliation_hash": self.reconciliation_hash,
             "concurrency": self.concurrency.to_dict(),
         }
 

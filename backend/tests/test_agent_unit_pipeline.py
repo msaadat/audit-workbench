@@ -9,7 +9,13 @@ import pytest
 from app import workspaces
 from app.agent import runner as agent_runner
 from app.agent import store, workflow
-from app.agent.context import ContextBundle, ContextManifest, ContextSize
+from app.agent.context import (
+    ContextBundle,
+    ContextManifest,
+    ContextRepresentation,
+    ContextSelection,
+    ContextSize,
+)
 from app.agent.executors import (
     ExecutorConcurrency,
     ExecutorDefinition,
@@ -104,7 +110,6 @@ def _pipeline(workspace, events, *, executor=None, reconciler=None):
     workers.register(
         WorkerDefinition(
             worker_id="planning.apm",
-            implementation_hash=HASH_A,
             prompt_hash=HASH_B,
             response_schema=WorkerResponseSchema(
                 "planning.apm.response",
@@ -125,8 +130,6 @@ def _pipeline(workspace, events, *, executor=None, reconciler=None):
     executors.register(
         ExecutorDefinition(
             executor_id="planning.apm",
-            implementation_hash=HASH_A,
-            reconciliation_hash=HASH_B,
             concurrency=ExecutorConcurrency("parent_hashes"),
             implementation=executor or default_executor,
             reconciler=reconciler
@@ -486,7 +489,6 @@ def test_failed_response_is_persisted_and_exact_linked_retry_repairs_it():
         workers.register(
             WorkerDefinition(
                 worker_id="planning.apm",
-                implementation_hash=HASH_A,
                 prompt_hash=HASH_B,
                 response_schema=WorkerResponseSchema(
                     "planning.apm.response", HASH_A, validate
@@ -499,8 +501,6 @@ def test_failed_response_is_persisted_and_exact_linked_retry_repairs_it():
         executors.register(
             ExecutorDefinition(
                 executor_id="planning.apm",
-                implementation_hash=HASH_A,
-                reconciliation_hash=HASH_B,
                 concurrency=ExecutorConcurrency("parent_hashes"),
                 implementation=lambda request, _target: _committed_result(request),
                 reconciler=lambda _request, _target: ExecutorReconciliation(
@@ -590,8 +590,13 @@ def test_failed_response_is_persisted_and_exact_linked_retry_repairs_it():
         ("capability", "capability_definition_changed"),
         ("unit_input", "unit_input_changed"),
         ("context", "exact_context_changed"),
-        ("selector", "selector_definitions_changed"),
-        ("prompt", "prompt_changed"),
+        # The identity no longer carries selector or prompt hashes of its own.
+        # Both are still covered: a selector definition is recorded on every
+        # manifest selection, and the prompt hash is hashed into the worker
+        # definition, so each still rejects reuse through the field that
+        # contains it.
+        ("selector", "exact_context_changed"),
+        ("prompt", "worker_definition_changed"),
     ],
 )
 def test_proposal_reuse_reports_exact_incompatibility_reason(change, expected_reason):
@@ -622,14 +627,10 @@ def test_proposal_reuse_reports_exact_incompatibility_reason(change, expected_re
     elif change == "context":
         context_provider = lambda: _context_with_resolver(HASH_A)
     elif change == "selector":
-        identity_provider = lambda manifest: {
-            **_context_identity(manifest),
-            "selector_definition_hashes": [HASH_A],
-        }
+        context_provider = lambda: _context_with_selector(HASH_A)
     elif change == "prompt":
         pipeline.workers._definitions["planning.apm"] = WorkerDefinition(
             worker_id="planning.apm",
-            implementation_hash=HASH_A,
             prompt_hash=HASH_A,
             response_schema=WorkerResponseSchema(
                 "planning.apm.response", HASH_A, lambda response: {"apm_markdown": response}
@@ -655,6 +656,43 @@ def test_proposal_reuse_reports_exact_incompatibility_reason(change, expected_re
     )
     assert "artifact_currency" not in payload
     assert "freshness" not in payload
+
+
+def _context_with_selector(selector_definition_hash):
+    """A manifest identical but for the selector that produced its one source.
+
+    The proposal identity dropped ``selector_definition_hashes`` as redundant;
+    this proves the redundancy holds, because the selector's definition hash is
+    recorded on the selection and so is inside ``manifest_hash``.
+    """
+    manifest, bundle = _context()
+    size = ContextSize(items=1, characters=8, estimated_tokens=2)
+    selection = ContextSelection(
+        source_id="planning.current",
+        source_type="planning",
+        source_ref="planning:context",
+        source_hash=HASH_B,
+        selector_kind="deterministic",
+        selector_id="planning.current",
+        selector_definition_hash=selector_definition_hash,
+        reason="Deterministic selector supplied the planning context.",
+        representation=ContextRepresentation("text"),
+        supplied_size=size,
+    )
+    return (
+        ContextManifest(
+            capability_id=manifest.capability_id,
+            unit_id=manifest.unit_id,
+            context_spec_hash=manifest.context_spec_hash,
+            resolver_hash=manifest.resolver_hash,
+            selections=(selection,),
+            omissions=manifest.omissions,
+            truncations=manifest.truncations,
+            privacy_decisions=manifest.privacy_decisions,
+            supplied_size=size,
+        ),
+        bundle,
+    )
 
 
 def _context_with_resolver(resolver_hash):
@@ -690,7 +728,6 @@ def test_recovery_after_manifest_or_interrupted_provider_calls_worker_again():
 
     pipeline.workers._definitions["planning.apm"] = WorkerDefinition(
         worker_id=original.worker_id,
-        implementation_hash=original.implementation_hash,
         prompt_hash=original.prompt_hash,
         response_schema=original.response_schema,
         repair_policy=original.repair_policy,

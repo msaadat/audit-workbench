@@ -92,6 +92,48 @@ def test_sha1(test: dict) -> str:
     return _sha1({key: value for key, value in test.items() if key != "sha1"})
 
 
+# What a finding actually rests on when it cites a Document Test: what was
+# tested, against which documents, and what the runner found. ``test_sha1``
+# above cannot serve this purpose — it covers the whole record, and every save
+# stamps ``updated``, so recording a conclusion or dispositioning one item would
+# read as "the evidence under this finding changed".
+#
+# Auditor rulings (``disposition``), runner notes, roll-ups, and save stamps are
+# therefore excluded. So are item ``evidence_refs``: ``normalize_anchor`` mints a
+# fresh ``EV-`` id for any anchor stored without one, which would make the hash
+# differ between two reads of the same unchanged file.
+_TEST_EVIDENCE_FIELDS = (
+    "id",
+    "rcm_id",
+    "kind",
+    "objective",
+    "criteria",
+    "steps",
+    "spec",
+)
+_ITEM_ANNOTATION_FIELDS = frozenset(
+    {"disposition", "evaluation", "runner_note", "qa_answers", "evidence_refs"}
+)
+
+
+def test_evidence_projection(test: dict) -> dict:
+    """Return the evidentiary basis of one Document Test."""
+    projection = {field: test.get(field) for field in _TEST_EVIDENCE_FIELDS}
+    projection["items"] = [
+        {
+            key: value
+            for key, value in (item or {}).items()
+            if key not in _ITEM_ANNOTATION_FIELDS
+        }
+        for item in test.get("items") or []
+    ]
+    return projection
+
+
+def test_evidence_sha1(test: dict) -> str:
+    return _sha1(test_evidence_projection(test))
+
+
 def _normalize_steps(values: object) -> list[dict]:
     """Preserve declared step fields as objects; reject a step that is not an object."""
     steps: list[dict] = []

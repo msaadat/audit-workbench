@@ -16,7 +16,6 @@ staged file that the batch does not contain.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -226,7 +225,6 @@ CLASSIFICATION_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 CLASSIFICATION_WORKER = WorkerDefinition(
     worker_id=CLASSIFICATION_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_classification_worker)),
     prompt_hash=_sha256_text(CLASSIFICATION_SYSTEM),
     response_schema=CLASSIFICATION_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -237,9 +235,6 @@ CLASSIFICATION_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_classification_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_classification_proposal)
-    ),
     semantic_validator=validate_classification_proposal,
 )
 

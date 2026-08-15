@@ -25,7 +25,6 @@ The worker never sees a table row: the declared context denies
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -522,7 +521,6 @@ def run_join_utility_worker(
 
 JOIN_UTILITY_WORKER = WorkerDefinition(
     worker_id=JOIN_UTILITY_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_join_utility_worker)),
     prompt_hash=_sha256_text(JOIN_UTILITY_SYSTEM),
     response_schema=WorkerResponseSchema(
         schema_id="analysis.join_utility.response",
@@ -531,7 +529,6 @@ JOIN_UTILITY_WORKER = WorkerDefinition(
     ),
     repair_policy=WorkerRepairPolicy(max_repair_attempts=1, guidance_hash=_sha256_text("Repair join utility decisions.")),
     implementation=run_join_utility_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_join_utility_proposal)),
     semantic_validator=validate_join_utility_proposal,
 )
 WORKERS.register(JOIN_UTILITY_WORKER)
@@ -1341,9 +1338,6 @@ ANALYSIS_DEFINITION_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 ANALYSIS_DEFINITION_WORKER = WorkerDefinition(
     worker_id=ANALYSIS_DEFINITION_WORKER_ID,
-    implementation_hash=_sha256_text(
-        inspect.getsource(run_analysis_definition_worker)
-    ),
     prompt_hash=_sha256_text(ANALYSIS_DEFINITION_SYSTEM),
     response_schema=ANALYSIS_DEFINITION_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -1354,9 +1348,6 @@ ANALYSIS_DEFINITION_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_analysis_definition_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_analysis_proposal)
-    ),
     semantic_validator=validate_analysis_proposal,
 )
 
@@ -1839,7 +1830,6 @@ ANALYSIS_SUMMARY_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 ANALYSIS_SUMMARY_WORKER = WorkerDefinition(
     worker_id=ANALYSIS_SUMMARY_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_analysis_summary_worker)),
     prompt_hash=_sha256_text(ANALYSIS_SUMMARY_SYSTEM),
     response_schema=ANALYSIS_SUMMARY_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -1852,7 +1842,6 @@ ANALYSIS_SUMMARY_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_analysis_summary_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_analysis_summary)),
     semantic_validator=validate_analysis_summary,
 )
 
@@ -2149,11 +2138,6 @@ def run_analysis_promotion_worker(
 
 ANALYSIS_PROMOTION_WORKER = WorkerDefinition(
     worker_id=ANALYSIS_PROMOTION_WORKER_ID,
-    implementation_hash=_sha256_text(
-        inspect.getsource(run_analysis_promotion_worker)
-        + inspect.getsource(_promotion_subject)
-        + inspect.getsource(_promotion_rows)
-    ),
     prompt_hash=_sha256_text(ANALYSIS_PROMOTION_SYSTEM),
     response_schema=WorkerResponseSchema(
         schema_id="analysis.promotion.response",
@@ -2170,9 +2154,6 @@ ANALYSIS_PROMOTION_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_analysis_promotion_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_promotion_proposal)
-    ),
     semantic_validator=validate_promotion_proposal,
 )
 WORKERS.register(ANALYSIS_PROMOTION_WORKER)

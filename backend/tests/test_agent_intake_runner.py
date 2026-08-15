@@ -121,7 +121,7 @@ def test_classification_worker_is_registered_with_hash_identity():
     definition = WORKERS.get(CLASSIFICATION_WORKER_ID)
 
     assert definition.prompt_hash.startswith("sha256:")
-    assert definition.implementation_hash.startswith("sha256:")
+    assert definition.definition_hash.startswith("sha256:")
     assert definition.response_schema.schema_hash.startswith("sha256:")
     assert definition.repair_policy.max_repair_attempts == 1
 
@@ -216,7 +216,9 @@ def test_classification_proposal_and_accepted_decisions_are_durable(fake_agent_l
     proposals = store.run_dir(ws, run["id"]) / "proposals"
     classification = _sidecar(proposals, classification_unit_id(batch["id"]))
     assert classification["worker_id"] == CLASSIFICATION_WORKER_ID
-    assert classification["execution_identity"]["prompt_hash"].startswith("sha256:")
+    assert classification["execution_identity"]["worker_definition_hash"].startswith(
+        "sha256:"
+    )
     assert [entry["id"] for entry in classification["proposal"]["items"]] == [item_id]
 
     accepted = _sidecar(proposals, apply_unit_id(batch["id"]))

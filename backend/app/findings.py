@@ -19,6 +19,7 @@ import uuid
 from . import cycle_vouching, doc_tests, templates_store
 from .agent import store as agent_store
 from .evidence import normalize_anchor, normalize_many
+from .workspace_transactions import material_projection, rcm_material_projection
 from .workspaces import Workspace, WorkspaceError, slugify
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
@@ -57,8 +58,20 @@ def _canonical_sha1(value: object) -> str:
 
 
 def artifact(workspace: Workspace, source_kind: str, source_id: str) -> dict | None:
-    """Resolve an evidence source to its current record and immutable hash."""
+    """Resolve an evidence source to its current record and material hash.
+
+    The hash covers the *evidentiary basis* of the source — what was tested,
+    against what, and what was found. Run stamps, presentation, derived
+    roll-ups, and the auditor's own annotations are excluded, so re-running a
+    test or recording a conclusion does not read as "the evidence changed".
+
+    This mirrors the discipline ``workspace_transactions.material_projection``
+    already applies to parent-conflict hashes; hashing whole records here made
+    every finding in a workspace go stale after one unchanged re-run.
+    """
     if source_kind == "document":
+        # Documents are content-addressed, so their own sha1 is already the
+        # material hash: it changes exactly when the bytes change.
         item = next((row for row in workspace.documents if row.get("id") == source_id), None)
         return {"item": item, "sha1": item.get("sha1")} if item else None
     if source_kind == "analysis":
@@ -69,6 +82,11 @@ def artifact(workspace: Workspace, source_kind: str, source_id: str) -> dict | N
         item = next((row for row in workspace.work_program if row.get("id") == source_id), None)
     elif source_kind == "rcm":
         item = next((row for row in workspace.rcm if row.get("id") == source_id), None)
+        return (
+            {"item": item, "sha1": _canonical_sha1(rcm_material_projection(item))}
+            if item
+            else None
+        )
     elif source_kind == "datatest":
         from . import data_tests
 
@@ -77,7 +95,7 @@ def artifact(workspace: Workspace, source_kind: str, source_id: str) -> dict | N
         if not doc_tests.exists(workspace, source_id):
             return None
         item = doc_tests.load_test(workspace, source_id)
-        return {"item": item, "sha1": item.get("sha1") or _canonical_sha1(item)}
+        return {"item": item, "sha1": doc_tests.test_evidence_sha1(item)}
     elif source_kind == "table":
         item = next((row for row in workspace.tables if row.get("name") == source_id), None)
         if item is None:
@@ -87,7 +105,11 @@ def artifact(workspace: Workspace, source_kind: str, source_id: str) -> dict | N
         return {"item": item, "sha1": _canonical_sha1(workspace._table_signature(source_id))}
     else:
         return None
-    return {"item": item, "sha1": _canonical_sha1(item)} if item else None
+    return (
+        {"item": item, "sha1": _canonical_sha1(material_projection(item))}
+        if item
+        else None
+    )
 
 
 def validate_evidence(

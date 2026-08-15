@@ -13,7 +13,6 @@ capability group, in :mod:`agent.workers.tests`.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -255,7 +254,6 @@ DOCUMENT_QA_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 DOCUMENT_QA_WORKER = WorkerDefinition(
     worker_id=DOCUMENT_QA_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_document_qa_worker)),
     prompt_hash=_sha256_text(DOCUMENT_QA_SYSTEM),
     response_schema=DOCUMENT_QA_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -265,9 +263,6 @@ DOCUMENT_QA_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_document_qa_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_document_qa_proposal)
-    ),
     semantic_validator=validate_document_qa_proposal,
 )
 

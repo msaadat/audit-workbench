@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -1612,15 +1611,6 @@ GENERATE_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 GENERATE_WORKER = WorkerDefinition(
     worker_id=GENERATE_WORKER_ID,
-    implementation_hash=_sha256_text(
-        inspect.getsource(run_generate_worker)
-        + inspect.getsource(_generation_prompt_payload)
-        + inspect.getsource(_model_transaction_manifest)
-        + inspect.getsource(_relevant_table_schemas)
-        + inspect.getsource(_relevant_documents)
-        + inspect.getsource(relevance_tokens)
-        + inspect.getsource(_manifest_candidate_ids)
-    ),
     prompt_hash=_sha256_text(GENERATE_SYSTEM),
     response_schema=GENERATE_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -1630,21 +1620,6 @@ GENERATE_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_generate_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_generate_proposal)
-        + inspect.getsource(_validate_generate_cycle_test)
-        + inspect.getsource(_validate_generate_data_step)
-        + inspect.getsource(_validate_generate_document_step)
-        + inspect.getsource(_manifest_candidate_matches)
-        + inspect.getsource(_manifest_candidate_ids)
-        + inspect.getsource(_code_loaded_names)
-        + inspect.getsource(_code_polars_columns)
-        + inspect.getsource(_redundant_imports)
-        + inspect.getsource(_step_text)
-        + inspect.getsource(_tables_covering_columns)
-        + inspect.getsource(cycle_vouching.compile_required_assertions)
-        + inspect.getsource(cycle_vouching.validate_cycle_test_semantics)
-    ),
     semantic_validator=validate_generate_proposal,
 )
 

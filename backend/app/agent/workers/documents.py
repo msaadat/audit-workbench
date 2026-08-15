@@ -25,7 +25,6 @@ these workers enforce.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Iterable, Mapping
@@ -2362,7 +2361,6 @@ CHUNK_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 CHUNK_WORKER = WorkerDefinition(
     worker_id=CHUNK_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_chunk_worker)),
     prompt_hash=_sha256_text(CHUNK_SYSTEM),
     response_schema=CHUNK_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -2373,7 +2371,6 @@ CHUNK_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_chunk_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_chunk_proposal)),
     semantic_validator=validate_chunk_proposal,
 )
 
@@ -2386,7 +2383,6 @@ VISUAL_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 VISUAL_WORKER = WorkerDefinition(
     worker_id=VISUAL_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_visual_worker)),
     prompt_hash=_sha256_text(VISUAL_SYSTEM),
     response_schema=VISUAL_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -2397,9 +2393,6 @@ VISUAL_WORKER = WorkerDefinition(
     ),
     implementation=run_visual_worker,
     required_model_capabilities=("vision",),
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_visual_proposal)
-    ),
     semantic_validator=validate_visual_proposal,
 )
 
@@ -2412,7 +2405,6 @@ VOUCHER_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 VOUCHER_WORKER = WorkerDefinition(
     worker_id=VOUCHER_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_voucher_worker)),
     prompt_hash=_sha256_text(VOUCHER_SYSTEM),
     response_schema=VOUCHER_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -2430,12 +2422,6 @@ VOUCHER_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_voucher_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_voucher_proposal)
-        + inspect.getsource(_canonicalize_voucher_fragment)
-        + inspect.getsource(cycle_vouching.normalize_record_fragment)
-        + _VOUCHER_REGISTRY_DESCRIPTORS
-    ),
     semantic_validator=validate_voucher_proposal,
 )
 
@@ -2446,7 +2432,6 @@ REDUCTION_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 REDUCTION_WORKER = WorkerDefinition(
     worker_id=REDUCTION_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_reduction_worker)),
     prompt_hash=_sha256_text(REDUCTION_SYSTEM),
     response_schema=REDUCTION_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -2456,10 +2441,6 @@ REDUCTION_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_reduction_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_reduction_proposal)
-        + inspect.getsource(cycle_vouching.reduce_record_fragments)
-    ),
     semantic_validator=validate_reduction_proposal,
 )
 

@@ -1475,7 +1475,12 @@ def quality_checks(
             if resolved is None:
                 issues.append(_issue("broken_evidence", "error", f"{finding['id']} has a broken evidence reference.", [ref, str(anchor.get('id'))]))
             elif anchor.get("source_sha1") != resolved["sha1"]:
-                issues.append(_issue("stale_evidence", "error", f"{finding['id']} evidence {anchor.get('id')} no longer matches its source hash.", [ref, str(anchor.get('id'))]))
+                # Advisory, not blocking. Whether a changed source still supports
+                # the finding is the auditor's call — ``update_finding`` already
+                # lets them confirm it after considering the warning, so holding
+                # the report to a stricter rule than the finding itself would
+                # leave an audit permanently unverifiable over a judgment call.
+                issues.append(_issue("stale_evidence", "warning", f"{finding['id']} evidence {anchor.get('id')} no longer matches its source hash.", [ref, str(anchor.get('id'))]))
         if text and finding in supported_findings and finding["id"] not in cited_findings:
             issues.append(_issue("finding_missing_from_report", "warning", f"{finding['id']} is not cited in the report.", [ref]))
 

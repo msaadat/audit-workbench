@@ -153,6 +153,37 @@ def evaluation_input_sha1(source_sha1: str, dataset_fingerprints: dict) -> str:
     return _sha1({"source": source_sha1, "data": dataset_fingerprints})
 
 
+# What a finding actually rests on when it cites a result: the definition and
+# data the run consumed, and the outcome it produced. The same reasoning as
+# ``evaluation_input_sha1`` above, applied to evidence anchors — ``run_at``,
+# presentation (``viz``, ``stdout``, ``statistics``, ``verdict_text``), runner
+# diagnostics, and the auditor's own conclusion are all excluded, because a
+# re-run that changed nothing must not read as "the evidence changed". An
+# allowlist rather than a denylist, so a new presentational field cannot
+# silently start invalidating evidence.
+_RESULT_EVIDENCE_FIELDS = (
+    "data_test_id",
+    "rcm_id",
+    "source_sha1",
+    "dataset_fingerprints",
+    "status",
+    "verdict",
+    "exception_count",
+    "exception_frame",
+    "summary_frame",
+    "semantic_valid",
+)
+
+
+def result_evidence_projection(result: dict) -> dict:
+    """Return the evidentiary basis of one Data Test result."""
+    return {field: result.get(field) for field in _RESULT_EVIDENCE_FIELDS}
+
+
+def result_evidence_sha1(result: dict) -> str:
+    return _sha1(result_evidence_projection(result))
+
+
 def reason_inventory(exception_profile: dict | None, exception_count: int) -> list[dict]:
     """The exception groups an auditor can rule on, one row each.
 
@@ -1756,7 +1787,9 @@ def result_artifact(workspace: Workspace, source_id: str) -> dict | None:
         result = _read_result(workspace, data_test_id, run_id)
     except WorkspaceError:
         return None
-    return {"item": result, "sha1": result["result_sha1"]}
+    # ``result_sha1`` stays the file-integrity hash checked by ``_read_result``.
+    # What an evidence anchor pins is the narrower evidentiary basis.
+    return {"item": result, "sha1": result_evidence_sha1(result)}
 
 
 def spec_as_python_code(spec: dict) -> str:

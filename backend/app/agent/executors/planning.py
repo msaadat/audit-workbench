@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -188,8 +187,6 @@ def reconcile_apm(
 
 APM_EXECUTOR = ExecutorDefinition(
     executor_id=APM_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_apm)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_apm)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_apm,
     reconciler=reconcile_apm,
@@ -354,8 +351,6 @@ def reconcile_planning_context(
 
 PLANNING_CONTEXT_EXECUTOR = ExecutorDefinition(
     executor_id=PLANNING_CONTEXT_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_planning_context)),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_planning_context)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_planning_context,
     reconciler=reconcile_planning_context,
@@ -733,12 +728,6 @@ def reconcile_rcm(
 
 RCM_EXECUTOR = ExecutorDefinition(
     executor_id=RCM_EXECUTOR_ID,
-    implementation_hash=_sha256_text(
-        inspect.getsource(execute_rcm)
-        + inspect.getsource(_validated_rcm)
-        + json.dumps(RCM_ROW_FIELDS, separators=(",", ":"))
-    ),
-    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_rcm)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_rcm,
     reconciler=reconcile_rcm,
