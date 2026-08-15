@@ -14,6 +14,7 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
+import { conclusionCounts, dataTestConclusion } from '../composables/conclusionFacet'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditFinding,
@@ -22,6 +23,7 @@ import type {
   DataTestResult,
   DataTestStep,
   PlanningPayload,
+  TestConclusionState,
   WorkspaceSummary,
 } from '../types'
 import AnalyticsTestAuthor from './data-tests/AnalyticsTestAuthor.vue'
@@ -66,6 +68,9 @@ const running = ref(false)
 const runningAll = ref(false)
 const generatingFindings = ref(false)
 const filter = ref<string>('all')
+// A second axis over the same tests, not a sixth status: "exceptions nobody
+// has concluded on" needs both halves at once.
+const conclusionFilter = ref<'all' | TestConclusionState>('all')
 const search = ref('')
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
 const editAnalyticsReady = ref(false)
@@ -117,19 +122,33 @@ const rcmFacet = computed(() => {
   return linked.size > 1 ? rcmOptions.value.filter(option => linked.has(option.value)) : []
 })
 const filterRcm = ref<string | null>(null)
+// The status chips stay a whole-tab tally, so the conclusion row is counted
+// within everything else already applied — the number on a conclusion chip is
+// what clicking it would leave, not a separate total.
+const conclusionScope = computed(() => tests.value.filter(test => {
+  if (filterRcm.value && test.rcm_id !== filterRcm.value) return false
+  if (filter.value === 'not_run' && test.last_run) return false
+  if (filter.value !== 'all' && filter.value !== 'not_run' && test.status !== filter.value) return false
+  return true
+}))
+const conclusionFacets = computed(() =>
+  conclusionCounts(conclusionScope.value.map(dataTestConclusion)))
 const visibleTests = computed(() => {
   const query = search.value.trim().toLowerCase()
-  return tests.value.filter(test => {
-    if (filterRcm.value && test.rcm_id !== filterRcm.value) return false
-    if (filter.value === 'not_run' && test.last_run) return false
-    if (filter.value !== 'all' && filter.value !== 'not_run' && test.status !== filter.value) return false
+  return conclusionScope.value.filter(test => {
+    if (conclusionFilter.value !== 'all' && dataTestConclusion(test) !== conclusionFilter.value) return false
     if (!query) return true
     return [test.title, test.objective, test.criteria, test.rcm_id ?? '']
       .some(value => (value ?? '').toLowerCase().includes(query))
   })
 })
-const activeFilterLabel = computed(() =>
-  triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'tests')
+const activeFilterLabel = computed(() => {
+  const status = triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'tests'
+  const conclusion = conclusionFilter.value === 'all'
+    ? null
+    : conclusionFacets.value.find(count => count.key === conclusionFilter.value)?.label.toLowerCase()
+  return conclusion ? `${status} · ${conclusion}` : status
+})
 const definitionReady = computed(() => {
   if (!selected.value) return false
   if (selected.value.engine === 'polars') return polarsStepsValid(editPolarsSteps.value)
@@ -455,6 +474,9 @@ function openRcm() {
 function pickFilter(key: string) {
   filter.value = key
 }
+function pickConclusion(key: string) {
+  conclusionFilter.value = key as 'all' | TestConclusionState
+}
 
 watch(visibleTests, items => {
   if (!items.length || items.some(item => item.id === selectedId.value)) return
@@ -498,7 +520,15 @@ onUnmounted(unsubscribe)
     </UiPageHeader>
 
     <template v-if="tests.length">
-      <UiTriageCounts :counts="triage" :active="filter" @select="pickFilter" />
+      <div class="facets">
+        <UiTriageCounts :counts="triage" :active="filter" label="Outcome" @select="pickFilter" />
+        <UiTriageCounts
+          :counts="conclusionFacets"
+          :active="conclusionFilter"
+          label="Conclusion"
+          @select="pickConclusion"
+        />
+      </div>
 
       <div class="toolbar">
         <IconField>
@@ -729,6 +759,7 @@ onUnmounted(unsubscribe)
 
 <style scoped>
 .data-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; max-width: 100%; min-height: 100%; }
+.facets { display: flex; flex-direction: column; gap: var(--aw-space-2); min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex-wrap: wrap; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 14rem; min-width: 0; max-width: 22rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }

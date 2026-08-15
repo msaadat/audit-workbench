@@ -8,7 +8,9 @@ export interface TriageCount {
   tone?: 'danger' | 'warn' | 'ok' | 'info' | 'muted'
 }
 
-const props = defineProps<{ counts: TriageCount[]; active?: string | null }>()
+/** `label` names the axis. It is only worth the width when a screen filters on
+ *  more than one — a lone row of chips is self-evidently the outcome. */
+const props = defineProps<{ counts: TriageCount[]; active?: string | null; label?: string }>()
 defineEmits<{ select: [key: string] }>()
 
 /**
@@ -29,7 +31,8 @@ const visible = computed(() => props.counts.filter(
   <!-- One row of count chips rather than a band of cards. The counts are a
        filter, not a dashboard: the numbers still need to be scannable, but
        they do not need 90px of vertical space on every fieldwork screen. -->
-  <div class="triage" role="group" aria-label="Filter by outcome">
+  <div class="triage" role="group" :aria-label="`Filter by ${label ? label.toLowerCase() : 'outcome'}`">
+    <span v-if="label" class="triage-label">{{ label }}</span>
     <button
       v-for="count in visible"
       :key="count.key"
@@ -49,7 +52,10 @@ const visible = computed(() => props.counts.filter(
 </template>
 
 <style scoped>
-.triage { display: flex; flex-wrap: wrap; gap: var(--aw-space-2); min-width: 0; }
+.triage { display: flex; flex-wrap: wrap; align-items: center; gap: var(--aw-space-2); min-width: 0; }
+/* A fixed width, so two stacked rows line their chips up against each other
+   instead of stepping in and out with the caption. */
+.triage-label { flex: 0 0 5.5rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .triage-chip {
   display: inline-flex;
   align-items: center;

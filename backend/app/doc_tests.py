@@ -2372,6 +2372,32 @@ def _item_classification(test: dict, item: dict) -> str:
     return "not_run"
 
 
+def _conclusion_state(test: dict, rollup: dict) -> str:
+    """Where the test's conclusion stands, as one exclusive bucket.
+
+    The worklist filters on this beside the outcome, so "exceptions nobody has
+    concluded on yet" is a pair of clicks rather than a read of every row.
+
+    The control conclusion alone decides whether one was recorded. Written
+    reasoning without it is not a conclusion — a run that narrates a result and
+    still reaches `no_conclusion` has left the sign-off outstanding, and burying
+    those in a "concluded" bucket is what the filter exists to prevent. A
+    control conclusion can only be saved while the test is eligible for one, so
+    one recorded against a test that is no longer eligible is a conclusion the
+    evidence has since moved out from under.
+    """
+
+    if str(test.get("control_conclusion") or "no_conclusion") == "no_conclusion":
+        return "none"
+    if str(test.get("control_conclusion_source") or "none") != "auditor":
+        return "agent"
+    # Only the auditor path is guarded by eligibility, so an auditor conclusion
+    # on a test that is no longer eligible is one whose ground moved. An
+    # unattended run writes its own conclusion without that guard, and an
+    # ineligible test is no reason to hide it from the auditor reviewing them.
+    return "auditor" if rollup.get("conclusion_eligible") else "stale"
+
+
 def _cycle_test_classification(test: dict, rollup: dict) -> str:
     """Bucket one Cycle vouch test without flattening its assertion cells."""
 
@@ -2440,8 +2466,11 @@ def summary_payload(workspace: Workspace) -> dict:
         kind = str(test.get("kind") or "")
         if kind in KINDS:
             test_counts[kind] += 1
+        # Both branches need the rollup now: the conclusion state each entry
+        # carries turns on whether the test is still eligible for one.
+        rollup = result_rollup(test)
+        conclusion_state = _conclusion_state(test, rollup)
         if is_cycle_test(test):
-            rollup = result_rollup(test)
             classification = _cycle_test_classification(test, rollup)
             entry_counts[classification] += 1
             for state in cycle_vouching.EVALUATION_STATES:
@@ -2466,6 +2495,7 @@ def summary_payload(workspace: Workspace) -> dict:
                 "test_status": test.get("status"),
                 "rcm_id": test.get("rcm_id"),
                 "classification": classification,
+                "conclusion_state": conclusion_state,
                 "item_count": int(rollup["items"]),
                 "tested_item_count": int(rollup["tested_items"]),
                 "evaluation_counts": dict(rollup["item_counts"]),
@@ -2523,6 +2553,9 @@ def summary_payload(workspace: Workspace) -> dict:
                 "instruction": item.get("instruction") or "",
                 "state": state,
                 "classification": classification,
+                # Test-grain, repeated on every item of the test: the auditor
+                # concludes once per test, and the worklist filters per row.
+                "conclusion_state": conclusion_state,
                 # Both readings travel with the worklist row so triage can show
                 # "the runner failed it, you confirmed it" without a second load.
                 "evaluation": dict(item.get("evaluation") or {}),

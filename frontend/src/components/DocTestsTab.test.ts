@@ -85,6 +85,7 @@ const summary: DocTestSummaryPayload = {
     test_status: 'completed_with_exception',
     rcm_id: 'RCM-1',
     classification: 'needs_review',
+    conclusion_state: 'none',
     item_count: 1,
     tested_item_count: 1,
     evaluation_counts: { failed: 1 },
@@ -215,6 +216,7 @@ describe('DocTestsTab Cycle vouch navigation', () => {
         entry_type: 'item', test_id: 'DT-QA', test_title: 'Contract questions', test_kind: 'qa',
         test_status: 'ready', rcm_id: null, item_id: 'ITEM-QA', label: 'Approval clause',
         instruction: 'Read the approval clause', state: 'pending', classification: 'not_run',
+        conclusion_state: 'none',
         evaluation: { state: 'not_run', note: '', input_sha1: null, ran_at: null },
         disposition: {
           state: 'pending', note: '', actor: null, at: null,
@@ -266,6 +268,103 @@ describe('DocTestsTab Cycle vouch navigation', () => {
     expect(get.mock.calls.map(([url]) => url)).toContain('/api/workspaces/WS-1/doc-tests/DT-QA')
     expect(get.mock.calls.some(([url]) => url.includes('/grid?'))).toBe(false)
     expect(wrapper.get('.item-detail').text()).toContain('ITEM-QA')
+  })
+})
+
+describe('DocTestsTab conclusion filter', () => {
+  function itemEntry(
+    suffix: string,
+    conclusion_state: 'none' | 'stale' | 'agent' | 'auditor',
+  ) {
+    return {
+      entry_type: 'item' as const, test_id: `DT-${suffix}`, test_title: `Test ${suffix}`,
+      test_kind: 'qa' as const, test_status: 'completed_with_exception' as const, rcm_id: null,
+      item_id: `ITEM-${suffix}`, label: `Item ${suffix}`, instruction: 'Read it',
+      state: 'exception' as const, classification: 'exception' as const, conclusion_state,
+      evaluation: { state: 'failed' as const, note: '', input_sha1: null, ran_at: null },
+      disposition: {
+        state: 'exception' as const, note: '', actor: null, at: null,
+        evaluated_input_sha1: null, stale: false,
+      },
+      question: '', response: '', runner_note: '', document_count: 0, citation_count: 0,
+      evidence_count: 0, checks_total: 0, checks_matched: 0, checks_failed: 0,
+      missing_document_types: [], image_only: false, evidence_request_count: 0,
+      has_conflict: false, updated: '2026-08-09T00:00:00Z',
+    }
+  }
+  const mixedSummary: DocTestSummaryPayload = {
+    entry_counts: { exception: 2, needs_review: 0, awaiting_evidence: 0, confirmed: 1, not_run: 0 },
+    test_counts: { vouching: 0, attribute: 0, review: 0, qa: 3, cycle_vouch: 0, total: 3, item_first: 3 },
+    tested_item_counts: {
+      total: 3, executed: 3, passed: 1, failed: 2, incomplete: 0, needs_review: 0,
+      not_run: 0, stale: 0, confirmed: 1, exceptions: 2, pending_disposition: 0,
+    },
+    assertion_counts: {
+      match: 0, mismatch: 0, missing_evidence: 0, invalid_extraction: 0,
+      ambiguous: 0, not_run: 0, total: 0,
+    },
+    entries: [
+      itemEntry('OPEN', 'none'),
+      itemEntry('SIGNED', 'auditor'),
+      { ...itemEntry('CLEAN', 'none'), classification: 'confirmed', state: 'confirmed' },
+    ],
+  }
+
+  function mountTab() {
+    routeState.query = {}
+    vi.spyOn(api, 'get').mockImplementation(async (url: string) => {
+      if (url.endsWith('/doc-tests/summary')) return mixedSummary
+      if (url.endsWith('/documents')) return { items: [] }
+      if (url.endsWith('/planning')) return { findings: [] }
+      if (url.endsWith('/doc-tests/meta')) return { document_types: [], cycle_vouch: {} }
+      if (url.includes('/doc-tests/DT-')) {
+        return { ...detail, id: url.split('/').pop(), kind: 'qa', items: [] } as unknown as DocTest
+      }
+      throw new Error(`Unexpected URL: ${url}`)
+    })
+    return mount(DocTestsTab, {
+      props: { workspace: { id: 'WS-1', name: 'Fixture' } as WorkspaceSummary },
+      global: {
+        provide: {
+          [PrimeVueToastSymbol as symbol]: { add: vi.fn() },
+          [PrimeVueConfirmSymbol as symbol]: { require: vi.fn() },
+        },
+        directives: { tooltip: () => undefined },
+        stubs: { DocTestCreateDialog: true, EvidenceAnchorDialog: true },
+      },
+    })
+  }
+
+  function chip(wrapper: ReturnType<typeof mountTab>, label: string) {
+    return wrapper.findAll('.triage-chip').find(item => item.text().startsWith(label))
+  }
+  function titles(wrapper: ReturnType<typeof mountTab>) {
+    return wrapper.findAll('.row-title').map(item => item.text())
+  }
+
+  it('narrows the worklist to exceptions nobody has concluded on', async () => {
+    const wrapper = mountTab()
+    await flushPromises()
+    expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED', 'Item CLEAN'])
+
+    await chip(wrapper, 'Exceptions')!.trigger('click')
+    expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED'])
+    // Counted within the active outcome, so the number is what the click leaves.
+    expect(chip(wrapper, 'Not concluded')!.text()).toBe('Not concluded1')
+
+    await chip(wrapper, 'Not concluded')!.trigger('click')
+    expect(titles(wrapper)).toEqual(['Item OPEN'])
+    expect(wrapper.text()).toContain('1 of 3 · exceptions · not concluded')
+  })
+
+  it('keeps a conclusion state with no rows in this outcome off the row', async () => {
+    const wrapper = mountTab()
+    await flushPromises()
+
+    expect(chip(wrapper, 'By auditor')?.text()).toBe('By auditor1')
+    await chip(wrapper, 'Confirmed')!.trigger('click')
+    expect(chip(wrapper, 'By auditor')).toBeUndefined()
+    expect(titles(wrapper)).toEqual(['Item CLEAN'])
   })
 })
 

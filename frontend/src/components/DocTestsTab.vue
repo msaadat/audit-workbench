@@ -11,6 +11,7 @@ import InputText from 'primevue/inputtext'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
+import { conclusionCounts } from '../composables/conclusionFacet'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
@@ -26,6 +27,7 @@ import type {
   DocTestSummaryPayload,
   EvidenceRef,
   PlanningPayload,
+  TestConclusionState,
   WorkspaceSummary,
   CycleEvidenceManifestGroup,
   CycleVouchDefinition,
@@ -71,6 +73,9 @@ const requestedTestId = ref<string | null>(String(route.query.test || '') || nul
 const createRequested = route.query.create === '1'
 const requestedRcmId = String(route.query.rcm || '')
 const filter = ref<'all' | DocTestClassification>('all')
+// A second axis over the same rows, not a sixth outcome: "exceptions nobody
+// has concluded on" needs both halves at once.
+const conclusionFilter = ref<'all' | TestConclusionState>('all')
 const search = ref('')
 const createOpen = ref(false)
 const creating = ref(false)
@@ -99,11 +104,17 @@ const triage = computed<TriageCount[]>(() => {
     { key: 'not_run', label: 'Not run', value: counts?.not_run ?? 0 },
   ]
 })
+// The outcome chips stay an engagement-wide tally, so the conclusion row is
+// counted within the outcome the auditor is standing in — the number on
+// "Not concluded" is what the click would leave, not a separate total.
+const outcomeMatches = computed(() => (summary.value?.entries ?? []).filter(
+  entry => filter.value === 'all' || entry.classification === filter.value))
+const conclusionFacets = computed(() =>
+  conclusionCounts(outcomeMatches.value.map(entry => entry.conclusion_state)))
 const visibleItems = computed(() => {
-  const items = summary.value?.entries ?? []
   const query = search.value.trim().toLowerCase()
-  return items.filter(item => {
-    if (filter.value !== 'all' && item.classification !== filter.value) return false
+  return outcomeMatches.value.filter(item => {
+    if (conclusionFilter.value !== 'all' && item.conclusion_state !== conclusionFilter.value) return false
     if (!query) return true
     const values = item.entry_type === 'cycle_test'
       ? [item.title, item.assurance_label, item.rcm_id ?? '']
@@ -112,8 +123,13 @@ const visibleItems = computed(() => {
       .some(value => value.toLowerCase().includes(query))
   })
 })
-const activeFilterLabel = computed(() =>
-  triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items')
+const activeFilterLabel = computed(() => {
+  const outcome = triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items'
+  const conclusion = conclusionFilter.value === 'all'
+    ? null
+    : conclusionFacets.value.find(count => count.key === conclusionFilter.value)?.label.toLowerCase()
+  return conclusion ? `${outcome} · ${conclusion}` : outcome
+})
 // Cycle tests are dispositioned in their own grid, so only item rows are
 // selectable here — a mixed selection would need two different mutations.
 const selectableItems = computed<DocTestSummaryItem[]>(() =>
@@ -196,8 +212,13 @@ async function loadSummary() {
   const requested = requestedTestId.value
     ? items.find(item => item.test_id === requestedTestId.value)
     : undefined
-  if (requested && filter.value !== 'all' && requested.classification !== filter.value) {
+  const hiddenByFilters = requested && !(
+    (filter.value === 'all' || requested.classification === filter.value)
+    && (conclusionFilter.value === 'all' || requested.conclusion_state === conclusionFilter.value)
+  )
+  if (hiddenByFilters) {
     filter.value = 'all'
+    conclusionFilter.value = 'all'
   }
   // Honour a deep link first, then keep the current selection, then fall back
   // to the most severe item so the tab opens on work that needs doing.
@@ -308,6 +329,9 @@ async function closeCycleGrid() {
 function pickFilter(key: string) {
   filter.value = key as 'all' | DocTestClassification
 }
+function pickConclusion(key: string) {
+  conclusionFilter.value = key as 'all' | TestConclusionState
+}
 
 async function createTest({ kind, direction, draft }: {
   kind: DocTestKind
@@ -385,6 +409,7 @@ async function createTest({ kind, direction, draft }: {
     requestedTestId.value = created.id
     selectedItemId.value = null
     filter.value = 'all'
+    conclusionFilter.value = 'all'
     await loadSummary()
     emit('changed')
   } catch (error) { fail('Could not create the document test', error) }
@@ -693,7 +718,15 @@ onUnmounted(unsubscribe)
     </UiPageHeader>
 
     <template v-if="hasTests">
-      <UiTriageCounts v-if="!selectedCycleTestId" :counts="triage" :active="filter" @select="pickFilter" />
+      <div v-if="!selectedCycleTestId" class="facets">
+        <UiTriageCounts :counts="triage" :active="filter" label="Outcome" @select="pickFilter" />
+        <UiTriageCounts
+          :counts="conclusionFacets"
+          :active="conclusionFilter"
+          label="Conclusion"
+          @select="pickConclusion"
+        />
+      </div>
 
       <div v-if="!selectedCycleTestId" class="toolbar">
         <IconField>
@@ -871,6 +904,7 @@ onUnmounted(unsubscribe)
 
 <style scoped>
 .doc-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; min-height: 100%; }
+.facets { display: flex; flex-direction: column; gap: var(--aw-space-2); min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 16rem; min-width: 0; max-width: 26rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }

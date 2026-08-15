@@ -152,6 +152,50 @@ def test_auditor_can_sign_off_an_item_stuck_in_manual_review(workspace_with_data
             doc_tests.update_item(ws, review["id"], item_id, {"state": state})
 
 
+def test_summary_reports_where_each_test_conclusion_stands(workspace_with_data):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "policy.txt", b"Approval is required.")
+    review = doc_tests.build_review(ws, {"title": "Policy review", "document_id": document["id"]})
+    item_id = review["items"][0]["id"]
+    doc_tests.run_item(ws, review["id"], item_id)
+    unattended = doc_tests.build_qa(ws, {
+        "title": "Policy Q&A", "document_ids": [document["id"]],
+        "questions": ["Is approval required?"],
+    })
+
+    def states():
+        return {
+            entry["test_id"]: entry["conclusion_state"]
+            for entry in doc_tests.summary_payload(ws)["entries"]
+        }
+
+    assert states() == {review["id"]: "none", unattended["id"]: "none"}
+
+    # Written reasoning is not a conclusion: a run that narrates its result and
+    # still reaches no_conclusion has left the sign-off outstanding.
+    drafted = doc_tests.load_test(ws, unattended["id"])
+    drafted["conclusion"] = "The policy requires approval."
+    drafted["conclusion_source"] = "agent"
+    doc_tests.save_test(ws, drafted)
+    assert states()[unattended["id"]] == "none"
+
+    # A bounded run's own control conclusion is recorded and reported as its
+    # own, so an auditor can filter for the ones nobody has reviewed.
+    drafted["control_conclusion"] = "effective"
+    drafted["control_conclusion_source"] = "agent"
+    doc_tests.save_test(ws, drafted)
+    assert states()[unattended["id"]] == "agent"
+
+    doc_tests.update_item(ws, review["id"], item_id, {"state": "confirmed"})
+    doc_tests.update_test(ws, review["id"], {"control_conclusion": "effective"})
+    assert states()[review["id"]] == "auditor"
+
+    # Withdrawing the sign-off the conclusion rested on does not delete it. The
+    # worklist reports it as no longer standing on current evidence.
+    doc_tests.update_item(ws, review["id"], item_id, {"state": "pending"})
+    assert states()[review["id"]] == "stale"
+
+
 _MATCHING_CHECK = {"field": "invoice", "expected": 1001, "method": "normalized"}
 
 

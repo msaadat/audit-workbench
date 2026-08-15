@@ -707,6 +707,13 @@ export type DocTestClassification =
 
 export type DocTestCounts = Record<DocTestClassification, number>
 
+/** Where a test's control conclusion stands, as one exclusive bucket. `stale`
+ *  is one recorded against evidence that has since moved; `agent` is an
+ *  unattended run's own conclusion, which no auditor has reviewed. Written
+ *  reasoning without a control conclusion is not a conclusion — those tests
+ *  stay `none`. */
+export type TestConclusionState = 'none' | 'stale' | 'agent' | 'auditor'
+
 export type CycleAssertionCounts = Record<CycleAssertionVerdict, number> & { total: number }
 
 /** One worklist item, flattened across tests for engagement-level triage. */
@@ -722,6 +729,9 @@ export interface DocTestSummaryItem {
   instruction: string
   state: DocTestItemState
   classification: DocTestClassification
+  /** Test-grain, repeated on every item of the test — the auditor concludes
+   *  once per test, and the worklist filters per row. */
+  conclusion_state: TestConclusionState
   /** Both sides behind `state`, so the worklist can show what the runner found
    *  next to what the auditor decided without loading the test. */
   evaluation: DocTestEvaluation
@@ -750,6 +760,7 @@ export interface DocTestSummaryCycleTest {
   test_status: TestStatus
   rcm_id: string | null
   classification: DocTestClassification
+  conclusion_state: TestConclusionState
   item_count: number
   tested_item_count: number
   evaluation_counts: Partial<Record<CycleEvaluationState, number>>
