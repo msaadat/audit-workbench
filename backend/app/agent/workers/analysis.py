@@ -1926,8 +1926,12 @@ Writing the step.
   or extend it.
 - Where `code` is empty, the procedure is a catalog test named by
   `catalog_test` with `parameters`. Write the Polars step that performs exactly
-  that test over `frame`, using only the supplied schemas for column spelling.
-  Assign the flagged rows to `result`.
+  that test, using only the supplied schemas for column spelling.
+  The step runs in a sandbox whose only names are `pl`, `tables`, and each
+  supplied frame under its own table name. Read the frame the procedure ran
+  against — the one `source_frame_name` names — as `tables["<that name>"]` or
+  by that bare name, and assign the flagged rows to `result`. No other
+  variable exists; a name you have not created yourself will not resolve.
 - `population` is a table name copied exactly from TABLE SCHEMAS — never a
   description, a row count, or a phrase. Choose the frame the step asserts
   *about*, which is one whose `grain` equals its own name: for a test over

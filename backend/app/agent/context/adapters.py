@@ -2561,7 +2561,7 @@ def promotion_scope(workspace: Workspace, analysis_id: str) -> ContextScope:
                 for candidate in test_generate_table_metadata_candidates(workspace)
                 if candidate.metadata.get("table")
                 in {
-                    str(subject.get("frame") or ""),
+                    str(subject.get("source_frame_name") or ""),
                     *(str(table.get("name") or "") for table in workspace.tables),
                 }
             ),

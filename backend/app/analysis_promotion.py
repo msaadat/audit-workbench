@@ -144,7 +144,13 @@ def fitting_subject(analysis: Mapping[str, Any]) -> dict[str, Any]:
         # this at all. It is the closest thing the procedure has to a control
         # objective, and it is what makes the fit decidable.
         "note": str(analysis.get("note") or ""),
-        "frame": str(analysis.get("table") or ""),
+        # Deliberately not called "frame". A fitting turn is asked to write
+        # Polars against this, and a bare field name in a prompt that also
+        # names real sandbox variables reads as one: four promoted steps came
+        # back as ``result = frame.filter(...)`` and failed to execute, because
+        # the instruction said "perform that test over `frame`" one sentence
+        # away from "assign the flagged rows to `result`".
+        "source_frame_name": str(analysis.get("table") or ""),
         "kind": str(analysis.get("kind") or ""),
         "catalog_test": spec.get("test"),
         "parameters": spec.get("params") or {},
