@@ -586,7 +586,16 @@ def execute_analysis_definitions(
             f"{NO_INFORMATIVE_ANALYSIS}: every proposed analysis was run and "
             "established nothing — " + "; ".join(broken + uninformative)
         )
-    dropped = broken + uninformative
+    # The validator's own removals travel with the executor's, because they are
+    # the same fact to a reader — the frame wrote more analyses than it kept —
+    # and only this path runs in every mode. Reported from the approval callback
+    # instead, they were silent on any run the auditor was not approving each
+    # item by hand, which is every unattended run.
+    dropped = [
+        *(str(item) for item in request.proposal.get("declined") or []),
+        *broken,
+        *uninformative,
+    ]
     state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> dict:

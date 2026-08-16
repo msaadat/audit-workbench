@@ -2153,6 +2153,56 @@ def test_one_broken_python_spec_does_not_cost_its_working_siblings(
     ), "a proposal that never got saved has to be said out loud, not silently lost"
 
 
+def test_what_the_validator_removed_travels_on_the_path_every_run_takes(
+    workspace_with_data,
+):
+    """The disclosure has to leave by the commit path, not the approval one.
+
+    Reported from the approval callback it was silent on every run the auditor
+    was not approving each item by hand — which is every unattended run, and
+    every run this pipeline has been measured on. One of them removed thirty-
+    eight proposals across eighteen frames and said nothing about any of them.
+    """
+    ws = workspace_with_data
+    parent_ref = "table:transactions"
+    spec = {"test": "duplicates", "params": {"columns": ["invoice_no"]}}
+    request = ExecutorRequest(
+        executor_id=analysis_executors.DEFINITIONS_EXECUTOR_ID,
+        capability_id="analysis.definitions_ready",
+        unit_id="analysis_definitions:transactions",
+        proposal={
+            "analyses": [
+                {
+                    "title": "Duplicate invoice numbers",
+                    "kind": "analytics",
+                    "table": "transactions",
+                    "spec": spec,
+                    "note": "Reused invoice numbers signal double postings.",
+                    "semantic_id": _identity(ws, "transactions", spec),
+                }
+            ],
+            "declined": ["analyses[1] (Repeated key scan) already saved elsewhere"],
+        },
+        expected_revision=ws.revision,
+        expected_parents=parent_hashes(ws, [parent_ref]),
+    )
+    target = analysis_executors.AnalysisDefinitionExecutorTarget(
+        ws, "run-declined", "transactions", parent_ref
+    )
+
+    result = analysis_executors.execute_analysis_definitions(request, target)
+
+    # ``dropped`` is the channel the binder already turns into run warnings, so
+    # a validator removal now reaches the auditor by the same route as one the
+    # executor made itself.
+    assert any(
+        "Repeated key scan" in reason for reason in result.output["dropped"]
+    ), "a repeat the validator removed is invisible unless the commit says so"
+    assert [item["title"] for item in result.output["analyses"]] == [
+        "Duplicate invoice numbers"
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # P8.10 — routing
 # --------------------------------------------------------------------------- #

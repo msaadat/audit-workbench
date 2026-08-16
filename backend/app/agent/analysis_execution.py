@@ -958,11 +958,6 @@ class AnalysisWorkflowExecution(BaseRunner):
             )
 
         def approval_provider(proposal):
-            # Said before approval, not after: a proposal the validator removed
-            # never reaches the approval list, so this is the only point at
-            # which the auditor can be told the frame wrote more than it kept.
-            for reason in proposal.get("declined") or []:
-                self.warn(f"'{target_frame}': a proposed analysis was not saved — {reason}")
             proposed = [
                 self.proposal_item(
                     str(item.get("title")),
