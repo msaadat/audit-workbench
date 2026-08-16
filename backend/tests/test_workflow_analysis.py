@@ -832,6 +832,53 @@ def test_a_test_spanning_three_tables_is_prepared_on_the_frame_that_can_run_it(
     ]
 
 
+def test_a_frame_the_sweep_found_something_on_keeps_its_turn(monkeypatch):
+    """The routing rule decides where a *guessed* test belongs. It was also
+    deciding frames the sweep had never been allowed to look at — six of
+    eighteen in one engagement, in three milliseconds each, one of them holding
+    an invoice's payment status beside its requisition's approval status. A
+    measurement that already found breaching rows outranks a rule about tests
+    nobody has run."""
+
+    ws = _three_hop_workspace_holding_a_minority_state()
+    fake = _fake_model(monkeypatch)
+    fake.overrides["agent:join_utility"] = _requires_script(
+        {
+            frozenset(("orders", "customers")): {"orders", "customers"},
+            frozenset(("customers", "plans")): {"orders", "customers", "plans"},
+        }
+    )
+    run = _analysis_run(ws, text="join these tables and analyse them")
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+    _drive(ws, run, "analysis.definitions_ready")
+
+    # Keyed by the frame each unit actually targets: a unit id is a slug, and
+    # the sweep has to be asked about the frame by the name the workspace holds.
+    units = {
+        str(unit["parent_refs"][0]).split(":", 1)[1]: unit["status"]
+        for unit in _stage(run, "analysis.definitions_ready")["units"]
+    }
+    pair_frame = "customers_plans_joined"
+
+    # The routing is identical to the test above — the three-table hypothesis
+    # lands on the chained frame, and this pair is left holding none of its own.
+    fresh = workspaces.load_workspace(ws.id)
+    assert [item for item in probes.probe_frame(fresh, pair_frame) if item["flagged"]], (
+        "fixture must give the pair frame something of its own to say"
+    )
+    assert units[pair_frame] == "succeeded"
+    assert pair_frame in [
+        json.loads(call["messages"][-1]["content"].split("\n\nYour previous")[0])
+        .get("TARGET FRAME", {})
+        .get("table")
+        for call in fake.calls
+        if call["tag"] == "agent:analysis_definitions"
+    ]
+
+
 def test_a_frame_is_told_which_test_it_was_materialized_to_support(monkeypatch):
     """The gate stated a falsifiable test before the join existed. A frame left
     to re-derive its purpose from schemas writes a worse question than the one
@@ -1400,6 +1447,159 @@ def test_generated_python_analysis_must_run_before_it_is_saved(
         analysis_executors.execute_analysis_definitions(request, target)
 
     assert not ws.analyses
+
+
+def _two_role_key_workspace() -> workspaces.Workspace:
+    """One staff master attached to invoices twice, by two different roles."""
+    ws = workspaces.create_workspace("Two role keys")
+    invoices = pl.DataFrame(
+        {
+            "invoice_id": [f"INV{index:03d}" for index in range(1, 11)],
+            "approved_by": [f"S{(index % 2) + 1:03d}" for index in range(1, 11)],
+            "verified_by": [f"S{(index % 3) + 1:03d}" for index in range(1, 11)],
+            "amount": [float(100 * index) for index in range(1, 11)],
+        }
+    )
+    staff = pl.DataFrame(
+        {
+            "staff_id": [f"S{index:03d}" for index in range(1, 4)],
+            "job_title": ["CFO", "Controller", "Clerk"],
+        }
+    )
+    ws.add_table("invoices.csv", invoices.write_csv().encode())
+    ws.add_table("staff.csv", staff.write_csv().encode())
+    for name, key in (("by_approver", "approved_by"), ("by_verifier", "verified_by")):
+        ws.add_join(
+            {
+                "name": name,
+                "left": "invoices",
+                "right": "staff",
+                "how": "left",
+                "left_on": [key],
+                "right_on": ["staff_id"],
+            }
+        )
+    return ws
+
+
+def _identity(ws, frame, spec, kind="analytics"):
+    return analysis_worker.analysis_semantic_id(
+        kind,
+        frame,
+        spec,
+        join_diagnostics.column_origins(ws, frame),
+        join_diagnostics.frame_root(ws, frame),
+        join_diagnostics.frame_route(ws, frame),
+    )
+
+
+def test_the_same_column_reached_by_two_role_keys_is_two_analyses():
+    """Provenance says which columns; it never said over which rows.
+
+    The approval-matrix reconciliation reads one column of one table whichever
+    frame asks it, so identity called every version of it the same analysis. It
+    answers 110 of 112 keyed to the approver and 118 of 118 keyed to the
+    verifier, and whichever frame ran first silently deleted the other.
+    """
+    ws = _two_role_key_workspace()
+    spec = {
+        "test": "referential",
+        "params": {
+            "column": "job_title",
+            "lookup_table": "staff",
+            "lookup_column": "job_title",
+        },
+    }
+    assert _identity(ws, "by_approver", spec) != _identity(ws, "by_verifier", spec)
+    # And a frame is still the same question as itself.
+    assert _identity(ws, "by_approver", spec) == _identity(ws, "by_approver", spec)
+
+
+def test_a_column_a_join_carries_through_unchanged_is_still_one_analysis():
+    """The guard on the fix above: a root column reads the same values on every
+    frame in the family, so a second copy of that test is a second copy."""
+    ws = _two_role_key_workspace()
+    spec = {
+        "test": "compare_columns",
+        "params": {"column": "amount", "op": "ge", "other": "amount"},
+    }
+    assert (
+        _identity(ws, "invoices", spec)
+        == _identity(ws, "by_approver", spec)
+        == _identity(ws, "by_verifier", spec)
+    )
+
+
+def test_a_proposal_dropped_as_a_repeat_is_said_out_loud(workspace_with_data):
+    """A dropped proposal was invisible from every artifact an auditor sees.
+
+    Re-asking for it would cost a model turn to gain nothing, which is why it is
+    dropped rather than rejected — but only the turn was ever in question. One
+    frame wrote five analyses, had four removed here, and the run recorded a
+    frame that had proposed one.
+    """
+    ws = workspace_with_data
+    spec = {"test": "duplicates", "params": {"columns": ["invoice_no"]}}
+    ws.add_analysis(
+        {
+            "title": "Already saved",
+            "kind": "analytics",
+            "table": "transactions",
+            "spec": spec,
+            "semantic_id": _identity(ws, "transactions", spec),
+            "created_by": "agent",
+            "agent_run_id": "run-earlier",
+        }
+    )
+    capability = capability_registries.ANALYSIS_REGISTRY.get("analysis.definitions_ready")
+    _manifest, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        {"id": "analysis_definitions:transactions"},
+        analysis_definition_scope(ws, "transactions"),
+    )
+    request = WorkerRequest(
+        worker_id=analysis_worker.ANALYSIS_DEFINITION_WORKER_ID,
+        capability_id=capability.id,
+        unit_id="analysis_definitions:transactions",
+        context=bundle,
+    )
+    accepted = analysis_worker.validate_analysis_proposal(
+        {
+            "analyses": [
+                {
+                    "title": "Repeated key scan",
+                    "kind": "analytics",
+                    "spec": spec,
+                    "note": "Every invoice number should appear once.",
+                },
+                {
+                    "title": "Completeness of the amount column",
+                    "kind": "analytics",
+                    "spec": {"test": "completeness", "params": {"columns": ["amount"]}},
+                    "note": "Every transaction should carry an amount.",
+                },
+            ]
+        },
+        request,
+    )
+
+    assert [item["title"] for item in accepted["analyses"]] == [
+        "Completeness of the amount column"
+    ]
+    declined = accepted["declined"]
+    assert len(declined) == 1
+    assert "Repeated key scan" in declined[0]
+    assert "already saved" in declined[0]
+
+
+def test_a_frame_names_the_population_its_rows_are_rows_of():
+    ws = _two_role_key_workspace()
+    assert join_diagnostics.frame_root(ws, "by_approver") == "invoices"
+    assert join_diagnostics.frame_root(ws, "invoices") == "invoices"
+    assert join_diagnostics.frame_route(ws, "by_approver") == {"staff": "approved_by"}
+    assert join_diagnostics.frame_route(ws, "by_verifier") == {"staff": "verified_by"}
+    assert join_diagnostics.frame_route(ws, "invoices") == {}
 
 
 def test_the_declared_preset_denies_row_level_table_data():
@@ -2381,6 +2581,36 @@ def _three_hop_workspace() -> workspaces.Workspace:
     )
     customers = pl.DataFrame(
         {"id": ["C1", "C2", "C3"], "plan_code": ["P1", "P2", "P1"]}
+    )
+    plans = pl.DataFrame({"plan_code": ["P1", "P2"], "credit_limit": [25.0, 55.0]})
+    ws.add_table("orders.csv", orders.write_csv().encode())
+    ws.add_table("customers.csv", customers.write_csv().encode())
+    ws.add_table("plans.csv", plans.write_csv().encode())
+    return ws
+
+
+def _three_hop_workspace_holding_a_minority_state() -> workspaces.Workspace:
+    """The same three hops, with something the pair frame's own data disputes.
+
+    ``account_status`` sits on the customer, so the ``customers``/``plans`` frame
+    carries two suspended accounts that no hypothesis was ever routed to it.
+    """
+    ws = workspaces.create_workspace("Three hops with a state")
+    orders = pl.DataFrame(
+        {
+            "order_id": [f"O{index}" for index in range(1, 31)],
+            "cust_id": [f"C{(index % 3) + 1}" for index in range(1, 31)],
+            "amount": [float(10 * index) for index in range(1, 31)],
+        }
+    )
+    customers = pl.DataFrame(
+        {
+            "id": [f"C{index}" for index in range(1, 31)],
+            "plan_code": ["P1" if index % 2 else "P2" for index in range(1, 31)],
+            "account_status": [
+                "Suspended" if index <= 2 else "Active" for index in range(1, 31)
+            ],
+        }
     )
     plans = pl.DataFrame({"plan_code": ["P1", "P2"], "credit_limit": [25.0, 55.0]})
     ws.add_table("orders.csv", orders.write_csv().encode())

@@ -730,13 +730,18 @@ def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
 
 
 # --------------------------------------------------------------- referential
-def _key_strings(column: str) -> pl.Expr:
+def key_strings(column: str) -> pl.Expr:
     """A key column as trimmed text, so an integer code matches its text twin.
 
     The same normalization :mod:`agent.joins` applies before measuring a match
     rate. A referential test that disagreed with the join diagnostics about
     whether a key matches would be reporting on a different relationship than
     the one an auditor was shown.
+
+    Public for the same reason :func:`comparable_expr` is: the probe sweep
+    decides which values are worth a test by counting them, and a sweep that
+    counted values differently from the test it then nominates would report a
+    share the test does not reproduce.
     """
     return pl.col(column).cast(pl.String).str.strip_chars()
 
@@ -784,7 +789,7 @@ def _resolves_in(
         for column in frame.columns:
             if exclude_column == (table, column):
                 continue
-            series = frame.select(_key_strings(column)).to_series().drop_nulls()
+            series = frame.select(key_strings(column)).to_series().drop_nulls()
             # Only a key column can explain an orphan set: a description column
             # that happens to contain one of the values explains nothing.
             if not len(series) or series.n_unique() != len(series):
@@ -814,9 +819,9 @@ def referential(
     )
 
     allowed = set(
-        lookup.select(_key_strings(lookup_column)).to_series().drop_nulls().to_list()
+        lookup.select(key_strings(lookup_column)).to_series().drop_nulls().to_list()
     )
-    keyed = df.with_columns(_key_strings(column).alias("_key"))
+    keyed = df.with_columns(key_strings(column).alias("_key"))
     # A null key is not an unmatched key: the row references nothing, which is a
     # completeness question and belongs to a completeness test. Counting it here
     # would merge two different findings into one number. It is still reported,
@@ -1029,7 +1034,7 @@ def value_filter(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     if not values:
         raise QueryError("Name at least one value to check against.")
 
-    keyed = df.with_columns(_key_strings(column).alias("_v"))
+    keyed = df.with_columns(key_strings(column).alias("_v"))
     present = keyed.filter(pl.col("_v").is_not_null() & (pl.col("_v") != ""))
     blanks = df.height - present.height
     n = present.height

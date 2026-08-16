@@ -103,9 +103,10 @@ MAX_NOMINATIONS_PER_FRAME = 12
 REFERENTIAL = "referential"
 COMPARISON = "comparison"
 EQUALITY = "equality"
+VALUES = "values"
 DUPLICATES = "duplicates"
 FORMAT = "format"
-FAMILIES = (REFERENTIAL, COMPARISON, EQUALITY, DUPLICATES, FORMAT)
+FAMILIES = (REFERENTIAL, COMPARISON, EQUALITY, VALUES, DUPLICATES, FORMAT)
 
 # Per family, because families are not interchangeable and the comparison sweep
 # is the one that fans out. A frame with eight date columns yields dozens of
@@ -117,6 +118,7 @@ MAX_PER_FAMILY: dict[str, int] = {
     REFERENTIAL: 4,
     COMPARISON: 5,
     EQUALITY: 3,
+    VALUES: 3,
     DUPLICATES: 3,
     FORMAT: 2,
 }
@@ -687,6 +689,277 @@ def equality_nominations(
     return nominations
 
 
+# -------------------------------------------------------------------- values
+# A column with few enough distinct values that naming all of them describes a
+# vocabulary rather than a population. The threshold is the profiler's own bar
+# for calling a column categorical, so "few" means one thing in this
+# application. The share guard is what keeps a four-row lookup from having its
+# population described as a vocabulary.
+DOMAIN_MAX_DISTINCT = profiler.CATEGORICAL_MAX_DISTINCT
+DOMAIN_MAX_SHARE = 0.5
+MAX_DOMAIN_COLUMNS = 20
+# A vocabulary token is a word or two. Past this the column holds prose — a
+# receipt comment, a description — and its few distinct values are short only
+# because the population is, not because they name a category. The word count
+# is the discriminating half: "Received in full; no exceptions noted." fits in
+# forty characters and is plainly a sentence, and a column holding it was being
+# published as though its eight comments were eight statuses.
+DOMAIN_MAX_VALUE_LENGTH = 40
+DOMAIN_MAX_VALUE_WORDS = 4
+
+
+def _identifies_in_lineage(workspace: Workspace, frame: str, column: str) -> bool:
+    """Whether this column identifies rows in the table it actually comes from.
+
+    A join re-profiles a dimension attribute into a category. ``NAME`` is one
+    value per row in a 52-row staff table — an identifier by every measure, and
+    excluded there. Joined to 118 invoices it becomes eight distinct values over
+    a hundred and eighteen rows, and every test this module applies now reads it
+    as a status list: few enough to name, short enough to be a token, a small
+    share of the population. The column did not change. The population it was
+    counted against did.
+
+    So the column is judged where it is a fact about an entity rather than about
+    how often that entity was referenced. Every staff name and email address in
+    this engagement reached the model this way, on seven joined frames, as
+    "vocabularies" the model was invited to write procedures against.
+    """
+    lineage = sorted(join_diagnostics.frame_lineage(workspace, frame) - {frame})
+    # Polars suffixes a collided column on the right-hand side of a join, so the
+    # joined name is not always the name its home table knows it by.
+    candidates = {column, column[: -len("_right")] if column.endswith("_right") else column}
+    for table in lineage:
+        profile = _profile(workspace, table)
+        rows = profile.get("rows")
+        for item in profile.get("column_profiles") or []:
+            if str(item.get("name") or "") not in candidates:
+                continue
+            if str(item.get("inferred_type") or "") == "id":
+                return True
+            distinct = item.get("distinct_count")
+            if (
+                isinstance(rows, int)
+                and rows
+                and isinstance(distinct, int)
+                and distinct / rows > DOMAIN_MAX_SHARE
+            ):
+                return True
+    return False
+
+
+def value_domains(workspace: Workspace, frame: str) -> list[dict]:
+    """The complete value vocabulary of each low-cardinality column.
+
+    The one thing a value-free profile cannot supply and a procedure cannot be
+    written without. "REQUISITION_STATUS has 3 distinct values" does not let
+    anybody test for a requisition that was rejected; the word ``Rejected`` does,
+    and no aggregate contains it.
+
+    A vocabulary is not a population. A column with twenty distinct values across
+    a thousand rows is a status list and naming its values names no record; a
+    column whose values are nearly one-per-row is the population itself, and its
+    values are never listed here — its *shape* is what ``format_anomaly``
+    reports, and its rows are what the sample shows.
+
+    Nor is a vocabulary a set of identifiers. A column of staff numbers is short
+    only because few people appear in the population, and listing it discloses
+    who they are while answering no question a procedure asks — what a reference
+    column needs is reconciliation, which the sweep already does. Reference-shaped
+    columns are therefore excluded even where they are small, along with prose
+    columns whose values are sentences rather than categories.
+    """
+    try:
+        profile = workspace.get_profile(frame) or {}
+        df = workspace.get_frame(frame)
+    except Exception:  # noqa: BLE001 - an unreadable frame has no vocabulary
+        return []
+    rows = profile.get("rows")
+    domains: list[dict] = []
+    for column in profile.get("column_profiles") or []:
+        if len(domains) >= MAX_DOMAIN_COLUMNS:
+            break
+        name = str(column.get("name") or "").strip()
+        distinct = column.get("distinct_count")
+        if not name or not isinstance(distinct, int) or not distinct:
+            continue
+        if distinct > DOMAIN_MAX_DISTINCT or name not in df.columns:
+            continue
+        if str(column.get("inferred_type") or "") != "categorical":
+            continue
+        if reference_shaped(name):
+            continue
+        if isinstance(rows, int) and rows and distinct / rows > DOMAIN_MAX_SHARE:
+            continue
+        if _identifies_in_lineage(workspace, frame, name):
+            continue
+        try:
+            values = sorted(
+                str(value)
+                for value in df[name].drop_nulls().unique().to_list()
+                if str(value).strip()
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if not values or len(values) > DOMAIN_MAX_DISTINCT:
+            continue
+        if max(len(value) for value in values) > DOMAIN_MAX_VALUE_LENGTH:
+            continue
+        if max(len(value.split()) for value in values) > DOMAIN_MAX_VALUE_WORDS:
+            continue
+        domains.append(
+            {
+                "table": frame,
+                "column": name,
+                "distinct_count": distinct,
+                "values": values,
+                "blank_count": column.get("blank_count"),
+            }
+        )
+    return domains
+
+
+# A column whose vocabulary has a usual answer. Below this the column classifies
+# rather than reports: eight departments at twelve percent each say what a row
+# *is*, and none of them is a minority in it. Above it there is a way things
+# normally are, and everything else in the column is a departure from it.
+#
+# Calibrated, not guessed. Across this engagement's fifteen vocabularies the
+# reporting columns sit at 0.83 to 1.00 — payment status, requisition status,
+# vendor status — and the classifying ones at 0.18 to 0.36. The only column in
+# between is a staff department at 0.54, where "one of fifty-two people works in
+# Executive" is an org chart and not an exception. Seven in ten is where the two
+# kinds of column separate.
+VALUE_DOMINANT_SHARE = 0.7
+# Rare enough to be an exception rather than a segment of the population. A
+# quarter of the rows is a second normal state; a twentieth is a handful of rows
+# somebody would have to explain.
+VALUE_MINORITY_SHARE = 0.2
+# Per column, because a long tail is a distribution and not a list of findings.
+MAX_VALUES_PER_COLUMN = 2
+
+
+def _home_modal_share(workspace: Workspace, frame: str, column: str) -> float | None:
+    """How dominant this column's commonest value is in the table it comes from.
+
+    The join that concentrates a name concentrates a category too. Eight
+    departments spread across fifty-two staff — the widest classifier in this
+    engagement at a 54% mode — become one department covering four invoice rows
+    in five, because the people in it sign far more invoices than the rest. The
+    frame's own distribution then reports a normal state that the entity does
+    not have, and the sweep offers "twenty rows are Procurement" as an exception.
+
+    Read from the profile's own census, so establishing this costs no scan.
+
+    Where a column name occurs in more than one contributing table the least
+    dominant reading wins, and the lineage is walked in a fixed order: a sweep
+    whose nominations depended on set iteration would move between runs on
+    unchanged data, which is the one thing this module promises it cannot do.
+    """
+    shares: list[float] = []
+    for table in sorted(join_diagnostics.frame_lineage(workspace, frame) - {frame}):
+        profile = _profile(workspace, table)
+        for item in profile.get("column_profiles") or []:
+            if str(item.get("name") or "") != column:
+                continue
+            top = item.get("top_values") or []
+            if not top:
+                continue
+            populated = int(item.get("total") or 0) - int(item.get("blank_count") or 0)
+            count = top[0].get("count")
+            pct = top[0].get("pct")
+            if populated > 0 and isinstance(count, int):
+                shares.append(count / populated)
+            elif isinstance(pct, (int, float)):
+                shares.append(float(pct) / 100.0)
+    return min(shares) if shares else None
+
+
+def value_nominations(
+    workspace: Workspace, frame: str, df: pl.DataFrame
+) -> list[dict]:
+    """Minority states in a column that has a usual one.
+
+    The sweep's other families ask whether two things agree. This one asks the
+    question an auditor asks first and the library could not express until
+    ``value_filter`` existed: *is anything in this population in a state it
+    should not be in*. A requisition that was rejected and still drew an
+    invoice, a vendor under review that still received a purchase order — the
+    condition is a single value, and no comparison between two columns reaches
+    it.
+
+    The rule is deliberately domain-free. It knows nothing of what ``Rejected``
+    means, and there is no list of suspicious words anywhere in it. It knows
+    only the shape of a column that reports rather than classifies: one value
+    covers most of the population, and the rest are slivers. Both halves are
+    load-bearing. Without the dominance floor the sweep nominates every
+    department in an evenly-spread column; without the minority ceiling it
+    nominates the second-commonest payment method. Together they select the
+    columns where the data itself says there is a normal case, and hand over
+    what departs from it — leaving what the departure *means* to the reader,
+    which is the half that is actually judgment.
+
+    Candidates come from :func:`value_domains` and nowhere else. The definition
+    worker may only name a value the vocabulary it was given contains, so a
+    nomination drawn from anywhere else would be a spec the model is forbidden
+    to restate — measured, offered, and unusable.
+    """
+    nominations: list[dict] = []
+    for domain in value_domains(workspace, frame):
+        column = str(domain.get("column") or "")
+        vocabulary = {str(value) for value in domain.get("values") or ()}
+        if column not in df.columns or not vocabulary:
+            continue
+        try:
+            census = (
+                df.select(analytics.key_strings(column).alias("_v"))
+                .filter(pl.col("_v").is_not_null() & (pl.col("_v") != ""))
+                .group_by("_v")
+                .agg(pl.len().alias("rows"))
+            )
+        except Exception:  # noqa: BLE001 - a column that will not count is not one
+            continue
+        counts = sorted(
+            ((str(value), int(rows)) for value, rows in census.iter_rows()),
+            key=lambda item: (item[1], item[0]),
+        )
+        total = sum(rows for _, rows in counts)
+        if not total or len(counts) < 2:
+            continue
+        usual, usual_rows = counts[-1]
+        if usual_rows / total < VALUE_DOMINANT_SHARE:
+            continue
+        # And dominant where the column lives, not only where it was joined to.
+        home = _home_modal_share(workspace, frame, column)
+        if home is not None and home < VALUE_DOMINANT_SHARE:
+            continue
+        for value, rows in counts[:MAX_VALUES_PER_COLUMN]:
+            if value not in vocabulary or rows / total > VALUE_MINORITY_SHARE:
+                continue
+            params = {"column": column, "mode": "flag", "values": [value]}
+            result = _run(df, "value_filter", params)
+            if result is None or result.detail is None or not result.detail.height:
+                continue
+            nominations.append(
+                _nomination(
+                    frame,
+                    VALUES,
+                    "value_filter",
+                    params,
+                    result,
+                    f"{result.detail.height} of {total} rows hold "
+                    f"'{value}' in {column}, where '{usual}' covers "
+                    f"{round(100 * usual_rows / total)}% — a minority state in a "
+                    f"column that has a usual one",
+                    {
+                        "usual_value": usual,
+                        "usual_share": round(usual_rows / total, 4),
+                        "distinct_values": len(counts),
+                    },
+                )
+            )
+    return nominations
+
+
 # ---------------------------------------------------------------- duplicates
 def duplicate_nominations(
     workspace: Workspace, frame: str, df: pl.DataFrame, profile: Mapping[str, object]
@@ -778,19 +1051,36 @@ def _rank(nomination: Mapping[str, object]) -> tuple:
     finding rather than the auditor's data-quality note. Within a family the
     larger flagged population leads, and a confirmed invariant sorts last: it is
     worth stating and it is not worth choosing over something that failed.
+
+    A minority state ranks with the broken orderings rather than with the
+    repeated keys. Rows in a state the population says is unusual are a claim
+    about those rows, the same standing as an amount exceeding its limit — not a
+    remark about how the data was captured.
+
+    Within the values family the order inverts, because for that family alone
+    "larger" means "less exceptional". Every other family counts how badly a
+    rule was broken, so more breaches is a stronger nomination. A value check
+    counts how much of the population sits in a state, and its entire premise is
+    that the *rare* state is the exception — 13 invoices awaiting payment is an
+    operational fact, 4 rejected ones are the finding. Ranked the common way,
+    ``Pending Payment`` outranked ``Rejected`` on every frame that carried both,
+    was taken as the column's one nomination, and A03/A04 stayed out of reach
+    through a whole run in which it was nominated eleven times.
     """
     family_rank = {
         REFERENTIAL: 0,
         COMPARISON: 1,
         EQUALITY: 1,
+        VALUES: 1,
         DUPLICATES: 2,
         FORMAT: 3,
     }
+    family = str(nomination.get("family"))
     flagged = int(nomination.get("flagged") or 0)
     return (
         0 if flagged else 1,
-        family_rank.get(str(nomination.get("family")), 9),
-        -flagged,
+        family_rank.get(family, 9),
+        flagged if family == VALUES else -flagged,
         str(nomination.get("test")),
         str(nomination.get("params")),
     )
@@ -811,6 +1101,7 @@ def probe_frame(workspace: Workspace, frame: str) -> list[dict]:
         *referential_nominations(workspace, frame, df, source=source),
         *comparison_nominations(frame, df, classes),
         *equality_nominations(frame, df, classes),
+        *value_nominations(workspace, frame, df),
         *duplicate_nominations(workspace, frame, df, profile),
         *format_nominations(frame, df, profile),
     ]
@@ -826,87 +1117,6 @@ def probe_frame(workspace: Workspace, frame: str) -> list[dict]:
         if len(kept) >= MAX_NOMINATIONS_PER_FRAME:
             break
     return kept
-
-
-# A column with few enough distinct values that naming all of them describes a
-# vocabulary rather than a population. The threshold is the profiler's own bar
-# for calling a column categorical, so "few" means one thing in this
-# application. The share guard is what keeps a four-row lookup from having its
-# population described as a vocabulary.
-DOMAIN_MAX_DISTINCT = profiler.CATEGORICAL_MAX_DISTINCT
-DOMAIN_MAX_SHARE = 0.5
-MAX_DOMAIN_COLUMNS = 20
-# A vocabulary token is a word or two. Past this the column holds prose — a
-# receipt comment, a description — and its few distinct values are short only
-# because the population is, not because they name a category.
-DOMAIN_MAX_VALUE_LENGTH = 40
-
-
-def value_domains(workspace: Workspace, frame: str) -> list[dict]:
-    """The complete value vocabulary of each low-cardinality column.
-
-    The one thing a value-free profile cannot supply and a procedure cannot be
-    written without. "REQUISITION_STATUS has 3 distinct values" does not let
-    anybody test for a requisition that was rejected; the word ``Rejected`` does,
-    and no aggregate contains it.
-
-    A vocabulary is not a population. A column with twenty distinct values across
-    a thousand rows is a status list and naming its values names no record; a
-    column whose values are nearly one-per-row is the population itself, and its
-    values are never listed here — its *shape* is what ``format_anomaly``
-    reports, and its rows are what the sample shows.
-
-    Nor is a vocabulary a set of identifiers. A column of staff numbers is short
-    only because few people appear in the population, and listing it discloses
-    who they are while answering no question a procedure asks — what a reference
-    column needs is reconciliation, which the sweep already does. Reference-shaped
-    columns are therefore excluded even where they are small, along with prose
-    columns whose values are sentences rather than categories.
-    """
-    try:
-        profile = workspace.get_profile(frame) or {}
-        df = workspace.get_frame(frame)
-    except Exception:  # noqa: BLE001 - an unreadable frame has no vocabulary
-        return []
-    rows = profile.get("rows")
-    domains: list[dict] = []
-    for column in profile.get("column_profiles") or []:
-        if len(domains) >= MAX_DOMAIN_COLUMNS:
-            break
-        name = str(column.get("name") or "").strip()
-        distinct = column.get("distinct_count")
-        if not name or not isinstance(distinct, int) or not distinct:
-            continue
-        if distinct > DOMAIN_MAX_DISTINCT or name not in df.columns:
-            continue
-        if str(column.get("inferred_type") or "") != "categorical":
-            continue
-        if reference_shaped(name):
-            continue
-        if isinstance(rows, int) and rows and distinct / rows > DOMAIN_MAX_SHARE:
-            continue
-        try:
-            values = sorted(
-                str(value)
-                for value in df[name].drop_nulls().unique().to_list()
-                if str(value).strip()
-            )
-        except Exception:  # noqa: BLE001
-            continue
-        if not values or len(values) > DOMAIN_MAX_DISTINCT:
-            continue
-        if max(len(value) for value in values) > DOMAIN_MAX_VALUE_LENGTH:
-            continue
-        domains.append(
-            {
-                "table": frame,
-                "column": name,
-                "distinct_count": distinct,
-                "values": values,
-                "blank_count": column.get("blank_count"),
-            }
-        )
-    return domains
 
 
 def probe_frames(workspace: Workspace, frames: Iterable[str]) -> dict[str, list[dict]]:
@@ -929,6 +1139,7 @@ __all__ = [
     "MAX_NOMINATIONS_PER_FRAME",
     "MIN_COMPARISON_ROWS",
     "REFERENTIAL",
+    "VALUES",
     "comparison_nominations",
     "duplicate_nominations",
     "equality_nominations",
@@ -936,4 +1147,6 @@ __all__ = [
     "probe_frame",
     "probe_frames",
     "referential_nominations",
+    "value_domains",
+    "value_nominations",
 ]

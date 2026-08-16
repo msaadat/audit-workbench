@@ -727,6 +727,8 @@ def analysis_semantic_id(
     table: str,
     spec: Mapping[str, Any],
     origins: Mapping[str, str] | None = None,
+    root: str = "",
+    route: Mapping[str, str] | None = None,
 ) -> str:
     """Stable identity for one analysis definition.
 
@@ -746,6 +748,21 @@ def analysis_semantic_id(
     Without ``origins`` the frame name carries identity, as before — a Python
     analysis reaches frames the spec never names, so its code is only
     meaningfully identified against the frame it was written for.
+
+    ``root`` and ``route`` say which population the computation was asked over,
+    and they are the half that provenance alone gets wrong. The columns are only
+    one of the two things an analysis is; the rows are the other. Reconciling
+    ``staff_details.JOB_TITLE`` against the approval matrix reads one column of
+    one table whichever frame asks it, so provenance calls every version of it
+    the same analysis — and it answers 48 of 52 over the staff master, 110 of
+    112 over invoices keyed to their approver, and 118 of 118 over invoices
+    keyed to their verifier. Three questions, three answers, one identity, and
+    whichever frame ran first silently deleted the other two. The 2,855.6M
+    finding was the one that lost.
+
+    A spec reading only its frame's root keeps the identity it always had: the
+    root is the same table on every frame in the family, and an invoice-only
+    date lag really is one analysis however many masters were joined on.
     """
     resolved_spec: object = _plain_json(spec)
     scope = str(table)
@@ -753,6 +770,17 @@ def analysis_semantic_id(
         resolved_spec, tables = _resolve_provenance(resolved_spec, origins)
         if tables:
             scope = "+".join(sorted(tables))
+            if root:
+                # Only the tables this spec reads matter; a join that brought in
+                # something it never touches did not change what it counts.
+                reached = sorted(
+                    (name, str((route or {}).get(name) or ""))
+                    for name in tables
+                    if name != root and name in (route or {})
+                )
+                scope = "|".join(
+                    [scope, str(root), *(f"{name}@{key}" for name, key in reached)]
+                )
     canonical = json.dumps(
         {"kind": str(kind), "table": scope, "spec": resolved_spec},
         sort_keys=True,
@@ -834,9 +862,17 @@ def _existing_semantic_ids(request: WorkerRequest, origins: Mapping[str, str]) -
     """Semantic ids of every analysis the request was shown.
 
     These come from the target frame's whole join family, so an id here may
-    belong to a sibling frame. That is the point: identity is provenance-based,
-    so a sibling's saved computation and this frame's proposal of it are the
-    same id, and the repeat is caught before it is written.
+    belong to a sibling frame. That is the point: a sibling's saved computation
+    and this frame's proposal of it are the same id, and the repeat is caught
+    before it is written — where the two frames really did ask the same
+    question, which is what the saved id encodes.
+
+    An analysis that carries no stored id is identified from provenance alone.
+    That derivation cannot see the population the analysis was saved over, so it
+    will not match a population-aware id and will not suppress a proposal. The
+    direction is deliberate: this fallback exists for records the workflow did
+    not write, and letting one of those silently delete a measured proposal is
+    the failure this whole path was corrected for.
     """
     ids: set[str] = set()
     for raw in _source_items(request, CURRENT_ANALYSES_SOURCE_ID):
@@ -1429,6 +1465,12 @@ def validate_analysis_proposal(
     registry = _analytics_contract(request)
     lookups = {table: set(keys) for table, keys in _lookup_catalog(request)}
     domains = {column: set(values) for column, values in _domain_catalog(request)}
+    root = str(schema.get("frame_root") or target)
+    route = {
+        str(table): str(key)
+        for table, key in (schema.get("frame_route") or {}).items()
+        if str(table or "").strip()
+    }
     existing = _existing_semantic_ids(request, origins)
     related = {
         str((_plain_json(item) or {}).get("table"))
@@ -1533,14 +1575,14 @@ def validate_analysis_proposal(
             if single:
                 # Dropped, not rejected, for the same reason a repeat is: the
                 # rest of the response is still good work.
-                single_sided.append(label)
+                single_sided.append(f"{label} ({title or 'untitled'})")
                 continue
-        semantic = analysis_semantic_id(kind, target, spec, origins)
+        semantic = analysis_semantic_id(kind, target, spec, origins, root, route)
         if semantic in existing:
             # Dropped rather than rejected: the rest of the response is still
             # good work, and spending the repair turn to re-ask for four when
             # three were fine would cost a model call to gain nothing.
-            duplicates.append(label)
+            duplicates.append(f"{label} ({title or 'untitled'})")
             continue
         if semantic in seen:
             errors.append(f"{label} duplicates an earlier proposal in this response")
@@ -1593,7 +1635,34 @@ def validate_analysis_proposal(
             f"{NOTHING_NEW_TO_ANALYSE}: no analysis was proposed for this frame. "
             "Propose one only if this frame genuinely supports it."
         )
-    return {"analyses": accepted}
+    # Carried out so the run can say what it silently declined. A dropped
+    # proposal is invisible from every artifact an auditor sees: the frame shows
+    # the analyses it kept, and nothing records that four more were written and
+    # discarded. The comment above is right that re-asking would cost a turn to
+    # gain nothing — but only the turn was ever in question, never the disclosure.
+    return {
+        "analyses": accepted,
+        **(
+            {"declined": _declined(duplicates, single_sided)}
+            if duplicates or single_sided
+            else {}
+        ),
+    }
+
+
+def _declined(duplicates: list[str], single_sided: list[str]) -> list[str]:
+    """One line per proposal that was written and not saved, and why."""
+    return [
+        *(
+            f"{item} repeats a computation already saved for these columns on "
+            "this frame or another built from the same tables"
+            for item in duplicates
+        ),
+        *(
+            f"{item} reads columns from only one of the tables this frame joins"
+            for item in single_sided
+        ),
+    ]
 
 
 def run_analysis_definition_worker(

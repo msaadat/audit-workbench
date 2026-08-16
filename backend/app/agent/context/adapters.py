@@ -2199,6 +2199,13 @@ def analysis_definition_scope(
     schema = {
         **schema,
         "column_origins": join_diagnostics.column_origins(workspace, target),
+        # The population the computation was asked over: which table the frame's
+        # rows are rows of, and which key each joined-in table was reached by.
+        # Identity above says which computation a proposal is; without these it
+        # cannot tell a repeat from a sibling frame's different question about
+        # the same column, and the difference is the finding.
+        "frame_root": join_diagnostics.frame_root(workspace, target),
+        "frame_route": join_diagnostics.frame_route(workspace, target),
     }
     return ContextScope(
         candidates={

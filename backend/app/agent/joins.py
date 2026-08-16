@@ -512,6 +512,63 @@ def _frame_columns(workspace: Workspace, name: str) -> list[str]:
         return []
 
 
+def frame_root(workspace: Workspace, name: str, _seen: frozenset = frozenset()) -> str:
+    """The base table a frame's rows are rows *of*.
+
+    Every join in this application is a left join from a fact side, so walking
+    ``left`` to a base table names the population the frame counts in: an
+    invoice-rooted frame has one row per invoice however many dimensions were
+    joined onto it.
+
+    This is what separates a column that travels unchanged across a join family
+    from one the join re-samples. ``PAYMENT_STATUS`` on an invoice-rooted frame
+    is the same 118 values whichever masters were attached, so testing it twice
+    is testing it twice. ``JOB_TITLE`` joined in from a 52-row staff master is
+    not: which title each row sees depends on the key the join was built on, and
+    an approver's title and a verifier's title are different audit questions
+    that happen to read the same column.
+    """
+    if name in _seen:
+        return name
+    if any(str(item.get("name")) == name for item in workspace.tables):
+        return name
+    join = next(
+        (item for item in workspace.joins if str(item.get("name")) == name), None
+    )
+    if join is None:
+        return name
+    return frame_root(workspace, str(join.get("left")), _seen | {name})
+
+
+def frame_route(workspace: Workspace, name: str) -> dict[str, str]:
+    """Which key each joined-in table was reached by, per base table.
+
+    Walking down the left spine records how the frame attached every table that
+    is not its root. Two invoice-rooted frames both holding ``staff_details``
+    are the same shape and a different question when one reached it by
+    ``SUPERVISOR_APPROVAL_ID`` and the other by ``VERIFIED_BY_ID``: the first
+    puts the approver on each row, the second the verifier, and a job-title
+    reconciliation over them answers 110 of 112 and 118 of 118.
+
+    A table reached through an already-joined side is attributed to the hop that
+    brought that side in, which is the key that decides which of its rows each
+    row of the frame sees.
+    """
+    joins = {str(item.get("name")): item for item in workspace.joins}
+    route: dict[str, str] = {}
+    seen: set[str] = set()
+    while name in joins and name not in seen:
+        seen.add(name)
+        join = joins[name]
+        right = str(join.get("right"))
+        key = "+".join(str(column) for column in join.get("left_on") or ())
+        reached = frame_lineage(workspace, right) if right in joins else {right}
+        for table in reached:
+            route.setdefault(table, key)
+        name = str(join.get("left"))
+    return route
+
+
 def column_origins(
     workspace: Workspace, name: str, _seen: frozenset = frozenset()
 ) -> dict[str, str]:

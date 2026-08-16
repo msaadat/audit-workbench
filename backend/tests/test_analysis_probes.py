@@ -489,6 +489,198 @@ def test_a_small_frame_does_not_have_its_population_described_as_a_vocabulary():
     assert probes.value_domains(ws, "financial_approval_matrix") == []
 
 
+def test_a_prose_column_is_not_a_vocabulary():
+    """Eight delivery comments are eight comments, not eight statuses."""
+    ws = _workspace(
+        "Comments",
+        po_data=pl.DataFrame(
+            {
+                "PO_ID": [f"P{n:03d}" for n in _rows(30)],
+                "GRN_COMMENTS": [
+                    (
+                        "All kits delivered."
+                        if n == 1
+                        else "Received in full; no exceptions noted."
+                    )
+                    for n in _rows(30)
+                ],
+            }
+        ),
+    )
+    # Every value fits the character cap; the longer one is plainly a sentence.
+    assert probes.value_domains(ws, "po_data") == []
+
+
+def _staff_joined_workspace() -> workspaces.Workspace:
+    """Invoices joined to a staff master, the shape that re-profiles a name."""
+    ws = _workspace(
+        "Joined",
+        invoice_data=pl.DataFrame(
+            {
+                "INVOICE_ID": [f"INV{n:03d}" for n in _rows(40)],
+                "VERIFIED_BY_ID": [f"S{(n % 4) + 1:03d}" for n in _rows(40)],
+                "PAYMENT_STATUS": [
+                    "Rejected" if n <= 2 else "Paid" for n in _rows(40)
+                ],
+            }
+        ),
+        staff_details=pl.DataFrame(
+            {
+                "STAFF_ID": [f"S{n:03d}" for n in _rows(4)],
+                "NAME": ["Ava Hall", "David Miller", "Emily White", "John Doe"],
+                "DEPARTMENT": ["Procurement", "Finance", "Audit", "IT"],
+            }
+        ),
+    )
+    ws.add_join(
+        {
+            "name": "invoice_staff",
+            "left": "invoice_data",
+            "right": "staff_details",
+            "how": "left",
+            "left_on": ["VERIFIED_BY_ID"],
+            "right_on": ["STAFF_ID"],
+        }
+    )
+    return ws
+
+
+def test_a_join_does_not_turn_an_identifier_into_a_vocabulary():
+    """Four names over forty invoice rows still name four people.
+
+    ``NAME`` is one value per row in the staff master and excluded there. The
+    join re-counts it against a population it did not come from, and every test
+    for "is this a vocabulary" then passes. Judging it where it lives is what
+    keeps staff names out of the model's context.
+    """
+    ws = _staff_joined_workspace()
+    published = {item["column"] for item in probes.value_domains(ws, "invoice_staff")}
+    assert "NAME" not in published
+    assert "PAYMENT_STATUS" in published
+
+
+# -------------------------------------------------------------------- values
+def test_a_minority_state_in_a_column_with_a_usual_one_is_nominated():
+    """The shape no comparison between two columns reaches."""
+    ws = _workspace(
+        "Statuses",
+        requisitions=pl.DataFrame(
+            {
+                "REQ_ID": [f"R{n:03d}" for n in _rows(40)],
+                "REQUISITION_STATUS": [
+                    "Rejected" if n <= 3 else "Completed" for n in _rows(40)
+                ],
+            }
+        ),
+    )
+    nominations = probes.probe_frame(ws, "requisitions")
+    found = _find(nominations, "value_filter", column="REQUISITION_STATUS")
+    assert found is not None
+    assert found["params"]["values"] == ["Rejected"]
+    assert found["params"]["mode"] == "flag"
+    assert found["flagged"] == 3
+    assert found["family"] == probes.VALUES
+    assert "Rejected" in found["reading"]
+
+
+def test_the_rarer_state_outranks_the_commoner_one():
+    """The one family where a bigger count is a weaker nomination.
+
+    Ranked the way every other family is ranked, "13 invoices awaiting payment"
+    outranked "4 rejected ones" on every frame carrying both, was taken as the
+    column's one nomination, and A03/A04 stayed out of reach through a run in
+    which it was nominated eleven times.
+    """
+    ws = _workspace(
+        "Two minorities",
+        invoice_data=pl.DataFrame(
+            {
+                "INVOICE_ID": [f"INV{n:03d}" for n in _rows(40)],
+                "PAYMENT_STATUS": [
+                    "Rejected" if n <= 2 else "Pending" if n <= 8 else "Paid"
+                    for n in _rows(40)
+                ],
+            }
+        ),
+    )
+    values = [
+        item
+        for item in probes.probe_frame(ws, "invoice_data")
+        if item["family"] == probes.VALUES
+    ]
+    assert [item["params"]["values"][0] for item in values] == ["Rejected", "Pending"]
+    assert [item["flagged"] for item in values] == [2, 6]
+
+
+def test_a_column_that_classifies_rather_than_reports_nominates_nothing():
+    """One of fifty-two people works in Executive; that is an org chart."""
+    ws = _workspace(
+        "Departments",
+        staff_details=pl.DataFrame(
+            {
+                "STAFF_ID": [f"S{n:03d}" for n in _rows(40)],
+                "DEPARTMENT": [
+                    ["Procurement", "Finance", "Audit", "IT", "Executive"][
+                        min(n % 5, 4)
+                    ]
+                    for n in _rows(40)
+                ],
+            }
+        ),
+    )
+    assert _find(probes.probe_frame(ws, "staff_details"), "value_filter") is None
+
+
+def test_a_second_normal_state_is_not_an_exception():
+    """A quarter of the population in one state is a segment of it."""
+    ws = _workspace(
+        "Two states",
+        invoice_data=pl.DataFrame(
+            {
+                "INVOICE_ID": [f"INV{n:03d}" for n in _rows(40)],
+                "PAYMENT_STATUS": [
+                    "Pending" if n <= 10 else "Paid" for n in _rows(40)
+                ],
+            }
+        ),
+    )
+    assert _find(probes.probe_frame(ws, "invoice_data"), "value_filter") is None
+
+
+def test_a_join_does_not_turn_a_classifier_into_a_reporting_column():
+    """The fan-out that concentrates a name concentrates a category too.
+
+    Every invoice this staff master verifies belongs to one of four people, and
+    joining amplifies whichever department they sit in until the column looks
+    like it has a normal state. It does not; it has four, evenly.
+    """
+    ws = _staff_joined_workspace()
+    assert _find(
+        probes.probe_frame(ws, "invoice_staff"), "value_filter", column="DEPARTMENT"
+    ) is None
+
+
+def test_a_nominated_value_is_one_the_definition_worker_may_name():
+    """The sweep and the validator have to agree, or the spec is unusable.
+
+    A ``value_filter`` spec is rejected unless its column carries a supplied
+    vocabulary and every value it names occurs in it. A nomination drawn from
+    anywhere but :func:`value_domains` would be measured, offered, and then
+    refused the moment the model restated it.
+    """
+    ws = _staff_joined_workspace()
+    domains = {
+        item["column"]: set(item["values"])
+        for item in probes.value_domains(ws, "invoice_staff")
+    }
+    for nomination in probes.probe_frame(ws, "invoice_staff"):
+        if nomination["test"] != "value_filter":
+            continue
+        column = nomination["params"]["column"]
+        assert column in domains
+        assert set(nomination["params"]["values"]) <= domains[column]
+
+
 # ------------------------------------------------------------ vacuity guards
 def test_a_comparison_no_row_satisfies_established_nothing():
     """Three of these reached ``fail`` on one run, reading as total failure.

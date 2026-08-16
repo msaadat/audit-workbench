@@ -416,6 +416,18 @@ class AnalysisWorkflowExecution(BaseRunner):
         self.save()
         return list(found)
 
+    def frame_findings(self, frame: str) -> list[dict]:
+        """This frame's nominations that measured a breach, not merely a spec.
+
+        A nomination flagging zero rows is a confirmed invariant: worth stating
+        on a frame that has earned its turn, never a reason to spend one. Only
+        the ones that separated rows from the population count as this frame
+        having something of its own to say.
+        """
+        return [
+            item for item in self.frame_probes(frame) if int(item.get("flagged") or 0) > 0
+        ]
+
     def _pair_record(self, left: str, right: str) -> dict:
         """This run's evidence for a pair, diagnosing it now if it has none.
 
@@ -885,18 +897,34 @@ class AnalysisWorkflowExecution(BaseRunner):
             self.retained_hypotheses()
             and target_frame not in table_scope.tables
             and not hypotheses
+            and not self.frame_findings(target_frame)
         ):
-            # A joined frame nothing was admitted to test. Every hypothesis its
+            # A joined frame nothing was admitted to test, and nothing its own
+            # columns dispute.
+            #
+            # The first half is a routing rule: every hypothesis this frame's
             # lineage carries is already prepared on the narrowest frame that
             # can test it, so a turn here would re-derive that work against a
-            # wider population and then be dropped as a repeat.
+            # wider population and then be dropped as a repeat. That reasoning
+            # holds for tests the gate imagined, and it was deciding alone —
+            # which meant a frame lost its turn before the sweep had been
+            # allowed to look at it. Six of eighteen frames went that way in one
+            # run, in three milliseconds each, among them a three-way frame
+            # carrying an invoice's payment status beside its requisition's
+            # approval status: 118 rows nobody measured.
+            #
+            # So the sweep gets the last word. A hypothesis is a guess about
+            # where a test belongs; a nomination is a count of rows that already
+            # failed one. A frame with breaching rows of its own is never
+            # redundant with a frame that does not hold them.
             self.task_detail(
                 self.add_task(
                     "analysis_definitions",
                     "workflow:analysis_definitions",
                     "Analysis definitions",
                 ),
-                f"'{target_frame}' carries no test another frame does not already hold.",
+                f"'{target_frame}' carries no test another frame does not already "
+                "hold, and nothing its own columns assert fails on it.",
             )
             return DeterministicUnitResult("skipped")
         expected = parent_hashes(self.ws, [parent_ref])
@@ -930,6 +958,11 @@ class AnalysisWorkflowExecution(BaseRunner):
             )
 
         def approval_provider(proposal):
+            # Said before approval, not after: a proposal the validator removed
+            # never reaches the approval list, so this is the only point at
+            # which the auditor can be told the frame wrote more than it kept.
+            for reason in proposal.get("declined") or []:
+                self.warn(f"'{target_frame}': a proposed analysis was not saved — {reason}")
             proposed = [
                 self.proposal_item(
                     str(item.get("title")),
