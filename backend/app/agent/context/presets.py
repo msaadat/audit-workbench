@@ -1211,6 +1211,19 @@ PRESETS.register(
                     budget=ContextBudget(max_items=12, max_characters=12_000),
                 ),
                 ContextSource(
+                    id="probe_findings",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # Measured nominations: a runnable spec plus what it produced
+                    # when the sweep ran it. Aggregate counts and column names,
+                    # which is why this rides the same value-free representation
+                    # as every other aggregate here — the flagged rows behind a
+                    # nomination are never part of it.
+                    representations=(ContextRepresentation("table_aggregate"),),
+                    budget=ContextBudget(max_items=12, max_characters=12_000),
+                ),
+                ContextSource(
                     id="current_analyses",
                     source_type="artifacts",
                     required=False,
@@ -1223,7 +1236,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=40, max_characters=16_000),
                 ),
             ),
-            budget=ContextBudget(max_items=75, max_characters=76_000),
+            budget=ContextBudget(max_items=87, max_characters=88_000),
             # Row-level table data is structurally impossible here: the
             # permission is denied and ``table_rows`` is rejected by the
             # resolver boundary before a candidate can become a bundle item.

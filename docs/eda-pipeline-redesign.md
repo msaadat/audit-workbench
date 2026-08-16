@@ -1,0 +1,633 @@
+# EDA pipeline redesign
+
+**Status:** Proposed; design agreed in outline, not implemented
+**Date:** 2026-08-16
+**Scope:** `analysis_workflow_v1` only. The audit workflow, document analysis and
+document tests are untouched.
+**Baseline:** `Workspaces/pro`, run `20260816-065650-652b21` at code `90de2a5` —
+§6. Every change below is measured against it.
+**Companion to:** `procurement-pipeline-review.md` (rev 609) and
+`procurement-pipeline-review-pass3.md` (rev 838). Those two describe what the
+pipeline produced; this one describes why the exploratory half produced it and
+what replaces the exploratory half. Answer-key IDs (`A01`–`A33`) are Appendix A
+of the second-pass review. New fix IDs in this document are `E*`.
+
+Every measurement below was taken from two workspaces — `Workspaces/procurement`
+(EDA run `20260813-192502-da3357`, the diagnosis in §1) and `Workspaces/pro`
+(EDA run `20260816-065650-652b21`, the baseline in §6) — plus the six source
+workbooks, verified byte-identical between the two and read directly. Nothing
+here is inferred from reading code alone.
+
+---
+
+## 0. Decision summary
+
+The exploratory pipeline is not underperforming because its stages are wrong. It
+is underperforming because **it decides what can be found before it decides what
+to look for**, and because it decomposes by data object rather than by question.
+
+Five changes, in the order they should be built:
+
+| ID | Change | Recovers | Baseline evidence |
+|---|---|---|---|
+| **E1** | A deterministic probe layer that sweeps intra-frame then cross-frame column pairs and nominates test specs ranked by measured yield | A05, A13, A14, A27 | §6.5 — `compare_columns` and `format_anomaly` exist and are aimed at the wrong columns |
+| **E2** | Stop pruning the relationship map; let orphan counts nominate `referential` directly | A01, A03/A04 route, A30 | §6.5 — both `referential` tests that ran returned `ok`; the two that would have failed were never proposed |
+| **E3** | A 30-row diagnostic sample plus low-cardinality value domains in model context | A03/A04, A05, judgment quality throughout | §6.2 |
+| **E4** | One `analysis.reading` turn over the whole map, replacing one proposal turn per frame | A33-class negative space; 19 turns → ~7 | §6.4 — 9 of 20 frames carry no analysis; compound hypotheses half-discharged |
+| **E5** | Joins materialize *after* definitions, from what the accepted specs need | A11/A12, A13, A15, A21, A22, A28 | §6.4 — *"this test was prepared nowhere"*, twice, on the 2,856M item |
+| **E6** | `analysis.reconciled` — a coverage artifact over the assertion register | S1b, S5b's column half, S2d's input | §6.4 — nothing detects a hypothesis answered by half |
+
+Steps E1 and E2 are wholly deterministic, need no prompt work and no model turn.
+
+The baseline sharpens the argument rather than softening it: at §6 the model
+**states the right hypotheses aloud** — invoice approval beyond delegated
+authority, `APPROVED_BY_ID == REQUESTER_ID` — and the per-frame stage either has
+no frame to carry them or has one and writes no test. The gap is no longer
+mostly a question of what the model can think of. It is a question of what the
+architecture will let it act on.
+
+---
+
+## 1. Diagnosis
+
+### 1.1 Five multiplicative filters run before the model's first substantive turn
+
+| Filter | Where | Rule |
+|---|---|---|
+| pair pruning | `joins.py:733` | one candidate per table pair, best evidence |
+| match-rate classification | `joins.py:369` | `weak` below a 0.90 match rate; `weak` on any row multiplication above 1.001 |
+| noise floor | `joins.py:597`, `joins.py:716` | `weak` and match rate < 0.5 → `continue  # noise` |
+| utility-gate admission | `adapters.py:1992` | only `strong`/`moderate` reach the model |
+| one route per pair | `workers/analysis.py:69`, enforced `:466` | *"Exactly one candidate may be retained for any pair of tables, in either direction"* |
+| lookup pruning | `capabilities/analysis.py:281` | frames under 5 rows and 10× smaller than the largest are not analysed |
+
+None of them knows what question is being asked. They compose, and every one of
+them narrows. The reference run that produced the answer key applied none.
+
+### 1.2 The gates discard in proportion to audit signal
+
+Diagnosed on `procurement`, from the run record:
+
+| Relationship the pipeline diagnosed | Match rate | Unmatched | Fate | Item | Exposure |
+|---|---:|---:|---|---|---:|
+| `invoice.PO_NUMBER_LINK → po.PO_NUMBER` | 0.8376 | 19 | `weak` — never offered | A01 | 1,054M |
+| `requisitions.REQUISITION_ID ← invoice+po` | 0.8304 | 19 | `weak` | A03/A04 route | 202M |
+| `invoice.SUPERVISOR_APPROVAL_ID → matrix+staff` | 0.0179 | 110 | below the noise floor | A11/A12 | 2,856M |
+| `po.BUYER_ID → staff.STAFF_ID` | 0.0000 | 93 | below the noise floor | A30 | — |
+
+Verified independently against the workbooks: 20 invoices carry a
+`PO_NUMBER_LINK` matching no purchase order, PKR 1,054,406,260, of which
+563,602,720 is paid. That is A01 to the rupee. The pipeline computed
+`unmatched_keys: 19` and deleted the candidate **for having them**.
+
+The unmatched values are `REQ2024011`, `REQ2024047`, `REQ2024053` … — requisition
+identifiers sitting in a purchase-order field.
+
+The principle the gates encode is backwards for audit work: **a low match rate is
+a finding about the population, not a verdict on the relationship.** The pipeline
+is most certain to discard the relationships carrying the largest exposures, and
+its certainty scales with the exposure.
+
+### 1.3 One route per pair forecloses segregation of duties
+
+`requisitions ↔ staff_details` produced four strong role keys, all at 1.0 match
+and 1.0 multiplication: `FIN_APPROVED_BY_ID`, `REQUESTER_ID`, `VERIFIED_BY_ID`,
+`APPROVED_BY_ID`. Three were rejected under protest — the run record carries the
+model's own wording, *"The requester role is useful context, but…"*. The same
+happened on `invoice ↔ staff` (`SUPERVISOR_APPROVAL_ID` dropped) and
+`vendor ↔ staff` (`UPDATED_BY` dropped).
+
+Segregation of duties is by definition a comparison of two roles on one
+transaction. The contract forbids materializing two roles.
+
+Five warnings recording exactly this sit in the run record and reach no reader.
+
+### 1.4 The pipeline never compares two columns of the same table
+
+Its entire model of "relationship" is between tables, so intra-frame column pairs
+are never examined. Measured directly:
+
+```
+invoice_data:  VERIFIED_BY_ID == SUPERVISOR_APPROVAL_ID   1 row
+               INV2024063, 98,061,570, Paid                        = A14
+requisitions:  REQUESTER_ID   == VERIFIED_BY_ID           8 rows
+               REQUESTER_ID   == FIN_APPROVED_BY_ID       1 row    = A13
+```
+
+Segregation of duties on this data needs **no join at all**. A14 has been
+downgraded across three revisions and is reported to the client as tooling
+unreliability; it is one comparison of two columns of `invoice_data`.
+
+### 1.5 Where the 21 missed items go
+
+| Root cause | Items |
+|---|---|
+| Relationship pruning (weak / noise discard) | A01, A03, A04, A11, A12, A16, A30 |
+| One route per table pair | A14, A15, A28 |
+| Missing test shapes | A05, A11, A12, A25, A27, A28 |
+| Value blindness | A03, A05, A28, A33 |
+| No challenge to a clean result | A07, A08, A09, A24 |
+| Not the EDA's work | A29, A31, A32 |
+
+Nineteen of twenty-one trace to four causes, all of them in the pipeline's front
+half. The execution half — the sandbox, spec-not-data rerunnability, the evidence
+sidecar, `result_sha1` linkage, the memo — is not where the loss is and is not
+changed by this design.
+
+### 1.6 Decomposition is not the problem; the axis is
+
+The reference run was decomposed too — by question, inside one context. This
+pipeline decomposes by data object: one proposal turn per frame. That choice has
+three consequences and they are the design's real subject.
+
+- A unit's context is one frame, so **no unit can hold a cross-frame hypothesis.**
+  The only cross-frame turn is the memo, which runs after execution and can
+  therefore summarize but never test.
+- The unit count is set by the schema, not by the risk. Twenty frames, twenty
+  turns, of which eleven produced date-ordering checks and eight of those found
+  nothing.
+- Narrowing is monotone. No later stage can recover what an earlier one discarded.
+
+---
+
+## 2. Decisions taken
+
+**D1 — No whole-population disclosure.** The engagement is 418 rows / 6,244 cells
+(~17k tokens as CSV) and would fit in one prompt, but the privacy boundary in
+`AGENTS.md` stands. Model context gains two things only: low-cardinality value
+domains, and a bounded **30-row diagnostic sample** under its own permission
+(§4.2, E3). `allow_table_rows` remains denied everywhere.
+
+**D2 — No cycle-registry dependency.** `cycle_registry/packs/procure_to_pay.py`
+encodes a date lifecycle that would assert A16 outright, and it is deliberately
+*not* used. The pipeline stays domain-neutral: structure is discovered
+empirically from the data, and all domain meaning comes from the model. This is
+not a compromise — see §3.1.
+
+**D3 — `analysis.reading` requires no auditor intervention.** No gate, no
+checkpoint. That imposes one rule: the reading turn is **additive by default** and
+may only subtract with a recorded reason (§4.2, E4).
+
+**D4 — Joins are an output of the analysis, not an input to it.**
+
+---
+
+## 3. Two findings that shape the design
+
+### 3.1 Empirical invariant discovery replaces the cycle pack, and is better
+
+An invariant does not have to be declared. It can be measured: for every pair of
+comparable columns reachable on a route, compute the direction distribution. A
+pair holding one way 95%+ of the time is an invariant the population asserts
+about itself; the residue is the exception.
+
+Run on the invoice↔PO route — the one the gates discarded — with no domain
+knowledge and no model turn:
+
+| Discovered invariant | Holds | Violations | |
+|---|---:|---:|---|
+| `PO_DATE ≤ INVOICE_DATE` | 94/98 | **4** | **A16** — 4 paid invoices, 35,236,240, exact |
+| `INVOICE_AMOUNT ≤ PO_TOTAL_AMOUNT` | 93/98 | **5** | **A06** |
+| `GRN_DATE ≤ INVOICE_DATE` | 93/98 | 5 | A17 |
+| `GRN_DATE ≤ PAYMENT_DATE` | 91/94 | 3 | A18 |
+| `PO_DATE ≤ DUE_DATE` | 98/98 | 0 | a confirmed invariant — reportable as *tested, holds* |
+
+Domain-neutral, self-calibrating, and it generalizes to payroll or revenue with
+no new code. The pack would have to be written per cycle and would still not know
+that `PO_DATE ≤ DUE_DATE` is worth stating as tested.
+
+**The route choice was not merely a risk — it cost coverage on the one item the
+pipeline is credited with recovering.** The promoted invoice-over-PO test found
+three violations; the discarded route finds five. `INV2024017` and `INV2025007`
+were invisible because the GRN route aligns 96 invoices and the PO route aligns
+98.
+
+### 3.2 The same sweep finds within-group variance
+
+`ITEM_DESCRIPTION → UNIT_PRICE` on `po_data`: 14 items appear more than once,
+**none** at a single price. Top spreads 194% (Cybersecurity Training Platform) and
+167% (Cloud Migration Services) — A27, including the two items the answer key
+names.
+
+This one carries its own warning. The dependency does not hold *at all*, so a
+naive "flag the violations" flags every repeated item — the same vacuity trap
+`SATURATION_SENSITIVE_TESTS` patches after the fact. The signal is the **spread
+distribution and its tail**, not the violation set. 194% is a finding; 63%
+probably is not. The probe layer must carry that discipline from the start.
+
+---
+
+## 4. Target architecture
+
+### 4.1 The graph
+
+```
+data.characterized      det    types, low-cardinality domains, format census,
+                               blanks, distinctness
+data.relationship_map   det    every route diagnosed, unpruned; orphan counts and
+                               where the orphans do resolve
+data.probes             det    sweep intra-frame pairs, then cross-frame over
+                               viable routes; emit ranked nominations as
+                               {test, params, expected_breaches, tested}
+analysis.reading        LLM×1  the whole map plus the 30-row diagnostic sample.
+                               Keep / add / decline-with-reason. Writes the
+                               durable assertion register.
+analysis.definitions    LLM×n  one turn per assertion cluster; a frame carrying
+                               no assertion gets no turn
+data.joins_ready        det    materialize only the routes accepted specs need
+analysis.executed       det    unchanged
+analysis.reconciled     det    register × outcome — the coverage artifact
+analysis.summarized     LLM×1  unchanged
+```
+
+Approximately seven model turns against today's twenty-two, with the expensive
+one spent on judgment rather than enumeration. At `max_llm_concurrency: 1` and
+97.4% model wait (second-pass review §8.1) that is also the latency line.
+
+### 4.2 Stage contracts
+
+**`data.characterized` (E3, deterministic half).** Extends the existing profile
+with the two things the model currently cannot see: the complete distinct set for
+any column under ~30 distinct values, and a format census over identifier columns
+using the mask already implemented at `analytics.py:1219`. `REQUISITION_STATUS ∈
+{Approved, Pending, Rejected}` is what makes A03/A04 askable at all.
+
+**`data.relationship_map` (E2).** Diagnoses every route and **prunes nothing**.
+The `weak` classification survives as a *label*, not as a gate. Orphan counts, and
+the table where the orphans do resolve, are read as findings and nominate a
+`referential` spec directly. On this engagement that is A01 and A30, from
+measurements already present in the run record.
+
+**`data.probes` (E1).** The layer's job is not to be a second test engine — with
+`compare_columns` and `referential` in the registry, a discovered invariant and an
+executable test are the same object. It sweeps, measures, and emits nominations
+**in the library's own vocabulary**, ranked by yield.
+
+Order matters: **intra-frame column pairs first** (cheapest, and on this
+engagement they own A13 and A14), then cross-frame over transient alignments.
+Bounding rules — type compatibility, minimum support, a stated confidence, and
+the vacuity discipline of §3.2 — are part of the contract, not a later patch.
+
+This is what fixes the proposal pathology at its root. Today the model proposes
+date comparisons from schema shape: two date columns exist, so compare them. With
+measured yield in hand it proposes from evidence, and `PO_DATE ≤ DUE_DATE` costs
+one line as a confirmed invariant instead of a proposal slot.
+
+**`analysis.reading` (E4).** One turn, the whole map, plus the sample. Output is
+an ordered assertion register: what should be true, which columns and routes state
+it, why it matters, and — separately — what this data cannot answer. Every
+assertion must name columns and routes from the supplied map, validated
+deterministically by the machinery `validate_analysis_proposal` already provides.
+
+Because there is no auditor gate (D3), **the deterministic nominations are the
+default set and the reading turn may only subtract with a recorded reason** — the
+same decline-with-reason contract `analysis_promotion` already uses, counted in
+the coverage artifact. That gives a hard floor: A01, A05, A06, A13, A14, A16 and
+A30 are all deterministic nominations and land whether or not the reading turn
+mentions them. What the model adds is what a sweep cannot reach: what a pattern
+*means*, cross-cutting reads, and negative space — a model holding the complete
+column inventory can say *"no field anywhere in this data records competitive
+bidding"* (A33), which twenty keyhole turns structurally cannot.
+
+The register is durable and inspectable after the fact. Not a gate, but not
+invisible: reconciliation reports against it.
+
+**The 30-row diagnostic sample (E3, disclosure half).** Not a preview —
+**stratified over what the deterministic layers already found**:
+
+- rows from each minority format cluster
+- rows whose keys are orphans
+- rows breaching each candidate invariant
+- rows with nulls in otherwise-populated columns
+- a handful of ordinary rows for baseline
+
+A random 30 of 118 is a coin flip on seeing a `VINSUSP` row. A stratified 30
+spans the anomaly space at the same token cost. It follows the existing precedent
+exactly: its own permission (`allow_population_sample`), its own cap, recorded in
+the manifest, and **split by source so truncation cannot silently drop the
+interesting half** — the lesson `analysis_exceptions` / `analysis_anomalies`
+already learned. The memo's existing rule about capped rows extends verbatim and
+matters more here: **never count from the sample.**
+
+**`analysis.definitions`.** Units become assertion clusters sharing a target
+frame, rather than one unit per frame. Frames carrying no assertion get no turn,
+which is where most of the turn saving comes from.
+
+**`data.joins_ready` (E5).** Today "join" conflates a durable workspace artifact
+the auditor sees with a transient alignment needed to compute a statistic.
+Separating them removes the scarcity that produced one-route-per-pair: **probe 70
+routes, materialize 8.** Materialization happens after definitions, from what the
+accepted specs actually need, so multiple routes between one pair are ordinary
+rather than contested.
+
+**`analysis.reconciled` (E6).** Register × outcome: answered, unanswerable,
+declined-with-reason, never-attempted. This replaces promotion-as-afterthought —
+promotion adjudicates only analyses that flagged something (eleven zero-exception
+analyses at rev 838 sit at `promotion: null`), whereas reconciliation adjudicates
+the register, so *asked and unanswerable* becomes distinguishable from *never
+asked*. It is the artifact `S1b`, `S5b` and `S2d` have each been reaching for from
+a different direction.
+
+No separate `analysis.challenged` turn. The duplicate-key qualifier rule
+(`workers/analysis.py:1049`) handles the known case deterministically, and once
+every clean result traces to a probe that measured the same thing, *"could this
+test see what it cleared"* is a reconciliation check rather than a model call.
+
+---
+
+## 5. Already landed
+
+Committed at `90de2a5` ("improved analytics library inventory"). These implement
+most of the library work this design assumed, and one thing better than it
+assumed. §6 measures what they actually produced on a live run.
+
+| Addition | Where |
+|---|---|
+| `referential` — reconcile a column against another table's key, reporting **where the unmatched values do resolve** | `analytics.py:1029`, `_resolves_in` at `:989` |
+| `compare_columns` — a relationship between two columns of one row, six operators, auto type mode | `analytics.py:1138` |
+| `format_anomaly` — learns the character-class shape a column takes and flags the minority, only where one shape governs | `analytics.py:1232`, `value_mask` at `:1219` |
+| `signal` taxonomy — `exception` / `screening` / `descriptive`, typed at the registry | `analytics.py:1325`, accessors `signal_for` `:1737`, `ids_with_signal` `:1747` |
+| Base-rate vacuity gate — a weekend scan flagging ~2/7 established nothing | `analysis_results.py:119` |
+| `descriptive` tests excluded from autonomous proposal | `workflows/analysis.py`, `EXCLUDED_ANALYTICS_TEST_IDS` |
+| Lookup candidates in definition context, with per-table branches so an invalid `(lookup_table, lookup_column)` pair is unrepresentable | `adapters.py:1908`, `presets.py` `lookup_candidates` |
+| Duplicate-key qualifier rule — `T7` | `workers/analysis.py:1049` |
+| `reference_candidates` — the schema-only half of `candidate_keys`, so a caller holding only metadata can ask which column plausibly references which key before any frame is read | `joins.py:216` |
+
+Three notes.
+
+`_resolves_in` is stronger than what this design originally proposed. Pattern-
+classing the orphans would have said "19 values shaped `REQ\d{7}`"; naming the
+table says *"19 of them are `requisitions.REQUISITION_ID` values"*, which is A01's
+actual finding and hands the model the route to A03/A04 at the same time.
+
+The `signal` taxonomy is the field the second-pass review's §8.3 was circling —
+*established nothing* versus *redundant with a cheaper signal* — typed once at the
+registry instead of guessed at in three places. It also does `F5`'s work: once the
+severity basis reads the signal, a design-gap finding and a paid exception cannot
+be rated alike.
+
+`reference_candidates` is the first piece of **E2** in place. It answers "which
+column plausibly references which key" from names alone, which is exactly the
+question `data.relationship_map` must ask across every frame pair before it
+measures anything — and asking it without reading a frame is what makes an
+unpruned map affordable.
+
+Each test run by hand against the source data with default parameters — what the
+primitive *can* do, given the right column. What the pipeline actually aimed them
+at is §6.
+
+| Test | Result | Owns |
+|---|---|---|
+| `format_anomaly` on `VENDOR_INVOICE_NUMBER` | dominant `A{4}9{3}-9{6}` 95/118 (80.5%); minority `A{7}9{3}` ×6 | **A05**, exactly the six VINSUSP rows |
+| `compare_columns` `PO_DATE ≤ INVOICE_DATE` | 4 breaches | **A16** |
+| `compare_columns` `INVOICE_AMOUNT ≤ PO_TOTAL_AMOUNT` | 5 breaches | **A06** |
+| `compare_columns` `VERIFIED_BY_ID ≠ SUPERVISOR_APPROVAL_ID` | 1 breach, INV2024063, 98.06M, Paid | **A14** |
+| `referential` `PO_NUMBER_LINK → po.PO_NUMBER` | 19 orphans, resolve in `requisitions.REQUISITION_ID` | **A01** |
+| `referential` `BUYER_ID → staff.STAFF_ID` | 93 orphans, resolve nowhere | **A30** |
+
+A tuning observation on the first: there is a third cluster,
+`A{4}9{3}-9{6}A` ×17 (14.4%), that the 10% default does not flag. It is not in the
+answer key, but seventeen invoice references carrying a trailing letter is worth a
+look — the threshold is doing real work and 10% may be tight.
+
+**Remaining library gap:** within-group variance — same key, different value.
+That is A27 and nothing currently expresses it.
+
+---
+
+## 6. Baseline — the `pro` engagement
+
+**Workspace:** `Workspaces/pro`
+**Run:** `AgentRuns/20260816-065650-652b21`, `analysis_workflow_v1`
+**Code:** `90de2a5`
+**Data:** the same six workbooks as `procurement`, verified byte-identical
+
+This is the reference point every change in §7 is measured against.
+
+**Read the scale carefully.** This run is the EDA alone — no RCM, no fieldwork, no
+report. The reviews' tally (12/33 at rev 838) counts items that *reached a
+finding and the report*. This one counts items an EDA procedure **computed**,
+which is a strictly earlier and more forgiving bar. The two numbers are not
+comparable and must never be quoted against each other.
+
+### 6.1 What the run produced
+
+| | |
+|---|---:|
+| Model turns | 19 — 2 `join_utility`, 15 `analysis_definitions`, 2 `analysis_summary` |
+| Prompt tokens | 244,974 |
+| Wall clock | 11m 53s |
+| Joins materialized | 14 |
+| Frames | 20 (6 base + 14 joins) |
+| Frames carrying no analysis | **9** |
+| Saved analyses | 26 |
+| Run status | `completed_with_failures` |
+
+Test mix: `date_lag` ×10 (five with zero exceptions), `compare_columns` ×4,
+python ×4, `duplicates` ×2, `referential` ×2, `completeness` ×1,
+`format_anomaly` ×1, `outliers` ×1.
+
+**No memo was produced.** `analysis.summary` failed twice — *"Worker
+'analysis.summary' returned an invalid response after 2 attempt(s): an embed
+names no analysis"* — so `analysis.summarized` never completed. A new defect,
+unrelated to this design, and it means the run's one cross-frame reading of the
+results does not exist.
+
+### 6.2 EDA reach against the answer key
+
+A31 and A32 are document-side and outside the EDA's scope, leaving 31 addressable
+items.
+
+| Outcome | Count | Items |
+|---|---:|---|
+| **Computed** | 9 | A07, A08, A10, A16, A18, A19, A20, A23, A29 |
+| **Partial** | 2 | A02 (inside a 22-row completeness result, not isolated), A06 (3 of 5) |
+| **Absent** | 20 | the rest |
+
+### 6.3 The new library tests, working
+
+| Analysis | Spec | Result | |
+|---|---|---|---|
+| `A-1CFB3868` | `duplicates` on `VENDOR_INVOICE_NUMBER` **alone** | 2 keys, 4 rows | **A07 + A08 recovered.** `T7`'s qualifier rule did exactly its job — the same test keyed `(VENDOR_ID, VENDOR_INVOICE_NUMBER)` returned a false clear for two revisions. |
+| `A-152A3303` | `date_lag` `PO_DATE → INVOICE_DATE` | 4 rows, 35,236,240 | **A16 recovered.** A two-revision regression, closed. |
+| `A-5E16319E` | `compare_columns` `ESTIMATED_TOTAL_COST ≤ MAX_APPROVAL_AMOUNT` | 1 | A10 |
+| `A-1E10FA83` | `compare_columns` `INVOICE_AMOUNT ≤ PO_TOTAL_AMOUNT` | 3 | A06, partial — see §6.5 |
+| — | base-rate gate | 2 proposals dropped | two weekend analyses, at 17% and 33% against 29% expected by chance |
+
+### 6.4 Three failure modes, all one cause
+
+The run makes the decomposition-axis argument (§1.6) far more sharply than the
+earlier one did, because this time the model **states the right hypotheses out
+loud at the join-utility turn** and the per-frame stage fails to carry them.
+
+**1. Asked, and refused.** Two retained hypotheses name the largest single missed
+item in the register:
+
+> *"Invoice amounts exist that exceed the MAX_APPROVAL_AMOUNT recorded for the
+> job title of the staff member who approved them."*
+>
+> *"Invoices exist where the approving supervisor's JOB_TITLE has a
+> MAX_APPROVAL_AMOUNT lower than the INVOICE_AMOUNT, i.e. approval beyond
+> delegated authority."*
+
+That is **A11/A12, PKR 2,856M**. `_warn_untestable_hypotheses`
+(`analysis_execution.py:329`) then reported, twice:
+
+> *"No materialized frame brings together financial_approval_matrix,
+> invoice_data, staff_details, so this test was prepared nowhere."*
+
+The model identified the test. The join architecture refused to build the frame,
+said so precisely, and nothing acted on it. This is **E5**'s case in one
+artifact.
+
+**2. Compound hypotheses half-discharged, undetected.** The requisitions/staff
+hypothesis reads *"Requisitions exist where **APPROVED_BY_ID equals REQUESTER_ID**,
+or where the approver's JOB_TITLE limit is below the ESTIMATED_TOTAL_COST."* The
+limit clause became `A-5E16319E`. The segregation clause became nothing — that is
+**A13**. Identically, the vendor hypothesis carried *"the UPDATED_BY staff member
+is not authorized … or a vendor's BANK_ACCOUNT_NUMBER was changed"*: the first
+clause became `A-3147AD3F`, the second became nothing — **A21**, which the
+earlier `procurement` run did catch.
+
+Nothing anywhere detects a hypothesis that was half answered.
+
+**3. Frame built, hypothesis stated, no test written.** Nine of twenty frames
+carry no analysis, and three of them are frames the utility gate materialized
+*for* a retained hypothesis:
+
+| Empty frame | Its retained hypothesis | Cost |
+|---|---|---|
+| `invoice_data_staff_details_joined` | invoice approval beyond delegated authority | A11/A12 |
+| `requisitions_staff_details_joined` | `APPROVED_BY_ID == REQUESTER_ID` | A13 |
+| `invoice_data_vendor_master_file_joined` | invoices to non-active vendors | A23 invoice side, A02 |
+
+### 6.5 Four defects this design already predicted, now observed
+
+**The route choice is non-deterministic, and it moves what is findable.** On
+byte-identical data the one-route-per-pair gate chose differently than the
+`procurement` run: `invoice↔staff` VERIFIED_BY_ID → **SUPERVISOR_APPROVAL_ID**,
+`requisitions↔staff` FIN_APPROVED_BY_ID → **APPROVED_BY_ID**, `vendor↔staff`
+APPROVED_BY → **UPDATED_BY**. The candidates are equally evidenced (1.0 match,
+1.0 multiplication), so the tie-break is arbitrary. Consequence: A21 and A22,
+both reached by the earlier run, are unreachable in this one. **Which findings
+are available is a coin flip.**
+
+**The GRN route still costs coverage.** `A-1E10FA83` tests `INVOICE_AMOUNT ≤
+PO_TOTAL_AMOUNT` on the GRN-joined frame: `tested: 96`, 3 breaches. The
+`PO_NUMBER_LINK` route aligns 98 and finds 5 — `INV2024017` and `INV2025007` are
+invisible. §3.1's prediction, reproduced exactly.
+
+**Segregation of duties is now expressible and still absent.**
+`compare_columns` makes `VERIFIED_BY_ID ≠ SUPERVISOR_APPROVAL_ID` a one-line spec
+on `invoice_data` needing no join at all. Across all 26 analyses,
+`VERIFIED_BY_ID`, `SUPERVISOR_APPROVAL_ID` and `REQUESTER_ID` are referenced by
+**zero** tests. The primitive exists; nothing points the model at the column
+pair. This is **E1**'s case.
+
+**`format_anomaly` was aimed at the wrong column.** It ran on
+`staff_details.EMAIL_ADDRESS` — *"No format governs EMAIL_ADDRESS; 16 shapes
+across 52 values"*, 0 exceptions — rather than at `VENDOR_INVOICE_NUMBER`, where
+§5 shows it isolates the six VINSUSP rows outright. Same cause as above: a
+capability with nothing pointing it.
+
+**Both `referential` tests that ran returned `ok`.** `APPROVED_BY → staff` (39
+tested) and `APPROVED_BY_ID → staff` (108 tested), both clean. The two
+reconciliations that would have *failed* — `PO_NUMBER_LINK → po.PO_NUMBER` (19
+orphans, A01) and `BUYER_ID → staff.STAFF_ID` (93 orphans, A30) — were never
+proposed, because the relationship map had already discarded those routes before
+any turn saw them. Neither column is referenced by any test in the run. This is
+**E2**'s case, stated as plainly as it can be: *the pipeline only reconciles the
+relationships it already believes in.*
+
+### 6.6 The baseline in one line
+
+Twenty-six procedures, nineteen model turns and 245k tokens produced nine of
+thirty-one answer-key items — and the three biggest absences were each named
+aloud by the run itself, in a hypothesis, a warning, or an empty frame.
+
+---
+
+## 7. Sequencing
+
+| Order | Item | Why here |
+|---|---|---|
+| 1 | **E1** `data.probes`, intra-frame pairs first | Highest yield, no model risk. Also what makes the three new tests get proposed against the right columns instead of waiting to be guessed. Owns A13, A14, A16, A06. |
+| 2 | **E2** unprune the relationship map; orphans nominate `referential` | Owns A01, A30, and hands over the A03/A04 route. The measurements already exist in the run record. |
+| 3 | **E3** diagnostic sample + value domains in context | Makes A03/A04 askable and lifts judgment quality throughout. |
+| 4 | **E4** `analysis.reading` replacing per-frame proposal | The turn-count and cross-frame win. Depends on 1–3 for its input. |
+| 5 | **E5** joins after definitions | Dissolves one-route-per-pair. Owns A15, A28; completes A14. |
+| 6 | **E6** `analysis.reconciled` | Closes `S1b`; supplies `S2d` its content. |
+| 7 | Within-group variance primitive | Last library gap. Owns A27. |
+| 8 | Regression fixture over Appendix A (`S6`) | Makes every step above measurable. Three regressions landed unnoticed in the last pass, and §6.5 adds a fourth kind — one that moves between runs on identical data. |
+
+Two items fall outside the E-series and should be picked up regardless:
+
+- **The memo failure (§6.1).** `analysis.summary` rejected its own output twice on
+  *"an embed names no analysis"* and the run produced no memo at all. The
+  validator is right to reject a malformed embed; failing the terminal outcome
+  over it is not. Diagnose before E4, which inherits this worker.
+- **Route tie-breaking is arbitrary (§6.5).** Until E5 lands and multiple routes
+  per pair become ordinary, the tie-break between equally-evidenced role keys
+  should at least be deterministic, so a rerun on unchanged data cannot silently
+  move which findings are reachable.
+
+Steps 1 and 2 are deterministic, require no prompt work, and recover A01, A05,
+A06, A13, A14, A16 and A30 — seven items, roughly PKR 1.2bn — before any
+model-facing change is made.
+
+---
+
+## 8. Risks and open items
+
+**Small populations manufacture spurious invariants.** At 98 aligned rows, "holds
+98/98" may be coincidence. Every nomination needs minimum support and a stated
+confidence, or the reading turn is handed noise wearing the costume of structure.
+
+**The vacuity trap moves rather than disappearing.** §3.2 is the live example: an
+invariant that holds nowhere flags everything. The probe layer needs the base-rate
+and saturation discipline built in, not bolted on — the machinery now exists at
+`analysis_results.py:119` and should be a probe-layer input, not only a
+post-execution label.
+
+**One reading turn is a single point of failure.** If it is shallow, the
+interpretation is shallow. What limits the damage is the additive-by-default rule
+(D3): the deterministic nominations execute regardless, so there is a floor. A
+poor reading turn still costs the meaning, and that is the half that matters.
+
+**Combinatorics.** At 84 columns an intra-frame and cross-frame pair sweep is
+trivial. At 500 columns it is not, and type compatibility plus route filtering
+become load-bearing rather than tidy.
+
+**Sample discipline.** Thirty rows in context is the largest row disclosure this
+product will have made. The "never count from the sample" rule needs to be
+enforced in the validator, not only asked for in the prompt.
+
+**Not addressed here.** `T6` (lookup anchoring in *test* generation) is a
+fieldwork defect and is unaffected by this design. `S5b`'s row-wise reachability
+count is still not built — this design gives route and column coverage, not "how
+many rows of each population no executed test ever touched".
+
+---
+
+## Appendix — measurement provenance
+
+All paths are relative to `Workspaces/procurement` in §1 and §3, and to
+`Workspaces/pro` in §6.
+
+| Claim | Source |
+|---|---|
+| Relationship candidates, strengths, match rates, retained/rejected decisions, the five one-route warnings | `AgentRuns/20260813-192502-da3357/run.json`, `analysis.relationships` and `analysis.join_utility` |
+| Baseline turn counts, tokens, warnings, run status and failure text | `Workspaces/pro/AgentRuns/20260816-065650-652b21/run.json` — `usage`, `warnings`, `error` |
+| Baseline hypotheses, retained and rejected | same record, `analysis.join_utility` |
+| Baseline analyses, specs, verdicts and denominators | `Workspaces/pro/Analyses/A-*.json`, field `last_result` |
+| Baseline frame coverage (9 of 20 empty) | `Workspaces/pro/workspace.json` tables + joins, against the `table` field of each analysis |
+| The two workspaces hold identical data | md5 over all six workbooks |
+| 20 invoices without a real PO, 1,054,406,260 (563,602,720 paid) | `Data/invoice_data.xlsx` × `Data/po_data.xlsx` |
+| A16: 4 paid invoices, 35,236,240 | invoice↔PO inner join on `PO_NUMBER_LINK` |
+| A06: 5 breaches on the PO route vs 3 on the GRN route | both routes computed and compared |
+| A13 / A14 intra-frame equality counts | `requisitions.xlsx`, `invoice_data.xlsx` |
+| A27 spreads (194%, 167%) | `po_data.xlsx` grouped on `ITEM_DESCRIPTION` |
+| A05 format census | `analytics.value_mask` over `VENDOR_INVOICE_NUMBER` |
+| A12: 110 of 118 invoices approved by a title absent from the matrix | `invoice_data` × `staff_details` × `financial_approval_matrix` |
+| 418 rows / 6,244 cells / ~17k tokens | all six workbooks |
+| 28 saved analyses, 11 `date_lag`, 8 of those with zero exceptions | `Analyses/A-*.json` |

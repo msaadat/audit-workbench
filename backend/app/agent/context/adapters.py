@@ -1791,6 +1791,7 @@ ANALYSIS_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYSIS_RELATIONSHIP_SOURCE_ID = "relationship_evidence"
 ANALYSIS_REGISTRY_SOURCE_ID = "analytics_registry"
 ANALYSIS_LOOKUP_SOURCE_ID = "lookup_candidates"
+ANALYSIS_PROBE_SOURCE_ID = "probe_findings"
 ANALYSIS_CURRENT_SOURCE_ID = "current_analyses"
 ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS = (
     analysis_workflow.EXCLUDED_ANALYTICS_TEST_IDS
@@ -2086,6 +2087,7 @@ def analysis_definition_scope(
     related: Iterable[str] = (),
     relationships: Iterable[Mapping[str, object]] | None = None,
     hypotheses: Iterable[Mapping[str, object]] = (),
+    probe_findings: Iterable[Mapping[str, object]] = (),
     analytics_registry: object = None,
 ) -> ContextScope:
     """Build the local candidate scope for one analysis-definition unit.
@@ -2215,6 +2217,28 @@ def analysis_definition_scope(
                 ),
             ),
             ANALYSIS_LOOKUP_SOURCE_ID: analysis_lookup_candidates(workspace, target),
+            # What this frame's own data already asserts, measured before the
+            # turn rather than guessed during it. Each is a runnable spec with
+            # the counts it produced, so the model is choosing among measured
+            # questions instead of deriving candidate questions from the schema
+            # and finding out afterwards which of them had anything in them.
+            # Counts and column names only — the rows behind a nomination stay
+            # in the evidence sidecar its execution writes.
+            ANALYSIS_PROBE_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=(
+                        f"probe:{item.get('frame')}:{item.get('test')}:{index}"
+                    ),
+                    source=dict(item),
+                    representations={"table_aggregate": dict(item)},
+                    metadata={
+                        "table": str(item.get("frame") or ""),
+                        "family": str(item.get("family") or ""),
+                    },
+                    lexical_text=str(item.get("reading") or ""),
+                )
+                for index, item in enumerate(probe_findings)
+            ),
             ANALYSIS_CURRENT_SOURCE_ID: tuple(
                 ContextCandidate(
                     source_ref=f"analysis:{item['id']}",

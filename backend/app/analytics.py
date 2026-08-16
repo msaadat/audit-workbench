@@ -43,6 +43,11 @@ class FrameSource:
 
     resolve: Resolve
     tables: tuple[str, ...] = ()
+    # The frame being tested, when the caller knows it. Only the orphan
+    # diagnosis uses it, and only to exclude itself: the unmatched values of a
+    # column are trivially present in that column, so a frame that does not name
+    # itself can be told its keys "resolve in" the very column they came from.
+    origin: str = ""
 
     def frame(self, name: str) -> pl.DataFrame:
         try:
@@ -811,7 +816,9 @@ def referential(
         .rename({"_key": "unmatched_value"})
     )
     elsewhere = _resolves_in(
-        set(census["unmatched_value"].to_list()), source, {lookup_table}
+        set(census["unmatched_value"].to_list()),
+        source,
+        {lookup_table, source.origin} - {""},
     )
     if elsewhere:
         census = census.with_columns(
@@ -871,12 +878,22 @@ _COMPARE_OPS: dict[str, str] = {
 }
 
 
-def _comparable(df: pl.DataFrame, column: str, mode: str) -> pl.Expr:
+def comparable_expr(df: pl.DataFrame, column: str, mode: str) -> pl.Expr:
+    """How ``compare_columns`` reads one column before comparing it.
+
+    Public because a caller deciding *whether* to propose a comparison has to
+    measure it the same way the test will. Re-deriving the coercion — a string
+    date parsed one way here and another way there — would let a nomination
+    report a hold rate the test it nominates does not reproduce.
+    """
     if mode == "number":
         return pl.col(column).cast(pl.Float64, strict=False)
     if mode == "date":
         return _date_expr(df, column)
     return pl.col(column).cast(pl.String).str.strip_chars()
+
+
+_comparable = comparable_expr
 
 
 def compare_columns(df: pl.DataFrame, params: dict) -> AnalyticsResult:

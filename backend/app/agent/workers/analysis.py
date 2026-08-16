@@ -36,6 +36,7 @@ from ... import analytics, sandbox
 # memo to the APM. It lives outside ``agent/`` because a worker may not import
 # the context package and vice versa; the module has no dependencies of its own.
 from ...analysis_memo import EMBED_FENCE, EMBED_KINDS, parse_embeds
+from ...field_names import subject_tokens
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -113,6 +114,23 @@ it is saved: on a joined frame, propose analyses that use columns from more than
 one of the joined tables, since that is what the join makes possible. You are
 never shown table rows and must not invent values, counts, or relationships.
 
+Where the request carries MEASURED ON THIS FRAME, those are procedures that have
+already been run against this frame's own data. Each is a complete, valid spec
+and the counts beside it are what it produced — a reconciliation that left rows
+unmatched, an ordering the population breaks, a key that repeats, an identifier
+built unlike the rest. They are not suggestions to evaluate: the arithmetic is
+done. Your judgment is what they *mean*, not whether they are worth measuring.
+
+A nomination that flagged rows is a finding this frame already has, and the
+array is sized to hold them, so **take it** — copy its `test` and `params`
+exactly and say in `note` what the flagged condition would mean, in terms of the
+business events the columns record. Changing a spec measures something else and
+the counts stop applying to it. Leave one only where you can say why the
+condition it flags could not indicate a control failing, and spend whatever
+slots remain on what the measurements do not reach. A nomination with no flagged
+rows is a relationship the population holds to; it is worth a line in a memo and
+is not a procedure worth a slot.
+
 Where the request carries TESTS THIS FRAME WAS MATERIALIZED TO SUPPORT, those
 are the reasons this frame exists. Each names a hypothesis that was found worth
 testing, and the columns that state it, before the frame was built. Write those
@@ -161,6 +179,7 @@ TARGET_SCHEMA_SOURCE_ID = "target_schema"
 JOIN_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYTICS_REGISTRY_SOURCE_ID = "analytics_registry"
 LOOKUP_CANDIDATES_SOURCE_ID = "lookup_candidates"
+PROBE_FINDINGS_SOURCE_ID = "probe_findings"
 CURRENT_ANALYSES_SOURCE_ID = "current_analyses"
 ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
 
@@ -201,9 +220,32 @@ MODEST_FRAME_ROWS = 100
 SMALL_FRAME_ANALYSES = 2
 MODEST_FRAME_ANALYSES = 3
 
+# The ceiling once a frame's findings have been measured rather than guessed.
+# The size budget above exists to stop padding, and that reasoning inverts when
+# the sweep arrives with runnable specs and the counts they produced: a
+# procedure that already flagged rows is not padding, it is a finding, and a
+# frame carrying ten of them cannot state them in four slots. Observed directly
+# — a frame with ten measured findings saved four, and the invoices dated before
+# their own purchase order were among the six that did not fit.
+#
+# Still bounded, because one turn has to write every analysis it returns and a
+# frame that measures fifteen things is better served by the sweep's own ranking
+# than by a completion long enough to hold all of them.
+MAX_MEASURED_ANALYSES = 8
 
-def proposal_budget(rows: int | None) -> int:
-    """How many analyses to ask of a frame, from the size of the frame."""
+
+def proposal_budget(rows: int | None, measured: int = 0) -> int:
+    """How many analyses to ask of a frame.
+
+    From the frame's size, or from the number of measured findings supplied for
+    it where that is larger — a slot spent restating something the sweep already
+    computed is not speculative work, and refusing it drops a finding that has
+    already been established.
+    """
+    return max(_size_budget(rows), min(int(measured or 0), MAX_MEASURED_ANALYSES))
+
+
+def _size_budget(rows: int | None) -> int:
     if rows is None:
         return MAX_PROPOSED_ANALYSES
     if rows < SMALL_FRAME_ROWS:
@@ -686,6 +728,23 @@ def _column_types(schema: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _measured_findings(request: WorkerRequest) -> int:
+    """How many supplied nominations actually flagged rows.
+
+    A confirmed invariant buys no slot: it is worth one line in a memo and is
+    not a procedure competing with the ones that found something.
+    """
+    total = 0
+    for raw in _source_items(request, PROBE_FINDINGS_SOURCE_ID):
+        item = _plain_json(raw)
+        if isinstance(item, Mapping):
+            try:
+                total += 1 if int(item.get("flagged") or 0) else 0
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
 def _target_rows(schema: Mapping[str, Any]) -> int | None:
     """The target frame's row count, when the supplied schema declares one."""
     raw = schema.get("rows")
@@ -971,7 +1030,8 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                         # with whatever column pairing the schema permits.
                         "minItems": 0,
                         "maxItems": proposal_budget(
-                            _target_rows(_target_schema(request))
+                            _target_rows(_target_schema(request)),
+                            _measured_findings(request),
                         ),
                     }
                 },
@@ -1029,23 +1089,6 @@ def _analysis_response_schema(response: str) -> Mapping[str, Any]:
     return {"analyses": proposed}
 
 
-# Word endings that mark a column as an identifier rather than as the thing it
-# identifies. Stripped before comparing two key columns, so ``VENDOR_ID`` and
-# ``VENDOR_INVOICE_NUMBER`` are compared as "vendor" against "vendor invoice".
-_IDENTIFIER_SEGMENTS = frozenset(
-    {"id", "ids", "code", "key", "no", "num", "number", "ref", "reference"}
-)
-_SEGMENT_SPLIT = re.compile(r"[A-Za-z0-9]+")
-
-
-def _subject_tokens(column: str) -> frozenset[str]:
-    """What a column names, with the fact that it is an identifier removed."""
-    segments = [segment.lower() for segment in _SEGMENT_SPLIT.findall(str(column))]
-    while segments and segments[-1] in _IDENTIFIER_SEGMENTS:
-        segments = segments[:-1]
-    return frozenset(segments)
-
-
 def _qualifying_key_columns(columns: list[str]) -> list[tuple[str, str]]:
     """(qualifier, qualified) pairs where one key column only narrows another.
 
@@ -1066,7 +1109,7 @@ def _qualifying_key_columns(columns: list[str]) -> list[tuple[str, str]]:
     INVOICE_DATE, INVOICE_AMOUNT)`` is a legitimate same-payment key and does not
     trip it: no subject there contains another.
     """
-    subjects = {column: _subject_tokens(column) for column in columns}
+    subjects = {column: subject_tokens(column) for column in columns}
     pairs = []
     for qualifier, qualified in permutations(columns, 2):
         narrow, wide = subjects[qualifier], subjects[qualified]
@@ -1247,7 +1290,7 @@ def validate_analysis_proposal(
     # alone computes, so it belongs on the table, not here — and it is exactly
     # the shape that filled a joined frame's slots with its sides' work.
     joined_frame = len(set(origins.values())) > 1
-    budget = proposal_budget(_target_rows(schema))
+    budget = proposal_budget(_target_rows(schema), _measured_findings(request))
     if len(proposed) > budget:
         # Reported, but every proposal is still validated: an over-budget
         # response raises anyway, and trimming first would hide the violations
@@ -1310,7 +1353,18 @@ def validate_analysis_proposal(
             if kind == "analytics":
                 # An analytics spec names its columns in declared parameters,
                 # so an empty scope is a real answer: it reads nothing.
-                single = len(spec_scope(spec, origins)) < 2
+                scope = spec_scope(spec, origins)
+                # A reconciliation reads a second frame by name rather than by
+                # column, so counting only its columns makes every lookup test
+                # look one-sided and drops it from exactly the frames it is
+                # worth most on. Reconciling the approver's job title against
+                # the approval matrix reads one column of the join — and asks it
+                # once per invoice, which is a different population from asking
+                # it once per member of staff, and the difference is the finding.
+                lookup = str((spec.get("params") or {}).get("lookup_table") or "")
+                if lookup:
+                    scope = scope | {lookup}
+                single = len(scope) < 2
             else:
                 # Code is read for the column names it quotes, which no
                 # procedure is obliged to quote — a frame-wide preview names
@@ -1427,9 +1481,19 @@ def run_analysis_definition_worker(
     # prompt alone to the system prompt plus the catalog. Nothing is dropped:
     # the same content is sent, earlier.
     catalog = _plain_json(_resolved_item(request, ANALYTICS_REGISTRY_SOURCE_ID))
+    # Named once, ahead of the bundle, for the same reason the target schema is:
+    # the nominations are the part of this turn the model acts on directly, and
+    # burying them among the aggregates they were derived from bills the same
+    # content twice and reads as one more description of the frame.
     context = _model_facing_context(
-        request, TARGET_SCHEMA_SOURCE_ID, ANALYTICS_REGISTRY_SOURCE_ID
+        request,
+        TARGET_SCHEMA_SOURCE_ID,
+        ANALYTICS_REGISTRY_SOURCE_ID,
+        PROBE_FINDINGS_SOURCE_ID,
     )
+    measured = [
+        _plain_json(item) for item in _source_items(request, PROBE_FINDINGS_SOURCE_ID)
+    ]
     hypotheses = [
         _plain_json(item) for item in _source_items(request, JOIN_HYPOTHESIS_SOURCE_ID)
     ]
@@ -1437,6 +1501,7 @@ def run_analysis_definition_worker(
         {
             **({"ANALYTICS CATALOG": catalog} if catalog else {}),
             "TARGET FRAME": schema,
+            **({"MEASURED ON THIS FRAME": measured} if measured else {}),
             # What this frame was admitted for. Present only on a frame the
             # utility gate retained a relationship for, and authoritative about
             # its purpose in a way no amount of schema reading recovers.

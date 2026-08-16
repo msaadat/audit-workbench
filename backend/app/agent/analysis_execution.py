@@ -24,7 +24,7 @@ import uuid
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
-from . import joins as join_diagnostics, narration, store, workflow
+from . import joins as join_diagnostics, narration, probes, store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
@@ -362,6 +362,30 @@ class AnalysisWorkflowExecution(BaseRunner):
         relationships.sort(key=lambda item: (str(item.get("left")), str(item.get("right"))))
         self._analysis_record()["relationships"] = relationships
         self.save()
+
+    def frame_probes(self, frame: str) -> list[dict]:
+        """What this frame's own data already asserts, measured once per run.
+
+        Computed lazily and cached on the run for the same reason
+        :meth:`_pair_record` recomputes relationship evidence: the sweep is
+        deterministic and read-only, so computing it where it is first needed is
+        a cost and never a divergence. Caching matters because a frame's
+        nominations are read by its definition turn and by nothing else, while
+        the sweep itself is several Polars passes over every column pair.
+
+        This is deliberately not its own capability yet. The stage that will own
+        it reads every frame at once rather than one at a time, so declaring a
+        per-frame capability now would be re-homed by the next change with no
+        behaviour to show for it.
+        """
+        record = self._analysis_record()
+        cached = record.setdefault("probes", {})
+        if frame in cached:
+            return list(cached[frame])
+        found = probes.probe_frame(self.ws, frame)
+        cached[frame] = found
+        self.save()
+        return list(found)
 
     def _pair_record(self, left: str, right: str) -> dict:
         """This run's evidence for a pair, diagnosing it now if it has none.
@@ -871,6 +895,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                     ],
                     relationships=self.relationship_records(),
                     hypotheses=hypotheses,
+                    probe_findings=self.frame_probes(target_frame),
                 ),
             )
 

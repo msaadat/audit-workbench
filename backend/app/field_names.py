@@ -8,8 +8,37 @@ between semantically different fields.
 
 from __future__ import annotations
 
+import re
 from difflib import get_close_matches
 from typing import Type
+
+
+# Word endings that mark a column as an identifier rather than as the thing it
+# identifies. Stripped before comparing two columns by subject, so ``VENDOR_ID``
+# and ``VENDOR_INVOICE_NUMBER`` are compared as "vendor" against "vendor
+# invoice".
+IDENTIFIER_SEGMENTS = frozenset(
+    {"id", "ids", "code", "key", "no", "num", "number", "ref", "reference"}
+)
+_SEGMENT_SPLIT = re.compile(r"[A-Za-z0-9]+")
+
+
+def subject_tokens(column: str) -> frozenset[str]:
+    """What a column names, with the fact that it is an identifier removed.
+
+    Two callers depend on the same reading of a column name and must not drift
+    apart. The duplicate-key rule uses it to recognise that one key column only
+    qualifies another (``VENDOR_ID`` inside ``VENDOR_INVOICE_NUMBER``), and the
+    probe sweep uses it to tell two *roles* of one entity
+    (``VERIFIED_BY_ID`` / ``SUPERVISOR_APPROVAL_ID``, disjoint subjects) from two
+    statements of one *attribute* (``REQUESTER_DEPARTMENT`` / ``DEPARTMENT``, one
+    subject contained in the other). Those two shapes want opposite comparisons,
+    so a shared reading of the names is what keeps the two rules consistent.
+    """
+    segments = [segment.lower() for segment in _SEGMENT_SPLIT.findall(str(column))]
+    while segments and segments[-1] in IDENTIFIER_SEGMENTS:
+        segments = segments[:-1]
+    return frozenset(segments)
 
 
 def matching_column(requested: object, columns: list[str]) -> str | None:
