@@ -1043,8 +1043,13 @@ def format_nominations(
 
 
 # --------------------------------------------------------------------- sweep
-def _rank(nomination: Mapping[str, object]) -> tuple:
+def rank(nomination: Mapping[str, object]) -> tuple:
     """Most worth a turn first.
+
+    Public because the register applies the same order across the engagement
+    that this applies within one frame: a sweep that ranks each frame's
+    nominations by a different rule than the register ranks the whole set would
+    be two opinions about the same question.
 
     A reconciliation gap outranks a broken ordering, which outranks a repeated
     key, because that is the order in which each is likely to be the auditor's
@@ -1105,7 +1110,7 @@ def probe_frame(workspace: Workspace, frame: str) -> list[dict]:
         *duplicate_nominations(workspace, frame, df, profile),
         *format_nominations(frame, df, profile),
     ]
-    nominations.sort(key=_rank)
+    nominations.sort(key=rank)
     kept: list[dict] = []
     taken: dict[str, int] = {}
     for nomination in nominations:
@@ -1146,6 +1151,7 @@ __all__ = [
     "format_nominations",
     "probe_frame",
     "probe_frames",
+    "rank",
     "referential_nominations",
     "value_domains",
     "value_nominations",

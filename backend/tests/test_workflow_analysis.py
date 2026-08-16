@@ -142,8 +142,23 @@ def _stage(run: dict, capability_id: str) -> dict:
     )
 
 
+# Stages that cannot say anything without a settled register. ``execute()``
+# reaches them in dependency order, so driving one directly has to settle the
+# register first or it is not "exactly as execute() would": the definition stage
+# takes its assertions from the register, and against an unsettled one every
+# frame correctly reports that nothing was placed on it.
+_NEEDS_REGISTER = frozenset(
+    {"analysis.definitions_ready", "analysis.executed", "analysis.summarized"}
+)
+
+
 def _drive(workspace, run: dict, capability_id: str):
     """Run one stage through the scheduler exactly as ``execute()`` would."""
+
+    if capability_id in _NEEDS_REGISTER:
+        settled = _stage(run, "analysis.register_ready")
+        if settled["status"] not in {"succeeded", "skipped"}:
+            _drive(workspace, run, "analysis.register_ready")
 
     scheduler = build_analysis_workflow_runner(
         workspace, run, runner.RunHandle(workspace.id, run["id"])
@@ -195,7 +210,8 @@ def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
         "data.relationships_inferred": (),
         "data.join_utility_ready": ("data.relationships_inferred",),
         "data.joins_ready": ("data.join_utility_ready",),
-        "analysis.definitions_ready": ("data.joins_ready",),
+        "analysis.register_ready": ("data.joins_ready",),
+        "analysis.definitions_ready": ("analysis.register_ready",),
         "analysis.executed": ("analysis.definitions_ready",),
         "analysis.summarized": ("analysis.executed",),
     }
@@ -214,6 +230,7 @@ def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
         "data.relationships_inferred",
         "data.join_utility_ready",
         "data.joins_ready",
+        "analysis.register_ready",
         "analysis.definitions_ready",
         "analysis.executed",
         "analysis.summarized",
@@ -430,6 +447,7 @@ def test_ambiguous_scope_asks_the_auditor_in_permission_mode(monkeypatch):
     # Declared on both fan-out boundaries, but settled once per run.
     assert set(analysis_capabilities.STAGE_CHECKPOINTS) == {
         "data.relationships_inferred",
+        "analysis.register_ready",
         "analysis.definitions_ready",
     }
     adapter._scope_checkpoint()
@@ -571,8 +589,11 @@ def test_audit_analysis_dependencies_are_partial_when_join_review_is_open():
     # ability to derive analyses from frames and joins that are already usable.
     from app.agent import audit_execution
 
-    assert audit_execution._PARTIAL_DEPENDENCIES["analysis.definitions_ready"] == {
+    assert audit_execution._PARTIAL_DEPENDENCIES["analysis.register_ready"] == {
         "data.joins_ready"
+    }
+    assert audit_execution._PARTIAL_DEPENDENCIES["analysis.definitions_ready"] == {
+        "analysis.register_ready"
     }
     assert audit_execution._PARTIAL_DEPENDENCIES["analysis.executed"] == {
         "analysis.definitions_ready"
@@ -777,14 +798,19 @@ def _requires_script(requires_by_pair):
     return respond
 
 
-def test_a_test_spanning_three_tables_is_prepared_on_the_frame_that_can_run_it(
+def test_a_test_spanning_three_tables_is_placed_by_a_turn_that_sees_all_of_them(
     monkeypatch,
 ):
     """The approval-limit shape. The limit is a relationship between the plan
     and the customer, but the test compares an *order* against it, so the pair's
-    own frame holds no amount to check. Preparing the test there spends a turn
-    on a frame that cannot answer it — which is what ``requires`` exists to
-    prevent."""
+    own frame holds no amount to check.
+
+    Deciding that used to be a routing rule applied one frame at a time, from
+    inside a frame that could not see the alternatives. It is the register's
+    decision now, and this is what makes it decidable: the reading turn is shown
+    every frame in the scope, including the chained one that holds all three
+    tables, alongside the tests the gate admitted. A placement made with the
+    whole map in view is the thing E4 exists to allow."""
 
     ws = _three_hop_workspace()
     fake = _fake_model(monkeypatch)
@@ -799,30 +825,36 @@ def test_a_test_spanning_three_tables_is_prepared_on_the_frame_that_can_run_it(
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
-    _drive(ws, run, "analysis.definitions_ready")
+    _drive(ws, run, "analysis.register_ready")
 
-    units = {
-        unit["id"].split(":", 1)[1]: unit["status"]
-        for unit in _stage(run, "analysis.definitions_ready")["units"]
-    }
-    chained = next(name for name in units if name.count("joined") > 1)
+    reading = next(
+        call for call in fake.calls if call["tag"] == "agent:analysis_reading"
+    )
+    payload = json.loads(
+        reading["messages"][-1]["content"].split("\n\nYour previous")[0]
+    )
+    frames = [item["table"] for item in payload["FRAME MAP"]]
+    chained = next(name for name in frames if name.count("joined") > 1)
     pair_frame = next(
-        name for name in units if "customers" in name and "plans" in name and name != chained
+        name
+        for name in frames
+        if "customers" in name and "plans" in name and name != chained
     )
 
-    # The three-table test lands on the only frame that holds all three.
-    assert units[chained] == "succeeded"
-    # Its pair's own frame carries nothing else, so it is not asked at all.
-    assert units[pair_frame] == "skipped"
-    # Base tables are never narrowed away: single-table work needs no join.
-    assert all(units[name] == "succeeded" for name in ("orders", "customers", "plans"))
-    assert "agent:analysis_definitions" not in [
-        call["tag"]
-        for call in fake.calls
-        if json.loads(
-            call["messages"][-1]["content"].split("\n\nYour previous")[0]
-        ).get("TARGET FRAME", {}).get("table") == pair_frame
-    ]
+    # One turn, every frame: the chained frame that can answer the test and the
+    # pair frame that cannot are both in front of it, which is precisely what no
+    # per-frame turn could see.
+    assert {"orders", "customers", "plans", chained, pair_frame} <= set(frames)
+    # And the reason the join exists, stated before it was built.
+    # Both admitted tests, the two-table one and the three-table one, reach the
+    # same turn — so the frame each belongs on is a choice rather than a
+    # consequence of which frame happened to be bound first.
+    assert {
+        item["hypothesis"] for item in payload["TESTS THE JOIN GATE ADMITTED"]
+    } == {
+        "A test over customers, orders must hold.",
+        "A test over customers, orders, plans must hold.",
+    }
 
 
 def test_a_frame_the_sweep_found_something_on_keeps_its_turn(monkeypatch):
@@ -872,11 +904,14 @@ def test_a_frame_the_sweep_found_something_on_keeps_its_turn(monkeypatch):
     ]
 
 
-def test_a_frame_is_told_which_test_it_was_materialized_to_support(monkeypatch):
-    """The gate stated a falsifiable test before the join existed. A frame left
-    to re-derive its purpose from schemas writes a worse question than the one
-    already asked of it — a completeness check on a dimension frame rather than
-    the control the join was admitted for."""
+def test_a_frame_is_told_the_assertion_the_register_placed_on_it(monkeypatch):
+    """A frame left to re-derive its purpose from schemas writes a worse
+    question than the one already asked of it — a completeness check on a
+    dimension frame rather than the control the join was admitted for.
+
+    The carrier changed with E4 and the guarantee did not. The gate's admitted
+    tests reach the reading turn; the reading turn's assertions reach the frame
+    they were placed on. What a definition turn must never be is unbriefed."""
 
     ws = _mixed_strength_workspace()
     fake = _fake_model(monkeypatch)
@@ -901,10 +936,17 @@ def test_a_frame_is_told_which_test_it_was_materialized_to_support(monkeypatch):
     payload = json.loads(
         joined["messages"][-1]["content"].split("\n\nYour previous")[0]
     )
-    carried = payload["TESTS THIS FRAME WAS MATERIALIZED TO SUPPORT"]
-    assert [item["hypothesis"] for item in carried] == [
-        "A test over orders, regions must hold."
-    ]
+    carried = payload["ASSERTIONS PLACED ON THIS FRAME"]
+    assert carried and all(item["hypothesis"] and item["why"] for item in carried)
+    assert all(
+        column in {item["name"] for item in payload["TARGET FRAME"]["columns"]}
+        for item in carried
+        for column in item["columns"]
+    )
+    # Nominations are deliberately absent: every measurement this frame supports
+    # was committed by the register before this turn was bound, so re-sending
+    # them would ask for a spec that already exists.
+    assert "MEASURED ON THIS FRAME" not in payload
     # The target schema is named once. It used to be sent again inside the
     # serialized bundle, billing the same block twice on every frame.
     supplied = payload["RESOLVED CONTEXT"]["items"]
@@ -1663,11 +1705,15 @@ def test_invalid_definitions_are_repaired_once_and_never_commit(
     assert "not safe Polars" in guidance
     assert "not in the supplied schema" in guidance
     assert len(attempts) == 2
-    assert [call["tag"] for call in fake.calls] == [ANALYSIS_TAG, ANALYSIS_TAG]
+    assert [
+        call["tag"] for call in fake.calls if call["tag"] == ANALYSIS_TAG
+    ] == [ANALYSIS_TAG, ANALYSIS_TAG]
 
     saved = workspaces.load_workspace(ws.id).analyses
     assert {item["title"] for item in saved} == {
-        "Duplicates in transactions",
+        # The sweep nominated this one and the register saved it first, so the
+        # surviving record carries the title the measurement derives.
+        "invoice_no repeats",
         "Preview transactions",
     }
     assert all(item["kind"] in {"analytics", "python"} for item in saved)
@@ -1758,8 +1804,14 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
     assert len(fake.calls) == model_turns_before, "execution must not call a model"
 
     fresh = workspaces.load_workspace(ws.id)
+    # Found by its computation, not its name: this check is nominated by the
+    # sweep, so the register saves it before the definition turn proposes it and
+    # the surviving record carries the title the measurement derives.
     duplicates = next(
-        item for item in fresh.analyses if item["title"] == "Duplicates in transactions"
+        item
+        for item in fresh.analyses
+        if (item.get("spec") or {}).get("test") == "duplicates"
+        and (item["spec"].get("params") or {}).get("columns") == ["invoice_no"]
     )
     result = duplicates["last_result"]
     assert result["status"] == "ok"
@@ -2102,8 +2154,13 @@ def test_a_broken_definition_is_rejected_before_it_is_saved(
     definition_unit = _stage(run, "analysis.definitions_ready")["units"][0]
     assert definition_unit["status"] == "failed"
     assert "failed local validation" in definition_unit["error"]
-    assert _stage(run, "analysis.executed")["units"] == []
-    assert not workspaces.load_workspace(ws.id).analyses
+    # The register's own measured nomination is saved and executed; what must
+    # not exist is a record for the definition that failed validation.
+    saved = workspaces.load_workspace(ws.id).analyses
+    assert [item["title"] for item in saved] == ["invoice_no repeats"]
+    assert "Broken preview" not in [
+        unit["title"] for unit in _stage(run, "analysis.executed")["units"]
+    ]
 
 
 def test_one_broken_python_spec_does_not_cost_its_working_siblings(
@@ -2118,9 +2175,16 @@ def test_one_broken_python_spec_does_not_cost_its_working_siblings(
         return {
             "analyses": [
                 {
+                    # Keyed on both columns deliberately: the sweep nominates
+                    # single near-unique columns, so a check on ``invoice_no``
+                    # alone is already saved by the register and this unit would
+                    # correctly have nothing new to write.
                     "title": "Duplicate invoice numbers",
                     "kind": "analytics",
-                    "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+                    "spec": {
+                        "test": "duplicates",
+                        "params": {"columns": ["invoice_no", "cust_id"]},
+                    },
                     "note": "Reused invoice numbers signal double postings.",
                 },
                 {
@@ -2146,7 +2210,7 @@ def test_one_broken_python_spec_does_not_cost_its_working_siblings(
     definition_unit = _stage(run, "analysis.definitions_ready")["units"][0]
     assert definition_unit["status"] == "succeeded"
     saved = workspaces.load_workspace(ws.id).analyses
-    assert [item["title"] for item in saved] == ["Duplicate invoice numbers"]
+    assert "Duplicate invoice numbers" in [item["title"] for item in saved]
     assert any(
         "dropped a proposed analysis" in warning and "Broken preview" in warning
         for warning in run["warnings"]
@@ -2279,7 +2343,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert completed["status"] == "completed"
     assert [stage["status"] for stage in completed["workflow"]["stages"]] == [
         "succeeded"
-    ] * 6
+    ] * 7
     fresh = workspaces.load_workspace(ws.id)
     # The run's answer is the memo, written over the results it just recorded
     # and current against them.
@@ -2320,18 +2384,20 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     ) == 5
     assert "rows" not in milestone and "table_rows" not in milestone
     first_turns = len(fake.calls)
-    # One utility-gate turn for the whole scope, one definition turn per scoped
+    # One utility-gate turn for the whole scope, one reading turn that settles
+    # the register over every frame at once, one definition turn per scoped
     # frame (both tables and the join), and the single workspace-wide summary
-    # turn. The gate is charged once no matter how many pairs it judges, which
-    # is why it sits on its own stage rather than inside the join units.
+    # turn. The gate and the reading turn are each charged once no matter how
+    # many pairs or frames they judge, which is why each sits on its own stage.
     assert [call["tag"] for call in fake.calls] == [
         "agent:join_utility",
+        "agent:analysis_reading",
         "agent:analysis_definitions",
         "agent:analysis_definitions",
         "agent:analysis_definitions",
         "agent:analysis_summary",
     ]
-    assert first_turns == 5
+    assert first_turns == 6
 
     repeat = runner.start_command_run(
         # Materialization reads the caller's workspace, which is how a route
@@ -3533,21 +3599,53 @@ def test_a_procedure_argued_in_both_findings_and_reliance_is_rejected(
         )
 
 
-def test_a_marker_the_entry_did_not_declare_is_rejected(workspace_with_data):
-    """Otherwise a sentence rests on something the memo never took on."""
+def test_a_marker_in_the_prose_counts_as_a_declaration(workspace_with_data):
+    """A ``[#7]`` in a sentence *is* the finding resting on that procedure.
+
+    This used to be rejected — the number had to appear in `procedures` too.
+    Requiring one fact in two places is the coupling a long emission breaks: a
+    real memo attributed nine sentences to procedures it had cited in prose and
+    not relisted, and the stage failed on a rule with nothing to say about
+    whether the memo was right. The marker is absorbed now, and absorbed into
+    the same checks the declared numbers face rather than into none.
+    """
     ws = workspace_with_data
     first = _saved(ws, "Duplicates", DUPLICATES)
     second = _saved(ws, "Completeness", COMPLETENESS)
     request = _summary_request(workspaces.load_workspace(ws.id))
     declared = _ref_of(request, first["id"])
-    undeclared = _ref_of(request, second["id"])
+    marked_only = _ref_of(request, second["id"])
 
-    with pytest.raises(WorkerResponseValidationError, match="does not list"):
+    accepted = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[
+                {
+                    "prose": f"Duplicated ([#{declared}]), and incomplete ([#{marked_only}]).",
+                    "procedures": [declared],
+                }
+            ]
+        ),
+        request,
+    )
+    # Both procedures are cited, and the one reached only through the marker is
+    # carried into the memo exactly as the declared one is.
+    assert set(accepted["cited_analysis_ids"]) >= {first["id"], second["id"]}
+
+
+def test_a_marker_naming_no_supplied_procedure_is_still_rejected(workspace_with_data):
+    """Absorbing markers widened the range check rather than removing one: a
+    number reachable only through the prose used to escape it entirely."""
+    ws = workspace_with_data
+    first = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    declared = _ref_of(request, first["id"])
+
+    with pytest.raises(WorkerResponseValidationError, match="not one of the supplied"):
         analysis_worker.validate_analysis_summary(
             _payload(
                 findings=[
                     {
-                        "prose": f"Duplicated ([#{undeclared}]).",
+                        "prose": f"Duplicated ([#{declared}]), and also ([#97]).",
                         "procedures": [declared],
                     }
                 ]
@@ -3686,14 +3784,17 @@ def test_summary_validation_reports_independent_errors_together(workspace_with_d
                 findings=[
                     {"prose": f"Duplicated ([#{other}]).", "procedures": [shared]}
                 ],
-                reliance={"prose": "Also worth noting.", "procedures": [shared]},
+                # Reached only through the prose, which is a declaration now —
+                # so the overlap this used to miss is the overlap it reports.
+                reliance={"prose": f"Also worth noting ([#{other}]).",
+                          "procedures": [shared]},
             ),
             request,
         )
 
     errors = "; ".join(raised.value.errors)
-    assert "does not list" in errors
-    assert "argued in both" in errors
+    assert errors.count("argued in both") == 2
+    assert str(shared) in errors and str(other) in errors
 
 
 def test_an_out_of_range_reference_is_answered_not_raised(workspace_with_data):

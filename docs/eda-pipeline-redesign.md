@@ -1,10 +1,11 @@
 # EDA pipeline redesign
 
-**Status:** E1 and E2 landed; E3 landed in part (domains yes, sample rejected on
-evidence); E4–E6 not started. Four changes not in the original design were forced
+**Status:** E1, E2 and E4 landed; E3 landed in part (domains yes, sample rejected
+on evidence); E5 and E6 not started. Four changes not in the original design were forced
 by measurement and have landed — §7.3. Latest measured run
 `20260816-114649-9f35cc`, reaching **18** answer-key items against the baseline's
-**9**.
+**9** on §7.2's hand-built basis — **19 of 28** on the scorer now in the
+repository, which additionally counts A23 and is the basis §7.5 uses.
 **Date:** 2026-08-16 (design), implementation record §7 current to the same day
 **Scope:** `analysis_workflow_v1` only. The audit workflow, document analysis and
 document tests are untouched.
@@ -37,7 +38,7 @@ Five changes, in the order they should be built:
 | **E1** | A deterministic probe layer that sweeps intra-frame then cross-frame column pairs and nominates test specs ranked by measured yield | A05, A13, A14, A27 | §6.5 — `compare_columns` and `format_anomaly` exist and are aimed at the wrong columns | **Landed** — `agent/probes.py`, six families |
 | **E2** | Stop pruning the relationship map; let orphan counts nominate `referential` directly | A01, A03/A04 route, A30 | §6.5 — both `referential` tests that ran returned `ok`; the two that would have failed were never proposed | **Landed** — the `referential` family |
 | **E3** | A 30-row diagnostic sample plus low-cardinality value domains in model context | A03/A04, A05, judgment quality throughout | §6.2 | **Half landed.** Value domains yes. The sample was built, measured, and **reverted** — §7.2 |
-| **E4** | One `analysis.reading` turn over the whole map, replacing one proposal turn per frame | A33-class negative space; 19 turns → ~7 | §6.4 — 9 of 20 frames carry no analysis; compound hypotheses half-discharged | Not started |
+| **E4** | One `analysis.reading` turn over the whole map, replacing one proposal turn per frame | A33-class negative space; 19 turns → ~7 | §6.4 — 9 of 20 frames carry no analysis; compound hypotheses half-discharged | **Landed** — `agent/register.py`, `analysis.register_ready`. §7.5 |
 | **E5** | Joins materialize *after* definitions, from what the accepted specs need | A11/A12, A13, A15, A21, A22, A28 | §6.4 — *"this test was prepared nowhere"*, twice, on the 2,856M item | Not started — still the largest open item |
 | **E6** | `analysis.reconciled` — a coverage artifact over the assertion register | S1b, S5b's column half, S2d's input | §6.4 — nothing detects a hypothesis answered by half | Not started |
 
@@ -596,6 +597,8 @@ are recorded from measurements taken at the time.
 | 4 | Join-gate repair + `value_filter` | `pro2` `…093126-6480c8` | 15 | 269,041 | 39 | 12 | 53 | **14** |
 | 5 | Sweep before the gate; `values` family | `pro3` `…102919-f3ccd6` | 24 | 418,041 | 45 | 18 | 115 | **13** |
 | 6 | Ranking, identity, disclosure | `pro4` `…114649-9f35cc` | 23 | 413,495 | 50 | 18 | 116 | **18** |
+| 7 | E4 — the register | `pro5` `…161822-fceda8` | 5 | — | 23 | 5 | 23 | **13**§ |
+| 8 | E4 + the gate fix | `pro5` `…163049-d059ea` | 14 | 297,607 | 39 | 18 | — | **18**¶ |
 
 **Bold counts are scorer-derived and mutually comparable** (§7.2). The three
 marked **†** are not: each workspace keeps only its latest run, so runs 0, 2 and 3
@@ -606,6 +609,17 @@ A23, A29, while run 1's are the scorer's. They must not be read as "no change".
 
 **‡** Run 3 materialized **zero** joins — the gate rejected all 16 candidates — so
 its seven are base-table only and not comparable with anything.
+
+**§** Run 7 materialized zero joins for a different reason: the join gate failed
+both attempts, and every join unit blocked behind it (§7.6). Its thirteen are
+base-table only and are not comparable either — but they are the same shape of
+run as run 3's seven, and the difference between 7 and 13 is what the register
+commits without a model turn.
+
+**¶** Run 8 is the first clean E4 run and §7.7 reads it. Its eighteen are the
+workspace's cumulative state: a ninth run over the same workspace re-stamped the
+analyses it re-committed with its own id, so per-run attribution does not
+partition after a repeat and the honest figure is the workspace's.
 
 Run 6 is `completed`; every earlier run whose record survives is
 `completed_with_failures`, and in each the sole failure was `analysis.summary`,
@@ -716,6 +730,206 @@ on turn count.
 
 ---
 
+### 7.5 E4 — what landed, and the one number that argues for it
+
+`analysis.register_ready` sits between the joins and the definitions and carries
+two units: `analysis_reading`, one model turn over the whole map, and
+`analysis_register`, one deterministic commit. The register is run-durable, like
+the relationship evidence beside it.
+
+**The floor is the finding.** Before any turn runs, the sweep over every scoped
+frame is deduplicated by `analysis_semantic_id` and committed as saved analyses.
+On the `pro4` data that is **116 flagged nominations resolving to 43 distinct
+computations**, and executed against the answer key it reaches **18 of 28
+scoreable items with no model turn at all** — against run 6's 19 from 23 turns
+and 413k tokens. Scored by the same scorer, now in the repository (§8.1 item 5,
+`backend/tests/eda_answer_key.py`), which reproduces §7.2's run-6 column item for
+item.
+
+| | pro4 (run 6) | the floor alone |
+|---|---:|---:|
+| Model turns | 23 | **0** |
+| Saved analyses | 50 | 43 |
+| Answer-key items | 19 | **18** |
+
+The two the floor does not reach are A10 and A14, and neither is a loss the sweep
+could have prevented: **the sweep never nominated either one**. They were
+authored by the model in run 6, which is exactly what the reading turn's `add`
+exists for. What the floor *gains* is **A03r** — `REQUISITION_STATUS = Rejected`,
+4 of 112, §8.1's second item, nominated on five frames and taken on none in every
+run on record.
+
+That table is the whole argument for spending one turn on the entire engagement.
+§9 called a single reading turn a single point of failure, and it would be if the
+turn were the only author. Because the register is additive by default — silence
+keeps a nomination, and only a decline needs an argument — the turn's worst case
+is eighteen items rather than zero. A reading that fails after its repair attempt
+settles as `skipped` and the commit unit writes the measured floor.
+
+**Three defects found while building it, all of the same family as §7.3's.**
+
+*The register unit re-billed itself when a join landed.* Unit ids were derived
+from the frame list, so materializing a join produced a *different* unit id — and
+the old one had already spent its turn. A two-table scope billed the reading turn
+twice. Both register units are now named for the capability, like the memo.
+
+*A reference that resolves nowhere was four findings.* The sweep names one master
+per referencing column, ranked by orphan rate — and when every candidate fails at
+100%, the tie breaks on alphabetical order among the tables outside that frame's
+lineage. `BUYER_ID` arrived eight times across two populations and four masters,
+saying the same thing. The register folds those on `(root, column)` and keeps the
+one that ruled out the most masters; the title states what was found rather than
+naming a master the data did not choose. This is §9's contention again, in the
+one family §9 exempted from the saturation rule.
+
+*The register broke the stage below it by succeeding.* `analysis.definitions_ready`
+decided both its readiness and its unit expansion by asking "does this frame
+carry an analysis" — which the register now makes true of every frame that
+measured anything, so no definition unit expanded at all. Expansion no longer
+filters on it, and the binder makes the distinction expansion cannot: which of a
+frame's analyses the register wrote, and which a definition turn did. The
+zero-model-turn property of `analysis_execution` moved to the register's own
+readiness, where it now lives.
+
+**What E4 did not do.** Turn count is unchanged in shape — one reading turn
+replaces nothing, it is added, and definitions still fans out per frame carrying
+an authored assertion. §7.4 already withdrew that half of the argument. The
+`MAX_NOMINATIONS_PER_FRAME = 12` cap is also untouched and is now doing different
+work than it was designed for: it bounded what one definition turn could read,
+and it now bounds the floor itself. Six of eighteen frames sit at it on this
+engagement. Raising it is cheap — the register deduplicates aggressively and the
+cost is Polars passes, not tokens — but it is a separate measurable change and
+§7.3's lesson is that adding coverage without measuring arbitration subtracts.
+
+### 7.6 Run 7 — the gate failed, and the floor held
+
+The first run on E4 code failed at `data.join_utility_ready` and materialized no
+join at all. The cause is not E4's and predates it: the gate asks for one
+decision per candidate as an *array* whose `ref` is an enum, which prevents an
+invented reference and does nothing about a repeated one. Given sixteen
+candidates the model returned **sixteen decisions covering six distinct
+references**, four of them answered four times over. Both attempts failed the
+duplicate rule and all fifteen join units blocked behind it.
+
+Fixed structurally rather than with a third attempt: `decisions` is now an object
+**keyed by the candidate reference**, every reference required and nothing else
+permitted, and the decision body no longer carries a `ref` of its own. A repeat
+is unrepresentable, a missing decision is unrepresentable, and an invented
+reference is unrepresentable — the same move `value_domains` makes for a value a
+column does not hold. The array shape is still parsed, because a model that
+ignores the schema is still answering the question.
+
+**What the run establishes about E4.** The gate took every join down and the run
+still completed: the register committed **23 measured analyses** across six base
+tables and the memo wrote. Against run 3 — the earlier zero-join run, whose seven
+base-table items §7.1 calls "not comparable with anything" — this one reaches
+**13**. That is the floor doing exactly what it was built for, observed under a
+failure nobody staged.
+
+**What it does not establish.** The reading turn ran, validated, and returned
+`{keep: [], add: [], decline: [], unanswerable: []}` — nothing. It had five base
+frames, no joined frame, and no gate hypotheses, because the stage that produces
+those had already failed. Its whole purpose is the cross-frame read, and there
+were no cross-frame frames; A10 and A14, the two items the floor misses, both
+need one. So this is close to no evidence about the turn either way.
+
+The one part of that answer the degenerate map does not excuse is
+`unanswerable`. Negative space is a statement about the column inventory, the
+turn held the whole inventory, and A33 is a real finding on this engagement. One
+empty answer is not a pattern, and the prompt is deliberately **not** being tuned
+on it: changing the instructions now would confound the first clean measurement.
+Re-run with the gate fixed, then judge.
+
+### 7.7 Run 8 — the first clean reading turn
+
+The gate fix held: one attempt, fourteen joins materialized, every stage
+succeeded except the memo. **14 model turns against the baseline's 23**, and
+**18 of 28 items against its 19**.
+
+The reading turn finally had the map it was designed for, and used it. Over
+eighteen frames it kept 39 nominations (renaming six), **authored eight
+assertions**, declined four with arguments, and wrote three statements of what
+the data cannot answer. Two of those matter beyond this engagement:
+
+> *"Was the purchase competitively sourced with independent quotes as policy
+> requires?"* — **A33**, stated by the pipeline for the first time.
+>
+> *"Is there a conflict of interest or ownership link between the
+> requester/approver and the vendor?"*
+
+Neither is a procedure and neither will ever be a result. They exist because one
+stage held the whole column inventory, which is the argument §4.2 made for E4 and
+the first evidence for it. The authored assertions carried the approval-authority
+shape (A10, reached) and the requester/approver segregation.
+
+**And it lost A30, reproducibly, to a defect this document introduced.** Both
+runs on the register declined `BUYER_ID reconciles to no imported master`, with
+the same reasoning: *"BUYER_ID identifies a staff member, but the spec tests it
+against requisitions.REQUISITION_ID"*. The critique is correct about the spec and
+wrong about the finding. §7.5's collapse folds the eight duplicate nominations
+onto one and must still name *a* master in the runnable params; every candidate
+failed identically, name affinity scores all four at 0.7, and so the choice is
+arbitrary — and it reads as a mis-aimed probe. The `reading` line said "checked
+against …" and that prose did not survive contact.
+
+The lookup cannot be made better, so the arbitrariness is now disclosed as data:
+an unreferenced nomination carries `lookup_is_arbitrary` and a note saying every
+master was checked, and the prompt names this as the one decline that is a
+mistake. Unverified on a live run.
+
+This is the third time in this record that a collapse rule cost a finding, and
+the shape is always the same: the rule is right about what to fold and silent
+about what the fold throws away. §9's warning generalizes further than it was
+written — **on this pipeline, arbitration that hides its own arbitrariness
+subtracts.**
+
+### 7.8 The memo failure, diagnosed — a fifth mode and a sixth
+
+Run 8's memo failed with *"the response is not a valid JSON object: Expecting
+value at character 0. The text around that position reads: ..."*. The response
+was three tab characters. That error names nothing actionable, and it was
+masking two separate defects.
+
+**Attempt 1** returned one tool call carrying 15,017 characters of arguments —
+**malformed JSON at character 9,853**. Recoverable in principle, and the repair
+turn is exactly for it.
+
+**Attempt 2 returned two tool calls, 11,253 and 4,708 characters, both valid
+JSON with every required key.** Every forced-tool extractor in this module
+required *exactly* one match and fell through to `content` otherwise — which on
+a tool-call response is empty. So the run discarded two complete memos, read
+three tabs, and failed the stage. **It lost its memo while holding two good
+ones.** The same guard sat in all four workers, including the reading worker
+E4 had just added.
+
+That is the "memo emitted twice" mode §7.1 lists — the one `bd3e00d` was
+understood to have killed. It did kill it in Markdown; it reappeared as two tool
+calls, in a code path that turned a known content fault into an unreadable
+transport one.
+
+Fixed by reading the first complete submission instead of discarding all of
+them. A model that submits twice has repeated itself, not contradicted itself.
+
+**And a redundancy rule that could only fail.** With the response recovered, the
+semantic validator rejected it nine times, every one of the form *"attributes a
+sentence to [#13] but does not list 13 in its `procedures`"*. That rule asked the
+model to state one fact in two places, consistently, across a long structured
+document — the coupling a long emission breaks by construction, and a rule with
+nothing to say about whether the memo was right. A marker in the prose is now
+read as the declaration it already is, which also *widens* the checks that
+matter: numbers reached only through prose now face the range and
+informativeness tests they previously escaped.
+
+Replayed through both fixes, run 8's discarded response validates down to **two**
+errors, and both are the validator doing its job — one procedure argued in the
+findings section and again in the reliance section, with a repair message that
+says what to do about it.
+
+`bd3e00d` hardened what the model *writes*. These two are about what the
+application *reads*, which is why the hardening did not reach them.
+
+---
+
 ## 8. Sequencing
 
 Items 1–3 are done; the table is kept with status so the ordering argument stays
@@ -726,11 +940,11 @@ readable against what it produced.
 | 1 | **E1** `data.probes`, intra-frame pairs first | Highest yield, no model risk. Also what makes the three new tests get proposed against the right columns instead of waiting to be guessed. Owns A13, A14, A16, A06. | **Done.** A14 and A16 landed; A13 held throughout |
 | 2 | **E2** unprune the relationship map; orphans nominate `referential` | Owns A01, A30, and hands over the A03/A04 route. The measurements already exist in the run record. | **Done.** A01 from run 1; A30 needed the identity fix to survive |
 | 3 | **E3** diagnostic sample + value domains in context | Makes A03/A04 askable and lifts judgment quality throughout. | **Domains done; sample rejected on evidence** — §7.4. A03 needed the ranking fix as well |
-| 4 | **E4** `analysis.reading` replacing per-frame proposal | The cross-frame win. Depends on 1–3 for its input. The turn-count half of the argument is withdrawn — §7.4. | Not started. Its worker's four failure modes are now one commit's worth better; diagnose before building on it |
+| 4 | **E4** `analysis.reading` replacing per-frame proposal | The cross-frame win. Depends on 1–3 for its input. The turn-count half of the argument is withdrawn — §7.4. | **Done** — §7.5. The floor reaches 18 with no model turn; A03r landed. Unmeasured on a live run |
 | 5 | **E5** joins after definitions | Dissolves one-route-per-pair. Owns A15, A28; completes A14. | **Not started, and now the largest single item.** See below |
 | 6 | **E6** `analysis.reconciled` | Closes `S1b`; supplies `S2d` its content. | Not started |
 | 7 | Within-group variance primitive | Last library gap. Owns A27. | Not started. A27 is reached at 2/93 by a different test, so this is now about doing it *properly* rather than reaching it at all |
-| 8 | Regression fixture over Appendix A (`S6`) | Makes every step above measurable. Three regressions landed unnoticed in the last pass, and §6.5 adds a fourth kind — one that moves between runs on identical data. | **Scorer written and used for §7.2.** Not yet in the repository as a test |
+| 8 | Regression fixture over Appendix A (`S6`) | Makes every step above measurable. Three regressions landed unnoticed in the last pass, and §6.5 adds a fourth kind — one that moves between runs on identical data. | **Done.** `backend/tests/eda_answer_key.py` plus `test_eda_answer_key.py`, which pins `pro4` at 19 |
 
 The original claim here was that steps 1 and 2 alone would recover seven items
 before any model-facing change. §7.2 does not support it. Run 1 — E1 and E2, no
@@ -748,21 +962,28 @@ it did not deliver its own list on its own schedule.
    `Rejected` — **5 invoices, PKR 202,094,220**, which is A03/A04 in full. The
    value family reaches four of them from the invoice side alone; the join is what
    makes it the finding. This is E5's territory and it is the biggest thing left.
-2. **A03r — the requisition side.** `REQUISITION_STATUS = Rejected` (4 of 112) is
-   nominated on five frames and taken on none. The 158.0M sits there.
+2. ~~**A03r — the requisition side.**~~ **Closed by E4.** It was nominated on
+   five frames and taken on none because taking was a model decision; the
+   register commits it. 4 of 112, 158.0M.
 3. **Single-sidedness is now the dominant loss channel.** At run 6, 33 of 38
    removed proposals were dropped for reading one side of a joined frame, against
    only 5 for repetition. Several read like real tests. Worth measuring before
    assuming the rule is right.
 4. **Confirm the disclosure fix on a live run** (§7.3, fourth item).
-5. **Land the scorer as a test** so §7.2 regenerates rather than being rebuilt by
-   hand — it has been rebuilt by hand three times and was wrong once.
+5. ~~**Land the scorer as a test**~~ **Done** — `backend/tests/eda_answer_key.py`.
+   It reproduces §7.2's run-6 column exactly and pins `pro4` at 19, so the next
+   run is scored rather than read.
 
 Two items outside the E-series:
 
-- **The memo failure.** Four distinct modes across five runs, then `completed` at
-  run 6 after commit `bd3e00d` rewrote the summary worker. Watch rather than fix;
-  E4 inherits this worker.
+- **The memo failure.** Diagnosed at last — §7.8. `bd3e00d` fixed what the model
+  writes and could not reach two defects in what the application reads: a
+  forced-tool extractor that discarded a duplicate submission rather than taking
+  the first, and a marker/`procedures` redundancy rule that a long emission
+  breaks by construction. Both fixed, unverified on a live run. Note also that
+  the memo is now the *most expensive* turn in the pipeline — 100–160s per call
+  at ~113k prompt tokens, 35% of run 8's wall clock and 69% of run 9's — because
+  E4 removed the definition turns that used to dwarf it.
 - **Route tie-breaking is arbitrary (§6.5).** Partly overtaken: identity now
   distinguishes routes rather than collapsing them, so an arbitrary tie-break no
   longer silently deletes the better answer. The *choice* of which single route to
@@ -789,8 +1010,13 @@ stating the invariant direction in the nomination rather than for loosening the
 gate. Note also that `referential` is deliberately *not* saturation-sensitive: A30
 is a legitimate 96-of-118 finding, and a blanket rule would delete it.
 
-**One reading turn is a single point of failure.** Unchanged and untested — E4 is
-not built.
+**One reading turn is a single point of failure.** *Answered structurally, still
+untested in the field.* E4 is built, and the register is additive by default
+precisely because of this risk: the turn may add freely and subtract only with a
+written reason, so a reading that fails after its repair attempt costs the run
+its judgment and none of its evidence. Measured, the floor that survives such a
+failure is 18 of 28 items (§7.5). What remains untested is the turn itself on a
+live provider — no run has yet exercised it.
 
 **Combinatorics.** Unchanged. At 84 columns the sweep costs seconds; 500 columns
 is still untested.

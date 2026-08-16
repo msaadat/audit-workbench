@@ -13,9 +13,17 @@ action DAG:
 ``data.relationships_inferred`` diagnoses table relationships from deterministic
 local Polars evidence, ``data.join_utility_ready`` selects the relationships
 that support a concrete audit hypothesis, ``data.joins_ready`` materializes
-only those selected joins, ``analysis.definitions_ready`` proposes rerunnable analysis
-specs from declared metadata context, and ``analysis.executed`` runs them
-locally and records a bounded result contract.
+only those selected joins, ``analysis.register_ready`` reads every frame at once
+and settles the ordered assertion register, ``analysis.definitions_ready``
+proposes rerunnable analysis specs for the assertions the register could not
+already state as a measured spec, and ``analysis.executed`` runs them locally
+and records a bounded result contract.
+
+``analysis.register_ready`` is the only capability in this graph whose model
+turn is optional to its own outcome. Its floor is the deterministic sweep, so a
+run whose reading turn is skipped or fails still holds a complete, committable
+register — which is what makes one turn over the whole engagement safe to
+depend on rather than a single point of failure.
 
 The generic ``WorkflowRunner`` never imports this module — it receives a
 capability registry by composition. Only the analysis-domain composition in the
@@ -61,7 +69,8 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "data.relationships_inferred": (),
     "data.join_utility_ready": ("data.relationships_inferred",),
     "data.joins_ready": ("data.join_utility_ready",),
-    "analysis.definitions_ready": ("data.joins_ready",),
+    "analysis.register_ready": ("data.joins_ready",),
+    "analysis.definitions_ready": ("analysis.register_ready",),
     "analysis.executed": ("analysis.definitions_ready",),
     "analysis.summarized": ("analysis.executed",),
 }

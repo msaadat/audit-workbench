@@ -197,6 +197,7 @@ class AuditWorkflowExecution(ActionRunner):
             "documents.analysis_generated",
             "data.relationships_inferred",
             "data.joins_ready",
+            "analysis.register_ready",
             "analysis.definitions_ready",
             "analysis.executed",
             "planning.context_ready",
@@ -1350,7 +1351,8 @@ _PARTIAL_DEPENDENCIES = {
     # deliberately *not* partial is ``data.joins_ready`` in
     # ``data.join_utility_ready``: a pair whose gate never answered has nothing
     # admitting it, and materializing it anyway would bypass the gate outright.
-    "analysis.definitions_ready": {"data.joins_ready"},
+    "analysis.register_ready": {"data.joins_ready"},
+    "analysis.definitions_ready": {"analysis.register_ready"},
     "analysis.executed": {"analysis.definitions_ready"},
     # One procedure that would not execute must not withhold the memo. A
     # summary written over the results that did land is the useful artifact,
@@ -1484,6 +1486,10 @@ def build_audit_workflow_runner(
         "data.join_utility_ready": (
             analysis_adapter._bind_join_utility,
             {"worker": "analysis.join_utility", "executor": None},
+        ),
+        "analysis.register_ready": (
+            analysis_adapter._bind_register,
+            {"worker": "analysis.reading", "executor": "analysis.register"},
         ),
         "analysis.definitions_ready": (
             analysis_adapter._bind_definitions,
@@ -1632,6 +1638,7 @@ def build_audit_workflow_runner(
             if capability.id in {
                 "data.relationships_inferred",
                 "data.joins_ready",
+                "analysis.register_ready",
                 "analysis.definitions_ready",
                 "analysis.executed",
             }

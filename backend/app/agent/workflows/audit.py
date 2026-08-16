@@ -60,6 +60,9 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "data.join_utility_ready"
     ),
     "data.joins_ready": analysis_workflow.dependencies("data.joins_ready"),
+    "analysis.register_ready": analysis_workflow.dependencies(
+        "analysis.register_ready"
+    ),
     "analysis.definitions_ready": analysis_workflow.dependencies(
         "analysis.definitions_ready"
     ),

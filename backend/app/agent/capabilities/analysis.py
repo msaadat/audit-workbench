@@ -32,10 +32,18 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "data.relationships_inferred",
     "data.join_utility_ready",
     "data.joins_ready",
+    "analysis.register_ready",
     "analysis.definitions_ready",
     "analysis.executed",
     "analysis.summarized",
 )
+
+# The register is one run-local artifact over the whole scope, so it takes one
+# reference and one unit. Like the relationship evidence beside it, it is
+# durable on the run record rather than in the workspace: it is a recomputable
+# reading of frames that already exist, not an engagement artifact an auditor
+# owns.
+ANALYSIS_REGISTER_REF = "analysis_register:current"
 
 # The memo is a single workspace artifact, so it takes exactly one reference.
 ANALYSIS_SUMMARY_REF = "analysis_summary:current"
@@ -532,6 +540,103 @@ def _data_joins_ready() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
+# analysis.register_ready (E4)
+# --------------------------------------------------------------------------- #
+def _register_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Settled once the frames in scope already carry the analyses it writes.
+
+    The register is where this graph now spends its one cross-cutting turn, so
+    the rule that used to keep ``analysis_execution`` free of model turns has to
+    live here rather than on the definition stage: with every scoped frame
+    already analysed there is nothing for a reading to settle, and "bring the
+    saved analyses up to date" must stay a request that bills nothing.
+
+    A frame that carries no analysis is the whole trigger. That is true of a
+    fresh engagement, and of one where a new table or join has appeared since —
+    which is exactly when the register should be read again.
+    """
+    table_scope = resolve_table_scope(workspace, scope)
+    blocked = _no_tables(table_scope)
+    if blocked is not None:
+        return blocked
+    defined = {
+        str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
+    }
+    targets = definable_targets(workspace, table_scope)
+    missing = [target for target in targets if target not in defined]
+    details = {"frames": len(targets), "defined": len(defined)}
+    if not missing:
+        return Readiness("satisfied", details=details)
+    return Readiness(
+        "missing",
+        (
+            f"{counted(len(missing), 'scoped frame')} "
+            f"{verb(len(missing), 'has', 'have')} no analysis",
+        ),
+        details=details,
+    )
+
+
+def _register_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """Two units: read the map, then write down what the register decided.
+
+    Neither is per frame — reading every frame at once is the whole point, and
+    the commit is one transaction because the register is one decision. They are
+    separate units so that a reading turn which fails after its repair attempt
+    settles on its own without taking the deterministic floor down with it: the
+    commit unit then finds no persisted register, builds the default one from
+    the sweep, and writes that.
+
+    The order is the sequential barrier's, which runs a capability's units in
+    sorted unit-ID order — and ``analysis_reading`` sorts before
+    ``analysis_register``. ``test_the_reading_unit_is_ordered_before_the_commit``
+    holds that, since the names alone do not make the dependency obvious.
+    """
+    table_scope = resolve_table_scope(workspace, scope)
+    targets = definable_targets(workspace, table_scope)
+    if not targets:
+        return []
+    # Neither unit id names the frames it covers. A stage re-expands as joins
+    # land, so an id derived from the frame list becomes a *different* unit the
+    # moment a join is materialized — and the old one has already run. Measured
+    # directly: a two-table scope billed the reading turn twice, once before its
+    # join existed and once after. The register is the whole scope by
+    # definition, so like the memo beside it there is exactly one of each, named
+    # once. ``payload`` still carries the frames, which is what re-expansion
+    # legitimately updates.
+    return [
+        UnitSpec(
+            semantic_unit_id("analysis_reading"),
+            "analysis_reading",
+            "Read the whole map",
+            (ANALYSIS_REGISTER_REF,),
+            {"frames": list(targets)},
+        ),
+        UnitSpec(
+            semantic_unit_id("analysis_register"),
+            "analysis_register",
+            "Record the assertion register",
+            (ANALYSIS_REGISTER_REF,),
+            {"frames": list(targets)},
+        ),
+    ]
+
+
+def _analysis_register_ready() -> Capability:
+    return Capability(
+        "analysis.register_ready",
+        "analysis_register",
+        "Assertion register",
+        "analysis_register",
+        analysis_workflow.dependencies("analysis.register_ready"),
+        _register_ready,
+        _register_units,
+        context="analysis.reading",
+        invalidate_on=("tables", "joins"),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # analysis.definitions_ready (P8.7 / P8.8)
 # --------------------------------------------------------------------------- #
 def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
@@ -561,12 +666,18 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 
 def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per definable frame; whether it spends a turn is the binder's.
+
+    This deliberately no longer filters on "the frame already has an analysis".
+    The register commits every measured nomination before this stage begins, so
+    that test now answers yes for every frame that measured anything and would
+    expand no unit at all. What the filter was protecting against — re-deriving
+    definitions a previous run already wrote — is the binder's job now, and it
+    can make the distinction this cannot: which of a frame's analyses the
+    register wrote, and which a definition turn did.
+    """
     table_scope = resolve_table_scope(workspace, scope)
-    defined = {
-        str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
-    }
     joins = {str(item.get("name")) for item in workspace.joins}
-    forced = _forced(scope)
     return [
         UnitSpec(
             semantic_unit_id("analysis_definitions", target),
@@ -576,7 +687,6 @@ def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             {"target": target},
         )
         for target in definable_targets(workspace, table_scope)
-        if forced or target not in defined
     ]
 
 
@@ -730,6 +840,11 @@ def _analysis_summarized() -> Capability:
 ANALYSIS_SCOPE_CHECKPOINT = "analysis_scope"
 STAGE_CHECKPOINTS: dict[str, str] = {
     "data.relationships_inferred": ANALYSIS_SCOPE_CHECKPOINT,
+    # The register reads every frame in scope at once and settles what the run
+    # will test, so it is now the boundary a guessed scope does the most damage
+    # at. Definitions keeps its declaration because a run may reuse the
+    # register; the handler is idempotent and asks at most once.
+    "analysis.register_ready": ANALYSIS_SCOPE_CHECKPOINT,
     "analysis.definitions_ready": ANALYSIS_SCOPE_CHECKPOINT,
 }
 
@@ -738,6 +853,7 @@ _BUILDERS = {
     "data.relationships_inferred": _data_relationships_inferred,
     "data.join_utility_ready": _data_join_utility_ready,
     "data.joins_ready": _data_joins_ready,
+    "analysis.register_ready": _analysis_register_ready,
     "analysis.definitions_ready": _analysis_definitions_ready,
     "analysis.executed": _analysis_executed,
     "analysis.summarized": _analysis_summarized,
@@ -752,8 +868,10 @@ def capabilities() -> tuple[Capability, ...]:
 
 __all__ = [
     "AGENT_OWNER",
+    "ANALYSIS_REGISTER_REF",
     "ANALYSIS_SCOPE_CHECKPOINT",
     "ANALYSIS_SUMMARY_REF",
+    "definable_targets",
     "STAGE_CHECKPOINTS",
     "CAPABILITY_IDS",
     "MAX_SCOPE_TABLES",

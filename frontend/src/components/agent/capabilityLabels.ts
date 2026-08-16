@@ -17,6 +17,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'data.relationships_inferred': 'Table relationships',
   'data.join_utility_ready': 'Join utility selection',
   'data.joins_ready': 'Materialized joins',
+  'analysis.register_ready': 'Assertion register',
   'analysis.definitions_ready': 'Analysis definitions',
   'analysis.executed': 'Analysis results',
   'analysis.summarized': 'Analysis summary',

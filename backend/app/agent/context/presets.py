@@ -1125,6 +1125,88 @@ PRESETS.register(
 )
 PRESETS.register(
     ContextPreset(
+        preset_id="analysis.reading",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="frame_map",
+                    source_type="tables",
+                    required=True,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # Every scoped frame's columns, types, origins, root and
+                    # route. Holding all of them at once is the capability's
+                    # reason to exist, so this is the one analysis source sized
+                    # for the whole engagement rather than for one frame.
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=24, max_characters=60_000),
+                ),
+                ContextSource(
+                    id="nominations",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # The deduplicated register floor: a runnable spec, the
+                    # counts it produced, and the reference a decision names it
+                    # by. Aggregate counts and column names, exactly as the
+                    # per-frame probe source carries them.
+                    representations=(ContextRepresentation("table_aggregate"),),
+                    budget=ContextBudget(max_items=80, max_characters=48_000),
+                ),
+                ContextSource(
+                    id="relationship_map",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # Unpruned. A relationship that was rejected is part of the
+                    # map the reading turn is asked to read: the pairs whose
+                    # keys mostly fail to match are where the unreconciled
+                    # populations are.
+                    representations=(ContextRepresentation("table_aggregate"),),
+                    budget=ContextBudget(max_items=40, max_characters=24_000),
+                ),
+                ContextSource(
+                    id="join_hypotheses",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=16, max_characters=12_000),
+                ),
+                ContextSource(
+                    id="value_domains",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("value_domain"),),
+                    budget=ContextBudget(max_items=40, max_characters=16_000),
+                ),
+                ContextSource(
+                    id="analytics_registry",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=20_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=201, max_characters=180_000),
+            # The same class as ``analysis.definitions`` and no wider. Breadth
+            # here is across frames, not down into rows: twenty column
+            # inventories disclose what one column inventory discloses, twenty
+            # times. ``allow_table_rows`` remains denied and ``table_rows``
+            # remains structurally rejected at the resolver boundary.
+            privacy=ContextPrivacy(
+                allow_document_text=True,
+                allow_table_metadata=True,
+                allow_table_profiles=True,
+                allow_table_aggregates=True,
+                allow_value_domains=True,
+            ),
+        ),
+    )
+)
+PRESETS.register(
+    ContextPreset(
         preset_id="analysis.definitions",
         spec=ContextSpec(
             sources=(

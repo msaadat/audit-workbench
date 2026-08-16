@@ -95,6 +95,33 @@ def _analysis_definitions_response(user: str) -> dict:
     }
 
 
+def _analysis_reading_response(user: str) -> dict:
+    """Settle the register: keep every measurement, add one assertion per frame.
+
+    Keeping is the default the contract already guarantees, so an empty answer
+    would be valid — and would leave the definition worker with nothing to do on
+    fixtures whose frames are too small for the sweep to nominate anything. One
+    assertion per frame reproduces the per-frame turn the definition tests are
+    written against, which is what a real reading turn does for the frames it
+    has something to say about.
+    """
+    payload = json.loads(user.split("\n\nYour previous response")[0])
+    added = []
+    for frame in payload.get("FRAME MAP") or []:
+        columns = [column["name"] for column in frame.get("columns") or []]
+        if not columns:
+            continue
+        added.append(
+            {
+                "frame": frame["table"],
+                "columns": columns[:1],
+                "assertion": f"{frame['table']} carries no repeated {columns[0]}.",
+                "why": "A reused key is the shape a double posting takes.",
+            }
+        )
+    return {"keep": [], "add": added[:12], "decline": [], "unanswerable": []}
+
+
 def _join_utility_response(user: str) -> dict:
     """Retain the first route to each table pair and reject its competitors.
 
@@ -265,6 +292,7 @@ class FakeAgentLLM:
         # pipeline's planning/rules/analyses/dashboard/summary scripts went
         # with it in Phase 12.
         "agent:join_utility": _join_utility_response,
+        "agent:analysis_reading": _analysis_reading_response,
         "agent:analysis_definitions": _analysis_definitions_response,
         "agent:analysis_summary": _analysis_summary_response,
         # A decline is a complete answer and needs no knowledge of a fixture's

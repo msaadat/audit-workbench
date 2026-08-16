@@ -269,13 +269,68 @@ def test_superseded_by_is_not_model_authored():
     tool = analysis_worker._join_utility_submission_tool(
         _request(_catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR]))
     )
+    decisions = tool["function"]["parameters"]["properties"]["decisions"]
+    entry = next(iter(decisions["properties"].values()))
     reject_branch = next(
         branch
-        for branch in tool["function"]["parameters"]["properties"]["decisions"]["items"]["oneOf"]
+        for branch in entry["oneOf"]
         if branch["properties"]["decision"]["enum"] == ["reject"]
     )
     assert "superseded_by" not in reject_branch["properties"]
     assert "superseded_by" not in reject_branch["required"]
+
+
+def test_a_repeated_decision_is_unrepresentable_rather_than_rejected():
+    """The failure that cost a whole engagement its joins.
+
+    Asked for sixteen decisions as an array with a ref enum, a model returned
+    sixteen entries covering six distinct references — four of them answered
+    four times over. The enum stopped it inventing a reference and could not
+    stop it repeating one, both attempts failed the duplicate rule, and the gate
+    took every join down with it: the run analysed six base tables in isolation.
+
+    Keyed by reference, the same mistake cannot be expressed. Every candidate is
+    a required key, nothing else is permitted, and an object has each key once.
+    """
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_STAFF_REQUESTER, _ORDERS_TO_VENDOR])
+    decisions = analysis_worker._join_utility_submission_tool(_request(catalog))[
+        "function"
+    ]["parameters"]["properties"]["decisions"]
+
+    assert decisions["type"] == "object"
+    assert set(decisions["properties"]) == {
+        item["ref"] for item in catalog["candidates"]
+    }
+    assert sorted(decisions["required"]) == sorted(decisions["properties"])
+    assert decisions["additionalProperties"] is False
+    # No ``ref`` inside a decision either: a decision cannot answer for a
+    # candidate other than the one it is filed under.
+    for entry in decisions["properties"].values():
+        for branch in entry["oneOf"]:
+            assert "ref" not in branch["properties"]
+
+
+def test_the_keyed_decision_object_is_normalized_back_to_the_validator_shape():
+    definition = WORKERS.get(analysis_worker.JOIN_UTILITY_WORKER_ID)
+    frozen = definition.response_schema.validate(
+        json.dumps(
+            {
+                "decisions": {
+                    _ORDERS_TO_STAFF["ref"]: {
+                        "decision": "retain",
+                        "rationale": "Approval authority spans both tables.",
+                        "hypothesis": "Every approver resolves to a staff record.",
+                        "columns": ["orders.approved_by", "staff.staff_id"],
+                        "requires": ["orders", "staff"],
+                    }
+                }
+            }
+        )
+    )
+    assert [dict(item)["ref"] for item in frozen["decisions"]] == [
+        _ORDERS_TO_STAFF["ref"]
+    ]
+    assert dict(frozen["decisions"][0])["decision"] == "retain"
 
 
 def test_a_valid_decision_survives_the_freeze_between_schema_and_validator():

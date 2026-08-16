@@ -40,6 +40,7 @@ from .model import (
 
 JOIN_EXECUTOR_ID = "analysis.join"
 DEFINITIONS_EXECUTOR_ID = "analysis.definitions"
+REGISTER_EXECUTOR_ID = "analysis.register"
 EXECUTION_EXECUTOR_ID = "analysis.execution"
 SUMMARY_EXECUTOR_ID = "analysis.summary"
 PROMOTION_EXECUTOR_ID = "analysis.promotion"
@@ -600,72 +601,12 @@ def execute_analysis_definitions(
 
     def commit(fresh: Workspace) -> dict:
         state["revision_before"] = fresh.revision
-        written: list[dict] = []
-        preserved: list[str] = []
-        covered: list[str] = []
-        creates: list[dict] = []
-        for definition in accepted:
-            semantic = str(definition["semantic_id"])
-            existing = _existing_analysis(fresh, semantic)
-            if existing is None:
-                creates.append(definition)
-                continue
-            if (
-                existing.get("created_by") != "agent"
-                and not target.allow_auditor_overwrite
-            ):
-                preserved.append(str(existing["id"]))
-                continue
-            if str(existing.get("table") or "") != str(definition["table"]):
-                # Identity is provenance-based, so this computation is already
-                # saved against another frame built from the same tables. The
-                # analysis stays where it is: rebinding it here would move a
-                # result the auditor has already seen onto a different frame
-                # without adding anything, since both frames compute it from
-                # the same columns.
-                covered.append(str(existing["id"]))
-                continue
-            existing.update(
-                {
-                    "title": definition["title"],
-                    "kind": definition["kind"],
-                    "table": definition["table"],
-                    # Identity is the semantic id, derived from the kind, the
-                    # spec, and the tables its columns come from — a match here
-                    # means this spec is the one already stored, so there is no
-                    # viz to refresh: only a spec that actually changed would
-                    # need that, and a changed spec never matches an existing
-                    # semantic id, it creates a new analysis instead.
-                    "spec": dict(definition.get("spec") or {}),
-                    "note": str(definition.get("note") or ""),
-                    **(
-                        {"outcome_policy": dict(definition["outcome_policy"])}
-                        if isinstance(definition.get("outcome_policy"), Mapping)
-                        else {}
-                    ),
-                    "semantic_id": semantic,
-                    "agent_run_id": target.run_id,
-                    "created_by": "agent",
-                }
-            )
-            existing.pop("last_result", None)
-            written.append({**existing, "action": "updated"})
-        if not written and not creates:
-            raise AnalysisEditPreserved(
-                ANALYSIS_COVERED_ELSEWHERE if covered else AUDITOR_ANALYSIS_PRESERVED
-            )
-        for definition in creates:
-            semantic = str(definition["semantic_id"])
-            entry = fresh.add_analysis(
-                {
-                    **{key: definition.get(key) for key in ANALYSIS_FIELDS},
-                    "id": analysis_stable_id(semantic),
-                    "semantic_id": semantic,
-                    "agent_run_id": target.run_id,
-                    "source": "ai",
-                }
-            )
-            written.append({**entry, "action": "created"})
+        written, preserved, covered = _write_definitions(
+            fresh,
+            accepted,
+            run_id=target.run_id,
+            allow_auditor_overwrite=target.allow_auditor_overwrite,
+        )
         state["preserved"] = preserved
         state["covered"] = covered
         return written
@@ -684,6 +625,254 @@ def execute_analysis_definitions(
         preserved=list(state.get("preserved") or []),
         covered=list(state.get("covered") or []),
         dropped=dropped,
+    )
+
+
+def _write_definitions(
+    fresh: Workspace,
+    accepted: list[dict],
+    *,
+    run_id: str,
+    allow_auditor_overwrite: bool,
+) -> tuple[list[dict], list[str], list[str]]:
+    """Create or update each definition, honouring the auditor-edit boundary.
+
+    Shared by the per-frame definition commit and the register commit. The two
+    differ only in where their definitions came from and how many frames they
+    span; what it means to write one — identity is the semantic id, an
+    auditor-owned record is preserved, a computation already saved against a
+    sibling frame stays where it is — is one rule and lives here.
+    """
+    written: list[dict] = []
+    preserved: list[str] = []
+    covered: list[str] = []
+    creates: list[dict] = []
+    for definition in accepted:
+        semantic = str(definition["semantic_id"])
+        existing = _existing_analysis(fresh, semantic)
+        if existing is None:
+            creates.append(definition)
+            continue
+        if existing.get("created_by") != "agent" and not allow_auditor_overwrite:
+            preserved.append(str(existing["id"]))
+            continue
+        if str(existing.get("table") or "") != str(definition["table"]):
+            # Identity is provenance-based, so this computation is already
+            # saved against another frame built from the same tables. The
+            # analysis stays where it is: rebinding it here would move a
+            # result the auditor has already seen onto a different frame
+            # without adding anything, since both frames compute it from
+            # the same columns.
+            covered.append(str(existing["id"]))
+            continue
+        existing.update(
+            {
+                "title": definition["title"],
+                "kind": definition["kind"],
+                "table": definition["table"],
+                # Identity is the semantic id, derived from the kind, the
+                # spec, and the tables its columns come from — a match here
+                # means this spec is the one already stored, so there is no
+                # viz to refresh: only a spec that actually changed would
+                # need that, and a changed spec never matches an existing
+                # semantic id, it creates a new analysis instead.
+                "spec": dict(definition.get("spec") or {}),
+                "note": str(definition.get("note") or ""),
+                **(
+                    {"outcome_policy": dict(definition["outcome_policy"])}
+                    if isinstance(definition.get("outcome_policy"), Mapping)
+                    else {}
+                ),
+                "semantic_id": semantic,
+                "agent_run_id": run_id,
+                "created_by": "agent",
+            }
+        )
+        existing.pop("last_result", None)
+        written.append({**existing, "action": "updated"})
+    if not written and not creates:
+        raise AnalysisEditPreserved(
+            ANALYSIS_COVERED_ELSEWHERE if covered else AUDITOR_ANALYSIS_PRESERVED
+        )
+    for definition in creates:
+        semantic = str(definition["semantic_id"])
+        entry = fresh.add_analysis(
+            {
+                **{key: definition.get(key) for key in ANALYSIS_FIELDS},
+                "id": analysis_stable_id(semantic),
+                "semantic_id": semantic,
+                "agent_run_id": run_id,
+                "source": "ai",
+            }
+        )
+        written.append({**entry, "action": "created"})
+    return written, preserved, covered
+
+
+@dataclass
+class AnalysisRegisterExecutorTarget:
+    """Mutable target for the register's own commit, across every frame.
+
+    Unlike the definition target this one is not bound to a frame: the register
+    is settled over the whole map at once, and each of its entries already
+    names the frame its computation was measured on.
+    """
+
+    workspace: Workspace
+    run_id: str
+    frames: tuple[str, ...]
+    allow_auditor_overwrite: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Analysis register target requires a Workspace.")
+        if not str(self.run_id or "").strip():
+            raise ValueError("Analysis register target requires a run_id.")
+        self.run_id = str(self.run_id).strip()
+        self.frames = tuple(
+            str(name).strip() for name in self.frames if str(name or "").strip()
+        )
+        if not self.frames:
+            raise ValueError("Analysis register target requires at least one frame.")
+        if not isinstance(self.allow_auditor_overwrite, bool):
+            raise ValueError("allow_auditor_overwrite must be a boolean.")
+
+
+def execute_analysis_register(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Commit every kept register entry, across every frame, in one transaction.
+
+    The entries are not proposals in the sense the definition executor's are.
+    Each was run by the sweep before this stage existed, so there is no spec to
+    validate against a schema and no generated code to try. What is still worth
+    doing is the informativeness screen: a nomination measured on one frame is
+    re-run here against the frame as it now stands, and one that turns out to
+    flag its whole population establishes nothing about any row in it and is
+    dropped with its reason recorded — the same rule, and the same code, that
+    governs a model-authored proposal.
+
+    One transaction rather than one per frame because the register is one
+    decision. A crash halfway through would otherwise leave an engagement whose
+    register says forty-three things and whose workspace holds nineteen of them.
+    """
+    if not isinstance(raw_target, AnalysisRegisterExecutorTarget):
+        raise WorkspaceError(
+            "Analysis register executor requires an AnalysisRegisterExecutorTarget."
+        )
+    target = raw_target
+    raw = request.proposal.get("analyses")
+    items = list(raw) if isinstance(raw, (list, tuple)) else []
+    accepted: list[dict] = []
+    for entry in items:
+        if not isinstance(entry, Mapping):
+            continue
+        definition = {
+            key: _plain_json(entry[key]) for key in ANALYSIS_FIELDS if key in entry
+        }
+        semantic = str(entry.get("semantic_id") or "").strip()
+        if not semantic:
+            raise WorkspaceError("A register entry has no semantic id.")
+        if not str(definition.get("table") or "").strip():
+            raise WorkspaceError("A register entry names no frame.")
+        if not str(definition.get("title") or "").strip():
+            raise WorkspaceError("A register entry has no title.")
+        definition["semantic_id"] = semantic
+        accepted.append(definition)
+    if not accepted:
+        raise WorkspaceError("The assertion register is empty.")
+    accepted, uninformative = _screen_uninformative_definitions(
+        target.workspace, accepted
+    )
+    if not accepted:
+        raise WorkspaceError(
+            f"{NO_INFORMATIVE_ANALYSIS}: every register entry was re-run and "
+            "established nothing — " + "; ".join(uninformative)
+        )
+    dropped = [
+        *(str(item) for item in request.proposal.get("declined") or []),
+        *uninformative,
+    ]
+    state: dict[str, object] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        written, preserved, covered = _write_definitions(
+            fresh,
+            accepted,
+            run_id=target.run_id,
+            allow_auditor_overwrite=target.allow_auditor_overwrite,
+        )
+        state["preserved"] = preserved
+        state["covered"] = covered
+        return written
+
+    committed = mutate(
+        target.workspace, commit, expected_parents=request.expected_parents
+    )
+    target.workspace = committed.workspace
+    return _definitions_result(
+        request,
+        committed.workspace,
+        revision_before=int(state["revision_before"]),
+        written=list(committed.value),
+        preserved=list(state.get("preserved") or []),
+        covered=list(state.get("covered") or []),
+        dropped=dropped,
+    )
+
+
+def reconcile_analysis_register(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    """Classify an interrupted register commit.
+
+    Writing analyses does not change the guarded frames, so a parent match
+    cannot distinguish "not yet applied" from "applied". Identity does: every
+    entry carries a semantic id, and the commit is complete exactly when each
+    of them is present and stamped with this run.
+    """
+    if not isinstance(raw_target, AnalysisRegisterExecutorTarget):
+        raise WorkspaceError(
+            "Analysis register executor requires an AnalysisRegisterExecutorTarget."
+        )
+    raw = request.proposal.get("analyses")
+    items = [item for item in (raw or ()) if isinstance(item, Mapping)]
+    wanted = {
+        str(item.get("semantic_id") or "").strip()
+        for item in items
+        if str(item.get("semantic_id") or "").strip()
+    }
+    current = Workspace(raw_target.workspace.root)
+    present = {
+        str(item.get("semantic_id") or "")
+        for item in current.analyses
+        if str(item.get("agent_run_id") or "") == raw_target.run_id
+    }
+    # A partial match is ``not_applied``: the commit is one transaction, so it
+    # either landed whole or did not land, and re-running it is idempotent by
+    # semantic id. Screening can legitimately drop entries between the proposal
+    # and the commit, which is why the test is coverage rather than equality.
+    if not wanted or not wanted <= present:
+        return ExecutorReconciliation("not_applied")
+    if current.revision <= request.expected_revision:
+        return ExecutorReconciliation("not_applied")
+    raw_target.workspace = current
+    saved = [
+        item
+        for item in current.analyses
+        if str(item.get("semantic_id") or "") in wanted
+    ]
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_definitions_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            written=[{**item, "action": "created"} for item in saved],
+            preserved=[],
+        ),
+        reason="The assertion register is already committed.",
     )
 
 
@@ -1243,6 +1432,12 @@ DEFINITIONS_EXECUTOR = ExecutorDefinition(
     implementation=execute_analysis_definitions,
     reconciler=reconcile_analysis_definitions,
 )
+REGISTER_EXECUTOR = ExecutorDefinition(
+    executor_id=REGISTER_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_analysis_register,
+    reconciler=reconcile_analysis_register,
+)
 EXECUTION_EXECUTOR = ExecutorDefinition(
     executor_id=EXECUTION_EXECUTOR_ID,
     concurrency=ExecutorConcurrency("parent_hashes"),
@@ -1259,6 +1454,7 @@ SUMMARY_EXECUTOR = ExecutorDefinition(
 
 EXECUTORS.register(JOIN_EXECUTOR)
 EXECUTORS.register(DEFINITIONS_EXECUTOR)
+EXECUTORS.register(REGISTER_EXECUTOR)
 EXECUTORS.register(EXECUTION_EXECUTOR)
 EXECUTORS.register(SUMMARY_EXECUTOR)
 EXECUTORS.register(PROMOTION_EXECUTOR)

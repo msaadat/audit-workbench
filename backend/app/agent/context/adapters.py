@@ -2013,12 +2013,17 @@ def analysis_relationship_candidates(
     recorded on the run. Nothing is re-derived here and no relationship fact is
     ever asked of the model; this only exposes the aggregate evidence for the
     joins the target participates in.
+
+    An empty ``target`` asks for the whole map rather than for nothing. That is
+    what the reading turn needs: the relationships that were *not* materialized
+    are as much a part of the map as the ones that were, and a pair whose keys
+    mostly fail to match is exactly where an unreconciled population lives.
     """
     candidates = []
     for record in relationships or ():
         left = str(record.get("left") or "")
         right = str(record.get("right") or "")
-        if target not in {left, right}:
+        if target and target not in {left, right}:
             continue
         evidence = {
             "scope": "relationship",
@@ -2103,6 +2108,125 @@ def join_utility_scope(
         ),),
         "join_tables": schema_candidates,
     })
+
+
+READING_FRAMES_SOURCE_ID = "frame_map"
+READING_NOMINATIONS_SOURCE_ID = "nominations"
+READING_RELATIONSHIP_SOURCE_ID = "relationship_map"
+READING_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
+READING_DOMAIN_SOURCE_ID = "value_domains"
+READING_REGISTRY_SOURCE_ID = "analytics_registry"
+
+
+def analysis_reading_scope(
+    workspace: Workspace,
+    frames: Iterable[str],
+    *,
+    nominations: Iterable[Mapping[str, object]] = (),
+    relationships: Iterable[Mapping[str, object]] | None = None,
+    hypotheses: Iterable[Mapping[str, object]] = (),
+    value_domains: Iterable[Mapping[str, object]] = (),
+    analytics_registry: object = None,
+) -> ContextScope:
+    """The whole map, once: every frame's columns and every measured nomination.
+
+    This is the one analysis bundle that is not frame-scoped, and the breadth is
+    the point. A turn holding every frame's column inventory can say what no
+    per-frame turn structurally can — that no field anywhere in the engagement
+    records a competitive bid — and a turn holding every nomination at once can
+    decide which frame a measurement belongs on instead of leaving that to
+    whichever frame happened to run first.
+
+    The privacy class is unchanged from the per-frame definition bundle it sits
+    beside: schemas, cached profiles' column names and types, aggregate counts,
+    and low-cardinality value vocabularies. Nothing here is a row, and breadth
+    across frames does not widen the class — a column inventory of twenty frames
+    discloses exactly what a column inventory of one frame discloses, twenty
+    times.
+    """
+    from ... import analytics as analytics_module
+
+    known = set(workspace.table_names())
+    scoped = [str(name) for name in frames if str(name) in known]
+    inventory = {
+        str(item.get("table")): item
+        for item in assistant.schema_brief(workspace)
+        if str(item.get("table") or "") in set(scoped) and not item.get("error")
+    }
+    frame_candidates = []
+    for name in scoped:
+        schema = inventory.get(name)
+        if schema is None:
+            continue
+        described = {
+            **schema,
+            "column_origins": join_diagnostics.column_origins(workspace, name),
+            "frame_root": join_diagnostics.frame_root(workspace, name),
+            "frame_route": join_diagnostics.frame_route(workspace, name),
+        }
+        frame_candidates.append(
+            ContextCandidate(
+                source_ref=f"table:{name}",
+                source=described,
+                representations={"table_metadata": described},
+                metadata={"table": name},
+                lexical_text=name,
+            )
+        )
+    registry = (
+        analytics_registry
+        if analytics_registry is not None
+        else [
+            item
+            for item in analytics_module.registry_payload()
+            if item["id"] not in ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS
+        ]
+    )
+    return ContextScope(
+        candidates={
+            READING_FRAMES_SOURCE_ID: tuple(frame_candidates),
+            # Every measured nomination in the engagement, already deduplicated
+            # and already ranked. Each carries the reference the reading turn
+            # keeps or declines it by, so a decision names a measurement rather
+            # than restating one.
+            READING_NOMINATIONS_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=f"nomination:{item.get('ref')}",
+                    source=dict(item),
+                    representations={"table_aggregate": dict(item)},
+                    metadata={
+                        "table": str(item.get("frame") or ""),
+                        "ref": str(item.get("ref") or ""),
+                    },
+                    lexical_text=str(item.get("reading") or ""),
+                )
+                for item in nominations
+            ),
+            READING_RELATIONSHIP_SOURCE_ID: analysis_relationship_candidates(
+                workspace, "", relationships
+            ),
+            READING_HYPOTHESIS_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=f"hypothesis:{item.get('ref')}",
+                    source=dict(item),
+                    representations={"current_artifact": dict(item)},
+                    metadata={"ref": str(item.get("ref") or "")},
+                    lexical_text=str(item.get("hypothesis") or ""),
+                )
+                for item in hypotheses
+            ),
+            READING_DOMAIN_SOURCE_ID: analysis_domain_candidates(value_domains),
+            READING_REGISTRY_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="registry:analytics",
+                    source=registry,
+                    representations={"current_artifact": registry},
+                    metadata={"registry": "analytics"},
+                ),
+            ),
+        },
+        selector_context={"analysis_query": " ".join(scoped)},
+    )
 
 
 def analysis_definition_scope(
@@ -3058,6 +3182,7 @@ __all__ = [
     "MAX_AGGREGATE_COLUMNS",
     "analysis_aggregate_candidates",
     "analysis_definition_scope",
+    "analysis_reading_scope",
     "analysis_relationship_candidates",
     "PROMOTION_SUBJECT_SOURCE_ID",
     "PROMOTION_RCM_SOURCE_ID",

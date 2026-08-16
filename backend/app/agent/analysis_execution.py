@@ -24,7 +24,7 @@ import uuid
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
-from . import joins as join_diagnostics, narration, probes, store, workflow
+from . import joins as join_diagnostics, narration, probes, register, store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
@@ -33,6 +33,8 @@ from .capabilities.analysis import (
     MAX_SCOPE_TABLES,
     TableScope,
     agent_analyses,
+    definable_targets,
+    frame_ref,
     pair_join,
     resolve_table_scope,
 )
@@ -40,6 +42,7 @@ from .capabilities import ANALYSIS_REGISTRY
 from .context import (
     ContextResolver,
     analysis_definition_scope,
+    analysis_reading_scope,
     join_utility_scope,
     analysis_summary_scope,
     promotion_scope,
@@ -51,6 +54,7 @@ from .executors.analysis import (
     AUDITOR_ANALYSIS_PRESERVED,
     AnalysisDefinitionExecutorTarget,
     AnalysisExecutionExecutorTarget,
+    AnalysisRegisterExecutorTarget,
     AnalysisSummaryExecutorTarget,
     PromotionExecutorTarget,
     JoinExecutorTarget,
@@ -98,6 +102,7 @@ class AnalysisWorkflowExecution(BaseRunner):
         "relationships": "Table relationships",
         "join_utility": "Join utility selection",
         "joins": "Materialized joins",
+        "analysis_register": "Assertion register",
         "analysis_definitions": "Analysis definitions",
         "analysis_execution": "Analysis results",
         "analysis_summary": "Analysis summary",
@@ -122,17 +127,25 @@ class AnalysisWorkflowExecution(BaseRunner):
     def _refresh_dynamic_limits(self) -> None:
         """Size the model budget from the frames actually in scope.
 
-        Two analysis capabilities are model-backed: definitions runs one turn
-        per target frame, and the summary runs exactly one more for the whole
-        workspace. The budget follows the resolved scope rather than a fixed
-        constant, with headroom for the summary's own repair turn.
+        Three analysis capabilities are model-backed. The register spends one
+        turn over the whole scope, definitions spends one per frame the register
+        placed an assertion on, and the summary spends one more for the whole
+        workspace. The budget still scales with the scope rather than with the
+        register, because it is refreshed before every stage and the register
+        does not exist when the first refresh runs — sizing it on the frames is
+        the bound that holds at every point in the run.
+
+        The register's own turn is the largest single prompt in the graph: it
+        carries every frame's columns and every measured nomination at once. It
+        is charged the same way as any other turn, and the token allowance below
+        is per-turn headroom rather than a per-turn expectation.
         """
         table_scope = self.scope()
         targets = max(1, len(table_scope.targets))
-        # Two additional bounded turns select useful relationships before the
-        # per-frame definition turns begin: the gate runs once for the whole
-        # scope, and a repair turn is charged like any other model call.
-        calculated = 14 + 2 * targets
+        # Bounded turns that are not per frame: the join-utility gate, the
+        # register's reading turn, the memo, and a repair turn for each, all
+        # charged like any other model call.
+        calculated = 16 + 2 * targets
         self.update_limits(
             {
                 "max_model_turns": calculated,
@@ -295,37 +308,6 @@ class AnalysisWorkflowExecution(BaseRunner):
             if item.get("decision") == "retain" and item.get("requires")
         ]
 
-    def frame_hypotheses(self, frame: str) -> list[dict]:
-        """The retained tests this frame is the narrowest home for.
-
-        A test belongs to exactly one frame: the smallest materialized frame
-        whose lineage holds every table it reads. Preparing it anywhere wider
-        would compute it over a population the evidence was never diagnosed
-        against, and preparing it on several frames spends a turn per frame to
-        save the same analysis once.
-
-        The gate speaks about pairs of tables while a test often spans three,
-        which is why ``requires`` exists: the relationship between an approver
-        and the approval matrix is admitted on that pair, but the test needs
-        the transaction whose amount is being checked, and so lands on the
-        chained frame rather than on the two-table one that can only restate
-        the limits.
-        """
-
-        lineages = {
-            name: join_diagnostics.frame_lineage(self.ws, name)
-            for name in self.ws.table_names()
-        }
-        if frame not in lineages:
-            return []
-        owned = []
-        for item in self.retained_hypotheses():
-            required = {str(name) for name in item.get("requires") or ()}
-            covering = [name for name, lin in lineages.items() if required <= lin]
-            if covering and min(covering, key=lambda n: (len(lineages[n]), n)) == frame:
-                owned.append(item)
-        return owned
-
     def _warn_untestable_hypotheses(self) -> None:
         """Report retained tests no materialized frame can carry."""
 
@@ -415,18 +397,6 @@ class AnalysisWorkflowExecution(BaseRunner):
         cached[frame] = found
         self.save()
         return list(found)
-
-    def frame_findings(self, frame: str) -> list[dict]:
-        """This frame's nominations that measured a breach, not merely a spec.
-
-        A nomination flagging zero rows is a confirmed invariant: worth stating
-        on a frame that has earned its turn, never a reason to spend one. Only
-        the ones that separated rows from the population count as this frame
-        having something of its own to say.
-        """
-        return [
-            item for item in self.frame_probes(frame) if int(item.get("flagged") or 0) > 0
-        ]
 
     def _pair_record(self, left: str, right: str) -> dict:
         """This run's evidence for a pair, diagnosing it now if it has none.
@@ -855,6 +825,313 @@ class AnalysisWorkflowExecution(BaseRunner):
             None,
         )
 
+    # ------------------------------------------------ analysis.register_ready
+    def register_floor(self) -> tuple[register.Nomination, ...]:
+        """Every measured nomination in scope, deduplicated and ranked once.
+
+        Cached on the run for the same reason ``frame_probes`` is: the sweep is
+        deterministic and read-only, so computing it where it is needed is a
+        cost and never a divergence — but it is several Polars passes per frame
+        and the register reads every frame.
+        """
+        record = self._analysis_record()
+        cached = record.get("register_floor")
+        if cached is None:
+            table_scope = self.scope()
+            swept = {
+                frame: self.frame_probes(frame)
+                for frame in definable_targets(self.ws, table_scope)
+            }
+            floor = register.build_floor(self.ws, swept)
+            record["register_floor"] = [
+                {
+                    "ref": item.ref,
+                    "frame": item.frame,
+                    "root": item.root,
+                    "test": item.test,
+                    "params": dict(item.params),
+                    "family": item.family,
+                    "signal": item.signal,
+                    "tested": item.tested,
+                    "flagged": item.flagged,
+                    "reading": item.reading,
+                    "semantic_id": item.semantic_id,
+                    "also_on": list(item.also_on),
+                    "unreferenced": item.unreferenced,
+                }
+                for item in floor
+            ]
+            self.save()
+            return floor
+        return tuple(
+            register.Nomination(
+                ref=str(item.get("ref") or ""),
+                frame=str(item.get("frame") or ""),
+                root=str(item.get("root") or ""),
+                test=str(item.get("test") or ""),
+                params=dict(item.get("params") or {}),
+                family=str(item.get("family") or ""),
+                signal=str(item.get("signal") or ""),
+                tested=int(item.get("tested") or 0),
+                flagged=int(item.get("flagged") or 0),
+                reading=str(item.get("reading") or ""),
+                semantic_id=str(item.get("semantic_id") or ""),
+                also_on=tuple(str(name) for name in item.get("also_on") or ()),
+                unreferenced=bool(item.get("unreferenced")),
+            )
+            for item in cached
+        )
+
+    def assertion_register(self) -> register.Register:
+        """The register this run settled, or the deterministic floor if none.
+
+        A run whose reading turn never completed is not a run without a
+        register. It is a run whose register is exactly what was measured, and
+        that is a complete answer — every nomination, kept under the name its
+        own measurement derives.
+        """
+        stored = self._analysis_record().get("register")
+        if stored is not None:
+            return register.from_payload(stored)
+        return register.default_register(self.register_floor())
+
+    def _store_register(self, settled: register.Register) -> None:
+        self._analysis_record()["register"] = settled.payload()
+        self.save()
+
+    def _bind_register(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Dispatch this capability's two unit kinds to their own boundaries."""
+        self.ws = subject
+        if str(unit.get("kind") or "") == "analysis_register":
+            return self._commit_register(capability, unit)
+        return self._read_the_map(capability, unit)
+
+    def _read_the_map(
+        self, capability: workflow.Capability, unit: dict
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """One turn over every frame, settling the register. Commits nothing."""
+        floor = self.register_floor()
+        table_scope = self.scope()
+        frames = definable_targets(self.ws, table_scope)
+        if not frames:
+            return DeterministicUnitResult("skipped")
+        task = self.add_task(
+            "analysis_register", "workflow:analysis_register", "Assertion register"
+        )
+        self.task_status(task, "running")
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                analysis_reading_scope(
+                    self.ws,
+                    frames,
+                    nominations=[
+                        {
+                            "ref": item.ref,
+                            "frame": item.frame,
+                            "family": item.family,
+                            "test": item.test,
+                            "params": dict(item.params),
+                            "tested": item.tested,
+                            "flagged": item.flagged,
+                            "reading": item.reading,
+                            # Said as a field rather than left inside the prose,
+                            # because the prose did not survive contact. Where a
+                            # reference resolves in no imported key the lookup
+                            # in ``params`` is one arbitrary member of a set that
+                            # all failed identically — and two runs read that
+                            # spec, saw a buyer identifier tested against an
+                            # invoice number, correctly called it a domain
+                            # mismatch, and declined a 96-row finding for it.
+                            # The spec cannot be made to name a better master:
+                            # name affinity scores every candidate the same.
+                            # So the arbitrariness is disclosed instead.
+                            **(
+                                {
+                                    "lookup_is_arbitrary": True,
+                                    "note": (
+                                        "Every imported master was checked and "
+                                        "none matched. The lookup named in "
+                                        "params is one of them, chosen "
+                                        "arbitrarily — judge the reconciliation "
+                                        "failing everywhere, not the master."
+                                    ),
+                                }
+                                if item.unreferenced
+                                else {}
+                            ),
+                            **(
+                                {"also_measured_on": list(item.also_on)}
+                                if item.also_on
+                                else {}
+                            ),
+                        }
+                        for item in floor
+                    ],
+                    relationships=self.relationship_records(),
+                    hypotheses=self.retained_hypotheses(),
+                    value_domains=[
+                        domain
+                        for frame in frames
+                        for domain in probes.value_domains(self.ws, frame)
+                    ],
+                ),
+            )
+
+        def settle(proposal):
+            # The pipeline calls this with the validated proposal before it
+            # becomes durable. For this unit the "acceptance" is the merge: the
+            # decisions the turn made, applied over a floor that already stands.
+            settled = register.merge(floor, proposal)
+            self._store_register(settled)
+            return dict(proposal)
+
+        def on_committed(_stage, _unit, _outcome):
+            settled = self.assertion_register()
+            for item in settled.declined:
+                # A subtraction from a measured set is the only irreversible
+                # thing this turn does, so it is reported rather than left in
+                # the register for a reader to go looking for.
+                self.warn(
+                    f"Declined a measured nomination — {item.title}: {item.reason}"
+                )
+            for item in settled.unanswerable:
+                self.warn(f"This data cannot answer: {item.question} — {item.why}")
+            self.task_detail(
+                task,
+                f"{counted(len(settled.kept), 'assertion')} kept, "
+                f"{len(settled.authored)} added, {len(settled.declined)} declined.",
+            )
+            self.task_status(task, "completed")
+            return DeterministicUnitResult("succeeded")
+
+        def failure_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            # The floor is the point. A reading turn that could not be used
+            # settles here and the commit unit below writes what was measured,
+            # so the run loses the turn's judgment and none of its evidence.
+            self.warn(
+                "The assertion register was not read by the model "
+                f"({error}); the measured nominations stand as written."
+            )
+            self.task_detail(
+                task, f"Unread; {counted(len(floor), 'measured nomination')} stand."
+            )
+            self.task_status(task, "completed")
+            return ("skipped", "The register stands on its measured floor.")
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="analysis.reading",
+                executor_id=None,
+                unit_input={"parent_refs": list(unit.get("parent_refs") or [])},
+                activity={
+                    "artifact_refs": list(unit.get("parent_refs") or []),
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents={},
+                capability_definition_hash=workflow.capability_definition_hash(
+                    capability
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=None,
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=None,
+            approval_provider=settle,
+            on_committed=on_committed,
+            failure_handler=failure_handler,
+        )
+
+    def _commit_register(
+        self, capability: workflow.Capability, unit: dict
+    ) -> DeterministicUnitResult:
+        """Write every kept register entry, across every frame, in one commit.
+
+        No model runs here. Each entry is a spec the sweep already executed, so
+        what would have been a definition turn per frame — nineteen of them on
+        the baseline run, half of whose output was the model retyping specs it
+        had been handed — is a transaction.
+        """
+        settled = self.assertion_register()
+        definitions = [item.definition() for item in settled.kept]
+        if not definitions:
+            return DeterministicUnitResult("skipped")
+        task = self.add_task(
+            "analysis_register", "workflow:analysis_register", "Assertion register"
+        )
+        self.task_status(task, "running")
+        frames = tuple(
+            dict.fromkeys(str(item["table"]) for item in definitions)
+        )
+        # Guarded on the frames actually written to rather than on the unit's
+        # parent refs. The unit is named for the whole scope and carries the
+        # register reference; what a concurrent write could invalidate is a
+        # frame one of these specs reads.
+        expected = parent_hashes(
+            self.ws, [frame_ref(self.ws, name) for name in frames]
+        )
+        target = AnalysisRegisterExecutorTarget(
+            self.ws,
+            self.run["id"],
+            frames,
+            allow_auditor_overwrite=self.run["mode"] == "permission",
+        )
+        try:
+            receipt = self._commit_with_receipt(
+                capability=capability,
+                unit=unit,
+                executor_id="analysis.register",
+                proposal={
+                    "analyses": definitions,
+                    "declined": [
+                        f"{item.title}: {item.reason}" for item in settled.declined
+                    ],
+                },
+                target=target,
+                expected_parents=expected,
+            )
+        except WorkspaceConflict as error:
+            self.task_status(task, "failed", str(error))
+            return DeterministicUnitResult("conflict", error=str(error))
+        self.ws = target.workspace
+        output = receipt.output
+        for item in output.get("analyses") or []:
+            self.record_artifact(
+                "analysis",
+                str(item["id"]),
+                str(item.get("semantic_id") or ""),
+                str(item.get("action") or "created"),
+                task,
+            )
+        for preserved in output.get("preserved") or []:
+            self.warn(f"Preserved auditor-owned analysis '{preserved}'.")
+        for reason in output.get("dropped") or []:
+            self.warn(f"Register entry not saved — {reason}")
+        written = len(output.get("analyses") or [])
+        self.task_detail(
+            task,
+            f"{counted(written, 'measured procedure')} saved across "
+            f"{counted(len(frames), 'frame')}.",
+        )
+        self.task_status(task, "completed")
+        return DeterministicUnitResult("succeeded", tuple(receipt.artifact_refs))
+
     # -------------------------------------------- analysis.definitions_ready
     def _bind_definitions(
         self,
@@ -875,13 +1152,24 @@ class AnalysisWorkflowExecution(BaseRunner):
         parent_ref = str(unit["parent_refs"][0])
         target_frame = parent_ref.split(":", 1)[1]
         table_scope = self.scope()
+        settled = self.assertion_register()
+        assertions = settled.assertions_for(target_frame)
+        # Analyses the register wrote are not evidence that this unit has run.
+        # Every frame carrying a measured nomination is populated before this
+        # stage begins now, so a guard that asked only "does this frame have an
+        # analysis" would answer yes for every frame and no definition turn
+        # would ever be taken.
+        from_register = {
+            item.nomination.semantic_id for item in settled.kept
+        }
         existing = [
             item
             for item in agent_analyses(self.ws, table_scope)
             if str(item.get("table") or "") == target_frame
+            and str(item.get("semantic_id") or "") not in from_register
         ]
         if existing and workflow_scope(self.run).get("generation_mode") != "force":
-            # The frame already carries workflow-authored definitions. Units are
+            # The frame already carries definitions this unit wrote. Units are
             # durable once materialized, so a stage re-run must not spend a
             # provider turn re-deriving what already exists; only an explicit
             # regeneration does that.
@@ -889,16 +1177,27 @@ class AnalysisWorkflowExecution(BaseRunner):
                 "succeeded",
                 tuple(analysis_ref(str(item["id"])) for item in existing),
             )
-        hypotheses = self.frame_hypotheses(target_frame)
-        # No gate decision to narrow by — an interrupted run, or one that
-        # reused an earlier run's joins. Every frame keeps its turn rather than
-        # losing one silently to a rule with no input.
-        if (
-            self.retained_hypotheses()
-            and target_frame not in table_scope.tables
-            and not hypotheses
-            and not self.frame_findings(target_frame)
-        ):
+        hypotheses = [
+            {
+                "ref": item.ref,
+                "hypothesis": item.assertion,
+                "why": item.why,
+                "columns": list(item.columns),
+                "requires": [],
+            }
+            for item in assertions
+        ]
+        # The register decided what this run tests, and it placed nothing here.
+        # Every nomination this frame measured is already saved — committed by
+        # the register, not proposed by a turn — so a definition turn here would
+        # have nothing to write that is not either already durable or already
+        # declined with a reason.
+        #
+        # This replaces the old rule, which skipped a joined frame carrying no
+        # retained hypothesis and no breaching nomination of its own. That rule
+        # was guessing at the same question from one frame's vantage; the
+        # register answers it from the whole map's.
+        if not assertions:
             # A joined frame nothing was admitted to test, and nothing its own
             # columns dispute.
             #
@@ -911,20 +1210,14 @@ class AnalysisWorkflowExecution(BaseRunner):
             # allowed to look at it. Six of eighteen frames went that way in one
             # run, in three milliseconds each, among them a three-way frame
             # carrying an invoice's payment status beside its requisition's
-            # approval status: 118 rows nobody measured.
-            #
-            # So the sweep gets the last word. A hypothesis is a guess about
-            # where a test belongs; a nomination is a count of rows that already
-            # failed one. A frame with breaching rows of its own is never
-            # redundant with a frame that does not hold them.
             self.task_detail(
                 self.add_task(
                     "analysis_definitions",
                     "workflow:analysis_definitions",
                     "Analysis definitions",
                 ),
-                f"'{target_frame}' carries no test another frame does not already "
-                "hold, and nothing its own columns assert fails on it.",
+                f"The register places no assertion on '{target_frame}' that its "
+                "own measurements have not already saved.",
             )
             return DeterministicUnitResult("skipped")
         expected = parent_hashes(self.ws, [parent_ref])
@@ -952,7 +1245,13 @@ class AnalysisWorkflowExecution(BaseRunner):
                     ],
                     relationships=self.relationship_records(),
                     hypotheses=hypotheses,
-                    probe_findings=self.frame_probes(target_frame),
+                    # Deliberately no probe findings. Every nomination this
+                    # frame measured is already a saved analysis, committed by
+                    # the register before this turn was bound, and it appears
+                    # here as one of ``current_analyses``. Sending it again as a
+                    # nomination would ask the model to re-propose a spec that
+                    # already exists, which the identity check then drops — a
+                    # slot spent to produce a duplicate.
                     value_domains=probes.value_domains(self.ws, target_frame),
                 ),
             )
@@ -1516,7 +1815,12 @@ _PARTIAL_DEPENDENCIES = {
     # actually committed. Note what is deliberately absent: ``data.joins_ready``
     # is not partial in ``data.join_utility_ready``, because a join
     # materialized after the gate failed is a join nothing admitted.
-    "analysis.definitions_ready": {"data.joins_ready"},
+    # The register's own two units are partial in each other's stage: a
+    # reading turn that could not be used must not withhold the floor it was
+    # given, which is the whole safety argument for spending one turn on the
+    # whole engagement.
+    "analysis.register_ready": {"data.joins_ready"},
+    "analysis.definitions_ready": {"analysis.register_ready"},
     "analysis.executed": {"analysis.definitions_ready"},
     # One procedure that would not execute must not withhold the memo. A
     # summary written over the results that did land is the useful artifact,
@@ -1551,6 +1855,10 @@ def build_analysis_workflow_runner(
     )
     adapter.unit_pipeline = unit_pipeline
     _PIPELINE_BINDERS = {
+        "analysis.register_ready": (
+            adapter._bind_register,
+            {"worker": "analysis.reading", "executor": "analysis.register"},
+        ),
         "data.join_utility_ready": (
             adapter._bind_join_utility,
             {"worker": "analysis.join_utility", "executor": None},

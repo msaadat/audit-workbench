@@ -474,9 +474,10 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   generation as a declared dependency.
 - Phase 8 added the exploratory data-analysis workflow on the same scheduler:
   `data.relationships_inferred` → `data.join_utility_ready` →
-  `data.joins_ready` →
+  `data.joins_ready` → `analysis.register_ready` →
   `analysis.definitions_ready` → `analysis.executed` → `analysis.summarized`
-  (the last added later; see the analysis-summary note below). It introduces no workspace
+  (the memo and the register were both added later; see the analysis-summary
+  note below and the register note under §4). It introduces no workspace
   collection — relationship evidence is run-durable, joins land in
   `workspace.joins`, definitions in `workspace.analyses`, and each execution
   records a bounded `last_result` (shape, verdict, the analytics service's own
@@ -667,6 +668,35 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   failures, `analysis_anomalies` for warnings) because deterministic selectors
   order candidates by reference: one source let a truncated budget drop a
   backdating failure while keeping a weekend-activity warning.
+- **The assertion register decides what an exploratory run tests, once.**
+  `analysis.register_ready` sits between the joins and the definitions and is
+  the only stage that reads every frame together. It is built in two passes and
+  the asymmetry between them is the whole contract. The floor is deterministic:
+  every frame is swept, every nomination that flagged rows is collected, and the
+  collection is deduplicated by `analysis_semantic_id` — identity over the
+  computation *and* the population, so one check reachable from six frames of a
+  join family is one entry while the same spec asked of different rows stays
+  several. Then one `analysis.reading` turn may **keep** an entry under a better
+  name, **add** an assertion no single measurement reaches, **decline** one with
+  a written reason, or name what the data cannot answer at all — and silence is
+  keeping. A nomination the turn never mentions is committed anyway, under the
+  title and note its own measurement derives.
+  That is what makes one turn over the whole engagement safe to depend on: its
+  worst case is the floor it was handed, so a reading that fails after its
+  repair attempt settles as `skipped` and the commit unit writes what was
+  measured. Measured on the procurement engagement, the floor alone reaches 18
+  of 28 scoreable answer-key items with no model turn at all.
+  The capability carries two units of different kinds — `analysis_reading`
+  (proposal-only) then `analysis_register` (deterministic commit) — ordered by
+  the sequential barrier's sorted-unit-ID rule. Neither unit id names the frames
+  it covers: a stage re-expands as joins land, and an id derived from the frame
+  list becomes a second, already-billed unit the moment one does.
+  The register is run-durable like the relationship evidence beside it, not a
+  workspace collection: it is a recomputable reading of frames that already
+  exist. `analysis.definitions_ready` then spends a turn only on the frames the
+  register placed an *authored* assertion on — a kept nomination is already an
+  exact spec with its counts measured, and re-deriving it through a model call
+  was, measured across four runs, sometimes declined.
 - **The memo feeds the APM.** `planning.apm` declares an optional
   `analysis_summary` source under its own `allow_analysis_summary` permission —
   planning sees the written memo, never the flagged rows behind it, and never
