@@ -1632,6 +1632,59 @@ def test_a_wholly_blank_column_stays_a_finding(workspace_with_data):
     assert result["uninformative_reason"] is None
 
 
+def _weekend_result(ws, dates: list[str], table: str = "postings") -> dict:
+    frame = pl.DataFrame({"posted": dates})
+    ws.add_table(f"{table}.csv", frame.write_csv().encode())
+    analysis = ws.add_analysis({
+        "kind": "analytics",
+        "table": table,
+        "title": f"Weekend postings — {table}",
+        "spec": {"test": "weekend_activity", "params": {"date_column": "posted"}},
+    })
+    return analysis_results.execute_analysis(ws, analysis, run_id="t").result
+
+
+def _dates(weekends: int, weekdays: int) -> list[str]:
+    # 2026-01-03 is a Saturday; 2026-01-05 a Monday. Both repeat weekly.
+    return [f"2026-01-{3 + 7 * index:02d}" for index in range(weekends)] + [
+        f"2026-01-{5 + 7 * index:02d}" for index in range(weekdays)
+    ]
+
+
+def test_a_weekend_share_at_the_base_rate_establishes_nothing(workspace_with_data):
+    """Two days in seven are a weekend, so about 29% of any ordinary spread of
+    dates lands on one. Reporting that share as a finding describes the calendar,
+    which is what a whole engagement's worth of weekend results did.
+    """
+    result = _weekend_result(workspace_with_data, _dates(weekends=2, weekdays=4))
+    assert result["exception_count"] == 2
+    assert result["informative"] is False
+    assert "expected by chance" in result["uninformative_reason"]
+
+
+def test_a_genuinely_elevated_weekend_share_stays_a_finding(workspace_with_data):
+    """The gate is about the distance from chance, not about the test."""
+    result = _weekend_result(workspace_with_data, _dates(weekends=4, weekdays=0))
+    assert result["informative"] is True
+    assert result["uninformative_reason"] is None
+
+
+def test_the_base_rate_gate_scales_with_the_population(workspace_with_data):
+    """The same share means different things at different sizes, so the margin is
+    measured in standard errors rather than in percentage points. Two weekend
+    dates in five is what an ordinary calendar produces; the identical 40% across
+    eighty rows is not."""
+    ws = workspace_with_data
+    spread = _dates(weekends=2, weekdays=3)
+    small = _weekend_result(ws, spread, table="few_postings")
+    large = _weekend_result(ws, spread * 16, table="many_postings")
+
+    assert small["exception_rate"] == pytest.approx(0.4)
+    assert large["exception_rate"] == pytest.approx(0.4)
+    assert small["informative"] is False
+    assert large["informative"] is True
+
+
 def test_an_uninformative_proposal_is_run_and_dropped_before_it_is_saved(
     workspace_with_data, monkeypatch
 ):
@@ -2417,10 +2470,164 @@ def test_a_populous_frame_keeps_its_population_tests(workspace_with_data):
         if item["properties"]["kind"]["enum"] == ["analytics"]
     )["properties"]["spec"]["oneOf"]
     allowed = {item["properties"]["test"]["enum"][0] for item in branches}
-    assert "outliers" in allowed and "stratify" in allowed
+    # Both are population tests the small-frame gate withholds. They are asserted
+    # rather than `stratify`, which a populous frame also does not receive — but
+    # for the unrelated reason that a stratification is `descriptive` and the
+    # workflow proposes no descriptive test at any size.
+    assert "outliers" in allowed and "threshold_check" in allowed
     assert tool["function"]["parameters"]["properties"]["analyses"]["maxItems"] == (
         analysis_worker.MAX_PROPOSED_ANALYSES
     )
+
+
+def _spec_branches(workspace, target: str) -> dict[str, dict]:
+    tool = analysis_worker._analysis_submission_tool(
+        _definition_request(workspace, target)
+    )
+    analytics_branch = next(
+        item
+        for item in tool["function"]["parameters"]["properties"]["analyses"]["items"][
+            "oneOf"
+        ]
+        if item["properties"]["kind"]["enum"] == ["analytics"]
+    )
+    return {
+        item["properties"]["test"]["enum"][0]: item
+        for item in analytics_branch["properties"]["spec"]["oneOf"]
+    }
+
+
+def test_the_workflow_proposes_no_descriptive_test(workspace_with_data):
+    """A stratification, a period trend and a drawn sample have no exception
+    concept, so an autonomous run proposing one spends a definition turn and an
+    execution to produce something nothing downstream can conclude from.
+
+    The exclusion list is a literal in the workflow definition — a workflow may
+    import only graph primitives — so this is what keeps it honest against the
+    registry's own classification.
+    """
+    descriptive = analytics.ids_with_signal(analytics.SIGNAL_DESCRIPTIVE)
+    assert descriptive <= ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS
+    assert descriptive.isdisjoint(_spec_branches(workspace_with_data, "transactions"))
+
+
+def _lookup_pairs(ws, target: str) -> set[tuple[str, tuple[str, ...]]]:
+    referential = _spec_branches(ws, target)["referential"]
+    branches = referential["properties"]["params"].get("oneOf") or [
+        referential["properties"]["params"]
+    ]
+    return {
+        (
+            branch["properties"]["lookup_table"]["enum"][0],
+            tuple(branch["properties"]["lookup_column"]["enum"]),
+        )
+        for branch in branches
+    }
+
+
+def test_a_reconciliation_may_only_name_a_supplied_lookup(workspace_with_data):
+    """``lookup_column`` means nothing except relative to a chosen table, so the
+    two are emitted as one branch per candidate. A single pair of independent
+    enums would admit every cross product, most of which name a column the
+    chosen table does not have."""
+    ws = workspace_with_data
+    ws.add_table(
+        "invoice_master.csv",
+        pl.DataFrame(
+            {
+                "invoice_no": [1001, 1002, 1003, 1005, 1006],
+                "region": ["north", "north", "south", "south", "north"],
+            }
+        ).write_csv().encode(),
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    pairs = _lookup_pairs(ws, "transactions")
+    # ``invoice_no`` is distinct on every row and populated throughout; ``region``
+    # repeats, so it identifies nothing and is not offered as a key.
+    assert ("invoice_master", ("invoice_no",)) in pairs
+    # A frame never reconciles against itself, nor against a frame it contains.
+    assert all(table != "transactions" for table, _ in pairs)
+
+
+def test_a_reconciliation_is_only_offered_where_the_target_references_it(
+    workspace_with_data,
+):
+    """Offering every table costs a schema branch each — carrying the target's
+    whole column enum — and invites a reconciliation between two populations that
+    were never meant to meet. Narrowed by the same schema-only name affinity the
+    join diagnostics use before they measure anything.
+    """
+    ws = workspace_with_data
+    ws.add_table(
+        "po_master.csv",
+        pl.DataFrame({"po_number": ["PO1", "PO2", "PO3"]}).write_csv().encode(),
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    offered = {table for table, _ in _lookup_pairs(ws, "transactions")}
+    # `transactions.cust_id` is a reference to `customers.id`, so that pair is
+    # worth offering. Nothing in the fixture names a purchase order at all.
+    assert "customers" in offered
+    assert "po_master" not in offered
+
+
+def test_a_reconciliation_is_not_offered_with_nothing_to_reconcile_against(
+    transactions_df,
+):
+    """A workspace of one table has no lookup, and a test offered with an empty
+    enum is a test the model cannot write — so it is withheld rather than
+    offered and then rejected after a turn has been spent on it."""
+    ws = workspaces.create_workspace("Single table")
+    ws.add_table("transactions.csv", transactions_df.write_csv().encode())
+    ws = workspaces.load_workspace(ws.id)
+    assert "referential" not in _spec_branches(ws, "transactions")
+
+
+def test_a_duplicate_key_may_not_be_qualified_by_what_it_already_identifies(
+    workspace_with_data,
+):
+    """The false clear this exists for: duplicates keyed on (VENDOR_ID,
+    VENDOR_INVOICE_NUMBER) reports "No duplicate keys found" over a population
+    holding two invoice numbers reused across different vendors, because the
+    vendor id is the very dimension the test was supposed to look across."""
+    ws = workspace_with_data
+    ws.add_table(
+        "invoices.csv",
+        pl.DataFrame(
+            {
+                "vendor_id": ["V1", "V2"],
+                "vendor_invoice_number": ["X1", "X1"],
+                "invoice_amount": [10.0, 10.0],
+            }
+        ).write_csv().encode(),
+    )
+    ws = workspaces.load_workspace(ws.id)
+    request = _definition_request(ws, "invoices")
+
+    def propose(columns: list[str]) -> dict:
+        return {
+            "analyses": [
+                {
+                    "title": "Duplicate vendor invoice references",
+                    "kind": "analytics",
+                    "note": "A vendor invoice number should identify one invoice.",
+                    "spec": {"test": "duplicates", "params": {"columns": columns}},
+                }
+            ]
+        }
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_proposal(
+            propose(["vendor_id", "vendor_invoice_number"]), request
+        )
+    assert "only narrows" in str(raised.value)
+
+    # The corrected key, and a legitimate composite that shares no subject, both
+    # pass: the rule is about one column restating another, not about breadth.
+    for columns in (["vendor_invoice_number"], ["vendor_id", "invoice_amount"]):
+        accepted = analysis_worker.validate_analysis_proposal(propose(columns), request)
+        assert accepted["analyses"][0]["spec"]["params"]["columns"] == columns
 
 
 def test_a_joined_frame_may_not_restate_one_side_s_own_work(workspace_with_data):

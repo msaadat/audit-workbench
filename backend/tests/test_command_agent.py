@@ -948,7 +948,7 @@ def test_failed_action_blocks_transitive_dependents_without_execution(
                 "type": "run_analytics",
                 "args": {
                     "table": "transactions",
-                    "test": "round_numbers",
+                    "test": "sign_scan",
                     "params": {"column": "amount"},
                 },
                 "depends_on": ["duplicates"],

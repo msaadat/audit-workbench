@@ -1196,6 +1196,21 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=20_000),
                 ),
                 ContextSource(
+                    id="lookup_candidates",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # The frames a reconciliation may read, and the columns in
+                    # each that are actually keys. Metadata and cardinality
+                    # counts, drawn from the cached profile — a lookup candidate
+                    # is described by the shape of its key column, never by the
+                    # values in it. Supplied so the submission schema can make
+                    # naming a non-existent lookup unrepresentable rather than
+                    # merely wrong.
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=12, max_characters=12_000),
+                ),
+                ContextSource(
                     id="current_analyses",
                     source_type="artifacts",
                     required=False,

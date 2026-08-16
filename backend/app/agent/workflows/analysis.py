@@ -30,11 +30,27 @@ from ..workflow import canonical_sha1
 WORKFLOW_ID = "analysis_workflow_v1"
 
 # These tests remain available in the manual analytics library but are not
-# proposed or re-executed by the autonomous analysis workflow. Their audit
-# signal is generally weaker than relationship, duplicate, timing, threshold,
-# completeness, and outlier tests.
+# proposed or re-executed by the autonomous analysis workflow. All three are
+# `descriptive` in the registry's own classification: a stratification, a period
+# trend and a drawn sample have no exception concept at all, so an autonomous run
+# proposing one spends a definition turn and an execution to produce a chart that
+# nothing downstream can promote, cite as an exception, or conclude from. Drawing
+# a sample is fieldwork besides, and `doc_tests` calls that one directly.
+#
+# The digit-pattern tests used to sit here too. They were deleted from the
+# registry outright rather than merely withheld: measured across an engagement,
+# Benford and the last-two-digit test refused on half the numeric columns for
+# want of 100 values and returned no rows on the rest, while the round-number
+# test compared business amounts against a null model meant for random ones and
+# flagged 35–40% of every amount column as a warning.
+#
+# Kept as a literal rather than derived from ``analytics.signal_for`` because a
+# workflow definition may import only graph primitives — which is also the right
+# boundary: *which* tests an autonomous run proposes is a decision belonging to
+# this workflow's hash-identified definition, not a property of the registry.
+# ``test_the_workflow_proposes_no_descriptive_test`` holds the two in agreement.
 EXCLUDED_ANALYTICS_TEST_IDS = frozenset(
-    {"benford", "round_numbers", "last_two_digits"}
+    {"period_compare", "stratify", "sampling"}
 )
 
 # The analysis dependency graph. Each capability ID maps to its direct

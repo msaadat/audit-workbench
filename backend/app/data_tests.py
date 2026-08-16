@@ -493,7 +493,10 @@ def _validate_spec(
             raise WorkspaceError(f"Unknown analytics test '{test_id}'.")
         try:
             params = analytics.canonicalize_params(
-                workspace.get_frame(refs[0]), test_id, dict(value.get("params") or {})
+                workspace.get_frame(refs[0]),
+                test_id,
+                dict(value.get("params") or {}),
+                source=workspace.frame_source(),
             )
         except ValueError as error:
             raise WorkspaceError(str(error)) from error
@@ -1279,12 +1282,26 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
     issues = list(item.get("semantic_warnings") or [])
     if engine == "analytics":
         frame = workspace.get_frame(item["table_refs"][0])
-        result = analytics.run_test(frame, item["spec"]["test_id"], item["spec"].get("params") or {})
+        result = analytics.run_test(
+            frame,
+            item["spec"]["test_id"],
+            item["spec"].get("params") or {},
+            source=workspace.frame_source(),
+        )
         payload = result.payload()
         summary, exceptions = result.summary, result.detail
         exception_count = result.detail.height if result.detail is not None else 0
         verdict = result.verdict
-        if item["spec"]["test_id"] in {"benford", "last_two_digits", "outliers"} and verdict in {"warn", "fail"}:
+        # What this test's flagged output *is*, read from the registry rather
+        # than from a list kept here. The list named benford, last_two_digits and
+        # outliers, which the registry still classifies exactly that way; what it
+        # could not say is that a weekend scan or a threshold cluster needs the
+        # same corroboration, so those results reached a control conclusion
+        # unqualified. Only an `exception` test is evidence on its face.
+        if (
+            analytics.signal_for(item["spec"]["test_id"]) != analytics.SIGNAL_EXCEPTION
+            and verdict in {"warn", "fail"}
+        ):
             issues.append("Screening result requires corroboration before it can support a control exception.")
         output = {
             "verdict": verdict,

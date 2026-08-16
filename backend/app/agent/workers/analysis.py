@@ -28,6 +28,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from itertools import permutations
 from typing import Any
 
 from ... import analytics, sandbox
@@ -159,6 +160,7 @@ the analysis should not be proposed.
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
 JOIN_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYTICS_REGISTRY_SOURCE_ID = "analytics_registry"
+LOOKUP_CANDIDATES_SOURCE_ID = "lookup_candidates"
 CURRENT_ANALYSES_SOURCE_ID = "current_analyses"
 ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
 
@@ -182,6 +184,10 @@ POPULATION_TEST_IDS = frozenset(
         "rare_values",
         "weekend_activity",
         "sampling",
+        # A dominant format is a property of the population: across four values
+        # the majority shape is whatever two of them happen to share, and every
+        # remaining value is an anomaly by construction.
+        "format_anomaly",
     }
 )
 MIN_ROWS_FOR_POPULATION_TESTS = 30
@@ -760,7 +766,63 @@ def _parameter_json_schema(
         return {"enum": values}
     if kind == "number":
         return {"type": "number"}
-    return {}
+    # Cross-frame kinds are not built here: ``lookup_column`` is only meaningful
+    # once ``lookup_table`` is fixed, so the two are emitted together as one
+    # branch per candidate table by ``_lookup_branches``. Reaching this point for
+    # any other kind means the registry grew a parameter shape this contract
+    # cannot constrain, and a permissive schema there would let the model write
+    # free text into a field the executor will act on.
+    return None
+
+
+def _lookup_catalog(request: WorkerRequest) -> list[tuple[str, list[str]]]:
+    """(table, key columns) the supplied context admits as reconciliation targets."""
+    catalog: list[tuple[str, list[str]]] = []
+    for raw in _source_items(request, LOOKUP_CANDIDATES_SOURCE_ID):
+        item = _plain_json(raw)
+        if not isinstance(item, Mapping):
+            continue
+        table = str(item.get("table") or "").strip()
+        keys = [
+            str(column).strip()
+            for column in item.get("key_columns") or []
+            if str(column or "").strip()
+        ]
+        if table and keys:
+            catalog.append((table, keys))
+    catalog.sort()
+    return catalog
+
+
+def _lookup_branches(
+    request: WorkerRequest, base: Mapping[str, Any], required: list[str]
+) -> list[dict[str, Any]]:
+    """One params branch per candidate lookup table.
+
+    ``lookup_column`` only means anything relative to a chosen ``lookup_table``,
+    and a single pair of independent enums would admit every cross product of
+    them — most of which name a column the chosen table does not have. Emitting a
+    branch per table, each with its own single-valued table enum and that table's
+    own key columns, makes the invalid combinations unrepresentable instead of
+    leaving them to be caught after a turn has been spent. This is the same shape
+    the ``test`` discriminator already uses.
+    """
+    branches = []
+    for table, keys in _lookup_catalog(request):
+        properties = {
+            **base,
+            "lookup_table": {"type": "string", "enum": [table]},
+            "lookup_column": {"type": "string", "enum": sorted(keys)},
+        }
+        branches.append(
+            {
+                "type": "object",
+                "properties": properties,
+                "required": [*required, "lookup_table", "lookup_column"],
+                "additionalProperties": False,
+            }
+        )
+    return branches
 
 
 def _analytics_spec_schemas(
@@ -779,11 +841,16 @@ def _analytics_spec_schemas(
         properties: dict[str, Any] = {}
         required: list[str] = []
         usable = True
+        needs_lookup = bool(metadata.get("needs_lookup"))
         for raw in metadata.get("params") or []:
             if not isinstance(raw, Mapping):
                 continue
             name = str(raw.get("name") or "").strip()
             if not name:
+                continue
+            if needs_lookup and name in {"lookup_table", "lookup_column"}:
+                # Supplied by the per-table branch below, where the two are
+                # constrained together rather than independently.
                 continue
             parameter_schema = _parameter_json_schema(raw, columns, column_types)
             is_required = not raw.get("optional") and "default" not in raw
@@ -799,13 +866,26 @@ def _analytics_spec_schemas(
                 required.append(name)
         if not usable:
             continue
-        params_schema: dict[str, Any] = {
-            "type": "object",
-            "properties": properties,
-            "additionalProperties": False,
-        }
-        if required:
-            params_schema["required"] = required
+        if needs_lookup:
+            # With no candidate the test cannot be written at all — a workspace
+            # of one table has nothing to reconcile against — so it is dropped
+            # rather than offered with an empty enum.
+            params_branches = _lookup_branches(request, properties, required)
+            if not params_branches:
+                continue
+            params_schema: dict[str, Any] = (
+                params_branches[0]
+                if len(params_branches) == 1
+                else {"oneOf": params_branches}
+            )
+        else:
+            params_schema = {
+                "type": "object",
+                "properties": properties,
+                "additionalProperties": False,
+            }
+            if required:
+                params_schema["required"] = required
         branches.append(
             {
                 "type": "object",
@@ -949,12 +1029,59 @@ def _analysis_response_schema(response: str) -> Mapping[str, Any]:
     return {"analyses": proposed}
 
 
+# Word endings that mark a column as an identifier rather than as the thing it
+# identifies. Stripped before comparing two key columns, so ``VENDOR_ID`` and
+# ``VENDOR_INVOICE_NUMBER`` are compared as "vendor" against "vendor invoice".
+_IDENTIFIER_SEGMENTS = frozenset(
+    {"id", "ids", "code", "key", "no", "num", "number", "ref", "reference"}
+)
+_SEGMENT_SPLIT = re.compile(r"[A-Za-z0-9]+")
+
+
+def _subject_tokens(column: str) -> frozenset[str]:
+    """What a column names, with the fact that it is an identifier removed."""
+    segments = [segment.lower() for segment in _SEGMENT_SPLIT.findall(str(column))]
+    while segments and segments[-1] in _IDENTIFIER_SEGMENTS:
+        segments = segments[:-1]
+    return frozenset(segments)
+
+
+def _qualifying_key_columns(columns: list[str]) -> list[tuple[str, str]]:
+    """(qualifier, qualified) pairs where one key column only narrows another.
+
+    A duplicate-detection key is a claim about what "the same thing twice" means.
+    Adding a column whose subject is already contained in another column's
+    subject does not widen that claim, it narrows it — and narrows it along
+    exactly the dimension the test was supposed to look across.
+
+    The case this exists for: duplicates keyed on ``(VENDOR_ID,
+    VENDOR_INVOICE_NUMBER)``. A vendor invoice number is the reference *the
+    vendor assigned*, so grouping it by vendor asks whether one supplier billed
+    the same number twice and can never see the same number arriving from two
+    suppliers. That result was reported as "No duplicate keys found" over a
+    population holding two such pairs — an affirmative clear of the risk the test
+    was named for, which is worse than not having run it.
+
+    Deliberately a name-shape rule and nothing more. ``(VENDOR_ID,
+    INVOICE_DATE, INVOICE_AMOUNT)`` is a legitimate same-payment key and does not
+    trip it: no subject there contains another.
+    """
+    subjects = {column: _subject_tokens(column) for column in columns}
+    pairs = []
+    for qualifier, qualified in permutations(columns, 2):
+        narrow, wide = subjects[qualifier], subjects[qualified]
+        if narrow and narrow < wide:
+            pairs.append((qualifier, qualified))
+    return pairs
+
+
 def _validate_analytics_spec(
     spec: Mapping[str, Any],
     registry: Mapping[str, Mapping[str, Any]],
     columns: set[str],
     column_types: Mapping[str, str],
     label: str,
+    lookups: Mapping[str, set[str]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     test_id = analytics.canonical_test_id(spec.get("test") or spec.get("test_id"))
@@ -1027,6 +1154,37 @@ def _validate_analytics_spec(
             isinstance(value, bool) or not isinstance(value, (int, float))
         ):
             errors.append(f"{label} parameter '{name}' must be a number")
+    # The lookup pair is checked together, because either half is meaningless
+    # alone: a real table with a column it does not have, and a real column name
+    # against a table nobody offered, are both a reconciliation against nothing.
+    # The submission schema already makes both unrepresentable; this holds when a
+    # provider returns something the schema did not describe.
+    if test_id == "duplicates":
+        key = [str(value) for value in params.get("columns") or []]
+        for qualifier, qualified in _qualifying_key_columns(key):
+            remaining = [column for column in key if column != qualifier]
+            errors.append(
+                f"{label} keys duplicates on '{qualifier}' together with "
+                f"'{qualified}', and '{qualifier}' only narrows what "
+                f"'{qualified}' already identifies — the test can then never see "
+                f"the same {qualified} arriving under two different {qualifier} "
+                f"values, which is the duplication worth finding. Key on "
+                f"{', '.join(remaining)} instead"
+            )
+    if registry[test_id].get("needs_lookup"):
+        catalog = dict(lookups or {})
+        table = str(params.get("lookup_table") or "").strip()
+        key = str(params.get("lookup_column") or "").strip()
+        if table not in catalog:
+            errors.append(
+                f"{label} names lookup table '{table}' which was not supplied; "
+                f"use one of {', '.join(sorted(catalog)) or 'the supplied tables'}"
+            )
+        elif key not in catalog[table]:
+            errors.append(
+                f"{label} names lookup column '{key}', which is not a key of "
+                f"'{table}'; use one of {', '.join(sorted(catalog[table]))}"
+            )
     return {"test": test_id, "params": params}, errors
 
 
@@ -1071,6 +1229,7 @@ def validate_analysis_proposal(
     column_types = _column_types(schema)
     origins = _column_origins(schema)
     registry = _analytics_contract(request)
+    lookups = {table: set(keys) for table, keys in _lookup_catalog(request)}
     existing = _existing_semantic_ids(request, origins)
     related = {
         str((_plain_json(item) or {}).get("table"))
@@ -1131,7 +1290,7 @@ def validate_analysis_proposal(
         raw_spec = raw_spec if isinstance(raw_spec, Mapping) else {}
         if kind == "analytics":
             spec, spec_errors = _validate_analytics_spec(
-                raw_spec, registry, columns, column_types, label
+                raw_spec, registry, columns, column_types, label, lookups
             )
         else:
             spec, spec_errors = _validate_python_spec(raw_spec, frames, label)

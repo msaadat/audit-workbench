@@ -161,7 +161,12 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             payload["frame"] = explore.frame_payload(summary, _cap_for(payload["viz"]))
         else:
             spec = item.get("spec") or {}
-            result = analytics.run_test(frame, spec.get("test"), spec.get("params"))
+            result = analytics.run_test(
+                frame,
+                spec.get("test"),
+                spec.get("params"),
+                source=workspace.frame_source(),
+            )
             # Analytics tiles use the test's own suggested visualization —
             # it tracks parameter changes (e.g. Benford digit count).
             payload["viz"] = result.viz or {"type": "table"}
@@ -731,7 +736,13 @@ def _candidate_score(workspace: Workspace, item: dict, result: dict) -> tuple[in
     if any(term in text for term in management_terms):
         score += 3
         reasons.append("management-relevant control signal")
-    if item.get("spec", {}).get("test_id") in {"benford", "last_two_digits", "outliers"}:
+    # Read from the registry rather than from a list kept here — this was the
+    # fourth copy of the same judgment. Deliberately `== SCREENING` and not
+    # `!= EXCEPTION`, which is the condition ``data_tests`` uses: a result that
+    # merely describes a population is a poor control test but a perfectly good
+    # dashboard tile, so a stratification is not penalised here the way a
+    # weekend scan offered as control evidence is.
+    if analytics.signal_for(item.get("spec", {}).get("test_id")) == analytics.SIGNAL_SCREENING:
         score -= 4
         reasons.append("screening-only analytic")
     return score, reasons
@@ -910,7 +921,9 @@ def analysis_export_frame(workspace: Workspace, analysis: dict):
         return result
     frame = workspace.get_frame(analysis["table"])
     spec = analysis.get("spec") or {}
-    outcome = analytics.run_test(frame, spec.get("test"), spec.get("params"))
+    outcome = analytics.run_test(
+        frame, spec.get("test"), spec.get("params"), source=workspace.frame_source()
+    )
     exported = outcome.export_frame()
     if exported is not None:
         return exported

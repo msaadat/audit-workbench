@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -105,6 +106,49 @@ _SATURATION_WORDING: dict[str, str] = {
     ),
 }
 
+# Saturation is one way to establish nothing. Its opposite is the other, and it
+# is the more common: a test whose flagged share is simply what chance produces.
+# A weekend scan is the pure case — two days in seven are a weekend, so about
+# 29% of any ordinary spread of dates falls on one, and reporting that as
+# "13 of 39 vendor approvals were dated on a weekend" describes the calendar.
+#
+# Only tests with an analytically knowable null rate belong here. An IQR fence's
+# expected share depends on the shape of the distribution it was computed from
+# and is not knowable in advance, so `outliers` is deliberately absent: it is
+# classified `screening` in the registry, which is the honest statement about it.
+BASE_RATE_TESTS: dict[str, tuple[float, str]] = {
+    "weekend_activity": (
+        2 / 7,
+        "two days in seven are a weekend, so any ordinary spread of dates lands "
+        "about this share on one",
+    ),
+}
+
+# How far above chance a result must sit to have distinguished its population.
+# Expressed in standard errors of the null rate rather than as a fixed margin,
+# because the same share means different things at different sizes: 33% weekend
+# activity is unremarkable across 39 rows and would be a real finding across
+# 3,900. Two is the conventional bar and, at the sizes an engagement actually
+# produces, it clears a genuinely elevated rate comfortably — a column with 60%
+# weekend dates stays informative at every population above about 20 rows.
+BASE_RATE_SIGMA = 2.0
+
+
+def _chance_reason(test: str, *, denominator: int, rate: float) -> str | None:
+    """Why a flagged share is indistinguishable from chance, if it is."""
+    entry = BASE_RATE_TESTS.get(test)
+    if entry is None:
+        return None
+    expected, wording = entry
+    spread = math.sqrt(expected * (1 - expected) / denominator)
+    if spread and rate >= expected + BASE_RATE_SIGMA * spread:
+        return None
+    return (
+        f"flags {rate:.0%} of the {denominator:,} rows it tested against "
+        f"{expected:.0%} expected by chance — {wording}, and this result does "
+        "not stand clear of that"
+    )
+
 
 def uninformative_reason(
     analysis: Mapping[str, object],
@@ -117,10 +161,21 @@ def uninformative_reason(
 
     Computed rather than judged. A reader shown a 96% exception rate can work
     this out, but only if they stop to divide — and the whole failure mode is
-    that nobody does.
+    that nobody does. The same holds at the other end, where the arithmetic a
+    reader would have to do is against a rate they would first have to know.
     """
     if not denominator or not exception_count or rate is None:
         return None
+    # Checked before the saturation threshold, not after: a result that
+    # establishes nothing because it matches chance is nowhere near saturated,
+    # so the threshold below would return early and never reach it.
+    chance = _chance_reason(
+        str((analysis.get("spec") or {}).get("test") or ""),
+        denominator=denominator,
+        rate=rate,
+    )
+    if chance is not None:
+        return chance
     if rate < SATURATION_THRESHOLD:
         return None
     share = f"{rate:.0%} of the {denominator:,} rows it tested"

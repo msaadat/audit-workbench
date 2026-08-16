@@ -112,11 +112,11 @@ def test_analytics_run_and_errors(client, ws_id):
     assert result["detail_rows"] == 2
 
     bad = client.post(
-        f"/api/workspaces/{ws_id}/tables/transactions/analytics/benford",
+        f"/api/workspaces/{ws_id}/tables/transactions/analytics/threshold_check",
         json={"column": "amount"},
     )
     assert bad.status_code == 400
-    assert "at least 100" in bad.json()["detail"]
+    assert "threshold value is required" in bad.json()["detail"]
 
 
 def test_join_via_api(client, ws_id):

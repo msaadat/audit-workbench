@@ -38,6 +38,7 @@ tables testable that pairwise joins leave apart.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 import polars as pl
 
@@ -210,6 +211,32 @@ def _name_affinity(
     if l.endswith(r) or r.endswith(l):
         return 0.6
     return 0.0
+
+
+def reference_candidates(
+    columns: Iterable[str],
+    key_columns: Iterable[str],
+    key_table: str,
+    entities: frozenset[str] = frozenset(),
+) -> list[tuple[str, str]]:
+    """(column, key) pairs whose names suggest one references the other.
+
+    The schema-only half of :func:`candidate_keys`: no frame is read and no value
+    compared, so a caller that only has metadata — deciding whether it is worth
+    *offering* a reconciliation between two frames — can ask the same question
+    the join diagnostics ask before measuring anything.
+
+    Ordered strongest affinity first, so a caller narrowing to a few keys keeps
+    the ones most likely to be the reference.
+    """
+    scored = [
+        (affinity, column, key)
+        for column in columns
+        for key in key_columns
+        if (affinity := _name_affinity(column, key, key_table, entities)) > 0
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [(column, key) for _, column, key in scored]
 
 
 def _key_series(df: pl.DataFrame, column: str) -> pl.Series:

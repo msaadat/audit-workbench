@@ -847,8 +847,11 @@ class _Session:
         table = args.get("table")
         test = args.get("test")
         params = args.get("params") or {}
-        params = analytics.canonicalize_params(self.frame(table), test, params)
-        result = analytics.run_test(self.frame(table), test, params)
+        source = self.workspace.frame_source()
+        params = analytics.canonicalize_params(
+            self.frame(table), test, params, source=source
+        )
+        result = analytics.run_test(self.frame(table), test, params, source=source)
         summary = result.summary
         artifact = self._artifact(
             tool="run_analytics",

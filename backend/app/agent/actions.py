@@ -732,7 +732,10 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         summary = {key: result.get(key) for key in ("run_at", "table", "rows", "verdict", "counts")}
         return _receipt(action, ruleset, refs=[f"ruleset:{target_id}"], result=summary)
     if type_ == "run_analytics":
-        result = analytics.run_test(workspace.get_frame(args["table"]), args["test"], args.get("params") or {})
+        result = analytics.run_test(
+            workspace.get_frame(args["table"]), args["test"], args.get("params") or {},
+            source=workspace.frame_source(),
+        )
         model_result = {"title": result.title, "verdict": result.verdict, "verdict_text": result.verdict_text, "stats": result.stats}
         if result.summary is not None:
             model_result["summary"] = model_context.project_frame(result.summary)

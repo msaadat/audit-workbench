@@ -1790,6 +1790,7 @@ ANALYSIS_RELATED_FRAMES_SOURCE_ID = "related_frames"
 ANALYSIS_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYSIS_RELATIONSHIP_SOURCE_ID = "relationship_evidence"
 ANALYSIS_REGISTRY_SOURCE_ID = "analytics_registry"
+ANALYSIS_LOOKUP_SOURCE_ID = "lookup_candidates"
 ANALYSIS_CURRENT_SOURCE_ID = "current_analyses"
 ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS = (
     analysis_workflow.EXCLUDED_ANALYTICS_TEST_IDS
@@ -1878,6 +1879,98 @@ def analysis_aggregate_candidates(
                 representations={"table_aggregate": aggregate},
                 metadata={"table": target, "column": aggregate["column"]},
                 lexical_text=f"{target} {aggregate['column']}",
+            )
+        )
+    return tuple(candidates)
+
+
+# A lookup key must actually identify rows of its frame. Measured from the
+# cached profile rather than by loading frames: a column is a key when it is
+# populated throughout and distinct on every row.
+def _key_columns(workspace: Workspace, table: str) -> list[str]:
+    try:
+        profile = workspace.get_profile(table)
+    except (OSError, WorkspaceError):
+        return []
+    rows = profile.get("rows")
+    if not isinstance(rows, int) or rows <= 0:
+        return []
+    keys = []
+    for column in profile.get("column_profiles") or []:
+        distinct = column.get("distinct_count")
+        blanks = column.get("blank_count") or 0
+        name = str(column.get("name") or "").strip()
+        if name and isinstance(distinct, int) and distinct == rows and not blanks:
+            keys.append(name)
+    return keys
+
+
+# How many key columns of one lookup frame are worth offering. The submission
+# schema spends a branch per lookup table and repeats the target's own column
+# enum inside each, so this is the term that decides whether a wide workspace
+# turns the reconciliation test into a third of the prompt.
+MAX_LOOKUP_KEYS = 3
+
+
+def analysis_lookup_candidates(
+    workspace: Workspace, target: str
+) -> tuple[ContextCandidate, ...]:
+    """Frames a reconciliation from ``target`` may read, and their key columns.
+
+    Base tables only, and never one the target already contains: reconciling a
+    joined frame against a table it was built from asks whether a key matches
+    itself. A frame with no key column is omitted — there is nothing on it for a
+    reference to resolve against.
+
+    Narrowed further to the frames the target plausibly *references*, by the same
+    schema-only name affinity the join diagnostics use before they measure
+    anything. Two reasons, and the second is the one that matters. Offering a
+    staff master to a frame carrying no person-shaped column invites a
+    reconciliation that can only report that two unrelated columns do not match.
+    And the offer is not free: each candidate costs a schema branch carrying the
+    target's whole column enum, so an unfiltered sweep of a twenty-table
+    workspace would spend more of the definition turn on this one test than on
+    every other test combined.
+    """
+    lineage = join_diagnostics.frame_lineage(workspace, target)
+    try:
+        columns = [
+            str(column.get("name"))
+            for column in workspace.get_profile(target).get("column_profiles") or []
+            if str(column.get("name") or "").strip()
+        ]
+    except (OSError, WorkspaceError):
+        columns = []
+    entities = join_diagnostics.entity_tokens(workspace.table_names())
+    candidates = []
+    for item in workspace.tables:
+        name = str(item.get("name") or "")
+        if not name or name in lineage or name == target:
+            continue
+        keys = _key_columns(workspace, name)
+        if not keys:
+            continue
+        referenced = list(
+            dict.fromkeys(
+                key
+                for _, key in join_diagnostics.reference_candidates(
+                    columns, keys, name, entities
+                )
+            )
+        )
+        # No column of the target looks like a reference to this frame. A
+        # reconciliation between them would be a comparison of two populations
+        # that were never meant to meet.
+        if not referenced:
+            continue
+        content = {"table": name, "key_columns": referenced[:MAX_LOOKUP_KEYS]}
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"lookup:{name}",
+                source=content,
+                representations={"table_metadata": content},
+                metadata={"table": name},
+                lexical_text=" ".join([name, *content["key_columns"]]),
             )
         )
     return tuple(candidates)
@@ -2121,6 +2214,7 @@ def analysis_definition_scope(
                     metadata={"registry": "analytics"},
                 ),
             ),
+            ANALYSIS_LOOKUP_SOURCE_ID: analysis_lookup_candidates(workspace, target),
             ANALYSIS_CURRENT_SOURCE_ID: tuple(
                 ContextCandidate(
                     source_ref=f"analysis:{item['id']}",

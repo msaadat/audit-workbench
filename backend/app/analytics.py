@@ -11,8 +11,9 @@ the UI, exported to Excel in full).
 
 from __future__ import annotations
 
-import math
+import re
 from dataclasses import dataclass, field
+from typing import Callable
 
 import polars as pl
 
@@ -22,6 +23,35 @@ from .field_names import resolve_column, resolve_columns
 
 SUMMARY_MAX_ROWS = 500
 DETAIL_PREVIEW_ROWS = 50
+
+# Reading another frame is the validation engine's contract, reused verbatim so
+# the two engines cannot disagree about what a lookup is.
+Resolve = Callable[[str], pl.DataFrame]
+
+
+@dataclass(frozen=True)
+class FrameSource:
+    """The workspace's other frames, for tests that reconcile across them.
+
+    Most analytics are a property of one frame and never see this. A referential
+    test is not: its whole question is whether this frame's values exist in
+    another one, so it needs both a way to read a named frame and the catalog of
+    what it may read. The catalog travels because a resolver alone cannot be
+    enumerated, and diagnosing *where* an unmatched key does resolve means
+    sweeping the keys the workspace actually holds.
+    """
+
+    resolve: Resolve
+    tables: tuple[str, ...] = ()
+
+    def frame(self, name: str) -> pl.DataFrame:
+        try:
+            return self.resolve(name)
+        except QueryError:
+            raise
+        except Exception as error:
+            raise QueryError(f"Could not load lookup table '{name}': {error}") from error
+
 
 PERIODS = {
     "day": "1d",
@@ -110,105 +140,6 @@ def _date_expr(df: pl.DataFrame, column: str) -> pl.Expr:
     return pl.col(column).cast(pl.String).str.to_date(strict=False)
 
 
-# ---------------------------------------------------------------- Benford
-# Nigrini's Mean Absolute Deviation conformity bands.
-_MAD_BANDS = {
-    1: (0.006, 0.012, 0.015),
-    2: (0.0012, 0.0018, 0.0022),
-}
-
-
-def benford(df: pl.DataFrame, params: dict) -> AnalyticsResult:
-    column = params.get("column")
-    digits = int(params.get("digits") or 1)
-    if digits not in (1, 2):
-        raise QueryError("Digits must be 1 or 2.")
-
-    values = _numeric_series(df, column).select(pl.col("value").abs()).filter(
-        pl.col("value") > 0
-    )
-    n = values.height
-    if n < 100:
-        raise QueryError(
-            f"Only {n} usable values in '{column}' — Benford needs at least 100."
-        )
-
-    # First significant digits: floor(v / 10^(floor(log10 v) - digits + 1)).
-    lead = values.select(
-        (
-            pl.col("value")
-            / pl.lit(10.0).pow(pl.col("value").log10().floor() - (digits - 1))
-        )
-        .floor()
-        .cast(pl.Int64)
-        .alias("lead")
-    )
-
-    start, end = (1, 9) if digits == 1 else (10, 99)
-    expected = pl.DataFrame(
-        {
-            "lead": list(range(start, end + 1)),
-            "expected_pct": [
-                100.0 * math.log10(1 + 1 / d) for d in range(start, end + 1)
-            ],
-        }
-    )
-
-    observed = lead.group_by("lead").agg(pl.len().alias("count"))
-    table = (
-        expected.join(observed, on="lead", how="left")
-        .with_columns(pl.col("count").fill_null(0))
-        .with_columns((100.0 * pl.col("count") / n).alias("observed_pct"))
-        .with_columns(
-            (pl.col("observed_pct") - pl.col("expected_pct")).alias("deviation_pct")
-        )
-        .sort("lead")
-        .select(
-            pl.col("lead").alias("digit" if digits == 1 else "digits"),
-            "count",
-            pl.col("observed_pct").round(2),
-            pl.col("expected_pct").round(2),
-            pl.col("deviation_pct").round(2),
-        )
-    )
-
-    obs_p = (table["observed_pct"] / 100.0).to_list()
-    exp_p = (table["expected_pct"] / 100.0).to_list()
-    chi_square = n * sum((o - e) ** 2 / e for o, e in zip(obs_p, exp_p))
-    mad = sum(abs(o - e) for o, e in zip(obs_p, exp_p)) / len(exp_p)
-
-    close, acceptable, marginal = _MAD_BANDS[digits]
-    if mad <= acceptable:
-        verdict, text = "ok", "Close conformity" if mad <= close else "Acceptable conformity"
-    elif mad <= marginal:
-        verdict, text = "warn", "Marginally acceptable conformity"
-    else:
-        verdict, text = "fail", "Nonconformity — distribution deviates from Benford's law"
-
-    worst = table.sort("deviation_pct", descending=True).row(0, named=True)
-    return AnalyticsResult(
-        title=f"Benford's law — first {'digit' if digits == 1 else 'two digits'} of {column}",
-        verdict=verdict,
-        verdict_text=text,
-        stats=[
-            _stat("Values tested", n),
-            _stat("MAD", f"{mad:.4f}"),
-            _stat("Chi-square", round(chi_square, 1)),
-            _stat(
-                "Most over-represented",
-                f"{worst['digit' if digits == 1 else 'digits']} (+{worst['deviation_pct']}%)",
-            ),
-        ],
-        summary=table,
-        tested=n,
-        viz={
-            "type": "bar",
-            "x": "digit" if digits == 1 else "digits",
-            "y": ["observed_pct", "expected_pct"],
-        },
-    )
-
-
 # ------------------------------------------------------------- duplicates
 def duplicates(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     columns = [c for c in (params.get("columns") or []) if c]
@@ -250,57 +181,6 @@ def duplicates(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         summary=counts,
         detail=detail,
         tested=df.height,
-    )
-
-
-# ------------------------------------------------------------------- gaps
-def gaps(df: pl.DataFrame, params: dict) -> AnalyticsResult:
-    column = params.get("column")
-    if column not in df.columns:
-        raise QueryError(f"Unknown column '{column}'.")
-
-    numbers = df.select(
-        pl.col(column).cast(pl.String).str.replace_all(r"[^\d]", "").cast(
-            pl.Int64, strict=False
-        ).alias("value")
-    ).drop_nulls()
-    if numbers.is_empty():
-        raise QueryError(f"'{column}' contains no sequence numbers.")
-
-    total = numbers.height
-    distinct = numbers["value"].n_unique()
-    ordered = numbers.unique().sort("value")
-    gap_rows = (
-        ordered.with_columns(pl.col("value").shift(1).alias("previous"))
-        .drop_nulls()
-        .filter(pl.col("value") - pl.col("previous") > 1)
-        .select(
-            (pl.col("previous") + 1).alias("gap_from"),
-            (pl.col("value") - 1).alias("gap_to"),
-            (pl.col("value") - pl.col("previous") - 1).alias("missing_count"),
-        )
-        .sort("gap_from")
-    )
-    missing_total = int(gap_rows["missing_count"].sum() or 0)
-    low, high = int(ordered["value"].min()), int(ordered["value"].max())
-
-    verdict = "ok" if gap_rows.is_empty() else "warn"
-    return AnalyticsResult(
-        title=f"Sequence gaps in {column}",
-        verdict=verdict,
-        verdict_text=(
-            "Sequence is complete"
-            if gap_rows.is_empty()
-            else f"{counted(gap_rows.height, 'gap')}, {counted(missing_total, 'missing number')}"
-        ),
-        stats=[
-            _stat("Range", f"{low:,} – {high:,}"),
-            _stat("Distinct numbers", distinct),
-            _stat("Missing numbers", missing_total),
-            _stat("Reused numbers", total - distinct),
-        ],
-        summary=gap_rows,
-        tested=total,
     )
 
 
@@ -431,55 +311,6 @@ def period_compare(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         summary=table,
         tested=frame.height,
         viz={"type": "line", "x": "period", "y": [measure]},
-    )
-
-
-# ------------------------------------------------------------ round numbers
-def round_numbers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
-    column = params.get("column")
-    values = _numeric_series(df, column)
-    n = values.height
-
-    tiers = []
-    for base in (10, 100, 1000, 10000):
-        count = values.filter(
-            (pl.col("value") != 0) & (pl.col("value") % base == 0)
-        ).height
-        tiers.append(
-            {
-                "multiple_of": base,
-                "count": count,
-                "pct": round(100.0 * count / n, 2),
-                # Under a uniform last-digits assumption ~1/base of values hit.
-                "expected_pct": round(100.0 / base, 2),
-            }
-        )
-    summary = pl.DataFrame(tiers)
-
-    thousand = tiers[2]
-    detail = df.filter(
-        (pl.col(column).cast(pl.Float64, strict=False) != 0)
-        & (pl.col(column).cast(pl.Float64, strict=False) % 1000 == 0)
-    )
-    excessive = thousand["pct"] > 10 * thousand["expected_pct"] and thousand["count"] >= 10
-    return AnalyticsResult(
-        title=f"Round-number analysis of {column}",
-        verdict="warn" if excessive else "ok",
-        verdict_text=(
-            f"{thousand['pct']}% of values are multiples of 1,000 "
-            f"(expected ≈{thousand['expected_pct']}%)"
-            if excessive
-            else "Round-number frequency looks unremarkable"
-        ),
-        stats=[
-            _stat("Values tested", n),
-            _stat("Multiples of 100", f"{tiers[1]['count']:,} ({tiers[1]['pct']}%)"),
-            _stat("Multiples of 1,000", f"{thousand['count']:,} ({thousand['pct']}%)"),
-        ],
-        summary=summary,
-        detail=detail if detail.height else None,
-        tested=n,
-        viz={"type": "bar", "x": "multiple_of", "y": ["pct", "expected_pct"]},
     )
 
 
@@ -847,62 +678,6 @@ def sign_scan(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     )
 
 
-# ------------------------------------------------------- last two digits
-def last_two_digits(df: pl.DataFrame, params: dict) -> AnalyticsResult:
-    column = params.get("column")
-    values = (
-        _numeric_series(df, column)
-        .select(pl.col("value").abs())
-        .filter(pl.col("value") > 0)
-    )
-    n = values.height
-    if n < 100:
-        raise QueryError(
-            f"Only {n} usable values in '{column}' — this test needs at least 100."
-        )
-
-    observed = (
-        values.select((pl.col("value").round(0).cast(pl.Int64) % 100).alias("last_two"))
-        .group_by("last_two")
-        .agg(pl.len().alias("count"))
-    )
-    table = (
-        pl.DataFrame({"last_two": list(range(100))})
-        .join(observed, on="last_two", how="left")
-        .with_columns(pl.col("count").fill_null(0))
-        .with_columns(
-            (100.0 * pl.col("count") / n).round(2).alias("observed_pct"),
-            pl.lit(1.0).alias("expected_pct"),
-        )
-        .sort("last_two")
-    )
-
-    expected = n / 100.0
-    chi_square = sum((c - expected) ** 2 / expected for c in table["count"].to_list())
-    # 99 degrees of freedom: χ² critical ≈ 123.2 (α=0.05), 134.6 (α=0.01).
-    if chi_square > 134.6:
-        verdict, text = "fail", "Strong non-uniformity in the last two digits"
-    elif chi_square > 123.2:
-        verdict, text = "warn", "Last-two-digit distribution deviates from uniform"
-    else:
-        verdict, text = "ok", "Last two digits look uniform"
-
-    top = table.sort("count", descending=True).row(0, named=True)
-    return AnalyticsResult(
-        title=f"Last-two-digit uniformity of {column}",
-        verdict=verdict,
-        verdict_text=text,
-        stats=[
-            _stat("Values tested", n),
-            _stat("Chi-square", round(chi_square, 1)),
-            _stat("Most common ending", f"{top['last_two']:02d} ({top['observed_pct']}%)"),
-        ],
-        summary=table,
-        tested=n,
-        viz={"type": "bar", "x": "last_two", "y": ["observed_pct", "expected_pct"]},
-    )
-
-
 # ---------------------------------------------------------- rare values
 def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     column = params.get("column")
@@ -940,35 +715,366 @@ def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     )
 
 
-# ---------------------------------------------------------------- registry
-ANALYTICS: dict[str, dict] = {
-    "benford": {
-        "group": "Digit & number patterns",
-        "label": "Benford's Law",
-        "icon": "pi pi-chart-bar",
-        "description": (
-            "Compares leading-digit frequencies of an amount column against "
-            "Benford's expected distribution. Deviations can indicate fabricated "
-            "or manipulated figures."
+# --------------------------------------------------------------- referential
+def _key_strings(column: str) -> pl.Expr:
+    """A key column as trimmed text, so an integer code matches its text twin.
+
+    The same normalization :mod:`agent.joins` applies before measuring a match
+    rate. A referential test that disagreed with the join diagnostics about
+    whether a key matches would be reporting on a different relationship than
+    the one an auditor was shown.
+    """
+    return pl.col(column).cast(pl.String).str.strip_chars()
+
+
+MAX_RESOLVES_IN = 3
+
+
+def _resolves_in(
+    orphans: set[str], source: FrameSource, exclude: set[str]
+) -> list[tuple[str, int]]:
+    """Where the unmatched values *do* resolve, across the workspace's keys.
+
+    This is the part that turns a count into a diagnosis. "19 invoices name a
+    purchase order that does not exist" is a data-quality note; "19 invoices
+    carry a requisition id in the purchase-order field" is the finding, and the
+    difference between them is one pass over the other imported key columns.
+
+    Reported as candidates ordered by how much of the orphan set each explains.
+    Nothing is asserted about *why* the values landed there — that is the
+    auditor's call — only that they are another table's keys.
+    """
+    if not orphans:
+        return []
+    found: list[tuple[str, int]] = []
+    for table in source.tables:
+        if table in exclude:
+            continue
+        try:
+            frame = source.resolve(table)
+        except Exception:
+            # A frame that will not load explains nothing, which is the same
+            # answer as a frame that holds none of the values. Diagnosis is a
+            # courtesy on top of the count; it may never fail the test.
+            continue
+        for column in frame.columns:
+            series = frame.select(_key_strings(column)).to_series().drop_nulls()
+            # Only a key column can explain an orphan set: a description column
+            # that happens to contain one of the values explains nothing.
+            if not len(series) or series.n_unique() != len(series):
+                continue
+            hits = len(orphans & set(series.to_list()))
+            if hits:
+                found.append((f"{table}.{column}", hits))
+    found.sort(key=lambda item: (-item[1], item[0]))
+    return found[:MAX_RESOLVES_IN]
+
+
+def referential(
+    df: pl.DataFrame, params: dict, source: FrameSource | None = None
+) -> AnalyticsResult:
+    lookup_table = str(params.get("lookup_table") or "").strip()
+    lookup_column = str(params.get("lookup_column") or "").strip()
+    column = params.get("column")
+    if column not in df.columns:
+        raise QueryError(f"Unknown column '{column}'.")
+    if not lookup_table or not lookup_column:
+        raise QueryError("Exists-in needs a lookup table and column.")
+    if source is None:
+        raise QueryError("Lookup tables are not available in this context.")
+    lookup = source.frame(lookup_table)
+    lookup_column = resolve_column(
+        lookup_column, lookup.columns, table=lookup_table, error_type=QueryError
+    )
+
+    allowed = set(
+        lookup.select(_key_strings(lookup_column)).to_series().drop_nulls().to_list()
+    )
+    keyed = df.with_columns(_key_strings(column).alias("_key"))
+    # A null key is not an unmatched key: the row references nothing, which is a
+    # completeness question and belongs to a completeness test. Counting it here
+    # would merge two different findings into one number. It is still reported,
+    # because a denominator that silently drops rows is the defect this whole
+    # contract exists to prevent.
+    present = keyed.filter(pl.col("_key").is_not_null() & (pl.col("_key") != ""))
+    null_keys = df.height - present.height
+    n = present.height
+    if not n:
+        raise QueryError(f"'{column}' has no values to reconcile.")
+
+    unmatched = present.filter(~pl.col("_key").is_in(list(allowed)))
+    matched = n - unmatched.height
+    census = (
+        unmatched.group_by("_key")
+        .agg(pl.len().alias("occurrences"))
+        .sort(["occurrences", "_key"], descending=[True, False])
+        .rename({"_key": "unmatched_value"})
+    )
+    elsewhere = _resolves_in(
+        set(census["unmatched_value"].to_list()), source, {lookup_table}
+    )
+    if elsewhere:
+        census = census.with_columns(
+            pl.lit(", ".join(f"{name} ({hits})" for name, hits in elsewhere)).alias(
+                "resolves_in"
+            )
+        )
+
+    rate = matched / n
+    stats = [
+        _stat("Values reconciled", n),
+        _stat("Unmatched rows", unmatched.height),
+        _stat("Distinct unmatched keys", census.height),
+        _stat("Match rate", f"{100.0 * rate:.2f}%"),
+    ]
+    if null_keys:
+        stats.append(_stat("Rows with no key", null_keys))
+    if elsewhere:
+        stats.append(_stat("Unmatched keys resolve in", elsewhere[0][0]))
+    text = (
+        f"{counted(unmatched.height, 'row')} {verb(unmatched.height, 'names', 'name')} "
+        f"a {lookup_table}.{lookup_column} value that does not exist"
+        if unmatched.height
+        else f"Every {column} value exists in {lookup_table}.{lookup_column}"
+    )
+    if elsewhere:
+        name, hits = elsewhere[0]
+        text += f"; {hits} of {census.height} unmatched keys are {name} values"
+    elif unmatched.height == n:
+        # Nothing matched and the values are nobody else's key either. Worth
+        # saying outright: the column references a master that was never
+        # imported, which is a scope limitation rather than a population of
+        # exceptions, and reads as neither from a bare count.
+        text += (
+            f"; no {column} value matches, so the master it references may not "
+            "have been imported"
+        )
+    return AnalyticsResult(
+        title=f"{column} exists in {lookup_table}.{lookup_column}",
+        verdict="fail" if unmatched.height else "ok",
+        verdict_text=text,
+        stats=stats,
+        summary=census if census.height else None,
+        detail=unmatched.drop("_key") if unmatched.height else None,
+        tested=n,
+    )
+
+
+# ----------------------------------------------------------- compare columns
+_COMPARE_OPS: dict[str, str] = {
+    "ge": "≥",
+    "gt": ">",
+    "eq": "=",
+    "ne": "≠",
+    "le": "≤",
+    "lt": "<",
+}
+
+
+def _comparable(df: pl.DataFrame, column: str, mode: str) -> pl.Expr:
+    if mode == "number":
+        return pl.col(column).cast(pl.Float64, strict=False)
+    if mode == "date":
+        return _date_expr(df, column)
+    return pl.col(column).cast(pl.String).str.strip_chars()
+
+
+def compare_columns(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    left = params.get("column")
+    right = params.get("other")
+    op = str(params.get("op") or "ge")
+    mode = str(params.get("compare_as") or "auto")
+    for name in (left, right):
+        if name not in df.columns:
+            raise QueryError(f"Unknown column '{name}'.")
+    if left == right:
+        raise QueryError("Pick two different columns to compare.")
+    if op not in _COMPARE_OPS:
+        raise QueryError(f"Unknown comparison '{op}'.")
+    if mode == "auto":
+        left_dtype, right_dtype = df.schema[left], df.schema[right]
+        if left_dtype.is_temporal() or right_dtype.is_temporal():
+            mode = "date"
+        elif left_dtype.is_numeric() and right_dtype.is_numeric():
+            mode = "number"
+        else:
+            mode = "text"
+
+    left_expr = _comparable(df, left, mode).alias("_l")
+    right_expr = _comparable(df, right, mode).alias("_r")
+    tagged = df.with_columns(left_expr, right_expr).drop_nulls(subset=["_l", "_r"])
+    n = tagged.height
+    if not n:
+        raise QueryError(
+            f"No rows have both '{left}' and '{right}' readable as {mode}s."
+        )
+    # ``holds`` is the expectation; the exception is its negation. Stated this
+    # way round because the parameter names the relationship an auditor expects
+    # to be true, and a test whose flagged rows were the *conforming* ones would
+    # invert every downstream count.
+    holds = {
+        "ge": pl.col("_l") >= pl.col("_r"),
+        "gt": pl.col("_l") > pl.col("_r"),
+        "eq": pl.col("_l") == pl.col("_r"),
+        "ne": pl.col("_l") != pl.col("_r"),
+        "le": pl.col("_l") <= pl.col("_r"),
+        "lt": pl.col("_l") < pl.col("_r"),
+    }[op]
+    breached = tagged.filter(~holds)
+    symbol = _COMPARE_OPS[op]
+
+    summary = pl.DataFrame(
+        {
+            "outcome": [f"{left} {symbol} {right}", f"{left} not {symbol} {right}"],
+            "rows": [n - breached.height, breached.height],
+            "pct": [
+                round(100.0 * (n - breached.height) / n, 2),
+                round(100.0 * breached.height / n, 2),
+            ],
+        }
+    )
+    return AnalyticsResult(
+        title=f"{left} {symbol} {right}",
+        verdict="fail" if breached.height else "ok",
+        verdict_text=(
+            f"{counted(breached.height, 'row')} of {n:,} {verb(breached.height, 'breaches', 'breach')} "
+            f"{left} {symbol} {right}"
+            if breached.height
+            else f"{left} {symbol} {right} holds for all {n:,} comparable rows"
         ),
-        "params": [
-            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
-            {
-                "name": "digits",
-                "kind": "select",
-                "label": "Digits",
-                "options": [
-                    {"label": "First digit", "value": 1},
-                    {"label": "First two digits", "value": 2},
-                ],
-                "default": 1,
-            },
+        stats=[
+            _stat("Rows compared", n),
+            _stat("Breaches", breached.height),
+            _stat("Not comparable", df.height - n),
         ],
-        "func": benford,
-    },
+        summary=summary,
+        detail=breached.drop(["_l", "_r"]) if breached.height else None,
+        tested=n,
+        viz={"type": "bar", "x": "outcome", "y": ["rows"]},
+    )
+
+
+# ---------------------------------------------------------- format anomaly
+_MASK_DIGIT = re.compile(r"[0-9]")
+_MASK_ALPHA = re.compile(r"[A-Za-z]")
+_MASK_RUN = re.compile(r"(.)\1+")
+
+
+def value_mask(value: object) -> str:
+    """Collapse one value to its character-class shape.
+
+    ``VINV011-202404`` becomes ``A{4}9{3}-9{6}``. Letters and digits lose their
+    identity, everything else — separators, prefixes' punctuation — is kept
+    verbatim, and runs are counted rather than repeated so a shape stays legible
+    at a glance and two values of the same construction land on one pattern.
+    """
+    text = str(value)
+    masked = _MASK_DIGIT.sub("9", _MASK_ALPHA.sub("A", text))
+    return _MASK_RUN.sub(lambda run: f"{run.group(1)}{{{len(run.group(0))}}}", masked)
+
+
+def format_anomaly(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    if column not in df.columns:
+        raise QueryError(f"Unknown column '{column}'.")
+    raw_share = params.get("max_share_pct")
+    max_share = float(raw_share) if raw_share not in (None, "") else 10.0
+    if not 0 < max_share < 100:
+        raise QueryError("Minority share must be between 0 and 100 percent.")
+
+    tagged = df.with_columns(
+        pl.col(column)
+        .cast(pl.String)
+        .str.strip_chars()
+        .map_elements(value_mask, return_dtype=pl.String)
+        .alias("_pattern")
+    ).filter(pl.col(column).is_not_null() & (pl.col("_pattern") != ""))
+    n = tagged.height
+    if not n:
+        raise QueryError(f"'{column}' has no values to profile.")
+
+    census = (
+        tagged.group_by("_pattern")
+        .agg(pl.len().alias("count"))
+        .with_columns((100.0 * pl.col("count") / n).round(2).alias("share_pct"))
+        .sort(["count", "_pattern"], descending=[True, False])
+        .rename({"_pattern": "pattern"})
+    )
+    # A column with no dominant shape has no minority: free-text descriptions
+    # and per-row identifiers both produce a census where every pattern is rare,
+    # and flagging all of them would report the population. The test only
+    # concludes where one shape actually governs the column.
+    dominant = float(census["share_pct"][0])
+    minority = census.filter(pl.col("share_pct") <= max_share)
+    governed = dominant > 50.0
+    odd = (
+        tagged.filter(pl.col("_pattern").is_in(minority["pattern"].to_list()))
+        if governed and minority.height
+        else None
+    )
+    flagged = odd.height if odd is not None else 0
+    return AnalyticsResult(
+        title=f"Format anomalies in {column}",
+        verdict="warn" if flagged else "ok",
+        verdict_text=(
+            f"{counted(flagged, 'value')} in {counted(minority.height, 'minority format')} "
+            f"against a dominant {census['pattern'][0]} ({dominant:.1f}%)"
+            if flagged
+            else (
+                f"No format governs {column}; {census.height:,} shapes across {n:,} values"
+                if not governed
+                else f"All {n:,} values conform to {counted(census.height, 'format')}"
+            )
+        ),
+        stats=[
+            _stat("Values profiled", n),
+            _stat("Distinct formats", census.height),
+            _stat("Dominant format", f"{census['pattern'][0]} ({dominant:.1f}%)"),
+            _stat("Off-pattern values", flagged),
+        ],
+        summary=census,
+        detail=odd.drop("_pattern") if odd is not None else None,
+        tested=n,
+        viz={"type": "bar", "x": "pattern", "y": ["count"]},
+    )
+
+
+# ---------------------------------------------------------------- registry
+# What a test's flagged output *means*, which is not something a count can say
+# and not something a title reliably says either.
+#
+#   exception   - the flagged items are control exceptions on their face. An
+#                 invoice exceeding its purchase order, a key that reconciles to
+#                 nothing, a duplicate where a key must be unique, a gap in a
+#                 document sequence. These may evidence a control failure
+#                 directly.
+#   screening   - the flagged items are candidates for review, not conclusions.
+#                 A weekend posting, a value outside an IQR fence, a Benford
+#                 deviation: each is unusual relative to its own population and
+#                 nothing more, and whether it matters is a judgment the data
+#                 cannot make. Note this is about what the output means, not
+#                 whether there are rows — a digit test flags no rows and still
+#                 reaches a verdict a reader can mistake for a finding.
+#   descriptive - the test characterises a population and has no exception
+#                 concept at all: a stratification, a period trend, a drawn
+#                 sample. Nothing here can be promoted or reported as an
+#                 exception because nothing here is one.
+#
+# Typed here rather than inferred downstream because three separate places were
+# guessing at it: the workflow's hand-maintained exclusion list, the memo prompt
+# (three paragraphs of prose about not writing up an outlier as a finding), and
+# ``data_tests``, which kept its own literal list of three screening test ids to
+# decide whether a result needed corroboration. They now read one field.
+SIGNAL_EXCEPTION = "exception"
+SIGNAL_SCREENING = "screening"
+SIGNAL_DESCRIPTIVE = "descriptive"
+SIGNALS = (SIGNAL_EXCEPTION, SIGNAL_SCREENING, SIGNAL_DESCRIPTIVE)
+
+ANALYTICS: dict[str, dict] = {
     "duplicates": {
         "group": "Duplicates & sequences",
         "label": "Duplicate Detection",
+        "signal": SIGNAL_EXCEPTION,
         "icon": "pi pi-clone",
         "description": (
             "Finds rows sharing the same key values — duplicate invoices, "
@@ -979,22 +1085,10 @@ ANALYTICS: dict[str, dict] = {
         ],
         "func": duplicates,
     },
-    "gaps": {
-        "group": "Duplicates & sequences",
-        "label": "Sequence Gaps",
-        "icon": "pi pi-sort-numeric-up",
-        "description": (
-            "Checks a document/invoice number sequence for missing and reused "
-            "numbers. Non-digit characters are ignored."
-        ),
-        "params": [
-            {"name": "column", "kind": "column", "label": "Sequence column"},
-        ],
-        "func": gaps,
-    },
     "sampling": {
         "group": "Sampling",
         "label": "Sampling",
+        "signal": SIGNAL_DESCRIPTIVE,
         "icon": "pi pi-filter",
         "description": (
             "Draws a documented, reproducible sample: random, fixed-interval, "
@@ -1026,6 +1120,7 @@ ANALYTICS: dict[str, dict] = {
     "period_compare": {
         "group": "Timing",
         "label": "Period Comparison",
+        "signal": SIGNAL_DESCRIPTIVE,
         "icon": "pi pi-calendar",
         "description": (
             "Aggregates activity per day/week/month/quarter/year and shows "
@@ -1056,22 +1151,10 @@ ANALYTICS: dict[str, dict] = {
         ],
         "func": period_compare,
     },
-    "round_numbers": {
-        "group": "Digit & number patterns",
-        "label": "Round Numbers",
-        "icon": "pi pi-circle",
-        "description": (
-            "Measures how often amounts are exact multiples of 10/100/1,000. "
-            "Excessive round amounts suggest estimates or fabricated entries."
-        ),
-        "params": [
-            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
-        ],
-        "func": round_numbers,
-    },
     "outliers": {
         "group": "Amounts & outliers",
         "label": "Outlier Detection",
+        "signal": SIGNAL_SCREENING,
         "icon": "pi pi-chart-scatter",
         "description": (
             "Flags numeric values far from the centre of the distribution using "
@@ -1102,6 +1185,7 @@ ANALYTICS: dict[str, dict] = {
     "threshold_check": {
         "group": "Amounts & outliers",
         "label": "Threshold Clustering",
+        "signal": SIGNAL_SCREENING,
         "icon": "pi pi-arrows-h",
         "description": (
             "Counts values sitting just below an approval/authorization limit "
@@ -1118,6 +1202,7 @@ ANALYTICS: dict[str, dict] = {
     "weekend_activity": {
         "group": "Timing",
         "label": "Weekend Postings",
+        "signal": SIGNAL_SCREENING,
         "icon": "pi pi-calendar-times",
         "description": (
             "Breaks activity down by weekday and flags entries dated on a "
@@ -1131,6 +1216,7 @@ ANALYTICS: dict[str, dict] = {
     "date_lag": {
         "group": "Timing",
         "label": "Date Lag / Backdating",
+        "signal": SIGNAL_EXCEPTION,
         "icon": "pi pi-history",
         "description": (
             "Measures the gap between two date columns. Flags negative gaps "
@@ -1147,6 +1233,7 @@ ANALYTICS: dict[str, dict] = {
     "stratify": {
         "group": "Amounts & outliers",
         "label": "Stratification",
+        "signal": SIGNAL_DESCRIPTIVE,
         "icon": "pi pi-align-left",
         "description": (
             "Buckets a numeric column into bands (equal-width or by quantile) "
@@ -1172,6 +1259,7 @@ ANALYTICS: dict[str, dict] = {
     "completeness": {
         "group": "Data quality",
         "label": "Completeness",
+        "signal": SIGNAL_EXCEPTION,
         "icon": "pi pi-check-square",
         "description": (
             "Counts blank and null values in the chosen mandatory columns and "
@@ -1185,6 +1273,7 @@ ANALYTICS: dict[str, dict] = {
     "sign_scan": {
         "group": "Amounts & outliers",
         "label": "Negative / Zero Scan",
+        "signal": SIGNAL_SCREENING,
         "icon": "pi pi-minus-circle",
         "description": (
             "Splits an amount column into negative, zero, and positive values. "
@@ -1195,23 +1284,10 @@ ANALYTICS: dict[str, dict] = {
         ],
         "func": sign_scan,
     },
-    "last_two_digits": {
-        "group": "Digit & number patterns",
-        "label": "Last-Two-Digit Test",
-        "icon": "pi pi-percentage",
-        "description": (
-            "A Benford-family test: the last two digits of genuine amounts are "
-            "close to uniform. Spikes point to rounding, estimates, or "
-            "fabricated figures the first-digit test can miss."
-        ),
-        "params": [
-            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
-        ],
-        "func": last_two_digits,
-    },
     "rare_values": {
         "group": "Data quality",
         "label": "Rare Values",
+        "signal": SIGNAL_SCREENING,
         "icon": "pi pi-search-minus",
         "description": (
             "Finds category values that occur only a handful of times — "
@@ -1222,6 +1298,94 @@ ANALYTICS: dict[str, dict] = {
             {"name": "max_count", "kind": "number", "label": "Max occurrences", "default": 1},
         ],
         "func": rare_values,
+    },
+    "referential": {
+        "group": "Cross-table reconciliation",
+        "label": "Exists in table",
+        "signal": SIGNAL_EXCEPTION,
+        "icon": "pi pi-link",
+        "description": (
+            "Reconciles a reference column against another table's key — every "
+            "PO number on an invoice exists in the PO master, every approver id "
+            "exists in the staff master. Reports the unmatched values, and where "
+            "those values do resolve elsewhere in the workspace: a key that "
+            "reconciles to nothing usually reconciles to the wrong table."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Reference column"},
+            {"name": "lookup_table", "kind": "table", "label": "Lookup table"},
+            {"name": "lookup_column", "kind": "lookup_column", "label": "Lookup key"},
+        ],
+        "needs_lookup": True,
+        "func": referential,
+    },
+    "compare_columns": {
+        "group": "Cross-table reconciliation",
+        "label": "Compare Two Columns",
+        "signal": SIGNAL_EXCEPTION,
+        "icon": "pi pi-arrow-right-arrow-left",
+        "description": (
+            "Tests a relationship that must hold between two columns of the same "
+            "row — an invoice amount at most its purchase-order total, a receipt "
+            "date on or after the order date, a stated department equal to the "
+            "master's. Flags the rows that breach it. On a joined frame this is "
+            "the test the join was built for."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "This column"},
+            {
+                "name": "op",
+                "kind": "select",
+                "label": "Must be",
+                "options": [
+                    {"label": "≥ (at least)", "value": "ge"},
+                    {"label": "> (greater than)", "value": "gt"},
+                    {"label": "= (equal to)", "value": "eq"},
+                    {"label": "≠ (different from)", "value": "ne"},
+                    {"label": "≤ (at most)", "value": "le"},
+                    {"label": "< (less than)", "value": "lt"},
+                ],
+                "default": "le",
+            },
+            {"name": "other", "kind": "column", "label": "That column"},
+            {
+                "name": "compare_as",
+                "kind": "select",
+                "label": "Compare as",
+                "options": [
+                    {"label": "Auto (from column types)", "value": "auto"},
+                    {"label": "Numbers", "value": "number"},
+                    {"label": "Dates", "value": "date"},
+                    {"label": "Text", "value": "text"},
+                ],
+                "default": "auto",
+            },
+        ],
+        "func": compare_columns,
+    },
+    "format_anomaly": {
+        "group": "Data quality",
+        "label": "Format Anomalies",
+        "signal": SIGNAL_SCREENING,
+        "icon": "pi pi-question",
+        "description": (
+            "Learns the shape identifiers in a column actually take — letters, "
+            "digits and separators, not the values — and flags the ones built "
+            "differently. Finds the batch of references that does not look like "
+            "the others without anyone specifying what to look for. Only "
+            "concludes where one shape governs the column."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Identifier column"},
+            {
+                "name": "max_share_pct",
+                "kind": "number",
+                "label": "Minority share (%)",
+                "default": 10,
+                "optional": True,
+            },
+        ],
+        "func": format_anomaly,
     },
 }
 
@@ -1246,8 +1410,39 @@ def registry_payload() -> list[dict]:
     ]
 
 
-def canonicalize_params(df: pl.DataFrame, test_id: str, params: dict | None) -> dict:
-    """Resolve analytics column parameters to their exact source spelling."""
+def signal_for(test_id: object) -> str:
+    """What a flagged row from this test is: exception, screening, descriptive.
+
+    Unknown tests read as ``descriptive`` — the conservative answer, since it is
+    the one classification that claims no control evidence.
+    """
+    meta = ANALYTICS.get(canonical_test_id(test_id))
+    return str((meta or {}).get("signal") or SIGNAL_DESCRIPTIVE)
+
+
+def ids_with_signal(*signals: str) -> frozenset[str]:
+    """Every registered test whose flagged rows carry one of these meanings."""
+    wanted = set(signals)
+    return frozenset(
+        test_id
+        for test_id, meta in ANALYTICS.items()
+        if str(meta.get("signal") or SIGNAL_DESCRIPTIVE) in wanted
+    )
+
+
+def canonicalize_params(
+    df: pl.DataFrame,
+    test_id: str,
+    params: dict | None,
+    *,
+    source: FrameSource | None = None,
+) -> dict:
+    """Resolve analytics column parameters to their exact source spelling.
+
+    A ``lookup_column`` resolves against the lookup frame rather than the target,
+    which is the whole point of the kind: the two frames have different columns
+    and resolving a lookup key against the target would reject every valid one.
+    """
     test_id = canonical_test_id(test_id)
     meta = ANALYTICS.get(test_id)
     if meta is None:
@@ -1258,23 +1453,49 @@ def canonicalize_params(df: pl.DataFrame, test_id: str, params: dict | None) -> 
         value = normalized.get(name)
         if value in (None, "", []):
             continue
-        if parameter.get("kind") == "column":
+        kind = parameter.get("kind")
+        if kind == "column":
             normalized[name] = resolve_column(
                 value, df.columns, error_type=QueryError
             )
-        elif parameter.get("kind") == "columns":
+        elif kind == "columns":
             normalized[name] = resolve_columns(
                 value, df.columns, error_type=QueryError
             )
+        elif kind == "lookup_column" and source is not None:
+            table = str(normalized.get("lookup_table") or "").strip()
+            if table:
+                normalized[name] = resolve_column(
+                    value,
+                    source.frame(table).columns,
+                    table=table,
+                    error_type=QueryError,
+                )
     return normalized
 
 
-def run_test(df: pl.DataFrame, test_id: str, params: dict) -> AnalyticsResult:
+def run_test(
+    df: pl.DataFrame,
+    test_id: str,
+    params: dict,
+    *,
+    source: FrameSource | None = None,
+) -> AnalyticsResult:
+    """Run one registered test against a frame.
+
+    ``source`` is optional and only reaches the tests that declare
+    ``needs_lookup``: every other test is a property of ``df`` alone and its
+    signature does not change. A lookup test called without a source raises
+    rather than silently reconciling against nothing.
+    """
     test_id = canonical_test_id(test_id)
     meta = ANALYTICS.get(test_id)
     if meta is None:
         raise QueryError(f"Unknown analytics test '{test_id}'.")
-    return meta["func"](df, canonicalize_params(df, test_id, params))
+    resolved = canonicalize_params(df, test_id, params, source=source)
+    if meta.get("needs_lookup"):
+        return meta["func"](df, resolved, source)
+    return meta["func"](df, resolved)
 
 
 def suggested_viz(df: pl.DataFrame, test_id: str, params: dict) -> dict | None:

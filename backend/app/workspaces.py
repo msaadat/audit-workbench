@@ -993,6 +993,24 @@ class Workspace:
     def table_names(self) -> list[str]:
         return [t["name"] for t in self.tables] + [j["name"] for j in self.joins]
 
+    def frame_source(self):
+        """Cross-frame access for the analytics tests that reconcile between frames.
+
+        Most analytics are a property of one frame and never ask for this. A
+        referential test is: its question is whether this frame's values exist in
+        another, so it needs to read a named frame and to know which frames it
+        may read. Frames resolve lazily; only the catalog is listed up front.
+
+        Mirrors the ``resolve`` callback the validation engine already receives,
+        deliberately — the two engines answering "does this value exist over
+        there" differently would be worse than either answer.
+        """
+        from . import analytics
+
+        return analytics.FrameSource(
+            resolve=self.get_frame, tables=tuple(self.table_names())
+        )
+
     def _table_entry(self, name: str) -> dict | None:
         return next((t for t in self.tables if t["name"] == name), None)
 

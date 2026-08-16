@@ -1,43 +1,28 @@
-import math
 import random
 
 import polars as pl
 import pytest
 
-from app.analytics import registry_payload, run_test
+from app.analytics import (
+    SIGNAL_DESCRIPTIVE,
+    SIGNAL_EXCEPTION,
+    SIGNAL_SCREENING,
+    SIGNALS,
+    FrameSource,
+    registry_payload,
+    run_test,
+    ids_with_signal,
+    signal_for,
+    value_mask,
+)
 from app.explore import QueryError
-
-
-def _benford_like(n: int = 2000, seed: int = 7) -> pl.DataFrame:
-    rng = random.Random(seed)
-    # 10**uniform gives an exactly Benford-distributed mantissa.
-    return pl.DataFrame({"amount": [10 ** rng.uniform(0, 4) for _ in range(n)]})
 
 
 def test_registry_is_json_safe():
     registry = registry_payload()
     ids = {t["id"] for t in registry}
-    assert {"benford", "duplicates", "gaps", "sampling", "period_compare", "round_numbers"} <= ids
+    assert {"duplicates", "sampling", "period_compare", "date_lag"} <= ids
     assert all("func" not in t for t in registry)
-
-
-def test_benford_conforming_data_passes():
-    result = run_test(_benford_like(), "benford", {"column": "amount", "digits": 1})
-    assert result.verdict == "ok"
-    assert result.summary.height == 9
-    total_expected = result.summary["expected_pct"].sum()
-    assert math.isclose(total_expected, 100.0, abs_tol=0.1)
-
-
-def test_benford_uniform_data_fails():
-    df = pl.DataFrame({"amount": [float(v) for v in range(100000, 101000)]})
-    result = run_test(df, "benford", {"column": "amount", "digits": 1})
-    assert result.verdict == "fail"
-
-
-def test_benford_requires_enough_values():
-    with pytest.raises(QueryError, match="at least 100"):
-        run_test(pl.DataFrame({"amount": [1.0] * 50}), "benford", {"column": "amount"})
 
 
 def test_duplicates(transactions_df):
@@ -61,20 +46,6 @@ def test_analytics_column_params_are_canonicalized(transactions_df):
     )
     assert result.verdict == "fail"
     assert result.detail.height == 2
-
-
-def test_gaps(transactions_df):
-    result = run_test(transactions_df, "gaps", {"column": "invoice_no"})
-    assert result.verdict == "warn"
-    assert result.summary.rows() == [(1004, 1004, 1)]
-    reused = next(s for s in result.stats if s["label"] == "Reused numbers")
-    assert reused["value"] == "1"
-
-
-def test_gaps_strips_prefixes():
-    df = pl.DataFrame({"doc": ["INV-001", "INV-002", "INV-005"]})
-    result = run_test(df, "gaps", {"column": "doc"})
-    assert result.summary.rows() == [(3, 4, 2)]
 
 
 def test_sampling_random_reproducible(transactions_df):
@@ -107,13 +78,6 @@ def test_period_compare_monthly(transactions_df):
     assert jan["amount_sum"] == pytest.approx(2150.0)
 
 
-def test_round_numbers(transactions_df):
-    result = run_test(transactions_df, "round_numbers", {"column": "amount"})
-    thousand_row = result.summary.filter(pl.col("multiple_of") == 1000)
-    assert thousand_row["count"][0] == 2  # 2000 and 1000
-    assert result.detail.height == 2
-
-
 def test_registry_includes_new_tests():
     ids = {t["id"] for t in registry_payload()}
     assert {
@@ -124,7 +88,6 @@ def test_registry_includes_new_tests():
         "stratify",
         "completeness",
         "sign_scan",
-        "last_two_digits",
         "rare_values",
     } <= ids
 
@@ -210,20 +173,6 @@ def test_sign_scan():
     assert neg_row["count"][0] == 2
 
 
-def test_last_two_digits_uniform_and_spiked():
-    uniform = pl.DataFrame({"amount": [float(v) for v in range(100, 1100)]})
-    clean = run_test(uniform, "last_two_digits", {"column": "amount"})
-    assert clean.verdict == "ok"
-    spiked = pl.DataFrame({"amount": [100.0] * 500})  # every value ends in 00
-    bad = run_test(spiked, "last_two_digits", {"column": "amount"})
-    assert bad.verdict == "fail"
-
-
-def test_last_two_digits_needs_enough_values():
-    with pytest.raises(QueryError, match="at least 100"):
-        run_test(pl.DataFrame({"amount": [123.0] * 20}), "last_two_digits", {"column": "amount"})
-
-
 def test_rare_values(transactions_df):
     result = run_test(transactions_df, "rare_values", {"column": "cust_id", "max_count": 1})
     # C3 appears once; C1 twice, C2 three times.
@@ -235,3 +184,204 @@ def test_rare_values(transactions_df):
 def test_unknown_test_rejected(transactions_df):
     with pytest.raises(QueryError, match="Unknown analytics test"):
         run_test(transactions_df, "nope", {})
+
+
+# --------------------------------------------------------------- signal
+def test_every_registered_test_declares_what_its_output_means():
+    """Three places used to guess this; they now read one field, so it must exist."""
+    for entry in registry_payload():
+        assert entry.get("signal") in SIGNALS, entry["id"]
+
+
+def test_signal_reads_the_registry():
+    assert signal_for("referential") == SIGNAL_EXCEPTION
+    assert signal_for("weekend_activity") == SIGNAL_SCREENING
+    assert signal_for("stratify") == SIGNAL_DESCRIPTIVE
+    # An unregistered id claims no control evidence rather than defaulting to it.
+    assert signal_for("nope") == SIGNAL_DESCRIPTIVE
+    assert signal_for(None) == SIGNAL_DESCRIPTIVE
+
+
+def test_the_screening_family_is_the_one_data_tests_used_to_hardcode():
+    """``data_tests`` and ``dashboard`` each kept their own literal copy of it."""
+    assert {"outliers", "weekend_activity", "rare_values"} <= ids_with_signal(
+        SIGNAL_SCREENING
+    )
+
+
+# ---------------------------------------------------------- referential
+def _masters() -> FrameSource:
+    frames = {
+        "po_master": pl.DataFrame({"po_number": ["PO1", "PO2", "PO3"]}),
+        "req_master": pl.DataFrame({"req_id": ["RQ9", "RQ8"]}),
+    }
+    return FrameSource(resolve=frames.__getitem__, tables=tuple(frames))
+
+
+def test_referential_flags_rows_whose_key_does_not_exist():
+    invoices = pl.DataFrame(
+        {"invoice": ["I1", "I2", "I3"], "po_link": ["PO1", "PO2", "NOPE"]}
+    )
+    result = run_test(
+        invoices,
+        "referential",
+        {"column": "po_link", "lookup_table": "po_master", "lookup_column": "po_number"},
+        source=_masters(),
+    )
+    assert result.verdict == "fail"
+    assert result.tested == 3
+    assert result.detail.height == 1
+    assert result.summary["unmatched_value"].to_list() == ["NOPE"]
+
+
+def test_referential_names_where_the_unmatched_keys_do_resolve():
+    """The diagnosis, not just the count: a key that reconciles to nothing here
+    usually reconciles to the wrong table, and saying which turns a data-quality
+    note into a finding."""
+    invoices = pl.DataFrame(
+        {"invoice": ["I1", "I2", "I3"], "po_link": ["PO1", "RQ9", "RQ8"]}
+    )
+    result = run_test(
+        invoices,
+        "referential",
+        {"column": "po_link", "lookup_table": "po_master", "lookup_column": "po_number"},
+        source=_masters(),
+    )
+    assert "req_master.req_id" in result.verdict_text
+    assert set(result.summary["resolves_in"].to_list()) == {"req_master.req_id (2)"}
+
+
+def test_referential_separates_a_null_key_from_an_unmatched_one():
+    """A row referencing nothing is a completeness question, not a broken
+    reference. Merging the two would report one number for two findings."""
+    invoices = pl.DataFrame({"invoice": ["I1", "I2"], "po_link": ["PO1", None]})
+    result = run_test(
+        invoices,
+        "referential",
+        {"column": "po_link", "lookup_table": "po_master", "lookup_column": "po_number"},
+        source=_masters(),
+    )
+    assert result.verdict == "ok"
+    assert result.tested == 1
+    assert any(stat["label"] == "Rows with no key" for stat in result.stats)
+
+
+def test_referential_says_so_when_nothing_matches_at_all():
+    """A zero match rate with the values found nowhere else is a scope
+    limitation — the master was never imported — and reads as neither a clean
+    result nor a population of exceptions without being told."""
+    orders = pl.DataFrame({"po": ["X1", "X2"], "buyer": ["B001", "B002"]})
+    result = run_test(
+        orders,
+        "referential",
+        {"column": "buyer", "lookup_table": "po_master", "lookup_column": "po_number"},
+        source=_masters(),
+    )
+    assert result.verdict == "fail"
+    assert "may not have been imported" in result.verdict_text
+
+
+def test_referential_matches_an_integer_code_to_its_text_twin():
+    frames = {"staff": pl.DataFrame({"staff_id": [1001, 1002]})}
+    source = FrameSource(resolve=frames.__getitem__, tables=("staff",))
+    rows = pl.DataFrame({"who": ["1001", "1002"]})
+    result = run_test(
+        rows,
+        "referential",
+        {"column": "who", "lookup_table": "staff", "lookup_column": "staff_id"},
+        source=source,
+    )
+    assert result.verdict == "ok"
+
+
+def test_referential_without_a_source_refuses_rather_than_clearing():
+    invoices = pl.DataFrame({"po_link": ["PO1"]})
+    with pytest.raises(QueryError, match="not available"):
+        run_test(
+            invoices,
+            "referential",
+            {
+                "column": "po_link",
+                "lookup_table": "po_master",
+                "lookup_column": "po_number",
+            },
+        )
+
+
+# ------------------------------------------------------- compare columns
+def test_compare_columns_flags_the_rows_that_breach_the_expectation():
+    frame = pl.DataFrame({"billed": [100.0, 250.0, 90.0], "ordered": [100.0, 200.0, 100.0]})
+    result = run_test(
+        frame, "compare_columns", {"column": "billed", "op": "le", "other": "ordered"}
+    )
+    assert result.verdict == "fail"
+    assert result.tested == 3
+    assert result.detail["billed"].to_list() == [250.0]
+
+
+def test_compare_columns_reads_dates_as_dates():
+    frame = pl.DataFrame(
+        {"invoice_date": ["2026-01-10", "2026-03-01"], "po_date": ["2026-01-20", "2026-02-01"]}
+    )
+    result = run_test(
+        frame,
+        "compare_columns",
+        {"column": "invoice_date", "op": "ge", "other": "po_date"},
+    )
+    assert result.verdict == "fail"
+    assert result.detail.height == 1
+
+
+def test_compare_columns_excludes_rows_it_could_not_compare():
+    """A row missing either side is a row no conclusion covers, so it belongs in
+    neither the numerator nor the denominator — and is reported, not dropped."""
+    frame = pl.DataFrame({"billed": [100.0, None, 300.0], "ordered": [50.0, 10.0, None]})
+    result = run_test(
+        frame, "compare_columns", {"column": "billed", "op": "le", "other": "ordered"}
+    )
+    assert result.tested == 1
+    assert result.detail.height == 1
+    assert {"label": "Not comparable", "value": "2"} in result.stats
+
+
+def test_compare_columns_rejects_a_column_against_itself():
+    frame = pl.DataFrame({"amount": [1.0, 2.0]})
+    with pytest.raises(QueryError, match="two different columns"):
+        run_test(
+            frame, "compare_columns", {"column": "amount", "op": "le", "other": "amount"}
+        )
+
+
+# -------------------------------------------------------- format anomaly
+def test_format_anomaly_finds_the_batch_built_differently():
+    """No pattern is supplied: the test learns the shape the column actually
+    takes and reports what does not fit it."""
+    frame = pl.DataFrame(
+        {"ref": [f"VINV{index:03d}-202404" for index in range(20)] + ["VINSUSP001", "VINSUSP002"]}
+    )
+    result = run_test(frame, "format_anomaly", {"column": "ref"})
+    assert result.verdict == "warn"
+    assert result.detail["ref"].to_list() == ["VINSUSP001", "VINSUSP002"]
+    assert result.summary["pattern"][0] == "A{4}9{3}-9{6}"
+
+
+def test_format_anomaly_concludes_nothing_where_no_shape_governs():
+    """Per-row identifiers and free text both produce a census where every
+    pattern is rare. Flagging all of them would report the population."""
+    frame = pl.DataFrame({"note": ["a", "bb", "ccc", "dddd", "eeeee", "ffffff"]})
+    result = run_test(frame, "format_anomaly", {"column": "note"})
+    assert result.verdict == "ok"
+    assert result.detail is None
+    assert "No format governs" in result.verdict_text
+
+
+def test_format_anomaly_is_quiet_on_a_uniform_column():
+    frame = pl.DataFrame({"ref": [f"INV{index:04d}" for index in range(12)]})
+    result = run_test(frame, "format_anomaly", {"column": "ref"})
+    assert result.verdict == "ok"
+    assert result.detail is None
+
+
+def test_value_mask_keeps_separators_and_counts_runs():
+    assert value_mask("VINV011-202404") == "A{4}9{3}-9{6}"
+    assert value_mask("PO2024004") == "A{2}9{7}"
