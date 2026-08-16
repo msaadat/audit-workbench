@@ -139,22 +139,21 @@ def _join_utility_response(user: str) -> dict:
 
 
 def _analysis_summary_response(_user: str) -> dict:
-    """A structurally valid EDA memo for any workspace.
+    """A structurally valid EDA memo submission for any workspace.
 
-    Returned as a ``content`` message because this worker answers in Markdown;
-    anything else is JSON-encoded and arrives as one quoted line. It cites no
-    procedures on purpose — embeds are optional, and a default that named an id
-    could cite one the bundle never supplied, which the validator rejects.
+    The worker takes the memo in parts and assembles the document itself, so
+    this answers with the parts. It references no procedure on purpose: a
+    default that reached for one would have to know what the bundle supplied,
+    and every workspace using this fixture supplies something different.
     """
     return {
-        "content": (
-            "The imported population reconciles and nothing requires escalation.\n"
-            "\n## Data received and its limitations\n"
-            "The imported tables were profiled.\n"
-            "\n## What the analysis found\nNothing requiring escalation.\n"
-            "\n## How far these results can be relied on\nNo material gaps.\n"
-            "\n## Further work required\nNothing outstanding.\n"
-        )
+        "lead": "The imported population reconciles and nothing requires escalation.",
+        "data_received": "The imported tables were profiled.",
+        "findings": [
+            {"prose": "Nothing requiring escalation.", "procedures": []},
+        ],
+        "reliance": {"prose": "No material gaps.", "procedures": []},
+        "further_work": "Nothing outstanding.",
     }
 
 

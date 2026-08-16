@@ -53,38 +53,31 @@ SUMMARY_TAG = "agent:analysis_summary"
 
 
 def _scripted_summary(user: str) -> dict:
-    """A memo that cites whichever procedures the bundle actually supplied.
+    """A submission that references whichever procedures the bundle supplied.
 
-    Citing a real supplied id matters: the worker's validator rejects an embed
-    naming a procedure it was not shown, so a script with a hardcoded id would
-    pass or fail for reasons unrelated to what is being tested.
-
-    Returned as a ``content`` message rather than a bare value because this
-    worker answers in Markdown; ``FakeAgentLLM`` JSON-encodes anything else,
-    which would deliver the memo as one quoted line.
+    The worker offers the memo a numbered register and takes back numbers, so a
+    script that reached for an analysis id would be answering a protocol this
+    worker no longer speaks. Reading the sheet keeps the script honest about
+    what was actually supplied, which is the point of scripting it at all.
     """
     payload = json.loads(user.split("\n\nThe previous summary failed")[0])
-    supplied = [
-        item["content"]["analysis_id"]
-        for item in payload["RESOLVED CONTEXT"]["items"]
-        if item["source_id"] == "analysis_results"
-    ]
-    embed = (
-        "\n```embed\nanalysis: %s\nas: summary_table\ncaption: what it showed\n```\n"
-        % supplied[0]
-        if supplied
-        else ""
+    references = [entry["ref"] for entry in payload.get("PROCEDURE REFERENCES") or []]
+    findings = (
+        [
+            {
+                "prose": f"Duplicate keys are the only issue ([#{references[0]}]).",
+                "procedures": [references[0]],
+            }
+        ]
+        if references
+        else [{"prose": "Nothing requires escalation.", "procedures": []}]
     )
     return {
-        "content": (
-            "The population is complete and the duplicate keys are the only issue.\n"
-            "\n## Data received and its limitations\n"
-            f"{len(supplied)} procedure(s) were run over the imported data.\n"
-            f"{embed}"
-            "\n## What the analysis found\nNone that require escalation.\n"
-            "\n## How far these results can be relied on\nKeys are largely complete.\n"
-            "\n## Further work required\nNothing outstanding.\n"
-        )
+        "lead": "The population is complete and the duplicate keys are the only issue.",
+        "data_received": f"{len(references)} procedure(s) were run over the imported data.",
+        "findings": findings,
+        "reliance": {"prose": "Keys are largely complete.", "procedures": []},
+        "further_work": "Nothing outstanding.",
     }
 
 
@@ -3319,409 +3312,156 @@ def test_the_summary_context_permits_flagged_rows_and_nothing_wider():
     assert spec.privacy.allow_table_rows is False
 
 
-def test_a_summary_citing_an_unsupplied_procedure_is_rejected(workspace_with_data):
+def _refs(request) -> dict[int, str]:
+    return analysis_worker._summary_reference_index(request)
+
+
+def _ref_of(request, analysis_id: str) -> int:
+    return next(
+        number for number, value in _refs(request).items() if value == analysis_id
+    )
+
+
+def _payload(**overrides):
+    """A submission that satisfies the contract, before an override breaks it."""
+    payload = {
+        "lead": "The population reconciles and one issue is worth following up.",
+        "data_received": "Six tables were received.",
+        "findings": [{"prose": "Invoices are duplicated.", "procedures": [1]}],
+        "reliance": {"prose": "22 rows carry a null key.", "procedures": []},
+        "further_work": "Obtain the buyer master.",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_a_memo_cannot_name_a_procedure_that_does_not_exist(workspace_with_data):
+    """The failure that cost three runs is now unrepresentable, not caught.
+
+    One draft got 15 of 20 embed ids wrong, spelling one with a character that
+    is not hexadecimal. The writer no longer types an id: it picks a number, and
+    the numbers it may pick are enumerated in the tool schema.
+    """
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    tool = analysis_worker._summary_submission_tool(request)
+    schema = tool["function"]["parameters"]["properties"]
+    references = schema["findings"]["items"]["properties"]["procedures"]["items"]
+
+    assert tool["function"]["name"] == analysis_worker.SUMMARY_SUBMISSION_TOOL
+    assert references == {"type": "integer", "enum": sorted(_refs(request))}
+    assert schema["findings"]["items"]["additionalProperties"] is False
+
+
+def test_the_reference_sheet_never_shows_the_writer_an_id(workspace_with_data):
+    """An id in front of a writer is an id that ends up copied."""
     ws = workspace_with_data
     analysis = _saved(ws, "Duplicates", DUPLICATES)
     request = _summary_request(workspaces.load_workspace(ws.id))
 
-    with pytest.raises(WorkerResponseValidationError, match="not a supplied procedure"):
-        analysis_worker.validate_analysis_summary(
-            {"markdown": _memo(embeds=_embed("A-NOTREAL"))}, request
-        )
+    sheet = analysis_worker._summary_reference_sheet(request)
+    entry = next(item for item in sheet if item["ref"] == _ref_of(request, analysis["id"]))
 
-    # The same memo citing a procedure it was actually shown is accepted, and
-    # the accepted proposal reports what it cited.
+    assert analysis["id"] not in json.dumps(sheet)
+    assert entry["title"] == "Duplicates"
+    assert entry["flagged_rows"] > 0
+
+
+def test_the_assembler_writes_the_skeleton_and_the_tables(workspace_with_data):
+    """The parts the model no longer emits, and no longer gets wrong."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+
     accepted = analysis_worker.validate_analysis_summary(
-        {"markdown": _memo(embeds=_embed(analysis["id"], "exception_table"))}, request
+        _payload(
+            findings=[
+                {"prose": f"Invoices are duplicated ([#{ref}]).", "procedures": [ref]}
+            ]
+        ),
+        request,
     )
+    markdown = accepted["markdown"]
+
+    assert [
+        line[3:] for line in markdown.splitlines() if line.startswith("## ")
+    ] == list(analysis_worker.SUMMARY_SECTIONS)
+    assert markdown.startswith("The population reconciles")
+    # The marker is resolved, and the table it implies is placed.
+    assert f"({analysis['id']})" in markdown
+    assert "[#" not in markdown
+    assert [
+        (item["analysis"], item["as"]) for item in analysis_worker.parse_embeds(markdown)
+    ] == [(analysis["id"], "exception_table")]
     assert accepted["cited_analysis_ids"] == [analysis["id"]]
 
 
-def test_every_embed_error_offers_deleting_the_block(workspace_with_data):
-    """A repair told only that a value is wrong reaches for a replacement.
-
-    One live repair, told an embed named no supplied procedure, substituted an
-    id that did not exist under a kind that did not exist — three lines above
-    the correct embed for the same result. Deleting the block was always a way
-    to comply; nothing in the message said so.
-    """
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    broken = {
-        "unsupplied id": _embed("A-NOTREAL", "exception_table"),
-        "coined kind": _embed(analysis["id"], "spreadsheets"),
-        "no analysis named": f"{FENCE}embed\nas: exception_table\n{FENCE}\n",
-        "embedded twice": (
-            _embed(analysis["id"], "exception_table")
-            + _embed(analysis["id"], "exception_table")
-        ),
-    }
-    for label, embeds in broken.items():
-        with pytest.raises(WorkerResponseValidationError) as raised:
-            analysis_worker.validate_analysis_summary(
-                {"markdown": _memo(embeds=embeds)}, request
-            )
-        assert "delete the" in "; ".join(raised.value.errors), label
-
-
-def test_a_memo_written_twice_says_so_rather_than_reporting_a_jumble(
-    workspace_with_data,
-):
-    """The defect is that it is two documents, not that one is misordered."""
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    drafted_twice = _memo() + _memo()
-    with pytest.raises(WorkerResponseValidationError) as raised:
-        analysis_worker.validate_analysis_summary({"markdown": drafted_twice}, request)
-
-    errors = "; ".join(raised.value.errors)
-    assert "the memo is written more than once" in errors
-    for section in analysis_worker.SUMMARY_SECTIONS:
-        assert f"'{section}' appears 2 times" in errors
-    # One defect, one error. Four sections duplicated is a memo written twice,
-    # and four messages saying so would crowd the repair turn's budget.
-    assert len([item for item in raised.value.errors if "appears" in item]) == 1
-    # The ordering rule stays quiet: against a doubled skeleton it always fails,
-    # and it would send the repair off to rearrange the wrong thing.
-    assert "out of order" not in errors
-
-
-def test_the_embed_example_in_the_prompt_cannot_be_copied_into_a_valid_memo():
-    """A placeholder left in a block is the shape of a value, not a value.
-
-    The prompt's example was once ``analysis: <analysis_id>`` inside a real
-    embed fence — formally identical to valid output, and duly emitted as
-    output. Whatever it shows now must not be mistaken for something to keep.
-    """
-    prompt = analysis_worker.ANALYSIS_SUMMARY_SYSTEM
-
-    assert "<analysis_id>" not in prompt
-    assert "illustration" in prompt
-    assert "delete it" in prompt
-    # And it still shows the exact grammar, which is why the example is there.
-    for field in ("analysis:", "as:", "caption:"):
-        assert field in prompt
-
-
-def test_a_summary_missing_a_section_is_rejected(workspace_with_data):
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    partial = _memo(sections=analysis_worker.SUMMARY_SECTIONS[:-1])
-    with pytest.raises(WorkerResponseValidationError, match="Further work required"):
-        analysis_worker.validate_analysis_summary({"markdown": partial}, request)
-
-
-def test_an_embed_fence_survives_the_response_unwrapper():
-    """A memo carrying fences must not be mistaken for a fenced document."""
-    memo = _memo(embeds=_embed("A-1"))
-    unwrapped = analysis_worker._summary_response_schema(memo)["markdown"]
-    assert f"{FENCE}embed" in unwrapped
-    assert analysis_worker.parse_embeds(unwrapped) == [
-        {"analysis": "A-1", "as": "chart", "caption": "x"}
-    ]
-
-
-def test_sections_out_of_order_are_rejected(workspace_with_data):
-    """The populations frame the findings; the limits qualify them."""
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    shuffled = list(analysis_worker.SUMMARY_SECTIONS)
-    shuffled[0], shuffled[1] = shuffled[1], shuffled[0]
-    with pytest.raises(WorkerResponseValidationError, match="out of order"):
-        analysis_worker.validate_analysis_summary(
-            {"markdown": _memo(sections=shuffled)}, request
-        )
-
-
-def test_a_summary_that_opens_on_a_heading_is_rejected(workspace_with_data):
-    """A reader who stops after the first paragraph should have the answer."""
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    headless = _memo().split("\n\n", 1)[1]
-    with pytest.raises(WorkerResponseValidationError, match="no paragraph"):
-        analysis_worker.validate_analysis_summary({"markdown": headless}, request)
-
-    # A title and a rule are punctuation, not an opening.
-    decorated = f"# Exploratory Data Analysis Summary\n\n---\n\n{headless}"
-    with pytest.raises(WorkerResponseValidationError, match="no paragraph"):
-        analysis_worker.validate_analysis_summary({"markdown": decorated}, request)
-
-
-def test_a_lead_paragraph_survives_the_response_unwrapper():
-    """The unwrapper used to discard everything before the first heading."""
-    memo = _memo()
-    unwrapped = analysis_worker._summary_response_schema(memo)["markdown"]
-    assert unwrapped.startswith("The population reconciles")
-    # A conversational hand-off is still dropped: that is what the rule was for.
-    preambled = analysis_worker._summary_response_schema(
-        "Here is the summary:\n\n" + memo
-    )["markdown"]
-    assert preambled.startswith("The population reconciles")
-
-
-def test_identifier_density_is_editorial_not_a_line_based_contract(
-    workspace_with_data,
-):
-    """Physical Markdown lines do not decide whether a memo is valid."""
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    dumped = _memo(
-        findings=(
-            "Vendor IDs do not match. Flagged rows include INV2024091, "
-            "INV2024032, INV2024024, INV2024021, INV2024068, INV2024029."
-        )
-    )
-    assert analysis_worker.validate_analysis_summary({"markdown": dumped}, request)
-
-    # Naming the two or three that carry the finding is exactly what is wanted.
-    named = _memo(
-        findings=(
-            "Two invoices carry the exposure: INV2024091 at 120,000,000 and "
-            "INV2024032 at 115,268,880."
-        )
-    )
-    assert analysis_worker.validate_analysis_summary({"markdown": named}, request)
-
-
-def test_summary_validation_reports_independent_errors_together(workspace_with_data):
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-    malformed = (
-        "## What the analysis found\nText.\n"
-        "```embed\nanalysis: A-NOTREAL\nas: mystery\ncaption: x\n```\n"
-    )
-
-    with pytest.raises(WorkerResponseValidationError) as raised:
-        analysis_worker.validate_analysis_summary({"markdown": malformed}, request)
-
-    errors = raised.value.errors
-    assert any("missing section 'Data received" in item for item in errors)
-    assert any("no paragraph" in item for item in errors)
-    assert any("not a supplied procedure" in item for item in errors)
-    assert any("unknown kind" in item for item in errors)
-
-
-def test_summary_repair_replays_the_rejected_draft(workspace_with_data):
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-    rejected = _memo(sections=analysis_worker.SUMMARY_SECTIONS[:-1])
-    corrected = _memo()
-
-    class Gateway:
-        def __init__(self):
-            self.responses = [rejected, corrected]
-            self.calls = []
-
-        def complete(
-            self,
-            system,
-            user,
-            activity=None,
-            *,
-            attempt=1,
-            conversation=None,
-        ):
-            self.calls.append(
-                {
-                    "system": system,
-                    "user": user,
-                    "activity": activity,
-                    "attempt": attempt,
-                    "conversation": conversation,
-                }
-            )
-            return self.responses.pop(0)
-
-    gateway = Gateway()
-    result = analysis_worker.WORKERS.execute(request, gateway)
-
-    assert result.repaired is True
-    assert gateway.calls[0]["conversation"] is None
-    repair = gateway.calls[1]
-    assert repair["attempt"] == 2
-    assert repair["conversation"][1] == {
-        "role": "assistant",
-        "content": rejected,
-    }
-    assert "preserving all otherwise-valid wording" in repair["conversation"][2][
-        "content"
-    ]
-    assert "Further work required" in repair["conversation"][2]["content"]
-
-
-def test_citing_several_procedures_is_not_a_run_of_identifiers(workspace_with_data):
-    """An auditor-saved procedure's id is a bare hex string, not an invoice."""
-    ws = workspace_with_data
-    ids = [
-        _saved(ws, f"Check {index}", COMPLETENESS)["id"] for index in range(5)
-    ]
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    cited = _memo(findings="Completeness held across the cycle (" + ", ".join(ids) + ").")
-    assert analysis_worker.validate_analysis_summary({"markdown": cited}, request)
-
-
-def test_a_citation_missing_its_prefix_is_not_a_free_pass(workspace_with_data):
-    """The gate used to fall hardest on the references that were right.
-
-    An exception-bearing procedure cited as ``A-1F2E3D4C`` was held to the
-    embed rule; the same procedure cited as ``1F2E3D4C`` was held to nothing,
-    because the scan matches ids exactly and saw no citation there at all. The
-    reader got the unresolvable one.
-    """
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    stripped = _memo(findings="Invoices are duplicated (1F2E3D4C).")
-    with pytest.raises(WorkerResponseValidationError, match="mangled copy") as raised:
-        analysis_worker.validate_analysis_summary({"markdown": stripped}, request)
-
-    assert analysis["id"] in "; ".join(raised.value.errors)
-    # The message names the procedure the reference was reaching for, because a
-    # repair turn told only that something is unresolvable has to guess.
-    assert f"cite '{analysis['id']}' exactly" in "; ".join(raised.value.errors)
-    # Reported, but not fatal at the end of the budget: the finding it sits next
-    # to is still true, and a memo with a broken pointer beats no memo.
-    assert raised.value.partial is not None
-
-
-def test_a_hand_saved_procedure_is_caught_when_its_bare_id_is_mistyped(
-    workspace_with_data,
-):
-    """No prefix to lose does not mean no way to get the reference wrong."""
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES, id="ab12cd34ef")
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    assert "-" not in analysis["id"]
-    truncated = _memo(findings="Invoices are duplicated (ab12cd34).")
-    with pytest.raises(WorkerResponseValidationError, match="mangled copy"):
-        analysis_worker.validate_analysis_summary({"markdown": truncated}, request)
-
-
-def test_a_truncated_citation_is_rejected_rather_than_read_as_absent(
-    workspace_with_data,
-):
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    for mangled in ("A-DF4??", "A-052…", "A-NOTREAL"):
-        memo = _memo(findings=f"Something was found ({mangled}).")
-        with pytest.raises(WorkerResponseValidationError, match="names no supplied"):
-            analysis_worker.validate_analysis_summary({"markdown": memo}, request)
-
-
-def test_business_identifiers_are_never_read_as_broken_citations(workspace_with_data):
-    """The check is anchored to the supplied register, not to a guessed shape.
-
-    A memo names requisitions, purchase orders, invoices, vendors and buyers by
-    their own identifiers, and several of those carry prefixes and hyphens. A
-    rule that read those as procedure references would reject every memo that
-    did its job.
-    """
-    ws = workspace_with_data
-    _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    memo = _memo(
-        findings=(
-            "Requisition REQ2024081 and REQ-2024081 ran against PO20251017 and "
-            "PO-20251017 for vendor V1010, invoice INV2024035, buyers B001 to "
-            "B006, staff 1002, on 2024-08-19 for 120,000,000. The GRN_ID_LINK "
-            "and MAX_APPROVAL_AMOUNT columns are null on 22 rows. This A-list "
-            "vendor has a front-end, purchase-to-payment, 3-sigma profile, and "
-            "labels A-1 through A-9 come from the client's own manual."
-        )
-    )
-
-    assert analysis_worker.validate_analysis_summary({"markdown": memo}, request)
-
-
-def test_an_exception_result_supporting_a_finding_is_embedded_for_the_writer(
-    workspace_with_data,
-):
-    """The requirement comes from result metadata, not digits in the prose.
-
-    Which table belongs under which finding is not a judgment call — the
-    citation names it and the kind is fixed — so the validator places it rather
-    than spending the one repair turn asking for it back.
-    """
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    unlinked = _memo(findings=f"Invoices are duplicated ({analysis['id']}).")
-    repaired = analysis_worker.validate_analysis_summary(
-        {"markdown": unlinked}, request
-    )
-
-    placed = analysis_worker.parse_embeds(repaired["markdown"])
-    assert [(item["analysis"], item["as"]) for item in placed] == [
-        (analysis["id"], "exception_table")
-    ]
-    assert repaired["cited_analysis_ids"] == [analysis["id"]]
-    # Under the paragraph that argues it, not appended to the document.
-    lines = repaired["markdown"].splitlines()
-    finding = next(
-        index for index, line in enumerate(lines) if "Invoices are duplicated" in line
-    )
-    assert lines[finding + 2] == f"{FENCE}embed"
-
-    linked = _memo(
-        findings=f"Invoices are duplicated ({analysis['id']}).",
-        embeds=_embed(analysis["id"], "exception_table"),
-    )
-    accepted = analysis_worker.validate_analysis_summary({"markdown": linked}, request)
-    assert accepted["markdown"] == linked.strip()
-
-
-def test_an_exception_result_embedded_under_the_wrong_kind_goes_back_to_the_writer(
-    workspace_with_data,
-):
-    """Replacing a placed embed would overrule prose the validator cannot read."""
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    charted = _memo(
-        findings=f"Invoices are duplicated ({analysis['id']}).",
-        embeds=_embed(analysis["id"], "chart"),
-    )
-    with pytest.raises(WorkerResponseValidationError, match="not exception_table"):
-        analysis_worker.validate_analysis_summary({"markdown": charted}, request)
-
-
-def test_digits_do_not_turn_a_zero_exception_result_into_an_embed_requirement(
-    workspace_with_data,
-):
+def test_a_result_with_nothing_flagged_is_cited_without_a_table(workspace_with_data):
     ws = workspace_with_data
     analysis = _saved(ws, "Completeness", COMPLETENESS)
     assert analysis["last_result"]["exception_count"] == 0
     request = _summary_request(workspaces.load_workspace(ws.id))
-    memo = _memo(
-        findings=(
-            f"The 2026 completeness procedure found no missing amount values "
-            f"({analysis['id']})."
-        )
+    ref = _ref_of(request, analysis["id"])
+
+    accepted = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[
+                {"prose": f"No amount is missing ([#{ref}]).", "procedures": [ref]}
+            ]
+        ),
+        request,
     )
 
-    assert analysis_worker.validate_analysis_summary({"markdown": memo}, request)
+    # Cited, because the memo rests on it; not embedded, because it flagged
+    # nothing there is a table of.
+    assert analysis_worker.parse_embeds(accepted["markdown"]) == []
+    assert accepted["cited_analysis_ids"] == [analysis["id"]]
+
+
+def test_a_result_that_established_nothing_cannot_be_a_finding(workspace_with_data):
+    """The backstop for anything that reaches the memo already saturated."""
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+    saturated = ws.add_analysis({
+        "kind": "analytics",
+        "table": "orders",
+        "title": "Deliveries before their order",
+        "spec": {
+            "test": "date_lag",
+            "params": {"from_date": "delivered", "to_date": "ordered"},
+        },
+    })
+    analysis_results.execute_and_record(ws, saturated["id"])
+    sound = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, saturated["id"])
+    other = _ref_of(request, sound["id"])
+
+    with pytest.raises(WorkerResponseValidationError, match="cannot carry a finding"):
+        analysis_worker.validate_analysis_summary(
+            _payload(
+                findings=[
+                    {"prose": "Deliveries precede their orders.", "procedures": [ref]}
+                ]
+            ),
+            request,
+        )
+
+    # Reported where it belongs — as a limit on the work — it is accepted.
+    accepted = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[{"prose": "Duplicate keys.", "procedures": [other]}],
+            reliance={
+                "prose": f"One procedure flagged its whole population ([#{ref}]).",
+                "procedures": [ref],
+            },
+        ),
+        request,
+    )
+    assert saturated["id"] in accepted["markdown"]
 
 
 def test_a_procedure_argued_in_both_findings_and_reliance_is_rejected(
@@ -3731,24 +3471,132 @@ def test_a_procedure_argued_in_both_findings_and_reliance_is_rejected(
     ws = workspace_with_data
     analysis = _saved(ws, "Duplicates", DUPLICATES)
     request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
 
-    restated = _memo(
-        findings=f"Duplicate keys are the issue ({analysis['id']}).",
-        embeds=_embed(analysis["id"], "exception_table"),
-    ).replace(
-        f"## {analysis_worker.RELIANCE_SECTION}\nText.",
-        f"## {analysis_worker.RELIANCE_SECTION}\nAlso worth noting ({analysis['id']}).",
-    )
     with pytest.raises(WorkerResponseValidationError, match="argued in both"):
-        analysis_worker.validate_analysis_summary({"markdown": restated}, request)
+        analysis_worker.validate_analysis_summary(
+            _payload(
+                findings=[{"prose": "Duplicate keys.", "procedures": [ref]}],
+                reliance={"prose": "Also worth noting.", "procedures": [ref]},
+            ),
+            request,
+        )
 
 
-def test_a_result_that_established_nothing_cannot_be_a_finding(workspace_with_data):
-    """The backstop for anything that reaches the memo already saturated.
+def test_a_marker_the_entry_did_not_declare_is_rejected(workspace_with_data):
+    """Otherwise a sentence rests on something the memo never took on."""
+    ws = workspace_with_data
+    first = _saved(ws, "Duplicates", DUPLICATES)
+    second = _saved(ws, "Completeness", COMPLETENESS)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    declared = _ref_of(request, first["id"])
+    undeclared = _ref_of(request, second["id"])
 
-    Definition-time screening stops these being created, but an auditor may
-    have saved one by hand, and a frame can change under a saved procedure.
-    """
+    with pytest.raises(WorkerResponseValidationError, match="does not list"):
+        analysis_worker.validate_analysis_summary(
+            _payload(
+                findings=[
+                    {
+                        "prose": f"Duplicated ([#{undeclared}]).",
+                        "procedures": [declared],
+                    }
+                ]
+            ),
+            request,
+        )
+
+
+def test_prose_that_reaches_for_the_document_is_rejected(workspace_with_data):
+    """Two of three recent drafts emitted the memo twice; one pasted a template."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    heading = _payload(data_received="## Data received and its limitations\n\nSix tables.")
+    with pytest.raises(WorkerResponseValidationError, match="contains a Markdown heading"):
+        analysis_worker.validate_analysis_summary(heading, request)
+
+    fenced = _payload(
+        findings=[
+            {
+                "prose": f"Duplicated.\n{FENCE}embed\nanalysis: x\n{FENCE}",
+                "procedures": [1],
+            }
+        ]
+    )
+    with pytest.raises(WorkerResponseValidationError, match="contains a fenced block"):
+        analysis_worker.validate_analysis_summary(fenced, request)
+
+
+def test_an_id_typed_into_the_prose_is_sent_back_for_a_marker(workspace_with_data):
+    """Both a right id and a mangled one are the same protocol slip."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+
+    for written in ("A-1F2E3D4C", "1F2E3D4C", "A-1F2E3D4"):
+        with pytest.raises(WorkerResponseValidationError, match="written into the prose"):
+            analysis_worker.validate_analysis_summary(
+                _payload(
+                    findings=[
+                        {"prose": f"Duplicated ({written}).", "procedures": [ref]}
+                    ]
+                ),
+                request,
+            )
+
+
+def test_business_identifiers_are_never_read_as_procedure_ids(workspace_with_data):
+    """A memo names requisitions, orders and vendors by their own identifiers."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    accepted = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[
+                {
+                    "prose": (
+                        "Requisition REQ2024081 and REQ-2024081 ran against PO20251017 "
+                        "and PO-20251017 for vendor V1010, invoice INV2024035, buyers "
+                        "B001 to B006, staff 1002, on 2024-08-19 for 120,000,000. The "
+                        "GRN_ID_LINK column is null on 22 rows. This A-list vendor has "
+                        "a front-end, purchase-to-payment, 3-sigma profile."
+                    ),
+                    "procedures": [1],
+                }
+            ]
+        ),
+        request,
+    )
+    assert "REQ2024081" in accepted["markdown"]
+
+
+def test_a_memo_wrong_only_in_shape_survives_a_spent_repair_budget(
+    workspace_with_data,
+):
+    """What the run that prompted all this lost: a whole memo, over punctuation."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_summary(
+            _payload(
+                findings=[{"prose": "Duplicate keys.", "procedures": [ref]}],
+                reliance={"prose": "Also worth noting.", "procedures": [ref]},
+            ),
+            request,
+        )
+
+    assert raised.value.partial is not None
+    assert raised.value.partial["cited_analysis_ids"] == [analysis["id"]]
+
+
+def test_a_memo_that_says_something_untrue_is_never_salvaged(workspace_with_data):
+    """A memo in the audit file is read as the work, so a gap beats a falsehood."""
     ws = workspace_with_data
     ws.add_table("orders.csv", ORDERS_CSV)
     saturated = ws.add_analysis({
@@ -3762,67 +3610,126 @@ def test_a_result_that_established_nothing_cannot_be_a_finding(workspace_with_da
     })
     analysis_results.execute_and_record(ws, saturated["id"])
     request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, saturated["id"])
 
-    as_finding = _memo(
-        findings=f"Deliveries systematically precede their orders ({saturated['id']}).",
-        embeds=_embed(saturated["id"], "exception_table"),
-    )
-    with pytest.raises(WorkerResponseValidationError, match="cannot be a finding"):
-        analysis_worker.validate_analysis_summary({"markdown": as_finding}, request)
-
-    # Reported where it belongs — as a limit on the work — it is accepted.
-    as_limit = _memo().replace(
-        f"## {analysis_worker.RELIANCE_SECTION}\nText.",
-        f"## {analysis_worker.RELIANCE_SECTION}\n"
-        f"One procedure ({saturated['id']}) flagged its whole population and is "
-        "not treated as a finding.",
-    )
-    assert analysis_worker.validate_analysis_summary({"markdown": as_limit}, request)
-
-
-def test_a_memo_wrong_only_in_shape_survives_a_spent_repair_budget(
-    workspace_with_data,
-):
-    """What the run that prompted this lost: a whole memo, over punctuation.
-
-    The partial changes nothing while repair turns remain. It decides only what
-    happens at the end of them, and a misshapen memo beats the nothing that got
-    committed when the document was discarded outright.
-    """
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    restated = _memo(
-        findings=f"Duplicate keys are the issue ({analysis['id']}).",
-        embeds=_embed(analysis["id"], "exception_table"),
-    ).replace(
-        f"## {analysis_worker.RELIANCE_SECTION}\nText.",
-        f"## {analysis_worker.RELIANCE_SECTION}\nAlso worth noting ({analysis['id']}).",
-    )
     with pytest.raises(WorkerResponseValidationError) as raised:
-        analysis_worker.validate_analysis_summary({"markdown": restated}, request)
-
-    assert raised.value.partial is not None
-    assert raised.value.partial["markdown"] == restated.strip()
-    assert raised.value.partial["cited_analysis_ids"] == [analysis["id"]]
-
-
-def test_a_memo_that_says_something_untrue_is_never_salvaged(workspace_with_data):
-    """A memo in the audit file is read as the work, so a gap beats a falsehood."""
-    ws = workspace_with_data
-    analysis = _saved(ws, "Duplicates", DUPLICATES)
-    request = _summary_request(workspaces.load_workspace(ws.id))
-
-    invented = _memo(
-        findings=f"Duplicate keys are the issue ({analysis['id']}).",
-        embeds=_embed(analysis["id"], "exception_table") + _embed("A-NOTREAL", "chart"),
-    )
-    with pytest.raises(WorkerResponseValidationError) as raised:
-        analysis_worker.validate_analysis_summary({"markdown": invented}, request)
-
-    assert "not a supplied procedure" in "; ".join(raised.value.errors)
+        analysis_worker.validate_analysis_summary(
+            _payload(
+                findings=[{"prose": "Systemic backdating.", "procedures": [ref]}]
+            ),
+            request,
+        )
     assert raised.value.partial is None
+
+
+def test_summary_validation_reports_independent_errors_together(workspace_with_data):
+    ws = workspace_with_data
+    first = _saved(ws, "Duplicates", DUPLICATES)
+    second = _saved(ws, "Completeness", COMPLETENESS)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    shared = _ref_of(request, first["id"])
+    other = _ref_of(request, second["id"])
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_summary(
+            _payload(
+                findings=[
+                    {"prose": f"Duplicated ([#{other}]).", "procedures": [shared]}
+                ],
+                reliance={"prose": "Also worth noting.", "procedures": [shared]},
+            ),
+            request,
+        )
+
+    errors = "; ".join(raised.value.errors)
+    assert "does not list" in errors
+    assert "argued in both" in errors
+
+
+def test_an_out_of_range_reference_is_answered_not_raised(workspace_with_data):
+    """Unreachable through the schema; reachable through the text fallback."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    with pytest.raises(WorkerResponseValidationError, match="not one of the supplied"):
+        analysis_worker.validate_analysis_summary(
+            _payload(findings=[{"prose": "Duplicated.", "procedures": [99]}]),
+            request,
+        )
+
+
+def test_the_response_schema_reads_the_tool_arguments(workspace_with_data):
+    parsed = analysis_worker._summary_response_schema(json.dumps(_payload()))
+    assert parsed["findings"] == [
+        {"prose": "Invoices are duplicated.", "procedures": [1]}
+    ]
+
+    with pytest.raises(WorkerResponseValidationError, match="non-empty `findings`"):
+        analysis_worker._summary_response_schema(json.dumps(_payload(findings=[])))
+    with pytest.raises(WorkerResponseValidationError, match="`lead` must carry prose"):
+        analysis_worker._summary_response_schema(json.dumps(_payload(lead="  ")))
+
+
+def test_summary_repair_replays_the_rejected_draft(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+    rejected = json.dumps(_payload(findings=[{"prose": "x", "procedures": [99]}]))
+    corrected = json.dumps(
+        _payload(findings=[{"prose": "Duplicated.", "procedures": [ref]}])
+    )
+
+    class Gateway:
+        def __init__(self):
+            self.responses = [rejected, corrected]
+            self.calls = []
+
+        def complete(
+            self,
+            system,
+            user,
+            activity=None,
+            *,
+            attempt=1,
+            tools=None,
+            tool_choice=None,
+            conversation=None,
+            return_message=False,
+        ):
+            self.calls.append(
+                {
+                    "user": user,
+                    "attempt": attempt,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "conversation": conversation,
+                }
+            )
+            return {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": analysis_worker.SUMMARY_SUBMISSION_TOOL,
+                            "arguments": self.responses.pop(0),
+                        }
+                    }
+                ]
+            }
+
+    gateway = Gateway()
+    result = analysis_worker.WORKERS.execute(request, gateway)
+
+    assert result.repaired is True
+    assert "PROCEDURE REFERENCES" in gateway.calls[0]["user"]
+    assert gateway.calls[0]["tool_choice"]["function"]["name"] == (
+        analysis_worker.SUMMARY_SUBMISSION_TOOL
+    )
+    repair = gateway.calls[1]
+    assert repair["attempt"] == 2
+    assert repair["conversation"][1]["content"] == rejected
+    assert analysis_worker.SUMMARY_SUBMISSION_TOOL in repair["conversation"][2]["content"]
 
 
 def test_the_skeleton_is_finding_shaped(workspace_with_data):
@@ -3833,11 +3740,6 @@ def test_the_skeleton_is_finding_shaped(workspace_with_data):
         "How far these results can be relied on",
         "Further work required",
     )
-    prompt = analysis_worker.ANALYSIS_SUMMARY_SYSTEM
-    assert "organise \"What the analysis found\" by *issue*" in prompt
-    # The record of work performed survives as one coverage table, not as a
-    # section that asks for a list of procedures.
-    assert "coverage table" in prompt.lower()
 
 
 def test_the_summary_goes_stale_when_the_result_set_moves(workspace_with_data):
