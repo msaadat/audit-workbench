@@ -27,7 +27,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterator, Mapping
 from itertools import permutations
 from typing import Any
 
@@ -41,6 +42,7 @@ from ...text import counted, verb
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
+    MAX_REPAIR_ERRORS,
     WORKERS,
     WorkerAttempt,
     WorkerContractError,
@@ -1895,21 +1897,33 @@ ESTIMATED_TOTAL_COST against MAX_APPROVAL_AMOUNT" is a usable instruction;
 outside the data — a document, a person, a system behaviour — say what evidence
 is wanted and from whom.
 
-To place a result in the memo, emit a fenced block on its own lines:
+To place a result in the memo, emit a fenced block on its own lines, carrying
+exactly the three fields `analysis`, `as` and `caption`. Filled in, one reads:
 ```{EMBED_FENCE}
-analysis: <analysis_id>
-as: <{" | ".join(EMBED_KINDS)}>
-caption: <one short line saying what the reader should see in it>
+analysis: A-0DAB063C
+as: exception_table
+caption: the four vendor rows sharing one bank account
 ```
-Use the exact analysis_id of a supplied procedure; an id that was not supplied
-is rejected. An embed is not a footnote — it renders the result itself, as a
-table the reader can read and open, so it is where the detail behind a finding
-belongs. In "What the analysis found", every cited procedure whose supplied
-`exception_count` is greater than zero must be embedded as `exception_table`.
-Use `chart` for a distribution or a trend that has no flagged-row set, and
-`stats` where the numbers are the point. Do not embed a procedure you only
-mention in passing, and do not embed one twice.
-Return Markdown only, with no JSON wrapper and no outer code fence.
+Both values there are illustration. Every block you write must name a procedure
+from the supplied results by its exact analysis_id — an id that was not
+supplied is rejected, and so is a block left holding the shape of a value
+instead of a value. Where you cannot fill a block in from what you were
+supplied, delete it: a block naming nothing is worse than no block, because it
+reads as evidence and opens on nothing.
+
+`as` is one of {" | ".join(EMBED_KINDS)}, and that set is closed. An embed is
+not a footnote — it renders the result itself, as a table the reader can read
+and open, so it is where the detail behind a finding belongs. In "What the
+analysis found", every cited procedure whose supplied `exception_count` is
+greater than zero must be embedded as `exception_table`. Use `chart` for a
+distribution or a trend that has no flagged-row set, and `stats` where the
+numbers are the point. Do not embed a procedure you only mention in passing,
+and do not embed one twice.
+
+Return the finished memo and nothing else: Markdown only, no JSON wrapper, no
+outer code fence, and none of the drafting — no note to yourself, no working
+comment, no abandoned first pass left above the real one. Emit each section
+once.
 """
 
 SUMMARY_RESULTS_SOURCE_ID = "analysis_results"
@@ -1947,32 +1961,161 @@ def _citation_pattern(supplied: set[str]) -> re.Pattern[str] | None:
     return re.compile(rf"(?<![A-Za-z0-9_-])({alternatives})(?![A-Za-z0-9_-])")
 
 
-def _memo_sections(markdown: str) -> list[tuple[str, list[str]]]:
-    """The level-2 sections in document order, each with its prose lines.
+def _prose_lines(markdown: str) -> Iterator[tuple[int, str]]:
+    """Every line of the memo a reader reads as prose, with its position.
 
     Table rows and embed blocks are dropped: both legitimately carry many
-    identifiers, and neither is prose a reader has to wade through.
+    identifiers, and neither is prose a reader has to wade through. One
+    implementation because two rules that disagree about what counts as prose
+    would disagree silently — one reading a citation the other cannot see.
     """
-    sections: list[tuple[str, list[str]]] = []
-    heading: str | None = None
-    body: list[str] = []
     fenced = False
-    for line in markdown.splitlines():
+    for index, line in enumerate(markdown.splitlines()):
         if line.lstrip().startswith("```"):
             fenced = not fenced
             continue
         if fenced or line.lstrip().startswith("|"):
             continue
+        yield index, line
+
+
+# A token that could be meant as a citation: an identifier run, kept together
+# with the marks a truncated one ends in, so ``A-DF4??`` is read as one broken
+# reference rather than as a good prefix followed by punctuation.
+_REFERENCE_TOKEN = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z0-9][A-Za-z0-9_?…-]*)")
+
+# How much of a procedure's id has to survive in a token before the token is
+# read as a mangled copy of it. Ids are high-entropy hex, so a run this long
+# reaching an unrelated identifier is not a thing that happens; a run much
+# shorter starts matching dates and amounts.
+_MIN_CITATION_RUN = 7
+
+
+def _citation_conventions(
+    supplied: set[str],
+) -> tuple[frozenset[str], dict[str, str]]:
+    """The prefixes and the id bodies this workspace's procedures actually use.
+
+    Derived from the supplied register rather than assumed, for the same reason
+    ``_citation_pattern`` matches ids exactly: a workflow-authored procedure is
+    ``A-1F2E3D4C`` and a hand-saved one is a bare hex string, so a guessed shape
+    would either miss half the register or read instance identifiers as
+    procedures. Here it also keeps the check away from the business identifiers
+    the memo is full of — ``REQ-2024081`` and ``PO-20251017`` carry prefixes no
+    procedure uses, so nothing about them looks like a citation.
+    """
+    prefixes: set[str] = set()
+    stems: dict[str, str] = {}
+    for item in supplied:
+        prefix, separator, stem = item.partition("-")
+        if separator and prefix and stem:
+            prefixes.add(prefix.casefold())
+            stems[stem.upper()] = item
+        elif not separator and item:
+            # A hand-saved procedure is a bare hex string with no prefix to
+            # lose. There is no prefix rule to derive from it, but it can still
+            # be truncated or mistyped, and the body is the whole id.
+            stems[item.upper()] = item
+    return frozenset(prefixes), stems
+
+
+def _looks_like_an_id(value: str) -> bool:
+    """Whether what follows a procedure prefix was meant to be an id.
+
+    Bounds the prefix rule to references, so an ordinary hyphenated word that
+    happens to start with a procedure's prefix letter is not read as a citation.
+    """
+    body = value.rstrip("?…")
+    if len(body) < 3 or not body.isalnum():
+        return False
+    return any(character.isdigit() for character in body) or body.isupper()
+
+
+def _unresolvable_citations(markdown: str, supplied: set[str]) -> list[str]:
+    """References written where a citation belongs that open on nothing.
+
+    The gate above requires an exception table under any *resolvable* citation,
+    which quietly made a correctly written id the expensive one: a memo that
+    cited ``A-C9CCB8C4`` was held to the rule, and the same memo citing
+    ``C9CCB8C4`` or ``A-DF4??`` for the same procedure was not held to anything,
+    because neither matches an id and the scan saw no citation there at all. So
+    the rule fell hardest on the references that were right, and the reader was
+    left with the ones that were wrong.
+
+    Two forms are recognised, and both are anchored to the supplied register
+    rather than to a guessed shape: a reference carrying a prefix this
+    workspace's procedures use that names no procedure, and a reference
+    carrying enough of one procedure's id to be a copy of it that has lost the
+    prefix or some characters. What is deliberately not recognised is a
+    reference with nothing of a real id left in it — there is nothing to
+    anchor on, and guessing would start flagging invoice numbers.
+    """
+    prefixes, stems = _citation_conventions(supplied)
+    if not prefixes and not stems:
+        return []
+    # Runs long enough to identify one procedure, letter-bearing so a run of
+    # digits shared with a date or an amount cannot stand in for one.
+    needles: dict[str, str] = {}
+    for stem, analysis_id in stems.items():
+        for start in range(len(stem) - _MIN_CITATION_RUN + 1):
+            run = stem[start : start + _MIN_CITATION_RUN]
+            if any(character.isalpha() for character in run):
+                needles.setdefault(run, analysis_id)
+
+    reported: dict[str, str] = {}
+    for _index, line in _prose_lines(markdown):
+        for match in _REFERENCE_TOKEN.finditer(line):
+            token = match.group(1)
+            if token in supplied or token in reported:
+                continue
+            prefix, separator, body = token.partition("-")
+            if separator and prefix.casefold() in prefixes and _looks_like_an_id(body):
+                reported[token] = (
+                    f"'{token}' is written as a procedure reference but names no "
+                    "supplied procedure; cite one by its exact id or drop the "
+                    "reference"
+                )
+                continue
+            upper = token.upper()
+            for run, analysis_id in needles.items():
+                if run in upper:
+                    reported[token] = (
+                        f"'{token}' reads as a mangled copy of '{analysis_id}'; "
+                        f"cite '{analysis_id}' exactly or drop the reference"
+                    )
+                    break
+    return list(reported.values())
+
+
+def _memo_section_lines(markdown: str) -> list[tuple[str, list[tuple[int, str]]]]:
+    """The level-2 sections in document order, each with its numbered prose.
+
+    Line numbers travel with the prose because a validator that can only repair
+    what it can locate needs to point back into the document it was handed, not
+    into a filtered copy of it.
+    """
+    sections: list[tuple[str, list[tuple[int, str]]]] = []
+    heading: str | None = None
+    body: list[tuple[int, str]] = []
+    for index, line in _prose_lines(markdown):
         match = re.fullmatch(r"##\s+(.+?)\s*", line)
         if match:
             if heading is not None:
                 sections.append((heading, body))
             heading, body = match.group(1).strip(), []
         elif heading is not None:
-            body.append(line)
+            body.append((index, line))
     if heading is not None:
         sections.append((heading, body))
     return sections
+
+
+def _memo_sections(markdown: str) -> list[tuple[str, list[str]]]:
+    """The level-2 sections in document order, each with its prose lines."""
+    return [
+        (heading, [line for _, line in body])
+        for heading, body in _memo_section_lines(markdown)
+    ]
 
 
 def _lead_paragraph(markdown: str) -> str:
@@ -1988,6 +2131,77 @@ def _lead_paragraph(markdown: str) -> str:
         if not line.lstrip().startswith("#")
         and not re.fullmatch(r"\s*([-_*])(\s*\1){2,}\s*", line)
     ).strip()
+
+
+def _paragraph_end(lines: list[str], start: int) -> int:
+    """Where the paragraph containing ``start`` stops.
+
+    Fences are stepped over rather than stopped at: a paragraph that already
+    carries an embed still ends at the blank line after it, and an insertion
+    point inside a fence would be swallowed as fence content.
+    """
+    fenced = False
+    index = start
+    while index < len(lines):
+        stripped = lines[index].lstrip()
+        if stripped.startswith("```"):
+            fenced = not fenced
+            index += 1
+            continue
+        if not fenced and (not stripped or stripped.startswith("## ")):
+            return index
+        index += 1
+    return len(lines)
+
+
+def _exception_table_embed(analysis_id: str, result: Mapping[str, Any]) -> list[str]:
+    """The embed directive the memo should have carried for one procedure.
+
+    The caption is the recorded verdict rather than authored prose. It is the
+    one line already written about what the reader should see in the result,
+    and inventing a better one here would be the validator writing memo copy.
+    """
+    caption = str(result.get("verdict_text") or result.get("title") or "").strip()
+    block = [
+        f"```{EMBED_FENCE}",
+        f"analysis: {analysis_id}",
+        "as: exception_table",
+    ]
+    if caption:
+        block.append(f"caption: {caption}")
+    block.append("```")
+    return block
+
+
+def _embed_exception_tables(
+    markdown: str,
+    placements: Mapping[str, int],
+    results_by_id: Mapping[str, Mapping[str, Any]],
+) -> str:
+    """Place the exception tables the findings cite but did not embed.
+
+    Which result belongs under which finding is not a judgment call — the
+    citation names it, the kind is fixed, and the caption is the verdict the
+    procedure already recorded. Asking the model for it spends a repair turn on
+    bookkeeping the validator can do outright, and spending the turn is how a
+    memo that is right about the engagement gets discarded for punctuation.
+    The model is still told to place these itself; this is what happens when it
+    does not, not a replacement for it doing so.
+    """
+    lines = markdown.splitlines()
+    # Bottom-up, so an insertion never moves the line another insertion is
+    # still pointing at.
+    for analysis_id, line_number in sorted(
+        placements.items(), key=lambda item: item[1], reverse=True
+    ):
+        block = _exception_table_embed(analysis_id, results_by_id.get(analysis_id) or {})
+        stop = _paragraph_end(lines, line_number)
+        trailing = [] if stop < len(lines) and not lines[stop].strip() else [""]
+        lines[stop:stop] = ["", *block, *trailing]
+    # Stripped for the same reason the incoming markdown was: the validator's
+    # output is the memo, and an insertion at the end of the document must not
+    # be the reason it gains trailing whitespace.
+    return "\n".join(lines).strip()
 
 
 def validate_analysis_summary(
@@ -2007,12 +2221,22 @@ def validate_analysis_summary(
         raise WorkerResponseValidationError("the summary is empty")
 
     errors: list[str] = []
+    # The half of the rules that decide whether a memo may be committed at all
+    # when the repair budget runs out. An unresolvable citation and a procedure
+    # that established nothing written up as a finding both make the memo say
+    # something untrue about the engagement, and a memo in the audit file is
+    # read as the work. Everything else here is shape — a section out of order,
+    # a restatement, a duplicated embed — and a misshapen memo still beats the
+    # nothing that gets committed when the whole document is discarded.
+    untrue: list[str] = []
 
-    def reject(message: str) -> None:
+    def reject(message: str, *, integrity: bool = False) -> None:
         if message not in errors:
             errors.append(message)
+            if integrity:
+                untrue.append(message)
 
-    sections = _memo_sections(markdown)
+    sections = _memo_section_lines(markdown)
     present = [name for name, _ in sections]
     folded = {name.casefold() for name in present}
     missing = [
@@ -2021,9 +2245,33 @@ def validate_analysis_summary(
     if missing:
         for section in missing:
             reject(f"missing section '{section}'")
+    # A memo that abandons a draft partway and starts again emits the whole
+    # skeleton twice. That reads to the ordering rule below as a jumble, and
+    # "sections are out of order" then sends the repair turn to rearrange a
+    # document whose actual defect is that it is two documents.
+    counts = Counter(name.casefold() for name in present)
+    repeated = [
+        section for section in SUMMARY_SECTIONS if counts[section.casefold()] > 1
+    ]
+    if repeated:
+        # One message, because it is one defect. Four sections duplicated is a
+        # memo written twice, not four separate things to go and fix, and
+        # spending four of the repair turn's errors saying so crowds out the
+        # ones that name something else.
+        reject(
+            "the memo is written more than once: "
+            + ", ".join(
+                f"'{section}' appears {counts[section.casefold()]} times"
+                for section in repeated
+            )
+            + ". Return one document — keep a single copy of each section, and "
+            "delete the abandoned pass along with any note you wrote to yourself "
+            "while drafting"
+        )
     # Order carries meaning here: the populations frame the findings, and the
     # findings are what the reliance limits qualify. Read out of order they
-    # argue for nothing.
+    # argue for nothing. Only worth saying once the skeleton is single: against
+    # a duplicated one the comparison always fails, and says the wrong thing.
     ordered = [name for name in present if name.casefold() in {
         section.casefold() for section in SUMMARY_SECTIONS
     }]
@@ -2032,7 +2280,9 @@ def validate_analysis_summary(
         for section in SUMMARY_SECTIONS
         if section.casefold() in {name.casefold() for name in ordered}
     ]
-    if [name.casefold() for name in ordered] != [name.casefold() for name in expected]:
+    if not repeated and [name.casefold() for name in ordered] != [
+        name.casefold() for name in expected
+    ]:
         reject("sections are out of order: expected " + ", ".join(expected))
 
     if not _lead_paragraph(markdown):
@@ -2071,26 +2321,63 @@ def validate_analysis_summary(
     for embed in embeds:
         analysis_id = embed.get("analysis")
         if not analysis_id:
-            reject("an embed names no analysis")
+            reject("an embed names no analysis; delete the block")
             continue
         # A citation the reader cannot open is worse than no citation at all: it
         # looks like evidence and resolves to nothing.
+        #
+        # Every one of these says deleting the block is a way to comply, because
+        # a repair turn told only that a value is wrong will reach for a
+        # replacement, and a worker with no valid replacement to hand invents
+        # one. That is not hypothetical: told an embed named no supplied
+        # procedure, one repair substituted an id that did not exist, under a
+        # kind that did not exist, three lines above the correct embed for the
+        # same result.
         if analysis_id not in supplied:
-            reject(f"embed cites '{analysis_id}', which is not a supplied procedure")
+            reject(
+                f"embed cites '{analysis_id}', which is not a supplied procedure. "
+                "Name a procedure from the supplied results, or delete the whole "
+                "block — never substitute an id you cannot find in them",
+                integrity=True,
+            )
         kind = embed.get("as") or ""
         if kind not in EMBED_KINDS:
-            reject(f"embed for '{analysis_id}' uses unknown kind '{kind}'")
+            reject(
+                f"embed for '{analysis_id}' uses unknown kind '{kind}'. Use one of "
+                f"{', '.join(EMBED_KINDS)}, or delete the block — the kinds are a "
+                "closed set and a new one cannot be coined"
+            )
         if analysis_id in embedded:
-            reject(f"'{analysis_id}' is embedded more than once")
+            reject(
+                f"'{analysis_id}' is embedded more than once; keep the placement "
+                "that carries the finding and delete the other block"
+            )
         else:
             embedded.append(analysis_id)
             if analysis_id in supplied and kind in EMBED_KINDS:
                 embedded_kinds[analysis_id] = kind
 
+    # Before the citation scan, because the scan can only see references that
+    # resolve, and the ones that do not are exactly what this reads.
+    #
+    # Shape rather than integrity, unlike the same defect in an embed. An embed
+    # is rendered evidence, and one naming nothing puts a block in the memo
+    # claiming to show a result that does not exist. A broken reference in prose
+    # is a pointer the reader cannot follow next to a finding that is still
+    # true, and discarding an otherwise-sound memo over a mistyped id is the
+    # failure this whole gate was rewritten to stop causing.
+    for message in _unresolvable_citations(markdown, supplied):
+        reject(message)
+
     citation = _citation_pattern(supplied)
     cited: dict[str, set[str]] = {}
+    # Where each unembedded result is argued, so the table can be placed under
+    # the paragraph that argues it rather than appended at the end of a section
+    # it has nothing to do with. The last citation wins: a thread that returns
+    # to a result closes on the reading the table is evidence for.
+    unembedded: dict[str, int] = {}
     for name, body in sections:
-        for line in body:
+        for line_number, line in body:
             on_line = citation.findall(line) if citation else []
             for analysis_id in on_line:
                 cited.setdefault(analysis_id, set()).add(name)
@@ -2101,18 +2388,27 @@ def validate_analysis_summary(
                     reject(
                         f"'{analysis_id}' cannot be a finding: it "
                         f"{uninformative[analysis_id]}. Report it under "
-                        f"'{RELIANCE_SECTION}' as a limit on the work, if at all"
+                        f"'{RELIANCE_SECTION}' as a limit on the work, if at all",
+                        integrity=True,
                     )
                 result = results_by_id.get(analysis_id) or {}
                 try:
                     has_exceptions = int(result.get("exception_count") or 0) > 0
                 except (TypeError, ValueError):
                     has_exceptions = False
-                if has_exceptions and embedded_kinds.get(analysis_id) != "exception_table":
-                    reject(
-                        f"'{analysis_id}' supports a finding with flagged rows but "
-                        "is not embedded as exception_table"
-                    )
+                kind = embedded_kinds.get(analysis_id)
+                if has_exceptions and kind != "exception_table":
+                    if kind is None:
+                        unembedded[analysis_id] = line_number
+                    else:
+                        # Already placed, under the wrong kind. Which view of a
+                        # result carries a finding is the writer's call and
+                        # replacing it here would overrule prose the validator
+                        # cannot read, so this one goes back to the model.
+                        reject(
+                            f"'{analysis_id}' supports a finding with flagged rows "
+                            f"but is embedded as {kind}, not exception_table"
+                        )
 
     # The two sections the memo must keep apart. Findings belong above,
     # reliance limits below, and a procedure argued in both is the restatement
@@ -2124,8 +2420,29 @@ def validate_analysis_summary(
                 f"'{RELIANCE_SECTION}'; say it once, in whichever it belongs to"
             )
 
+    # Done after the rules that read the document, so every error is raised
+    # against what the model actually wrote, and before the result is assembled,
+    # so what the memo carries and what it reports carrying are the same list.
+    if unembedded:
+        markdown = _embed_exception_tables(markdown, unembedded, results_by_id)
+        embedded = [
+            *embedded,
+            *sorted(unembedded, key=lambda item: unembedded[item]),
+        ]
+
     if errors:
-        raise WorkerResponseValidationError(errors)
+        # A memo the budget ran out on is committed only where every surviving
+        # error is about shape. Where one of them makes the memo untrue, there
+        # is nothing to salvage: the strict path discards it, and a gap in the
+        # workspace is the honest outcome.
+        raise WorkerResponseValidationError(
+            errors,
+            partial=(
+                None
+                if untrue
+                else {"markdown": markdown, "cited_analysis_ids": embedded}
+            ),
+        )
 
     return {
         "markdown": markdown,
@@ -2220,9 +2537,14 @@ ANALYSIS_SUMMARY_WORKER = WorkerDefinition(
         guidance_hash=_sha256_text(
             "Repair missing or misordered summary sections, a missing lead "
             "paragraph, citations to unsupplied procedures, exception-bearing "
-            "findings without an exception-table embed, and findings restated "
+            "findings embedded under the wrong kind, and findings restated "
             "under the reliance section."
         ),
+        # One memo argues every procedure in the workspace, so its errors scale
+        # with the register rather than with the length of the response. The
+        # default of eight is a whole class of finding short of that, and an
+        # error that does not fit is an error the one repair turn cannot fix.
+        max_validation_errors=MAX_REPAIR_ERRORS,
     ),
     implementation=run_analysis_summary_worker,
     semantic_validator=validate_analysis_summary,

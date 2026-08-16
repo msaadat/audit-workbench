@@ -272,6 +272,58 @@ def test_repair_guidance_is_bounded_by_error_count_and_characters():
     assert sum(map(len, seen[1].validation_errors)) == 12
 
 
+def test_guidance_that_leaves_errors_out_says_how_many_it_left_out():
+    """The failure this prevents cost a live run its analysis memo.
+
+    Ten errors were raised, the first eight were delivered, and the model
+    corrected all eight — which is everything it was told about and not enough
+    to pass, with no attempt left to discover the difference.
+    """
+    policy = WorkerRepairPolicy(1, HASH_A, max_validation_errors=8)
+    guidance = policy.bounded_errors([f"error {index}" for index in range(10)])
+
+    assert len(guidance) == 9
+    assert guidance[:8] == tuple(f"error {index}" for index in range(8))
+    assert "2 further validation error(s)" in guidance[-1]
+
+
+def test_guidance_that_fits_carries_no_notice():
+    policy = WorkerRepairPolicy(1, HASH_A, max_validation_errors=8)
+
+    assert policy.bounded_errors(["one", "two"]) == ("one", "two")
+
+
+def test_bounded_guidance_never_exceeds_its_character_budget():
+    """Including the notice: the reservation is what makes it always fit."""
+    policy = WorkerRepairPolicy(
+        1, HASH_A, max_validation_errors=20, max_guidance_characters=400
+    )
+    guidance = policy.bounded_errors([f"error {'x' * 60} {index}" for index in range(20)])
+
+    assert sum(map(len, guidance)) <= 400
+    assert "further validation error(s)" in guidance[-1]
+
+
+def test_every_registered_worker_announces_guidance_it_withholds():
+    """The invariant, checked across the registry rather than per worker.
+
+    A worker whose validator can raise more errors than its policy delivers is
+    one bad draft away from an unrepairable failure, and nothing about the
+    worker's own tests would show it.
+    """
+    from app.agent import workers as registered_workers  # noqa: F401
+    from app.agent.workers.model import WORKERS
+
+    for definition in WORKERS.all():
+        policy = definition.repair_policy
+        if not policy.max_repair_attempts:
+            continue
+        raised = [f"error {index}" for index in range(policy.max_validation_errors + 3)]
+        guidance = policy.bounded_errors(raised)
+        assert len(guidance) < len(raised), definition.worker_id
+        assert "further validation error(s)" in guidance[-1], definition.worker_id
+
+
 def test_invalid_response_stops_exactly_at_the_registered_repair_bound():
     calls = []
 

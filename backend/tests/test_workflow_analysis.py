@@ -3107,6 +3107,76 @@ def test_a_summary_citing_an_unsupplied_procedure_is_rejected(workspace_with_dat
     assert accepted["cited_analysis_ids"] == [analysis["id"]]
 
 
+def test_every_embed_error_offers_deleting_the_block(workspace_with_data):
+    """A repair told only that a value is wrong reaches for a replacement.
+
+    One live repair, told an embed named no supplied procedure, substituted an
+    id that did not exist under a kind that did not exist — three lines above
+    the correct embed for the same result. Deleting the block was always a way
+    to comply; nothing in the message said so.
+    """
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    broken = {
+        "unsupplied id": _embed("A-NOTREAL", "exception_table"),
+        "coined kind": _embed(analysis["id"], "spreadsheets"),
+        "no analysis named": f"{FENCE}embed\nas: exception_table\n{FENCE}\n",
+        "embedded twice": (
+            _embed(analysis["id"], "exception_table")
+            + _embed(analysis["id"], "exception_table")
+        ),
+    }
+    for label, embeds in broken.items():
+        with pytest.raises(WorkerResponseValidationError) as raised:
+            analysis_worker.validate_analysis_summary(
+                {"markdown": _memo(embeds=embeds)}, request
+            )
+        assert "delete the" in "; ".join(raised.value.errors), label
+
+
+def test_a_memo_written_twice_says_so_rather_than_reporting_a_jumble(
+    workspace_with_data,
+):
+    """The defect is that it is two documents, not that one is misordered."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    drafted_twice = _memo() + _memo()
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_summary({"markdown": drafted_twice}, request)
+
+    errors = "; ".join(raised.value.errors)
+    assert "the memo is written more than once" in errors
+    for section in analysis_worker.SUMMARY_SECTIONS:
+        assert f"'{section}' appears 2 times" in errors
+    # One defect, one error. Four sections duplicated is a memo written twice,
+    # and four messages saying so would crowd the repair turn's budget.
+    assert len([item for item in raised.value.errors if "appears" in item]) == 1
+    # The ordering rule stays quiet: against a doubled skeleton it always fails,
+    # and it would send the repair off to rearrange the wrong thing.
+    assert "out of order" not in errors
+
+
+def test_the_embed_example_in_the_prompt_cannot_be_copied_into_a_valid_memo():
+    """A placeholder left in a block is the shape of a value, not a value.
+
+    The prompt's example was once ``analysis: <analysis_id>`` inside a real
+    embed fence — formally identical to valid output, and duly emitted as
+    output. Whatever it shows now must not be mistaken for something to keep.
+    """
+    prompt = analysis_worker.ANALYSIS_SUMMARY_SYSTEM
+
+    assert "<analysis_id>" not in prompt
+    assert "illustration" in prompt
+    assert "delete it" in prompt
+    # And it still shows the exact grammar, which is why the example is there.
+    for field in ("analysis:", "as:", "caption:"):
+        assert field in prompt
+
+
 def test_a_summary_missing_a_section_is_rejected(workspace_with_data):
     ws = workspace_with_data
     _saved(ws, "Duplicates", DUPLICATES)
@@ -3275,23 +3345,136 @@ def test_citing_several_procedures_is_not_a_run_of_identifiers(workspace_with_da
     assert analysis_worker.validate_analysis_summary({"markdown": cited}, request)
 
 
-def test_an_exception_result_supporting_a_finding_must_be_embedded(
+def test_a_citation_missing_its_prefix_is_not_a_free_pass(workspace_with_data):
+    """The gate used to fall hardest on the references that were right.
+
+    An exception-bearing procedure cited as ``A-1F2E3D4C`` was held to the
+    embed rule; the same procedure cited as ``1F2E3D4C`` was held to nothing,
+    because the scan matches ids exactly and saw no citation there at all. The
+    reader got the unresolvable one.
+    """
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    stripped = _memo(findings="Invoices are duplicated (1F2E3D4C).")
+    with pytest.raises(WorkerResponseValidationError, match="mangled copy") as raised:
+        analysis_worker.validate_analysis_summary({"markdown": stripped}, request)
+
+    assert analysis["id"] in "; ".join(raised.value.errors)
+    # The message names the procedure the reference was reaching for, because a
+    # repair turn told only that something is unresolvable has to guess.
+    assert f"cite '{analysis['id']}' exactly" in "; ".join(raised.value.errors)
+    # Reported, but not fatal at the end of the budget: the finding it sits next
+    # to is still true, and a memo with a broken pointer beats no memo.
+    assert raised.value.partial is not None
+
+
+def test_a_hand_saved_procedure_is_caught_when_its_bare_id_is_mistyped(
     workspace_with_data,
 ):
-    """The requirement comes from result metadata, not digits in the prose."""
+    """No prefix to lose does not mean no way to get the reference wrong."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES, id="ab12cd34ef")
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    assert "-" not in analysis["id"]
+    truncated = _memo(findings="Invoices are duplicated (ab12cd34).")
+    with pytest.raises(WorkerResponseValidationError, match="mangled copy"):
+        analysis_worker.validate_analysis_summary({"markdown": truncated}, request)
+
+
+def test_a_truncated_citation_is_rejected_rather_than_read_as_absent(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    for mangled in ("A-DF4??", "A-052…", "A-NOTREAL"):
+        memo = _memo(findings=f"Something was found ({mangled}).")
+        with pytest.raises(WorkerResponseValidationError, match="names no supplied"):
+            analysis_worker.validate_analysis_summary({"markdown": memo}, request)
+
+
+def test_business_identifiers_are_never_read_as_broken_citations(workspace_with_data):
+    """The check is anchored to the supplied register, not to a guessed shape.
+
+    A memo names requisitions, purchase orders, invoices, vendors and buyers by
+    their own identifiers, and several of those carry prefixes and hyphens. A
+    rule that read those as procedure references would reject every memo that
+    did its job.
+    """
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES, id="A-1F2E3D4C")
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    memo = _memo(
+        findings=(
+            "Requisition REQ2024081 and REQ-2024081 ran against PO20251017 and "
+            "PO-20251017 for vendor V1010, invoice INV2024035, buyers B001 to "
+            "B006, staff 1002, on 2024-08-19 for 120,000,000. The GRN_ID_LINK "
+            "and MAX_APPROVAL_AMOUNT columns are null on 22 rows. This A-list "
+            "vendor has a front-end, purchase-to-payment, 3-sigma profile, and "
+            "labels A-1 through A-9 come from the client's own manual."
+        )
+    )
+
+    assert analysis_worker.validate_analysis_summary({"markdown": memo}, request)
+
+
+def test_an_exception_result_supporting_a_finding_is_embedded_for_the_writer(
+    workspace_with_data,
+):
+    """The requirement comes from result metadata, not digits in the prose.
+
+    Which table belongs under which finding is not a judgment call — the
+    citation names it and the kind is fixed — so the validator places it rather
+    than spending the one repair turn asking for it back.
+    """
     ws = workspace_with_data
     analysis = _saved(ws, "Duplicates", DUPLICATES)
     request = _summary_request(workspaces.load_workspace(ws.id))
 
     unlinked = _memo(findings=f"Invoices are duplicated ({analysis['id']}).")
-    with pytest.raises(WorkerResponseValidationError, match="not embedded"):
-        analysis_worker.validate_analysis_summary({"markdown": unlinked}, request)
+    repaired = analysis_worker.validate_analysis_summary(
+        {"markdown": unlinked}, request
+    )
+
+    placed = analysis_worker.parse_embeds(repaired["markdown"])
+    assert [(item["analysis"], item["as"]) for item in placed] == [
+        (analysis["id"], "exception_table")
+    ]
+    assert repaired["cited_analysis_ids"] == [analysis["id"]]
+    # Under the paragraph that argues it, not appended to the document.
+    lines = repaired["markdown"].splitlines()
+    finding = next(
+        index for index, line in enumerate(lines) if "Invoices are duplicated" in line
+    )
+    assert lines[finding + 2] == f"{FENCE}embed"
 
     linked = _memo(
         findings=f"Invoices are duplicated ({analysis['id']}).",
         embeds=_embed(analysis["id"], "exception_table"),
     )
-    assert analysis_worker.validate_analysis_summary({"markdown": linked}, request)
+    accepted = analysis_worker.validate_analysis_summary({"markdown": linked}, request)
+    assert accepted["markdown"] == linked.strip()
+
+
+def test_an_exception_result_embedded_under_the_wrong_kind_goes_back_to_the_writer(
+    workspace_with_data,
+):
+    """Replacing a placed embed would overrule prose the validator cannot read."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    charted = _memo(
+        findings=f"Invoices are duplicated ({analysis['id']}).",
+        embeds=_embed(analysis["id"], "chart"),
+    )
+    with pytest.raises(WorkerResponseValidationError, match="not exception_table"):
+        analysis_worker.validate_analysis_summary({"markdown": charted}, request)
 
 
 def test_digits_do_not_turn_a_zero_exception_result_into_an_embed_requirement(
@@ -3365,6 +3548,51 @@ def test_a_result_that_established_nothing_cannot_be_a_finding(workspace_with_da
         "not treated as a finding.",
     )
     assert analysis_worker.validate_analysis_summary({"markdown": as_limit}, request)
+
+
+def test_a_memo_wrong_only_in_shape_survives_a_spent_repair_budget(
+    workspace_with_data,
+):
+    """What the run that prompted this lost: a whole memo, over punctuation.
+
+    The partial changes nothing while repair turns remain. It decides only what
+    happens at the end of them, and a misshapen memo beats the nothing that got
+    committed when the document was discarded outright.
+    """
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    restated = _memo(
+        findings=f"Duplicate keys are the issue ({analysis['id']}).",
+        embeds=_embed(analysis["id"], "exception_table"),
+    ).replace(
+        f"## {analysis_worker.RELIANCE_SECTION}\nText.",
+        f"## {analysis_worker.RELIANCE_SECTION}\nAlso worth noting ({analysis['id']}).",
+    )
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_summary({"markdown": restated}, request)
+
+    assert raised.value.partial is not None
+    assert raised.value.partial["markdown"] == restated.strip()
+    assert raised.value.partial["cited_analysis_ids"] == [analysis["id"]]
+
+
+def test_a_memo_that_says_something_untrue_is_never_salvaged(workspace_with_data):
+    """A memo in the audit file is read as the work, so a gap beats a falsehood."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    invented = _memo(
+        findings=f"Duplicate keys are the issue ({analysis['id']}).",
+        embeds=_embed(analysis["id"], "exception_table") + _embed("A-NOTREAL", "chart"),
+    )
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_summary({"markdown": invented}, request)
+
+    assert "not a supplied procedure" in "; ".join(raised.value.errors)
+    assert raised.value.partial is None
 
 
 def test_the_skeleton_is_finding_shaped(workspace_with_data):

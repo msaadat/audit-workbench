@@ -25,6 +25,16 @@ MAX_REPAIR_ATTEMPTS = 2
 MAX_REPAIR_ERRORS = 20
 MAX_REPAIR_GUIDANCE_CHARACTERS = 4_000
 
+# Appended to bounded guidance whenever the list handed to a repair turn is
+# shorter than the list the validator raised. Phrased as an instruction rather
+# than a count alone: the useful response to "there are more" is to re-check the
+# whole response, not to guess which items were withheld.
+_TRUNCATION_NOTICE = (
+    "{dropped} further validation error(s) were raised but not listed here. "
+    "Re-check the whole response against every rule, not only the errors named "
+    "above."
+)
+
 
 def _normalized_id(value: object, field_name: str) -> str:
     text = str(value or "").strip()
@@ -352,22 +362,46 @@ class WorkerRepairPolicy:
             )
 
     def bounded_errors(self, errors: Iterable[str]) -> tuple[str, ...]:
+        """The guidance a repair turn carries, and how much of it was left out.
+
+        The bound is the point: guidance has to fit a prompt. What does not
+        fit still has to be *announced*, because a list handed over silently
+        truncated reads as the complete set of what is wrong, and a model that
+        corrects every item on it has then done everything it was asked and
+        still fails the same gate. The workspace already applies this rule to
+        the flagged rows a memo is shown — supplied of total, never as the set
+        — and guidance is no different.
+        """
+        messages = [text for text in (str(raw).strip() for raw in errors) if text]
+        if not messages:
+            return (
+                "The response did not satisfy the registered schema."[
+                    : self.max_guidance_characters
+                ],
+            )
+        # Reserved before filling rather than trimmed to fit afterwards: the
+        # notice is the one line that must survive, and the full count bounds
+        # the number that can finally be dropped, so the reservation is never
+        # too small. Unspent reservation costs a few characters of guidance,
+        # which is the cheaper failure by a wide margin. A budget too small to
+        # hold the notice whole carries none of it — half a sentence saying
+        # something was withheld is not something a reader can act on.
+        reserve = len(_TRUNCATION_NOTICE.format(dropped=len(messages)))
+        if len(messages) < 2 or reserve >= self.max_guidance_characters:
+            reserve = 0
         bounded: list[str] = []
-        remaining = self.max_guidance_characters
-        for raw in errors:
+        remaining = self.max_guidance_characters - reserve
+        for message in messages:
             if len(bounded) >= self.max_validation_errors or remaining <= 0:
                 break
-            message = str(raw).strip()
-            if not message:
-                continue
             message = message[:remaining]
             bounded.append(message)
             remaining -= len(message)
-        return tuple(bounded) or (
-            "The response did not satisfy the registered schema."[
-                : self.max_guidance_characters
-            ],
-        )
+        if reserve and len(bounded) < len(messages):
+            bounded.append(
+                _TRUNCATION_NOTICE.format(dropped=len(messages) - len(bounded))
+            )
+        return tuple(bounded)
 
     def to_dict(self) -> dict[str, object]:
         return {
