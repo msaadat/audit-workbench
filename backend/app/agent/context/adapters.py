@@ -1792,6 +1792,7 @@ ANALYSIS_RELATIONSHIP_SOURCE_ID = "relationship_evidence"
 ANALYSIS_REGISTRY_SOURCE_ID = "analytics_registry"
 ANALYSIS_LOOKUP_SOURCE_ID = "lookup_candidates"
 ANALYSIS_PROBE_SOURCE_ID = "probe_findings"
+ANALYSIS_DOMAIN_SOURCE_ID = "value_domains"
 ANALYSIS_CURRENT_SOURCE_ID = "current_analyses"
 ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS = (
     analysis_workflow.EXCLUDED_ANALYTICS_TEST_IDS
@@ -1977,6 +1978,30 @@ def analysis_lookup_candidates(
     return tuple(candidates)
 
 
+def analysis_domain_candidates(
+    domains: Iterable[Mapping[str, object]],
+) -> tuple[ContextCandidate, ...]:
+    """Declare the value vocabularies the sweep read off the frame.
+
+    Computed there rather than here for the same reason the sample is: reading
+    a frame is the sweep's job, and this module is held to metadata and cached
+    profiles by a boundary test that checks the whole file.
+    """
+    return tuple(
+        ContextCandidate(
+            source_ref=f"domain:{item.get('table')}:{item.get('column')}",
+            source=dict(item),
+            representations={"value_domain": dict(item)},
+            metadata={
+                "table": str(item.get("table") or ""),
+                "column": str(item.get("column") or ""),
+            },
+            lexical_text=f"{item.get('table')} {item.get('column')}",
+        )
+        for item in domains
+    )
+
+
 def analysis_relationship_candidates(
     workspace: Workspace,
     target: str,
@@ -2088,6 +2113,7 @@ def analysis_definition_scope(
     relationships: Iterable[Mapping[str, object]] | None = None,
     hypotheses: Iterable[Mapping[str, object]] = (),
     probe_findings: Iterable[Mapping[str, object]] = (),
+    value_domains: Iterable[Mapping[str, object]] = (),
     analytics_registry: object = None,
 ) -> ContextScope:
     """Build the local candidate scope for one analysis-definition unit.
@@ -2239,6 +2265,7 @@ def analysis_definition_scope(
                 )
                 for index, item in enumerate(probe_findings)
             ),
+            ANALYSIS_DOMAIN_SOURCE_ID: analysis_domain_candidates(value_domains),
             ANALYSIS_CURRENT_SOURCE_ID: tuple(
                 ContextCandidate(
                     source_ref=f"analysis:{item['id']}",

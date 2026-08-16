@@ -21,6 +21,7 @@ from app import analysis_results, analytics, dashboard, llm, workspaces
 from app.agent import narration, runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent import joins as join_diagnostics
+from app.agent import probes
 from app.agent.analysis_execution import build_analysis_workflow_runner
 from app.agent.audit_execution import build_audit_workflow_runner
 from app.agent.capabilities import analysis as analysis_capabilities
@@ -1074,6 +1075,66 @@ def test_analysis_context_supplies_metadata_and_aggregates_without_row_values(
         if item.source_id == "relationship_evidence"
     ]
     assert relationship and relationship[0]["diagnostics"]["match_rate"] == 1.0
+
+
+def test_values_reach_this_preset_only_through_their_own_declared_sources():
+    """The two value classes this preset admits, and the one it still does not.
+
+    The aggregates above stay value-free, and that is now a statement about the
+    aggregates rather than about the preset: a vocabulary and a bounded sample
+    are admitted, each under its own permission, and an arbitrary slice of a
+    table is still refused outright.
+    """
+    ws = workspaces.create_workspace("Values")
+    ws.add_table(
+        "requisitions.csv",
+        pl.DataFrame(
+            {
+                "REQ_ID": [f"R{n:03d}" for n in range(1, 31)],
+                "REQUISITION_STATUS": [
+                    ("Rejected" if n <= 4 else "Approved" if n % 2 else "Pending")
+                    for n in range(1, 31)
+                ],
+                "ESTIMATED_TOTAL_COST": [float(n * 100) for n in range(1, 31)],
+            }
+        )
+        .write_csv()
+        .encode(),
+    )
+    capability = capability_registries.ANALYSIS_REGISTRY.get(
+        "analysis.definitions_ready"
+    )
+    findings = probes.probe_frame(ws, "requisitions")
+    scope = analysis_definition_scope(
+        ws,
+        "requisitions",
+        probe_findings=findings,
+        value_domains=probes.value_domains(ws, "requisitions"),
+    )
+    _, bundle = ContextResolver().resolve(
+        ws, capability, {"id": "analysis_definitions:requisitions"}, scope
+    )
+    kinds = {item.representation.kind for item in bundle.items}
+    assert "value_domain" in kinds
+    # The wider disclosures a vocabulary does not reopen.
+    assert "table_rows" not in kinds
+    assert "population_sample" not in kinds
+
+    spec = PRESETS.get("analysis.definitions").spec
+    assert spec.privacy.allow_value_domains is True
+    assert spec.privacy.allow_table_rows is False
+    assert spec.privacy.allow_analysis_exception_rows is False
+    assert not hasattr(spec.privacy, "allow_population_sample")
+
+    domain = next(
+        item.content
+        for item in bundle.items
+        if item.representation.kind == "value_domain"
+    )
+    # A vocabulary names what values exist and never which row holds one.
+    assert domain["column"] == "REQUISITION_STATUS"
+    assert domain["values"] == ["Approved", "Pending", "Rejected"]
+    assert "R001" not in bundle.to_json(), "a requisition id is a row value"
 
 
 def test_analysis_context_supplies_the_complete_workflow_library_contract(

@@ -343,6 +343,35 @@ class AnalysisWorkflowExecution(BaseRunner):
                 f"nowhere: {item.get('hypothesis')}"
             )
 
+    def _warn_unjoined_engagement(self) -> None:
+        """Say plainly when an engagement reached analysis with no join at all.
+
+        The per-pair rejections are already reported, but nine of them read as
+        nine local judgments rather than as the one fact they add up to: every
+        cross-table question in the engagement is now unanswerable, and the
+        analysis will run over base tables as though the tables were unrelated.
+        A run that did this reported ``completed``.
+        """
+        scope = self.scope()
+        if len(scope.tables) < 2 or self.ws.joins:
+            return
+        rejected = [
+            item
+            for item in self.join_utility_decisions().values()
+            if item.get("decision") == "reject"
+        ]
+        if not rejected:
+            return
+        self.warn(
+            f"No join was materialized anywhere in this engagement: all "
+            f"{counted(len(rejected), 'diagnosed relationship')} were judged to "
+            f"support no audit test. The analysis covers "
+            f"{counted(len(scope.tables), 'table')} in isolation, and every test "
+            "that would compare one against another — an amount against its "
+            "authorisation, a date against the document it follows — is out of "
+            "reach for this run."
+        )
+
     def _record_relationships(self, record: dict) -> None:
         """Persist one pair's diagnosis on the durable run record.
 
@@ -896,6 +925,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                     relationships=self.relationship_records(),
                     hypotheses=hypotheses,
                     probe_findings=self.frame_probes(target_frame),
+                    value_domains=probes.value_domains(self.ws, target_frame),
                 ),
             )
 
@@ -1564,6 +1594,7 @@ def build_analysis_workflow_runner(
             # gate admitted and no frame can carry is a coverage gap, and the
             # frames that were skipped are not where a reader would look for it.
             adapter._warn_untestable_hypotheses()
+            adapter._warn_unjoined_engagement()
 
     def dependency_policy(
         capability_id: str,

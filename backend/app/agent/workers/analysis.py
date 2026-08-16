@@ -37,6 +37,7 @@ from ... import analytics, sandbox
 # the context package and vice versa; the module has no dependencies of its own.
 from ...analysis_memo import EMBED_FENCE, EMBED_KINDS, parse_embeds
 from ...field_names import subject_tokens
+from ...text import counted, verb
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -131,6 +132,10 @@ slots remain on what the measurements do not reach. A nomination with no flagged
 rows is a relationship the population holds to; it is worth a line in a memo and
 is not a procedure worth a slot.
 
+VALUE DOMAINS lists the complete set of values each low-cardinality column
+holds. Use those exact spellings when a procedure has to name one — a status, a
+designation — and never invent a value that is not listed for that column.
+
 Where the request carries TESTS THIS FRAME WAS MATERIALIZED TO SUPPORT, those
 are the reasons this frame exists. Each names a hypothesis that was found worth
 testing, and the columns that state it, before the frame was built. Write those
@@ -180,6 +185,7 @@ JOIN_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYTICS_REGISTRY_SOURCE_ID = "analytics_registry"
 LOOKUP_CANDIDATES_SOURCE_ID = "lookup_candidates"
 PROBE_FINDINGS_SOURCE_ID = "probe_findings"
+VALUE_DOMAINS_SOURCE_ID = "value_domains"
 CURRENT_ANALYSES_SOURCE_ID = "current_analyses"
 ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
 
@@ -509,6 +515,34 @@ def validate_join_utility_proposal(
                 f"keep the single most useful of {', '.join(sorted(refs))} and "
                 "reject the others"
             )
+    # A floor, and deliberately a systemic one. Two tables that share a key and
+    # nothing worth testing across it are ordinary, so rejecting a pair outright
+    # — even a strongly-evidenced one — stays a decision the gate is allowed to
+    # make. What is not ordinary is rejecting *every* pair in an engagement while
+    # several of them match on every row without multiplying any: that says this
+    # data supports no cross-table test at all, and the run that said it
+    # proceeded over six frames instead of twenty without anything stopping to
+    # ask. The claim stays available; it may not be arrived at by accident.
+    if accepted and not any(item["decision"] == "retain" for item in accepted):
+        strong = {
+            ref: frozenset(
+                (str(candidate.get("left") or ""), str(candidate.get("right") or ""))
+            )
+            for ref, candidate in candidates.items()
+            if str(candidate.get("strength") or "") == "strong"
+        }
+        if len(set(strong.values())) > 1:
+            named = sorted(strong)
+            errors.append(
+                f"Every candidate was rejected, including {counted(len(named), 'candidate')} "
+                f"across {counted(len(set(strong.values())), 'table pair')} whose keys "
+                "match on every row without multiplying any: "
+                + ", ".join(named[:4])
+                + (f" and {len(named) - 4} more" if len(named) > 4 else "")
+                + ". Retain the relationships that support an audit test and "
+                "reject only the rest, or resubmit rejecting them all again if "
+                "this engagement genuinely supports no cross-table test"
+            )
     missing = sorted(set(candidates) - seen)
     if missing:
         errors.append("A decision is required for every candidate: " + ", ".join(missing))
@@ -549,8 +583,36 @@ def run_join_utility_worker(
         "TABLE SCHEMAS": schemas,
         "REQUIRED OUTPUT": f"Call {JOIN_UTILITY_SUBMISSION_TOOL} exactly once.",
     }, indent=1, ensure_ascii=False)
+    conversation = None
     if attempt.is_repair:
-        prompt += "\nRepair the prior response: " + "; ".join(attempt.validation_errors)
+        # The prior decisions are replayed, not summarized into a list of
+        # complaints. Every violation this gate raises is of the form "keep the
+        # single most useful of A, B and reject the others", which cannot be
+        # acted on by a turn that has been shown neither A's rationale nor B's:
+        # the cheapest response satisfying five such instructions at once is to
+        # reject everything, and a run did exactly that — sixteen retained on the
+        # first attempt, sixteen rejected on the second, no join materialized and
+        # the workspace reduced from twenty frames to six.
+        if attempt.previous_response is None:
+            raise WorkerContractError(
+                "A join-utility repair requires the previous response."
+            )
+        conversation = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": attempt.previous_response},
+            {
+                "role": "user",
+                "content": (
+                    "Correct only the listed violations, and keep every other "
+                    "decision and rationale exactly as you already made them: "
+                    + "; ".join(attempt.validation_errors)
+                    + ". Where a pair retained more than one candidate, keep the "
+                    "one whose stated test matters most and reject only its "
+                    "alternates — a pair that supported a test before still "
+                    "supports it. Resubmit the complete decision set."
+                ),
+            },
+        ]
     activity = dict(request.activity)
     activity.setdefault("context_metrics", {
         "worker_kind": "join_utility",
@@ -562,6 +624,7 @@ def run_join_utility_worker(
         JOIN_UTILITY_SYSTEM, prompt, activity, attempt=attempt.number,
         tools=[tool],
         tool_choice={"type": "function", "function": {"name": JOIN_UTILITY_SUBMISSION_TOOL}},
+        conversation=conversation,
         return_message=True,
     )
     return _join_utility_submission_response(message)
@@ -853,6 +916,58 @@ def _lookup_catalog(request: WorkerRequest) -> list[tuple[str, list[str]]]:
     return catalog
 
 
+def _domain_catalog(request: WorkerRequest) -> list[tuple[str, list[str]]]:
+    """(column, its complete value vocabulary) for the supplied domains."""
+    catalog: list[tuple[str, list[str]]] = []
+    for raw in _source_items(request, VALUE_DOMAINS_SOURCE_ID):
+        item = _plain_json(raw)
+        if not isinstance(item, Mapping):
+            continue
+        column = str(item.get("column") or "").strip()
+        values = [
+            str(value) for value in item.get("values") or [] if str(value).strip()
+        ]
+        if column and values:
+            catalog.append((column, values))
+    catalog.sort()
+    return catalog
+
+
+def _value_branches(
+    request: WorkerRequest, base: Mapping[str, Any], required: list[str]
+) -> list[dict[str, Any]]:
+    """One params branch per column that has a vocabulary.
+
+    ``values`` only means anything relative to a chosen column, and the values a
+    column actually holds are the only ones worth checking against: a filter on a
+    status that does not occur flags nothing and reads as a clean pass. Emitting a
+    branch per column, each carrying that column's own domain as an enum, makes
+    an invented value unrepresentable rather than merely wrong — which matters
+    here more than anywhere, because a value is the one part of a spec that
+    cannot be checked against a schema.
+    """
+    branches = []
+    for column, values in _domain_catalog(request):
+        properties = {
+            **{key: value for key, value in base.items() if key != "column"},
+            "column": {"type": "string", "enum": [column]},
+            "values": {
+                "type": "array",
+                "items": {"type": "string", "enum": sorted(values)},
+                "minItems": 1,
+            },
+        }
+        branches.append(
+            {
+                "type": "object",
+                "properties": properties,
+                "required": [*(key for key in required if key != "column"), "column", "values"],
+                "additionalProperties": False,
+            }
+        )
+    return branches
+
+
 def _lookup_branches(
     request: WorkerRequest, base: Mapping[str, Any], required: list[str]
 ) -> list[dict[str, Any]]:
@@ -901,6 +1016,7 @@ def _analytics_spec_schemas(
         required: list[str] = []
         usable = True
         needs_lookup = bool(metadata.get("needs_lookup"))
+        needs_values = bool(metadata.get("needs_values"))
         for raw in metadata.get("params") or []:
             if not isinstance(raw, Mapping):
                 continue
@@ -910,6 +1026,10 @@ def _analytics_spec_schemas(
             if needs_lookup and name in {"lookup_table", "lookup_column"}:
                 # Supplied by the per-table branch below, where the two are
                 # constrained together rather than independently.
+                continue
+            if needs_values and name == "values":
+                # Supplied by the per-column branch below, from that column's
+                # own vocabulary.
                 continue
             parameter_schema = _parameter_json_schema(raw, columns, column_types)
             is_required = not raw.get("optional") and "default" not in raw
@@ -925,11 +1045,16 @@ def _analytics_spec_schemas(
                 required.append(name)
         if not usable:
             continue
-        if needs_lookup:
+        if needs_lookup or needs_values:
             # With no candidate the test cannot be written at all — a workspace
-            # of one table has nothing to reconcile against — so it is dropped
-            # rather than offered with an empty enum.
-            params_branches = _lookup_branches(request, properties, required)
+            # of one table has nothing to reconcile against, and a frame whose
+            # every column is unique per row has no vocabulary to check — so it
+            # is dropped rather than offered with an empty enum.
+            params_branches = (
+                _lookup_branches(request, properties, required)
+                if needs_lookup
+                else _value_branches(request, properties, required)
+            )
             if not params_branches:
                 continue
             params_schema: dict[str, Any] = (
@@ -1125,6 +1250,7 @@ def _validate_analytics_spec(
     column_types: Mapping[str, str],
     label: str,
     lookups: Mapping[str, set[str]] | None = None,
+    domains: Mapping[str, set[str]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     test_id = analytics.canonical_test_id(spec.get("test") or spec.get("test_id"))
@@ -1228,6 +1354,33 @@ def _validate_analytics_spec(
                 f"{label} names lookup column '{key}', which is not a key of "
                 f"'{table}'; use one of {', '.join(sorted(catalog[table]))}"
             )
+    if registry[test_id].get("needs_values"):
+        vocabulary = dict(domains or {})
+        column = str(params.get("column") or "").strip()
+        raw = params.get("values")
+        named = [
+            str(value).strip()
+            for value in (raw if isinstance(raw, (list, tuple)) else [raw])
+            if str(value or "").strip()
+        ]
+        if not named:
+            errors.append(f"{label} names no value to check against")
+        elif column not in vocabulary:
+            errors.append(
+                f"{label} checks values in '{column}', whose vocabulary was not "
+                f"supplied; use one of {', '.join(sorted(vocabulary)) or 'the supplied columns'}"
+            )
+        else:
+            # A value is the one part of a spec no schema can vouch for. A
+            # filter on a status the column never holds flags nothing and
+            # records a clean pass over a question that was never asked.
+            unknown = sorted(set(named) - vocabulary[column])
+            if unknown:
+                errors.append(
+                    f"{label} names {', '.join(unknown)}, which "
+                    f"{verb(len(unknown), 'does', 'do')} not occur in '{column}'; "
+                    f"its values are {', '.join(sorted(vocabulary[column]))}"
+                )
     return {"test": test_id, "params": params}, errors
 
 
@@ -1273,6 +1426,7 @@ def validate_analysis_proposal(
     origins = _column_origins(schema)
     registry = _analytics_contract(request)
     lookups = {table: set(keys) for table, keys in _lookup_catalog(request)}
+    domains = {column: set(values) for column, values in _domain_catalog(request)}
     existing = _existing_semantic_ids(request, origins)
     related = {
         str((_plain_json(item) or {}).get("table"))
@@ -1333,7 +1487,7 @@ def validate_analysis_proposal(
         raw_spec = raw_spec if isinstance(raw_spec, Mapping) else {}
         if kind == "analytics":
             spec, spec_errors = _validate_analytics_spec(
-                raw_spec, registry, columns, column_types, label, lookups
+                raw_spec, registry, columns, column_types, label, lookups, domains
             )
         else:
             spec, spec_errors = _validate_python_spec(raw_spec, frames, label)
@@ -1490,9 +1644,13 @@ def run_analysis_definition_worker(
         TARGET_SCHEMA_SOURCE_ID,
         ANALYTICS_REGISTRY_SOURCE_ID,
         PROBE_FINDINGS_SOURCE_ID,
+        VALUE_DOMAINS_SOURCE_ID,
     )
     measured = [
         _plain_json(item) for item in _source_items(request, PROBE_FINDINGS_SOURCE_ID)
+    ]
+    domains = [
+        _plain_json(item) for item in _source_items(request, VALUE_DOMAINS_SOURCE_ID)
     ]
     hypotheses = [
         _plain_json(item) for item in _source_items(request, JOIN_HYPOTHESIS_SOURCE_ID)
@@ -1501,6 +1659,7 @@ def run_analysis_definition_worker(
         {
             **({"ANALYTICS CATALOG": catalog} if catalog else {}),
             "TARGET FRAME": schema,
+            **({"VALUE DOMAINS": domains} if domains else {}),
             **({"MEASURED ON THIS FRAME": measured} if measured else {}),
             # What this frame was admitted for. Present only on a frame the
             # utility gate retained a relationship for, and authoritative about

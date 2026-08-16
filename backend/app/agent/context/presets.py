@@ -57,6 +57,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "analysis_exception_rows": "allow_analysis_exception_rows",
     "datatest_exception_rows": "allow_datatest_exception_rows",
     "analysis_summary": "allow_analysis_summary",
+    "value_domain": "allow_value_domains",
 }
 
 
@@ -1224,6 +1225,18 @@ PRESETS.register(
                     budget=ContextBudget(max_items=12, max_characters=12_000),
                 ),
                 ContextSource(
+                    id="value_domains",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # The complete value vocabulary of the columns that have a
+                    # small one. Category literals, never a record: a domain
+                    # says a status column holds Approved, Pending and Rejected
+                    # and cannot say which requisition holds which.
+                    representations=(ContextRepresentation("value_domain"),),
+                    budget=ContextBudget(max_items=20, max_characters=8_000),
+                ),
+                ContextSource(
                     id="current_analyses",
                     source_type="artifacts",
                     required=False,
@@ -1236,15 +1249,27 @@ PRESETS.register(
                     budget=ContextBudget(max_items=40, max_characters=16_000),
                 ),
             ),
-            budget=ContextBudget(max_items=87, max_characters=88_000),
-            # Row-level table data is structurally impossible here: the
-            # permission is denied and ``table_rows`` is rejected by the
-            # resolver boundary before a candidate can become a bundle item.
+            budget=ContextBudget(max_items=95, max_characters=86_000),
+            # This preset admits exactly one class of engagement value, and no
+            # row. ``allow_value_domains`` admits the categories a column ranges
+            # over — the disclosure that lets a procedure be written against
+            # ``Rejected`` instead of against "a status value" — and says what
+            # values exist without saying which record holds which.
+            #
+            # A bounded sample of real rows was declared here and withdrawn: it
+            # cost half the context of a definition turn and, measured against
+            # the run before it, bought fewer analyses and worse ones. It belongs
+            # to a stage that reads the whole engagement once, not to a turn that
+            # reads one frame nineteen times over.
+            #
+            # ``allow_table_rows`` remains denied and ``table_rows`` remains
+            # structurally rejected at the resolver boundary.
             privacy=ContextPrivacy(
                 allow_document_text=True,
                 allow_table_metadata=True,
                 allow_table_profiles=True,
                 allow_table_aggregates=True,
+                allow_value_domains=True,
             ),
         ),
     )

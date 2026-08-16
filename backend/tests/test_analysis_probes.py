@@ -8,9 +8,11 @@ noise that crowded a real one out, on a measured engagement.
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
-from app import workspaces
+from app import analysis_results, analytics, workspaces
 from app.agent import probes
+from app.explore import QueryError
 from app.agent.context.adapters import analysis_definition_scope
 from app.agent.workers.analysis import (
     MAX_MEASURED_ANALYSES,
@@ -82,6 +84,59 @@ def test_a_reference_resolving_nowhere_is_the_strongest_nomination():
     assert nomination is not None
     assert nomination["flagged"] == nomination["tested"] == 30
     assert "resolve in no imported key" in nomination["reading"]
+
+
+def test_a_key_pointing_inside_its_own_table_resolves_there():
+    """A supervisor id resolves in the staff master it sits on.
+
+    Suppressing the tested frame wholesale to avoid the trivial self-match made
+    every self-reference look like it reconciled to nothing — the commonest
+    correct shape in a master file reported as a total reconciliation failure,
+    and it took a real one down with it by crowding the frame's budget.
+    """
+    ws = _workspace(
+        "Self reference",
+        staff_details=pl.DataFrame(
+            {
+                "STAFF_ID": [1000 + n for n in _rows(30)],
+                "SUPERVISOR_ID": [1000 + max(n - 1, 1) for n in _rows(30)],
+                "DEPARTMENT": ["IT" if n % 2 else "Finance" for n in _rows(30)],
+            }
+        ),
+        invoice_data=pl.DataFrame({"INVOICE_ID": [f"INV{n:03d}" for n in _rows(30)]}),
+    )
+    found = probes.probe_frame(ws, "staff_details")
+    # It reconciles within its own frame, so the mis-aimed pair against the
+    # invoice master is recognised as the wrong question and dropped.
+    assert _find(found, "referential", column="SUPERVISOR_ID") is None
+
+
+def test_a_reference_matching_nothing_says_what_it_was_checked_against():
+    """A run declined 93 unreconciled buyer ids because the pair read as absurd.
+
+    When no candidate matches, nothing in the data ranks them, so the one named
+    in the spec is arbitrary. Saying what else was tried is what makes an
+    exhaustive result read as the scope limitation it is rather than as a badly
+    aimed question.
+    """
+    ws = _workspace(
+        "No master anywhere",
+        po_data=pl.DataFrame(
+            {
+                "PO_NUMBER": [f"PO{n:03d}" for n in _rows(30)],
+                "BUYER_ID": [f"B{n % 6:03d}" for n in _rows(30)],
+            }
+        ),
+        staff_details=pl.DataFrame({"STAFF_ID": [1000 + n for n in _rows(30)]}),
+        invoice_data=pl.DataFrame({"INVOICE_ID": [f"INV{n:03d}" for n in _rows(30)]}),
+    )
+    nomination = _find(
+        probes.probe_frame(ws, "po_data"), "referential", column="BUYER_ID"
+    )
+    assert nomination is not None
+    assert "resolve in no imported key" in nomination["reading"]
+    assert "checked against" in nomination["reading"]
+    assert len(nomination["evidence"]["checked_against"]) > 1
 
 
 def test_a_reference_aimed_at_the_wrong_master_is_not_a_finding():
@@ -396,6 +451,92 @@ def test_measured_findings_widen_a_frame_beyond_its_size_budget():
     assert proposal_budget(118, 500) == MAX_MEASURED_ANALYSES
 
 
+# ------------------------------------------------- value domains and samples
+def test_a_status_vocabulary_is_named_in_full():
+    """"Three distinct values" cannot be tested against; ``Rejected`` can."""
+    ws = _workspace(
+        "Vocabulary",
+        requisitions=pl.DataFrame(
+            {
+                "REQ_ID": [f"R{n:03d}" for n in _rows(30)],
+                "REQUISITION_STATUS": [
+                    ("Rejected" if n <= 4 else "Approved" if n % 2 else "Pending")
+                    for n in _rows(30)
+                ],
+            }
+        ),
+    )
+    domains = {item["column"]: item for item in probes.value_domains(ws, "requisitions")}
+    assert domains["REQUISITION_STATUS"]["values"] == [
+        "Approved",
+        "Pending",
+        "Rejected",
+    ]
+    # A near-unique column is the population, not a vocabulary.
+    assert "REQ_ID" not in domains
+
+
+def test_a_small_frame_does_not_have_its_population_described_as_a_vocabulary():
+    ws = _workspace(
+        "Four rows",
+        financial_approval_matrix=pl.DataFrame(
+            {
+                "JOB_TITLE": ["CEO", "CFO", "Controller", "Treasurer"],
+                "MAX_APPROVAL_AMOUNT": [1, 2, 3, 4],
+            }
+        ),
+    )
+    assert probes.value_domains(ws, "financial_approval_matrix") == []
+
+
+# ------------------------------------------------------------ vacuity guards
+def test_a_comparison_no_row_satisfies_established_nothing():
+    """Three of these reached ``fail`` on one run, reading as total failure.
+
+    A payment status set against a vendor status is never equal, so every row is
+    flagged and the result looks like every invoice breaching a control. The
+    comparison was given two columns that do not stand in the relationship it
+    was asked to check.
+    """
+    reason = analysis_results.uninformative_reason(
+        {"kind": "analytics", "spec": {"test": "compare_columns"}},
+        exception_count=117,
+        denominator=117,
+        rate=1.0,
+    )
+    assert reason is not None
+    assert "holds on no row at all" in reason
+
+
+def test_a_comparison_the_sweep_nominated_can_never_be_vacuous():
+    """The guard cannot suppress a real finding that came from a measurement.
+
+    A nomination is admitted only where the relationship already holds on
+    ``INVARIANT_HOLD_RATE`` of rows, which is far under the saturation
+    threshold — so the gate fires on invented comparisons and never on measured
+    ones.
+    """
+    assert 1 - probes.INVARIANT_HOLD_RATE < analysis_results.SATURATION_THRESHOLD
+    reason = analysis_results.uninformative_reason(
+        {"kind": "analytics", "spec": {"test": "compare_columns"}},
+        exception_count=4,
+        denominator=96,
+        rate=4 / 96,
+    )
+    assert reason is None
+
+
+def test_a_date_column_cannot_be_compared_against_itself():
+    """One run saved APPROVED_DATE against APPROVED_DATE and recorded a pass."""
+    frame = pl.DataFrame({"APPROVED_DATE": ["2024-01-01", "2024-02-01"]})
+    with pytest.raises(QueryError):
+        analytics.run_test(
+            frame,
+            "date_lag",
+            {"from_date": "APPROVED_DATE", "to_date": "APPROVED_DATE"},
+        )
+
+
 def test_probe_findings_reach_the_definition_context():
     ws = _workspace(
         "Wired",
@@ -414,3 +555,55 @@ def test_probe_findings_reach_the_definition_context():
     assert {item.source["test"] for item in supplied} == {item["test"] for item in found}
     # Absent by default rather than fabricated: a frame nobody swept supplies none.
     assert not analysis_definition_scope(ws, "invoice_data").candidates["probe_findings"]
+
+
+# --------------------------------------------------------------- value filter
+def test_a_value_is_testable_in_both_directions():
+    """The shape the library talked around until now.
+
+    Asked for invoices belonging to inactive vendors, a run submitted
+    ``PAYMENT_STATUS = VENDOR_STATUS`` — comparing "Paid" against "Active", which
+    flags every row and reads as a total control failure. The condition was a
+    value, and nothing in the library took one.
+    """
+    frame = pl.DataFrame(
+        {
+            "REQ_ID": [f"R{n:03d}" for n in _rows(20)],
+            "STATUS": ["Rejected" if n <= 3 else "Approved" for n in _rows(20)],
+        }
+    )
+    flagged = analytics.run_test(
+        frame, "value_filter", {"column": "STATUS", "mode": "flag", "values": ["Rejected"]}
+    )
+    assert flagged.verdict == "fail"
+    assert flagged.detail.height == 3
+    assert flagged.tested == 20
+
+    # The same column read as a closed vocabulary instead.
+    allowed = analytics.run_test(
+        frame, "value_filter", {"column": "STATUS", "mode": "allow", "values": ["Approved"]}
+    )
+    assert allowed.detail.height == 3
+
+
+def test_a_row_naming_no_value_breaches_neither_reading():
+    """A blank is a completeness finding, not a valid-value one."""
+    frame = pl.DataFrame(
+        {
+            "STATUS": ["Approved"] * 18 + [None, ""],
+        }
+    )
+    result = analytics.run_test(
+        frame, "value_filter", {"column": "STATUS", "mode": "allow", "values": ["Approved"]}
+    )
+    assert result.verdict == "ok"
+    assert result.tested == 18
+    assert any(stat["label"] == "Rows with no value" for stat in result.stats)
+
+
+def test_a_value_check_needs_a_value():
+    frame = pl.DataFrame({"STATUS": ["Approved"] * 5})
+    with pytest.raises(QueryError):
+        analytics.run_test(
+            frame, "value_filter", {"column": "STATUS", "mode": "flag", "values": []}
+        )

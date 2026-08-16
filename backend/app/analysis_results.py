@@ -89,9 +89,25 @@ SATURATION_THRESHOLD = 0.8
 # noise this guards against. The tests below are different in kind: each sets
 # values against something else — another column, or the rest of their own
 # distribution — so separating nothing means the something else was wrong.
-SATURATION_SENSITIVE_TESTS = frozenset({"date_lag", "outliers", "rare_values"})
+#
+# ``compare_columns`` is the clearest case of that kind and was missing while it
+# was the most-proposed test in the library. A comparison breached by every row
+# has not found a population in breach; it has been given two columns that do
+# not stand in the relationship it was asked to check — a payment status set
+# against a vendor status, neither of which was ever going to equal the other.
+# Three such results reached `fail` on one engagement, each reading as a total
+# control failure. A comparison the sweep nominated cannot land here: those are
+# admitted only where the relationship already holds on 85% of rows.
+SATURATION_SENSITIVE_TESTS = frozenset(
+    {"compare_columns", "date_lag", "outliers", "rare_values"}
+)
 
 _SATURATION_WORDING: dict[str, str] = {
+    "compare_columns": (
+        "so the relationship it asked for holds on no row at all; two columns "
+        "that never stand in it are not two sides of one comparison, they are "
+        "two different facts"
+    ),
     "date_lag": (
         "so the ordering it checked holds for the whole frame; a date pair that "
         "never runs the other way is two unrelated dates, not backdating"

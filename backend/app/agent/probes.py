@@ -27,12 +27,13 @@ this application stays — in the evidence sidecar the execution writes.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 from collections.abc import Iterable, Mapping
 
 import polars as pl
 
-from .. import analytics
+from .. import analytics, profiler
 from ..field_names import IDENTIFIER_SEGMENTS, subject_tokens
 from ..workspaces import Workspace, WorkspaceError
 from . import joins as join_diagnostics
@@ -306,6 +307,7 @@ def referential_nominations(
     # A column is a reference to one thing; reporting it against four masters
     # says the same fact four times and crowds out three other columns.
     best: dict[str, dict] = {}
+    attempted: dict[str, list[str]] = {}
     for table in tables:
         keys = _lookup_keys(workspace, table)
         if not keys:
@@ -339,6 +341,7 @@ def referential_nominations(
                 # aimed at is a candidate of its own and reconciles cleanly, so
                 # dropping this one loses nothing.
                 continue
+            attempted.setdefault(column, []).append(f"{table}.{key}")
             candidate = (rate, str(table), str(key))
             if column in best and best[column]["_order"] <= candidate:
                 continue
@@ -362,11 +365,23 @@ def referential_nominations(
             f"{found['orphans']} of {found['tested']} {column} values do not "
             f"exist in {found['table']}.{found['key']}"
         )
-        reading += (
-            f"; they resolve in {found['elsewhere']}"
-            if found["elsewhere"]
-            else "; they resolve in no imported key"
-        )
+        checked = sorted(set(attempted.get(column, ())))
+        evidence: dict[str, object] = {"resolves_in": found["elsewhere"] or None}
+        if found["elsewhere"]:
+            reading += f"; they resolve in {found['elsewhere']}"
+        else:
+            # Which master a reference that matches nothing was checked against
+            # is undetermined by the data — no candidate matched, so nothing
+            # ranks them. Naming one and stopping makes an exhaustive result read
+            # as a badly aimed question, and a run declined a genuine finding for
+            # exactly that reason: 93 buyer identifiers reconciling to no
+            # imported master, reported against the invoice table because its
+            # name sorts first. Saying what else was tried is what makes the
+            # claim legible as the scope limitation it is.
+            reading += "; they resolve in no imported key"
+            if len(checked) > 1:
+                reading += f" — checked against {', '.join(checked)}"
+            evidence["checked_against"] = checked
         nominations.append(
             _nomination(
                 frame,
@@ -375,7 +390,7 @@ def referential_nominations(
                 found["params"],
                 found["result"],
                 reading,
-                {"resolves_in": found["elsewhere"] or None},
+                evidence,
             )
         )
     return nominations
@@ -811,6 +826,87 @@ def probe_frame(workspace: Workspace, frame: str) -> list[dict]:
         if len(kept) >= MAX_NOMINATIONS_PER_FRAME:
             break
     return kept
+
+
+# A column with few enough distinct values that naming all of them describes a
+# vocabulary rather than a population. The threshold is the profiler's own bar
+# for calling a column categorical, so "few" means one thing in this
+# application. The share guard is what keeps a four-row lookup from having its
+# population described as a vocabulary.
+DOMAIN_MAX_DISTINCT = profiler.CATEGORICAL_MAX_DISTINCT
+DOMAIN_MAX_SHARE = 0.5
+MAX_DOMAIN_COLUMNS = 20
+# A vocabulary token is a word or two. Past this the column holds prose — a
+# receipt comment, a description — and its few distinct values are short only
+# because the population is, not because they name a category.
+DOMAIN_MAX_VALUE_LENGTH = 40
+
+
+def value_domains(workspace: Workspace, frame: str) -> list[dict]:
+    """The complete value vocabulary of each low-cardinality column.
+
+    The one thing a value-free profile cannot supply and a procedure cannot be
+    written without. "REQUISITION_STATUS has 3 distinct values" does not let
+    anybody test for a requisition that was rejected; the word ``Rejected`` does,
+    and no aggregate contains it.
+
+    A vocabulary is not a population. A column with twenty distinct values across
+    a thousand rows is a status list and naming its values names no record; a
+    column whose values are nearly one-per-row is the population itself, and its
+    values are never listed here — its *shape* is what ``format_anomaly``
+    reports, and its rows are what the sample shows.
+
+    Nor is a vocabulary a set of identifiers. A column of staff numbers is short
+    only because few people appear in the population, and listing it discloses
+    who they are while answering no question a procedure asks — what a reference
+    column needs is reconciliation, which the sweep already does. Reference-shaped
+    columns are therefore excluded even where they are small, along with prose
+    columns whose values are sentences rather than categories.
+    """
+    try:
+        profile = workspace.get_profile(frame) or {}
+        df = workspace.get_frame(frame)
+    except Exception:  # noqa: BLE001 - an unreadable frame has no vocabulary
+        return []
+    rows = profile.get("rows")
+    domains: list[dict] = []
+    for column in profile.get("column_profiles") or []:
+        if len(domains) >= MAX_DOMAIN_COLUMNS:
+            break
+        name = str(column.get("name") or "").strip()
+        distinct = column.get("distinct_count")
+        if not name or not isinstance(distinct, int) or not distinct:
+            continue
+        if distinct > DOMAIN_MAX_DISTINCT or name not in df.columns:
+            continue
+        if str(column.get("inferred_type") or "") != "categorical":
+            continue
+        if reference_shaped(name):
+            continue
+        if isinstance(rows, int) and rows and distinct / rows > DOMAIN_MAX_SHARE:
+            continue
+        try:
+            values = sorted(
+                str(value)
+                for value in df[name].drop_nulls().unique().to_list()
+                if str(value).strip()
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if not values or len(values) > DOMAIN_MAX_DISTINCT:
+            continue
+        if max(len(value) for value in values) > DOMAIN_MAX_VALUE_LENGTH:
+            continue
+        domains.append(
+            {
+                "table": frame,
+                "column": name,
+                "distinct_count": distinct,
+                "values": values,
+                "blank_count": column.get("blank_count"),
+            }
+        )
+    return domains
 
 
 def probe_frames(workspace: Workspace, frames: Iterable[str]) -> dict[str, list[dict]]:

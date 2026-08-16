@@ -44,9 +44,11 @@ class FrameSource:
     resolve: Resolve
     tables: tuple[str, ...] = ()
     # The frame being tested, when the caller knows it. Only the orphan
-    # diagnosis uses it, and only to exclude itself: the unmatched values of a
-    # column are trivially present in that column, so a frame that does not name
-    # itself can be told its keys "resolve in" the very column they came from.
+    # diagnosis uses it, and only to exclude the tested column itself: the
+    # unmatched values of a column are trivially present in that column, so a
+    # frame that does not name itself can be told its keys "resolve in" the very
+    # column they came from. The rest of the frame stays in scope, because a
+    # reference pointing inside its own table is ordinary in a master file.
     origin: str = ""
 
     def frame(self, name: str) -> pl.DataFrame:
@@ -486,6 +488,13 @@ def weekend_activity(df: pl.DataFrame, params: dict) -> AnalyticsResult:
 def date_lag(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     from_col = params.get("from_date")
     to_col = params.get("to_date")
+    if from_col == to_col:
+        # A column against itself has a lag of zero on every row and records a
+        # clean pass over a question nobody asked. ``compare_columns`` has
+        # refused this since it was written; the date test had not, and a run
+        # saved ``APPROVED_DATE`` against ``APPROVED_DATE`` as a chronology
+        # check that found nothing.
+        raise QueryError("Pick two different date columns to compare.")
     raw_max = params.get("max_days")
     max_days = int(raw_max) if raw_max not in (None, "") else None
 
@@ -736,7 +745,10 @@ MAX_RESOLVES_IN = 3
 
 
 def _resolves_in(
-    orphans: set[str], source: FrameSource, exclude: set[str]
+    orphans: set[str],
+    source: FrameSource,
+    exclude: set[str],
+    exclude_column: tuple[str, str] | None = None,
 ) -> list[tuple[str, int]]:
     """Where the unmatched values *do* resolve, across the workspace's keys.
 
@@ -748,6 +760,13 @@ def _resolves_in(
     Reported as candidates ordered by how much of the orphan set each explains.
     Nothing is asserted about *why* the values landed there — that is the
     auditor's call — only that they are another table's keys.
+
+    ``exclude_column`` is the column under test. It is excluded by name rather
+    than by frame, which matters for a key that points inside its own table: a
+    supervisor id resolves in the staff master it sits on, and suppressing the
+    whole frame to avoid the trivial self-match would report a self-reference as
+    resolving nowhere — turning the commonest correct shape in a master file
+    into a reconciliation failure.
     """
     if not orphans:
         return []
@@ -763,6 +782,8 @@ def _resolves_in(
             # courtesy on top of the count; it may never fail the test.
             continue
         for column in frame.columns:
+            if exclude_column == (table, column):
+                continue
             series = frame.select(_key_strings(column)).to_series().drop_nulls()
             # Only a key column can explain an orphan set: a description column
             # that happens to contain one of the values explains nothing.
@@ -818,7 +839,8 @@ def referential(
     elsewhere = _resolves_in(
         set(census["unmatched_value"].to_list()),
         source,
-        {lookup_table, source.origin} - {""},
+        {lookup_table},
+        (source.origin, str(column)) if source.origin else None,
     )
     if elsewhere:
         census = census.with_columns(
@@ -968,6 +990,96 @@ def compare_columns(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         detail=breached.drop(["_l", "_r"]) if breached.height else None,
         tested=n,
         viz={"type": "bar", "x": "outcome", "y": ["rows"]},
+    )
+
+
+# ------------------------------------------------------------- value filter
+def value_filter(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    """Rows whose value in one column is, or is not, among named values.
+
+    The shape every other test in this library talks around. A requisition that
+    was *rejected* and still drew an invoice, a vendor that is *Under Review* and
+    still received a purchase order — the condition is a value, and until now the
+    nearest thing available was a comparison between two columns. A run reached
+    for it: asked to find invoices for inactive vendors it submitted
+    ``PAYMENT_STATUS = VENDOR_STATUS``, which compares "Paid" against "Active",
+    flags every row of the population, and reads as a total control failure.
+
+    Two directions, because auditors ask this both ways round. ``flag`` names the
+    values that are themselves the exception; ``allow`` names the values that are
+    permitted and flags everything else, which is the classic valid-value test
+    over a column whose vocabulary is supposed to be closed.
+
+    Null and blank rows are reported and never flagged. A row that names no value
+    breaches neither reading of the rule, and folding it in would merge a
+    completeness finding into a valid-value one.
+    """
+    column = params.get("column")
+    if column not in df.columns:
+        raise QueryError(f"Unknown column '{column}'.")
+    mode = str(params.get("mode") or "flag").strip()
+    if mode not in {"flag", "allow"}:
+        raise QueryError("Value check mode must be flag or allow.")
+    raw = params.get("values")
+    values = [
+        str(value).strip()
+        for value in (raw if isinstance(raw, (list, tuple)) else [raw])
+        if str(value or "").strip()
+    ]
+    if not values:
+        raise QueryError("Name at least one value to check against.")
+
+    keyed = df.with_columns(_key_strings(column).alias("_v"))
+    present = keyed.filter(pl.col("_v").is_not_null() & (pl.col("_v") != ""))
+    blanks = df.height - present.height
+    n = present.height
+    if not n:
+        raise QueryError(f"'{column}' has no values to check.")
+
+    named = pl.col("_v").is_in(values)
+    flagged = present.filter(named if mode == "flag" else ~named)
+    census = (
+        present.group_by("_v")
+        .agg(pl.len().alias("rows"))
+        .rename({"_v": "value"})
+        .with_columns(
+            pl.col("value").is_in(values).alias("named"),
+            (100.0 * pl.col("rows") / n).round(2).alias("share_pct"),
+        )
+        .sort(["rows", "value"], descending=[True, False])
+    )
+    listed = ", ".join(values[:4]) + (f" and {len(values) - 4} more" if len(values) > 4 else "")
+    stats = [
+        _stat("Rows checked", n),
+        _stat("Rows flagged", flagged.height),
+        _stat("Distinct values present", census.height),
+        _stat("Values named", len(values)),
+    ]
+    if blanks:
+        stats.append(_stat("Rows with no value", blanks))
+    return AnalyticsResult(
+        title=(
+            f"{column} is {listed}" if mode == "flag" else f"{column} outside {listed}"
+        ),
+        verdict="fail" if flagged.height else "ok",
+        verdict_text=(
+            (
+                f"{counted(flagged.height, 'row')} of {n:,} {verb(flagged.height, 'holds', 'hold')} {listed}"
+                if mode == "flag"
+                else f"{counted(flagged.height, 'row')} of {n:,} {verb(flagged.height, 'holds', 'hold')} a value outside {listed}"
+            )
+            if flagged.height
+            else (
+                f"No row holds {listed}"
+                if mode == "flag"
+                else f"Every one of the {n:,} rows checked holds one of {listed}"
+            )
+        ),
+        stats=stats,
+        summary=census,
+        detail=flagged.drop("_v") if flagged.height else None,
+        tested=n,
+        viz={"type": "bar", "x": "value", "y": ["rows"]},
     )
 
 
@@ -1379,6 +1491,35 @@ ANALYTICS: dict[str, dict] = {
             },
         ],
         "func": compare_columns,
+    },
+    "value_filter": {
+        "group": "Data quality",
+        "label": "Value Check",
+        "signal": SIGNAL_EXCEPTION,
+        "icon": "pi pi-flag",
+        "description": (
+            "Flags rows by the value in one column — the requisitions that were "
+            "rejected, the vendors under review, the payments in a status they "
+            "should never reach. Either name the values that are themselves the "
+            "exception, or name the values that are permitted and flag "
+            "everything outside them."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Column"},
+            {
+                "name": "mode",
+                "kind": "select",
+                "label": "Flag rows that",
+                "options": [
+                    {"label": "hold one of these values", "value": "flag"},
+                    {"label": "hold anything but these values", "value": "allow"},
+                ],
+                "default": "flag",
+            },
+            {"name": "values", "kind": "values", "label": "Values"},
+        ],
+        "needs_values": True,
+        "func": value_filter,
     },
     "format_anomaly": {
         "group": "Data quality",

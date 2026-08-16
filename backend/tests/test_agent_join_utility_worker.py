@@ -67,6 +67,9 @@ _ORDERS_TO_STAFF_REQUESTER = {
     "ref": "relationship:orders:staff:requested_by:staff_id",
     "left_on": ["requested_by"],
 }
+# The all-reject floor fires only on strong evidence, so a test whose subject is
+# something else uses moderately-evidenced candidates and stays clear of it.
+_ORDERS_TO_STAFF_MODERATE = {**_ORDERS_TO_STAFF, "strength": "moderate"}
 _ORDERS_TO_VENDOR = {
     "ref": "relationship:orders:vendor:vendor_id:vendor_id",
     "left": "orders",
@@ -181,7 +184,12 @@ def test_a_model_cross_pair_reference_is_ignored():
 def test_a_model_reference_to_a_rejected_route_is_ignored():
     """The deterministic result has no retained route to link to."""
 
-    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
+    catalog = _catalog(
+        [
+            _ORDERS_TO_STAFF_MODERATE,
+            {**_ORDERS_TO_VENDOR, "strength": "moderate"},
+        ]
+    )
 
     accepted = analysis_worker.validate_join_utility_proposal(
         {
@@ -426,4 +434,57 @@ def test_the_worker_spends_its_repair_turn_and_then_fails_cleanly():
 
     assert caught.value.attempts == 2
     assert len(gateway.calls) == 2
-    assert "Repair the prior response" in gateway.calls[1]["user"]
+    # The repair replays the prior decisions rather than reducing them to a list
+    # of complaints. A turn told "keep the single most useful of A, B" without
+    # being shown what it said about A or B cannot act on that, and one run
+    # answered five such instructions at once by rejecting all sixteen
+    # candidates.
+    conversation = gateway.calls[1]["conversation"]
+    assert [message["role"] for message in conversation] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "nonexistent" in conversation[1]["content"]
+    assert "keep every other decision" in conversation[2]["content"]
+
+
+def test_one_pair_may_be_rejected_outright_but_a_whole_engagement_may_not():
+    """The floor is systemic, not local.
+
+    Two tables sharing a key and nothing worth testing across it are ordinary,
+    so a lone pair stays rejectable. Rejecting every pair while several match on
+    every row without multiplying any is a different claim — that this data
+    supports no cross-table test at all — and a run arrived at it by accident:
+    sixteen retained on the first attempt, sixteen rejected on the repair, six
+    frames instead of twenty, and the run reported ``completed``.
+    """
+    lone = analysis_worker.validate_join_utility_proposal(
+        {"decisions": (_reject(_ORDERS_TO_STAFF["ref"]),)},
+        _request(_catalog([_ORDERS_TO_STAFF])),
+    )
+    assert lone["decisions"][0]["decision"] == "reject"
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
+        analysis_worker.validate_join_utility_proposal(
+            {
+                "decisions": (
+                    _reject(_ORDERS_TO_STAFF["ref"]),
+                    _reject(_ORDERS_TO_VENDOR["ref"]),
+                )
+            },
+            _request(_catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])),
+        )
+    assert "2 table pairs" in str(caught.value)
+
+    # And the claim stays available: alternates of one pair are not two pairs.
+    same_pair = analysis_worker.validate_join_utility_proposal(
+        {
+            "decisions": (
+                _reject(_ORDERS_TO_STAFF["ref"]),
+                _reject(_ORDERS_TO_STAFF_REQUESTER["ref"]),
+            )
+        },
+        _request(_catalog([_ORDERS_TO_STAFF, _ORDERS_TO_STAFF_REQUESTER])),
+    )
+    assert all(item["decision"] == "reject" for item in same_pair["decisions"])

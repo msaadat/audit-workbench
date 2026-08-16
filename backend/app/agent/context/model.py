@@ -300,6 +300,14 @@ class ContextPrivacy(_JSONModel):
     # bounded verdicts and statistics that permission covers — and a narrower
     # one than the raw flagged rows.
     allow_analysis_summary: bool = False
+    # The complete set of distinct values in a column that has few of them — a
+    # status vocabulary, a set of designations. Its own permission because it is
+    # its own content class: a domain says what values *exist* in a column and
+    # never which row holds which, so it discloses the population's categories
+    # without disclosing any record. It is what lets a procedure be written
+    # against ``Rejected`` at all; a profile reporting "7 distinct values" cannot
+    # name one, and a test cannot filter on a value nobody was allowed to see.
+    allow_value_domains: bool = False
 
     _FIELDS: ClassVar[tuple[str, ...]] = (
         "allow_provider",
@@ -317,6 +325,7 @@ class ContextPrivacy(_JSONModel):
         "allow_analysis_exception_rows",
         "allow_datatest_exception_rows",
         "allow_analysis_summary",
+        "allow_value_domains",
     )
 
     def __post_init__(self) -> None:
