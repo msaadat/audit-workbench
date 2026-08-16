@@ -1,7 +1,11 @@
 # EDA pipeline redesign
 
-**Status:** Proposed; design agreed in outline, not implemented
-**Date:** 2026-08-16
+**Status:** E1 and E2 landed; E3 landed in part (domains yes, sample rejected on
+evidence); E4–E6 not started. Four changes not in the original design were forced
+by measurement and have landed — §7.3. Latest measured run
+`20260816-114649-9f35cc`, reaching **18** answer-key items against the baseline's
+**9**.
+**Date:** 2026-08-16 (design), implementation record §7 current to the same day
 **Scope:** `analysis_workflow_v1` only. The audit workflow, document analysis and
 document tests are untouched.
 **Baseline:** `Workspaces/pro`, run `20260816-065650-652b21` at code `90de2a5` —
@@ -28,16 +32,28 @@ to look for**, and because it decomposes by data object rather than by question.
 
 Five changes, in the order they should be built:
 
-| ID | Change | Recovers | Baseline evidence |
-|---|---|---|---|
-| **E1** | A deterministic probe layer that sweeps intra-frame then cross-frame column pairs and nominates test specs ranked by measured yield | A05, A13, A14, A27 | §6.5 — `compare_columns` and `format_anomaly` exist and are aimed at the wrong columns |
-| **E2** | Stop pruning the relationship map; let orphan counts nominate `referential` directly | A01, A03/A04 route, A30 | §6.5 — both `referential` tests that ran returned `ok`; the two that would have failed were never proposed |
-| **E3** | A 30-row diagnostic sample plus low-cardinality value domains in model context | A03/A04, A05, judgment quality throughout | §6.2 |
-| **E4** | One `analysis.reading` turn over the whole map, replacing one proposal turn per frame | A33-class negative space; 19 turns → ~7 | §6.4 — 9 of 20 frames carry no analysis; compound hypotheses half-discharged |
-| **E5** | Joins materialize *after* definitions, from what the accepted specs need | A11/A12, A13, A15, A21, A22, A28 | §6.4 — *"this test was prepared nowhere"*, twice, on the 2,856M item |
-| **E6** | `analysis.reconciled` — a coverage artifact over the assertion register | S1b, S5b's column half, S2d's input | §6.4 — nothing detects a hypothesis answered by half |
+| ID | Change | Recovers | Baseline evidence | Status |
+|---|---|---|---|---|
+| **E1** | A deterministic probe layer that sweeps intra-frame then cross-frame column pairs and nominates test specs ranked by measured yield | A05, A13, A14, A27 | §6.5 — `compare_columns` and `format_anomaly` exist and are aimed at the wrong columns | **Landed** — `agent/probes.py`, six families |
+| **E2** | Stop pruning the relationship map; let orphan counts nominate `referential` directly | A01, A03/A04 route, A30 | §6.5 — both `referential` tests that ran returned `ok`; the two that would have failed were never proposed | **Landed** — the `referential` family |
+| **E3** | A 30-row diagnostic sample plus low-cardinality value domains in model context | A03/A04, A05, judgment quality throughout | §6.2 | **Half landed.** Value domains yes. The sample was built, measured, and **reverted** — §7.2 |
+| **E4** | One `analysis.reading` turn over the whole map, replacing one proposal turn per frame | A33-class negative space; 19 turns → ~7 | §6.4 — 9 of 20 frames carry no analysis; compound hypotheses half-discharged | Not started |
+| **E5** | Joins materialize *after* definitions, from what the accepted specs need | A11/A12, A13, A15, A21, A22, A28 | §6.4 — *"this test was prepared nowhere"*, twice, on the 2,856M item | Not started — still the largest open item |
+| **E6** | `analysis.reconciled` — a coverage artifact over the assertion register | S1b, S5b's column half, S2d's input | §6.4 — nothing detects a hypothesis answered by half | Not started |
 
 Steps E1 and E2 are wholly deterministic, need no prompt work and no model turn.
+
+**What the record since has added to this summary.** The design's central bet —
+that measuring before proposing is the lever — held, and by a wider margin than
+argued here: across four measured runs a nomination yields roughly **ten times**
+the exceptions of a model-authored analysis, and the reach against Appendix A went
+**9 → 18** on a single consistent scoring basis (§7.2). What the design got wrong is where the remaining loss sits. It assumed
+the binding constraint after E1/E2 would be *coverage*; measurement showed it
+becomes **contention** — several frames able to compute the same thing, and the
+machinery deciding between them doing so on grounds that had nothing to do with
+which answer was better. Four unplanned changes (§7.3) were needed for that, and
+three of the four were defects the design's own reasoning had already stated
+correctly in prose without implementing.
 
 The baseline sharpens the argument rather than softening it: at §6 the model
 **states the right hypotheses aloud** — invoice approval beyond delegated
@@ -393,6 +409,21 @@ look — the threshold is doing real work and 10% may be tight.
 **Remaining library gap:** within-group variance — same key, different value.
 That is A27 and nothing currently expresses it.
 
+### 5.1 Landed since this design was written
+
+| Addition | Where | Owns |
+|---|---|---|
+| **The probe sweep** — six families (`referential`, `comparison`, `equality`, `values`, `duplicates`, `format`), each nomination a runnable spec pre-run with its counts and a one-line reading | `agent/probes.py` | E1, E2 |
+| **`value_domains`** — the complete vocabulary of each low-cardinality column, with per-column JSON-Schema enums making an unnameable value unrepresentable | `probes.py`, `adapters.py`, `presets.py`, `workers/analysis.py` | E3's surviving half |
+| **`value_filter`** — rows whose value in one column is, or is not, among named values, in both `flag` and `allow` directions | `analytics.py:997` | The shape the library could not express; A03/A04 |
+| **The `values` probe family** — a minority state in a column that has a usual one, selected by a dominance floor and a minority ceiling, both calibrated against the engagement's own fifteen vocabularies | `probes.py:850` | A03 |
+| **`frame_root` / `frame_route`** — which table a frame's rows are rows *of*, and by which key each joined-in table was reached | `joins.py:515`, `:541` | The population half of analysis identity |
+| **Population-aware analysis identity** | `workers/analysis.py:762` | A12, A10, A30 |
+| **The sweep outranks the hypothesis router** | `analysis_execution.py:897` | 6 of 18 frames that were being dropped unmeasured |
+
+**Library gap now closed except A27.** Within-group variance is still unexpressed
+and is still the last one.
+
 ---
 
 ## 6. Baseline — the `pro` engagement
@@ -402,7 +433,7 @@ That is A27 and nothing currently expresses it.
 **Code:** `90de2a5`
 **Data:** the same six workbooks as `procurement`, verified byte-identical
 
-This is the reference point every change in §7 is measured against.
+This is the reference point every change in §8 is measured against.
 
 **Read the scale carefully.** This run is the EDA alone — no RCM, no fieldwork, no
 report. The reviews' tally (12/33 at rev 838) counts items that *reached a
@@ -547,60 +578,238 @@ aloud by the run itself, in a hypothesis, a warning, or an empty frame.
 
 ---
 
-## 7. Sequencing
+## 7. Implementation record
 
-| Order | Item | Why here |
-|---|---|---|
-| 1 | **E1** `data.probes`, intra-frame pairs first | Highest yield, no model risk. Also what makes the three new tests get proposed against the right columns instead of waiting to be guessed. Owns A13, A14, A16, A06. |
-| 2 | **E2** unprune the relationship map; orphans nominate `referential` | Owns A01, A30, and hands over the A03/A04 route. The measurements already exist in the run record. |
-| 3 | **E3** diagnostic sample + value domains in context | Makes A03/A04 askable and lifts judgment quality throughout. |
-| 4 | **E4** `analysis.reading` replacing per-frame proposal | The turn-count and cross-frame win. Depends on 1–3 for its input. |
-| 5 | **E5** joins after definitions | Dissolves one-route-per-pair. Owns A15, A28; completes A14. |
-| 6 | **E6** `analysis.reconciled` | Closes `S1b`; supplies `S2d` its content. |
-| 7 | Within-group variance primitive | Last library gap. Owns A27. |
-| 8 | Regression fixture over Appendix A (`S6`) | Makes every step above measurable. Three regressions landed unnoticed in the last pass, and §6.5 adds a fourth kind — one that moves between runs on identical data. |
+Seven runs on byte-identical data, same model (`deepseek/deepseek-v4-flash-0731`,
+`max_llm_concurrency: 1`), across four workspaces. A workspace keeps only its
+latest run, so four of the seven survive as scoreable artifacts; the other three
+are recorded from measurements taken at the time.
 
-Two items fall outside the E-series and should be picked up regardless:
+### 7.1 The series
 
-- **The memo failure (§6.1).** `analysis.summary` rejected its own output twice on
-  *"an embed names no analysis"* and the run produced no memo at all. The
-  validator is right to reject a malformed embed; failing the terminal outcome
-  over it is not. Diagnose before E4, which inherits this worker.
-- **Route tie-breaking is arbitrary (§6.5).** Until E5 lands and multiple routes
-  per pair become ordinary, the tie-break between equally-evidenced role keys
-  should at least be deterministic, so a rerun on unchanged data cannot silently
-  move which findings are reachable.
+| # | Change under test | Workspace / run | Turns | Prompt tokens | Analyses | Frames swept | Flagged nominations | Key items |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 0 | **Baseline** (`90de2a5`) | `pro` `…065650-652b21` | 19 | 244,974 | 26 | — | — | 9† |
+| 1 | E1 + E2 | `pro` `…074814-408ee8` | 16 | 244,487 | 34 | 12 | 50 | **9** |
+| 2 | E3 with the 30-row sample | `pro2` (superseded) | 22 | ~374k | 13 | 12 | — | 4† |
+| 3 | E3 sample reverted | `pro2` (superseded) | 8 | ~84k | 21 | 12 | — | 7†‡ |
+| 4 | Join-gate repair + `value_filter` | `pro2` `…093126-6480c8` | 15 | 269,041 | 39 | 12 | 53 | **14** |
+| 5 | Sweep before the gate; `values` family | `pro3` `…102919-f3ccd6` | 24 | 418,041 | 45 | 18 | 115 | **13** |
+| 6 | Ranking, identity, disclosure | `pro4` `…114649-9f35cc` | 23 | 413,495 | 50 | 18 | 116 | **18** |
 
-Steps 1 and 2 are deterministic, require no prompt work, and recover A01, A05,
-A06, A13, A14, A16 and A30 — seven items, roughly PKR 1.2bn — before any
-model-facing change is made.
+**Bold counts are scorer-derived and mutually comparable** (§7.2). The three
+marked **†** are not: each workspace keeps only its latest run, so runs 0, 2 and 3
+no longer exist as artifacts and their counts were taken by hand at the time, on
+bases that differ from the scorer's and from each other. The baseline's 9 and run
+1's 9 are *not the same nine* — §6.2's nine are A07, A08, A10, A16, A18, A19, A20,
+A23, A29, while run 1's are the scorer's. They must not be read as "no change".
+
+**‡** Run 3 materialized **zero** joins — the gate rejected all 16 candidates — so
+its seven are base-table only and not comparable with anything.
+
+Run 6 is `completed`; every earlier run whose record survives is
+`completed_with_failures`, and in each the sole failure was `analysis.summary`,
+across four distinct modes: an embed naming no analysis; a hallucinated procedure
+id; the memo emitted twice; and an earlier double-rejection. Run 6's success is
+**not attributable to anything in this document** — it follows commit `bd3e00d`, a
+separate rewrite of the summary worker landed the same minute the run began.
+
+### 7.2 Reach against the answer key
+
+Scored by matching the *computation* — spec signature plus count — never the
+title, since titles move between runs and the test a frame ran does not. A hit
+flagging its whole population is rejected as saturated rather than counted, which
+is why A12 shows `sat.` at run 5 and A30 at run 1.
+
+| item | run 1 | run 4 | run 5 | run 6 |
+|---|---:|---:|---:|---:|
+| A01 invoice PO link that is not a PO | 19/118 | 19/118 | 19/118 | 19/118 |
+| A03 invoices against Rejected requisitions | — | — | — | **4/118** |
+| A05 VINSUSP re-billing | — | 6/118 | 6/118 | 6/118 |
+| A06 invoice exceeds its PO total | 3/118 | 3/118 | 3/118 | 3/118 |
+| A07/A08 duplicate vendor invoice number | — | 4/118 | 4/118 | 4/118 |
+| A10 requisition approved above the limit | 1/112 | 1/112 | — | 1/112 |
+| A12 approver title absent from the matrix | 48/52 | 110/118 | *sat.* | 110/118 |
+| A13 requester also verifies | 8/112 | 8/112 | 8/112 | 8/112 |
+| A14 approval outside the verifier's chain | — | — | — | **18/118** |
+| A16 invoice dated before its PO | — | 4/118 | 4/118 | 4/118 |
+| A17 receipt dated before the GRN | — | 5/118 | 5/118 | 5/118 |
+| A18 payment before goods receipt | 3/118 | 3/118 | 3/118 | 3/118 |
+| A19 payment before the invoice arrived | — | 1/118 | 1/118 | 1/118 |
+| A21 vendors sharing a bank account | 4/39 | 4/39 | 4/39 | 4/39 |
+| A22 vendor created and approved by one person | 5/39 | 5/39 | 5/39 | 5/39 |
+| A27 unit price vs requisition estimate | — | — | 2/93 | 2/93 |
+| A29 staff sharing a bank account | 6/52 | 6/52 | 6/52 | 6/52 |
+| A30 `BUYER_ID` resolves to no staff record | *sat.* | — | — | **96/118** |
+| **Reached** | **9** | **14** | **13** | **18** |
+
+**The one measurement that governs everything else.**
+
+| | taken nominations | exceptions | model-authored | exceptions | ratio per analysis |
+|---|---:|---:|---:|---:|---:|
+| Run 4 | 19 | 221 | 18 | 13 | **16×** |
+| Run 5 | 25 | 237 | 20 | 147 | 1.3× — or **6×** excluding the single vacuous 118 |
+| Run 6 | 25 | 341 | 25 | 31 | **11×** |
+
+Run 5's raw figure is the exception that proves the rule: 118 of its 147
+model-authored exceptions are one saturated analysis establishing nothing about
+any row. Stated plainly: *what the sweep nominates gets taken, and what it does
+not nominate mostly does not get used.* Every subsequent decision follows from
+that, including the ones below.
+
+### 7.3 Four changes measurement forced, none of them in the original design
+
+**The sweep was subordinated to a router that guesses.** A joined frame with no
+retained hypothesis routed to it was dropped as redundant — before the sweep had
+been allowed to look at it. Six of eighteen frames went that way in three
+milliseconds each, one of them a 118-row frame holding an invoice's payment status
+beside its requisition's approval status. The gate now consults the measurement
+and the sweep gets the last word (`analysis_execution.py:897`). Frames swept: 12 →
+18; flagged nominations 53 → 115.
+
+**Rarity had to be ranked as strength, for one family only.** Every other family
+counts how badly a rule was broken, so more breaches is a stronger nomination. The
+`values` family counts how much of the population sits in a state, and its whole
+premise is that the *rare* state is the exception. Ranked the common way, `Pending
+Payment` (13 of 118) outranked `Rejected` (4 of 118) on every frame carrying both,
+was taken as the column's one nomination, and **A03 stayed unreached through a
+whole run in which it was nominated eleven times**. One line, and it owns A03.
+
+**Analysis identity knew the columns and not the rows.** Identity was derived from
+which columns from which tables — right for a column a join carries through
+unchanged, wrong for one the join re-samples. The approval-matrix reconciliation
+reads one column of one table whichever frame asks it, and answers 48 of 52 over
+the staff master, 110 of 112 over invoices keyed to their approver, and 118 of 118
+over invoices keyed to their verifier. Three questions, three answers, one
+identity — and whichever frame ran first silently deleted the other two,
+alphabetically. §1.3 of this document states the problem correctly in prose and
+the code did not implement it; the `lookup` carve-out at `workers/analysis.py`
+even says *"the difference is the finding"* in a comment beside the rule that
+erased it. Identity now carries the frame's root and join route. Measured over the
+engagement: 34 → 43 distinct ids, 30 groups still deduplicating correctly, and
+**zero** groups collapsing measurements that differ (was 3). Owns A12, A10, A30.
+
+**Removals were silent.** A proposal removed by the validator appeared in no
+artifact: the frame showed what it kept, and nothing recorded that more had been
+written. One run removed 38 proposals across 18 frames and said nothing about any
+of them. Now carried out of the worker as `declined` and merged into the
+executor's `dropped` channel, which commits in every mode. *This one is not yet
+confirmed on a live run* — the first attempt put the disclosure in
+`approval_provider`, which is only bound when `run["mode"] == "permission"`, so it
+was dead on every unattended run and produced nothing at run 6. Fixed and tested
+at the executor boundary; unverified in the field.
+
+### 7.4 What the runs disproved
+
+**The 30-row diagnostic sample (E3's other half) is reverted.** Run 2 cost 53%
+more tokens for 62% fewer analyses than run 1, produced four saturated results and
+leaked sample rows into procedure notes. The value domains alone — the vocabulary
+without the rows — carry the whole of the benefit E3 was proposed for. The design's
+"sample discipline" risk in §9 was not a risk to be managed; the sample was simply
+not worth its cost.
+
+**Turn count did not fall, and should stop being a target.** E4 was argued partly
+on 19 turns → ~7. Runs 5 and 6 use 23–24 turns and 413k tokens against the
+baseline's 19 and 245k, and are unambiguously the better runs. Cost per frame fell;
+frames rose. E4's case has to rest on cross-frame reading, which is real, and not
+on turn count.
 
 ---
 
-## 8. Risks and open items
+## 8. Sequencing
 
-**Small populations manufacture spurious invariants.** At 98 aligned rows, "holds
-98/98" may be coincidence. Every nomination needs minimum support and a stated
-confidence, or the reading turn is handed noise wearing the costume of structure.
+Items 1–3 are done; the table is kept with status so the ordering argument stays
+readable against what it produced.
 
-**The vacuity trap moves rather than disappearing.** §3.2 is the live example: an
-invariant that holds nowhere flags everything. The probe layer needs the base-rate
-and saturation discipline built in, not bolted on — the machinery now exists at
-`analysis_results.py:119` and should be a probe-layer input, not only a
-post-execution label.
+| Order | Item | Why here | Status |
+|---|---|---|---|
+| 1 | **E1** `data.probes`, intra-frame pairs first | Highest yield, no model risk. Also what makes the three new tests get proposed against the right columns instead of waiting to be guessed. Owns A13, A14, A16, A06. | **Done.** A14 and A16 landed; A13 held throughout |
+| 2 | **E2** unprune the relationship map; orphans nominate `referential` | Owns A01, A30, and hands over the A03/A04 route. The measurements already exist in the run record. | **Done.** A01 from run 1; A30 needed the identity fix to survive |
+| 3 | **E3** diagnostic sample + value domains in context | Makes A03/A04 askable and lifts judgment quality throughout. | **Domains done; sample rejected on evidence** — §7.4. A03 needed the ranking fix as well |
+| 4 | **E4** `analysis.reading` replacing per-frame proposal | The cross-frame win. Depends on 1–3 for its input. The turn-count half of the argument is withdrawn — §7.4. | Not started. Its worker's four failure modes are now one commit's worth better; diagnose before building on it |
+| 5 | **E5** joins after definitions | Dissolves one-route-per-pair. Owns A15, A28; completes A14. | **Not started, and now the largest single item.** See below |
+| 6 | **E6** `analysis.reconciled` | Closes `S1b`; supplies `S2d` its content. | Not started |
+| 7 | Within-group variance primitive | Last library gap. Owns A27. | Not started. A27 is reached at 2/93 by a different test, so this is now about doing it *properly* rather than reaching it at all |
+| 8 | Regression fixture over Appendix A (`S6`) | Makes every step above measurable. Three regressions landed unnoticed in the last pass, and §6.5 adds a fourth kind — one that moves between runs on identical data. | **Scorer written and used for §7.2.** Not yet in the repository as a test |
 
-**One reading turn is a single point of failure.** If it is shallow, the
-interpretation is shallow. What limits the damage is the additive-by-default rule
-(D3): the deterministic nominations execute regardless, so there is a floor. A
-poor reading turn still costs the meaning, and that is the half that matters.
+The original claim here was that steps 1 and 2 alone would recover seven items
+before any model-facing change. §7.2 does not support it. Run 1 — E1 and E2, no
+prompt work — reached nine: A01, A06, A10, A12 (staff-side, 48/52), A13, A18, A21,
+A22, A29. A05 and A16 arrived at run 4, A14 and A03 only at run 6, and A30 was
+*taken* at run 1 but saturated, then absent for two runs, and became a usable
+finding only once identity was fixed. Determinism delivered the floor it promised;
+it did not deliver its own list on its own schedule.
 
-**Combinatorics.** At 84 columns an intra-frame and cross-frame pair sweep is
-trivial. At 500 columns it is not, and type compatibility plus route filtering
-become load-bearing rather than tidy.
+### 8.1 What to do next, in order
 
-**Sample discipline.** Thirty rows in context is the largest row disclosure this
-product will have made. The "never count from the sample" rule needs to be
-enforced in the validator, not only asked for in the prompt.
+1. **The `invoice_data ↔ requisitions` relationship is never diagnosed.**
+   `PO_NUMBER_LINK` carries two kinds of value: 19 of 118 invoices hold a
+   requisition id rather than a PO number, and five of those requisitions are
+   `Rejected` — **5 invoices, PKR 202,094,220**, which is A03/A04 in full. The
+   value family reaches four of them from the invoice side alone; the join is what
+   makes it the finding. This is E5's territory and it is the biggest thing left.
+2. **A03r — the requisition side.** `REQUISITION_STATUS = Rejected` (4 of 112) is
+   nominated on five frames and taken on none. The 158.0M sits there.
+3. **Single-sidedness is now the dominant loss channel.** At run 6, 33 of 38
+   removed proposals were dropped for reading one side of a joined frame, against
+   only 5 for repetition. Several read like real tests. Worth measuring before
+   assuming the rule is right.
+4. **Confirm the disclosure fix on a live run** (§7.3, fourth item).
+5. **Land the scorer as a test** so §7.2 regenerates rather than being rebuilt by
+   hand — it has been rebuilt by hand three times and was wrong once.
+
+Two items outside the E-series:
+
+- **The memo failure.** Four distinct modes across five runs, then `completed` at
+  run 6 after commit `bd3e00d` rewrote the summary worker. Watch rather than fix;
+  E4 inherits this worker.
+- **Route tie-breaking is arbitrary (§6.5).** Partly overtaken: identity now
+  distinguishes routes rather than collapsing them, so an arbitrary tie-break no
+  longer silently deletes the better answer. The *choice* of which single route to
+  materialize per pair is still arbitrary, and that is E5.
+
+---
+
+## 9. Risks and open items
+
+Marked against what the runs showed: two held, one of them costing a finding; one
+is withdrawn outright; two remain untested because the work they attach to is not
+built. The risk that actually did the damage is not on the original list.
+
+**Small populations manufacture spurious invariants.** *Held, and handled.*
+`MIN_COMPARISON_ROWS = 20` and `INVARIANT_HOLD_RATE = 0.85` bound it, and no run
+has produced a nomination traceable to coincidence at these sizes. Still live at
+smaller frames.
+
+**The vacuity trap moves rather than disappearing.** *Held, and it cost A10.* At
+run 5 the model wrote the approval-limit comparison with its operands inverted,
+flagging 99% of 112 rows; the saturation gate correctly killed it and the item was
+lost for that run. The gate is right and the loss is real — this is now a case for
+stating the invariant direction in the nomination rather than for loosening the
+gate. Note also that `referential` is deliberately *not* saturation-sensitive: A30
+is a legitimate 96-of-118 finding, and a blanket rule would delete it.
+
+**One reading turn is a single point of failure.** Unchanged and untested — E4 is
+not built.
+
+**Combinatorics.** Unchanged. At 84 columns the sweep costs seconds; 500 columns
+is still untested.
+
+**Sample discipline.** *Withdrawn.* The sample is reverted (§7.4), so there is no
+row disclosure to discipline. What replaced the concern is narrower and was real:
+value domains published staff **names and email addresses** as "vocabularies" on
+seven joined frames, because a join re-profiles a 52-row dimension attribute into
+a category. Fixed by judging a column where it lives (`probes.py:711`), plus a
+word cap for prose columns. Worth remembering as the shape of the next disclosure
+bug: *the join changed what the column looked like, not what it was.*
+
+**The real risk was none of these: contention.** Every one of the risks above is
+about a single measurement being wrong. What actually cost the most was several
+frames being able to compute the same thing and the machinery choosing between
+them on grounds unrelated to which answer was better — alphabetical order, in
+practice. It cost the 2,855.6M item for a whole run. Adding frames (§7.3, first
+item) made it worse before identity was fixed, which is the general warning: **on
+this pipeline, more coverage without better arbitration can subtract.**
 
 **Not addressed here.** `T6` (lookup anchoring in *test* generation) is a
 fieldwork defect and is unaffected by this design. `S5b`'s row-wise reachability
@@ -612,10 +821,18 @@ many rows of each population no executed test ever touched".
 ## Appendix — measurement provenance
 
 All paths are relative to `Workspaces/procurement` in §1 and §3, and to
-`Workspaces/pro` in §6.
+`Workspaces/pro` in §6. §7 names its own workspace per row.
 
 | Claim | Source |
 |---|---|
+| §7.1 turns, tokens, wall clock, run status, frames swept, flagged nominations | each run's `run.json` — `usage`, `status`, and `analysis.probes` |
+| §7.2 reach, all four runs | each workspace's `Analyses/A-*.json` filtered on `agent_run_id`, matched on spec signature and `last_result.exception_count`, saturated hits rejected |
+| §7.2 nomination-vs-authored yield | the same records, joined to `analysis.probes` on the canonical `(test, params)` of each nomination |
+| §7.3 six frames dropped unmeasured, three milliseconds each | `pro3` `events.jsonl`, `unit_update` records with `kind: analysis_definition`, `started_at`/`finished_at` |
+| §7.3 identity grouping, 34 → 43 ids | `analysis_semantic_id` recomputed over every flagged nomination on all 18 frames, before and after |
+| §7.3 38 proposals removed, 33 single-sided / 5 repeats | `pro4` proposal sidecars, `declined`, against the tool-call arguments in `Debug/LLMCalls` |
+| A03/A04 route: 5 invoices, 202,094,220 | `invoice_data.PO_NUMBER_LINK` matched against `requisitions.REQUISITION_ID` where `REQUISITION_STATUS = 'Rejected'` |
+| The four workspaces hold identical data | sha256 over all six workbooks, `pro`↔`pro2`↔`pro3`↔`pro4` |
 | Relationship candidates, strengths, match rates, retained/rejected decisions, the five one-route warnings | `AgentRuns/20260813-192502-da3357/run.json`, `analysis.relationships` and `analysis.join_utility` |
 | Baseline turn counts, tokens, warnings, run status and failure text | `Workspaces/pro/AgentRuns/20260816-065650-652b21/run.json` — `usage`, `warnings`, `error` |
 | Baseline hypotheses, retained and rejected | same record, `analysis.join_utility` |
