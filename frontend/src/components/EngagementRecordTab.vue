@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import { useToast } from 'primevue/usetoast'
@@ -29,6 +29,13 @@ import UiPageHeader from './ui/UiPageHeader.vue'
  * for what it asks first is in `_OPEN_RANK` on the server: reading what the
  * assistant decided outranks running the next stage, because auto mode runs
  * stages by itself and only a person can review.
+ *
+ * The projection is of *committed* work, so on its own it is blind to the run
+ * happening right now — it would go on advertising "draft the memorandum" while
+ * the memorandum is being drafted. A workflow's stages are keyed by the same
+ * capability ids the record's rows are, so the run in flight is laid over the
+ * ledger directly: the row that is being written says so, and the band at the
+ * top reports the run instead of proposing work already under way.
  */
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -85,6 +92,24 @@ void load()
 // screen has to refresh it.
 const unsubscribe = agent.onWorkspaceInvalidated(() => { void load() })
 onUnmounted(unsubscribe)
+
+// The agent store is normally woken by the assistant thread, which is not
+// mounted while the sidecar is collapsed. Without this, opening the record
+// during a run — or reloading the page mid-run — shows a ledger that has never
+// heard of it.
+onMounted(() => { void agent.init() })
+
+/** Ticks only while a run is in flight, so elapsed time on screen moves. */
+const now = ref(Date.now())
+let ticker = 0
+watch(agent.isActive, (active) => {
+  window.clearInterval(ticker)
+  ticker = 0
+  if (!active) return
+  now.value = Date.now()
+  ticker = window.setInterval(() => { now.value = Date.now() }, 1000)
+}, { immediate: true })
+onUnmounted(() => window.clearInterval(ticker))
 
 const entries = computed(() => data.value?.entries ?? [])
 const pending = computed(() => data.value?.pending ?? [])
@@ -143,6 +168,127 @@ function dayBreak(index: number): string {
   return current && current !== previous ? current : ''
 }
 
+/* --- the run in flight ---------------------------------------------------- */
+
+/** What a run's own status is called, for a reader who is not watching it. */
+const RUN_STATUS_LABEL: Record<string, string> = {
+  queued: 'Queued',
+  interpreting: 'Working out what to run',
+  executing: 'Running',
+  verifying: 'Verifying',
+  awaiting_approval: 'Waiting for your approval',
+  awaiting_input: 'Waiting for your answer',
+  paused: 'Paused',
+}
+
+const SETTLED_STAGES = new Set(['succeeded', 'skipped', 'failed', 'cancelled'])
+
+interface LiveStage { status: string; title: string; startedAt: string | null }
+
+/**
+ * Capability → what the run in flight is doing with it. A workflow's stages and
+ * the record's rows are keyed by the same capability ids, so the live run maps
+ * onto the ledger without inventing a second vocabulary for it. Empty whenever
+ * no run is active, which is what makes every consumer below a no-op then.
+ */
+const liveStages = computed(() => {
+  const map = new Map<string, LiveStage>()
+  if (!agent.isActive.value) return map
+  for (const stage of agent.state.run?.workflow?.stages ?? []) {
+    map.set(stage.capability, {
+      status: stage.status,
+      title: stage.title,
+      startedAt: stage.started_at ?? null,
+    })
+  }
+  return map
+})
+
+/**
+ * The stage this page just asked for. A run exists before its route resolves,
+ * so for a second or two after the click the stage is in no workflow yet — and
+ * the row would offer its Run button again. Held until the run lists it or ends.
+ */
+const justStarted = ref('')
+watch([liveStages, agent.isActive], () => {
+  if (!agent.isActive.value || liveStages.value.has(justStarted.value)) justStarted.value = ''
+})
+
+/**
+ * '' unless the run in flight has this capability still owing. A stage it has
+ * already finished is dropped deliberately: the commit that settled it has
+ * reloaded the record, and the row is a filed one now.
+ */
+function liveState(capability: string): '' | 'queued' | 'running' {
+  const status = liveStages.value.get(capability)?.status
+  if (status === 'running') return 'running'
+  if (status === 'queued') return 'queued'
+  return capability && capability === justStarted.value ? 'queued' : ''
+}
+
+/** How long the stage on this row has been running. */
+function liveSince(capability: string): string {
+  const startedAt = liveStages.value.get(capability)?.startedAt
+  if (!startedAt) return ''
+  const started = new Date(startedAt).valueOf()
+  return Number.isNaN(started) ? '' : duration(Math.max(0, now.value - started))
+}
+
+/**
+ * The run's live activity line, attributed to a row only when exactly one stage
+ * is running. Activity is reported per run, not per stage, so with two in
+ * flight it belongs to the band and to neither row.
+ */
+const soleRunning = computed(() => {
+  const running = [...liveStages.value.entries()].filter(([, stage]) => stage.status === 'running')
+  return running.length === 1 ? running[0][0] : ''
+})
+
+const activityLine = computed(() => {
+  const activity = agent.state.run?.activity
+  if (!activity) return ''
+  const label = activity.detail || activity.label || ''
+  if (activity.total) return `${label}${label ? ' — ' : ''}${activity.current ?? 0} of ${activity.total}`
+  return label
+})
+
+/**
+ * The run in flight, restated for the top of the record. It takes the brief
+ * band's place rather than sitting beside it: proposing the next step while a
+ * step is running is the staleness this is here to fix.
+ */
+const live = computed(() => {
+  const run = agent.isActive.value ? agent.state.run : null
+  if (!run) return null
+  const stages = run.workflow?.stages ?? []
+  const running = stages.find(stage => stage.status === 'running')
+  const settled = stages.filter(stage => SETTLED_STAGES.has(stage.status)).length
+  const owed = running
+    ? pending.value.find(stage => stage.capability === running.capability)
+    : undefined
+  return {
+    status: run.status,
+    waiting: run.status === 'awaiting_approval' || run.status === 'awaiting_input',
+    headline: owed?.headline || running?.title || run.activity?.label
+      || RUN_STATUS_LABEL[run.status] || 'Working',
+    state: RUN_STATUS_LABEL[run.status] || 'Running',
+    step: stages.length > 1 ? `step ${Math.min(settled + 1, stages.length)} of ${stages.length}` : '',
+    since: run.started || run.created,
+  }
+})
+
+const liveElapsed = computed(() => {
+  const since = live.value?.since
+  if (!since) return ''
+  const started = new Date(since).valueOf()
+  return Number.isNaN(started) ? '' : duration(Math.max(0, now.value - started))
+})
+
+/** The thread is where a run is watched in detail; the ledger stays on screen. */
+function watchRun() {
+  agent.openDrawer()
+}
+
 function destinationFor(target: string): WorkspaceDestination | null {
   return KNOWN_DESTINATIONS.includes(target) ? (target as WorkspaceDestination) : null
 }
@@ -189,8 +335,10 @@ function openPoint(point: EngagementOpenPoint) {
 
 /**
  * Start a stage that has not run. The assistant owns running work, so this is
- * the same request the guided shortcuts make, and the reader is taken to the
- * thread to watch rather than left on a page that cannot show progress.
+ * the same request the guided shortcuts make. It used to hand the reader to the
+ * console, because the record could not show progress; now that it can, the
+ * ledger stays on screen and lights up, with the thread beside it in the
+ * sidecar for anyone who wants the detail.
  */
 async function start(stage: EngagementPendingStage) {
   if (starting.value) return
@@ -200,7 +348,8 @@ async function start(stage: EngagementPendingStage) {
       source: 'shortcut',
       requestedOutcomes: stage.start.outcomes,
     })
-    await nav.push('console')
+    justStarted.value = stage.capability
+    agent.openDrawer()
   } catch (error) {
     toast.add({
       severity: 'error',
@@ -213,8 +362,13 @@ async function start(stage: EngagementPendingStage) {
   }
 }
 
-/** The first runnable stage is the only one drawn as a call to action. */
-const leadStage = computed(() => pending.value.find(stage => stage.runnable)?.capability ?? '')
+/**
+ * The first runnable stage is the only one drawn as a call to action — and
+ * nothing is while a run is in flight, which is about to change the answer.
+ */
+const leadStage = computed(
+  () => (agent.isActive.value ? '' : pending.value.find(stage => stage.runnable)?.capability ?? ''),
+)
 
 const totalLine = computed(() => {
   const value = totals.value
@@ -236,6 +390,9 @@ const quietRuns = computed(() => {
 const pendingNote = computed(() => {
   const count = pending.value.length
   if (!count) return ''
+  const underway = pending.value.filter(stage => liveState(stage.capability)).length
+  if (underway === count) return `${plural(count, 'stage')} under way`
+  if (underway) return `${underway} of ${count} under way`
   return `${plural(count, 'stage')} ${count === 1 ? 'has' : 'have'} not run`
 })
 </script>
@@ -256,9 +413,33 @@ const pendingNote = computed(() => {
     />
 
     <template v-else>
+      <!-- While a run is in flight it, not the next step, is the news. The two
+           never show together: proposing work that is under way is exactly the
+           staleness this band exists to remove. -->
+      <section v-if="live" class="brief live" :data-wait="live.waiting ? '1' : null">
+        <span class="mark">
+          <i :class="live.waiting ? 'pi pi-question-circle' : 'pi pi-spin pi-spinner'" />
+        </span>
+        <div class="txt">
+          <strong>{{ live.headline }}</strong>
+          <span>
+            {{ live.state }}<template v-if="live.step"> · {{ live.step }}</template
+            ><template v-if="liveElapsed"> · {{ liveElapsed }} so far</template>
+          </span>
+        </div>
+        <Button
+          :label="live.waiting ? 'Respond' : 'Watch it'"
+          :icon="live.waiting ? 'pi pi-reply' : 'pi pi-sparkles'"
+          size="small"
+          :severity="live.waiting ? undefined : 'secondary'"
+          :outlined="!live.waiting"
+          @click="watchRun"
+        />
+      </section>
+
       <!-- The single most blocking thing, restated as a sentence. Not a fourth
            widget: it is the top-ranked item of the two registers below. -->
-      <section v-if="next" class="brief" :data-kind="next.kind">
+      <section v-else-if="next" class="brief" :data-kind="next.kind">
         <span class="mark"><i :class="next.kind === 'open_point' ? 'pi pi-exclamation-circle' : 'pi pi-play'" /></span>
         <div class="txt">
           <strong>{{ next.kind === 'open_point' ? next.message : next.headline }}</strong>
@@ -326,6 +507,16 @@ const pendingNote = computed(() => {
             <span class="say">
               <b class="ttl">{{ entry.headline }}</b>
               <span class="dsc">{{ entry.summary }}</span>
+
+              <!-- Filed once already, and being produced again right now. -->
+              <span v-if="liveState(entry.capability)" class="again" :data-live="liveState(entry.capability)">
+                <i :class="liveState(entry.capability) === 'running' ? 'pi pi-spin pi-spinner' : 'pi pi-clock'" aria-hidden="true" />
+                <template v-if="liveState(entry.capability) === 'running'">
+                  Running again{{ liveSince(entry.capability) ? ` · ${liveSince(entry.capability)}` : '' }}<template
+                    v-if="soleRunning === entry.capability && activityLine"> · {{ activityLine }}</template>
+                </template>
+                <template v-else>Queued to run again</template>
+              </span>
 
               <ul v-if="entry.highlights.length" class="hl">
                 <li v-for="item in entry.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
@@ -397,22 +588,42 @@ const pendingNote = computed(() => {
             :key="stage.id"
             class="row ghost"
             :class="{ lead: stage.capability === leadStage }"
+            :data-live="liveState(stage.capability) || null"
           >
-            <span class="tm">—</span>
+            <span class="tm">{{ liveState(stage.capability) === 'running' ? 'now' : '—' }}</span>
             <span class="gut"><i /></span>
             <span class="made">
               <span class="card">
                 <i :class="icon(stage.filed.label)" aria-hidden="true" />
-                <span class="mt"><b>{{ stage.filed.label }}</b><em>not yet</em></span>
+                <span class="mt">
+                  <b>{{ stage.filed.label }}</b>
+                  <em>{{ liveState(stage.capability) === 'running'
+                    ? 'being written'
+                    : liveState(stage.capability) === 'queued' ? 'queued' : 'not yet' }}</em>
+                </span>
               </span>
             </span>
             <span class="say">
               <b class="ttl">{{ stage.headline }}</b>
-              <span v-if="stage.blocked_reason" class="dsc">{{ stage.blocked_reason }}</span>
+              <span v-if="liveState(stage.capability) === 'running'" class="dsc">
+                {{ soleRunning === stage.capability && activityLine
+                  ? activityLine
+                  : 'The assistant is working on it now.' }}
+              </span>
+              <span v-else-if="liveState(stage.capability) === 'queued'" class="dsc">
+                Scheduled by the run in progress.
+              </span>
+              <span v-else-if="stage.blocked_reason" class="dsc">{{ stage.blocked_reason }}</span>
             </span>
             <span class="took">
+              <!-- A stage the run in flight already owns must not offer to be
+                   started a second time. -->
+              <span v-if="liveState(stage.capability) === 'running'" class="going">
+                <i class="pi pi-spin pi-spinner" aria-hidden="true" />{{ liveSince(stage.capability) }}
+              </span>
+              <span v-else-if="liveState(stage.capability) === 'queued'" class="waits">queued</span>
               <Button
-                v-if="stage.runnable"
+                v-else-if="stage.runnable"
                 label="Run"
                 size="small"
                 :severity="stage.capability === leadStage ? undefined : 'secondary'"
@@ -584,6 +795,55 @@ const pendingNote = computed(() => {
 .row.ghost.lead .ttl { color: var(--aw-ink-strong); }
 
 .row.orphan .gut i { background: var(--aw-warn); }
+
+/* --- the run in flight ---------------------------------------------------- */
+/* Blue, deliberately: teal is what the engagement has filed and amber is what
+   it owes. Work happening right now is neither, and reusing either colour made
+   a live row read as already settled. */
+.brief.live { border-color: var(--aw-info-line); background: var(--aw-info-soft); }
+.brief.live .mark { color: var(--aw-info); }
+.brief.live[data-wait] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); }
+.brief.live[data-wait] .mark { color: var(--aw-warn-ink); }
+
+/* A work product that is already filed and is being produced again. */
+.again {
+  display: inline-flex; align-items: center; gap: .35rem;
+  margin-top: .3rem; padding: .15rem .45rem;
+  border-radius: var(--aw-radius-pill);
+  background: var(--aw-info-soft); color: var(--aw-info);
+  font-size: var(--aw-text-2xs); font-weight: 600;
+}
+.again i { font-size: var(--aw-text-2xs); }
+
+.going {
+  display: inline-flex; align-items: center; gap: .3rem; justify-content: flex-end;
+  color: var(--aw-info); font-size: var(--aw-text-2xs); font-weight: 600;
+}
+
+.row.ghost[data-live] { background: var(--aw-info-soft); }
+.row.ghost[data-live] .card { border-style: solid; border-color: var(--aw-info-line); background: var(--aw-panel); color: var(--aw-info); }
+.row.ghost[data-live] .mt em { color: var(--aw-info); }
+.row.ghost[data-live] .ttl { color: var(--aw-ink-strong); }
+.row.ghost[data-live] .dsc { color: var(--aw-ink-soft); }
+.row.ghost[data-live] .gut i { border-style: solid; border-color: var(--aw-info); background: var(--aw-info); }
+.row.ghost[data-live] .gut::before { background: var(--aw-info-line); }
+
+/* The running row is the only one that moves. A queued row is scheduled, not
+   under way, and a tail of pulsing dots says nothing about which is which. */
+.row.ghost[data-live='running'] .tm { color: var(--aw-info); font-weight: 700; }
+.row.ghost[data-live='running'] .gut i { animation: aw-record-pulse 1.8s ease-out infinite; }
+.row.ghost[data-live='queued'] .gut i { background: var(--aw-panel); border-color: var(--aw-info-line); }
+
+/* The ring is mixed from the token rather than written out, because the blue
+   inverts between themes and a fixed rgba() would glow dark-on-dark. */
+@keyframes aw-record-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--aw-info) 45%, transparent); }
+  70% { box-shadow: 0 0 0 .4rem transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .row.ghost[data-live='running'] .gut i { animation: none; }
+}
 
 @container (max-width: 56rem) {
   .head { display: none; }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { reactive, ref } from 'vue'
 
 import EngagementRecordTab from './EngagementRecordTab.vue'
 import type {
@@ -19,9 +20,45 @@ vi.mock('../api', () => ({
   ApiError: class extends Error {},
 }))
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }))
+// The record lays the run in flight over the ledger, so the agent store is not
+// incidental to it any more: these stand in for a live run.
+const agentActive = ref(false)
+const agentState = reactive<{ run: Record<string, unknown> | null }>({ run: null })
+const openDrawer = vi.fn()
+const agentInit = vi.fn()
 vi.mock('../composables/useAgentRun', () => ({
-  useAgentRun: () => ({ onWorkspaceInvalidated: () => () => undefined }),
+  useAgentRun: () => ({
+    state: agentState,
+    isActive: agentActive,
+    init: agentInit,
+    openDrawer,
+    onWorkspaceInvalidated: () => () => undefined,
+  }),
 }))
+
+/** A run in flight, with `capability` naming the stage the ledger should mark. */
+function liveRun(
+  stages: Array<{ capability: string; status: string; title?: string }>,
+  overrides: Record<string, unknown> = {},
+) {
+  agentActive.value = true
+  agentState.run = {
+    id: 'live',
+    status: 'executing',
+    created: '2026-08-15T12:20:00+00:00',
+    started: '2026-08-15T12:20:00+00:00',
+    activity: null,
+    workflow: {
+      stages: stages.map(item => ({
+        capability: item.capability,
+        status: item.status,
+        title: item.title ?? item.capability,
+        started_at: item.status === 'running' ? '2026-08-15T12:20:10+00:00' : null,
+      })),
+    },
+    ...overrides,
+  }
+}
 const push = vi.fn()
 vi.mock('../composables/useWorkspaceNavigation', () => ({
   useWorkspaceNav: () => ({
@@ -137,7 +174,12 @@ async function render(
 }
 
 describe('EngagementRecordTab', () => {
-  beforeEach(() => { get.mockReset(); push.mockReset(); send.mockReset() })
+  beforeEach(() => {
+    get.mockReset(); push.mockReset(); send.mockReset()
+    openDrawer.mockReset(); agentInit.mockReset()
+    agentActive.value = false
+    agentState.run = null
+  })
 
   it('states an irregular unit from the declared plural, not by appending s', async () => {
     const wrapper = await render([entry({
@@ -307,7 +349,52 @@ describe('EngagementRecordTab', () => {
       source: 'shortcut',
       requestedOutcomes: ['dashboard.curated'],
     })
-    expect(push).toHaveBeenCalledWith('console')
+  })
+
+  it('keeps the ledger on screen when a stage is started, and opens the sidecar', async () => {
+    // It used to hand the reader to the console, because the record could not
+    // show progress. It can, so the row they just started stays in view.
+    const wrapper = await render([entry()], { pending: [stage()] })
+    await wrapper.find('.row.ghost button').trigger('click')
+
+    expect(openDrawer).toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('does not offer to start a stage again in the gap before the run lists it', async () => {
+    // A run exists before its route resolves, so for a second or two the stage
+    // just asked for is in no workflow yet. Clicking Run twice starts it twice.
+    const wrapper = await render([entry()], { pending: [stage()] })
+    await wrapper.find('.row.ghost button').trigger('click')
+    agentActive.value = true
+    agentState.run = {
+      id: 'live', status: 'interpreting', created: '2026-08-15T12:20:00+00:00',
+      started: null, activity: null, workflow: null,
+    }
+    await wrapper.vm.$nextTick()
+
+    const ghost = wrapper.find('.row.ghost')
+    expect(ghost.attributes('data-live')).toBe('queued')
+    expect(ghost.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('hands a just-started stage back to the run once its workflow names it', async () => {
+    const wrapper = await render([entry()], { pending: [stage()] })
+    await wrapper.find('.row.ghost button').trigger('click')
+    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.row.ghost').attributes('data-live')).toBe('running')
+    wrapper.unmount()
+  })
+
+  it('wakes the agent store itself, which the collapsed sidecar never does', async () => {
+    // `ConsoleThread` owns that call, and it is not mounted while the drawer is
+    // collapsed — so without this a reload mid-run shows a ledger blind to it.
+    await render([entry()])
+
+    expect(agentInit).toHaveBeenCalled()
   })
 
   it('still reports a debt whose stage never filed', async () => {
@@ -323,5 +410,107 @@ describe('EngagementRecordTab', () => {
 
     expect(wrapper.find('.brief').exists()).toBe(false)
     expect(wrapper.find('.nowline').exists()).toBe(false)
+  })
+
+  /* --- the run in flight -------------------------------------------------- */
+
+  it('reports the run in progress instead of proposing work already under way', async () => {
+    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
+    const wrapper = await render([entry()], {
+      pending: [stage()],
+      next: { kind: 'stage', ...stage() },
+    })
+
+    const brief = wrapper.find('.brief')
+    expect(brief.classes()).toContain('live')
+    // The band takes the next step's place rather than sitting beside it.
+    expect(wrapper.findAll('.brief')).toHaveLength(1)
+    expect(brief.text()).toContain('Pick the analyses worth showing on the dashboard')
+    expect(brief.text()).toContain('Running')
+    wrapper.unmount()
+  })
+
+  it('marks the pending row the run is writing, and takes its Run button away', async () => {
+    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    const ghost = wrapper.find('.row.ghost')
+    expect(ghost.attributes('data-live')).toBe('running')
+    expect(ghost.text()).toContain('being written')
+    // Offering to start a stage that is already running starts it twice.
+    expect(ghost.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('separates a stage the run has merely scheduled from the one it is writing', async () => {
+    liveRun([
+      { capability: 'report.working_draft', status: 'running' },
+      { capability: 'dashboard.curated', status: 'queued' },
+    ])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    const ghost = wrapper.find('.row.ghost')
+    expect(ghost.attributes('data-live')).toBe('queued')
+    expect(ghost.text()).toContain('Scheduled by the run in progress')
+    expect(ghost.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('leaves a pending row the run never scheduled exactly as it was', async () => {
+    liveRun([{ capability: 'report.working_draft', status: 'running' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    const ghost = wrapper.find('.row.ghost')
+    expect(ghost.attributes('data-live')).toBeUndefined()
+    expect(ghost.text()).toContain('not yet')
+    wrapper.unmount()
+  })
+
+  it('drops the call-to-action highlight while a run is deciding the answer', async () => {
+    liveRun([{ capability: 'report.working_draft', status: 'running' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    expect(wrapper.find('.row.ghost').classes()).not.toContain('lead')
+    wrapper.unmount()
+  })
+
+  it('says a filed work product is being produced again rather than looking settled', async () => {
+    liveRun([{ capability: 'findings.drafted', status: 'running' }])
+    const wrapper = await render([entry()])
+
+    expect(wrapper.find('.again').text()).toContain('Running again')
+    wrapper.unmount()
+  })
+
+  it('ignores a stage the run has already finished, whose commit filed the row', async () => {
+    liveRun([{ capability: 'dashboard.curated', status: 'succeeded' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    expect(wrapper.find('.brief.live').exists()).toBe(true)
+    expect(wrapper.find('.row.ghost').attributes('data-live')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('still names the run when it is waiting on a person, and asks for a reply', async () => {
+    liveRun([{ capability: 'dashboard.curated', status: 'running' }], { status: 'awaiting_approval' })
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    const brief = wrapper.find('.brief')
+    expect(brief.attributes('data-wait')).toBe('1')
+    expect(brief.text()).toContain('Waiting for your approval')
+    wrapper.unmount()
+  })
+
+  it('reports a run whose route has not resolved yet, which has no stages at all', async () => {
+    agentActive.value = true
+    agentState.run = {
+      id: 'live', status: 'interpreting', created: '2026-08-15T12:20:00+00:00',
+      started: null, activity: null, workflow: null,
+    }
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    expect(wrapper.find('.brief.live').text()).toContain('Working out what to run')
+    expect(wrapper.find('.row.ghost').attributes('data-live')).toBeUndefined()
+    wrapper.unmount()
   })
 })

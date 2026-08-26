@@ -518,6 +518,17 @@ export function useAgentRun(workspaceId: string) {
     respond,
     onWorkspaceChanged,
     onWorkspaceInvalidated,
+    /**
+     * Show the sidecar without touching the saved preference. A run started
+     * from another surface has to be watchable there and then, and the drawer
+     * closes again when the run settles rather than becoming the new default —
+     * that is what `drawerAutoOpened` means.
+     */
+    openDrawer: () => {
+      if (store.drawerOpen) return
+      store.drawerOpen = true
+      store.drawerAutoOpened = true
+    },
     toggleDrawer: () => {
       store.drawerOpen = !store.drawerOpen
       store.drawerAutoOpened = false
