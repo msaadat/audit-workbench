@@ -6,7 +6,7 @@ import { useToast } from 'primevue/usetoast'
 import { api, ApiError } from '../../api'
 import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 import type {
-  AuditDocument, AuditFinding, CriterionRef, DataTest, PlanningPayload, RcmRow, WorkspaceSummary,
+  AuditDocument, CriterionRef, DataTest, FindingSummary, PlanningPayload, RcmRow, WorkspaceSummary,
 } from '../../types'
 import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import UiEmptyState from '../ui/UiEmptyState.vue'
@@ -72,6 +72,18 @@ function shortRisk(row: RcmRow) {
   return first.length > 120 ? `${first.slice(0, 119).trimEnd()}…` : first
 }
 
+/**
+ * A finding points at the rows it was written against; a row does not point
+ * back. `RcmRow.finding_refs` exists in the shape but nothing populates it —
+ * it is empty on every row the planning payload returns — so the server sends
+ * `finding_rollups.by_rcm` as the index to read instead, which is what the
+ * matrix grid uses. Reading the row field here counted zero findings on every
+ * row, which both emptied the rail and flattened the ordering below.
+ */
+function findingsFor(rcmId: string): FindingSummary[] {
+  return data.value?.finding_rollups?.by_rcm?.[rcmId] ?? []
+}
+
 /** How much of a row's chain actually exists, for ordering and for the rail. */
 function linksOf(row: RcmRow) {
   const rollup = row.execution_rollup ?? {}
@@ -79,7 +91,7 @@ function linksOf(row: RcmRow) {
     sources: row.criteria_refs?.length ?? 0,
     tests: rollup.tests ?? row.test_refs.length ?? 0,
     exceptions: rollup.exceptions ?? 0,
-    findings: row.finding_refs?.length ?? 0,
+    findings: findingsFor(row.id).length,
     conclusion: rollup.control_conclusion ?? '',
   }
 }
@@ -98,8 +110,10 @@ const linkedDataTests = computed<DataTest[]>(() =>
 const linkedDocTests = computed(() =>
   (data.value?.document_tests ?? []).filter(test =>
     test.rcm_id === selectedId.value || (test.rcm_refs ?? []).includes(selectedId.value ?? '')))
-const linkedFindings = computed<AuditFinding[]>(() =>
-  (data.value?.findings ?? []).filter(item => (item.rcm_refs ?? []).includes(selectedId.value ?? '')))
+// The same index the rail counts, so a row can never show "2 find" beside an
+// empty Findings hop.
+const linkedFindings = computed<FindingSummary[]>(() =>
+  (selectedId.value ? findingsFor(selectedId.value) : []))
 const selectedLinks = computed(() => (selected.value ? linksOf(selected.value) : null))
 
 function openAnchor(item: CriterionRef) {
