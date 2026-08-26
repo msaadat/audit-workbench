@@ -92,6 +92,7 @@ function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecord
     elapsed_ms: 120_000,
     measured_attempts: 2,
     open_points: [],
+    stats: [],
     filed: {
       label: 'Findings register',
       destination: 'findings',
@@ -410,6 +411,38 @@ describe('EngagementRecordTab', () => {
 
     expect(wrapper.find('.brief').exists()).toBe(false)
     expect(wrapper.find('.nowline').exists()).toBe(false)
+  })
+
+  /* --- a stage whose result is a distribution ----------------------------- */
+
+  it('states a distribution as a tally rather than as another paragraph', async () => {
+    // A matrix is read as "1 critical, 8 high" before any single row is, and a
+    // sentence cannot say that at a glance.
+    const wrapper = await render([entry({
+      stats: [
+        { label: 'critical', value: 1, severity: 'error' },
+        { label: 'high', value: 8, severity: 'warning' },
+      ],
+    })])
+
+    const chips = wrapper.findAll('.tally li')
+    expect(chips).toHaveLength(2)
+    expect(chips[0].text()).toBe('1critical')
+    expect(chips[0].attributes('data-severity')).toBe('error')
+  })
+
+  it('leaves a severe tier at zero uncoloured, since nothing is wrong there', async () => {
+    const wrapper = await render([entry({
+      stats: [{ label: 'critical', value: 0, severity: 'error' }],
+    })])
+
+    expect(wrapper.find('.tally li').attributes('data-zero')).toBe('1')
+  })
+
+  it('draws no tally for a stage whose result is not a distribution', async () => {
+    const wrapper = await render([entry()])
+
+    expect(wrapper.find('.tally').exists()).toBe(false)
   })
 
   /* --- the run in flight -------------------------------------------------- */

@@ -186,6 +186,108 @@ def _rcm_label(row: Mapping) -> str:
     return str(row.get("id") or "RCM row")
 
 
+def _rating(row: Mapping) -> str:
+    return str(row.get("risk_rating") or "").casefold()
+
+
+def _incomplete(row: Mapping) -> bool:
+    """A row with no risk or no control cannot support coverage either way."""
+    return not str(row.get("risk") or row.get("risk_description") or "").strip() or not str(
+        row.get("control") or row.get("control_description") or ""
+    ).strip()
+
+
+def _processes(rows: list[dict]) -> list[str]:
+    return list(dict.fromkeys(
+        str(row.get("process") or "").strip() for row in rows if str(row.get("process") or "").strip()
+    ))
+
+
+def _rating_tally(by_rating: dict[str, list[dict]], incomplete: list[dict]) -> list[dict]:
+    """The severity distribution, as a strip a reader takes in at a glance.
+
+    Critical and high are stated even at zero — "no critical risks" is a
+    finding about the matrix, not an absence worth hiding — while medium and
+    low appear only where the matrix has them, so a two-tier engagement is not
+    padded out to four.
+    """
+    tally = [
+        {"label": rating, "value": len(by_rating.get(rating, [])), "severity": severity}
+        for rating, severity in (
+            ("critical", "error"), ("high", "warning"),
+            ("medium", "info"), ("low", "info"),
+        )
+        if by_rating.get(rating) or rating in {"critical", "high"}
+    ]
+    if incomplete:
+        tally.append(
+            {"label": "incomplete", "value": len(incomplete), "severity": "error"}
+        )
+    return tally
+
+
+def _rcm_row_highlight(row: Mapping) -> dict:
+    """One row read out in full: the risk, then what is relied on against it."""
+    control = _lead_sentence(str(row.get("control") or row.get("control_description") or ""))
+    process = str(row.get("process") or "").strip()
+    return {
+        "severity": "error" if _rating(row) == "critical" else "warning",
+        "label": _rcm_label(row),
+        "detail": " — ".join(part for part in (process, control) if part),
+        "artifact_ref": f"rcm:{row.get('id')}",
+    }
+
+
+def _rcm_highlights(
+    critical: list[dict], high: list[dict], incomplete: list[dict]
+) -> list[dict]:
+    """Critical rows read out, everything else severe counted underneath them.
+
+    Three rows quoted at equal weight said nothing about which mattered, and
+    where a matrix had incomplete rows they took every slot and the critical
+    risks vanished from the milestone entirely. The incomplete count is rolled
+    into one line so it can never do that again.
+    """
+    highlights: list[dict] = []
+    if incomplete:
+        highlights.append({
+            "severity": "error",
+            "label": (
+                f"{counted(len(incomplete), 'row')} "
+                f"{verb(len(incomplete), 'has', 'have')} no risk or control description"
+            ),
+            "detail": "Neither side of the pairing is stated, so the row cannot be tested.",
+            "artifact_ref": f"rcm:{incomplete[0].get('id')}",
+        })
+    # Critical rows are the ones worth reading. Where a matrix has none, the
+    # high rows lead instead — an empty list of exemplars is worse than a
+    # slightly less severe one.
+    severe = critical + high
+    slots = max(0, HIGHLIGHT_LIMIT - len(highlights) - 1)
+    detailed = (critical or high)[:slots]
+    named = {str(row.get("id") or "") for row in detailed}
+    highlights.extend(_rcm_row_highlight(row) for row in detailed)
+    remaining = [row for row in severe if str(row.get("id") or "") not in named]
+    if remaining:
+        tiers = sorted(
+            {_rating(row) for row in remaining},
+            key=lambda rating: _SEVERITY_RANK.get(rating, 9),
+        )
+        processes = _processes(remaining)
+        highlights.append({
+            "severity": "warning",
+            "label": (
+                f"{counted(len(remaining), 'further row')} rated "
+                f"{' or '.join(tiers)}"
+                if detailed else
+                f"{counted(len(remaining), 'row')} rated {' or '.join(tiers)}"
+            ),
+            "detail": ", ".join(processes[:4]) + ("…" if len(processes) > 4 else ""),
+            "artifact_ref": "rcm",
+        })
+    return highlights[:HIGHLIGHT_LIMIT]
+
+
 def _quoted_headings(headings: list[str]) -> str:
     """"Key risks and planned response", from the casefolded heading keys."""
     named = [f"\u201c{heading[:1].upper()}{heading[1:]}\u201d" for heading in headings if heading]
@@ -456,71 +558,47 @@ class AuditWorkflowExecution(ActionRunner):
                 "artifact_refs": refs or ["planning:apm"],
             }
         if capability_id == "planning.rcm_ready":
-            high = sum(
-                str(item.get("risk_rating") or "").casefold()
-                in {"critical", "high"}
-                for item in subject.rcm
-            )
-            gaps = sum(
-                not str(item.get("risk") or item.get("risk_description") or "").strip()
-                or not str(item.get("control") or item.get("control_description") or "").strip()
-                for item in subject.rcm
-            )
+            # A matrix is a distribution before it is a list. Reading it as
+            # "one critical, eight high" is what an auditor does first, and
+            # three rows quoted at equal weight — which is what a milestone
+            # built only from highlights can say — buried that.
+            rows = list(subject.rcm)
+            incomplete = [row for row in rows if _incomplete(row)]
+            by_rating: dict[str, list[dict]] = {}
+            for row in rows:
+                by_rating.setdefault(_rating(row), []).append(row)
+            critical = by_rating.get("critical", [])
+            high = by_rating.get("high", [])
+            processes = _processes(rows)
             return {
-                "status": "completed_with_issues" if gaps or attention else state,
+                "status": "completed_with_issues" if incomplete or attention else state,
                 "headline": (
-                    f"Risk and control matrix drafted — {counted(gaps, 'row')} incomplete"
-                    if gaps else "Risk and control matrix ready"
+                    f"Risk and control matrix drafted — "
+                    f"{counted(len(incomplete), 'row')} incomplete"
+                    if incomplete else "Risk and control matrix ready"
                 ),
+                # The counts moved to the tally, so the sentence says what the
+                # matrix covers instead of repeating them.
                 "summary": (
-                    f"The RCM now contains {counted(len(subject.rcm), 'row')}, including "
-                    f"{counted(high, 'high or critical risk')}."
+                    f"{counted(len(rows), 'row')} covering "
+                    f"{counted(len(processes), 'process', 'processes')}, each "
+                    "pairing a risk with the control the entity relies on."
                     + (
-                        f" {counted(gaps, 'row')} {verb(gaps, 'has', 'have')} a "
-                        "missing risk or control description."
-                        if gaps else ""
+                        f" {counted(len(incomplete), 'row')} "
+                        f"{verb(len(incomplete), 'is', 'are')} missing a risk or "
+                        "control description and cannot support coverage."
+                        if incomplete else ""
                     )
                 ),
                 "metrics": [
-                    {"label": "RCM rows", "value": len(subject.rcm)},
+                    {"label": "RCM rows", "value": len(rows)},
                     {"label": "Created", "value": int(changes.get("rcm_created") or 0)},
                     {"label": "Updated", "value": int(changes.get("rcm_updated") or 0)},
                     {"label": "Preserved", "value": int(changes.get("rcm_preserved") or 0)},
-                    {"label": "High or critical", "value": high},
+                    {"label": "High or critical", "value": len(critical) + len(high)},
                 ],
-                # An incomplete row blocks coverage, so it outranks a complete
-                # row however severe that row's risk.
-                "highlights": [
-                    {
-                        "severity": "error",
-                        "label": _rcm_label(row),
-                        "detail": "No risk or control description — this row cannot support coverage.",
-                        "artifact_ref": f"rcm:{row.get('id')}",
-                    }
-                    for row in subject.rcm
-                    if not str(row.get("risk") or row.get("risk_description") or "").strip()
-                    or not str(row.get("control") or row.get("control_description") or "").strip()
-                ][:HIGHLIGHT_LIMIT] + [
-                    {
-                        "severity": "warning",
-                        "label": _rcm_label(row),
-                        "detail": (
-                            f"{str(row.get('risk_rating') or '').capitalize()} risk"
-                            + (f" · {row.get('process')}" if row.get("process") else "")
-                        ),
-                        "artifact_ref": f"rcm:{row.get('id')}",
-                    }
-                    for row in sorted(
-                        subject.rcm,
-                        key=lambda item: (
-                            _SEVERITY_RANK.get(
-                                str(item.get("risk_rating") or "").casefold(), 9
-                            ),
-                            str(item.get("id") or ""),
-                        ),
-                    )
-                    if str(row.get("risk_rating") or "").casefold() in {"critical", "high"}
-                ][:HIGHLIGHT_LIMIT],
+                "stats": _rating_tally(by_rating, incomplete),
+                "highlights": _rcm_highlights(critical, high, incomplete),
                 "artifact_refs": refs,
             }
         if capability_id == "tests.specified":

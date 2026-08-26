@@ -284,6 +284,51 @@ def test_milestone_is_structured_bounded_and_idempotent():
     assert [item[0] for item in events] == ["milestone"]
 
 
+def test_a_milestone_carries_a_tally_only_where_a_stage_fills_one():
+    """The channel is absent from a milestone that does not use it.
+
+    Its id is the hash of its body, and a stage that settled before the channel
+    existed has to replay to the same id — an empty `stats` key in every body
+    would renumber every milestone in the product and file each of them again.
+    """
+    graded, plain = _run(), _run()
+    payload = {
+        "capability": "planning.rcm_ready",
+        "stage_id": "rcm",
+        "status": "completed",
+        "headline": "Risk and control matrix ready",
+        "summary": "10 rows covering 7 processes.",
+    }
+
+    with_tally = narration.milestone(
+        graded, lambda type_, data: None,
+        stats=[{"label": "critical", "value": 1, "severity": "error"}],
+        **payload,
+    )
+    without = narration.milestone(plain, lambda type_, data: None, **payload)
+
+    assert with_tally["stats"] == [
+        {"label": "critical", "value": 1, "severity": "error"}
+    ]
+    assert "stats" not in without
+    # A different distribution is a different milestone, not a replay of one.
+    assert with_tally["id"] != without["id"]
+
+
+def test_a_tally_is_bounded_like_every_other_milestone_channel():
+    entry = narration.milestone(
+        _run(), lambda type_, data: None,
+        capability="planning.rcm_ready", stage_id="rcm", status="completed",
+        headline="Risk and control matrix ready", summary="Rows drafted.",
+        stats=[
+            {"label": f"tier {index}", "value": index, "severity": "info"}
+            for index in range(9)
+        ],
+    )
+
+    assert len(entry["stats"]) == 6
+
+
 def test_stage_handoff_names_what_finished_and_what_is_next():
     stage = _stage("succeeded", [_unit()], title="Audit planning memorandum")
     assert narration.stage_handoff(stage, "Risk and control matrix") == (

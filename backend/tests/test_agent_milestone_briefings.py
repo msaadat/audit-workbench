@@ -240,6 +240,117 @@ def test_the_planning_highlights_stop_at_the_milestone_budget():
 
 
 # --------------------------------------------------------------------------- #
+# The matrix briefing
+# --------------------------------------------------------------------------- #
+def _row(rcm_id, rating, process="Invoice matching", risk=None, control="Finance matches invoices to the order."):
+    return {
+        "id": rcm_id,
+        "process": process,
+        "risk": risk if risk is not None else f"A {rating} risk to the cycle. More prose follows.",
+        "risk_rating": rating,
+        "control": control,
+    }
+
+
+def _rcm_milestone(rows) -> dict:
+    execution = audit.AuditWorkflowExecution.__new__(audit.AuditWorkflowExecution)
+    return execution.milestone_projection(
+        _Workspace(rcm=rows),
+        {"id": "run-milestone", "planning_changes": {}},
+        SimpleNamespace(id="planning.rcm_ready"),
+        {"units": []},
+    )
+
+
+def _tally(milestone: dict) -> dict:
+    return {item["label"]: item["value"] for item in milestone["stats"]}
+
+
+def test_a_matrix_states_its_distribution_before_any_single_row():
+    """An auditor reads a matrix as "one critical, eight high" first.
+
+    Three rows quoted at equal weight — all a milestone built only from
+    highlights can say — cannot carry that, and made the row look like every
+    other artifact's.
+    """
+    rows = [_row("RCM-1", "critical")] + [
+        _row(f"RCM-{index}", "high") for index in range(2, 10)
+    ] + [_row("RCM-10", "medium")]
+
+    milestone = _rcm_milestone(rows)
+
+    assert _tally(milestone) == {"critical": 1, "high": 8, "medium": 1}
+    # The counts live in the tally now, so the sentence says what it covers.
+    assert milestone["summary"].startswith("10 rows covering 1 process,")
+
+
+def test_the_tally_states_a_severe_tier_at_zero_and_omits_an_absent_mild_one():
+    # "No critical risks" is a finding about the matrix. "No low risks" is not.
+    milestone = _rcm_milestone([_row("RCM-1", "medium")])
+
+    assert _tally(milestone) == {"critical": 0, "high": 0, "medium": 1}
+
+
+def test_the_critical_rows_are_read_out_and_the_rest_are_counted():
+    rows = [_row("RCM-1", "critical", risk="Management may override the controls. Prose.")] + [
+        _row(f"RCM-{index}", "high", process=f"Process {index}") for index in range(2, 10)
+    ]
+
+    highlights = _rcm_milestone(rows)["highlights"]
+
+    assert len(highlights) == 2
+    assert highlights[0]["severity"] == "error"
+    assert highlights[0]["label"] == "Management may override the controls."
+    # The row's own control is what it proposes to rely on, which is worth more
+    # than repeating a rating the tally already carries.
+    assert highlights[0]["detail"] == (
+        "Invoice matching — Finance matches invoices to the order."
+    )
+    assert highlights[1]["label"] == "8 further rows rated high"
+    assert highlights[1]["detail"].startswith("Process 2, Process 3")
+
+
+def test_a_matrix_with_no_critical_row_leads_with_its_high_ones():
+    # An empty list of exemplars is worse than a slightly less severe one.
+    rows = [_row(f"RCM-{index}", "high", process=f"Process {index}") for index in range(1, 6)]
+
+    highlights = _rcm_milestone(rows)["highlights"]
+
+    assert [item["label"] for item in highlights][:2] == [
+        "A high risk to the cycle.", "A high risk to the cycle.",
+    ]
+    assert highlights[-1]["label"] == "3 further rows rated high"
+
+
+def test_incomplete_rows_are_one_line_and_never_crowd_out_the_critical_ones():
+    """They used to take every slot a milestone had.
+
+    The projection built three incomplete highlights and three severe ones and
+    handed over six, and the writer keeps the first three — so a matrix with
+    three blank rows filed a milestone that never mentioned its critical risk.
+    """
+    rows = [
+        _row(f"RCM-b{index}", "medium", risk="", control="") for index in range(3)
+    ] + [_row("RCM-1", "critical", risk="Management may override the controls. Prose.")]
+
+    milestone = _rcm_milestone(rows)
+    highlights = milestone["highlights"]
+
+    assert milestone["status"] == "completed_with_issues"
+    assert highlights[0]["label"] == "3 rows have no risk or control description"
+    assert any(item["label"] == "Management may override the controls." for item in highlights)
+    assert _tally(milestone)["incomplete"] == 3
+
+
+def test_a_matrix_with_nothing_to_grade_states_no_tally_rather_than_zeroes():
+    milestone = _rcm_milestone([])
+
+    assert milestone["stats"] == [{"label": "critical", "value": 0, "severity": "error"},
+                                  {"label": "high", "value": 0, "severity": "warning"}]
+    assert milestone["highlights"] == []
+
+
+# --------------------------------------------------------------------------- #
 # Naming the things a briefing points at
 # --------------------------------------------------------------------------- #
 def test_rcm_label_leads_with_the_risk_it_states():

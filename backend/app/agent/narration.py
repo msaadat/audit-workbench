@@ -107,6 +107,7 @@ def milestone(
     summary: str,
     metrics: list[dict] | None = None,
     highlights: list[dict] | None = None,
+    stats: list[dict] | None = None,
     artifact_refs: list[str] | None = None,
 ) -> dict | None:
     """Persist one deterministic, idempotent workflow milestone.
@@ -148,6 +149,22 @@ def milestone(
             str(item) for item in (artifact_refs or []) if str(item).strip()
         ))[:20],
     }
+    # A short severity-graded tally, for a stage whose result is a distribution
+    # rather than a list — a matrix is read as "one critical, eight high" before
+    # any single row is. Absent from the body unless a stage fills it, so the
+    # hash of every milestone that does not use it is unchanged and a settled
+    # stage still replays to the same id.
+    graded = [
+        {
+            "label": str(item.get("label") or "")[:24],
+            "value": item.get("value"),
+            "severity": str(item.get("severity") or "info"),
+        }
+        for item in (stats or [])[:6]
+        if isinstance(item, dict) and str(item.get("label") or "").strip()
+    ]
+    if graded:
+        body["stats"] = graded
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha1(encoded.encode("utf-8")).hexdigest()
     milestone_id = f"{body['stage_id']}:{body['status']}:{digest[:12]}"

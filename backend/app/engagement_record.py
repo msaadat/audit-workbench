@@ -190,6 +190,9 @@ def _entry(capability: str, rows: list[dict], counts: dict[str, int]) -> dict:
         "summary": str(milestone.get("summary") or ""),
         "metrics": list(milestone.get("metrics") or []),
         "highlights": list(milestone.get("highlights") or []),
+        # Absent on every stage whose result is not a distribution, and on
+        # milestones filed before the channel existed.
+        "stats": list(milestone.get("stats") or []),
         "objective": latest["objective"],
         "run_id": latest["run_id"],
         "chat_id": latest["chat_id"],

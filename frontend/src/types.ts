@@ -2095,6 +2095,15 @@ export interface AgentMilestone {
     detail: string
     artifact_ref: string | null
   }>
+  /**
+   * A short severity-graded tally, for a stage whose result is a distribution
+   * rather than a list. Absent unless the stage fills it.
+   */
+  stats?: Array<{
+    label: string
+    value: string | number | boolean | null
+    severity: 'info' | 'warning' | 'error' | string
+  }>
   artifact_refs: string[]
   summary_sha1: string
   created_at: string
@@ -2121,6 +2130,8 @@ export interface EngagementRecordEntry {
   summary: string
   metrics: AgentMilestone['metrics']
   highlights: AgentMilestone['highlights']
+  /** Empty on every stage whose result is not a distribution. */
+  stats: NonNullable<AgentMilestone['stats']>
   objective: string
   run_id: string
   chat_id: string | null

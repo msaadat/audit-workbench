@@ -518,6 +518,20 @@ const pendingNote = computed(() => {
                 <template v-else>Queued to run again</template>
               </span>
 
+              <!-- A stage whose result is a distribution states it as one. A
+                   matrix is read as "one critical, eight high" before any
+                   single row is, and a paragraph cannot say that at a glance. -->
+              <ul v-if="entry.stats.length" class="tally">
+                <li
+                  v-for="stat in entry.stats"
+                  :key="stat.label"
+                  :data-severity="stat.severity"
+                  :data-zero="stat.value ? null : '1'"
+                >
+                  <b>{{ stat.value }}</b><span>{{ stat.label }}</span>
+                </li>
+              </ul>
+
               <ul v-if="entry.highlights.length" class="hl">
                 <li v-for="item in entry.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
                   <b>{{ item.label }}</b><span>{{ item.detail }}</span>
@@ -731,6 +745,23 @@ const pendingNote = computed(() => {
 .say { display: grid; gap: .2rem; min-width: 0; justify-items: start; }
 .ttl { font-size: var(--aw-text-base); font-weight: 600; line-height: 1.3; color: var(--aw-ink-strong); }
 .dsc { max-width: 68ch; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.5; }
+
+/* The tally reads left to right as a distribution, so it is not the stacked
+   bordered list every other block on this row uses. */
+.tally { display: flex; flex-wrap: wrap; gap: .3rem; margin: .35rem 0 .1rem; padding: 0; list-style: none; }
+.tally li {
+  display: inline-flex; align-items: baseline; gap: .3rem;
+  padding: .15rem .45rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill);
+  background: var(--aw-raised); color: var(--aw-muted-strong);
+}
+.tally b { font-size: var(--aw-text-sm); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--aw-ink-strong); }
+.tally span { font-size: var(--aw-text-2xs); letter-spacing: .04em; text-transform: uppercase; }
+/* Zero of something severe is worth saying and not worth colouring. */
+.tally li[data-severity="warning"]:not([data-zero]) { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.tally li[data-severity="warning"]:not([data-zero]) b { color: var(--aw-warn-ink); }
+.tally li[data-severity="error"]:not([data-zero]) { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
+.tally li[data-severity="error"]:not([data-zero]) b { color: var(--aw-danger-ink); }
 
 .hl { display: grid; gap: .25rem; margin: .3rem 0 0; padding: 0; list-style: none; }
 .hl li { display: grid; gap: .05rem; padding-left: .6rem; border-left: 2px solid var(--aw-warn-line); }

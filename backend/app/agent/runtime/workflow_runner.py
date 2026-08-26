@@ -1142,6 +1142,7 @@ class WorkflowRunner:
                 summary=str(projection.get("summary") or ""),
                 metrics=list(projection.get("metrics") or []),
                 highlights=list(projection.get("highlights") or []),
+                stats=list(projection.get("stats") or []),
                 artifact_refs=list(projection.get("artifact_refs") or []),
             )
             # A milestone that was already on the record is a replay, not new
