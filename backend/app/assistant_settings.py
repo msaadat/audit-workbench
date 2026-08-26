@@ -1,8 +1,9 @@
 """Persisted assistant and agent model-profile settings.
 
 Secrets stay in ``.env`` or the process environment. This file stores only the
-normal, non-secret choices the user can edit from the UI: provider, model, and
-declared capabilities for custom agent-vision profiles.
+normal, non-secret choices the user can edit from the UI: provider, model,
+sampling temperature, and declared capabilities for custom agent-vision
+profiles.
 """
 
 from __future__ import annotations
@@ -137,6 +138,44 @@ def _clean_provider(value: object) -> str:
     return provider
 
 
+# Sampling is *absent* by default, which is not the same as sending zero. An
+# omitted parameter is forwarded as omitted, so the model answers at whatever
+# its own vendor tuned it to — and vendors do tune it: the recommendation for
+# one model in use here is 1.0, where this code used to send 0.0. A number set
+# here overrides that deliberately, for a model whose default is wrong for this
+# work; leaving it unset is the choice to defer.
+MAX_TEMPERATURE = 2.0
+
+
+def _clean_temperature(value: object) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        temperature = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise SettingsError(
+            "Temperature must be a number, or null to use the model's default."
+        ) from error
+    if temperature != temperature or not 0.0 <= temperature <= MAX_TEMPERATURE:
+        raise SettingsError(
+            f"Temperature must be between 0 and {MAX_TEMPERATURE:g}, "
+            "or null to use the model's default."
+        )
+    return temperature
+
+
+def load_temperature() -> float | None:
+    """The configured sampling temperature, or ``None`` to send none at all.
+
+    The environment wins over the stored document, matching how a model name is
+    resolved, so a deployment can pin sampling without editing saved settings.
+    """
+    override = (os.environ.get("LLM_TEMPERATURE") or "").strip()
+    if override:
+        return _clean_temperature(override)
+    return _clean_temperature(_stored_document().get("temperature"))
+
+
 def _default_model(provider: str) -> str:
     return str(PROVIDERS[provider]["default_model"])
 
@@ -215,6 +254,12 @@ def save(changes: dict) -> dict:
 
     stored = _stored_document()
     stored["assistant"] = current
+    if "temperature" in changes:
+        temperature = _clean_temperature(changes.get("temperature"))
+        if temperature is None:
+            stored.pop("temperature", None)
+        else:
+            stored["temperature"] = temperature
     if "vision_profile" in changes or "agent_vision" in changes:
         profile = changes.get("vision_profile", changes.get("agent_vision"))
         if profile is None:

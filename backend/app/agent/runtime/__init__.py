@@ -2,14 +2,11 @@
 
 from .model_gateway import (
     DefaultModelGateway,
-    FIRST_ATTEMPT_TEMPERATURE,
     ModelCapabilityError,
     ModelGateway,
     ModelResponseUnusable,
     PreparedMediaError,
-    REPAIR_TEMPERATURE,
     VisionRequestRejected,
-    repair_temperature,
 )
 from .interactions import submit_approval_response, submit_interaction_response
 from .run_runtime import Cancelled, DefaultRunRuntime, LimitExceeded, RunRuntime
@@ -39,10 +36,7 @@ __all__ = [
     "Cancelled",
     "DefaultModelGateway",
     "DefaultRunRuntime",
-    "FIRST_ATTEMPT_TEMPERATURE",
     "LimitExceeded",
-    "REPAIR_TEMPERATURE",
-    "repair_temperature",
     "ModelCapabilityError",
     "ModelResponseUnusable",
     "ModelGateway",

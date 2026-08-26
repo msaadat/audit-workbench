@@ -205,6 +205,9 @@ def isolated_workspaces(tmp_path, monkeypatch):
     monkeypatch.setattr(assistant_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     for provider in assistant_settings.PROVIDERS:
         monkeypatch.delenv(f"{provider.upper()}_MODEL", raising=False)
+    # Sampling is configuration now, and it overrides the stored document, so a
+    # developer's own export would otherwise decide what the suite asserts.
+    monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
     loader.clear_cache()
     yield
 

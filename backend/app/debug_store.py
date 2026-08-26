@@ -237,7 +237,10 @@ def start_call(request: dict, settings: Any, *, extra: dict | None = None) -> tu
         "model": getattr(settings, "model", None),
         "profile": context.get("profile"),
         "endpoint": f"{getattr(settings, 'base_url', '').rstrip('/')}/chat/completions",
-        "temperature": request.get("temperature", 0),
+        # ``None`` where the request sent none, never 0: the two are different
+        # requests, and reading a run's sampling back off this record is how the
+        # difference is ever noticed.
+        "temperature": request.get("temperature"),
         "timeout_seconds": getattr(settings, "timeout", None),
         "request": safe_request,
         "request_size_bytes": len(raw), "request_sha256": hashlib.sha256(raw).hexdigest(),

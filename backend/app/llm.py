@@ -186,6 +186,20 @@ def _max_output_tokens() -> int:
     return limit
 
 
+def configured_temperature() -> float | None:
+    """The sampling temperature to send, or ``None`` to send none at all.
+
+    Omitting the parameter is a distinct request from sending a number: a
+    provider forwards an absent parameter as absent, so the model samples at
+    its own vendor's default rather than at whatever this code guessed. That
+    matters because the guess was wrong — every call here used to be sent at
+    temperature 0 while the vendor of one model in use recommends 1.0, and
+    greedy decoding is where a repair returns the response it was correcting
+    byte for byte.
+    """
+    return assistant_settings.load_temperature()
+
+
 def _rate_limit_cooldown() -> float:
     """Return the configured minimum pause after a provider rate limit."""
     configured = _env("LLM_RATE_LIMIT_COOLDOWN")
@@ -536,7 +550,7 @@ def image_part(content: bytes, mime: str) -> dict:
 def chat(
     messages: list[dict],
     tools: list[dict] | None = None,
-    temperature: float = 0.0,
+    temperature: float | None = None,
     profile: str | dict = "assistant",
     tool_choice: str | dict | None = None,
     on_delta: Callable[[str], None] | None = None,
@@ -554,6 +568,10 @@ def chat(
     only wants progress reporting needs no other adjustment. Streaming is
     text-only: a request carrying ``tools`` ignores ``on_delta``, because a
     partial tool call is not something a reader can be shown.
+
+    ``temperature`` left as ``None`` defers to the configured setting, and to
+    the model's own default where nothing is configured — the parameter is then
+    not sent at all. A caller passes a number only to override both.
     """
     streaming = on_delta is not None and not tools
     call_started = time.monotonic()
@@ -576,12 +594,15 @@ def chat(
             )
         raise
 
+    if temperature is None:
+        temperature = configured_temperature()
     body: dict = {
         "model": settings.model,
         "messages": messages,
-        "temperature": temperature,
         "max_tokens": _max_output_tokens(),
     }
+    if temperature is not None:
+        body["temperature"] = temperature
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice or "auto"

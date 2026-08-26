@@ -606,6 +606,91 @@ def test_llm_chat_reports_why_the_provider_stopped(monkeypatch):
     assert message["usage"]["completion_tokens_details"]["reasoning_tokens"] == 65090
 
 
+def _capturing_transport(monkeypatch, sent: dict):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+            ).encode()
+
+    def _capture(request, timeout):
+        sent.clear()
+        sent.update(json.loads(request.data.decode()))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", _capture)
+
+
+def test_no_temperature_is_sent_when_none_is_configured(monkeypatch):
+    """Absent is a different request from zero, and it is now the default.
+
+    An omitted sampling parameter is forwarded as omitted, so the model answers
+    at its own vendor's default — which for one model in use here is 1.0, where
+    this code used to assert 0.0 over every call it made.
+    """
+
+    sent: dict = {}
+    _capturing_transport(monkeypatch, sent)
+
+    llm.chat([{"role": "user", "content": "hello"}])
+
+    assert "temperature" not in sent
+    assert llm.configured_temperature() is None
+
+
+def test_a_configured_temperature_is_sent_and_can_be_cleared(monkeypatch):
+    sent: dict = {}
+    _capturing_transport(monkeypatch, sent)
+
+    assistant_settings.save({"temperature": 0.7})
+    assert llm.configured_temperature() == 0.7
+    llm.chat([{"role": "user", "content": "hello"}])
+    assert sent["temperature"] == 0.7
+
+    # Explicit null is how a setting returns to "let the model decide"; the key
+    # being absent from `changes` must instead leave it alone.
+    assistant_settings.save({"model": "llama-3.1-8b-instant"})
+    assert llm.configured_temperature() == 0.7
+
+    assistant_settings.save({"temperature": None})
+    assert llm.configured_temperature() is None
+    llm.chat([{"role": "user", "content": "hello"}])
+    assert "temperature" not in sent
+
+
+def test_the_environment_overrides_a_stored_temperature(monkeypatch):
+    assistant_settings.save({"temperature": 0.2})
+    monkeypatch.setenv("LLM_TEMPERATURE", "1.0")
+
+    assert llm.configured_temperature() == 1.0
+
+
+@pytest.mark.parametrize("value", ["hot", -0.5, 2.5])
+def test_an_out_of_range_temperature_is_refused(value):
+    with pytest.raises(assistant_settings.SettingsError, match="[Tt]emperature"):
+        assistant_settings.save({"temperature": value})
+
+
+def test_a_caller_may_still_override_the_configured_temperature(monkeypatch):
+    """The dashboard and the agent defer to the setting; a caller may not have to."""
+
+    sent: dict = {}
+    _capturing_transport(monkeypatch, sent)
+    assistant_settings.save({"temperature": 0.7})
+
+    llm.chat([{"role": "user", "content": "hello"}], temperature=0.0)
+
+    assert sent["temperature"] == 0.0
+
+
 def test_llm_chat_asks_for_an_explicit_output_ceiling(monkeypatch):
     """Every request carries one, so the room to answer is not routing luck.
 

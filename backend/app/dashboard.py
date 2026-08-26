@@ -868,7 +868,7 @@ Prefer specific, non-duplicative advice that adds judgment beyond the determinis
         message = llm.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": json.dumps(model_view, ensure_ascii=False)}],
-            temperature=0.0, profile="agent",
+            profile="agent",
         )
     parsed = parse_json_object(message.get("content") or "")
     validate_json_shape(parsed, object_arrays=("suggestions",))
