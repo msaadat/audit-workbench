@@ -1301,7 +1301,6 @@ export interface RcmCompletion {
   unreviewed_agent_conclusions: Array<{ rcm_id: string; test_id: string }>
   blocked_without_plan: Array<{ rcm_id: string; test_id: string; missing: string[] }>
   rcm_without_conclusion: string[]
-  assurance_gaps: Array<{ rcm_id: string; reason: string }>
   /** Conclusions capped by their evidence class rather than earned. */
   evidence_ceilings: Array<{ rcm_id: string; reason: string }>
   pending_cycle_dispositions: Array<{ rcm_id: string; test_id: string; item_id: string | null }>
@@ -2201,6 +2200,20 @@ export interface EngagementRecordPayload {
   /** Debts whose originating stage never filed, so they have no row to sit on. */
   orphaned_points: EngagementOpenPoint[]
   next: EngagementNextStep | null
+  /**
+   * What every capability the record can name files, keyed by capability id.
+   * Neither half of the ledger covers a stage while it runs — no milestone
+   * yet, and its work product may already exist enough to stop being owed — so
+   * the live overlay draws that row itself, in this vocabulary.
+   */
+  catalog: Record<string, {
+    label: string
+    destination: string
+    /** The sentence the row carries while owed; '' where the record never owes it. */
+    headline: string
+    /** null where the engagement plan does not contain this capability at all. */
+    order: number | null
+  }>
   counts: Record<string, number>
   totals: {
     work_products: number

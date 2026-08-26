@@ -24,7 +24,7 @@ export type DocTestFilter =
   | 'not_run' | 'awaiting_evidence' | 'exceptions' | 'confirmed'
   | 'no_conclusion' | 'stale_conclusion' | 'agent_concluded'
   | 'missing_finding' | 'has_finding'
-  | 'evidence_request' | 'supplemental'
+  | 'evidence_request'
 
 export type DocTestActionKey = 'run_tests' | 'draft_findings'
 
@@ -43,14 +43,9 @@ interface Counts {
   staleConclusion: number
   agentConcluded: number
   auditorConcluded: number
-  supplemental: number
   exceptionTests: number
   exceptionTestsCovered: number
   undrafted: string[]
-}
-
-function isSupplemental(entry: DocTestSummaryEntry): boolean {
-  return entry.entry_type === 'cycle_test' && entry.assurance_scope === 'targeted_evidence_only'
 }
 
 function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]): Counts {
@@ -61,7 +56,7 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
     notRunTests: [], notRunEntries: 0, awaitingEvidence: 0,
     exceptions: 0, confirmed: 0, evidenceRequests: 0,
     tests: 0, concluded: 0, noConclusion: 0, staleConclusion: 0,
-    agentConcluded: 0, auditorConcluded: 0, supplemental: 0,
+    agentConcluded: 0, auditorConcluded: 0,
     exceptionTests: 0, exceptionTestsCovered: 0, undrafted: [],
   }
   const notRun = new Set<string>()
@@ -89,7 +84,6 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
     if (entry.conclusion_state === 'stale') counts.staleConclusion += 1
     if (entry.conclusion_state === 'agent') counts.agentConcluded += 1
     if (entry.conclusion_state === 'auditor') counts.auditorConcluded += 1
-    if (isSupplemental(entry)) counts.supplemental += 1
 
     if (entry.test_status === 'completed_with_exception') {
       counts.exceptionTests += 1
@@ -230,15 +224,6 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
       filter: 'agent_concluded',
     })
   }
-  if (counts.supplemental) {
-    items.push({
-      key: 'supplemental', mark: 'Limit', tone: 'warn',
-      message: `${plural(counts.supplemental, 'test')} ${
-        counts.supplemental === 1 ? 'gathers' : 'gather'
-      } targeted evidence only, which cannot support a population conclusion.`,
-      filter: 'supplemental',
-    })
-  }
   if (counts.evidenceRequests) {
     items.push({
       key: 'evidence', mark: 'Evidence', tone: 'muted',
@@ -272,7 +257,6 @@ export const DOC_TEST_FILTER_LABELS: Record<DocTestFilter, string> = {
   missing_finding: 'exception tests with no finding',
   has_finding: 'items written up as a finding',
   evidence_request: 'items with an open evidence request',
-  supplemental: 'tests gathering targeted evidence only',
 }
 
 /**
@@ -299,7 +283,6 @@ export function filterDocTestEntries(
       case 'has_finding': return drafted.has(entry.test_id)
       case 'evidence_request':
         return entry.entry_type === 'item' && entry.evidence_request_count > 0
-      case 'supplemental': return isSupplemental(entry)
       default: return true
     }
   })

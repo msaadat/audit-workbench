@@ -125,42 +125,48 @@ def test_failed_and_incomplete_counts_can_name_the_same_distinct_item(
     assert rollup["assertion_mismatches"] == 1
 
 
-def test_targeted_evidence_is_structurally_ineligible_but_keeps_item_exception(
+def test_targeted_evidence_carries_an_auditor_control_conclusion(
     contract, monkeypatch
 ):
+    """Selection breadth is reported, not enforced.
+
+    ``targeted_evidence_only`` stays on the roll-up as a description of how the
+    items were reached, but it no longer refuses the auditor's conclusion, caps
+    the row, or writes a scope limitation nobody asked for. Narrow evidence is a
+    judgment to disclose, and the auditor is the one who makes it.
+    """
+
     workspace, test, _source = _exception_cycle_with_citations(contract, monkeypatch)
 
-    with pytest.raises(WorkspaceError, match="Targeted evidence"):
-        doc_tests.update_test(
-            workspace, test["id"], {"control_conclusion": "ineffective"}
-        )
+    doc_tests.update_test(
+        workspace, test["id"], {"control_conclusion": "ineffective"}
+    )
 
     rolled = rcm_execution.rollup(workspace)
     test_rollup = rolled["rows"][0]["test_rollups"][0]
     completion = rcm_execution.completion(workspace)
-    verification = verify_audit(workspace)
     context = report.build_context(workspace)
 
     assert test_rollup["assurance_scope"] == "targeted_evidence_only"
-    assert test_rollup["conclusion_eligible"] is False
-    assert test_rollup["control_conclusion"] == "no_conclusion"
+    assert test_rollup["conclusion_eligible"] is True
+    assert test_rollup["control_conclusion"] == "ineffective"
+    assert test_rollup["control_conclusion_source"] == "auditor"
     assert test_rollup["open_exception_count"] == 1
-    assert rolled["rows"][0]["control_conclusion"] == "no_conclusion"
-    assert completion["assurance_gaps"]
-    assert verification["audit_complete"] is False
-    assert verification["assurance_gaps"] == completion["assurance_gaps"]
+    assert rolled["rows"][0]["control_conclusion"] == "ineffective"
+    assert "assurance_gaps" not in completion
     report_test = context["rcm"][0]["tests"][0]
-    assert report_test["control_conclusion"] == "no_conclusion"
+    assert report_test["control_conclusion"] == "ineffective"
     assert report_test["rollup"]["open_exceptions"] == 1
-    limitation = next(
+    # No synthetic limitation is injected on the test's behalf; the section
+    # carries only what an auditor actually wrote.
+    assert not [
         item
         for item in context["scope_limitations"]
         if item["test_id"] == test["id"]
-    )
-    assert "projected exception rate" in limitation["text"]
+    ]
 
 
-def test_evidence_aware_simple_vouching_has_the_same_structural_restriction(
+def test_evidence_aware_simple_vouching_is_concludable_the_same_way(
     contract, monkeypatch
 ):
     workspace, cycle_test, _current = _workspace(contract, monkeypatch)
@@ -190,15 +196,14 @@ def test_evidence_aware_simple_vouching_has_the_same_structural_restriction(
         },
     )
 
-    with pytest.raises(WorkspaceError, match="Targeted evidence"):
-        doc_tests.update_test(
-            workspace, test["id"], {"control_conclusion": "ineffective"}
-        )
+    doc_tests.update_test(
+        workspace, test["id"], {"control_conclusion": "ineffective"}
+    )
     rollup = doc_tests.result_rollup(doc_tests.load_test(workspace, test["id"]))
 
     assert rollup["assurance_scope"] == "targeted_evidence_only"
-    assert rollup["conclusion_eligible"] is False
-    assert rollup["control_conclusion"] == "no_conclusion"
+    assert rollup["conclusion_eligible"] is True
+    assert rollup["control_conclusion"] == "ineffective"
     assert rollup["open_exceptions"] == 1
 
 

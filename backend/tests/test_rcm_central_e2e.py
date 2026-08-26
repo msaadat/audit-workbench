@@ -221,10 +221,11 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
         "control_conclusion": "not_applicable",
     })
     # Evidence-aware vouching selects the rows that already carry documents, so
-    # its assurance scope is targeted rather than sampled. The narrative, the
-    # scope limitation, and the next action are still the auditor's to record;
-    # the population conclusion is the one thing the selection cannot support.
-    with pytest.raises(workspaces.WorkspaceError, match="Targeted evidence"):
+    # its assurance scope is targeted rather than sampled. That is reported, not
+    # enforced — what still refuses a conclusion here is the one structural rule
+    # left: items nobody has run. The narrative, the scope limitation, and the
+    # next action remain the auditor's to record.
+    with pytest.raises(workspaces.WorkspaceError, match="Run every item"):
         doc_tests.update_test(
             workspace,
             document_test["id"],

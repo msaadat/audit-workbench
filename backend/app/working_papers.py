@@ -434,12 +434,7 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
                 "Conclusion:", "",
                 test.get("conclusion") or "No conclusion recorded.", "",
                 "Scope limitations:", "",
-                (
-                    "Targeted evidence - not a sample; no population control conclusion "
-                    "or projected exception rate is permitted."
-                    if execution_rollup.get("assurance_scope") == "targeted_evidence_only"
-                    else test.get("scope_limitations") or "No scope limitations recorded."
-                ), "",
+                test.get("scope_limitations") or "No scope limitations recorded.", "",
             ]
         )
     lines.extend(["## Observations and findings", ""])

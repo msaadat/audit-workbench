@@ -223,8 +223,6 @@ const missingRoles = computed(() => props.item.missing_roles ?? [])
 const frozenRow = computed(() => Object.entries(props.item.frozen_row ?? props.item.frozen ?? {}))
 const cycleConclusionEligible = computed(() => {
   if (!isCanonicalCycle.value) return true
-  const selection = props.test.definition?.population.selection
-  if (selection?.mode !== 'sample') return false
   return Boolean(props.test.items.length) && props.test.items.every(item =>
     ['passed', 'failed'].includes(item.evaluation?.state ?? '')
     && ['confirmed', 'exception'].includes(item.disposition?.state ?? '')
@@ -233,9 +231,7 @@ const cycleConclusionEligible = computed(() => {
 })
 const controlConclusionReason = computed(() => {
   if (!isCanonicalCycle.value || cycleConclusionEligible.value) return ''
-  return props.test.definition?.population.selection.mode === 'evidence_linked'
-    ? 'Targeted evidence is item-specific and cannot support a population control conclusion or projected exception rate.'
-    : 'Complete deterministic evaluation and current auditor disposition are required before recording a control conclusion.'
+  return 'Complete deterministic evaluation and current auditor disposition are required before recording a control conclusion.'
 })
 // Item-first tests let the auditor conclude over open items — that judgment is
 // theirs. Naming the items is what was missing: the save used to fail with a

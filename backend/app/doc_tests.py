@@ -2290,12 +2290,8 @@ def result_rollup(test: dict) -> dict:
     executions_current = bool(items) and all(
         item_execution_current(test, item) for item in items
     )
-    population_scope_eligible = (
-        scope == "sampled_population" if test.get("kind") == "vouching" else True
-    )
     conclusion_eligible = bool(
-        population_scope_eligible
-        and executions_current
+        executions_current
         and dispositions_current
         and not incomplete_items
     )
@@ -2434,15 +2430,12 @@ def incomplete_checks(test: dict) -> int:
 def conclusion_block(test: dict) -> str:
     """Why this test structurally cannot carry a conclusion, or an empty string.
 
-    Only two things are genuinely not the auditor's call: projecting a
-    population conclusion from evidence that was not sampled for it, and
-    concluding on a test that has not run. An incomplete evidence base is a
-    different matter — that is a judgment the auditor is entitled to make and
+    The one thing genuinely not the auditor's call is concluding on a test that
+    has not run. How narrow the evidence is — targeted rather than sampled, or
+    an incomplete base — is a judgment the auditor is entitled to make and
     disclose, which is what :func:`record_conclusion_override` writes down.
     """
 
-    if assurance_scope(test) == "targeted_evidence_only":
-        return "Targeted evidence cannot support a population control conclusion."
     if is_cycle_test(test):
         return (
             ""

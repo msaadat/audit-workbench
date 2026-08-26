@@ -198,7 +198,6 @@ def verify_audit(workspace: Workspace) -> dict:
             for item in linked_tests
             if doc_tests.is_cycle_test(item)
         ),
-        "assurance_gaps": list(completion.get("assurance_gaps") or []),
         # Exceptions are recorded outcomes, not unresolved auditor gates.
         "recorded_exception_observations": sum(
             item.get("outcome") == "exception" for item in workspace.observations
@@ -220,7 +219,6 @@ def verify_audit(workspace: Workspace) -> dict:
         + len(completion.get("blocked_without_plan") or [])
         + len(completion.get("rcm_without_conclusion") or [])
         + len(completion.get("pending_cycle_dispositions") or [])
-        + len(completion.get("assurance_gaps") or [])
         + len(errors)
         + len(issues),
     }

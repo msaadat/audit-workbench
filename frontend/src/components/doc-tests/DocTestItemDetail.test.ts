@@ -170,17 +170,17 @@ function dispositionButtons(wrapper: ReturnType<typeof mount>) {
 }
 
 describe('DocTestItemDetail Cycle-vouch assurance', () => {
-  it('keeps targeted evidence item-specific and disables a population conclusion', () => {
+  it('states the targeted scope without withholding the conclusion', () => {
     const wrapper = render('evidence_linked')
 
-    expect(wrapper.findComponent(Select).props('disabled')).toBe(true)
-    expect(wrapper.get('.assurance-restriction').text()).toContain(
-      'cannot support a population control conclusion or projected exception rate',
-    )
+    // Narrow selection is a fact the coverage line reports, not a restriction:
+    // whether it can carry a conclusion is the auditor's judgment to make.
+    expect(wrapper.findComponent(Select).props('disabled')).toBe(false)
+    expect(wrapper.find('.assurance-restriction').exists()).toBe(false)
     expect(wrapper.text()).toContain('Targeted evidence — not a sample')
   })
 
-  it('enables an auditor conclusion only for a current signed sample', () => {
+  it('enables an auditor conclusion for a current signed sample', () => {
     const wrapper = render('sample')
 
     expect(wrapper.findComponent(Select).props('disabled')).toBe(false)

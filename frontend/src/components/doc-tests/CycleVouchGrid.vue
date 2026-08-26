@@ -254,23 +254,6 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
       </div>
     </header>
 
-    <div
-      v-if="payload"
-      class="scope-label"
-      :data-scope="payload.assurance_scope"
-      role="status"
-    >
-      <i :class="payload.assurance_scope === 'sampled_population' ? 'pi pi-chart-bar' : 'pi pi-crosshairs'" />
-      <div>
-        <strong>{{ payload.assurance_label }}</strong>
-        <span>
-          {{ payload.assurance_scope === 'sampled_population'
-            ? 'The selected items form a deterministic sample of the stated population.'
-            : 'These items were selected because evidence is available. Results do not represent a population sample.' }}
-        </span>
-      </div>
-    </div>
-
     <div v-if="payload" class="grid-summary" aria-label="Cycle grid summary">
       <span><strong>{{ payload.page.total }}</strong> selected items</span>
       <span><strong>{{ payload.columns.length }}</strong> assertions</span>
@@ -469,11 +452,6 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
 .grid-head { justify-content: space-between; gap: 1rem; }
 .grid-head h3 { margin: .15rem 0 0; font-size: var(--aw-text-xl); }
 .eyebrow { margin: .15rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; }
-.scope-label { display: flex; align-items: flex-start; gap: .7rem; padding: .75rem .85rem; border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-control); background: var(--aw-teal-soft); }
-.scope-label[data-scope='sampled_population'] { border-color: var(--aw-ok-line); background: var(--aw-ok-soft); }
-.scope-label > i { margin-top: .1rem; color: var(--aw-teal); }
-.scope-label div { display: grid; gap: .15rem; }
-.scope-label span { color: var(--aw-ink-soft); font-size: var(--aw-text-sm); }
 .grid-summary { flex-wrap: wrap; gap: .45rem; }
 .grid-summary span { padding: .35rem .6rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .grid-summary strong { color: var(--aw-ink); }

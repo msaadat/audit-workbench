@@ -41,7 +41,7 @@ function completionWith(overrides: Partial<RcmCompletion>): RcmCompletion {
       completed_without_durable_result: [], inconsistent_conclusions: [],
     },
     incomplete_outcomes: [], blank_conclusions: [], unreviewed_agent_conclusions: [],
-    blocked_without_plan: [], rcm_without_conclusion: [], assurance_gaps: [],
+    blocked_without_plan: [], rcm_without_conclusion: [],
     evidence_ceilings: [], pending_cycle_dispositions: [], untested_columns: [],
     undispositioned_analyses: 0, declined_analyses: 0,
     ...overrides,

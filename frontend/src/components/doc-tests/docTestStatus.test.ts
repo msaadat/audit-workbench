@@ -127,7 +127,7 @@ describe('document test findings lane', () => {
 })
 
 describe('document test disclosures', () => {
-  it('reports agent conclusions, targeted evidence, and open evidence requests', () => {
+  it('reports agent conclusions and open evidence requests, but not selection breadth', () => {
     const cycle = {
       entry_type: 'cycle_test', test_id: 'DT-CYCLE', title: 'Cycle', test_kind: 'cycle_vouch',
       test_status: 'completed_with_exception', rcm_id: 'RCM-1', classification: 'needs_review',
@@ -143,7 +143,7 @@ describe('document test disclosures', () => {
       cycle,
     ]))
 
-    expect(model.disclosures.map(entry => entry.key)).toEqual(['agent', 'supplemental', 'evidence'])
+    expect(model.disclosures.map(entry => entry.key)).toEqual(['agent', 'evidence'])
     expect(model.disclosures[0].message).toContain('1 of 2 test conclusions was set by the agent')
   })
 

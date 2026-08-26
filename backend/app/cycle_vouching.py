@@ -5662,8 +5662,7 @@ def result_rollup(test: Mapping[str, object]) -> dict:
         == len(items)
     )
     conclusion_eligible = bool(
-        scope == "sampled_population"
-        and evaluations_current
+        evaluations_current
         and dispositions_current
         and not item_counts["incomplete"]
         and not item_counts["needs_review"]

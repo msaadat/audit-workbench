@@ -505,18 +505,6 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
             for row in workspace.rcm
             for test in _linked_tests(workspace, row["id"], document_tests)
             if str(test.get("scope_limitations") or "").strip()
-        ] + [
-            {
-                "rcm_id": row["id"],
-                "test_id": test["id"],
-                "text": (
-                    "Targeted evidence - not a sample; this test cannot support a "
-                    "population control conclusion or projected exception rate."
-                ),
-            }
-            for row in workspace.rcm
-            for test in _linked_tests(workspace, row["id"], document_tests)
-            if doc_tests.assurance_scope(test) == "targeted_evidence_only"
         ],
         "completion": completion,
         "preliminary": completion["status"] != "completed",

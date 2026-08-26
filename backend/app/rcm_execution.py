@@ -234,19 +234,6 @@ def coverage(
                         "reason": "Effective conclusion conflicts with open exceptions.",
                     }
                 )
-            if (
-                doc_tests.assurance_scope(item) == "targeted_evidence_only"
-                and item.get("control_conclusion") != "no_conclusion"
-            ):
-                inconsistent_conclusions.append(
-                    {
-                        "rcm_id": row["id"],
-                        "test_id": test["id"],
-                        "reason": (
-                            "Targeted evidence cannot support a population control conclusion."
-                        ),
-                    }
-                )
         if row.get("risk_rating") in {"high", "critical"} and tests and not usable:
             high_risks_without_executable_work.append(row["id"])
 
@@ -662,9 +649,6 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
         if test["kind"] == "doctest"
         else str(item.get("control_conclusion") or "no_conclusion")
     )
-    if assurance_scope == "targeted_evidence_only":
-        item["control_conclusion"] = "no_conclusion"
-        item["control_conclusion_source"] = "none"
     if test["kind"] == "doctest" and doc_tests.is_cycle_test(item):
         result_summary = (
             f"{detailed_rollup['tested_items']} of {counted(detailed_rollup['items'], 'item')} tested; "
@@ -930,19 +914,6 @@ def completion(
             for test in _tests(workspace, row["id"], document_tests)
         )
     ]
-    assurance_gaps = [
-        {
-            "rcm_id": row["id"],
-            "reason": (
-                "Targeted evidence is supplemental and cannot support a population "
-                "control conclusion."
-            ),
-        }
-        for row in workspace.rcm
-        if (row.get("execution_rollup") or {}).get("tests")
-        and not (row.get("execution_rollup") or {}).get("conclusion_eligible_tests")
-        and (row.get("execution_rollup") or {}).get("supplemental_tests")
-    ]
     # A conclusion that was capped rather than earned. Reported separately from
     # the rows that reached no conclusion at all, because "we tested less than
     # this claims" and "we could not look" are different disclosures. A ceiling
@@ -978,7 +949,6 @@ def completion(
         or blank_conclusions
         or blocked_without_plan
         or rcm_without_conclusion
-        or assurance_gaps
         or pending_cycle_dispositions
         or any(
             test["item"].get("status") in {"blocked", "review_required"}
@@ -1003,7 +973,6 @@ def completion(
         ],
         "blocked_without_plan": blocked_without_plan,
         "rcm_without_conclusion": rcm_without_conclusion,
-        "assurance_gaps": assurance_gaps,
         "evidence_ceilings": evidence_ceilings,
         "pending_cycle_dispositions": pending_cycle_dispositions,
         # What the audit never framed a procedure over, from the data's side

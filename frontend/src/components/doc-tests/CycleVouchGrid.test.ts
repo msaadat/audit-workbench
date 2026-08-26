@@ -77,7 +77,7 @@ const global = {
 afterEach(() => vi.restoreAllMocks())
 
 describe('CycleVouchGrid', () => {
-  it('loads only the paged grid projection and labels targeted scope persistently', async () => {
+  it('loads only the paged grid projection and never the whole test', async () => {
     const get = vi.spyOn(api, 'get').mockResolvedValue(payload)
     const wrapper = mount(CycleVouchGrid, {
       props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false, metadata: null },
@@ -88,8 +88,9 @@ describe('CycleVouchGrid', () => {
     expect(get).toHaveBeenCalledTimes(1)
     expect(get).toHaveBeenCalledWith('/api/workspaces/WS-1/doc-tests/DT-CYCLE/grid?offset=0&limit=100')
     expect(get.mock.calls.some(([url]) => url === '/api/workspaces/WS-1/doc-tests/DT-CYCLE')).toBe(false)
-    expect(wrapper.get('.scope-label').text()).toContain('Targeted evidence - not a sample')
-    expect(wrapper.get('.scope-label').text()).toContain('do not represent a population sample')
+    // How the items were selected is reported where the coverage numbers are,
+    // not as a banner over the grid qualifying every result beneath it.
+    expect(wrapper.find('.scope-label').exists()).toBe(false)
   })
 
   it('retains every projected comparison in a cell popover and opens the exact assertion', async () => {
