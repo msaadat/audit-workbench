@@ -2277,9 +2277,18 @@ export interface ContextDocument {
  * what the cards draw, so a reader sees at a glance which files the work rests
  * on and which were held out of scope.
  */
+/** A work product a step read as input — the APM, the analysis summary. */
+export interface ContextArtifact {
+  ref: string
+  name: string
+  badge: string
+  destination: string
+}
+
 export interface ContextRead {
   at: string
   stage_title: string
+  artifacts: ContextArtifact[]
   documents: ContextDocument[]
   withheld: ContextDocument[]
   supporting: string[]

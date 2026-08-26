@@ -20,6 +20,7 @@ function context(overrides: Partial<ContextRead> = {}): ContextRead {
   return {
     at: '2026-08-14T06:01:00+00:00',
     stage_title: 'Audit planning memorandum',
+    artifacts: [],
     documents: [
       { document_id: 'd1', name: 'Procurement SOP Extracts.docx', category: 'policy', pages: 1 },
       { document_id: 'd2', name: 'Financial Approval Matrix.docx', category: 'policy', pages: 1 },
@@ -136,3 +137,48 @@ describe('AgentContextCard merged reads', () => {
   })
 })
 
+
+describe('AgentContextCard work products', () => {
+  const withApm = () => context({
+    stage_title: 'Risk and control matrix',
+    artifacts: [{
+      ref: 'planning:apm',
+      name: 'Audit planning memorandum',
+      badge: 'APM',
+      destination: 'apm',
+    }],
+    supporting: ['the RCM template', '6 table profiles'],
+  })
+
+  it('leads with the work product the step rests on', () => {
+    const wrapper = mount(AgentContextCard, { props: { context: withApm() } })
+
+    // For the RCM the memorandum is the main context, not footer plumbing.
+    const cards = wrapper.findAll('.doc .identity b').map(node => node.text())
+    expect(cards[0]).toBe('Audit planning memorandum')
+    expect(wrapper.find('.product .badge').text()).toBe('APM')
+    expect(wrapper.find('.footer').text()).not.toContain('Audit planning memorandum')
+  })
+
+  it('counts work products separately from documents', () => {
+    const wrapper = mount(AgentContextCard, { props: { context: withApm() } })
+
+    expect(wrapper.find('header span').text()).toContain('1 work product · 3 documents')
+  })
+
+  it('opens the work product on its own screen', async () => {
+    const wrapper = mount(AgentContextCard, { props: { context: withApm() } })
+
+    await wrapper.find('.product').trigger('click')
+
+    expect(push).toHaveBeenCalledWith('apm')
+  })
+
+  it('says nothing about work products when the step read none', () => {
+    const wrapper = mount(AgentContextCard, { props: { context: context() } })
+
+    expect(wrapper.find('header span').text()).toContain('3 documents')
+    expect(wrapper.find('header span').text()).not.toContain('work product')
+    expect(wrapper.find('.product').exists()).toBe(false)
+  })
+})

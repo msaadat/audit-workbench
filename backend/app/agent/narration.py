@@ -495,6 +495,18 @@ def _omission_clauses(omissions: list, workspace: object) -> list[str]:
     return clauses
 
 
+# Work products a step reads as input, as opposed to the templates it needs to
+# write one and the row-level scaffolding it walks. These are the artifacts an
+# auditor recognises and can open, and for a stage like the RCM the memorandum
+# is the main context — leaving it in the footer beside the template said the
+# opposite. Keyed by exact ref: everything numerous (`rcm:RCM-…`,
+# `analysis:A-…`, `datatest:…`) is row-level and stays in the footer.
+_WORK_PRODUCT_CARDS: dict[str, tuple[str, str, str]] = {
+    "planning:apm": ("Audit planning memorandum", "APM", "apm"),
+    "analysis_summary:current": ("Data analysis summary", "EDA", "analysis"),
+}
+
+
 def context_read(
     manifest: "ContextManifest", workspace: object, *, label: str = ""
 ) -> dict | None:
@@ -524,15 +536,29 @@ def context_read(
 
     documents = [described(record) for record in _resolve_documents(selections, workspace)]
 
+    artifacts: list[dict] = []
+    for item in selections:
+        ref = str(getattr(item, "source_ref", "") or "")
+        card = _WORK_PRODUCT_CARDS.get(ref)
+        # A stage revising its own artifact reads it, but naming it beside the
+        # stage's own title says the same words twice.
+        if card is None or card[0] == str(label or ""):
+            continue
+        if any(entry["ref"] == ref for entry in artifacts):
+            continue
+        artifacts.append({"ref": ref, "name": card[0], "badge": card[1], "destination": card[2]})
+
     omissions = list(getattr(manifest, "omissions", None) or [])
     scoped = [item for item in omissions if _omission_kind(str(getattr(item, "reason", "") or "")) == "scope"]
     withheld = [described(record) for record in _resolve_documents(scoped, workspace)]
 
+    promoted = {entry["ref"] for entry in artifacts}
     supporting = _grouped_source_labels(
         [
             item
             for item in selections
             if not str(getattr(item, "source_ref", "") or "").startswith("document:")
+            and str(getattr(item, "source_ref", "") or "") not in promoted
         ],
         workspace,
     )
@@ -545,12 +571,13 @@ def context_read(
         workspace,
         name_documents=False,
     )
-    if not documents and not withheld:
+    if not documents and not withheld and not artifacts:
         # Nothing a card would show that the sentence does not say better.
         return None
     return {
         "at": store.utcnow(),
         "stage_title": str(label or ""),
+        "artifacts": artifacts,
         "documents": documents,
         "withheld": withheld,
         "supporting": supporting,

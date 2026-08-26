@@ -2,7 +2,8 @@
 import { computed } from 'vue'
 
 import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
-import type { ContextDocument, ContextRead } from '../../types'
+import type { WorkspaceDestination } from '../../composables/useWorkspaceNavigation'
+import type { ContextArtifact, ContextDocument, ContextRead } from '../../types'
 import { plural } from '../../format'
 
 /**
@@ -67,6 +68,16 @@ const withheldSummary = computed(() => {
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
 })
 
+/** "1 work product · 3 documents", naming only what is actually there. */
+const counts = computed(() => {
+  const parts: string[] = []
+  if (props.context.artifacts.length) {
+    parts.push(plural(props.context.artifacts.length, 'work product'))
+  }
+  parts.push(plural(props.context.documents.length, 'document'))
+  return parts.join(' · ')
+})
+
 const footer = computed(() => {
   const parts: string[] = []
   if (props.context.supporting.length) {
@@ -88,7 +99,7 @@ const footer = computed(() => {
  */
 const label = computed(() => {
   if (props.context.sentence) return props.context.sentence
-  const read = `Reading ${plural(props.context.documents.length, 'document')}`
+  const read = `Reading ${counts.value}`
   const stage = props.context.stage_title ? ` for ${props.context.stage_title}` : ''
   const held = props.context.withheld.length
     ? `. Holding back ${withheldSummary.value}, outside this step's scope`
@@ -98,6 +109,18 @@ const label = computed(() => {
 
 function open(item: ContextDocument) {
   if (item.document_id) void nav.push('documents', { doc: item.document_id })
+}
+
+const ARTIFACT_DESTINATIONS: Record<string, WorkspaceDestination> = {
+  apm: 'apm',
+  rcm: 'rcm',
+  analysis: 'analysis',
+  report: 'report',
+}
+
+function openArtifact(item: ContextArtifact) {
+  const destination = ARTIFACT_DESTINATIONS[item.destination]
+  if (destination) void nav.push(destination)
 }
 </script>
 
@@ -109,10 +132,30 @@ function open(item: ContextDocument) {
     <header>
       <strong>Reading</strong>
       <span>
-        {{ plural(context.documents.length, 'document') }}
+        {{ counts }}
         <template v-if="context.stage_title"> · {{ context.stage_title }}</template>
       </span>
     </header>
+
+    <!-- Work products lead: for a stage like the RCM the memorandum is the
+         main context, and the documents are what it was drafted from. -->
+    <div v-if="context.artifacts.length" class="cards">
+      <button
+        v-for="item in context.artifacts"
+        :key="item.ref"
+        type="button"
+        class="doc product"
+        :title="`Open the ${item.name.toLowerCase()}`"
+        :aria-label="`Open the ${item.name.toLowerCase()}`"
+        @click="openArtifact(item)"
+      >
+        <span class="badge">{{ item.badge }}</span>
+        <span class="identity">
+          <b>{{ item.name }}</b>
+          <small><span class="tag">Work product</span></small>
+        </span>
+      </button>
+    </div>
 
     <div v-if="context.documents.length" class="cards">
       <button
@@ -164,6 +207,10 @@ function open(item: ContextDocument) {
 .held{display:flex;align-items:baseline;gap:.4rem;margin:.35rem 0 0;padding-top:.45rem;border-top:1px dashed var(--aw-border);color:var(--aw-muted);font-size:var(--aw-text-xs);line-height:1.5}
 .held>i{font-size:var(--aw-text-2xs)}
 .held strong{color:var(--aw-ink-soft);font-weight:600}
+
+/* A work product is the engagement's own output, not source material. */
+.product .badge{background:var(--aw-accent-soft);color:var(--aw-accent)}
+.product .tag{border-color:var(--aw-border-strong);background:var(--aw-raised);color:var(--aw-muted)}
 
 .footer{margin:.3rem 0 0;padding-top:.45rem;border-top:1px dashed var(--aw-border);color:var(--aw-muted);font-size:var(--aw-text-2xs);line-height:1.5}
 </style>

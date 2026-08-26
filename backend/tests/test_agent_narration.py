@@ -988,3 +988,51 @@ def test_a_document_read_twice_in_one_stage_is_listed_once():
 
     assert len(groups) == 1
     assert len(groups[0]["documents"]) == 1
+
+
+def test_context_read_promotes_the_work_product_a_stage_rests_on():
+    """For the RCM the memorandum is the main context, not footer plumbing."""
+    manifest = _Manifest(selections=[
+        _Selection("current_apm", "planning:apm"),
+        _Selection("rcm_template", "template:rcm"),
+        _Selection("documents", "document:d1"),
+    ])
+
+    read = narration.context_read(
+        manifest, _Workspace(_documents()), label="Risk and control matrix"
+    )
+
+    assert [item["name"] for item in read["artifacts"]] == ["Audit planning memorandum"]
+    assert read["artifacts"][0]["destination"] == "apm"
+    # Promoted out of the footer, not duplicated into both.
+    assert "the current APM" not in read["supporting"]
+    assert "the RCM template" in read["supporting"]
+
+
+def test_a_stage_does_not_card_the_artifact_it_is_writing():
+    """"Reading … Audit planning memorandum" under that same heading is noise."""
+    manifest = _Manifest(selections=[
+        _Selection("current_apm", "planning:apm"),
+        _Selection("documents", "document:d1"),
+    ])
+
+    read = narration.context_read(
+        manifest, _Workspace(_documents()), label="Audit planning memorandum"
+    )
+
+    assert read["artifacts"] == []
+    # Still reported, just where a revision target belongs.
+    assert "the current APM" in read["supporting"]
+
+
+def test_row_level_artifacts_never_become_cards():
+    """A stage walking 27 RCM rows must not show 27 work products."""
+    manifest = _Manifest(selections=[
+        _Selection("rcm_row", f"rcm:RCM-{index:04X}") for index in range(27)
+    ] + [_Selection("documents", "document:d1")])
+
+    read = narration.context_read(
+        manifest, _Workspace(_documents()), label="Planned tests"
+    )
+
+    assert read["artifacts"] == []
