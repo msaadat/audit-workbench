@@ -37,12 +37,18 @@ tables testable that pairwise joins leave apart.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterable
+from datetime import datetime, timezone
+from itertools import combinations
+from pathlib import Path
 
 import polars as pl
 
-from ..workspaces import Workspace, join_suffix
+from .. import loader
+from ..workspaces import Workspace, WorkspaceError, join_suffix, write_json_atomic
 
 # Candidate discovery caps: comparing every column pair is quadratic, so only
 # plausible key columns (ids, codes, low-null, reasonable cardinality) enter.
@@ -679,6 +685,106 @@ def direct_join(workspace: Workspace, left: str, right: str) -> dict | None:
         ),
         None,
     )
+
+
+def connected_pairs(workspace: Workspace) -> set[frozenset[str]]:
+    """Every base-table pair some materialized frame already brings together.
+
+    A chained join connects each pair of tables in its lineage, not just the two
+    frames named as its sides: the frame joining requisitions to the approval
+    matrix *through* the approver's staff record is exactly the frame in which
+    a requisition can be tested against its approval limit. Reading only the
+    two immediate sides would call that pair unconnected while the frame that
+    connects them sits in the workspace.
+    """
+    connected: set[frozenset[str]] = set()
+    for join in workspace.joins:
+        lineage = frame_lineage(workspace, str(join.get("name")))
+        connected.update(
+            frozenset(pair) for pair in combinations(sorted(lineage), 2)
+        )
+    return connected
+
+
+# --------------------------------------------------------------------------- #
+# Settled pairs
+# --------------------------------------------------------------------------- #
+# A pair the join stage deliberately left unjoined — because local diagnosis
+# found no candidate key at all, or because the utility gate retained none of
+# the ones it found — is decided, not outstanding. Nothing in the workspace
+# records that decision: an unrelated pair leaves no join behind, so every
+# readiness check phrased as "is this pair connected yet" reads it as work still
+# to do, and an engagement whose analysis has in fact finished reports its
+# analysis chain blocked forever. This ledger is that missing record.
+#
+# It lives beside the profile cache rather than in the manifest for the reason
+# relationship evidence is not a workspace collection: it is a recomputable
+# diagnostic about data files, not an engagement artifact. Each record carries
+# the content signature of both tables, so replacing a file reopens the question
+# that file's contents answered.
+_SETTLED_FILENAME = "relationships.json"
+_PAIR_SEPARATOR = "|"
+
+
+def _settled_path(workspace: Workspace) -> Path:
+    return workspace.data_dir / loader.CACHE_DIRNAME / _SETTLED_FILENAME
+
+
+def _pair_signature(workspace: Workspace, left: str, right: str) -> str:
+    digest = repr(
+        tuple(workspace.content_signature(name) for name in sorted((left, right)))
+    )
+    return hashlib.sha1(digest.encode()).hexdigest()[:16]
+
+
+def _read_settled(workspace: Workspace) -> dict:
+    try:
+        payload = json.loads(_settled_path(workspace).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    pairs = payload.get("pairs")
+    return dict(pairs) if isinstance(pairs, dict) else {}
+
+
+def settled_pairs(workspace: Workspace) -> set[frozenset[str]]:
+    """Pairs recorded as having no relationship worth materializing.
+
+    A record whose tables have changed, or whose tables are gone, is ignored
+    rather than deleted: the question it answered is open again, and the next
+    run answers it from the data that is there now.
+    """
+    settled: set[frozenset[str]] = set()
+    for key, record in _read_settled(workspace).items():
+        names = str(key).split(_PAIR_SEPARATOR)
+        if len(names) != 2 or not isinstance(record, dict):
+            continue
+        try:
+            current = _pair_signature(workspace, *names)
+        except (WorkspaceError, OSError):
+            continue
+        if record.get("signature") == current:
+            settled.add(frozenset(names))
+    return settled
+
+
+def settle_pair(workspace: Workspace, left: str, right: str, reason: str) -> None:
+    """Record that this pair has nothing worth joining, and why."""
+    try:
+        signature = _pair_signature(workspace, left, right)
+    except (WorkspaceError, OSError):
+        return
+    pairs = _read_settled(workspace)
+    pairs[_PAIR_SEPARATOR.join(sorted((left, right)))] = {
+        "signature": signature,
+        "reason": reason,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    path = _settled_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(path, {"pairs": pairs})
+    except OSError:
+        pass  # best-effort, like the profile cache it sits beside
 
 
 def chain_extends_reach(workspace: Workspace, lineage: frozenset[str], table: str) -> bool:

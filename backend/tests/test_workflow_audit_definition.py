@@ -50,7 +50,6 @@ EXPECTED_DEPENDENCIES = {
     ),
     "audit.verified": (
         "working_papers.generated",
-        "dashboard.curated",
         "report.working_draft",
     ),
 }

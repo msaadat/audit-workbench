@@ -223,12 +223,24 @@ def pair_join(workspace: Workspace, left: str, right: str) -> dict | None:
 def uncovered_pairs(
     workspace: Workspace, table_scope: TableScope
 ) -> tuple[tuple[str, str], ...]:
-    """Scoped table pairs with no join directly connecting them yet."""
+    """Scoped table pairs the join stage has neither connected nor settled.
 
+    Two pairs look identical to a check that only asks whether a join names
+    both tables as its sides, and they are not the same at all. A pair reached
+    through a chain is connected — the frame that tests it exists. A pair local
+    diagnosis found nothing to join, or the utility gate declined to admit, is
+    settled: it has been answered, and asking again returns the same answer
+    every time. Counting either as outstanding leaves this capability, and the
+    whole analysis chain that depends on it, permanently unsatisfiable on a
+    workspace whose analysis has actually finished.
+    """
+
+    connected = join_diagnostics.connected_pairs(workspace)
+    settled = join_diagnostics.settled_pairs(workspace)
     return tuple(
         pair
         for pair in table_scope.pairs()
-        if pair_join(workspace, pair[0], pair[1]) is None
+        if frozenset(pair) not in connected and frozenset(pair) not in settled
     )
 
 

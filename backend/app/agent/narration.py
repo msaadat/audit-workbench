@@ -781,11 +781,15 @@ _GUIDED_WORKFLOWS: tuple[dict[str, object], ...] = (
     {
         "label": "Full audit",
         "command": "full_audit",
+        # Curating the dashboard is something a full audit does, not something
+        # a finished audit is missing, so it is not one of the outcomes that
+        # keeps this shortcut on offer. Listing it held the button open on
+        # engagements where every audit step was done — which reads as the
+        # console failing to notice completed work.
         "outcomes": (
             "analysis.executed",
             "findings.drafted",
             "working_papers.generated",
-            "dashboard.curated",
             "report.working_draft",
             "audit.verified",
         ),

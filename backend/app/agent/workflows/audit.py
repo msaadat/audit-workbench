@@ -98,9 +98,16 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "results.rolled_up",
         "findings.drafted",
     ),
+    # ``dashboard.curated`` is deliberately *not* an edge here. Curating the RCM
+    # dashboard arranges tiles over results the roll-up already produced; it
+    # changes how the engagement is read, not whether it is complete. Making it
+    # a prerequisite meant a finished audit — every paper written, every result
+    # rolled up, the report drafted — reported itself unverifiable until someone
+    # had arranged its dashboard, and no request that reached verification could
+    # be satisfied without scheduling that arrangement. A full audit still
+    # curates it: it stays a requested outcome of the full-audit template.
     "audit.verified": (
         "working_papers.generated",
-        "dashboard.curated",
         "report.working_draft",
     ),
 }

@@ -519,9 +519,14 @@ class AnalysisWorkflowExecution(BaseRunner):
         )
         self.task_status(task, "completed")
         if not record["candidates"] and record["join"] is None:
-            # Unrelated table pairs are normal in a broad workspace. The
-            # relationship record retains the evidence locally, but there is
-            # nothing useful to surface to the auditor or narrate repeatedly.
+            # Unrelated table pairs are normal in a broad workspace. There is
+            # nothing useful to surface to the auditor or narrate repeatedly,
+            # but the pair is now answered and must be recorded as such — left
+            # unrecorded it reads as undiagnosed on every later run, and the
+            # analysis chain waits on a diagnosis that has already happened.
+            join_diagnostics.settle_pair(
+                self.ws, left, right, "no candidate key was found"
+            )
             return DeterministicUnitResult("succeeded", refs)
         return DeterministicUnitResult("succeeded", refs)
 
@@ -610,6 +615,9 @@ class AnalysisWorkflowExecution(BaseRunner):
         strong = list(record["strong"])
         moderate = list(record["moderate"])
         if not strong and not moderate:
+            join_diagnostics.settle_pair(
+                self.ws, left, right, "no candidate key was found"
+            )
             self.task_status(task, "completed")
             return DeterministicUnitResult("skipped")
 
@@ -640,6 +648,15 @@ class AnalysisWorkflowExecution(BaseRunner):
             # An unjoined pair is a finding about the data, so it is reported
             # rather than left for a reader to infer from a frame that is not
             # there. The gate's own words are the explanation.
+            #
+            # The gate ruled; that ruling is the answer for this data. Recording
+            # it is what stops a later run treating a relationship deliberately
+            # declined as one nobody has looked at yet. Replacing either table
+            # reopens it, and an auditor who wants the join regardless can still
+            # build it in the join dialog.
+            join_diagnostics.settle_pair(
+                self.ws, left, right, "no relationship the utility gate would retain"
+            )
             self._warn_gate_rejection(left, right, record, decisions)
             self.task_detail(
                 task, f"'{left}' and '{right}': no relationship worth materializing."

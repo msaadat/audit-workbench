@@ -506,6 +506,121 @@ def test_two_table_request_infers_the_plausible_join_deterministically(
     assert workspaces.load_workspace(ws.id).joins == []
 
 
+def _three_table_chain() -> workspaces.Workspace:
+    """Requisitions → staff → approval matrix, chained one hop past pairwise.
+
+    The matrix shares no key with requisitions; it is reachable only through the
+    approver's grade on the staff record. That is the shape a direct-join-only
+    coverage check misreads as two unconnected tables.
+    """
+    ws = workspaces.create_workspace("Chained reach")
+    ws.add_table(
+        "requisitions.csv",
+        pl.DataFrame(
+            {
+                "req_id": ["R1", "R2", "R3"],
+                "approved_by_id": ["S1", "S2", "S1"],
+                "amount": [10.0, 20.0, 30.0],
+            }
+        ).write_csv().encode(),
+    )
+    ws.add_table(
+        "staff_details.csv",
+        pl.DataFrame(
+            {"staff_id": ["S1", "S2"], "grade": ["G1", "G2"]}
+        ).write_csv().encode(),
+    )
+    ws.add_table(
+        "approval_matrix.csv",
+        pl.DataFrame({"grade": ["G1", "G2"], "limit": [100.0, 500.0]})
+        .write_csv().encode(),
+    )
+    ws.add_join({
+        "name": "requisitions_staff_details_joined",
+        "left": "requisitions", "right": "staff_details", "how": "left",
+        "left_on": ["approved_by_id"], "right_on": ["staff_id"],
+    })
+    ws.add_join({
+        "name": "requisitions_staff_details_approval_matrix_joined",
+        "left": "requisitions_staff_details_joined", "right": "approval_matrix",
+        "how": "left", "left_on": ["grade"], "right_on": ["grade"],
+    })
+    return ws
+
+
+def test_a_chained_join_connects_the_pair_it_makes_testable():
+    """Coverage follows lineage, not the two names on the join.
+
+    The chained frame is precisely where a requisition meets its approval limit,
+    so calling that pair unestablished would leave the capability unsatisfiable
+    while the frame that establishes it sits in the workspace.
+    """
+    ws = _three_table_chain()
+    scope = analysis_capabilities.resolve_table_scope(ws, {})
+
+    assert analysis_capabilities.pair_join(ws, "requisitions", "approval_matrix") is None
+    assert join_diagnostics.connected_pairs(ws) >= {
+        frozenset({"requisitions", "approval_matrix"}),
+        frozenset({"staff_details", "approval_matrix"}),
+        frozenset({"requisitions", "staff_details"}),
+    }
+    assert analysis_capabilities.uncovered_pairs(ws, scope) == ()
+
+    registry = capability_registries.build_analysis_registry()
+    readiness = registry.get("data.relationships_inferred").readiness(ws, {})
+    assert readiness.state == "satisfied"
+
+
+def test_the_stage_settles_a_dead_end_until_the_data_changes(monkeypatch):
+    """A diagnosis that found nothing is still an answer, and it has to stick.
+
+    Left unrecorded, the pair reads as undiagnosed on every later run and the
+    analysis chain waits on work that has already happened. Recorded forever, a
+    replaced file would keep the old verdict — so the record is keyed by what it
+    was read from.
+    """
+    ws = workspaces.create_workspace("Diagnosed dead end")
+    ws.add_table(
+        "invoices.csv",
+        pl.DataFrame({"invoice_no": [1, 2], "amount": [5.0, 6.0]})
+        .write_csv().encode(),
+    )
+    ws.add_table(
+        "policies.csv",
+        pl.DataFrame({"policy": ["A", "B"], "text": ["x", "y"]})
+        .write_csv().encode(),
+    )
+    _fake_model(monkeypatch)
+
+    _drive(ws, _analysis_run(ws), "data.relationships_inferred")
+
+    registry = capability_registries.build_analysis_registry()
+    settled = workspaces.load_workspace(ws.id)
+    assert join_diagnostics.settled_pairs(settled) == {
+        frozenset({"invoices", "policies"})
+    }
+    assert analysis_capabilities.uncovered_pairs(
+        settled, analysis_capabilities.resolve_table_scope(settled, {})
+    ) == ()
+    assert (
+        registry.get("data.relationships_inferred").readiness(settled, {}).state
+        == "satisfied"
+    )
+
+    ws.replace_table(
+        "policies",
+        "policies.csv",
+        pl.DataFrame({"policy": ["A", "B"], "invoice_no": [1, 2]})
+        .write_csv().encode(),
+    )
+    reopened = workspaces.load_workspace(ws.id)
+    assert join_diagnostics.settled_pairs(reopened) == set()
+    assert (
+        registry.get("data.relationships_inferred").readiness(reopened, {}).state
+        == "missing"
+    )
+
+
 def test_relationship_inference_cannot_reach_a_model():
     source = inspect.getsource(analysis_executors)
     tree = ast.parse(source)

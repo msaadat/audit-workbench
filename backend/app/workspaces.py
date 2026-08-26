@@ -2063,6 +2063,15 @@ class Workspace:
         self._table_signature_cache[name] = signature
         return signature
 
+    def content_signature(self, name: str) -> tuple:
+        """Public fingerprint of a frame's content, for callers caching beside it.
+
+        Anything derived from a frame and stored outside the manifest — a
+        profile, a diagnosis about a pair of tables — needs to know when the
+        frame it was derived from stopped being the same frame.
+        """
+        return self._table_signature(name)
+
     # ---------------------------------------------------------------- profile
     def _cache_dir(self) -> Path:
         return self.data_dir / loader.CACHE_DIRNAME

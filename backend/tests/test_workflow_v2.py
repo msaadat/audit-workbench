@@ -431,7 +431,6 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         ),
         "audit.verified": (
             "working_papers.generated",
-            "dashboard.curated",
             "report.working_draft",
         ),
     }
