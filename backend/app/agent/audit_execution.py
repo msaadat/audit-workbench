@@ -104,6 +104,21 @@ from .workers import planning as planning_workers
 # when handing the work over, not a second copy of the artifact. Everything
 # below is derived from durable local state, so a briefing never asserts
 # anything the workspace cannot already show.
+# Stages that deliberately file no milestone: machine steps whose completion is
+# not an audit deliverable. `engagement_record` reads this too — a stage that
+# never narrates must not be drawn as work still owed.
+UNNARRATED_CAPABILITIES = frozenset({
+    "documents.text_ready",
+    "documents.analysis_chunks_ready",
+    "documents.analysis_generated",
+    "data.relationships_inferred",
+    "data.joins_ready",
+    "analysis.register_ready",
+    "analysis.definitions_ready",
+    "analysis.executed",
+    "planning.context_ready",
+})
+
 HIGHLIGHT_LIMIT = 3
 
 # Planning reads the governing material. Ordering by how directly a category
@@ -340,17 +355,7 @@ class AuditWorkflowExecution(ActionRunner):
         """Build compact audit-deliverable summaries from durable local state."""
         self.ws = subject
         capability_id = capability.id
-        if capability_id in {
-            "documents.text_ready",
-            "documents.analysis_chunks_ready",
-            "documents.analysis_generated",
-            "data.relationships_inferred",
-            "data.joins_ready",
-            "analysis.register_ready",
-            "analysis.definitions_ready",
-            "analysis.executed",
-            "planning.context_ready",
-        }:
+        if capability_id in UNNARRATED_CAPABILITIES:
             return None
         units = list(stage.get("units") or [])
         done = sum(unit.get("status") in {"succeeded", "skipped"} for unit in units)

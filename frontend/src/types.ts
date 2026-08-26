@@ -2132,6 +2132,8 @@ export interface EngagementRecordEntry {
   }>
   elapsed_ms: number | null
   measured_attempts: number
+  /** What this stage left open behind it. */
+  open_points: EngagementOpenPoint[]
   /** Null for a capability the record has no artifact mapping for. */
   filed: {
     label: string
@@ -2148,8 +2150,46 @@ export interface EngagementRecordEntry {
   } | null
 }
 
+/**
+ * A debt left behind by a stage that completed. It hangs off the entry that
+ * created it, or on `orphaned_points` when that entry is not on the record.
+ */
+export interface EngagementOpenPoint {
+  key: string
+  capability: string
+  message: string
+  action: string
+  destination: string
+}
+
+/**
+ * A stage whose work product does not exist yet — an entry the ledger has not
+ * written. Only drawn when the artifact is genuinely absent; "no milestone" is
+ * not "not done".
+ */
+export interface EngagementPendingStage {
+  id: string
+  capability: string
+  headline: string
+  /** Empty when nothing holds the stage. */
+  blocked_reason: string
+  runnable: boolean
+  start: { prompt: string; outcomes: string[] }
+  filed: { label: string; destination: string; unit: string; unit_plural: string; count: null }
+  order: number
+}
+
+export type EngagementNextStep =
+  | ({ kind: 'open_point' } & EngagementOpenPoint)
+  | ({ kind: 'stage' } & EngagementPendingStage)
+
 export interface EngagementRecordPayload {
   entries: EngagementRecordEntry[]
+  pending: EngagementPendingStage[]
+  open_points: EngagementOpenPoint[]
+  /** Debts whose originating stage never filed, so they have no row to sit on. */
+  orphaned_points: EngagementOpenPoint[]
+  next: EngagementNextStep | null
   counts: Record<string, number>
   totals: {
     work_products: number

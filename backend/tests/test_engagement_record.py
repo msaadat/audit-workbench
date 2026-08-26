@@ -13,14 +13,19 @@ from app import engagement_record
 
 
 class _Workspace:
-    """Only the surface the record's counters touch."""
+    """Only the surface the record's counters and presence tests touch."""
 
-    def __init__(self, *, rcm=(), findings=(), documents=(), analyses=(), data_tests=()):
+    def __init__(self, *, rcm=(), findings=(), documents=(), analyses=(),
+                 data_tests=(), tiles=(), apm="", planning=None):
         self.rcm = list(rcm)
         self.findings = list(findings)
         self.documents = list(documents)
         self.analyses = list(analyses)
         self.data_tests = list(data_tests)
+        self.tiles = list(tiles)
+        self.planning = dict(planning or {})
+        if apm:
+            self.planning["apm_markdown"] = apm
 
 
 def _milestone(capability, at, *, status="completed", headline="Done", summary="Filed."):
@@ -64,6 +69,13 @@ def stub_store(monkeypatch):
             lambda workspace, run_id: by_id[run_id],
         )
         monkeypatch.setattr(engagement_record.doc_tests, "list_tests", lambda workspace: [])
+        # The forward half of the record reads the report and the conclusion
+        # rollup; neither exists for an in-memory workspace.
+        monkeypatch.setattr(engagement_record.report, "hydrate", lambda workspace: {"markdown": ""})
+        monkeypatch.setattr(
+            engagement_record.rcm_execution, "completion",
+            lambda workspace: {"unreviewed_agent_conclusions": []},
+        )
 
     return install
 
@@ -285,3 +297,165 @@ def test_an_unparseable_timestamp_leaves_the_duration_unstated(stub_store):
     entry = engagement_record.record(_Workspace())["entries"][0]
 
     assert entry["elapsed_ms"] is None
+
+
+# --------------------------------------------------------------------------- #
+# The forward half: what has not run, and what a finished stage left open
+# --------------------------------------------------------------------------- #
+def test_a_stage_whose_work_product_exists_is_never_drawn_as_pending(stub_store):
+    """The report files no milestone on the demo engagement and still exists.
+
+    Diffing the plan against the milestones would advertise "report not yet
+    written" against 78,000 characters of report. Presence is the test.
+    """
+    stub_store([])
+    workspace = _Workspace(findings=[{}] * 35)
+    engagement_record.report.hydrate = lambda ws: {"markdown": "# Report\n\nreal content"}
+    try:
+        pending = {row["capability"] for row in engagement_record.record(workspace)["pending"]}
+    finally:
+        del engagement_record.report.hydrate
+    assert "report.working_draft" not in pending
+
+
+def test_a_stage_with_no_work_product_is_drawn_as_pending(stub_store):
+    stub_store([])
+    pending = engagement_record.record(_Workspace())["pending"]
+
+    assert "planning.apm_ready" in {row["capability"] for row in pending}
+
+
+def test_a_stage_that_never_narrates_is_never_drawn_as_pending(stub_store):
+    """Nine stages file nothing by design; as phantom rows they would be
+    permanent debt on a finished engagement."""
+    stub_store([])
+    pending = {row["capability"] for row in engagement_record.record(_Workspace())["pending"]}
+
+    assert not (pending & set(engagement_record.UNNARRATED_CAPABILITIES))
+
+
+def test_pending_stages_come_back_in_plan_order(stub_store):
+    stub_store([])
+    order = [row["capability"] for row in engagement_record.record(_Workspace())["pending"]]
+
+    assert order.index("planning.apm_ready") < order.index("planning.rcm_ready")
+    assert order.index("planning.rcm_ready") < order.index("tests.specified")
+
+
+def test_a_stage_waiting_on_an_earlier_one_says_so_instead_of_offering_a_button(stub_store):
+    stub_store([])
+    rows = {r["capability"]: r for r in engagement_record.record(_Workspace())["pending"]}
+
+    assert rows["planning.apm_ready"]["runnable"] is True
+    assert rows["planning.apm_ready"]["blocked_reason"] == ""
+    assert rows["planning.rcm_ready"]["runnable"] is False
+    assert rows["planning.rcm_ready"]["blocked_reason"] == "Waits for the memorandum."
+
+
+def test_a_stage_carries_what_to_ask_the_assistant_for(stub_store):
+    stub_store([])
+    rows = {r["capability"]: r for r in engagement_record.record(_Workspace())["pending"]}
+
+    assert rows["planning.apm_ready"]["start"] == {
+        "prompt": "Draft the APM.", "outcomes": ["planning.apm_ready"],
+    }
+
+
+def test_open_points_attach_to_the_stage_that_left_them(stub_store):
+    stub_store([
+        _run("r1", "2026-08-15T12:00:00+00:00",
+             [_milestone("findings.drafted", "2026-08-15T12:10:00+00:00")]),
+    ])
+    workspace = _Workspace(findings=[{"cause_pending": True}] * 35)
+    result = engagement_record.record(workspace)
+
+    entry = result["entries"][0]
+    assert [point["key"] for point in entry["open_points"]] == ["findings_followup"]
+    assert "35 of 35 findings" in entry["open_points"][0]["message"]
+    assert result["orphaned_points"] == []
+
+
+def test_a_debt_whose_stage_never_filed_is_still_reported(stub_store):
+    """The rows are draft but no `planning.rcm_ready` milestone survives."""
+    stub_store([])
+    result = engagement_record.record(_Workspace(rcm=[{"id": "R1", "review_status": "draft"}]))
+
+    assert [point["key"] for point in result["orphaned_points"]] == ["draft_rcm"]
+
+
+def test_review_outranks_unstarted_work_as_the_next_step(stub_store):
+    """Auto mode runs the next stage by itself; only a person can read."""
+    stub_store([
+        _run("r1", "2026-08-15T12:00:00+00:00",
+             [_milestone("findings.drafted", "2026-08-15T12:10:00+00:00")]),
+    ])
+    workspace = _Workspace(findings=[{"cause_pending": True}] * 35)
+    result = engagement_record.record(workspace)
+
+    assert result["next"]["kind"] == "open_point"
+    assert result["next"]["key"] == "findings_followup"
+    # ...and there was runnable work it deliberately did not choose.
+    assert any(row["runnable"] for row in result["pending"])
+
+
+def test_with_nothing_open_the_next_step_is_the_first_runnable_stage(stub_store):
+    stub_store([])
+    result = engagement_record.record(_Workspace())
+
+    assert result["next"]["kind"] == "stage"
+    assert result["next"]["capability"] == "planning.apm_ready"
+
+
+def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1", "review_status": "reviewed"}],
+        data_tests=[{"id": "T1", "rcm_id": "R1"}], analyses=[{}], tiles=[{}],
+        findings=[{"management_response": "Agreed.", "cause_pending": False}],
+    )
+    engagement_record.report.hydrate = lambda ws: {"markdown": "# Report"}
+    try:
+        result = engagement_record.record(workspace)
+    finally:
+        del engagement_record.report.hydrate
+
+    assert result["pending"] == []
+    assert result["open_points"] == []
+    assert result["next"] is None
+
+
+def test_a_presence_test_that_raises_does_not_invent_absent_work(stub_store):
+    stub_store([])
+
+    def explode(workspace):
+        raise RuntimeError("cannot read the report")
+
+    engagement_record.report.hydrate = explode
+    try:
+        pending = {row["capability"] for row in engagement_record.record(_Workspace())["pending"]}
+    finally:
+        del engagement_record.report.hydrate
+
+    assert "report.working_draft" not in pending
+
+
+def test_every_stage_that_can_be_pending_has_a_readable_label():
+    """A phantom row printed `dashboard.curated` at the reader.
+
+    `_FILED` carried `report.drafted`, which is not a capability the pipeline
+    has, and no entry for `dashboard.curated` at all — so both fell back to the
+    raw id. The two registries have to agree on the vocabulary.
+    """
+    missing = [
+        capability for capability in engagement_record._PHANTOM
+        if capability not in engagement_record._FILED
+    ]
+    assert missing == []
+
+
+def test_a_pending_row_never_shows_a_capability_id(stub_store):
+    stub_store([])
+    for row in engagement_record.record(_Workspace())["pending"]:
+        label = row["filed"]["label"]
+        assert label != row["capability"], label
+        assert "." not in label, label

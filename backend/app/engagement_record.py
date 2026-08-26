@@ -13,6 +13,8 @@ idempotent projection a workflow stage writes when it settles (see
 `agent.narration.milestone`); this module groups those by the artifact they
 filed and joins them to the run that emitted them.
 
+The record also runs forward. A stage that has never produced its work product is drawn as an entry the ledger has not written yet, and a stage that did produce one but left something open carries that debt on its own row. Between them they answer the question the record could not: what should happen next.
+
 Counts come from the workspace as it stands, not from the milestone that
 happened to be last. A milestone's metrics mix engagement state ("RCM rows: 28")
 with the delta for that one run ("Drafts prepared: 1"), and the final
@@ -25,8 +27,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from . import doc_tests
+from . import doc_tests, engagement, rcm_execution, report
 from .agent import store
+from .agent.audit_execution import UNNARRATED_CAPABILITIES
 from .workspaces import Workspace
 
 # --------------------------------------------------------------------------- #
@@ -77,9 +80,13 @@ _FILED: dict[str, dict[str, Any]] = {
         "label": "Findings register", "destination": "findings",
         "unit": "finding", "count": "findings",
     },
-    "report.drafted": {
+    "report.working_draft": {
         "label": "Report", "destination": "report",
         "unit": "", "count": None,
+    },
+    "dashboard.curated": {
+        "label": "Dashboard curation", "destination": "dashboard",
+        "unit": "pinned item", "count": "tiles",
     },
     "audit.verified": {
         "label": "Verification", "destination": "dashboard",
@@ -108,6 +115,7 @@ def _counts(workspace: Workspace) -> dict[str, int]:
         "document_tests": document_tests,
         "tests": data_tests + document_tests,
         "findings": len(workspace.findings),
+        "tiles": len(workspace.tiles),
     }
 
 
@@ -216,6 +224,212 @@ def _entry(capability: str, rows: list[dict], counts: dict[str, int]) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# What has not run yet
+# --------------------------------------------------------------------------- #
+# A stage earns a place on the tail only when its work product is genuinely
+# absent from the workspace. "No milestone" is emphatically not "not done":
+# `report.working_draft` files no milestone on this repo's demo engagement while
+# the workspace holds 78,000 characters of report, and nine stages
+# (`UNNARRATED_CAPABILITIES`) never narrate at all by design. Diffing the plan
+# against the milestones would advertise both as work still owed.
+#
+# `present` therefore tests the artifact, which is the same rule the filed rows
+# already use for their counts, so both halves of the ledger agree about what
+# exists. A stage with no cheap presence test is simply left off — `audit.verified`
+# is read-only and commits nothing, so its absence is not observable and it is
+# never drawn.
+
+
+def _report_markdown(workspace: Workspace) -> str:
+    """Deliberately does not swallow: a presence test that cannot answer must
+    raise, so `_pending` skips the stage rather than reporting it as absent and
+    inviting the reader to redo work that may already exist."""
+    return str((report.hydrate(workspace) or {}).get("markdown") or "")
+
+
+_PHANTOM: dict[str, dict[str, Any]] = {
+    "planning.apm_ready": {
+        "present": lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
+        "headline": "Draft the audit planning memorandum",
+        "prompt": "Draft the APM.",
+    },
+    "planning.rcm_ready": {
+        "present": lambda ws: bool(ws.rcm),
+        "headline": "Build the risk and control matrix",
+        "prompt": "Generate the RCM.",
+        "needs": ("planning.apm_ready", "the memorandum"),
+    },
+    "tests.specified": {
+        "present": lambda ws: bool(ws.data_tests) or bool(_document_tests(ws)),
+        "headline": "Specify the tests each control needs",
+        "prompt": "Draft the tests the RCM rows still need.",
+        "needs": ("planning.rcm_ready", "the matrix"),
+    },
+    "findings.drafted": {
+        "present": lambda ws: bool(ws.findings),
+        "headline": "Draft findings from the exceptions",
+        "prompt": "Draft findings.",
+        "needs": ("tests.specified", "the tests"),
+    },
+    "dashboard.curated": {
+        "present": lambda ws: bool(ws.tiles),
+        "headline": "Pick the analyses worth showing on the dashboard",
+        "prompt": "Curate the dashboard.",
+        "needs": ("analysis", "the analysis library"),
+    },
+    "report.working_draft": {
+        "present": lambda ws: bool(_report_markdown(ws).strip()),
+        "headline": "Write the report from the findings",
+        "prompt": "Generate the report.",
+        "needs": ("findings.drafted", "the findings"),
+    },
+}
+
+
+def _document_tests(workspace: Workspace) -> list[dict]:
+    try:
+        return list(doc_tests.list_tests(workspace))
+    except Exception:
+        return []
+
+
+def _plan_order() -> dict[str, int]:
+    """Stage order as the engagement plan declares it."""
+    try:
+        outcomes = engagement.plan_outcomes(engagement.DEFAULT_TEMPLATE)
+    except Exception:
+        return {}
+    return {str(item.get("capability") or ""): index for index, item in enumerate(outcomes)}
+
+
+def _blocked_by(workspace: Workspace, spec: dict) -> str:
+    """Why a stage cannot start, or '' when nothing holds it."""
+    needs = spec.get("needs")
+    if not needs:
+        return ""
+    dependency, noun = needs
+    if dependency == "analysis":
+        return "" if workspace.analyses else f"Waits for {noun}."
+    upstream = _PHANTOM.get(dependency)
+    if upstream and not upstream["present"](workspace):
+        return f"Waits for {noun}."
+    return ""
+
+
+def _pending(workspace: Workspace) -> list[dict]:
+    """Stages whose work product does not exist, in plan order."""
+    order = _plan_order()
+    rows = []
+    for capability, spec in _PHANTOM.items():
+        if capability in UNNARRATED_CAPABILITIES:
+            continue
+        try:
+            if spec["present"](workspace):
+                continue
+        except Exception:
+            # A presence test that cannot answer must not invent absent work.
+            continue
+        filed = _FILED.get(capability) or {}
+        blocked = _blocked_by(workspace, spec)
+        rows.append({
+            "id": f"pending:{capability}",
+            "capability": capability,
+            "headline": spec["headline"],
+            "blocked_reason": blocked,
+            "runnable": not blocked,
+            "start": {"prompt": spec["prompt"], "outcomes": [capability]},
+            "filed": {
+                "label": filed.get("label") or capability,
+                "destination": filed.get("destination") or "",
+                "unit": "", "unit_plural": "", "count": None,
+            },
+            "order": order.get(capability, len(order)),
+        })
+    return sorted(rows, key=lambda row: row["order"])
+
+
+# --------------------------------------------------------------------------- #
+# What a filed stage left open
+# --------------------------------------------------------------------------- #
+# Rank is deliberate, and it puts review ahead of unstarted work. Running the
+# next stage is something the agent does by itself in auto mode; reading what it
+# decided is the one thing only a person can do, so that is what the record asks
+# for first.
+_OPEN_RANK = {"unread_conclusions": 10, "findings_followup": 20, "draft_rcm": 30}
+
+
+def _open_points(workspace: Workspace) -> list[dict]:
+    """Debts left behind by stages that completed."""
+    points: list[dict] = []
+
+    try:
+        completion = rcm_execution.completion(workspace)
+        unread = len(completion.get("unreviewed_agent_conclusions") or [])
+        linked = _linked_test_count(workspace)
+    except Exception:
+        unread, linked = 0, 0
+    if unread:
+        points.append({
+            "key": "unread_conclusions",
+            "capability": "results.rolled_up",
+            "message": (
+                f"{unread} of {linked} conclusions were set by the assistant "
+                "and never read." if linked
+                else f"{unread} conclusions were set by the assistant and never read."
+            ),
+            "action": "Open them",
+            "destination": "rcm",
+        })
+
+    owed = [
+        item for item in workspace.findings
+        if item.get("cause_pending")
+        or not str(item.get("management_response") or "").strip()
+    ]
+    if owed:
+        points.append({
+            "key": "findings_followup",
+            "capability": "findings.drafted",
+            "message": (
+                f"{len(owed)} of {len(workspace.findings)} findings have no "
+                "root cause or management response."
+            ),
+            "action": "Add causes",
+            "destination": "findings",
+        })
+
+    draft = [row for row in workspace.rcm if str(row.get("review_status") or "") == "draft"]
+    if draft:
+        points.append({
+            "key": "draft_rcm",
+            "capability": "planning.rcm_ready",
+            "message": (
+                f"{len(draft)} of {len(workspace.rcm)} rows are still marked "
+                "draft. None has been reviewed."
+            ),
+            "action": "Review rows",
+            "destination": "rcm",
+        })
+
+    return sorted(points, key=lambda point: _OPEN_RANK.get(point["key"], 99))
+
+
+def _linked_test_count(workspace: Workspace) -> int:
+    """Tests attached to a row of the matrix.
+
+    The same rule the dashboard's `tests_linked` uses, rather than every test in
+    the workspace — a test with no `rcm_id` is not part of the population the
+    unread-conclusion disclosure is a fraction of, and the two figures appear on
+    screens one click apart.
+    """
+    rows = {str(row.get("id") or "") for row in workspace.rcm}
+    return sum(
+        1 for item in (*workspace.data_tests, *_document_tests(workspace))
+        if str(item.get("rcm_id") or "") in rows
+    )
+
+
 def record(workspace: Workspace) -> dict:
     """Every work product the engagement filed, oldest settlement first."""
     runs = store.list_runs(workspace)
@@ -241,9 +455,34 @@ def record(workspace: Workspace) -> dict:
         (_entry(capability, rows, counts) for capability, rows in by_capability.items()),
         key=lambda entry: str(entry["at"] or ""),
     )
+    points = _open_points(workspace)
+    by_capability_point: dict[str, list[dict]] = {}
+    for point in points:
+        by_capability_point.setdefault(point["capability"], []).append(point)
+    for entry in entries:
+        entry["open_points"] = by_capability_point.get(entry["capability"], [])
+    # A debt whose stage is not on the record still has to be said; it hangs at
+    # the end rather than disappearing with the row it expected to find.
+    attached = {point["key"] for entry in entries for point in entry["open_points"]}
+    orphaned = [point for point in points if point["key"] not in attached]
+
+    pending = _pending(workspace)
+    # Review outranks unstarted work — see `_OPEN_RANK`.
+    first_runnable = next((row for row in pending if row["runnable"]), None)
+    upcoming = points[0] if points else None
+    next_step = (
+        {"kind": "open_point", **upcoming} if upcoming
+        else {"kind": "stage", **first_runnable} if first_runnable
+        else None
+    )
+
     measured = [entry["elapsed_ms"] for entry in entries if entry["elapsed_ms"] is not None]
     return {
         "entries": entries,
+        "pending": pending,
+        "open_points": points,
+        "orphaned_points": orphaned,
+        "next": next_step,
         "counts": counts,
         "totals": {
             "work_products": len(entries),

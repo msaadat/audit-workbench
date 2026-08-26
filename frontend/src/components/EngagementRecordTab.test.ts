@@ -2,7 +2,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import EngagementRecordTab from './EngagementRecordTab.vue'
-import type { EngagementRecordEntry, EngagementRecordPayload } from '../types'
+import type {
+  EngagementOpenPoint, EngagementPendingStage, EngagementRecordEntry, EngagementRecordPayload,
+} from '../types'
 
 /**
  * The record's job is to state what was filed and what it cost without
@@ -20,8 +22,16 @@ vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }))
 vi.mock('../composables/useAgentRun', () => ({
   useAgentRun: () => ({ onWorkspaceInvalidated: () => () => undefined }),
 }))
+const push = vi.fn()
 vi.mock('../composables/useWorkspaceNavigation', () => ({
-  useWorkspaceNav: () => ({ to: (destination: string) => ({ path: `/${destination}` }) }),
+  useWorkspaceNav: () => ({
+    to: (destination: string) => ({ path: `/${destination}` }),
+    push: (...args: unknown[]) => push(...args),
+  }),
+}))
+const send = vi.fn()
+vi.mock('../composables/useAssistantChat', () => ({
+  useAssistantChat: () => ({ send: (...args: unknown[]) => send(...args) }),
 }))
 
 function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecordEntry {
@@ -44,6 +54,7 @@ function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecord
     ],
     elapsed_ms: 120_000,
     measured_attempts: 2,
+    open_points: [],
     filed: {
       label: 'Findings register',
       destination: 'findings',
@@ -55,9 +66,41 @@ function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecord
   }
 }
 
-function payload(entries: EngagementRecordEntry[]): EngagementRecordPayload {
+function stage(overrides: Partial<EngagementPendingStage> = {}): EngagementPendingStage {
+  return {
+    id: 'pending:dashboard.curated',
+    capability: 'dashboard.curated',
+    headline: 'Pick the analyses worth showing on the dashboard',
+    blocked_reason: '',
+    runnable: true,
+    start: { prompt: 'Curate the dashboard.', outcomes: ['dashboard.curated'] },
+    filed: { label: 'Dashboard curation', destination: 'dashboard', unit: '', unit_plural: '', count: null },
+    order: 19,
+    ...overrides,
+  }
+}
+
+function point(overrides: Partial<EngagementOpenPoint> = {}): EngagementOpenPoint {
+  return {
+    key: 'unread_conclusions',
+    capability: 'results.rolled_up',
+    message: '41 of 60 conclusions were set by the assistant and never read.',
+    action: 'Open them',
+    destination: 'rcm',
+    ...overrides,
+  }
+}
+
+function payload(
+  entries: EngagementRecordEntry[],
+  extra: Partial<EngagementRecordPayload> = {},
+): EngagementRecordPayload {
   return {
     entries,
+    pending: [],
+    open_points: [],
+    orphaned_points: [],
+    next: null,
     counts: {},
     totals: {
       work_products: entries.length,
@@ -68,11 +111,15 @@ function payload(entries: EngagementRecordEntry[]): EngagementRecordPayload {
       first_at: '2026-08-13T19:22:24+00:00',
       last_at: '2026-08-15T12:10:00+00:00',
     },
+    ...extra,
   }
 }
 
-async function render(entries: EngagementRecordEntry[]) {
-  get.mockResolvedValue(payload(entries))
+async function render(
+  entries: EngagementRecordEntry[],
+  extra: Partial<EngagementRecordPayload> = {},
+) {
+  get.mockResolvedValue(payload(entries, extra))
   const wrapper = mount(EngagementRecordTab, {
     props: { workspace: { id: 'procurement' } as never },
     global: {
@@ -90,7 +137,7 @@ async function render(entries: EngagementRecordEntry[]) {
 }
 
 describe('EngagementRecordTab', () => {
-  beforeEach(() => get.mockReset())
+  beforeEach(() => { get.mockReset(); push.mockReset(); send.mockReset() })
 
   it('states an irregular unit from the declared plural, not by appending s', async () => {
     const wrapper = await render([entry({
@@ -193,5 +240,88 @@ describe('EngagementRecordTab', () => {
     ])
 
     expect(wrapper.findAll('.daybreak')).toHaveLength(2)
+  })
+
+  // ---------------------------------------------------------------- forward
+  it('names the single most blocking thing above the ledger', async () => {
+    const wrapper = await render([entry()], { next: { kind: 'open_point', ...point() } })
+
+    const brief = wrapper.find('.brief')
+    expect(brief.attributes('data-kind')).toBe('open_point')
+    expect(brief.text()).toContain('41 of 60 conclusions')
+  })
+
+  it('hangs an open point off the row that created it', async () => {
+    const wrapper = await render([entry({
+      capability: 'results.rolled_up',
+      open_points: [point()],
+    })])
+
+    expect(wrapper.find('.row .open').text()).toContain('never read')
+  })
+
+  it('takes the reader to where an open point is answered', async () => {
+    const wrapper = await render([entry({ open_points: [point()] })])
+    await wrapper.find('.row .open').trigger('click')
+
+    expect(push).toHaveBeenCalledWith('rcm')
+  })
+
+  it('draws a stage that has not run below a now line', async () => {
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    expect(wrapper.find('.nowline').exists()).toBe(true)
+    expect(wrapper.find('.row.ghost').text()).toContain('Dashboard curation')
+    expect(wrapper.find('.row.ghost .mt em').text()).toBe('not yet')
+  })
+
+  it('marks only the first runnable stage as the call to action', async () => {
+    // A tail of buttons is a menu, not a next step.
+    const wrapper = await render([entry()], {
+      pending: [
+        stage({ id: 'a', capability: 'planning.apm_ready' }),
+        stage({ id: 'b', capability: 'planning.rcm_ready' }),
+      ],
+    })
+
+    expect(wrapper.findAll('.row.ghost')).toHaveLength(2)
+    expect(wrapper.findAll('.row.ghost.lead')).toHaveLength(1)
+  })
+
+  it('gives a blocked stage its reason instead of a button', async () => {
+    const wrapper = await render([entry()], {
+      pending: [stage({ runnable: false, blocked_reason: 'Waits for the memorandum.' })],
+    })
+
+    const ghost = wrapper.find('.row.ghost')
+    expect(ghost.text()).toContain('Waits for the memorandum.')
+    expect(ghost.find('.waits').exists()).toBe(true)
+    expect(ghost.find('button').exists()).toBe(false)
+  })
+
+  it('asks the assistant for the stage outcome when one is started', async () => {
+    const wrapper = await render([entry()], { pending: [stage()] })
+    await wrapper.find('.row.ghost button').trigger('click')
+
+    expect(send).toHaveBeenCalledWith('Curate the dashboard.', 'act', 'auto', {
+      source: 'shortcut',
+      requestedOutcomes: ['dashboard.curated'],
+    })
+    expect(push).toHaveBeenCalledWith('console')
+  })
+
+  it('still reports a debt whose stage never filed', async () => {
+    const wrapper = await render([entry()], {
+      orphaned_points: [point({ key: 'draft_rcm', message: '27 of 27 rows are still marked draft.' })],
+    })
+
+    expect(wrapper.find('.row.orphan').text()).toContain('27 of 27 rows')
+  })
+
+  it('says nothing above the ledger when there is nothing to do', async () => {
+    const wrapper = await render([entry()])
+
+    expect(wrapper.find('.brief').exists()).toBe(false)
+    expect(wrapper.find('.nowline').exists()).toBe(false)
   })
 })
