@@ -624,11 +624,13 @@ defineExpose({ reload: load })
   background: var(--aw-teal-soft); color: var(--aw-teal);
   font-size: var(--aw-text-2xs); font-weight: 700;
 }
-/* A file-type tag needs room for three letters; a status glyph does not. */
+/* A file-type tag needs room for four letters; a status glyph does not. At
+   0.55rem this was the smallest text in the application, which is the wrong
+   thing for a label whose whole job is to be recognised at a glance. */
 .ic.badge {
-  flex-basis: 2.1rem; height: 1.05rem;
+  flex-basis: 2.4rem; height: 1.15rem;
   font-family: var(--aw-font-mono);
-  font-size: 0.55rem; letter-spacing: 0.03em;
+  font-size: var(--aw-text-2xs); letter-spacing: 0.02em;
 }
 .ic.warn { background: var(--aw-warn-soft); color: var(--aw-warn); }
 .ic.muted-ic { background: var(--aw-raised); color: var(--aw-muted); }

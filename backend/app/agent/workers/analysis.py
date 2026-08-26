@@ -28,7 +28,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from itertools import permutations
 from typing import Any
 
@@ -2195,8 +2195,9 @@ coverage gaps. Never invent a count, a value, an identifier, or a procedure.
 
 You do not write the document. Call {SUMMARY_SUBMISSION_TOOL} once, with the
 memo in parts, and the parts are assembled into it: the headings, their order,
-and the result tables are added for you. Write prose into each part and nothing
-else — no heading, no fenced block, and no draft you then replace.
+the result tables, the table of populations received and the table of coverage
+by frame are all added for you. Write prose into each part and nothing else —
+no heading, no fenced block, and no draft you then replace.
 
 `lead` is a short paragraph saying what the analysis concluded — the two or
 three things a reader who stops there should leave with. Not what was performed:
@@ -2219,8 +2220,9 @@ one as support inside that entry. Never organise by procedure, by test type, or
 by verdict label. If two procedures evidence one issue, they belong in one
 entry; if one procedure evidences two, it is cited in both.
 Order the issues by how much they matter — exposure, then how far the evidence
-carries — and say why the first one is first. A procedure that established
-nothing does not earn a mention here at all.
+carries — and say why the first one is first. They are numbered and headed with
+their titles in that order, so the ranking is visible without your describing
+it. A procedure that established nothing does not earn a mention here at all.
 
 Say each thing once. A fact that belongs to a finding goes in "What the
 analysis found"; a fact about how much the results can be trusted goes in "How
@@ -2228,22 +2230,49 @@ far these results can be relied on". Restating a finding under a second heading
 because it is also a data-quality point is the single fastest way to make a
 memo unreadable.
 
-Write the way an auditor writes for the file. Use whichever form carries the
-content best, and mix them freely within a section:
+Be terse. An auditor reads this memo to decide what to do next, and every
+sentence that does not change that decision is in the way. Work to these
+budgets — they are ceilings, not targets, and a part that says its piece in
+half of one is a better part:
+
+- `lead`, at most 120 words.
+- `data_received`, at most 150 words. The figures are in the table below it, so
+  do not narrate them: write what they mean.
+- each finding's `prose`, at most 120 words. Its `title` is a phrase naming the
+  issue — around eight words, no procedure reference, no final full stop.
+- `reliance.prose`, at most 180 words. The coverage table is below it.
+- each `further_work` item, at most 40 words.
+
+Cut in this order: adjectives, then any sentence restating a figure the reader
+can see, then any clause explaining why a number is what a number is. Never cut
+a qualification — "for the rows the data allowed to compare" is the sentence
+doing the work.
+
+Use whichever form carries the content best:
 
 - Prose for judgment, cause, and anything qualified — what the data shows, what
-  it does not settle, and why it matters. This should be most of the memo.
-- A Markdown table where the content is genuinely tabular. The data received is
-  one: a row per source table with its record count, period covered, and a short
-  commentary. Coverage of procedures by cycle stage or by table is another, and
-  it belongs in "How far these results can be relied on" — one table there is
-  the record of work performed, and it replaces any enumeration of procedures.
-- A list where the content is genuinely a set of items — outstanding work, or
-  the corroboration a finding needs.
+  it does not settle, and why it matters. This is most of the memo.
+- A Markdown table where the content is genuinely tabular and is not one of the
+  two written for you. Those two are the populations received — a row per source
+  table with its record count, its columns and the period it covers — and the
+  coverage of frames by procedure, a row per frame with the procedures it
+  carries, the rows they reached and how many flagged. Each is placed at the end
+  of its section, so prose above it may call it the table below. Write neither.
+  Write what they mean instead: which population is too small to carry a rate,
+  which frame nobody tested, which period is short of a full year.
+- A bulleted list inside a part where the content is genuinely a set — the
+  corroboration one finding needs, or the conditions under which a result would
+  change. Three items or more, each a full clause; two items are a sentence.
 
-Structure has to earn its place: never emit a bullet per procedure, and do not
-break a line of reasoning into fragments. A section that is one argument should
-be one or two paragraphs. Use standard Markdown tables with a `---` separator
+The findings and the outstanding work are numbered for you, from the order you
+put them in, so never number them yourself and never write "finally" or "as
+noted above" — the numbers carry that.
+
+Structure still has to earn its place. Never emit a bullet per procedure: a
+list of what ran is the register, not the analysis, and the coverage table
+already is that list. Never break one line of reasoning into fragments — an
+argument that has to be read in order is a paragraph, and chopping it into
+bullets loses the order. Use standard Markdown tables with a `---` separator
 row of at least three dashes per column.
 
 State the population before the exceptions. Distinguish what the data
@@ -2297,10 +2326,11 @@ say what would confirm it. Never state a count, a proportion, or "all" or
 "none" about a pattern no supplied result actually measured.
 
 "How far these results can be relied on" is about the instrument, not about the
-findings. It carries the coverage table — what was tested across the cycle and
-what was not — and then the things that bound how far the rest of the memo can
-be pushed: rows no procedure could evaluate, populations too small or too
-skewed for the method applied, and results that measured nothing.
+findings. The coverage table is placed under it for you, so this prose is the
+things that bound how far the rest of the memo can be pushed: rows no procedure
+could evaluate, populations too small or too skewed for the method applied, and
+results that measured nothing. Never enumerate the procedures — the table below
+your prose is the record of what ran.
 
 A procedure carrying `informative: false` established nothing, and
 `uninformative_reason` says why. It is not a finding and must not appear as one
@@ -2311,7 +2341,10 @@ flag is set but the arithmetic says the same thing — a weekend share close to
 two days in seven is what any ordinary spread of dates produces, not a finding
 about after-hours work.
 
-"Further work required" must cover every outstanding, stale, and errored
+`further_work` is a list, one entry per piece of work, ordered by what should
+happen first. One entry is one thing somebody can be asked to do — never a
+paragraph carrying three, and never a heading followed by its own sub-list.
+Between them the entries must cover every outstanding, stale, and errored
 procedure named in the supplied coverage gaps, every frame carrying no
 procedure, and the judgment items the results themselves raise — corroboration
 a data test cannot supply, populations needing a different cut, controls the
@@ -2336,6 +2369,9 @@ Call {SUMMARY_SUBMISSION_TOOL} exactly once, with every part filled in.
 
 SUMMARY_RESULTS_SOURCE_ID = "analysis_results"
 SUMMARY_EXCEPTIONS_SOURCE_ID = "analysis_exceptions"
+SUMMARY_GAPS_SOURCE_ID = "coverage_gaps"
+SUMMARY_TABLE_METADATA_SOURCE_ID = "table_metadata"
+SUMMARY_TABLE_PROFILE_SOURCE_ID = "table_profiles"
 
 # How a memo attributes a sentence to the procedure that establishes it. One or
 # two digits, because that is a copy a writer makes correctly: asked instead for
@@ -2585,10 +2621,16 @@ def _summary_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                         "items": {
                             "type": "object",
                             "properties": {
+                                # The issue named, so the assembler can number
+                                # it and head it. Eight words of writing buys a
+                                # memo a reader can scan, and buys the prose
+                                # below it the opening sentence it no longer
+                                # has to spend restating its own subject.
+                                "title": {"type": "string", "minLength": 1},
                                 "prose": {"type": "string", "minLength": 1},
                                 "procedures": procedure_list,
                             },
-                            "required": ["prose", "procedures"],
+                            "required": ["title", "prose", "procedures"],
                             "additionalProperties": False,
                         },
                     },
@@ -2604,7 +2646,15 @@ def _summary_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                         "required": ["prose"],
                         "additionalProperties": False,
                     },
-                    "further_work": {"type": "string", "minLength": 1},
+                    # A set of items, and now shaped as one. Asked for a string,
+                    # the writer returned 460 words of paragraphs enumerating
+                    # work the reader then had to separate out again; an array
+                    # is numbered by the assembler and cannot run together.
+                    "further_work": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "minLength": 1},
+                    },
                 },
                 "required": [
                     "lead",
@@ -2617,6 +2667,176 @@ def _summary_submission_tool(request: WorkerRequest) -> dict[str, Any]:
             },
         },
     }
+
+
+# The two tables a memo carries that are not judgment: what was received, and
+# what was tested over it. Both used to be typed into a prose field — pipes and
+# newlines inside a JSON string, which is the region a long emission corrupts
+# first. One attempt broke its JSON mid-table; the next flattened the object a
+# table sat in. Neither table ever wanted a writer: every figure in them is
+# already in the supplied bundle, so they are assembled here for exactly the
+# reason the headings and the embed blocks are, and the model is left the half
+# of each section that needs an auditor — what the figures mean.
+def _as_count(value: object) -> int:
+    """A supplied count, or zero where the procedure recorded none."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _markdown_table(
+    headers: Sequence[str], rows: Sequence[Sequence[str]]
+) -> list[str]:
+    """A Markdown table, or nothing at all where there are no rows to show."""
+    if not rows:
+        return []
+    return [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+        *("| " + " | ".join(row) + " |" for row in rows),
+    ]
+
+
+def _period_covered(profile: Mapping[str, Any]) -> str:
+    """The span of every date column in one table, as ISO bounds.
+
+    Every date the table carries, not one nominated column: a procure-to-pay
+    invoice is raised, received, verified, approved and paid, and the period the
+    file covers is the outer edge of all five.
+    """
+    lows: list[str] = []
+    highs: list[str] = []
+    for column in profile.get("columns") or []:
+        if not isinstance(column, Mapping) or column.get("type") != "date":
+            continue
+        low = str(column.get("min") or "").strip()
+        high = str(column.get("max") or "").strip()
+        if low and high:
+            lows.append(low)
+            highs.append(high)
+    if not lows:
+        return "—"
+    return f"{min(lows)} to {max(highs)}"
+
+
+def _described_tables(
+    request: WorkerRequest, source_id: str
+) -> dict[str, Mapping[str, Any]]:
+    return {
+        str(item.get("table") or ""): item
+        for item in _resolved_items(request, source_id)
+        if isinstance(item, Mapping)
+    }
+
+
+def _population_table(request: WorkerRequest) -> list[str]:
+    """A row per source table: what was received, before anything was done to it."""
+    profiles = _described_tables(request, SUMMARY_TABLE_PROFILE_SOURCE_ID)
+    metadata = _described_tables(request, SUMMARY_TABLE_METADATA_SOURCE_ID)
+    rows: list[tuple[str, ...]] = []
+    for table in sorted(set(profiles) | set(metadata)):
+        if not table:
+            continue
+        profile = profiles.get(table) or {}
+        source = profile or metadata[table]
+        rows.append(
+            (
+                table,
+                f"{_as_count(source.get('rows')):,}",
+                str(len(source.get("columns") or [])),
+                _period_covered(profile),
+            )
+        )
+    return _markdown_table(
+        ("Source table", "Records", "Columns", "Period covered"), rows
+    )
+
+
+def _rows_reached(procedures: Sequence[Mapping[str, Any]]) -> str:
+    """The rows a frame's procedures could evaluate, as one figure or a range.
+
+    A procedure that recorded no denominator contributes none: ``row_count`` is
+    the size of a result frame and was never a denominator, and inventing one
+    here would be the assembler making the claim the prompt forbids the writer.
+    """
+    tested = sorted(
+        {
+            count
+            for item in procedures
+            for count in (_as_count(item.get("tested")),)
+            if count > 0
+        }
+    )
+    if not tested:
+        return "—"
+    if len(tested) == 1:
+        return f"{tested[0]:,}"
+    return f"{tested[0]:,} to {tested[-1]:,}"
+
+
+def _coverage_table(request: WorkerRequest) -> list[str]:
+    """A row per frame: the procedures it carries, and the rows they reached.
+
+    The record of work performed, which is what the reliance section needs and
+    what an enumeration of procedures in prose was a worse copy of. Frames the
+    register never reached are rows here too — a frame nobody tested is the most
+    load-bearing thing this table says, and it is invisible in a list of what
+    ran.
+    """
+    frames: dict[str, list[Mapping[str, Any]]] = {}
+    for item in _summary_procedures(request):
+        frames.setdefault(str(item.get("table") or ""), []).append(item)
+    frames.pop("", None)
+
+    # An untested frame has no procedure to read a population off, but a base
+    # table still has a profile. Saying how many records nobody tested is the
+    # whole point of listing it.
+    described = {
+        **_described_tables(request, SUMMARY_TABLE_METADATA_SOURCE_ID),
+        **_described_tables(request, SUMMARY_TABLE_PROFILE_SOURCE_ID),
+    }
+
+    def records(frame: str, procedures: Sequence[Mapping[str, Any]]) -> str:
+        population = max(
+            (_as_count(item.get("population")) for item in procedures), default=0
+        ) or _as_count((described.get(frame) or {}).get("rows"))
+        return f"{population:,}" if population else "—"
+
+    rows: list[tuple[str, ...]] = []
+    for frame in sorted(frames):
+        procedures = frames[frame]
+        flagged = sum(
+            1 for item in procedures if _as_count(item.get("exception_count")) > 0
+        )
+        rows.append(
+            (
+                frame,
+                records(frame, procedures),
+                str(len(procedures)),
+                _rows_reached(procedures),
+                str(flagged),
+            )
+        )
+    for frame in _uncovered_frames(request):
+        if frame not in frames:
+            rows.append((frame, records(frame, ()), "0", "—", "0"))
+    return _markdown_table(
+        ("Frame", "Records", "Procedures", "Rows tested", "Procedures flagging"),
+        rows,
+    )
+
+
+def _uncovered_frames(request: WorkerRequest) -> list[str]:
+    """Frames the register never reached, from the supplied coverage gaps."""
+    for item in _resolved_items(request, SUMMARY_GAPS_SOURCE_ID):
+        if isinstance(item, Mapping):
+            return [
+                str(frame)
+                for frame in item.get("frames_without_any_procedure") or []
+                if str(frame or "").strip()
+            ]
+    return []
 
 
 def _rendered_prose(prose: str, index: Mapping[int, str]) -> str:
@@ -2634,22 +2854,37 @@ def _render_summary_markdown(
     payload: Mapping[str, Any],
     index: Mapping[int, str],
     results_by_id: Mapping[str, Mapping[str, Any]],
+    request: WorkerRequest,
 ) -> tuple[str, list[str]]:
     """Assemble the memo, and report the procedures it ended up embedding.
 
-    Deterministic on purpose. The skeleton, the ordering and the embed blocks
-    are the parts a long emission got wrong — two of three recent drafts wrote
-    the whole document twice, and one pasted the prompt's own template into its
-    output — so none of them is asked for any more.
+    Deterministic on purpose. The skeleton, the ordering, the embed blocks and
+    the two figure tables are the parts a long emission got wrong — two of three
+    early drafts wrote the whole document twice, one pasted the prompt's own
+    template into its output, and a later one broke its JSON inside a table it
+    was typing — so none of them is asked for any more.
+
+    Each table is placed at the end of its section, after the prose that reads
+    it. One rule, both sections: prose written above a table can refer to it as
+    the table below and be right, whatever else the section carries.
     """
     embedded: list[str] = []
     out: list[str] = [_rendered_prose(str(payload.get("lead") or ""), index), ""]
 
     out += [f"## {SUMMARY_SECTIONS[0]}", ""]
     out += [_rendered_prose(str(payload.get("data_received") or ""), index), ""]
+    population = _population_table(request)
+    if population:
+        out += [*population, ""]
 
     out += [f"## {FINDINGS_SECTION}", ""]
-    for finding in payload.get("findings") or []:
+    # Numbered by the assembler, from the order the writer chose. The order is
+    # already the argument — the prompt asks for the issues ranked by how much
+    # they matter — and numbering it is what lets the rest of the file, and the
+    # reader, refer to "finding 3" and mean something stable.
+    for position, finding in enumerate(payload.get("findings") or [], start=1):
+        title = _rendered_prose(str(finding.get("title") or ""), index)
+        out += [f"### {position}. {title}".rstrip(" ."), ""]
         out += [_rendered_prose(str(finding.get("prose") or ""), index), ""]
         for number in _cited_numbers(finding):
             analysis_id = index.get(int(number))
@@ -2670,23 +2905,53 @@ def _render_summary_markdown(
     reliance = payload.get("reliance") or {}
     out += [f"## {RELIANCE_SECTION}", ""]
     out += [_rendered_prose(str(reliance.get("prose") or ""), index), ""]
+    coverage = _coverage_table(request)
+    if coverage:
+        out += [*coverage, ""]
 
     out += [f"## {SUMMARY_SECTIONS[3]}", ""]
-    out += [_rendered_prose(str(payload.get("further_work") or ""), index)]
+    for position, item in enumerate(_memo_items(payload.get("further_work")), start=1):
+        # One line per item: a newline inside a numbered entry ends the list as
+        # far as Markdown is concerned, and the item after it stops being one.
+        text = re.sub(r"\s+", " ", _rendered_prose(item, index))
+        out += [f"{position}. {text}"]
 
     return "\n".join(out).strip(), embedded
 
 
-def _prose_fields(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """(where, text) for every field the model wrote, for the prose guards."""
+# A Markdown table row, which is the shape a hand-written table announces
+# itself by wherever it starts. Only the two sections that get a table
+# assembled for them are checked against it: a table anywhere else is a form
+# the memo is free to use.
+_TABLE_ROW = re.compile(r"(?m)^\s*\|.*\|\s*$")
+
+
+def _prose_fields(payload: Mapping[str, Any]) -> list[tuple[str, str, bool]]:
+    """(where, text, assembled_table) for every field the model wrote.
+
+    The flag marks the two sections whose table this worker writes, so prose
+    that types one anyway is caught before the reader gets the same figures
+    twice under one heading.
+    """
     fields = [
-        ("the lead paragraph", str(payload.get("lead") or "")),
-        (f"'{SUMMARY_SECTIONS[0]}'", str(payload.get("data_received") or "")),
-        (f"'{RELIANCE_SECTION}'", str((payload.get("reliance") or {}).get("prose") or "")),
-        (f"'{SUMMARY_SECTIONS[3]}'", str(payload.get("further_work") or "")),
+        ("the lead paragraph", str(payload.get("lead") or ""), False),
+        (f"'{SUMMARY_SECTIONS[0]}'", str(payload.get("data_received") or ""), True),
+        (
+            f"'{RELIANCE_SECTION}'",
+            str((payload.get("reliance") or {}).get("prose") or ""),
+            True,
+        ),
+        (
+            f"'{SUMMARY_SECTIONS[3]}'",
+            "\n\n".join(_memo_items(payload.get("further_work"))),
+            False,
+        ),
     ]
     for position, finding in enumerate(payload.get("findings") or [], start=1):
-        fields.append((f"finding {position}", str(finding.get("prose") or "")))
+        fields.append(
+            (f"finding {position}'s title", str(finding.get("title") or ""), False)
+        )
+        fields.append((f"finding {position}", str(finding.get("prose") or ""), False))
     return fields
 
 
@@ -2785,10 +3050,11 @@ def validate_analysis_summary(
         )
 
     supplied = set(index.values())
-    for where, prose in _prose_fields(proposal):
-        # The assembler owns the skeleton and the embeds. Prose that reaches for
-        # either is a draft trying to emit the document, which is the failure
-        # this worker's shape exists to make impossible rather than to catch.
+    for where, prose, assembled_table in _prose_fields(proposal):
+        # The assembler owns the skeleton, the embeds and the figure tables.
+        # Prose that reaches for any of them is a draft trying to emit the
+        # document, which is the failure this worker's shape exists to make
+        # impossible rather than to catch.
         if re.search(r"(?m)^\s*#{1,6}\s", prose):
             reject(
                 f"{where} contains a Markdown heading. Write prose only — the "
@@ -2799,10 +3065,18 @@ def validate_analysis_summary(
                 f"{where} contains a fenced block. Write prose only — the result "
                 "tables are added when the memo is assembled"
             )
+        if assembled_table and _TABLE_ROW.search(prose):
+            reject(
+                f"{where} contains a Markdown table. This section's table is "
+                "assembled from the supplied figures and placed under your "
+                "prose — write what it means, not the table itself"
+            )
         for message in _handwritten_procedure_ids(prose, supplied):
             reject(f"{where}: {message}")
 
-    markdown, _embedded = _render_summary_markdown(proposal, index, results_by_id)
+    markdown, _embedded = _render_summary_markdown(
+        proposal, index, results_by_id, request
+    )
     if not markdown:
         raise WorkerResponseValidationError("the summary is empty")
 
@@ -2842,22 +3116,98 @@ def validate_analysis_summary(
     }
 
 
+def _memo_part(value: object) -> Mapping[str, Any] | None:
+    """One ``{prose, procedures}`` part, from the shapes a long emission returns.
+
+    Nesting is the first thing a long emission loses. One run flattened
+    `reliance` to the prose string it would have held; the attempt before it
+    flattened `findings` the same way. Neither flattening lost anything the memo
+    needed — assembly reads a part only through `prose`, and ``_cited_numbers``
+    already recovers the references from the ``[#n]`` markers in that prose,
+    because a marker *is* a declaration — so a whole memo was discarded over a
+    pair of braces.
+
+    Reading the flattened form is not leniency about what the memo may say.
+    Every rule about the argument runs immediately after this, on the same text.
+    The asymmetry it removes is the one that ran the wrong way: a memo whose
+    argument is faulty is salvaged by ``validate_analysis_summary``'s partial
+    path, and a memo that was merely misshapen was not salvaged at all.
+    """
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str) and value.strip():
+        return {"prose": value}
+    return None
+
+
+def _memo_findings(value: object) -> list[Mapping[str, Any]] | None:
+    """The findings array, from those same shapes. ``None`` where it is corrupt.
+
+    A flattened array is worth one parse: it is JSON often enough to recover.
+    Where the parse fails the emission is corrupt rather than merely flattened —
+    the run this reads for returned a duplicated clause, an invented key and a
+    stray closing tag inside that string — and no coercion should paper over it.
+
+    An entry that will not coerce fails the whole array rather than being
+    dropped from it. A memo silently missing one of its issues is worse than a
+    memo rejected for missing one.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, list) or not value:
+        return None
+    parts = [_memo_part(item) for item in value]
+    if any(part is None for part in parts):
+        return None
+    return [part for part in parts if part is not None]
+
+
+def _memo_items(value: object) -> list[str]:
+    """A list part, from the shapes a long emission returns.
+
+    A run of items flattened into one string is the same slip as a flattened
+    object, and recovers the same way: the bullets or the blank lines the writer
+    reached for anyway are where the items divide. Where it flattened to a
+    single paragraph there is one item, which is what a paragraph is.
+    """
+    if isinstance(value, str):
+        blocks = [
+            re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", block).strip()
+            for block in re.split(r"\n\s*\n|\n(?=\s*(?:[-*•]|\d+[.)])\s)", value)
+        ]
+        return [block for block in blocks if block]
+    if isinstance(value, list):
+        return [
+            str(item).strip()
+            for item in value
+            if isinstance(item, str) and str(item).strip()
+        ]
+    return []
+
+
 def _summary_response_schema(response: str) -> Mapping[str, Any]:
     """The submitted memo parts, before anything is asked about the argument."""
     payload = decode_json_response(response)
     if not isinstance(payload, dict):
         raise WorkerResponseValidationError("the response must be a JSON object")
-    findings = payload.get("findings")
-    if not isinstance(findings, list) or not findings:
+    findings = _memo_findings(payload.get("findings"))
+    if findings is None:
         raise WorkerResponseValidationError(
-            "the response must carry a non-empty `findings` array"
+            "the response must carry a non-empty `findings` array, and every "
+            "entry must carry prose"
         )
-    if any(not isinstance(item, dict) for item in findings):
-        raise WorkerResponseValidationError("every findings entry must be an object")
-    reliance = payload.get("reliance")
-    if not isinstance(reliance, dict):
+    reliance = _memo_part(payload.get("reliance"))
+    if reliance is None:
         raise WorkerResponseValidationError("`reliance` must be an object")
-    for field in ("lead", "data_received", "further_work"):
+    further_work = _memo_items(payload.get("further_work"))
+    if not further_work:
+        raise WorkerResponseValidationError(
+            "`further_work` must carry at least one item"
+        )
+    for field in ("lead", "data_received"):
         if not str(payload.get(field) or "").strip():
             raise WorkerResponseValidationError(f"`{field}` must carry prose")
     return {
@@ -2865,7 +3215,7 @@ def _summary_response_schema(response: str) -> Mapping[str, Any]:
         "data_received": payload.get("data_received"),
         "findings": findings,
         "reliance": reliance,
-        "further_work": payload.get("further_work"),
+        "further_work": further_work,
     }
 
 
@@ -2936,7 +3286,10 @@ def run_analysis_summary_worker(
 
 ANALYSIS_SUMMARY_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="analysis.summary.response",
-    schema_hash=_sha256_text("analysis-summary-response:v2:structured-references"),
+    schema_hash=_sha256_text(
+        "analysis-summary-response:v4:structured-references:flattened-parts-read"
+        ":titled-findings:listed-further-work"
+    ),
     validator=_summary_response_schema,
 )
 ANALYSIS_SUMMARY_WORKER = WorkerDefinition(

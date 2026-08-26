@@ -3553,14 +3553,26 @@ def _ref_of(request, analysis_id: str) -> int:
     )
 
 
+def _section(markdown: str, heading: str) -> str:
+    """One assembled section's body, up to the next heading."""
+    body = markdown.split(f"## {heading}\n", 1)[1]
+    return body.split("\n## ", 1)[0]
+
+
 def _payload(**overrides):
     """A submission that satisfies the contract, before an override breaks it."""
     payload = {
         "lead": "The population reconciles and one issue is worth following up.",
         "data_received": "Six tables were received.",
-        "findings": [{"prose": "Invoices are duplicated.", "procedures": [1]}],
+        "findings": [
+            {
+                "title": "Duplicate invoice keys",
+                "prose": "Invoices are duplicated.",
+                "procedures": [1],
+            }
+        ],
         "reliance": {"prose": "22 rows carry a null key.", "procedures": []},
-        "further_work": "Obtain the buyer master.",
+        "further_work": ["Obtain the buyer master."],
     }
     payload.update(overrides)
     return payload
@@ -3650,6 +3662,242 @@ def test_a_result_with_nothing_flagged_is_cited_without_a_table(workspace_with_d
     # nothing there is a table of.
     assert analysis_worker.parse_embeds(accepted["markdown"]) == []
     assert accepted["cited_analysis_ids"] == [analysis["id"]]
+
+
+def test_the_assembler_writes_the_populations_received(workspace_with_data):
+    """The figures a memo used to type into a prose field, placed for it.
+
+    Every one of them is already in the supplied bundle, so the writer was only
+    ever transcribing — and transcribing a Markdown table into a JSON string is
+    where one emission broke its own JSON.
+    """
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    markdown = analysis_worker.validate_analysis_summary(_payload(), request)["markdown"]
+    received = _section(markdown, analysis_worker.SUMMARY_SECTIONS[0])
+
+    assert "| Source table | Records | Columns | Period covered |" in received
+    assert "| transactions | 6 | 4 |" in received
+    assert "| customers | 3 | 2 | — |" in received
+    # The table is placed under the prose that reads it, so "the table below"
+    # is true of anything the writer says about it.
+    assert received.index("Six tables were received.") < received.index("| Source")
+
+
+def test_the_assembler_writes_the_coverage_of_frames_by_procedure(workspace_with_data):
+    """The record of work performed, including the frames no work reached."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+
+    markdown = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[{"prose": f"Duplicated ([#{ref}]).", "procedures": [ref]}]
+        ),
+        request,
+    )["markdown"]
+    reliance = _section(markdown, analysis_worker.RELIANCE_SECTION)
+
+    assert "| Frame | Records | Procedures | Rows tested | Procedures flagging |" in (
+        reliance
+    )
+    assert "| transactions | 6 | 1 | 6 | 1 |" in reliance
+    # A frame nobody tested is the most load-bearing row in this table, and it
+    # is invisible in any enumeration of what ran. It still carries its record
+    # count, because saying how many records went untested is the point.
+    assert "| customers | 3 | 0 | — | 0 |" in reliance
+
+
+def test_prose_may_not_retype_a_table_the_assembler_writes(workspace_with_data):
+    """Otherwise the reader gets the same figures twice under one heading."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    table = "| Table | Rows |\n| --- | --- |\n| transactions | 6 |"
+
+    with pytest.raises(WorkerResponseValidationError, match="contains a Markdown table"):
+        analysis_worker.validate_analysis_summary(
+            _payload(data_received=f"Six tables were received.\n\n{table}"), request
+        )
+    with pytest.raises(WorkerResponseValidationError, match="contains a Markdown table"):
+        analysis_worker.validate_analysis_summary(
+            _payload(reliance={"prose": f"Bounded.\n\n{table}", "procedures": []}),
+            request,
+        )
+
+    # Only the two sections that get one. A table is a form the rest of the
+    # memo is free to use.
+    accepted = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[
+                {
+                    "title": "Duplicate invoice keys",
+                    "prose": f"Invoices are duplicated.\n\n{table}",
+                    "procedures": [],
+                }
+            ]
+        ),
+        request,
+    )
+    assert table in accepted["markdown"]
+
+
+def test_the_assembler_numbers_the_findings_and_the_outstanding_work(
+    workspace_with_data,
+):
+    """The writer supplies the order and the name; the numbering is not its job.
+
+    Both lists were free prose the writer numbered by hand, or did not. Ordering
+    is the argument — the issues are ranked by how much they matter — and
+    numbering it here is what makes "finding 3" mean the same thing to the memo,
+    the file and the reader.
+    """
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+
+    markdown = analysis_worker.validate_analysis_summary(
+        _payload(
+            findings=[
+                {
+                    "title": "Duplicate invoice keys.",
+                    "prose": f"Invoices are duplicated ([#{ref}]).",
+                    "procedures": [ref],
+                },
+                {
+                    "title": "Amounts repeat across customers",
+                    "prose": "One amount recurs.",
+                    "procedures": [],
+                },
+            ],
+            further_work=["Obtain the buyer master.", "Confirm the duplicate pair."],
+        ),
+        request,
+    )["markdown"]
+
+    # A heading per issue, numbered in the order supplied, with the writer's
+    # own full stop trimmed off the end of a heading.
+    assert "### 1. Duplicate invoice keys" in markdown
+    assert "### 1. Duplicate invoice keys." not in markdown
+    assert "### 2. Amounts repeat across customers" in markdown
+    assert _section(markdown, analysis_worker.SUMMARY_SECTIONS[3]).strip() == (
+        "1. Obtain the buyer master.\n2. Confirm the duplicate pair."
+    )
+
+
+def test_an_outstanding_work_item_stays_on_one_line(workspace_with_data):
+    """A newline inside a numbered entry ends the list Markdown is reading."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    markdown = analysis_worker.validate_analysis_summary(
+        _payload(further_work=["Obtain the buyer master.\nThen reconcile it."]),
+        request,
+    )["markdown"]
+
+    assert _section(markdown, analysis_worker.SUMMARY_SECTIONS[3]).strip() == (
+        "1. Obtain the buyer master. Then reconcile it."
+    )
+
+
+def test_outstanding_work_flattened_to_prose_is_split_back_into_items(
+    workspace_with_data,
+):
+    """The same recovery the other parts get, for the shape a list collapses to.
+
+    The bullets or the blank lines the writer reached for anyway are where the
+    items divide, so nothing is lost and the numbering still lands.
+    """
+    parsed = analysis_worker._summary_response_schema(
+        json.dumps(
+            _payload(
+                further_work=(
+                    "- Obtain the buyer master.\n"
+                    "- Confirm the duplicate pair.\n"
+                    "3. Re-run the ageing."
+                )
+            )
+        )
+    )
+    assert parsed["further_work"] == [
+        "Obtain the buyer master.",
+        "Confirm the duplicate pair.",
+        "Re-run the ageing.",
+    ]
+
+    # A part that flattened to one paragraph is one item, which is what a
+    # paragraph is.
+    single = analysis_worker._summary_response_schema(
+        json.dumps(_payload(further_work="Obtain the buyer master."))
+    )
+    assert single["further_work"] == ["Obtain the buyer master."]
+
+
+def test_a_flattened_part_is_read_rather_than_discarded(workspace_with_data):
+    """The failure that cost the run this was written for.
+
+    A long emission loses nesting first: one attempt returned `reliance` as the
+    prose string it would have held, and the whole memo — seven sound findings
+    and all — was discarded over a pair of braces. Nothing was lost by the
+    flattening, because assembly reads a part through `prose` and the markers in
+    that prose are themselves the declaration.
+    """
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    ref = _ref_of(request, analysis["id"])
+
+    parsed = analysis_worker._summary_response_schema(
+        json.dumps(
+            _payload(
+                findings=[f"Invoices are duplicated ([#{ref}])."],
+                reliance=f"Six rows carry a null key ([#{ref}]).",
+            )
+        )
+    )
+
+    assert parsed["reliance"] == {"prose": f"Six rows carry a null key ([#{ref}])."}
+    assert parsed["findings"] == [{"prose": f"Invoices are duplicated ([#{ref}])."}]
+    # And the reference survives the flattening, so the argument is still
+    # checkable and the procedure is still cited.
+    assert analysis_worker._cited_numbers(parsed["reliance"]) == [ref]
+
+
+def test_a_findings_array_flattened_to_json_is_parsed_back(workspace_with_data):
+    parsed = analysis_worker._summary_response_schema(
+        json.dumps(
+            _payload(
+                findings=json.dumps([{"prose": "Duplicated.", "procedures": [1]}])
+            )
+        )
+    )
+    assert parsed["findings"] == [{"prose": "Duplicated.", "procedures": [1]}]
+
+
+def test_a_corrupt_emission_is_still_rejected(workspace_with_data):
+    """Reading the flattened shape is not leniency about a broken one.
+
+    The attempt before the flattening returned a duplicated clause, an invented
+    key and a stray closing tag inside its findings string. That is corrupt
+    rather than merely flattened, and no coercion should paper over it.
+    """
+    with pytest.raises(WorkerResponseValidationError, match="non-empty `findings`"):
+        analysis_worker._summary_response_schema(
+            json.dumps(_payload(findings='[{"prose": "x", "NonExec": }]'))
+        )
+    # An entry that will not coerce fails the array rather than being dropped
+    # from it: a memo silently missing an issue is worse than one rejected.
+    with pytest.raises(WorkerResponseValidationError, match="non-empty `findings`"):
+        analysis_worker._summary_response_schema(
+            json.dumps(_payload(findings=[{"prose": "Duplicated."}, 7]))
+        )
+    with pytest.raises(WorkerResponseValidationError, match="`reliance` must be"):
+        analysis_worker._summary_response_schema(json.dumps(_payload(reliance="  ")))
 
 
 def test_a_result_that_established_nothing_cannot_be_a_finding(workspace_with_data):
@@ -3928,13 +4176,20 @@ def test_an_out_of_range_reference_is_answered_not_raised(workspace_with_data):
 def test_the_response_schema_reads_the_tool_arguments(workspace_with_data):
     parsed = analysis_worker._summary_response_schema(json.dumps(_payload()))
     assert parsed["findings"] == [
-        {"prose": "Invoices are duplicated.", "procedures": [1]}
+        {
+            "title": "Duplicate invoice keys",
+            "prose": "Invoices are duplicated.",
+            "procedures": [1],
+        }
     ]
+    assert parsed["further_work"] == ["Obtain the buyer master."]
 
     with pytest.raises(WorkerResponseValidationError, match="non-empty `findings`"):
         analysis_worker._summary_response_schema(json.dumps(_payload(findings=[])))
     with pytest.raises(WorkerResponseValidationError, match="`lead` must carry prose"):
         analysis_worker._summary_response_schema(json.dumps(_payload(lead="  ")))
+    with pytest.raises(WorkerResponseValidationError, match="`further_work` must"):
+        analysis_worker._summary_response_schema(json.dumps(_payload(further_work=[])))
 
 
 def test_summary_repair_replays_the_rejected_draft(workspace_with_data):
