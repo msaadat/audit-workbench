@@ -836,7 +836,11 @@ def rollup(
             # Whether that ceiling changed the answer, or is recorded beside a
             # conclusion the auditor owns.
             "evidence_ceiling_applied": ceiling_applied,
-            "findings": len(row.get("finding_refs") or []),
+            # No findings count here on purpose. A finding names its rows in
+            # ``rcm_refs`` and the row does not point back, and findings are
+            # added and removed without a roll-up, so a count frozen into the
+            # row would drift from the findings. ``findings.rollups`` derives
+            # ``by_rcm`` fresh on every read; that is the count to display.
             "review_status": row.get("review_status") or "draft",
             "test_rollups": test_rollups,
         }

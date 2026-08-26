@@ -1113,11 +1113,6 @@ export interface RcmExecutionRollup {
   evidence_ceiling?: string
   /** False when the ceiling is recorded beside a conclusion the auditor owns. */
   evidence_ceiling_applied?: boolean
-  /**
-   * Counts `finding_refs`, which nothing currently populates — read
-   * `FindingRollups.by_rcm` for the findings actually attached to a row.
-   */
-  findings?: number
   review_status?: string
   test_rollups?: TestRollup[]
 }
