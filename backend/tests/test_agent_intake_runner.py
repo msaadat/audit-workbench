@@ -28,8 +28,10 @@ from app.agent.intake_runner import (
     classification_unit_id,
 )
 from app.agent.workers import WORKERS
+from app.agent.workers.model import WorkerResponseValidationError
 from app.agent.workers.intake import (
     CLASSIFICATION_WORKER_ID,
+    _json_object,
     supplied_files,
     validate_classification_proposal,
 )
@@ -445,3 +447,29 @@ def test_intake_runner_accepts_an_injected_runtime(workspace_with_data):
 
     assert injected.runtime is default.runtime
     assert injected.unit_pipeline.runtime is default.runtime
+
+
+def test_malformed_intake_json_names_the_position_and_quotes_the_region():
+    """An unactionable parse error costs the whole repair allowance.
+
+    "the response is not a valid JSON object" locates nothing, so a response
+    with one unescaped quote is re-emitted with the same quote in the same
+    place until the attempts run out. The shared decoder quotes the decoder's
+    own position and the text around it; this worker used to carry a private
+    copy that discarded both.
+    """
+
+    broken = '{"items": [{"note": "contains only the "Agreed" decision"}]}'
+
+    with pytest.raises(WorkerResponseValidationError) as caught:
+        _json_object(broken)
+
+    message = caught.value.errors[0]
+    assert "is not a valid JSON object:" in message
+    assert "at character" in message
+    assert "Agreed" in message
+
+
+def test_non_object_intake_json_is_still_rejected_as_a_shape_error():
+    with pytest.raises(WorkerResponseValidationError, match="must be a JSON object"):
+        _json_object("[1, 2, 3]")

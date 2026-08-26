@@ -121,3 +121,39 @@ def test_new_command_run_chooses_no_engine_before_routing(workspace_with_data):
     assert store.is_command_run(
         store.new_run(workspace_with_data, "auto", None, kind="intake")
     ) is False
+
+
+def test_default_llm_concurrency_fans_out_parallel_stages(monkeypatch):
+    """A stage declared parallel needs a width above 1 to actually be parallel.
+
+    Document chunk units are independent and commit nothing, so the width is
+    what decides throughput. Pinned at 1 the barrier bought failure isolation
+    only: a run's wall time was the sum of its model calls, one after another.
+    """
+
+    from app.agent import routing
+
+    monkeypatch.delenv("AGENT_LLM_CONCURRENCY", raising=False)
+    assert routing.default_llm_concurrency() == 4
+
+    monkeypatch.setenv("AGENT_LLM_CONCURRENCY", "6")
+    assert routing.default_llm_concurrency() == 6
+
+    # Bounded at both ends: the ceiling here is the provider's rate limit.
+    monkeypatch.setenv("AGENT_LLM_CONCURRENCY", "99")
+    assert routing.default_llm_concurrency() == 8
+    monkeypatch.setenv("AGENT_LLM_CONCURRENCY", "0")
+    assert routing.default_llm_concurrency() == 1
+    monkeypatch.setenv("AGENT_LLM_CONCURRENCY", "not-a-number")
+    assert routing.default_llm_concurrency() == 4
+
+
+def test_explicit_run_limit_still_overrides_the_concurrency_default(monkeypatch):
+    from app.agent import routing
+
+    monkeypatch.delenv("AGENT_LLM_CONCURRENCY", raising=False)
+    run = {"limits": {"max_llm_concurrency": 2}}
+    assert int(
+        run.get("limits", {}).get("max_llm_concurrency")
+        or routing.default_llm_concurrency()
+    ) == 2

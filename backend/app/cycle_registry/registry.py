@@ -238,6 +238,35 @@ class CycleRegistry:
         pack = self.pack(pack_id)
         return RegistryReference(pack.id, pack.version, self._pack_hashes[pack.id])
 
+    def bind_reference(self, value: object) -> RegistryReference:
+        """Resolve the authoritative reference for a model-selected pack.
+
+        Which pack a record belongs to is the model's to decide and carries real
+        information. Its version and definition hash are neither: they are
+        functions of the pack id that this registry already holds, handed to the
+        model in the prompt only so it could hand them back. Asking a model to
+        transcribe a 64-character hash to express "I chose procure_to_pay" adds
+        no evidence and one failure mode — a live run lost a repair attempt to
+        two wrong hex characters in an otherwise correct response.
+
+        Nothing is lost by binding them here. A response cannot prove the
+        vocabulary it used was current by copying a hash it cannot verify, and
+        the interlock that does prove it is already exact and server-side: the
+        pack descriptors are part of the worker's hashed prompt, so a registry
+        change moves the execution identity and no proposal built against the
+        old definitions can be reused under the new ones.
+
+        ``validate_reference`` keeps its exact-match contract for stored
+        artifacts, where a recorded hash is provenance rather than an echo.
+        """
+
+        if not isinstance(value, dict):
+            raise RegistryError("registry must be an object.")
+        pack_id = str(value.get("pack_id") or "")
+        if not pack_id:
+            raise RegistryError("registry must name the selected pack_id.")
+        return self.reference(pack_id)
+
     def validate_reference(self, value: object) -> RegistryReference:
         if not isinstance(value, dict):
             raise RegistryError("registry must be an object.")

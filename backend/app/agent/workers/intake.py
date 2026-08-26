@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -33,6 +32,7 @@ from .model import (
     WorkerRequest,
     WorkerResponseSchema,
     WorkerResponseValidationError,
+    decode_json_response,
 )
 
 CLASSIFICATION_WORKER_ID = "intake.classification"
@@ -105,16 +105,9 @@ def supplied_files(request: WorkerRequest) -> list[dict[str, Any]]:
 
 
 def _json_object(response: str) -> dict[str, Any]:
-    value = str(response or "").strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?\s*\n?(.*?)\n?```", value, re.DOTALL | re.IGNORECASE
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError:
-        raise WorkerResponseValidationError("the response is not a valid JSON object")
+    """Parse the shared fenced-or-bare JSON envelope, saying where it broke."""
+
+    payload = decode_json_response(response)
     if not isinstance(payload, dict):
         raise WorkerResponseValidationError("the response must be a JSON object")
     return payload

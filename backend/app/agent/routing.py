@@ -854,6 +854,23 @@ def document_page_limit() -> int:
         return 0
 
 
+def default_llm_concurrency() -> int:
+    """Model-call fan-out width for stages declared parallel.
+
+    Document chunk units are independent, commit nothing, and settle
+    all-settled, so this width is what decides whether a parallel stage is
+    actually parallel. Pinned at 1 the barrier bought failure isolation and no
+    throughput: eight one-page documents ran strictly one after another, and a
+    run's wall time was the sum of its model calls. Capped because the ceiling
+    here is the provider's rate limit, not local capacity.
+    """
+
+    try:
+        return max(1, min(int(os.environ.get("AGENT_LLM_CONCURRENCY") or 4), 8))
+    except ValueError:
+        return 4
+
+
 def document_visual_page_limit() -> int:
     """Durable default bound for image-bearing document map units."""
 
@@ -1029,7 +1046,8 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         ) + _analysis_model_turns(workspace, scope)
     run.setdefault("limits", {}).update(
         max_llm_concurrency=int(
-            run.get("limits", {}).get("max_llm_concurrency") or 1
+            run.get("limits", {}).get("max_llm_concurrency")
+            or default_llm_concurrency()
         ),
         max_compute_concurrency=int(
             run.get("limits", {}).get("max_compute_concurrency") or 2

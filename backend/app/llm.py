@@ -775,7 +775,15 @@ def chat(
                 debug_store.finish_call(trace_workspace_id, call_id, payload=payload,
                                         message=message, headers=response_headers,
                                         started_monotonic=call_started)
-            return message
+            # Usage is a sibling of `choices`, not a field of the message. The
+            # budget ledger reads it off the returned message, so without this
+            # it saw no usage on any call and fell back silently — metering the
+            # provider's own prompt count as the local estimate and every
+            # completion as zero, which left `max_completion_tokens` checked
+            # against a total that could never grow. Attached on return rather
+            # than before the trace so the debug record keeps the raw message.
+            usage = payload.get("usage")
+            return {**message, "usage": usage} if isinstance(usage, dict) else message
         if attempt + 1 < MAX_REQUEST_ATTEMPTS:
             delay = _wait_before_retry(attempt)
             if call_id:

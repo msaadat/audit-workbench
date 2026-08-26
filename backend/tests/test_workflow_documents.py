@@ -2968,19 +2968,85 @@ def test_voucher_pack_is_constrained_to_the_packs_the_engagement_uses(monkeypatc
     assert analysis["registry"]["pack_id"] == "procure_to_pay"
 
 
-def test_voucher_prompt_exposes_exact_registry_reference_objects():
+def test_voucher_prompt_keeps_the_registry_hash_without_asking_for_it_back():
+    """The pack hash stays in the prompt; copying it back is no longer asked for.
+
+    Keeping the exact reference in the prompt text is what makes the staleness
+    interlock exact — it is hashed into the worker's prompt hash, so a pack
+    change moves the execution identity and no proposal built against the old
+    definitions can be reused under the new ones. Asking the model to echo it
+    added no evidence on top of that and one failure mode: a live run lost a
+    repair attempt to two wrong hex characters in a 64-character hash.
+    """
+
     descriptors = document_workers._VOUCHER_REGISTRY_DESCRIPTORS
 
     for pack_id in ("procure_to_pay", "payroll"):
         reference = cycle_vouching.DEFAULT_REGISTRY.reference(pack_id).to_dict()
         assert set(reference) == {"pack_id", "pack_version", "definition_hash"}
-        # Rendered as the exact object the response must copy back, so a stale
-        # hash cannot survive a pack change unnoticed.
         assert json.dumps(reference, sort_keys=True, separators=(",", ":")) in descriptors
+        # The hash reaches the prompt hash, which is what governs reuse.
+        assert reference["definition_hash"] in document_workers.VOUCHER_WORKER.prompt_hash or (
+            reference["definition_hash"] in document_workers.VOUCHER_SYSTEM
+        )
 
-    assert "copy its\n`registry` object exactly" in document_workers.VOUCHER_SYSTEM
-    assert "`pack_id`, `pack_version`, and" in document_workers.VOUCHER_SYSTEM
-    assert "pack_id, version, and definition_hash" not in document_workers.VOUCHER_SYSTEM
+    assert "name it as\n`registry.pack_id`" in document_workers.VOUCHER_SYSTEM
+    assert "do not copy them\nback" in document_workers.VOUCHER_SYSTEM
+    assert "copy its\n`registry` object exactly" not in document_workers.VOUCHER_SYSTEM
+
+
+def test_voucher_tool_asks_only_for_the_selected_pack_id():
+    tool = document_workers._citation_submission_tool(
+        "submit",
+        description="test",
+        voucher=True,
+        pack_ids=["procure_to_pay"],
+    )
+    registry = tool["function"]["parameters"]["properties"]["registry"]
+
+    assert registry["required"] == ["pack_id"]
+    assert set(registry["properties"]) == {"pack_id"}
+    assert registry["properties"]["pack_id"]["enum"] == ["procure_to_pay"]
+
+
+def test_registry_reference_is_bound_locally_from_the_selected_pack():
+    """A response names the pack; version and hash come from the registry."""
+
+    bound = cycle_vouching.DEFAULT_REGISTRY.bind_reference({"pack_id": "procure_to_pay"})
+    expected = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay")
+
+    assert bound == expected
+    # A wrong hash carried by an older response cannot make the binding wrong,
+    # and cannot cost a repair turn either.
+    stale = cycle_vouching.DEFAULT_REGISTRY.bind_reference(
+        {
+            "pack_id": "procure_to_pay",
+            "pack_version": 3,
+            "definition_hash": "sha256:" + "0" * 64,
+        }
+    )
+    assert stale == expected
+
+    with pytest.raises(ValueError):
+        cycle_vouching.DEFAULT_REGISTRY.bind_reference({"pack_id": "not_a_pack"})
+    with pytest.raises(ValueError):
+        cycle_vouching.DEFAULT_REGISTRY.bind_reference({})
+
+
+def test_stored_artifacts_keep_the_exact_reference_contract():
+    """`validate_reference` is unchanged: a stored hash is provenance, not echo."""
+
+    expected = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay")
+
+    assert cycle_vouching.DEFAULT_REGISTRY.validate_reference(expected.to_dict()) == expected
+    with pytest.raises(ValueError):
+        cycle_vouching.DEFAULT_REGISTRY.validate_reference(
+            {
+                "pack_id": "procure_to_pay",
+                "pack_version": expected.pack_version,
+                "definition_hash": "sha256:" + "0" * 64,
+            }
+        )
 
 
 def test_voucher_prompt_states_the_allowed_selectors_for_each_record_kind():
@@ -3218,3 +3284,41 @@ def test_the_chunk_worker_only_ever_sees_the_chunk_it_was_supplied(monkeypatch):
         assert "GENERATED ORIENTATION" not in supplied
         # Internal storage filenames never reach the provider.
         assert document["file"] not in supplied
+
+
+def test_malformed_map_json_names_the_position_and_quotes_the_region():
+    """The map worker returns hand-written JSON, so escaping is a live failure.
+
+    A real run lost its single repair turn to `only the "Agreed" decision` — an
+    unescaped quote inside audit_notes_markdown — because the worker carried a
+    private decoder that reported only "the response is not a valid JSON
+    object". That locates nothing, so the same quote comes back in the same
+    place. The voucher worker submits through a tool call and cannot hit this.
+    """
+
+    broken = (
+        '{"summary_markdown": "## Summary\\n\\nFine.", '
+        '"audit_notes_markdown": "The extract contains only the "Agreed" decision.", '
+        '"citations": []}'
+    )
+
+    with pytest.raises(document_workers.WorkerResponseValidationError) as caught:
+        document_workers._json_object(broken)
+
+    message = caught.value.errors[0]
+    assert "is not a valid JSON object:" in message
+    assert "at character" in message
+    # The region around the break is quoted, so the repair can see the quote.
+    assert "Agreed" in message
+    assert "escaped" in message
+
+
+def test_map_json_still_accepts_a_fenced_object_and_rejects_a_non_object():
+    fenced = '```json\n{"summary_markdown": "ok"}\n```'
+    assert document_workers._json_object(fenced) == {"summary_markdown": "ok"}
+
+    with pytest.raises(
+        document_workers.WorkerResponseValidationError,
+        match="must be a JSON object",
+    ):
+        document_workers._json_object('["not", "an", "object"]')

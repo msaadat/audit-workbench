@@ -507,6 +507,65 @@ def test_llm_chat_sends_user_agent(monkeypatch):
     assert captured["timeout"] == llm.REQUEST_TIMEOUT
 
 
+def test_llm_chat_returns_provider_usage_with_the_message(monkeypatch):
+    """Usage is a sibling of `choices`, and the budget ledger reads it off the
+    returned message.
+
+    Returning the message alone meant every call metered as zero completion
+    tokens, so `max_completion_tokens` was checked against a total that could
+    never grow — and a provider that genuinely reports no usage looked exactly
+    like this plumbing being broken.
+    """
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {
+                        "prompt_tokens": 4962,
+                        "completion_tokens": 21148,
+                        "completion_tokens_details": {"reasoning_tokens": 19930},
+                    },
+                }
+            ).encode()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    message = llm.chat([{"role": "user", "content": "hello"}])
+
+    assert message["content"] == "ok"
+    assert message["usage"]["completion_tokens"] == 21148
+    assert message["usage"]["prompt_tokens"] == 4962
+    assert message["usage"]["completion_tokens_details"]["reasoning_tokens"] == 19930
+
+
+def test_llm_chat_omits_usage_when_the_provider_reports_none(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+
+
 def test_llm_chat_wraps_remote_disconnect(monkeypatch):
     def fake_urlopen(request, timeout):
         raise http.client.RemoteDisconnected("Remote end closed connection without response")

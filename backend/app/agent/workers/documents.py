@@ -44,6 +44,7 @@ from .model import (
     WorkerRequest,
     WorkerResponseSchema,
     WorkerResponseValidationError,
+    decode_json_response,
 )
 
 CHUNK_WORKER_ID = "documents.analysis_chunk"
@@ -250,16 +251,17 @@ def document_metadata(document: Mapping[str, Any]) -> dict:
 
 
 def _json_object(response: str) -> dict[str, Any]:
-    value = str(response or "").strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?\s*\n?(.*?)\n?```", value, re.DOTALL | re.IGNORECASE
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError:
-        raise WorkerResponseValidationError("the response is not a valid JSON object")
+    """Parse the shared fenced-or-bare JSON envelope, saying where it broke.
+
+    This used to carry its own copy of the decoder and report only "the response
+    is not a valid JSON object" — true, and unactionable: it locates nothing, so
+    a response with one unescaped quote in two thousand characters is re-emitted
+    with the same quote in the same place until the repair allowance runs out.
+    A live map response spent its single repair turn on exactly that, over a
+    stray quote in `only the "Agreed" decision`.
+    """
+
+    payload = decode_json_response(response)
     if not isinstance(payload, dict):
         raise WorkerResponseValidationError("the response must be a JSON object")
     return payload
@@ -909,14 +911,16 @@ def _citation_submission_tool(
         selectable = sorted(pack_ids) or sorted(DEFAULT_REGISTRY.packs)
         properties.update(
             {
+                # Only the pack selection is asked for. Version and definition
+                # hash are ours to supply, and a schema that demanded them back
+                # made a transcription slip in a 64-character hash cost a repair
+                # turn without adding any evidence.
                 "registry": {
                     "type": "object",
                     "properties": {
                         "pack_id": {"type": "string", "enum": selectable},
-                        "pack_version": {"type": "integer"},
-                        "definition_hash": {"type": "string", "minLength": 1},
                     },
-                    "required": ["pack_id", "pack_version", "definition_hash"],
+                    "required": ["pack_id"],
                     "additionalProperties": False,
                 },
                 "record_fragments": {
@@ -1225,7 +1229,13 @@ def _pack_descriptor(pack_id: str) -> str:
         if bindable
         else set()
     )
-    lines = [f"PACK {pack.id} (v{pack.version}) registry={reference}"]
+    # Printed as `definition=`, not `registry=`: the response field is named
+    # `registry` and carries the pack id alone, so labelling this line with that
+    # name invited the model to copy the whole object back. The hash stays in the
+    # prompt text because that is what makes the staleness interlock exact — a
+    # pack definition change moves this text, the prompt hash, and with it the
+    # execution identity that governs proposal reuse.
+    lines = [f"PACK {pack.id} (v{pack.version}) definition={reference}"]
     for policy, label in (("transaction", "linking"), ("non_linking", "entity")):
         kinds = [
             identifier_id
@@ -1317,11 +1327,11 @@ that carries it and no more: at most {CITATION_EXCERPT_LINES} lines and
 citing it everywhere anchors nothing and is rejected. Emit as many citations as
 you have distinct facts.
 
-Select exactly one registered pack from the descriptors below and copy its
-`registry` object exactly, including the keys `pack_id`, `pack_version`, and
-`definition_hash` at the response root. You may use only record, identifier,
-field, group, kind, and attribute IDs declared by that selected pack. Never
-invent or abbreviate an ID.
+Select exactly one registered pack from the descriptors below and name it as
+`registry.pack_id` at the response root. That id is all that is asked for — the
+pack version and definition hash are attached locally, so do not copy them
+back. You may use only record, identifier, field, group, kind, and attribute IDs
+declared by that selected pack. Never invent or abbreviate an ID.
 
 record_fragments is an array. Each fragment describes one candidate record in
 this chunk and contains:
@@ -1965,7 +1975,9 @@ def validate_voucher_proposal(
         )
     errors.extend(_citation_shape_errors(validated["citations"]))
     try:
-        reference = DEFAULT_REGISTRY.validate_reference(
+        # The response names the pack; its version and definition hash are bound
+        # from this registry rather than transcribed back to us.
+        reference = DEFAULT_REGISTRY.bind_reference(
             _plain_json(proposal.get("registry"))
         )
     except ValueError as error:
