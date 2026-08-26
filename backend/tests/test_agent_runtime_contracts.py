@@ -27,6 +27,7 @@ from app.agent.runtime import (
     DefaultRunRuntime,
     LimitExceeded,
     ModelGateway,
+    ModelResponseUnusable,
     RunRuntime,
     WorkflowRunner,
     submit_approval_response,
@@ -971,7 +972,15 @@ def test_model_gateway_does_not_stream_tool_capable_turns(
 
     def fake_chat(messages, **kwargs):
         seen.update(kwargs)
-        return {"content": "", "tool_calls": []}
+        # What a tool-capable turn actually returns: no prose, one call. An
+        # empty message with no calls is a dead completion, and the gateway
+        # now says so rather than handing it on.
+        return {
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "route", "arguments": "{}"}},
+            ],
+        }
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(
@@ -993,3 +1002,157 @@ def test_model_gateway_does_not_stream_tool_capable_turns(
     assert "on_delta" not in seen
     events = store.read_events(workspace_with_data, active.run["id"])
     assert not [event for event in events if event["type"] == "model_stream"]
+
+
+# --------------------------------------------------------------------------- #
+# Completions that carry nothing
+# --------------------------------------------------------------------------- #
+
+
+def _no_output_gateway(workspace_with_data, monkeypatch, message):
+    """A run whose provider returns exactly ``message``, however empty."""
+    calls = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(kwargs)
+        return message
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "empty-test", "model": "model"},
+    )
+    active = _base_runner(workspace_with_data)
+    active.run["limits"] = {
+        "max_model_turns": 4,
+        "max_estimated_prompt_tokens": 100_000,
+        "max_completion_tokens": 200_000,
+    }
+    active.save()
+    return active, calls
+
+
+def test_a_reasoning_runaway_is_reported_as_no_output_not_as_bad_json(
+    workspace_with_data, monkeypatch
+):
+    """The failure that cost one RCM run both of its attempts and $0.09.
+
+    The provider spent the whole completion budget thinking and returned an
+    empty string. Handed on, that reaches the worker as unparseable JSON — so
+    the run blamed the model's formatting for a matrix it never wrote, and the
+    repair turn quoted a parse error back at a model with nothing to correct.
+    """
+    active, _ = _no_output_gateway(
+        workspace_with_data,
+        monkeypatch,
+        {
+            "content": "",
+            "finish_reason": "length",
+            "usage": {
+                "prompt_tokens": 17_535,
+                "completion_tokens": 65_536,
+                "completion_tokens_details": {"reasoning_tokens": 65_090},
+            },
+        },
+    )
+
+    with pytest.raises(ModelResponseUnusable) as raised:
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
+
+    detail = str(raised.value)
+    assert "returned no output" in detail
+    # Says where the answer went, in the provider's own numbers.
+    assert "65,090" in detail and "65,536" in detail
+    assert "reasoning" in detail
+    assert "JSON" not in detail
+
+
+def test_an_empty_completion_that_stopped_normally_says_so(
+    workspace_with_data, monkeypatch
+):
+    """Nothing to say and cut off mid-thought are different faults."""
+    active, _ = _no_output_gateway(
+        workspace_with_data, monkeypatch, {"content": "", "finish_reason": "stop"}
+    )
+
+    with pytest.raises(ModelResponseUnusable, match="'stop'"):
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
+
+
+def test_a_turn_that_answers_in_tool_calls_carries_no_prose_and_is_not_rejected(
+    workspace_with_data, monkeypatch
+):
+    """The one empty ``content`` that means the model did its job."""
+    active, _ = _no_output_gateway(
+        workspace_with_data,
+        monkeypatch,
+        {
+            "content": "",
+            "finish_reason": "tool_calls",
+            "tool_calls": [{"function": {"name": "route", "arguments": "{}"}}],
+        },
+    )
+
+    message = active.model_gateway.complete(
+        "[agent:workflow_router]\nRoute it",
+        "",
+        tools=[{"type": "function", "function": {"name": "route"}}],
+        return_message=True,
+    )
+
+    assert message["tool_calls"][0]["function"]["name"] == "route"
+
+
+def test_a_dead_completion_is_metered_before_it_is_raised(
+    workspace_with_data, monkeypatch
+):
+    """A runaway is real spend on a real turn whether or not it answered.
+
+    Raising before the ledger sees it would let a model burn a full output
+    budget for free, and the budget that exists to stop exactly that would
+    never count the turn it needs to stop.
+    """
+    active, _ = _no_output_gateway(
+        workspace_with_data,
+        monkeypatch,
+        {
+            "content": "",
+            "finish_reason": "length",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 65_536},
+        },
+    )
+
+    with pytest.raises(ModelResponseUnusable):
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
+
+    usage = store.load_run(workspace_with_data, active.run["id"])["usage"]
+    assert usage["completion_tokens"] == 65_536
+    assert usage["llm_turns"] == 1
+
+
+def test_no_output_does_not_spend_the_worker_repair_allowance(
+    workspace_with_data, monkeypatch
+):
+    """A response that does not exist is not a response a repair can correct.
+
+    The repair loop turns on ``WorkerResponseValidationError``. This is not one,
+    so the worker stops on the first dead turn instead of paying for a second
+    that has no more information than the first.
+    """
+    from app.agent.workers import WORKERS
+
+    active, calls = _no_output_gateway(
+        workspace_with_data,
+        monkeypatch,
+        {"content": "", "finish_reason": "length", "usage": {"completion_tokens": 100}},
+    )
+    definition = WORKERS.get("planning.apm")
+    assert definition.repair_policy.max_repair_attempts >= 1, "a repair is on offer"
+
+    from test_agent_planning_worker import _request
+
+    with pytest.raises(ModelResponseUnusable):
+        WORKERS.execute(_request(), active.model_gateway)
+
+    assert len(calls) == 1, "the dead turn must not be retried"

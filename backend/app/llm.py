@@ -783,7 +783,18 @@ def chat(
             # against a total that could never grow. Attached on return rather
             # than before the trace so the debug record keeps the raw message.
             usage = payload.get("usage")
-            return {**message, "usage": usage} if isinstance(usage, dict) else message
+            # `finish_reason` is a sibling too, and it is the only thing that
+            # separates a model that had nothing to say from one that was cut
+            # off before it started. A caller that cannot tell them apart reads
+            # a truncated completion as malformed output and asks the model to
+            # correct text it never sent — which is how one RCM run spent both
+            # of its attempts, and $0.09, on an empty string.
+            finish_reason = choices[0].get("finish_reason")
+            return {
+                **message,
+                **({"usage": usage} if isinstance(usage, dict) else {}),
+                **({"finish_reason": str(finish_reason)} if finish_reason else {}),
+            }
         if attempt + 1 < MAX_REQUEST_ATTEMPTS:
             delay = _wait_before_retry(attempt)
             if call_id:

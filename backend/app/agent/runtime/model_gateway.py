@@ -35,6 +35,47 @@ class VisionRequestRejected(RuntimeError):
     """A declared vision provider rejected an image-bearing request."""
 
 
+class ModelResponseUnusable(RuntimeError):
+    """The provider returned a completion carrying no output to work with.
+
+    Distinct from a response the worker rejects, and deliberately not a
+    :class:`WorkerResponseValidationError`: there is no text to correct, so the
+    bounded repair loop must not spend a turn asking for a correction. A model
+    that exhausted its output budget on reasoning returns an empty string, and
+    an empty string reaches the worker as unparseable JSON — a diagnosis that
+    sends the reader hunting a prompt defect that is not there, and a repair
+    prompt quoting an error about a response the model never sent.
+    """
+
+
+def _unusable_completion_detail(
+    finish_reason: str, usage: Mapping[str, Any]
+) -> str:
+    """Say what the provider spent, so the reader knows where the answer went."""
+    completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    details = usage.get("completion_tokens_details")
+    reasoning = (
+        details.get("reasoning_tokens") if isinstance(details, Mapping) else None
+    ) or 0
+    if finish_reason == "length":
+        spent = (
+            f"{reasoning:,} of its {completion:,} completion tokens on reasoning"
+            if reasoning
+            else f"all {completion:,} of its completion tokens"
+        )
+        return (
+            "The model returned no output: it reached its output limit having "
+            f"spent {spent}, leaving nothing for the answer. Retry, or choose "
+            "a model that answers within its output limit — the same profile "
+            "may well succeed, because how long a model reasons varies between "
+            "identical calls."
+        )
+    return (
+        "The model returned no output: it finished with reason "
+        f"'{finish_reason or 'unreported'}' and an empty message."
+    )
+
+
 def _media_handle(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and detach the content-free prepared-media handle contract."""
 
@@ -604,6 +645,16 @@ class DefaultModelGateway:
         )
         if token_budget_exceeded:
             raise self._limit_error("workflow token budget reached")
+        # Checked after metering and provenance, never before: a runaway that
+        # spends a full output budget is real spend on a real turn, and the run
+        # has to carry it whether or not the turn produced anything. A turn that
+        # answers with tool calls carries no content by design and is untouched.
+        if not content and not message.get("tool_calls"):
+            raise ModelResponseUnusable(
+                _unusable_completion_detail(
+                    str(message.get("finish_reason") or ""), provider_usage
+                )
+            )
         return message if return_message else content
 
     def _load_prepared_media(self, handle: Mapping[str, Any]) -> bytes:
@@ -716,6 +767,7 @@ __all__ = [
     "FIRST_ATTEMPT_TEMPERATURE",
     "ModelCapabilityError",
     "ModelGateway",
+    "ModelResponseUnusable",
     "PreparedMediaError",
     "REPAIR_TEMPERATURE",
     "VisionRequestRejected",

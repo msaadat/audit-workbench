@@ -566,6 +566,46 @@ def test_llm_chat_omits_usage_when_the_provider_reports_none(monkeypatch):
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
 
 
+def test_llm_chat_reports_why_the_provider_stopped(monkeypatch):
+    """`finish_reason` is a sibling of `choices` and the caller needs it.
+
+    Without it an empty completion is indistinguishable from a model that
+    replied with nothing to say — and from malformed output, which is what one
+    truncated RCM turn was reported as while the real cause was a reasoning
+    loop that never reached the answer.
+    """
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {"finish_reason": "length", "message": {"content": ""}}
+                    ],
+                    "usage": {
+                        "completion_tokens": 65536,
+                        "completion_tokens_details": {"reasoning_tokens": 65090},
+                    },
+                }
+            ).encode()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    message = llm.chat([{"role": "user", "content": "hello"}])
+
+    assert message["finish_reason"] == "length"
+    assert message["content"] == ""
+    assert message["usage"]["completion_tokens_details"]["reasoning_tokens"] == 65090
+
+
 def test_llm_chat_wraps_remote_disconnect(monkeypatch):
     def fake_urlopen(request, timeout):
         raise http.client.RemoteDisconnected("Remote end closed connection without response")
