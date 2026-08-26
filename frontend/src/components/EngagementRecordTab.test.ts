@@ -139,6 +139,19 @@ function payload(
     open_points: [],
     orphaned_points: [],
     next: null,
+    catalog: {
+      'fieldwork.executed': {
+        label: 'Fieldwork results', destination: 'doc-tests',
+        headline: 'Run the tests against the data and documents', order: 15,
+      },
+      'dashboard.curated': {
+        label: 'Dashboard curation', destination: 'dashboard', headline: '', order: 19,
+      },
+      // Its own workflow, so the audit plan does not place it.
+      'doc_tests.executed': {
+        label: 'Document test results', destination: 'doc-tests', headline: '', order: null,
+      },
+    },
     counts: {},
     totals: {
       work_products: entries.length,
@@ -531,6 +544,73 @@ describe('EngagementRecordTab', () => {
     const brief = wrapper.find('.brief')
     expect(brief.attributes('data-wait')).toBe('1')
     expect(brief.text()).toContain('Waiting for your approval')
+    wrapper.unmount()
+  })
+
+  it('draws the stage the run is executing even when the ledger owes no row for it', async () => {
+    // A stage is covered by neither half while it runs: it has filed no
+    // milestone, and fieldwork stops being owed the moment its first test
+    // commits — a third of the way into its own run. The band named it; the
+    // spine went quiet.
+    liveRun([{ capability: 'fieldwork.executed', status: 'running', title: 'Fieldwork execution' }])
+    const wrapper = await render([entry()], { pending: [] })
+
+    const ghost = wrapper.find('.row.ghost')
+    expect(ghost.attributes('data-live')).toBe('running')
+    expect(ghost.text()).toContain('Fieldwork results')
+    // The sentence it carried while owed, so it does not rename itself at the
+    // moment it starts.
+    expect(ghost.text()).toContain('Run the tests against the data and documents')
+    expect(ghost.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('leaves a machine step the record files nothing for to the band alone', async () => {
+    // A ledger row for a capability with no work product is a row about
+    // nothing; `data.joins_ready` is not in the catalog and gets none.
+    liveRun([{ capability: 'data.joins_ready', status: 'running', title: 'Joins ready' }])
+    const wrapper = await render([entry()], { pending: [] })
+
+    expect(wrapper.find('.row.ghost').exists()).toBe(false)
+    expect(wrapper.find('.brief.live').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps a live row in plan order rather than appending it to the tail', async () => {
+    liveRun([{ capability: 'fieldwork.executed', status: 'running' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    // Fieldwork is stage 15, dashboard curation 19.
+    const order = wrapper.findAll('.row.ghost').map(row => row.find('.mt b').text())
+    expect(order).toEqual(['Fieldwork results', 'Dashboard curation'])
+    wrapper.unmount()
+  })
+
+  it('does not duplicate a stage the ledger already has a row for', async () => {
+    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    expect(wrapper.findAll('.row.ghost')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('leads the tail with a running stage the plan does not place', async () => {
+    // A document-test run is its own workflow, so it has no audit-plan order.
+    // Sorted by a "put unknown last" number it landed after the report, which
+    // reads as the final step rather than the one happening now.
+    liveRun([{ capability: 'doc_tests.executed', status: 'running', title: 'Document test execution' }])
+    const wrapper = await render([entry()], { pending: [stage()] })
+
+    const order = wrapper.findAll('.row.ghost').map(row => row.find('.mt b').text())
+    expect(order).toEqual(['Document test results', 'Dashboard curation'])
+    wrapper.unmount()
+  })
+
+  it('falls back to the workflow stage title where the record owes no sentence', async () => {
+    liveRun([{ capability: 'doc_tests.executed', status: 'running', title: 'Document test execution' }])
+    const wrapper = await render([entry()], { pending: [] })
+
+    expect(wrapper.find('.row.ghost .ttl').text()).toBe('Document test execution')
     wrapper.unmount()
   })
 

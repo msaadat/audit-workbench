@@ -355,6 +355,35 @@ def _plan_order() -> dict[str, int]:
     return {str(item.get("capability") or ""): index for index, item in enumerate(outcomes)}
 
 
+def _catalog() -> dict[str, dict]:
+    """What every capability the record can name files, and where it sits.
+
+    Published because neither half of the ledger covers a stage while it is
+    *running*: it has filed no milestone yet, and its work product may already
+    exist enough for the forward half to stop owing it — fieldwork stops being
+    owed the moment its first test commits, two thirds of the way through its
+    own run. A caller watching the live run draws that row itself, and this is
+    the vocabulary to draw it in, so the label on a live row is the same label
+    it will carry once it files.
+    """
+    order = _plan_order()
+    return {
+        capability: {
+            "label": spec.get("label") or capability,
+            "destination": spec.get("destination") or "",
+            # The same sentence the row carried while it was still owed, so a
+            # stage does not rename itself at the moment it starts running.
+            "headline": (_PHANTOM.get(capability) or {}).get("headline") or "",
+            # None where this plan does not contain the capability at all — a
+            # document-test run is its own workflow, not a step of the audit
+            # plan. A caller placing a live row decides what that means rather
+            # than being handed a number that sorts it after the report.
+            "order": order.get(capability),
+        }
+        for capability, spec in _FILED.items()
+    }
+
+
 def _dependencies(capability: str) -> tuple[str, ...]:
     """A stage's direct dependencies, from the graph that owns them."""
     try:
@@ -564,6 +593,7 @@ def record(workspace: Workspace) -> dict:
         "open_points": points,
         "orphaned_points": orphaned,
         "next": next_step,
+        "catalog": _catalog(),
         "counts": counts,
         "totals": {
             "work_products": len(entries),

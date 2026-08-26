@@ -114,6 +114,7 @@ onUnmounted(() => window.clearInterval(ticker))
 const entries = computed(() => data.value?.entries ?? [])
 const pending = computed(() => data.value?.pending ?? [])
 const orphaned = computed(() => data.value?.orphaned_points ?? [])
+const catalog = computed(() => data.value?.catalog ?? {})
 const totals = computed(() => data.value?.totals ?? null)
 const next = computed(() => data.value?.next ?? null)
 
@@ -363,6 +364,47 @@ async function start(stage: EngagementPendingStage) {
 }
 
 /**
+ * Stages the run in flight is executing that the ledger has no row for.
+ *
+ * A stage is covered by neither half while it runs: it has filed no milestone,
+ * and its work product can already exist enough to stop being owed — fieldwork
+ * stops being owed the moment its first test commits, a third of the way into
+ * its own run, and then vanishes from the record until it files. The band still
+ * named it; the spine went quiet. These put it back, carrying the label and the
+ * sentence the row will still carry once it files.
+ */
+const liveOnly = computed<EngagementPendingStage[]>(() => {
+  const known = new Set([
+    ...entries.value.map(entry => entry.capability),
+    ...pending.value.map(stage => stage.capability),
+  ])
+  const rows: EngagementPendingStage[] = []
+  for (const [capability, stage] of liveStages.value) {
+    if (known.has(capability)) continue
+    const filed = catalog.value[capability]
+    // A capability the record files nothing for is a machine step. The band
+    // names it; a ledger row for it would be a row with no work product.
+    if (!filed) continue
+    rows.push({
+      id: `live:${capability}`,
+      capability,
+      headline: filed.headline || stage.title || filed.label,
+      blocked_reason: '',
+      runnable: false,
+      start: { prompt: '', outcomes: [capability] },
+      filed: { label: filed.label, destination: filed.destination, unit: '', unit_plural: '', count: null },
+      // A capability the plan does not contain leads the tail rather than
+      // trailing it: everything below is owed, and this is happening now.
+      order: filed.order ?? -1,
+    })
+  }
+  return rows
+})
+
+/** The forward half as drawn: what is owed, plus what is happening. */
+const tail = computed(() => [...pending.value, ...liveOnly.value].sort((a, b) => a.order - b.order))
+
+/**
  * The first runnable stage is the only one drawn as a call to action — and
  * nothing is while a run is in flight, which is about to change the answer.
  */
@@ -388,9 +430,9 @@ const quietRuns = computed(() => {
 })
 
 const pendingNote = computed(() => {
-  const count = pending.value.length
+  const count = tail.value.length
   if (!count) return ''
-  const underway = pending.value.filter(stage => liveState(stage.capability)).length
+  const underway = tail.value.filter(stage => liveState(stage.capability)).length
   if (underway === count) return `${plural(count, 'stage')} under way`
   if (underway) return `${underway} of ${count} under way`
   return `${plural(count, 'stage')} ${count === 1 ? 'has' : 'have'} not run`
@@ -406,7 +448,7 @@ const pendingNote = computed(() => {
     <div v-if="loading && !data" class="loading"><i class="pi pi-spin pi-spinner" /> Reading the record…</div>
 
     <UiEmptyState
-      v-else-if="!entries.length && !pending.length"
+      v-else-if="!entries.length && !tail.length"
       icon="pi pi-book"
       title="Nothing filed yet"
       detail="Once the assistant completes a stage, what it produced is recorded here."
@@ -591,14 +633,14 @@ const pendingNote = computed(() => {
         </li>
 
         <!-- The ledger continues past the present into entries not yet written. -->
-        <template v-if="pending.length">
+        <template v-if="tail.length">
           <li class="nowline">
             <span class="lab">Now</span>
             <span class="hr" />
             <span class="lab">{{ pendingNote }}</span>
           </li>
           <li
-            v-for="stage in pending"
+            v-for="stage in tail"
             :key="stage.id"
             class="row ghost"
             :class="{ lead: stage.capability === leadStage }"
