@@ -9,6 +9,7 @@ import { useAgentRun } from '../composables/useAgentRun'
 import type { DashboardPhase, DashboardSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import ImportDialog from '../components/ImportDialog.vue'
+import { useAppearance } from '../composables/useAppearance'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
@@ -26,6 +27,7 @@ const router = useRouter()
 const nav = useWorkspaceNav()
 
 const workspace = ref<WorkspaceSummary | null>(null)
+const { theme, presenting, cycleTheme } = useAppearance()
 const folderImportOpen = ref(false)
 const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
 const dropActive = ref(false)
@@ -170,6 +172,22 @@ onUnmounted(() => {
 
       <span class="header-spacer" />
       <Button label="Import" icon="pi pi-upload" size="small" severity="secondary" @click="folderImportOpen = true" />
+      <button
+        type="button"
+        class="header-link"
+        :class="{ on: presenting }"
+        :aria-pressed="presenting"
+        :title="presenting ? 'Presentation size — on' : 'Presentation size — larger type for a room'"
+        aria-label="Presentation size"
+        @click="presenting = !presenting"
+      ><i class="pi pi-search-plus" /></button>
+      <button
+        type="button"
+        class="header-link"
+        :title="`Theme — ${theme}`"
+        :aria-label="`Theme: ${theme}. Change theme.`"
+        @click="cycleTheme"
+      ><i :class="theme === 'system' ? 'pi pi-desktop' : theme === 'dark' ? 'pi pi-moon' : 'pi pi-sun'" /></button>
       <router-link :to="`/workspace/${props.id}/debug`" class="header-link" aria-label="Debug console" title="Debug console"><i class="pi pi-code" /></router-link>
       <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
       <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
@@ -263,9 +281,16 @@ onUnmounted(() => {
 }
 .surface-switcher a.active em { background: var(--aw-navy-900); color: var(--aw-on-dark); }
 
-.workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: var(--aw-on-dark); }
+/* Outranks the global secondary-button rule: on the navy header the same
+   button is white-on-navy, not ink-on-canvas. */
+.workspace-header :deep(.p-button.p-button-secondary.p-component) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: var(--aw-on-dark); }
 .header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-control); color: var(--aw-on-navy); text-decoration: none; transition: background .15s; }
 .header-link:hover { background: rgb(255 255 255 / 10%); }
+/* The two appearance controls are buttons, not links; they need the reset a
+   link does not, and the pressed one has to look pressed. */
+button.header-link { border: 0; background: transparent; cursor: pointer; font: inherit; }
+button.header-link.on { background: var(--aw-teal-600); color: var(--aw-on-dark); }
+.header-link:focus-visible { outline: 2px solid var(--aw-mint); outline-offset: 2px; }
 
 @media (max-width: 1280px) {
   .brand strong { display: none; }

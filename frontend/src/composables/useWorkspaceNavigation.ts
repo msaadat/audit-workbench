@@ -19,6 +19,7 @@ export type WorkspaceDestination =
   | 'dashboard'
   | 'apm'
   | 'rcm'
+  | 'chain'
   | 'doc-tests'
   | 'data-tests'
   | 'findings'
@@ -43,6 +44,8 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   dashboard: { surface: 'file', section: 'dashboard', keys: [] },
   apm: { surface: 'file', section: 'apm', keys: [] },
   rcm: { surface: 'file', section: 'coverage', keys: ['rcm', 'observation'] },
+  // The derivation spine for one risk, source through to finding.
+  chain: { surface: 'file', section: 'chain', keys: ['rcm'] },
   'doc-tests': { surface: 'file', section: 'doc-tests', keys: ['test', 'item', 'create', 'rcm'] },
   'data-tests': { surface: 'file', section: 'data-tests', keys: ['test', 'create', 'rcm'] },
   findings: { surface: 'file', section: 'findings', keys: ['finding'] },
@@ -57,7 +60,7 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
 
 /** Sections in rail order, per surface. */
 export const FILE_SECTIONS = [
-  'dashboard', 'apm', 'coverage', 'data-tests', 'doc-tests', 'findings', 'report',
+  'dashboard', 'apm', 'coverage', 'data-tests', 'doc-tests', 'findings', 'chain', 'report',
 ] as const
 export const BENCH_SECTIONS = ['documents', 'tables', 'query', 'analysis'] as const
 

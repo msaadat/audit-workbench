@@ -333,6 +333,16 @@ def generated_record(workspace: Workspace, document_id: str) -> dict | None:
 _NOTE_BULLET = re.compile(r"^\s*[-*]\s+(?P<text>\S.*)$")
 _CITATION_MARKER = re.compile(r"\s*\[[A-Za-z0-9][A-Za-z0-9-]*\]")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# Some analyses lead a bullet with a bold summary of the observation, which is
+# a better label than the first sentence of the prose that follows it.
+_BOLD_LEAD = re.compile(r"^\*\*\s*(?P<lead>.+?)\s*\*\*\s*")
+# Observations are read into a plain-text label and detail, so the emphasis
+# markers around them render as literal asterisks rather than as emphasis.
+_EMPHASIS = re.compile(r"\*\*|__|(?<![A-Za-z0-9])[*_`]|[*_`](?![A-Za-z0-9])")
+
+
+def _plain(value: str) -> str:
+    return " ".join(_EMPHASIS.sub("", str(value or "")).split()).strip()
 
 
 def effective_audit_notes(workspace: Workspace, document_id: str) -> str:
@@ -362,17 +372,23 @@ def audit_observations(workspace: Workspace, document_id: str) -> list[dict]:
         match = _NOTE_BULLET.match(line)
         if match is None:
             continue
-        body = " ".join(match.group("text").split())
         # Citation ids anchor the note to a page; they read as noise in a
         # one-line label, and the detail keeps them.
-        parts = _SENTENCE_END.split(_CITATION_MARKER.sub("", body).strip(), maxsplit=1)
-        statement = parts[0].strip()
+        body = _CITATION_MARKER.sub("", " ".join(match.group("text").split())).strip()
+        lead = _BOLD_LEAD.match(body)
+        if lead:
+            statement = _plain(lead.group("lead"))
+            detail = _plain(body[lead.end():])
+        else:
+            parts = _SENTENCE_END.split(body, maxsplit=1)
+            statement = _plain(parts[0])
+            detail = _plain(parts[1] if len(parts) > 1 else "")
         if not statement:
             continue
         observations.append({
             "document_id": document_id,
             "statement": statement,
-            "detail": (parts[1].strip() if len(parts) > 1 else ""),
+            "detail": detail,
         })
     return observations
 

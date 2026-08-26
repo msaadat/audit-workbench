@@ -10,6 +10,7 @@ import DashboardTab from '../components/DashboardTab.vue'
 import PlanningTab from '../components/PlanningTab.vue'
 import DataTestsTab from '../components/DataTestsTab.vue'
 import DocTestsTab from '../components/DocTestsTab.vue'
+import ChainView from '../components/planning/ChainView.vue'
 import FindingsTab from '../components/FindingsTab.vue'
 import ReportTab from '../components/ReportTab.vue'
 
@@ -42,6 +43,7 @@ const rail: RailEntry[] = [
   { section: 'data-tests', destination: 'data-tests', label: 'Data tests', icon: 'pi pi-shield' },
   { section: 'doc-tests', destination: 'doc-tests', label: 'Document tests', icon: 'pi pi-verified', phase: 'fieldwork' },
   { section: 'findings', destination: 'findings', label: 'Findings', icon: 'pi pi-flag', count: () => workspace.value.finding_count ?? 0 },
+  { section: 'chain', destination: 'chain', label: 'Chain', icon: 'pi pi-sitemap' },
   { section: 'report', destination: 'report', label: 'Report', icon: 'pi pi-file-edit', phase: 'report' },
 ]
 
@@ -124,6 +126,7 @@ onUnmounted(unsubscribe)
       <DataTestsTab v-else-if="section === 'data-tests'" :workspace="workspace" @changed="reload" />
       <DocTestsTab v-else-if="section === 'doc-tests'" :workspace="workspace" @changed="reloadStatus" />
       <FindingsTab v-else-if="section === 'findings'" :workspace="workspace" @changed="reload" />
+      <ChainView v-else-if="section === 'chain'" :workspace="workspace" />
       <ReportTab v-else-if="section === 'report'" :workspace="workspace" @changed="reloadStatus" />
     </div>
   </div>

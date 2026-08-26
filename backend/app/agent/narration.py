@@ -495,6 +495,74 @@ def _omission_clauses(omissions: list, workspace: object) -> list[str]:
     return clauses
 
 
+def context_read(
+    manifest: "ContextManifest", workspace: object, *, label: str = ""
+) -> dict | None:
+    """The same reading, as structure rather than a sentence.
+
+    A sentence can list four filenames; it cannot show at a glance that four
+    were taken and five deliberately left. Both are projections of the same
+    content-free manifest — the sentence stays because it is the accessible
+    reading and the durable record, and this is what the transcript draws.
+
+    Documents are named individually here however many there are: the card
+    that renders them is scannable in a way a clause is not, so the naming
+    limit that protects the sentence does not apply.
+    """
+    selections = list(getattr(manifest, "selections", None) or [])
+    if not selections:
+        return None
+
+    def described(record: dict, reason: str = "") -> dict:
+        entry = {
+            "document_id": str(record.get("id") or ""),
+            "name": _document_name(record),
+            "category": str(record.get("category") or ""),
+            "pages": record.get("pages"),
+        }
+        return {**entry, "reason": reason} if reason else entry
+
+    documents = [described(record) for record in _resolve_documents(selections, workspace)]
+
+    omissions = list(getattr(manifest, "omissions", None) or [])
+    scoped = [item for item in omissions if _omission_kind(str(getattr(item, "reason", "") or "")) == "scope"]
+    withheld = [described(record) for record in _resolve_documents(scoped, workspace)]
+
+    supporting = _grouped_source_labels(
+        [
+            item
+            for item in selections
+            if not str(getattr(item, "source_ref", "") or "").startswith("document:")
+        ],
+        workspace,
+    )
+    absent = _grouped_source_labels(
+        [
+            item
+            for item in omissions
+            if _omission_kind(str(getattr(item, "reason", "") or "")) == "unavailable"
+        ],
+        workspace,
+        name_documents=False,
+    )
+    if not documents and not withheld:
+        # Nothing a card would show that the sentence does not say better.
+        return None
+    return {
+        "at": store.utcnow(),
+        "stage_title": str(label or ""),
+        "documents": documents,
+        "withheld": withheld,
+        "supporting": supporting,
+        "unavailable": absent,
+        # The prose reading of the same manifest. It is not a second thing the
+        # transcript shows — the card renders it for assistive technology and
+        # nothing else — but it stays on the record so a run read back as JSON
+        # still says in words what it read.
+        "sentence": context_note(manifest, workspace, label=label),
+    }
+
+
 def context_note(manifest: "ContextManifest", workspace: object, *, label: str = "") -> str:
     """What a model turn is about to read, and what it left out.
 

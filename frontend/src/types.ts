@@ -2164,6 +2164,42 @@ export interface AssistantApprovalProjection {
   approval: AgentApproval
 }
 
+/** One document a step read, or deliberately did not. */
+export interface ContextDocument {
+  document_id: string
+  name: string
+  category: string
+  pages: number | null
+  reason?: string
+}
+
+/**
+ * What one step read, as structure rather than as a sentence.
+ *
+ * The prose line remains in the transcript as the accessible reading; this is
+ * what the cards draw, so a reader sees at a glance which files the work rests
+ * on and which were held out of scope.
+ */
+export interface ContextRead {
+  at: string
+  stage_title: string
+  documents: ContextDocument[]
+  withheld: ContextDocument[]
+  supporting: string[]
+  unavailable: string[]
+  /** The prose reading of the same manifest, for assistive technology. */
+  sentence: string
+}
+
+export interface AssistantContextProjection {
+  id: string
+  type: 'context'
+  derived: true
+  run_id: string
+  created_at: string
+  context: ContextRead
+}
+
 export interface AssistantMilestoneProjection {
   id: string
   type: 'milestone'
@@ -2193,7 +2229,7 @@ export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count
   next_ordinal: number
   composer_context: { document_ids: string[] }
   messages: AssistantChatMessage[]
-  transcript: Array<AssistantChatMessage | AssistantRunProjection | AssistantInteractionProjection | AssistantApprovalProjection | AssistantMilestoneProjection>
+  transcript: Array<AssistantChatMessage | AssistantRunProjection | AssistantInteractionProjection | AssistantApprovalProjection | AssistantMilestoneProjection | AssistantContextProjection>
   artifacts: Record<string, AssistantArtifact>
   artifact_errors: Array<{ id: string; error: string }>
   runs: AssistantRunProjection[]

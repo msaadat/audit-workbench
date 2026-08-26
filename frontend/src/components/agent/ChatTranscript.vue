@@ -3,12 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 
 import { TERMINAL_STATUSES, useAgentRun } from '../../composables/useAgentRun'
-import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AssistantSuggestion, AuditDocument, EvidenceRef } from '../../types'
+import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantContextProjection, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AssistantSuggestion, AuditDocument, EvidenceRef } from '../../types'
 import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import MarkdownView from '../MarkdownView.vue'
 import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
 import AgentMilestoneCard from './AgentMilestoneCard.vue'
+import AgentContextCard from './AgentContextCard.vue'
 import AgentThinking from './AgentThinking.vue'
 import ChatArtifactCard from './ChatArtifactCard.vue'
 import ChatRunCard from './ChatRunCard.vue'
@@ -63,6 +64,7 @@ function isRun(item: TranscriptItem): item is AssistantRunProjection { return it
 function isInteraction(item: TranscriptItem): item is AssistantInteractionProjection { return item.type === 'interaction' }
 function isApproval(item: TranscriptItem): item is AssistantApprovalProjection { return item.type === 'approval' }
 function isMilestone(item: TranscriptItem): item is AssistantMilestoneProjection { return item.type === 'milestone' }
+function isContext(item: TranscriptItem): item is AssistantContextProjection { return item.type === 'context' }
 // Narrower than the card's notion of "active": a run that is paused, waiting on
 // the auditor, or interrupted is not working, and animating a phase line for it
 // claims progress that isn't happening.
@@ -181,6 +183,7 @@ function messageTime(value: string) {
              this conversation's work: it stays a compact receipt here. -->
         <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
       </template>
+      <AgentContextCard v-else-if="isContext(item)" :context="item.context" />
       <AgentMilestoneCard v-else-if="isMilestone(item)" :milestone="item.milestone" />
       <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" />
       <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />

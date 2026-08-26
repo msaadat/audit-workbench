@@ -166,3 +166,37 @@ def test_lead_sentence_reads_one_section_of_a_finding_narrative():
         "The SOP requires matching."
     )
     assert audit._lead_sentence(narrative, section="Cause") == ""
+
+
+# --------------------------------------------------------------------------- #
+# Reading a bold-led observation
+# --------------------------------------------------------------------------- #
+BOLD_NOTES = """## Review observations
+- **Governance metadata is incomplete.** The supplied extract does not identify the issuer or version. This matters because the authority cannot be verified. [C1]
+- **Action owner and deadlines are not stated.** The agreed review scope is documented. [C4] [C5]
+"""
+
+
+def test_a_bold_lead_becomes_the_label_without_its_markers(monkeypatch):
+    _stub_notes(monkeypatch, {"d_sop": BOLD_NOTES})
+
+    observations = document_analysis.audit_observations(_Workspace(), "d_sop")
+
+    # The bold lead is the analysis' own summary of the observation, which is a
+    # better label than the first sentence of the prose after it.
+    assert observations[0]["statement"] == "Governance metadata is incomplete."
+    assert observations[0]["detail"].startswith("The supplied extract does not identify")
+    # Labels render as plain text, so emphasis markers must never reach them.
+    assert "**" not in observations[0]["statement"]
+    assert "**" not in observations[0]["detail"]
+    assert observations[1]["statement"] == "Action owner and deadlines are not stated."
+
+
+def test_emphasis_inside_a_plain_bullet_is_stripped_too(monkeypatch):
+    _stub_notes(monkeypatch, {
+        "d_sop": "## Notes\n- The SOP has no *effective date* and no `owner`. Obtain the record. [C1]\n",
+    })
+
+    observation = document_analysis.audit_observations(_Workspace(), "d_sop")[0]
+
+    assert observation["statement"] == "The SOP has no effective date and no owner."

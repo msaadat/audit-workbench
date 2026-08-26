@@ -47,18 +47,31 @@ body {
   --aw-ink: #0d2340;          /* primary body text */
   --aw-ink-strong: #07162b;   /* headings, deepest navy */
   --aw-ink-soft: #46576d;     /* form labels, secondary body */
-  --aw-muted: #5f7088;        /* tertiary text, captions */
-  --aw-muted-strong: #78899e; /* tertiary on tinted surfaces */
+  /* Both tertiary greys are measured against the surface they are used on,
+     not against white. `--aw-muted` was 4.49:1 on `--aw-raised` — under AA by
+     a hundredth, on the app's standard label-on-tinted-panel pairing — and
+     `--aw-muted-strong`, whose whole job is tinted surfaces, was 3.18:1. */
+  --aw-muted: #5a6a81;        /* tertiary text, captions — 4.90 on raised */
+  --aw-muted-strong: #627081; /* tertiary on tinted surfaces — 4.50 on raised */
 
   /* Text over the navy header/hero surfaces. */
   --aw-on-dark: #ffffff;
   --aw-on-navy: #e6edf6;
   --aw-on-navy-muted: #8fa6c2;
+  /* Text on a solid accent fill. Distinct from `--aw-on-dark`, which is text
+     over the navy header and stays white in both themes: the accent is dark
+     teal on a light ground and light teal on a dark one, so what reads on it
+     flips. */
+  --aw-on-accent: #ffffff;
 
   /* --- Surface layers -------------------------------------------------- */
   --aw-canvas: #f6f8fb;       /* page background */
   --aw-panel: #ffffff;        /* cards, rails, dialogs */
   --aw-raised: #eef2f7;       /* inset/tinted block inside a panel */
+  /* A panel lifted just off the canvas. Was written four times as a literal
+     `rgb(255 255 255 / 55%)`, which is a lift on a light ground and a pale
+     wash under light text on a dark one. */
+  --aw-panel-wash: rgb(255 255 255 / 55%);
   --aw-navy-950: #07162b;
   --aw-navy-900: #0d2340;
   --aw-navy-800: #14294a;
@@ -83,7 +96,8 @@ body {
   --aw-accent: #7c3aed;
   --aw-accent-soft: #f5f0ff;
 
-  --aw-ok: #16855b;
+  /* 4.58 on its own soft fill; #16855b measured 4.13 there. */
+  --aw-ok: #147d55;
   --aw-ok-soft: #e5f6ee;
   --aw-ok-line: #9fd9be;
 
@@ -120,6 +134,217 @@ body {
   --aw-shadow-sm: 0 1px 2px rgb(13 35 64 / 6%), 0 1px 3px rgb(13 35 64 / 4%);
   --aw-shadow-md: 0 2px 6px rgb(13 35 64 / 7%), 0 10px 24px rgb(13 35 64 / 6%);
   --aw-shadow-lg: 0 8px 20px rgb(7 22 43 / 12%), 0 24px 60px rgb(7 22 43 / 10%);
+}
+
+/* =========================================================================
+   Presentation density.
+
+   The interface lives in a narrow band under body size: on the planning
+   screen, 86 of 212 visible text nodes measure 12.25px or less. That reads as
+   dense and professional on a laptop and as unreadable on a projector, and
+   unreadable reads as "not for me".
+
+   Because every size already routes through a token, showing the same
+   interface to a room is an override rather than a rebuild. Nothing below
+   changes a layout rule — only the scale the layout is drawn at — so a screen
+   that fits at default density still fits here.
+   ========================================================================= */
+:root[data-density='presentation'] {
+  --aw-text-2xs: 0.8rem;
+  --aw-text-xs: 0.85rem;
+  --aw-text-sm: 0.94rem;
+  --aw-text-base: 1.03rem;
+  --aw-text-md: 1.12rem;
+  --aw-text-lg: 1.3rem;
+  --aw-text-xl: 1.6rem;
+  --aw-text-2xl: 2.05rem;
+  --aw-text-3xl: 2.6rem;
+
+  --aw-control-height: 2.6rem;
+  --aw-control-height-sm: 2.2rem;
+  --aw-row-height: 2.9rem;
+  --aw-section-gap: 1.1rem;
+}
+
+/* =========================================================================
+   Dark theme.
+
+   Three viewer states, not two: an explicit choice stamps `data-theme` on the
+   root, and the default setting stamps nothing, where only the OS preference
+   separates light from dark. Only tokens are redefined — never a component
+   rule — so a colour can never be defined in one theme and missing in the
+   other.
+
+   The dark palette is not an inversion. Ink lightens, surfaces lift rather
+   than darken as they come forward, and every accent moves up its own ramp so
+   it still reads as itself against a navy ground: the teal that carries the
+   brand on white is invisible on navy, and the semantic hues have to stay
+   distinguishable from each other at the new lightness.
+   ========================================================================= */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --aw-ink: #e6edf6;
+    --aw-ink-strong: #ffffff;
+    --aw-ink-soft: #c3d2e4;
+    --aw-muted: #9db0c9;
+    --aw-muted-strong: #8fa2bb;
+
+    --aw-on-dark: #ffffff;
+    --aw-on-navy: #e6edf6;
+    --aw-on-navy-muted: #8fa6c2;
+    --aw-on-accent: #07162b;
+
+    --aw-canvas: #07162b;
+    --aw-panel: #0d2340;
+    --aw-raised: #14294a;
+    --aw-panel-wash: rgb(230 237 246 / 6%);
+    --aw-navy-950: #050f1e;
+    --aw-navy-900: #07162b;
+    --aw-navy-800: #0d2340;
+
+    --aw-border: #1e3557;
+    --aw-border-strong: #2c4870;
+
+    --aw-teal: #5eead4;
+    --aw-teal-600: #2dd4bf;
+    --aw-teal-strong: #99f6e4;
+    --aw-teal-soft: #0e3b3a;
+    --aw-teal-line: #1c5f5a;
+    --aw-mint: #99f6e4;
+    --aw-mint-600: #5eead4;
+
+    --aw-accent: #c4b5fd;
+    --aw-accent-soft: #2a2145;
+
+    --aw-ok: #6ee7b7;
+    --aw-ok-soft: #0d3527;
+    --aw-ok-line: #1c5c43;
+
+    --aw-warn: #f0b45f;
+    --aw-warn-ink: #f8d199;
+    --aw-warn-soft: #3a2a12;
+    --aw-warn-line: #6b4a1c;
+
+    --aw-low: #fde047;
+    --aw-low-ink: #fef08a;
+    --aw-low-soft: #322a0c;
+
+    --aw-danger: #fca5a0;
+    --aw-danger-ink: #fecaca;
+    --aw-danger-soft: #3d1714;
+    --aw-danger-line: #6d2823;
+
+    --aw-info: #93c5fd;
+    --aw-info-soft: #14243f;
+    --aw-info-line: #26456f;
+
+    /* A shadow on a dark ground reads as depth only when it is a real
+       shadow, not a tinted haze. */
+    --aw-shadow-sm: 0 1px 2px rgb(0 0 0 / 32%), 0 1px 3px rgb(0 0 0 / 24%);
+    --aw-shadow-md: 0 2px 6px rgb(0 0 0 / 34%), 0 10px 24px rgb(0 0 0 / 28%);
+    --aw-shadow-lg: 0 8px 20px rgb(0 0 0 / 44%), 0 24px 60px rgb(0 0 0 / 38%);
+  }
+}
+
+/* The explicit choice wins in both directions: dark on a light OS, and — via
+   the `:not([data-theme='light'])` guard above — light on a dark one. */
+:root[data-theme='dark'] {
+  --aw-ink: #e6edf6;
+  --aw-ink-strong: #ffffff;
+  --aw-ink-soft: #c3d2e4;
+  --aw-muted: #9db0c9;
+  --aw-muted-strong: #8fa2bb;
+
+  --aw-on-dark: #ffffff;
+  --aw-on-navy: #e6edf6;
+  --aw-on-navy-muted: #8fa6c2;
+  --aw-on-accent: #07162b;
+
+  --aw-canvas: #07162b;
+  --aw-panel: #0d2340;
+  --aw-raised: #14294a;
+  --aw-panel-wash: rgb(230 237 246 / 6%);
+  --aw-navy-950: #050f1e;
+  --aw-navy-900: #07162b;
+  --aw-navy-800: #0d2340;
+
+  --aw-border: #1e3557;
+  --aw-border-strong: #2c4870;
+
+  --aw-teal: #5eead4;
+  --aw-teal-600: #2dd4bf;
+  --aw-teal-strong: #99f6e4;
+  --aw-teal-soft: #0e3b3a;
+  --aw-teal-line: #1c5f5a;
+  --aw-mint: #99f6e4;
+  --aw-mint-600: #5eead4;
+
+  --aw-accent: #c4b5fd;
+  --aw-accent-soft: #2a2145;
+
+  --aw-ok: #6ee7b7;
+  --aw-ok-soft: #0d3527;
+  --aw-ok-line: #1c5c43;
+
+  --aw-warn: #f0b45f;
+  --aw-warn-ink: #f8d199;
+  --aw-warn-soft: #3a2a12;
+  --aw-warn-line: #6b4a1c;
+
+  --aw-low: #fde047;
+  --aw-low-ink: #fef08a;
+  --aw-low-soft: #322a0c;
+
+  --aw-danger: #fca5a0;
+  --aw-danger-ink: #fecaca;
+  --aw-danger-soft: #3d1714;
+  --aw-danger-line: #6d2823;
+
+  --aw-info: #93c5fd;
+  --aw-info-soft: #14243f;
+  --aw-info-line: #26456f;
+
+  --aw-shadow-sm: 0 1px 2px rgb(0 0 0 / 32%), 0 1px 3px rgb(0 0 0 / 24%);
+  --aw-shadow-md: 0 2px 6px rgb(0 0 0 / 34%), 0 10px 24px rgb(0 0 0 / 28%);
+  --aw-shadow-lg: 0 8px 20px rgb(0 0 0 / 44%), 0 24px 60px rgb(0 0 0 / 38%);
+}
+
+
+/* The severities the preset does not remap. Aura ships zinc greys for
+   `secondary`, which read as a foreign palette on a light ground and fall to
+   ~2.5:1 on the navy one. PrimeVue injects its own `:root` tokens after this
+   stylesheet, so redefining them here loses the cascade — these are rules, at
+   a specificity that wins, rather than variables that get overwritten.
+
+   The workspace header sets its own white-on-navy treatment for the same
+   buttons and is deliberately excluded. */
+.p-button.p-button-secondary.p-button-outlined,
+.p-button.p-button-secondary.p-button-text {
+  color: var(--aw-ink-soft);
+}
+
+/* A solid primary button carried white on teal-500 — 2.49:1, the worst
+   pairing in the interface and on its most-clicked control. The brand teal
+   the rest of the app uses for the same job is the 700 step, which carries
+   white at 5.47:1. In dark the relationship inverts: the button becomes a
+   light teal with navy on it, because a 700 teal on a navy ground reads as a
+   disabled control rather than the primary action. */
+.p-button:not(.p-button-outlined):not(.p-button-text):not(.p-button-secondary):not(.p-button-danger):not(.p-button-success):not(.p-button-warn):not(.p-button-info) {
+  background: var(--aw-teal);
+  border-color: var(--aw-teal);
+  color: var(--aw-on-accent);
+}
+.p-button:not(.p-button-outlined):not(.p-button-text):not(.p-button-secondary):not(.p-button-danger):not(.p-button-success):not(.p-button-warn):not(.p-button-info):hover {
+  background: var(--aw-teal-strong);
+  border-color: var(--aw-teal-strong);
+}
+.p-button.p-button-secondary.p-button-outlined {
+  border-color: var(--aw-border-strong);
+}
+.p-button.p-button-secondary.p-button-outlined:hover,
+.p-button.p-button-secondary.p-button-text:hover {
+  background: var(--aw-raised);
+  color: var(--aw-ink-strong);
 }
 
 body {
@@ -310,7 +535,7 @@ button, input, textarea, select { font: inherit; }
   text-decoration: none;
   transition: background .15s, color .15s;
 }
-.ui-surface__item:hover:not(.active) { background: rgb(255 255 255 / 55%); color: var(--aw-ink); }
+.ui-surface__item:hover:not(.active) { background: var(--aw-panel-wash); color: var(--aw-ink); }
 /* Active nav lifts off the rail — one of the few places a shadow earns its keep. */
 .ui-surface__item.active { color: var(--aw-teal); background: var(--aw-panel); box-shadow: var(--aw-shadow-sm); }
 .ui-surface__item.active .pi { color: var(--aw-teal); }
@@ -349,7 +574,7 @@ button, input, textarea, select { font: inherit; }
   padding: 2rem;
   border: 1px dashed var(--aw-border-strong);
   border-radius: var(--aw-radius-surface);
-  background: rgb(255 255 255 / 55%);
+  background: var(--aw-panel-wash);
   text-align: center;
 }
 .ui-empty-state--compact { min-height: 10rem; padding: 1.25rem; }
@@ -425,7 +650,7 @@ button, input, textarea, select { font: inherit; }
   padding: 2rem;
   border: 1px dashed var(--aw-border-strong);
   border-radius: var(--aw-radius-surface);
-  background: rgb(255 255 255 / 55%);
+  background: var(--aw-panel-wash);
 }
 .empty-state-icon { display: grid; place-items: center; width: 3rem; height: 3rem; margin-bottom: var(--aw-space-3); border-radius: var(--aw-radius-control); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: var(--aw-text-xl); }
 .empty-state-icon i { position: relative; top: -0.03em; left: -0.01em; }

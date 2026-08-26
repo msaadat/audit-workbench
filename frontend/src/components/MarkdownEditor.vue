@@ -106,6 +106,38 @@ onBeforeUnmount(() => void unmount())
   --crepe-shadow-2: var(--aw-shadow-md);
 }
 
+/*
+ * A memorandum is read, not filled in.
+ *
+ * The editor drew the APM and the report as full-width interface text at body
+ * size — the visual language of a form field, over a document a partner is
+ * meant to read end to end. A measure, a reading size and page-like padding
+ * are the difference between "a textarea with Markdown in it" and a planning
+ * memorandum, and they cost no component logic.
+ *
+ * The measure is set as padding on the content box, not as `max-width` plus
+ * `margin-inline: auto` on each block. Centring blocks individually gives each
+ * one its own left edge — a heading, a paragraph and a list all start at
+ * different x, because their boxes are different widths — and Crepe's drag
+ * handles, which position against the block, drift with them. Padding gives
+ * every child one shared edge and lets a wide table use the room it needs.
+ */
+.markdown-editor :deep(.milkdown .ProseMirror) {
+  padding-block: 2rem;
+  padding-inline: max(1.75rem, calc((100% - 68ch) / 2));
+  font-size: var(--aw-text-md);
+  line-height: 1.65;
+}
+.markdown-editor :deep(.milkdown .ProseMirror > :is(h1, h2, h3)) {
+  margin-top: 1.6em;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.markdown-editor :deep(.milkdown .ProseMirror > h1) { font-size: var(--aw-text-2xl); }
+.markdown-editor :deep(.milkdown .ProseMirror > h2) { font-size: var(--aw-text-xl); }
+.markdown-editor :deep(.milkdown .ProseMirror > h3) { font-size: var(--aw-text-lg); }
+
 .markdown-editor:focus-within {
   border-color: var(--aw-teal-600);
   box-shadow: 0 0 0 1px var(--aw-teal-600);

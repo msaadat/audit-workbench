@@ -824,6 +824,17 @@ class WorkflowRunner:
         """
 
         def resolved(manifest: Any) -> None:
+            # A structured read where there are documents to show, so the
+            # transcript can draw them as files rather than bury four names in
+            # a clause. It carries the prose reading with it, so the sentence
+            # is not lost — only the duplicate rendering of it is.
+            record = narration.context_read(
+                manifest, self.subject, label=capability.title
+            )
+            if record:
+                self.run.setdefault("context_reads", []).append(record)
+                self.runtime.emit("context_read", {"entry": record})
+                return
             text = narration.context_note(manifest, self.subject, label=capability.title)
             if text:
                 narration.say(self.run, self.runtime.emit, text)
