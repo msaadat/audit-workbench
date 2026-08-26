@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from './views/HomeView.vue'
 import WorkspaceView from './views/WorkspaceView.vue'
 import ConsoleView from './views/ConsoleView.vue'
+import EngagementRecordView from './views/EngagementRecordView.vue'
 import AuditFileView from './views/AuditFileView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import DebugView from './views/DebugView.vue'
@@ -11,7 +12,7 @@ import {
 } from './composables/useWorkspaceNavigation'
 
 const WORKSPACE_ROUTES = [
-  'workspace', 'workspace-file', 'workspace-bench',
+  'workspace', 'workspace-console', 'workspace-file', 'workspace-bench',
 ]
 
 const router = createRouter({
@@ -24,7 +25,10 @@ const router = createRouter({
       component: WorkspaceView,
       props: true,
       children: [
-        { path: '', name: 'workspace', component: ConsoleView, props: true },
+        // The engagement record is the landing surface; the chat has its own
+        // path. Both keep the shell, so the assistant drawer rides along.
+        { path: '', name: 'workspace', component: EngagementRecordView, props: true },
+        { path: 'console', name: 'workspace-console', component: ConsoleView, props: true },
         { path: 'file/:section', name: 'workspace-file', component: AuditFileView, props: true },
         { path: 'bench/:section', name: 'workspace-bench', component: WorkbenchView, props: true },
         // Bare surface paths land on their first section.

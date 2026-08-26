@@ -38,13 +38,14 @@ const sectionById = ref<Record<string, DashboardSection>>({})
 
 const agent = useAgentRun(props.id)
 
-// The console owns the assistant full-width; every other surface keeps it as a
-// sidecar so a question is always one click away without leaving the record.
-const onConsole = computed(() => route.name === 'workspace')
+// The assistant surface owns the chat full-width; every other surface keeps it
+// as a sidecar so a question is always one click away without leaving the work.
+const onConsole = computed(() => route.name === 'workspace-console')
 const surface = computed(() => {
   if (route.name === 'workspace-file') return 'file'
   if (route.name === 'workspace-bench') return 'bench'
-  return 'console'
+  if (route.name === 'workspace-console') return 'console'
+  return 'home'
 })
 
 async function loadEngagementStatus() {
@@ -159,8 +160,11 @@ onUnmounted(() => {
       </div>
 
       <nav class="surface-switcher" aria-label="Workspace surfaces">
+        <router-link :to="nav.to('record')" :class="{ active: surface === 'home' }">
+          <i class="pi pi-history" /><span>Record</span>
+        </router-link>
         <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
-          <i class="pi pi-sparkles" /><span>Console</span>
+          <i class="pi pi-sparkles" /><span>Assistant</span>
         </router-link>
         <router-link :to="nav.to('dashboard')" :class="{ active: surface === 'file' }">
           <i class="pi pi-book" /><span>Audit file</span>

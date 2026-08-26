@@ -12,10 +12,17 @@ type QueryValue = string | number | null | undefined
  * names stable meant the ~25 call sites only changed shape, not intent.
  */
 
-export type WorkspaceSurface = 'console' | 'file' | 'bench'
+/**
+ * `home` is the engagement record at the workspace root. The console keeps its
+ * own path rather than the root: the landing question is "what was done here",
+ * and the chat answers a different one — it is also always a click away in the
+ * sidecar drawer on every surface but its own.
+ */
+export type WorkspaceSurface = 'home' | 'console' | 'file' | 'bench'
 
 export type WorkspaceDestination =
   | 'console'
+  | 'record'
   | 'dashboard'
   | 'apm'
   | 'rcm'
@@ -39,6 +46,9 @@ interface DestinationSpec {
 
 const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   console: { surface: 'console', section: '', keys: [] },
+  // What the engagement filed, keyed by work product rather than by the chat
+  // that asked for it. A projection of runs and their milestones.
+  record: { surface: 'home', section: '', keys: [] },
   // The curated dashboard is an audit outcome (`dashboard.curated`), so it sits
   // in the audit file rather than acting as the workspace landing page.
   dashboard: { surface: 'file', section: 'dashboard', keys: [] },
@@ -100,7 +110,8 @@ export function destinationForSection(
 
 export function surfacePath(workspaceId: string, surface: WorkspaceSurface, section = ''): string {
   const base = `/workspace/${workspaceId}`
-  if (surface === 'console') return base
+  if (surface === 'home') return base
+  if (surface === 'console') return `${base}/console`
   return section ? `${base}/${surface}/${section}` : `${base}/${surface}`
 }
 

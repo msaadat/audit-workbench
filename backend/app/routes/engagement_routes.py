@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Query
 
-from .. import engagement, workspaces
+from .. import engagement, engagement_record, workspaces
 
 router = APIRouter(prefix="/api", tags=["engagement"])
 
@@ -20,6 +20,16 @@ async def get_engagement_plan(
     a workspace exists.
     """
     return engagement.plan_preview(template, mode)
+
+
+@router.get("/workspaces/{workspace_id}/engagement/record")
+async def get_engagement_record(workspace_id: str):
+    """What this engagement filed, in the order each work product settled.
+
+    A projection of runs and their milestones — no state of its own.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    return engagement_record.record(ws)
 
 
 @router.post("/workspaces/{workspace_id}/engagement/brief")

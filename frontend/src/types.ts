@@ -2101,6 +2101,68 @@ export interface AgentMilestone {
 }
 
 /**
+ * The engagement record: what this engagement filed, keyed by the work product
+ * rather than by the conversation that asked for it.
+ *
+ * Every attempt at one capability collapses into a single entry — the demo
+ * engagement files nine work products across twenty-three milestones — so
+ * `attempts` is how many runs it took and `elapsed_ms` is what all of them
+ * cost together. Where `measured_attempts` is short of `attempts.length`, some
+ * of those runs were cancelled or failed and their wall clock counts time
+ * spent waiting for a person, so they are deliberately not timed.
+ */
+export interface EngagementRecordEntry {
+  id: string
+  capability: string
+  at: string | null
+  first_at: string | null
+  status: string
+  headline: string
+  summary: string
+  metrics: AgentMilestone['metrics']
+  highlights: AgentMilestone['highlights']
+  objective: string
+  run_id: string
+  chat_id: string | null
+  attempts: Array<{
+    run_id: string
+    run_status: string
+    at: string | null
+    elapsed_ms: number | null
+  }>
+  elapsed_ms: number | null
+  measured_attempts: number
+  /** Null for a capability the record has no artifact mapping for. */
+  filed: {
+    label: string
+    /**
+     * A `WorkspaceDestination`, but left wide here so `types.ts` stays free of
+     * imports and a destination this build does not know degrades to an
+     * unlinked row instead of throwing inside the router.
+     */
+    destination: string
+    unit: string
+    /** Declared beside the unit so irregulars ("analyses") are not guessed. */
+    unit_plural: string
+    count: number | null
+  } | null
+}
+
+export interface EngagementRecordPayload {
+  entries: EngagementRecordEntry[]
+  counts: Record<string, number>
+  totals: {
+    work_products: number
+    runs: number
+    runs_that_filed: number
+    attempts: number
+    elapsed_ms: number | null
+    first_at: string | null
+    last_at: string | null
+  }
+}
+
+/**
  * A unit that stopped because it needs a person, already turned into a
  * question. `suggestions` are ordinary chat commands, so answering a blocker
  * goes through the same path as anything else the auditor types.
