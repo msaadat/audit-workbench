@@ -468,9 +468,9 @@ extracted records — you are not shown those, and must not guess at them.
 
 Return an object with `contracts`, one entry per supplied attribute, each with
 row_index and attribute_key copied exactly from the request, plus:
-- registry: an object with exactly pack_id, pack_version, and definition_hash,
-  copied verbatim from one installed pack below. All attributes of one row must
-  use the same pack. The pack is the business cycle the control belongs to.
+- pack_id: the id of one installed pack below, and nothing else about it. All
+  attributes of one row must use the same pack. The pack is the business cycle
+  the control belongs to.
 - comparison_recipes: a non-empty array of {{"recipe_id": "<id>"}} objects and
   nothing else. No bindings, no record kinds, no field selectors, no operators.
   Cite each shape once; a shape used against two different record pairs is bound
@@ -484,17 +484,16 @@ by returning `unsupported: true` with a one-line reason instead of the contract
 fields, and the attribute's evidence strategy will be reconsidered rather than
 answered by a shape that proves something else. {JSON_RULES}"""
 
+# Ids only. The version and the definition hash are derived from the id in
+# ``_canonical_registry`` — showing them here asks the model to transcribe a
+# sixty-four character hash, and ``docs/memo-structured-references.md`` settled
+# what models do with hex tokens a sixth that length. Measured on one live
+# matrix before this changed: six of seven hashes came back corrupted, one by a
+# transposition, one by a dropped character that shifted the fifty following
+# it — and each corruption quarantined the row it belonged to.
 RCM_EVIDENCE_SYSTEM += (
-    "\n\nInstalled transaction-evidence packs. Copy one `registry` object "
-    "exactly:\n"
-) + json.dumps(
-    [
-        {"registry": pack["registry"]}
-        for pack in _RCM_CANONICAL_PACK_REFERENCES
-    ],
-    sort_keys=True,
-    separators=(",", ":"),
-)
+    "\n\nInstalled transaction-evidence packs. Name one by `pack_id`:\n"
+) + json.dumps(sorted(_RCM_PACK_IDS), separators=(",", ":"))
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
 # Keys a proposed row may carry into normalization. Anything else — a rationale,
@@ -521,10 +520,19 @@ _RCM_ROW_KEYS = frozenset(
 
 # The source id the RCM scope supplies engagement documents under.
 RCM_DOCUMENT_SOURCE_ID = "documents"
-# Citation anchors are authored by document analysis as `[C7]` markers inside
+# Citation anchors are authored by document analysis as `[c7]` markers inside
 # the summary a worker reads, so the ids a row may cite are exactly the ids
 # present in the text it was shown.
-_CITATION_MARKER = re.compile(r"\[(C\d+)\]")
+#
+# Either case, because a marker's case carries no information and the worker
+# that writes them says so: ``documents._citation_case_map`` folds every variant
+# onto the supplied id rather than rejecting the difference. Recognizing one
+# spelling here did not reject anything — it silently recognized *nothing*. Every
+# marker in one live engagement was lower case, so the sheet found no citations
+# in any document, skipped all three, and handed the model an empty register;
+# it noticed ("CITABLE DOCUMENTS says [] yet documents summaries have [c1]") and
+# correctly wrote a matrix citing no criteria at all.
+_CITATION_MARKER = re.compile(r"\[([Cc]\d+)\]")
 # One initial call plus this many correction turns, mirrored into the registered
 # repair policy below. The worker needs it to know which attempt is its last, and
 # therefore when an unrepairable row should be quarantined rather than sink the
@@ -617,12 +625,19 @@ def _validated_criteria_refs(
             raise WorkerResponseValidationError(
                 f"RCM row {index} criteria_refs entry for ref {ref} needs citations"
             )
-        allowed = set(supplied["citations"])
+        # Folded onto the register's own spelling, for the same reason the
+        # recognizer above accepts both: a row that answers `[C4]` to a sheet
+        # listing `c4` has cited the right sentence, and spending the repair
+        # allowance on the difference corrects nothing an auditor would read.
+        allowed = {
+            str(value).casefold(): str(value) for value in supplied["citations"]
+        }
         for citation in citations:
-            identifier = str(citation or "").strip()
-            if identifier not in allowed:
+            supplied_id = str(citation or "").strip()
+            identifier = allowed.get(supplied_id.casefold())
+            if identifier is None:
                 raise WorkerResponseValidationError(
-                    f"RCM row {index} cites {identifier} in "
+                    f"RCM row {index} cites {supplied_id} in "
                     f"'{supplied['document']}', which does not carry it"
                 )
             resolved.append({
@@ -1353,10 +1368,38 @@ def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
     return pending
 
 
-_CONTRACT_FIELDS = (
-    "registry",
-    "comparison_recipes",
-)
+_CONTRACT_FIELDS = ("comparison_recipes",)
+
+#: The installed reference for every pack, looked up by the one field a model is
+#: asked to write. A reference is wholly derivable from its pack id, so nothing
+#: is lost by deriving it — and a hash the model never types is a hash it can
+#: never mistype.
+_RCM_REGISTRY_BY_PACK_ID = {
+    str(pack["id"]): {
+        "pack_id": str(pack["id"]),
+        "pack_version": pack["version"],
+        "definition_hash": pack["definition_hash"],
+    }
+    for pack in cycle_vouching.metadata()["registry"]["packs"]
+}
+
+
+def _canonical_registry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The installed reference for the pack one contract names.
+
+    Accepts the id on its own or still nested under a ``registry`` object, since
+    a model told to name a pack will sometimes wrap it in the shape it used to
+    be asked for. An id naming no installed pack resolves to nothing: the
+    attribute then reaches the gate as a cycle strategy with no contract, which
+    is the existing honest failure and one :func:`_downgraded_uncontracted` can
+    reroute — where keeping a corrupt reference only fails the row.
+    """
+    supplied = entry.get("registry")
+    if isinstance(supplied, Mapping):
+        supplied = supplied.get("pack_id")
+    pack_id = str(supplied or entry.get("pack_id") or "").strip()
+    reference = _RCM_REGISTRY_BY_PACK_ID.get(pack_id)
+    return dict(reference) if reference is not None else None
 
 
 def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
@@ -1405,6 +1448,11 @@ def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
                 for field in _CONTRACT_FIELDS
                 if entry.get(field) is not None
             }
+            # Derived from the named id rather than taken from the response, so
+            # a mistyped hash cannot exist to be rejected.
+            registry = _canonical_registry(entry)
+            if registry is not None:
+                contract["registry"] = registry
             # A citation names the audit shape and stops there; which record
             # kinds fill its placeholders is decided during test generation,
             # against the evidence a workspace actually holds. The evidence
@@ -1657,7 +1705,17 @@ def _downgraded_uncontracted(
                 and attribute.get("evidence_kind") == "transaction_cycle"
                 and not attribute.get("registry")
             ):
-                attribute = {**attribute, "evidence_kind": fallback}
+                # The recipes go with the strategy that owned them. A shape
+                # cited against a pack is meaningless once the attribute is no
+                # longer answered by that pack, and leaving it behind trades one
+                # rejection for another — "does not accept comparison recipes" —
+                # on a row this path exists to save.
+                attribute = {
+                    key: value
+                    for key, value in attribute.items()
+                    if key != "comparison_recipes"
+                }
+                attribute["evidence_kind"] = fallback
             updated.append(attribute)
         downgraded.append({**row, "control_attributes": updated})
     return downgraded

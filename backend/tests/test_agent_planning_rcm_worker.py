@@ -814,12 +814,12 @@ def test_rcm_worker_runs_the_evidence_pass_only_for_cycle_attributes():
     assert len(gateway.calls) == 1
     assert gateway.calls[0]["system"] == planning.RCM_SYSTEM
     assert "procure_to_pay.purchase_order" not in planning.RCM_SYSTEM
-    assert "pack_id, pack_version, and definition_hash" in (
-        planning.RCM_EVIDENCE_SYSTEM
-    )
-    assert json.dumps(_registry(), sort_keys=True, separators=(",", ":")) in (
-        planning.RCM_EVIDENCE_SYSTEM
-    )
+    # The evidence pass is asked for a pack id and never for the reference
+    # around it: a hash absent from the prompt is a hash no response can
+    # mistype. See the canonicalization tests below.
+    assert "pack_id" in planning.RCM_EVIDENCE_SYSTEM
+    assert "definition_hash" not in planning.RCM_EVIDENCE_SYSTEM
+    assert _registry()["definition_hash"] not in planning.RCM_EVIDENCE_SYSTEM
 
 
 def test_rcm_worker_completes_a_partial_evidence_contract_from_the_second_pass():
@@ -899,71 +899,74 @@ def test_rcm_worker_aggregates_quality_errors_across_rows():
 
 
 @pytest.mark.parametrize(
-    ("malformed_registry", "expected_error"),
+    "supplied_registry",
     [
-        ("procure_to_pay", "registry must be an object"),
-        (
-            {
-                "pack_id": "procure_to_pay",
-                "required_record_kinds": [
-                    "procure_to_pay.purchase_order",
-                    "procure_to_pay.vendor_invoice",
-                ],
-            },
-            "has unexpected key 'required_record_kinds'",
-        ),
-        (
-            {"pack_id": "procure_to_pay", "pack_version": 7},
-            "is stale or inconsistent",
-        ),
+        # The id alone, which is now all the prompt asks for.
+        "procure_to_pay",
+        {"pack_id": "procure_to_pay"},
+        # Shapes a model reaches for anyway, each of which used to cost a turn.
+        {"pack_id": "procure_to_pay", "pack_version": 7},
+        {
+            "pack_id": "procure_to_pay",
+            "required_record_kinds": ["procure_to_pay.purchase_order"],
+        },
+        # The failure this replaced: a sixty-four character hash transcribed by
+        # hand. Six of seven came back corrupted on one live matrix — one by a
+        # transposition, one by a dropped character that shifted the fifty
+        # following it — and each corruption quarantined the row carrying it.
+        {
+            "pack_id": "procure_to_pay",
+            "pack_version": 7,
+            "definition_hash": "sha256:" + "0" * 64,
+        },
     ],
 )
-def test_rcm_worker_repairs_transaction_cycle_registry_to_canonical_reference(
-    malformed_registry, expected_error
+def test_the_registry_reference_is_derived_from_the_pack_id_not_transcribed(
+    supplied_registry,
 ):
-    """A misplaced key is named as a misplaced key.
+    """Whatever shape names the pack, the attribute ends with the real reference.
 
-    A stray key nested inside ``registry`` used to surface as a stale-reference
-    or bad-version error, sending the next attempt to look at the pack version —
-    the one thing that was not wrong.
+    And ends with it on the first attempt: the reference is wholly derivable
+    from the id, so there is nothing for a repair turn to correct and no reason
+    to spend one. A corrupted hash is not diagnosed better here, it is made
+    impossible.
     """
 
     gateway = _Gateway(
         [
             json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
-            json.dumps(
-                {"contracts": [_contract(registry=malformed_registry)]}
-            ),
-            json.dumps(
-                {
-                    "rows": [
-                        {
-                            **_row(control_attributes=[_cycle_attribute()]),
-                            "row_index": 1,
-                        }
-                    ]
-                }
-            ),
-            json.dumps({"contracts": [_contract()]}),
+            json.dumps({"contracts": [_contract(registry=supplied_registry)]}),
         ]
     )
 
     result = WORKERS.execute(_request(), gateway)
 
-    assert result.repaired is True
+    assert result.repaired is False
     assert result.proposal["rows"][0]["control_attributes"][0]["registry"] == (
         _registry()
     )
-    repair_request = json.loads(gateway.calls[2]["user"])
-    assert any(
-        expected_error in error
-        for entry in repair_request["ROWS TO CORRECT"]
-        for error in entry["errors"]
-    )
-    # The prompt no longer needs to say where record kinds go, because a row
-    # does not name them at all; the registry key set still rejects the
-    # misplacement itself.
 
+
+def test_an_unknown_pack_id_leaves_the_attribute_uncontracted_rather_than_wrong():
+    """An id naming no installed pack resolves to nothing, never to a guess.
+
+    Deriving a reference must not become inventing one. The attribute reaches
+    the gate as a cycle strategy with no contract, which is the existing path
+    that reroutes it to the strongest evidence still open to the requirement.
+    """
+
+    gateway = _Gateway(
+        [
+            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
+            json.dumps({"contracts": [_contract(registry="order_to_cash_v9")]}),
+        ]
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    (attribute,) = result.proposal["rows"][0]["control_attributes"]
+    assert "registry" not in attribute
+    assert attribute["evidence_kind"] != "transaction_cycle"
 
 def test_rcm_worker_tolerates_stray_characters_after_a_complete_object():
     """Run 20260809-140906-19a740: a valid 24-row draft lost to a trailing `]}`.
@@ -1326,6 +1329,52 @@ def test_citation_sheet_numbers_documents_and_lists_only_their_own_anchors():
             "citations": ["C2"],
         },
     ]
+
+
+LOWER_CASE_SUMMARY = (
+    "DOCUMENT SUMMARY — Delegation of Authority.docx\n"
+    "## Limits\n- The CFO approves commitments to PKR 10,000,000. [c3]\n"
+    "- Approval below the committed value breaches the delegation. [c9]\n"
+)
+
+
+def test_the_citation_sheet_recognises_either_marker_case():
+    """The register is built from what the documents worker actually writes.
+
+    That worker's prompt asks for `[c1]`, and its own normalizer folds every
+    case variant onto the supplied id rather than rejecting the difference.
+    Matching only `[C1]` here did not reject anything — it recognized nothing:
+    a live engagement whose markers were all lower case produced an empty
+    register, so no row could cite a criterion and none did.
+    """
+
+    sheet = planning.rcm_citation_sheet(
+        _request(_document_bundle(("d_doa", LOWER_CASE_SUMMARY)))
+    )
+
+    assert sheet == [
+        {
+            "ref": 1,
+            "document": "Delegation of Authority.docx",
+            "document_id": "d_doa",
+            "citations": ["c3", "c9"],
+        }
+    ]
+
+
+def test_a_row_may_cite_a_marker_in_the_other_case():
+    """Folded onto the register's spelling, never spent on a repair turn."""
+
+    sheet = planning.rcm_citation_sheet(
+        _request(_document_bundle(("d_doa", LOWER_CASE_SUMMARY)))
+    )
+
+    resolved = planning._validated_criteria_refs(
+        {"criteria_refs": [{"document": 1, "citations": ["C3", "c9"]}]}, 1, sheet
+    )
+
+    assert [item["citation_id"] for item in resolved] == ["c3", "c9"]
+    assert all(item["document_id"] == "d_doa" for item in resolved)
 
 
 def test_citation_sheet_skips_a_document_with_nothing_to_cite():
