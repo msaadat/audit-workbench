@@ -46,6 +46,17 @@ DEFAULT_LMSTUDIO_API_KEY = "lm-studio"
 USER_AGENT = "audit-workbench/0.1"
 REQUEST_TIMEOUT = 60  # seconds
 LOCAL_REQUEST_TIMEOUT = 300  # seconds
+# The output ceiling asked of every provider. Sent to raise a floor, not to
+# impose one: left unset, the limit is whatever the routed provider happens to
+# default to, and for one model in use those defaults span 32,768 to 1,179,648
+# — so an answer's room depends on routing luck rather than on anything this
+# code decided. It is deliberately far above any legitimate output measured
+# here (the largest across 446 calls was 7,293 tokens, and the largest matrix
+# 6,389), because a ceiling that can truncate real work costs an entire run,
+# while a degenerate call that runs to this limit costs a few cents. Loops and
+# runaways are caught by the empty-completion check in the model gateway, which
+# can tell them from a long answer; this number cannot, and is not asked to.
+MAX_OUTPUT_TOKENS = 131_072
 MAX_REQUEST_ATTEMPTS = 3
 MAX_RETRY_DELAY = 2.0
 DEFAULT_RATE_LIMIT_COOLDOWN = 60.0  # seconds
@@ -160,6 +171,19 @@ def _request_timeout(default: int) -> int:
     if timeout <= 0:
         raise LLMError("LLM_REQUEST_TIMEOUT must be a positive integer.")
     return timeout
+
+
+def _max_output_tokens() -> int:
+    configured = _env("LLM_MAX_OUTPUT_TOKENS")
+    if not configured:
+        return MAX_OUTPUT_TOKENS
+    try:
+        limit = int(configured)
+    except ValueError as error:
+        raise LLMError("LLM_MAX_OUTPUT_TOKENS must be a positive integer.") from error
+    if limit <= 0:
+        raise LLMError("LLM_MAX_OUTPUT_TOKENS must be a positive integer.")
+    return limit
 
 
 def _rate_limit_cooldown() -> float:
@@ -556,6 +580,7 @@ def chat(
         "model": settings.model,
         "messages": messages,
         "temperature": temperature,
+        "max_tokens": _max_output_tokens(),
     }
     if tools:
         body["tools"] = tools

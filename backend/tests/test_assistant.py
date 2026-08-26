@@ -606,6 +606,57 @@ def test_llm_chat_reports_why_the_provider_stopped(monkeypatch):
     assert message["usage"]["completion_tokens_details"]["reasoning_tokens"] == 65090
 
 
+def test_llm_chat_asks_for_an_explicit_output_ceiling(monkeypatch):
+    """Every request carries one, so the room to answer is not routing luck.
+
+    Unset, the ceiling is the routed provider's own default, and those differ
+    by more than an order of magnitude for a single model — an answer that fits
+    on one provider is truncated on another for no reason the run can see.
+    """
+
+    sent: dict = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+            ).encode()
+
+    def _capture(request, timeout):
+        sent.update(json.loads(request.data.decode()))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", _capture)
+
+    llm.chat([{"role": "user", "content": "hello"}])
+
+    assert sent["max_tokens"] == llm.MAX_OUTPUT_TOKENS
+    # Far above the largest legitimate completion this pipeline has produced,
+    # because truncating real work costs a whole run and a runaway costs cents.
+    assert llm.MAX_OUTPUT_TOKENS >= 65_536
+
+
+def test_llm_output_ceiling_is_configurable_and_validated(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "8192")
+    assert llm._max_output_tokens() == 8192
+
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "0")
+    with pytest.raises(llm.LLMError, match="positive integer"):
+        llm._max_output_tokens()
+
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "lots")
+    with pytest.raises(llm.LLMError, match="positive integer"):
+        llm._max_output_tokens()
+
+
 def test_llm_chat_wraps_remote_disconnect(monkeypatch):
     def fake_urlopen(request, timeout):
         raise http.client.RemoteDisconnected("Remote end closed connection without response")
