@@ -30,6 +30,7 @@ from typing import Any
 from . import doc_tests, engagement, rcm_execution, report
 from .agent import store
 from .agent.audit_execution import UNNARRATED_CAPABILITIES
+from .agent.workflows import audit as audit_workflow
 from .workspaces import Workspace
 
 # --------------------------------------------------------------------------- #
@@ -251,6 +252,35 @@ def _report_markdown(workspace: Workspace) -> str:
     return str((report.hydrate(workspace) or {}).get("markdown") or "")
 
 
+# A test the runner has not reached yet. Both registers share one status
+# vocabulary (`workspaces.TEST_STATUSES`), so one rule covers data and document
+# tests alike — where `last_run` would not, because document tests do not carry
+# one.
+_UNRUN_TEST_STATUSES = frozenset({"", "draft", "ready"})
+
+
+def _fieldwork_ran(workspace: Workspace) -> bool:
+    """Whether any specified test has been executed."""
+    return any(
+        str(item.get("status") or "") not in _UNRUN_TEST_STATUSES
+        for item in (*workspace.data_tests, *_document_tests(workspace))
+    )
+
+
+def _conclusions_set(workspace: Workspace) -> bool:
+    """Whether the roll-up has concluded on the matrix.
+
+    `rcm_execution.completion` owns what an unconcluded row is, and
+    `_open_points` already reads it for the unread-conclusion debt. An empty
+    matrix has nothing to conclude, which is not the same as the roll-up having
+    run, so it is answered here rather than read as satisfied.
+    """
+    if not workspace.rcm:
+        return False
+    completion = rcm_execution.completion(workspace)
+    return not (completion.get("rcm_without_conclusion") or [])
+
+
 _PHANTOM: dict[str, dict[str, Any]] = {
     "planning.apm_ready": {
         "present": lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
@@ -267,26 +297,45 @@ _PHANTOM: dict[str, dict[str, Any]] = {
         "present": lambda ws: bool(ws.data_tests) or bool(_document_tests(ws)),
         "headline": "Specify the tests each control needs",
         "prompt": "Draft the tests the RCM rows still need.",
-        "needs": ("planning.rcm_ready", "the matrix"),
+    },
+    "fieldwork.executed": {
+        "present": _fieldwork_ran,
+        "headline": "Run the tests against the data and documents",
+        "prompt": "Run the tests.",
+    },
+    "results.rolled_up": {
+        "present": _conclusions_set,
+        "headline": "Roll the results up into control conclusions",
+        "prompt": "Roll the test results up into control conclusions.",
     },
     "findings.drafted": {
         "present": lambda ws: bool(ws.findings),
         "headline": "Draft findings from the exceptions",
         "prompt": "Draft findings.",
-        "needs": ("tests.specified", "the tests"),
     },
     "dashboard.curated": {
         "present": lambda ws: bool(ws.tiles),
         "headline": "Pick the analyses worth showing on the dashboard",
         "prompt": "Curate the dashboard.",
-        "needs": ("analysis", "the analysis library"),
     },
     "report.working_draft": {
         "present": lambda ws: bool(_report_markdown(ws).strip()),
         "headline": "Write the report from the findings",
         "prompt": "Generate the report.",
-        "needs": ("findings.drafted", "the findings"),
     },
+}
+
+# What a stage's work product is called in a sentence about waiting for it.
+# Only the wording lives here; which stage waits for which comes from the graph.
+_NOUNS = {
+    "planning.apm_ready": "the memorandum",
+    "planning.rcm_ready": "the matrix",
+    "tests.specified": "the tests",
+    "fieldwork.executed": "the test results",
+    "results.rolled_up": "the conclusions",
+    "findings.drafted": "the findings",
+    "dashboard.curated": "the dashboard",
+    "report.working_draft": "the report",
 }
 
 
@@ -306,18 +355,47 @@ def _plan_order() -> dict[str, int]:
     return {str(item.get("capability") or ""): index for index, item in enumerate(outcomes)}
 
 
-def _blocked_by(workspace: Workspace, spec: dict) -> str:
-    """Why a stage cannot start, or '' when nothing holds it."""
-    needs = spec.get("needs")
-    if not needs:
+def _dependencies(capability: str) -> tuple[str, ...]:
+    """A stage's direct dependencies, from the graph that owns them."""
+    try:
+        return tuple(audit_workflow.dependencies(capability))
+    except Exception:
+        return ()
+
+
+def _blocked_by(workspace: Workspace, capability: str) -> str:
+    """Why a stage cannot start, or '' when nothing holds it.
+
+    Read from the authoritative graph rather than restated here, the way the
+    capability modules already read it. Restating drifted: the record had
+    `findings.drafted` waiting on `tests.specified` while the graph had it
+    waiting on `results.rolled_up`, so an engagement whose tests were specified
+    and never run was invited to draft findings from exceptions that did not
+    exist — and told nothing was blocking it.
+
+    Only a dependency the record can test the presence of is reported. The rest
+    are machine steps whose absence is not observable, and naming one would tell
+    a reader to wait for something they cannot see or start.
+    """
+    waiting: list[str] = []
+    for dependency in _dependencies(capability):
+        spec = _PHANTOM.get(dependency)
+        if spec is None:
+            continue
+        try:
+            if spec["present"](workspace):
+                continue
+        except Exception:
+            # A presence test that cannot answer must not invent a blocker.
+            continue
+        noun = _NOUNS.get(dependency, "an earlier stage")
+        if noun not in waiting:
+            waiting.append(noun)
+    if not waiting:
         return ""
-    dependency, noun = needs
-    if dependency == "analysis":
-        return "" if workspace.analyses else f"Waits for {noun}."
-    upstream = _PHANTOM.get(dependency)
-    if upstream and not upstream["present"](workspace):
-        return f"Waits for {noun}."
-    return ""
+    if len(waiting) == 1:
+        return f"Waits for {waiting[0]}."
+    return f"Waits for {', '.join(waiting[:-1])} and {waiting[-1]}."
 
 
 def _pending(workspace: Workspace) -> list[dict]:
@@ -334,7 +412,7 @@ def _pending(workspace: Workspace) -> list[dict]:
             # A presence test that cannot answer must not invent absent work.
             continue
         filed = _FILED.get(capability) or {}
-        blocked = _blocked_by(workspace, spec)
+        blocked = _blocked_by(workspace, capability)
         rows.append({
             "id": f"pending:{capability}",
             "capability": capability,

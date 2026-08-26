@@ -10,6 +10,7 @@ projection deliberately refuses to state a number it cannot stand behind.
 import pytest
 
 from app import engagement_record
+from app.workspaces import TEST_STATUSES
 
 
 class _Workspace:
@@ -74,7 +75,15 @@ def stub_store(monkeypatch):
         monkeypatch.setattr(engagement_record.report, "hydrate", lambda workspace: {"markdown": ""})
         monkeypatch.setattr(
             engagement_record.rcm_execution, "completion",
-            lambda workspace: {"unreviewed_agent_conclusions": []},
+            # Derived from the rows rather than fixed, so a fixture's matrix and
+            # its conclusions cannot disagree with each other.
+            lambda workspace: {
+                "unreviewed_agent_conclusions": [],
+                "rcm_without_conclusion": [
+                    row for row in workspace.rcm
+                    if not str(row.get("conclusion") or "").strip()
+                ],
+            },
         )
 
     return install
@@ -409,8 +418,12 @@ def test_with_nothing_open_the_next_step_is_the_first_runnable_stage(stub_store)
 def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
     stub_store([])
     workspace = _Workspace(
-        apm="# APM", rcm=[{"id": "R1", "review_status": "reviewed"}],
-        data_tests=[{"id": "T1", "rcm_id": "R1"}], analyses=[{}], tiles=[{}],
+        apm="# APM",
+        rcm=[{"id": "R1", "review_status": "reviewed", "conclusion": "effective"}],
+        data_tests=[
+            {"id": "T1", "rcm_id": "R1", "status": "completed_no_exception"},
+        ],
+        analyses=[{}], tiles=[{}],
         findings=[{"management_response": "Agreed.", "cause_pending": False}],
     )
     engagement_record.report.hydrate = lambda ws: {"markdown": "# Report"}
@@ -422,6 +435,115 @@ def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
     assert result["pending"] == []
     assert result["open_points"] == []
     assert result["next"] is None
+
+
+# --------------------------------------------------------------------------- #
+# What a stage waits for, read from the graph rather than restated
+# --------------------------------------------------------------------------- #
+def _specified_not_run():
+    """Tests drafted against a reviewed matrix, and not one of them run."""
+    return _Workspace(
+        apm="# APM",
+        rcm=[{"id": "R1", "review_status": "reviewed"}],
+        data_tests=[{"id": "T1", "rcm_id": "R1", "status": "ready"}],
+        analyses=[{}],
+    )
+
+
+def test_running_the_tests_is_the_next_step_once_they_are_specified(stub_store):
+    """The stage between specifying tests and drafting findings is running them.
+
+    `fieldwork.executed` and `results.rolled_up` had no place on the tail at
+    all, so the forward ledger jumped from "tests specified" to "draft
+    findings" — offering to draft findings from exceptions that could not exist
+    because no test had run.
+    """
+    stub_store([])
+    rows = {r["capability"]: r for r in engagement_record.record(_specified_not_run())["pending"]}
+
+    assert rows["fieldwork.executed"]["runnable"] is True
+    assert rows["fieldwork.executed"]["blocked_reason"] == ""
+    assert rows["results.rolled_up"]["blocked_reason"] == "Waits for the test results."
+
+
+def test_findings_wait_for_the_conclusions_the_graph_names_not_the_tests(stub_store):
+    """The record used to keep its own copy of the dependency graph.
+
+    It said `findings.drafted` waited on `tests.specified`; the graph says it
+    waits on `results.rolled_up`. With the tests specified and never run, the
+    copy reported findings as runnable with nothing blocking it.
+    """
+    stub_store([])
+    rows = {r["capability"]: r for r in engagement_record.record(_specified_not_run())["pending"]}
+
+    assert rows["findings.drafted"]["runnable"] is False
+    assert rows["findings.drafted"]["blocked_reason"] == "Waits for the conclusions."
+    # The dashboard drifted the same way: it claimed the analysis library
+    # unblocked it while the graph has it branching off the roll-up too.
+    assert rows["dashboard.curated"]["runnable"] is False
+
+
+def test_a_stage_with_several_prerequisites_names_all_the_missing_ones(stub_store):
+    stub_store([])
+    rows = {r["capability"]: r for r in engagement_record.record(_specified_not_run())["pending"]}
+
+    # `report.working_draft` depends on the memorandum, the conclusions and the
+    # findings; the memorandum is filed, so only the other two are owed.
+    assert rows["report.working_draft"]["blocked_reason"] == (
+        "Waits for the conclusions and the findings."
+    )
+
+
+def test_a_prerequisite_the_record_cannot_see_is_not_named_as_a_blocker(stub_store):
+    """`fieldwork.executed` also depends on `tests.promoted_from_analysis`.
+
+    That stage has no presence test here, so naming it would tell a reader to
+    wait for something they can neither observe nor start.
+    """
+    stub_store([])
+    rows = {r["capability"]: r for r in engagement_record.record(_specified_not_run())["pending"]}
+
+    assert "promoted" not in rows["fieldwork.executed"]["blocked_reason"]
+    assert rows["fieldwork.executed"]["blocked_reason"] == ""
+
+
+def test_every_stage_that_can_block_another_has_a_readable_noun():
+    """A missing noun degrades to "an earlier stage", which names nothing."""
+    for capability in engagement_record._PHANTOM:
+        assert capability in engagement_record._NOUNS, capability
+
+
+def test_the_unrun_statuses_are_real_members_of_the_shared_vocabulary():
+    """A renamed status would silently make every test look executed."""
+    assert engagement_record._UNRUN_TEST_STATUSES - {""} <= TEST_STATUSES
+
+
+def test_a_half_run_test_register_counts_as_fieldwork_having_run(stub_store):
+    """One executed test is a result the stage produced; the rest is coverage.
+
+    Drawing fieldwork as never started because some tests remain would invite a
+    reader to redo work the filed row already reports.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        data_tests=[
+            {"id": "T1", "status": "completed_with_exception"},
+            {"id": "T2", "status": "ready"},
+        ],
+    )
+    pending = {row["capability"] for row in engagement_record.record(workspace)["pending"]}
+
+    assert "fieldwork.executed" not in pending
+
+
+def test_an_empty_matrix_is_not_a_matrix_whose_rows_are_concluded(stub_store):
+    """`rcm_without_conclusion` is empty either way; only one means concluded."""
+    stub_store([])
+    workspace = _Workspace(apm="# APM", data_tests=[{"id": "T1", "status": "completed"}])
+    pending = {row["capability"] for row in engagement_record.record(workspace)["pending"]}
+
+    assert "results.rolled_up" in pending
 
 
 def test_a_presence_test_that_raises_does_not_invent_absent_work(stub_store):
