@@ -119,23 +119,6 @@ def _section_bodies(markdown: str) -> dict[str, str]:
     return bodies
 
 
-def _populations_are_dated(request: WorkerRequest) -> bool:
-    """Whether any imported population carries a date-typed column.
-
-    The trigger for the period gate is deliberately this weak. A supplied range
-    is what makes "the period is unavailable" false; which range is the audit
-    period is a judgement the memo makes from the per-table columns, not one
-    this function should pre-empt by picking a span.
-    """
-    for item in _supplied_items(request, "population_summary"):
-        if not isinstance(item, Mapping):
-            continue
-        for table in item.get("tables") or []:
-            if isinstance(table, Mapping) and table.get("date_columns"):
-                return True
-    return False
-
-
 def _context_without_sources(
     request: WorkerRequest,
     *source_ids: str,
@@ -231,7 +214,15 @@ def validate_apm_proposal(
                 f"template section '{heading}' is present but has no content"
             )
     normalized = re.sub(r"\s+", " ", markdown.casefold())
-    for field_name in ("objective", "scope", "period"):
+    # Proximity over the whole memo, so this holds only for fields whose absence
+    # the structured context contradicts outright. The period was such a gate and
+    # is no longer: it is proposed from observed ranges rather than asserted, a
+    # wrong one is corrected in place by the auditor, and the scan discarded a
+    # complete valid memo when "in the audit period; if not available" — prose
+    # about whether evidence exists, twenty thousand characters from the
+    # Engagement section — read as the memo disowning its own period. Proposing
+    # a period is steered by APM_SYSTEM instead of gated here.
+    for field_name in ("objective", "scope"):
         if structured.get(field_name) and re.search(
             rf"\b{field_name}\b.{{0,80}}{_UNAVAILABLE}",
             normalized,
@@ -239,20 +230,6 @@ def validate_apm_proposal(
             raise WorkerResponseValidationError(
                 f"the memorandum says {field_name} is unavailable despite structured context"
             )
-    # The period is the one planning fact the populations can supply when the
-    # context does not. Declaring it unavailable with dated populations in hand
-    # is the specific defect this catches.
-    period_derivable = not structured.get("period") and _populations_are_dated(request)
-    if period_derivable and re.search(
-        rf"\bperiod\b.{{0,80}}{_UNAVAILABLE}",
-        normalized,
-    ):
-        raise WorkerResponseValidationError(
-            "the memorandum reports the audit period as unavailable although the "
-            "supplied populations carry dated columns; propose a period from the "
-            "observed ranges, name the columns it came from, and mark it for "
-            "confirmation"
-        )
     return {"apm_markdown": markdown}
 
 
@@ -279,10 +256,19 @@ def run_apm_worker(
         ensure_ascii=False,
     )
     if attempt.is_repair:
+        # The rejected draft goes back with the errors. Without it the repair is
+        # a fresh generation that happens to know one thing the last one got
+        # wrong: a memo that failed a single gate is rewritten end to end, and
+        # every section that had passed is re-rolled. ``CURRENT APM TO REVISE``
+        # cannot stand in for it — that slot carries the committed artifact,
+        # which is empty on a first draft, exactly when a repair is likeliest.
+        if attempt.previous_response:
+            user += "\n\nPREVIOUS APM DRAFT:\n" + attempt.previous_response
         user += (
             "\n\nThe previous APM draft failed the engagement quality gate: "
             + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected memorandum."
+            + ". Correct that draft and return the complete corrected "
+            "memorandum, keeping the sections that did not fail."
         )
     activity = dict(request.activity)
     activity.setdefault(

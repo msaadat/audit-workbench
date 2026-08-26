@@ -115,6 +115,10 @@ def test_apm_semantic_validation_gets_one_bounded_repair_with_specific_guidance(
     assert result.repaired is True
     assert [call["attempt"] for call in gateway.calls] == [1, 2]
     assert "missing template section 'scope'" in gateway.calls[1]["user"]
+    # The repair corrects the rejected draft rather than regenerating from the
+    # context alone, so the sections that passed survive their sibling's failure.
+    assert "First draft omits scope." in gateway.calls[1]["user"]
+    assert "PREVIOUS APM DRAFT:" in gateway.calls[1]["user"]
 
 
 def test_apm_semantic_validation_rejects_structured_context_contradiction():
@@ -145,11 +149,20 @@ _DATED = {
 }
 
 
-def test_dated_populations_forbid_reporting_the_period_as_unavailable():
+def test_prose_about_missing_evidence_does_not_disown_a_stated_period():
+    """The false positive that discarded a complete, valid memorandum.
+
+    The memo states its period in the Engagement section and, far below in the
+    risk assessment, plans for evidence that may not have been retained. A scan
+    for "period" within eighty characters of "not available" read the second as
+    a retraction of the first and spent the whole repair allowance on it.
+    """
     gateway = _Gateway(
         [
-            "# Engagement\n\nPeriod: not available.\n\n# Scope\n\nCommitments.",
-            "# Engagement\n\nPeriod: undefined.\n\n# Scope\n\nCommitments.",
+            "# Engagement\n\nPeriod: 1 January 2024 to 31 December 2024, proposed "
+            "from INVOICE_DATE and marked for confirmation.\n\n"
+            "# Scope\n\nCommitments. The audit establishes completeness of GRN "
+            "entry in the audit period; if not available, the gap is escalated."
         ]
     )
     request = _request(
@@ -159,29 +172,33 @@ def test_dated_populations_forbid_reporting_the_period_as_unavailable():
         )
     )
 
-    with pytest.raises(WorkerRunError, match="dated columns"):
-        WORKERS.execute(request, gateway)
-    assert len(gateway.calls) == 2
+    result = WORKERS.execute(request, gateway)
+
+    assert len(gateway.calls) == 1
+    assert "1 January 2024" in result.proposal["apm_markdown"]
 
 
-def test_the_period_may_be_unavailable_when_no_population_carries_a_date():
+def test_the_period_is_steered_by_the_prompt_rather_than_gated():
+    """Reporting the period as unavailable is not a validation failure.
+
+    Proposing one from the observed ranges is asked for in ``APM_SYSTEM``. It is
+    not enforced here: the period is proposed rather than asserted, and an
+    auditor corrects a wrong one in place — which does not justify discarding an
+    otherwise complete draft, nor the model call that produced it.
+    """
     gateway = _Gateway(
         ["# Engagement\n\nPeriod: not available.\n\n# Scope\n\nCommitments."]
     )
     request = _request(
         _bundle(
             planning_context={"context": {"objective": "Assess approvals"}},
-            # A workspace whose dates are held as text has no range to read, and
-            # saying so is the correct output rather than a gate failure.
-            population={
-                "tables": [{"table": "invoices", "rows": 118, "date_columns": []}],
-                "total_rows": 118,
-            },
+            population=_DATED,
         )
     )
 
     result = WORKERS.execute(request, gateway)
 
+    assert len(gateway.calls) == 1
     assert "not available" in result.proposal["apm_markdown"]
 
 
