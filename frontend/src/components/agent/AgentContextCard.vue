@@ -44,15 +44,27 @@ function categoryLabel(value: string) {
   return CATEGORY_LABELS[value] || CATEGORY_LABELS.other
 }
 
-/** "5 vouchers", or a plain count where the kinds are mixed. */
+/**
+ * What was held back, by kind: "5 vouchers", "3 vouchers and 2 contracts".
+ *
+ * The kind is the whole point — it is what makes the exclusion read as a scope
+ * decision rather than a gap. The files themselves are not named here: a step
+ * can decline a great many of them, and a wall of dimmed cards buries the four
+ * documents the work actually rests on. The provenance rail on the artifact
+ * lists them individually for anyone who wants the roster.
+ */
 const withheldSummary = computed(() => {
-  const items = props.context.withheld
-  const categories = new Set(items.map(item => item.category))
-  if (categories.size === 1) {
-    const label = categoryLabel([...categories][0]).toLowerCase()
-    return `${items.length} ${items.length === 1 ? label : `${label}s`}`
+  const counts = new Map<string, number>()
+  for (const item of props.context.withheld) {
+    counts.set(item.category, (counts.get(item.category) ?? 0) + 1)
   }
-  return plural(items.length, 'document')
+  const parts = [...counts].map(([category, total]) => {
+    const label = categoryLabel(category).toLowerCase()
+    return `${total} ${total === 1 ? label : `${label}s`}`
+  })
+  if (!parts.length) return ''
+  if (parts.length === 1) return parts[0]
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
 })
 
 const footer = computed(() => {
@@ -123,29 +135,10 @@ function open(item: ContextDocument) {
       </button>
     </div>
 
-    <template v-if="context.withheld.length">
-      <header class="held">
-        <strong>Held back</strong>
-        <span>{{ withheldSummary }} — outside this step's scope</span>
-      </header>
-      <div class="cards">
-        <button
-          v-for="item in context.withheld"
-          :key="item.document_id"
-          type="button"
-          class="doc held-doc"
-          :title="`Open ${item.name}`"
-        :aria-label="`Open ${item.name}, ${categoryLabel(item.category)}`"
-          @click="open(item)"
-        >
-          <span class="badge">{{ badge(item.name) }}</span>
-          <span class="identity">
-            <b>{{ item.name }}</b>
-            <small><span class="tag">{{ categoryLabel(item.category) }}</span></small>
-          </span>
-        </button>
-      </div>
-    </template>
+    <p v-if="context.withheld.length" class="held">
+      <i class="pi pi-filter" aria-hidden="true" />
+      <span><strong>Held back</strong> {{ withheldSummary }} — outside this step's scope.</span>
+    </p>
 
     <p v-if="footer" class="footer">{{ footer }}</p>
   </section>
@@ -156,8 +149,6 @@ function open(item: ContextDocument) {
 .context-read>header{display:flex;align-items:baseline;gap:.45rem}
 .context-read>header>strong{font-size:var(--aw-text-sm);color:var(--aw-ink)}
 .context-read>header>span{color:var(--aw-muted);font-family:var(--aw-font-mono);font-size:var(--aw-text-2xs);letter-spacing:.04em;text-transform:uppercase}
-.context-read>header.held{margin-top:.35rem;padding-top:.5rem;border-top:1px dashed var(--aw-border)}
-.context-read>header.held>strong{color:var(--aw-muted)}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.4rem}
 .doc{display:grid;grid-template-columns:2.1rem minmax(0,1fr);gap:0 .5rem;align-items:center;padding:.45rem .5rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:var(--aw-panel);text-align:left;cursor:pointer;color:inherit}
@@ -169,12 +160,10 @@ function open(item: ContextDocument) {
 .identity small{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem;color:var(--aw-muted);font-size:var(--aw-text-2xs)}
 .tag{padding:.05rem .3rem;border:1px solid var(--aw-teal-line);border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-weight:700;letter-spacing:.04em;text-transform:uppercase}
 
-/* Held back is a decision, not a warning: quieter, never alarming. */
-.doc.held-doc{border-style:dashed;background:transparent}
-.doc.held-doc .badge{background:var(--aw-raised);color:var(--aw-muted)}
-.doc.held-doc .identity b{color:var(--aw-muted);font-weight:500}
-.doc.held-doc .tag{border-color:var(--aw-border-strong);background:var(--aw-raised);color:var(--aw-muted)}
-.doc.held-doc:hover{border-color:var(--aw-border-strong);background:var(--aw-raised)}
+/* Held back is a decision, not a warning: stated once, never alarming. */
+.held{display:flex;align-items:baseline;gap:.4rem;margin:.35rem 0 0;padding-top:.45rem;border-top:1px dashed var(--aw-border);color:var(--aw-muted);font-size:var(--aw-text-xs);line-height:1.5}
+.held>i{font-size:var(--aw-text-2xs)}
+.held strong{color:var(--aw-ink-soft);font-weight:600}
 
 .footer{margin:.3rem 0 0;padding-top:.45rem;border-top:1px dashed var(--aw-border);color:var(--aw-muted);font-size:var(--aw-text-2xs);line-height:1.5}
 </style>

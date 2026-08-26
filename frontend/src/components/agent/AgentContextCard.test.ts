@@ -52,31 +52,35 @@ describe('AgentContextCard', () => {
     ])
   })
 
-  it('shows what was held back as a scope decision, by kind', () => {
+  it('states what was held back by kind, without naming the files', () => {
     const wrapper = mount(AgentContextCard, { props: { context: context() } })
 
-    expect(wrapper.text()).toContain('Held back')
-    expect(wrapper.text()).toContain("2 vouchers — outside this step's scope")
-    expect(wrapper.findAll('.held-doc')).toHaveLength(2)
-    expect(wrapper.findAll('.held-doc .badge').map(n => n.text())).toEqual(['PDF', 'PDF'])
+    expect(wrapper.find('.held').text()).toBe(
+      "Held back 2 vouchers — outside this step's scope.",
+    )
+    // A step can decline a great many files; naming them buries the ones the
+    // work actually rests on.
+    expect(wrapper.text()).not.toContain('PO2024004_Purchase_Order.pdf')
+    expect(wrapper.findAll('.doc')).toHaveLength(3)
     // Never phrased as a failure.
     expect(wrapper.text()).not.toContain('did not match')
     expect(wrapper.text()).not.toContain('unsupported')
   })
 
-  it('falls back to a plain count when the held-back kinds are mixed', () => {
+  it('breaks the held-back count down when the kinds are mixed', () => {
     const wrapper = mount(AgentContextCard, {
       props: {
         context: context({
           withheld: [
             { document_id: 'v1', name: 'A.pdf', category: 'voucher', pages: 1 },
-            { document_id: 'c1', name: 'B.docx', category: 'contract', pages: 1 },
+            { document_id: 'v2', name: 'B.pdf', category: 'voucher', pages: 1 },
+            { document_id: 'c1', name: 'C.docx', category: 'contract', pages: 1 },
           ],
         }),
       },
     })
 
-    expect(wrapper.text()).toContain('2 documents')
+    expect(wrapper.find('.held').text()).toContain('2 vouchers and 1 contract')
   })
 
   it('keeps templates and plumbing in a quiet line, not on cards', () => {
@@ -85,8 +89,9 @@ describe('AgentContextCard', () => {
     const footer = wrapper.find('.footer').text()
     expect(footer).toContain('Also the planning context, the APM template.')
     expect(footer).toContain('The methodology pack was not available.')
-    // Five cards, not seven: nobody needs a card for a template.
-    expect(wrapper.findAll('.doc')).toHaveLength(5)
+    // Three cards: the documents read. Templates go in the footer, and the
+    // held-back files are summarised rather than listed.
+    expect(wrapper.findAll('.doc')).toHaveLength(3)
   })
 
   it('opens the document it names', async () => {
@@ -130,3 +135,4 @@ describe('AgentContextCard merged reads', () => {
     expect(wrapper.text()).not.toContain('Held back')
   })
 })
+
