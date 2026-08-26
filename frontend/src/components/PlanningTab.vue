@@ -67,7 +67,9 @@ const completion = ref<RcmCompletion | null>(null)
 const rcmFilter = ref<RcmFilter | null>(null)
 // Provenance is a reviewer's question, not an author's, so it stays closed
 // until asked for rather than taking a column from the editor by default.
-const apmProvenanceOpen = ref(false)
+// Open by default. What the memorandum was drafted from is the first thing a
+// reviewer asks about it, and a panel behind a button is a panel nobody opens.
+const apmProvenanceOpen = ref(true)
 const workingPaper = ref<WorkingPaper | null>(null)
 const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
@@ -485,7 +487,7 @@ const rcmActions = computed(() => [
       <!-- Provenance describes a document that exists. On an untouched
            engagement the old unconditional label read "Auditor edited" over a
            blank editor nobody had opened. -->
-      <div class="section-toolbar"><div><strong>Audit planning memorandum</strong><span v-if="apmHasContent" class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide provenance' : 'Provenance'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
+      <div class="section-toolbar"><div><strong>Audit planning memorandum</strong><span v-if="apmHasContent" class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide sources' : 'Sources'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
       <input ref="apmImportInput" type="file" accept=".md,.markdown,.txt" hidden @change="importApm"/>
       <div class="apm-body" :class="{ 'with-rail': apmProvenanceOpen }">
         <UiEmptyState

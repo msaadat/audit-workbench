@@ -695,3 +695,146 @@ def test_plan_sentence_reads_as_prose():
     assert text.startswith("I'll work through document analysis, planning context, then audit planning memorandum.")
     assert "Document text is already done" in text
     assert not re.search(r"[a-z_]+\.[a-z_]+", text)
+
+
+# --------------------------------------------------------------------------- #
+# Context notes: which sources a step read, and which it declined
+# --------------------------------------------------------------------------- #
+class _Selection:
+    def __init__(self, source_id, source_ref=""):
+        self.source_id = source_id
+        self.source_ref = source_ref
+
+
+class _Omission:
+    def __init__(self, source_id, reason, source_ref=None):
+        self.source_id = source_id
+        self.reason = reason
+        self.source_ref = source_ref
+
+
+class _Manifest:
+    def __init__(self, selections=(), omissions=()):
+        self.selections = list(selections)
+        self.omissions = list(omissions)
+
+
+class _Workspace:
+    def __init__(self, documents=()):
+        self.documents = list(documents)
+
+
+def _documents():
+    return [
+        {"id": "d1", "title": "procurement_sop_extracts", "category": "policy",
+         "source": "Procurement SOP Extracts.docx"},
+        {"id": "d2", "title": "financial_approval_matrix", "category": "policy",
+         "source": "Financial Approval Matrix.docx"},
+        {"id": "d3", "title": "minutes_of_meeting_cfo", "category": "minutes",
+         "source": "Minutes of Meeting - CFO.docx"},
+        {"id": "v1", "title": "po2024004_purchase_order", "category": "voucher",
+         "source": "PO2024004_Purchase_Order.pdf"},
+        {"id": "v2", "title": "grn2024004_signed_receipt", "category": "voucher",
+         "source": "GRN2024004_Signed_Receipt.pdf"},
+    ]
+
+
+def test_context_note_names_documents_by_the_file_the_auditor_recognises():
+    manifest = _Manifest(selections=[
+        _Selection("planning_context", "planning:context"),
+        _Selection("planning_documents", "document:d1"),
+        _Selection("planning_documents", "document:d3"),
+    ])
+
+    text = narration.context_note(
+        manifest, _Workspace(_documents()), label="Audit planning memorandum"
+    )
+
+    # The file as it arrived, not the slug derived from it.
+    assert "Procurement SOP Extracts.docx" in text
+    assert "Minutes of Meeting - CFO.docx" in text
+    assert "procurement_sop_extracts" not in text
+    # Documents lead their own sentence; supporting material follows.
+    assert text.startswith("Reading 2 documents for Audit planning memorandum:")
+    assert "Also the planning context." in text
+
+
+def test_context_note_reports_a_selector_decision_as_scope_not_failure():
+    manifest = _Manifest(
+        selections=[_Selection("planning_documents", "document:d1")],
+        omissions=[
+            _Omission("planning_documents", "Local selector strategy 'lexical' did not match the candidate.", "document:v1"),
+            _Omission("planning_documents", "Local selector strategy 'lexical' did not match the candidate.", "document:v2"),
+        ],
+    )
+
+    text = narration.context_note(manifest, _Workspace(_documents()))
+
+    # Declined material is named by kind, which is what carries the decision.
+    assert "Holding back 2 vouchers — outside this step's scope." in text
+    assert "did not match" not in text
+    assert "selector" not in text
+
+
+def test_context_note_reports_a_source_once_when_two_reasons_apply():
+    manifest = _Manifest(
+        selections=[_Selection("planning_context", "planning:context")],
+        omissions=[
+            _Omission("population_summary", "Global or per-source size limit reached.", "table:x"),
+            _Omission("population_summary", "Optional context source supplied no permitted items."),
+        ],
+    )
+
+    text = narration.context_note(manifest, _Workspace())
+
+    assert text.count("population summary") == 1
+    assert "past the size limit" in text
+    assert "not available" not in text
+
+
+def test_context_note_counts_one_document_when_pages_are_selected_separately():
+    manifest = _Manifest(selections=[
+        _Selection("document_pages", "document:d1:page:00001"),
+        _Selection("document_pages", "document:d1:page:00002"),
+    ])
+
+    text = narration.context_note(manifest, _Workspace(_documents()))
+
+    assert text.startswith("Reading 1 document:")
+    assert "Procurement SOP Extracts.docx" in text
+
+
+def test_context_note_groups_documents_by_category_beyond_the_naming_limit():
+    documents = [
+        {"id": f"v{index}", "title": f"voucher_{index}", "category": "voucher",
+         "source": f"VOUCHER-{index}.pdf"}
+        for index in range(10)
+    ]
+    manifest = _Manifest(selections=[
+        _Selection("documents", f"document:v{index}") for index in range(10)
+    ])
+
+    text = narration.context_note(manifest, _Workspace(documents))
+
+    assert "10 vouchers" in text
+    assert "VOUCHER-0.pdf" not in text
+
+
+def test_context_note_does_not_double_pluralise_an_already_plural_source_id():
+    manifest = _Manifest(selections=[
+        _Selection("analysis_results", "analysis:a1"),
+        _Selection("analysis_results", "analysis:a2"),
+    ])
+
+    text = narration.context_note(manifest, _Workspace())
+
+    assert "2 analysis results" in text
+    assert "resultss" not in text
+
+
+def test_context_note_gives_a_lone_unlabelled_source_an_article():
+    manifest = _Manifest(selections=[_Selection("observation", "observation:o1")])
+
+    text = narration.context_note(manifest, _Workspace())
+
+    assert text.startswith("Reading the observation")

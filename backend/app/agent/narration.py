@@ -237,44 +237,176 @@ _SOURCE_LABELS: dict[str, tuple[str, str]] = {
     "table_profile": ("a table profile", "table profiles"),
     "documents": ("a document", "documents"),
     "methodology": ("the methodology pack", "the methodology pack"),
+    "analysis_summary": ("the analysis summary", "the analysis summary"),
+    "population_summary": ("the population summary", "the population summary"),
+    "relationship_evidence": ("the relationship evidence", "relationship evidence items"),
 }
 
-# Omission and truncation reasons are authored sentences from the context
-# resolver (agent/context/manifest.py, agent/context/resolver.py) rather than
-# stable codes, so they are matched loosely and a raw fallback covers the rest.
-_OMISSION_PHRASES: tuple[tuple[str, str], ...] = (
-    ("size limit", "past the size limit"),
-    ("did not match", "did not match this capability's selector"),
-    ("unavailable", "not available"),
+# A planning-scale step supplies a handful of governance documents, and which
+# ones they were is the single most useful fact in the sentence. Only a bulk
+# step exceeds this, and there a count genuinely reads better than a list.
+_NAMED_DOCUMENT_LIMIT = 8
+
+# Document categories as they read mid-sentence. (singular, plural) — used
+# when documents are too numerous to name, so the reader still learns what
+# kind of material was involved rather than only how much.
+_CATEGORY_LABELS: dict[str, tuple[str, str]] = {
+    "background": ("a background document", "background documents"),
+    "policy": ("a policy document", "policy documents"),
+    "regulation": ("a regulation", "regulations"),
+    "contract": ("a contract", "contracts"),
+    "minutes": ("a set of minutes", "sets of minutes"),
+    "voucher": ("a voucher", "vouchers"),
+    "evidence": ("an evidence document", "evidence documents"),
+    "prior_report": ("a prior report", "prior reports"),
+    "correspondence": ("a letter", "correspondence"),
+    "other": ("a document", "documents"),
+}
+
+# Omission reasons are authored sentences from the context resolver
+# (agent/context/resolver.py) rather than stable codes, so they are matched
+# loosely. They fall into three kinds that mean genuinely different things to
+# an auditor, and collapsing them into one clause — as an undifferentiated
+# "leaving out" list once did — reads as four failures rather than one
+# decision and two facts.
+#
+# Order matters: "Selector item limit reached." is a scope decision and must
+# be classified before the generic "limit" test catches it as capacity.
+_OMISSION_KINDS: tuple[tuple[str, str], ...] = (
+    ("did not match", "scope"),
+    ("selector item limit", "scope"),
+    ("limit", "capacity"),
+    ("unavailable", "absent"),
+    ("no permitted items", "absent"),
+    ("representation", "absent"),
 )
+_OMISSION_ORDER = ("scope", "capacity", "absent")
 
 
-def _omission_phrase(reason: str) -> str:
+def _fallback_labels(source_id: str) -> tuple[str, str]:
+    """Readable words for a source id no preset has spelled out.
+
+    Many ids are already plural — ``target_aggregates``, ``analysis_results``,
+    ``rcm_rows`` — so appending an "s" unconditionally produced "8 target
+    aggregatess". The singular takes an article, because a bare "observation"
+    reads as a heading rather than a thing the model was handed.
+    """
+    word = humanize(source_id)
+    if not word:
+        return ("", "")
+    plural = word if word.endswith("s") else f"{word}s"
+    return (f"the {word}", plural)
+
+
+def _omission_kind(reason: str) -> str:
     lowered = reason.casefold()
-    for needle, phrase in _OMISSION_PHRASES:
+    for needle, kind in _OMISSION_KINDS:
         if needle in lowered:
-            return phrase
-    return reason.rstrip(".").strip() or "left out"
+            return kind
+    return "absent"
 
 
-def _document_title(source_ref: str | None, workspace: object) -> str:
+def _document_record(source_ref: str | None, workspace: object) -> dict | None:
+    """The inventory entry behind a document ref, if there is one.
+
+    Refs are ``document:<id>`` and, where a source selects pages rather than
+    whole files, ``document:<id>:page:<n>``. Both name the same document.
+    """
     ref = str(source_ref or "")
     if not ref.startswith("document:"):
-        return ""
-    document_id = ref.split(":", 1)[1]
+        return None
+    document_id = ref.split(":")[1]
     for item in getattr(workspace, "documents", None) or []:
         if str(item.get("id")) == document_id:
-            return str(item.get("title") or "").strip()
-    return ""
+            return item
+    return None
 
 
-def _grouped_source_labels(items: list, workspace: object) -> list[str]:
+def _resolve_documents(items: list, workspace: object) -> list[dict]:
+    """The distinct documents behind a group of selections or omissions.
+
+    A document can be selected more than once — chunked analysis supplies one
+    selection per chunk — and the reader cares how many documents were
+    involved, not how many slices of them were passed.
+    """
+    records: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        record = _document_record(getattr(item, "source_ref", None), workspace)
+        if record is None:
+            continue
+        identity = str(record.get("id") or "")
+        if identity in seen:
+            continue
+        seen.add(identity)
+        records.append(record)
+    return records
+
+
+def _document_name(record: dict) -> str:
+    """What the auditor calls this document.
+
+    ``source`` is the file as it arrived — "Minutes of Meeting - CFO.docx" —
+    and is what someone recognises. ``title`` is a slug derived from it
+    ("minutes_of_meeting_cfo"), readable only as a fallback.
+    """
+    name = str(record.get("source") or "").strip()
+    if name:
+        return name
+    slug = str(record.get("title") or "").strip()
+    return slug.replace("_", " ").strip()
+
+
+def _document_labels(records: list[dict], count: int, *, named: bool) -> list[str]:
+    """Name the documents, or say what kind they were.
+
+    Naming is right for what a step read: which four governance documents the
+    memorandum rests on is the fact the auditor wants. It is wrong for what a
+    step declined, where the *kind* carries the decision — "5 vouchers" says
+    at a glance that transaction evidence was held out of planning, while five
+    filenames make the reader work it out.
+    """
+    if named:
+        names = [name for name in (_document_name(item) for item in records) if name]
+        if names and len(names) <= _NAMED_DOCUMENT_LIMIT:
+            return [_joined(names, "and")]
+    # Grouped by category, so "5 vouchers" survives where a bare "5 documents"
+    # would have thrown the only useful fact away.
+    by_category: dict[str, int] = {}
+    order: list[str] = []
+    for item in records:
+        category = str(item.get("category") or "other").strip() or "other"
+        by_category[category] = by_category.get(category, 0) + 1
+        if category not in order:
+            order.append(category)
+    unknown = count - len(records)
+    if not order:
+        return [_count(count, "document")]
+    labels = []
+    for category in order:
+        total = by_category[category]
+        singular, plural = _CATEGORY_LABELS.get(
+            category, _CATEGORY_LABELS["other"]
+        )
+        labels.append(singular if total == 1 else f"{total} {plural}")
+    if unknown > 0:
+        labels.append(_count(unknown, "document"))
+    return [_joined(labels, "and")]
+
+
+def _grouped_source_labels(
+    items: list, workspace: object, *, name_documents: bool = True
+) -> list[str]:
     """One label per distinct source, folding repeats into a count.
 
-    Documents are named individually when there are few enough to read; every
+    Documents are named individually up to ``_NAMED_DOCUMENT_LIMIT``; every
     other source type is too numerous or too undifferentiated to be worth
     naming twice (``table_profiles`` selected six times is six labels the
     reader would skim past, not six facts).
+
+    A group is treated as documents when its refs say so, not when its source
+    id happens to be "documents" — the same presets also declare document
+    sources under ids like ``planning_documents`` and ``policy_documents``.
     """
     groups: dict[str, list] = {}
     order: list[str] = []
@@ -286,23 +418,65 @@ def _grouped_source_labels(items: list, workspace: object) -> list[str]:
     labels: list[str] = []
     for source_id in order:
         group = groups[source_id]
-        if source_id == "documents":
-            titles = [
-                title
-                for title in (
-                    _document_title(getattr(item, "source_ref", None), workspace)
-                    for item in group
-                )
-                if title
-            ]
-            if titles and len(titles) <= 3:
-                labels.append(_joined(titles, "and"))
-            else:
-                labels.append(_count(len(group), "document"))
+        records = _resolve_documents(group, workspace)
+        if records:
+            labels.extend(
+                _document_labels(records, len(records), named=name_documents)
+            )
             continue
-        singular, plural = _SOURCE_LABELS.get(source_id, (humanize(source_id), f"{humanize(source_id)}s"))
+        singular, plural = _SOURCE_LABELS.get(source_id) or _fallback_labels(source_id)
         labels.append(singular if len(group) == 1 else f"{len(group)} {plural}")
     return labels
+
+
+def _omission_clauses(omissions: list, workspace: object) -> list[str]:
+    """One sentence per kind of omission, each source named at most once.
+
+    A source that lands in more than one bucket — a population summary whose
+    candidates hit the size limit and whose source then supplied nothing —
+    used to be listed under both reasons in a single clause, so the same words
+    appeared twice in one sentence. It is reported once, under the most
+    specific reason it earned.
+    """
+    buckets: dict[str, list] = {}
+    claimed: set[str] = set()
+    for kind in _OMISSION_ORDER:
+        for item in omissions:
+            source_id = str(getattr(item, "source_id", "") or "")
+            if source_id in claimed:
+                continue
+            if _omission_kind(str(getattr(item, "reason", "") or "")) != kind:
+                continue
+            buckets.setdefault(kind, []).append(item)
+        claimed.update(
+            str(getattr(item, "source_id", "") or "") for item in buckets.get(kind, [])
+        )
+
+    clauses: list[str] = []
+    scope = _grouped_source_labels(
+        buckets.get("scope", []), workspace, name_documents=False
+    )
+    if scope:
+        # A selector that declined a candidate made a scope decision, and
+        # saying so plainly is the difference between a tool that chose and a
+        # tool that failed. It never claims the material is irrelevant to the
+        # engagement — only that this step did not call for it.
+        clauses.append(f"Holding back {_joined(scope, 'and')} — outside this step's scope.")
+    capacity = _grouped_source_labels(
+        buckets.get("capacity", []), workspace, name_documents=False
+    )
+    if capacity:
+        clauses.append(f"Leaving out {_joined(capacity, 'and')} — past the size limit.")
+    absent = _grouped_source_labels(
+        buckets.get("absent", []), workspace, name_documents=False
+    )
+    if absent:
+        single = len(buckets.get("absent", [])) == 1
+        clauses.append(
+            f"{_sentence(_joined(absent, 'and'))} "
+            f"{'was' if single else 'were'} not available."
+        )
+    return clauses
 
 
 def context_note(manifest: "ContextManifest", workspace: object, *, label: str = "") -> str:
@@ -316,29 +490,48 @@ def context_note(manifest: "ContextManifest", workspace: object, *, label: str =
     selections = list(getattr(manifest, "selections", None) or [])
     if not selections:
         return ""
-    named = _grouped_source_labels(selections, workspace)
-    if not named:
-        return ""
+    # Documents lead their own sentence. They are the sources an auditor
+    # recognises and can open, and burying four filenames at the end of a list
+    # of templates and table profiles hid the only part anyone reads. The
+    # supporting material follows in a second sentence, where it belongs.
+    documents = [
+        item
+        for item in selections
+        if str(getattr(item, "source_ref", "") or "").startswith("document:")
+    ]
+    supporting = [item for item in selections if item not in documents]
     # No token count. It is the one number in this sentence the auditor cannot
     # act on, and it turns a line about evidence into a line about the model.
     # The manifest still carries `supplied_size` for anyone debugging a run.
     subject = f" for {label}" if label else ""
-    sentence = f"Reading {_joined(named, 'and')}{subject}."
-    omissions = list(getattr(manifest, "omissions", None) or [])
-    if omissions:
-        buckets: dict[str, list] = {}
-        order: list[str] = []
-        for item in omissions:
-            phrase = _omission_phrase(str(getattr(item, "reason", "") or ""))
-            buckets.setdefault(phrase, []).append(item)
-            if phrase not in order:
-                order.append(phrase)
-        left_out = [
-            f"{_joined(_grouped_source_labels(buckets[phrase], workspace), 'and')} ({phrase})"
-            for phrase in order
-        ]
-        sentence += f" Leaving out {_joined(left_out, 'and')}."
-    return sentence
+
+    sentences: list[str] = []
+    if documents:
+        records = _resolve_documents(documents, workspace)
+        counted = _count(len(records) or len(documents), "document")
+        if records and len(records) <= _NAMED_DOCUMENT_LIMIT:
+            named = _document_labels(records, len(records), named=True)
+            sentences.append(f"Reading {counted}{subject}: {named[0]}.")
+        else:
+            named = (
+                _document_labels(records, len(records), named=False)
+                if records
+                else []
+            )
+            sentences.append(f"Reading {_joined(named, 'and') or counted}{subject}.")
+        rest = _grouped_source_labels(supporting, workspace)
+        if rest:
+            sentences.append(f"Also {_joined(rest, 'and')}.")
+    else:
+        rest = _grouped_source_labels(supporting, workspace)
+        if not rest:
+            return ""
+        sentences.append(f"Reading {_joined(rest, 'and')}{subject}.")
+
+    sentences.extend(
+        _omission_clauses(list(getattr(manifest, "omissions", None) or []), workspace)
+    )
+    return " ".join(sentences)
 
 
 def repair_note(reason: str = "") -> str:

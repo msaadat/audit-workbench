@@ -502,6 +502,7 @@ watch([() => selected.value?.id, sourceView, view], () => { void renderDocx() },
 function fileIcon(doc: AuditDocument) {
   if (/\.(png|jpe?g|webp|bmp|tiff?)$/i.test(doc.source)) return 'pi pi-image'
   if (/\.pdf$/i.test(doc.source)) return 'pi pi-file-pdf'
+  if (/\.docx?$/i.test(doc.source)) return 'pi pi-file-word'
   return 'pi pi-file'
 }
 
@@ -509,7 +510,15 @@ function normalizedName(value: string) {
   return value.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
-function showSource(doc: AuditDocument) {
+/**
+ * Whether the stored title says anything the filename does not.
+ *
+ * `title` is a slug derived from the file at intake — "Minutes of Meeting -
+ * CFO.docx" becomes `minutes_of_meeting_cfo` — so showing it beside the file
+ * repeats the same words in a worse form. It earns its place only once
+ * someone has retitled the document to something genuinely different.
+ */
+function hasDistinctTitle(doc: AuditDocument) {
   return normalizedName(doc.source) !== normalizedName(doc.title)
 }
 
@@ -599,7 +608,7 @@ onUnmounted(() => {
               :title="`${doc.source} · ${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`" @click="selectDocument(doc.id, 1)"
             >
               <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
-              <span class="doc-identity"><strong>{{ doc.title }}</strong><small v-if="showSource(doc)">{{ doc.source }}</small></span>
+              <span class="doc-identity"><strong>{{ doc.source }}</strong><small v-if="hasDistinctTitle(doc)">{{ doc.title }}</small></span>
               <template v-for="status in [documentStatus(doc, { visionAvailable })]" :key="`${doc.id}:status`">
                 <span
                   v-if="status.level !== 'ready'" class="doc-status" :class="[status.level, { failed: status.failed }]"
@@ -619,8 +628,11 @@ onUnmounted(() => {
       <main v-if="selected" class="document-detail">
         <header class="detail-head">
           <div class="detail-identity">
-            <h3>{{ selected.title }}</h3>
-            <p>{{ selected.source }} · {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }}</p>
+            <h3>{{ selected.source }}</h3>
+            <p>
+              <template v-if="hasDistinctTitle(selected)">{{ selected.title }} · </template>
+              {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }}
+            </p>
           </div>
           <div class="detail-actions">
             <Tag v-if="selectedStatus" :value="selectedStatus.label" :severity="selectedStatusSeverity" v-tooltip.bottom="selectedStatus.detail" />
