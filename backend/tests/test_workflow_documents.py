@@ -15,6 +15,7 @@ reconciled rather than repeated into a second artifact.
 from __future__ import annotations
 
 from io import BytesIO
+from types import SimpleNamespace
 import json
 from pathlib import Path
 
@@ -29,7 +30,10 @@ from app.agent.context import PRESETS
 from app.agent.context.adapters import (
     document_identity_candidate as document_context_identity,
 )
-from app.agent.documents_execution import build_documents_workflow_runner
+from app.agent.documents_execution import (
+    DocumentWorkflowExecution,
+    build_documents_workflow_runner,
+)
 from app.agent.executors import EXECUTORS, ExecutorRequest
 from app.agent.executors import documents as document_executors
 from app.agent.routing import classify_command, resolve_route
@@ -1374,6 +1378,218 @@ def test_structured_narrative_rejects_markers_whose_excerpt_did_not_survive():
         document_workers._validate_surviving_narrative_citations(
             proposal, validated
         )
+
+
+def _analysis_milestone(ws, document_ids: list[str]) -> dict:
+    """Project the document-analysis milestone for a finished run."""
+
+    execution = DocumentWorkflowExecution.__new__(DocumentWorkflowExecution)
+    execution.ws = ws
+    execution.run = {
+        "id": "run-milestone",
+        "workflow": {
+            "requested_outcomes": ["documents.analysis_generated"],
+            "scope": {"document_ids": list(document_ids)},
+        },
+    }
+    return execution.milestone_projection(
+        ws,
+        execution.run,
+        # The projection reads only the capability's id; a full registered
+        # capability would carry a scheduler's worth of unused bindings.
+        SimpleNamespace(id="documents.analysis_generated"),
+        {"units": []},
+    )
+
+
+def _metric(milestone: dict, label: str) -> int:
+    return next(
+        item["value"] for item in milestone["metrics"] if item["label"] == label
+    )
+
+
+def test_fully_covered_analyses_are_not_reported_as_partial():
+    """Coverage is read from the analysis record, not from its envelope.
+
+    `load_analysis` returns an envelope whose top level has no `coverage` key,
+    so reading it there yielded None for every document and reported a clean run
+    as entirely partial — one warning per analyzed document, every run.
+    """
+
+    ws = workspaces.create_workspace("Analysis coverage milestone")
+    doc = documents.add_document(ws, "requisition.txt", b"Quantity 25 Kits")
+    extracted = documents.extract_document(ws, doc["id"])
+    document_analysis.persist_analysis(
+        ws,
+        doc,
+        extracted,
+        {
+            "summary_markdown": "A purchase requisition for onboarding kits.",
+            "audit_notes_markdown": "No specific observations.",
+            "citations": [
+                {
+                    "id": "c1",
+                    "page": 1,
+                    "excerpt": "Quantity 25 Kits",
+                    "source_sha1": doc["sha1"],
+                }
+            ],
+        },
+        provider="test",
+        model="test",
+        coverage={"state": "complete", "analyzed_pages": [1], "omitted_pages": []},
+    )
+
+    milestone = _analysis_milestone(ws, [doc["id"]])
+
+    assert _metric(milestone, "Analyses generated") == 1
+    assert _metric(milestone, "Partial coverage") == 0
+    assert milestone["highlights"] == []
+    assert milestone["status"] == "completed"
+
+
+def test_genuinely_partial_coverage_is_still_reported():
+    ws = workspaces.create_workspace("Partial coverage milestone")
+    doc = documents.add_document(ws, "minutes.txt", b"Procurement planning minutes")
+    extracted = documents.extract_document(ws, doc["id"])
+    document_analysis.persist_analysis(
+        ws,
+        doc,
+        extracted,
+        {
+            "summary_markdown": "Minutes of the procurement planning meeting.",
+            "audit_notes_markdown": "No specific observations.",
+            "citations": [
+                {
+                    "id": "c1",
+                    "page": 1,
+                    "excerpt": "Procurement planning minutes",
+                    "source_sha1": doc["sha1"],
+                }
+            ],
+        },
+        provider="test",
+        model="test",
+        coverage={
+            "state": "partial",
+            "analyzed_pages": [1],
+            "omitted_pages": [2],
+            "reason": "partial_coverage",
+        },
+    )
+
+    milestone = _analysis_milestone(ws, [doc["id"]])
+
+    assert _metric(milestone, "Partial coverage") == 1
+    assert milestone["highlights"][0]["detail"] == "Only part of this document was covered."
+    assert milestone["status"] == "completed_with_issues"
+
+
+def _voucher_note_payload(observation: str, why: str, follow_up: str) -> dict:
+    return {
+        "audit_notes": [
+            {
+                "title": "Unit-cost arithmetic",
+                "observation": observation,
+                "why_it_matters": why,
+                "follow_up": follow_up,
+            }
+        ],
+        "citations": [
+            {"id": "c7", "page": 1, "excerpt": "Quantity 25 Kits"},
+            {"id": "c8", "page": 1, "excerpt": "Estimated unit cost (PKR) 80,000.00"},
+            {"id": "c9", "page": 1, "excerpt": "Estimated total cost (PKR) 2,000,000.00"},
+        ],
+        "registry": {},
+        "record_fragments": [],
+    }
+
+
+def test_voucher_audit_notes_fold_marker_case_onto_the_supplied_id():
+    """Marker case carries no meaning, so it is normalized rather than rejected.
+
+    A live run failed a purchase requisition on exactly this: the response cited
+    [C7][C8][C9] against ids c7/c8/c9, spent its whole repair allowance, and
+    produced no analysis for a document whose answer was already correct.
+    """
+
+    payload = _voucher_note_payload(
+        "25 kits at 80,000.00 totals 2,000,000.00 [C8][C7][C9].",
+        "A mismatch would signal a data-entry defect [C8][C9].",
+        "Recompute the extension against the stated total [C7].",
+    )
+
+    markdown, validated, contract = document_workers._voucher_audit_notes(payload)
+
+    assert contract == "structured_voucher_notes_v1"
+    assert "[c8][c7][c9]" in validated[0]["observation"]
+    assert "[C8]" not in markdown
+    assert "[c7]" in markdown
+
+
+def test_voucher_audit_notes_report_every_missing_marker_in_one_turn():
+    """All three fields are named at once, with the ids that would satisfy them.
+
+    Reported one at a time these cost three round-trips to discover — more than
+    the repair allowance funds — so the allowance is spent learning the shape of
+    the error instead of correcting it.
+    """
+
+    payload = _voucher_note_payload(
+        "25 kits at 80,000.00 totals 2,000,000.00.",
+        "A mismatch would signal a data-entry defect.",
+        "Recompute the extension against the stated total.",
+    )
+
+    with pytest.raises(document_workers.WorkerResponseValidationError) as caught:
+        document_workers._voucher_audit_notes(payload)
+
+    errors = caught.value.errors
+    assert len(errors) == 3
+    assert [error.split("`")[1] for error in errors] == [
+        "audit_notes[0].observation",
+        "audit_notes[0].why_it_matters",
+        "audit_notes[0].follow_up",
+    ]
+    # Naming the usable markers is what turns the rule restatement into a
+    # correction the response can act on without guessing at their spelling.
+    assert all("[c7], [c8], [c9]" in error for error in errors)
+
+
+def test_voucher_audit_notes_still_reject_markers_that_name_no_citation():
+    """Folding case must not fold away a marker that cites nothing at all."""
+
+    payload = _voucher_note_payload(
+        "25 kits at 80,000.00 totals 2,000,000.00 [c8].",
+        "A mismatch would signal a data-entry defect [c8].",
+        "Recompute the extension against the stated total [c42].",
+    )
+
+    with pytest.raises(
+        document_workers.WorkerResponseValidationError,
+        match=r"\[c42\]",
+    ):
+        document_workers._voucher_audit_notes(payload)
+
+
+def test_structured_narrative_folds_marker_case_onto_the_supplied_id():
+    payload = {
+        "summary_sections": [
+            {
+                "heading": "Scope",
+                "paragraphs": ["The policy covers procurement approvals [C1]."],
+                "bullets": [],
+            }
+        ],
+        "audit_notes": [],
+        "citations": [{"id": "c1", "page": 1, "excerpt": "procurement approvals"}],
+    }
+
+    summary, _notes, contract = document_workers._structured_narrative(payload)
+
+    assert contract == "structured_blocks_v1"
+    assert "[c1]" in summary
+    assert "[C1]" not in summary
 
 
 def test_voucher_citations_reject_whole_paragraph_excerpts():

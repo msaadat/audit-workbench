@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -157,7 +157,9 @@ specific review observation, use: `No specific drafting or control-design
 observations were identified from the supplied text. Operating effectiveness
 was not assessed.`
 
-Every substantive point must use citation markers such as [C1]. Citations is
+Every substantive point must use citation markers. A marker is a citation's own
+`id` in square brackets, written exactly as you declared it in citations: the
+citation with id `c1` is cited as [c1], never [C1] or [1]. Citations is
 an array of objects with id, page, and an ``excerpt`` copied verbatim from this
 chunk. Metadata and generated orientation are context only and cannot support
 citations. Distinguish documented requirements from evidence that a control
@@ -485,16 +487,88 @@ def _narrative_array(value: object, label: str) -> list[str]:
     ]
 
 
+_CITATION_MARKER_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]")
+
+#: How many supplied markers a repair message names before it summarizes. Long
+#: enough to list a typical chunk's citations in full, short enough that the
+#: guidance does not crowd out the other errors sharing the turn.
+_MARKER_GUIDANCE_LIMIT = 24
+
+
 def _citation_marker_ids(text: str) -> set[str]:
-    return set(re.findall(r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]", text))
+    return set(_CITATION_MARKER_RE.findall(text))
 
 
 def _replace_citation_markers(text: str, aliases: Mapping[str, str]) -> str:
-    return re.sub(
-        r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]",
+    return _CITATION_MARKER_RE.sub(
         lambda match: f"[{aliases.get(match.group(1), match.group(1))}]",
         text,
     )
+
+
+def _supplied_citation_ids(payload: Mapping[str, Any]) -> list[str]:
+    """The citation ids a response declared, in the order it declared them.
+
+    Order is the response's own, not sorted: ``c2`` before ``c10`` reads as the
+    numbering the model chose, where a lexical sort would read as a jumble.
+    """
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in payload.get("citations") or []:
+        if not isinstance(item, Mapping):
+            continue
+        value = str(item.get("id") or "")
+        if value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
+
+
+def _citation_case_map(supplied_ids: Iterable[str]) -> dict[str, str]:
+    """Fold every case variant of a supplied id onto the id itself.
+
+    A marker's case carries no information: ``[C8]`` and ``[c8]`` name the same
+    citation, and the recognizer above accepts either. Rejecting the difference
+    spends a repair turn on a correction with exactly one possible outcome —
+    and a run whose repair allowance is spent that way fails holding an answer
+    that was already right. Normalize the drift instead; reserve rejection for
+    markers that name no supplied citation at all.
+    """
+
+    canonical: dict[str, str] = {}
+    for value in supplied_ids:
+        if value:
+            canonical.setdefault(value.casefold(), value)
+    return canonical
+
+
+def _normalize_citation_markers(text: str, canonical: Mapping[str, str]) -> str:
+    return _CITATION_MARKER_RE.sub(
+        lambda match: f"[{canonical.get(match.group(1).casefold(), match.group(1))}]",
+        text,
+    )
+
+
+def _marker_guidance(supplied_ids: Sequence[str]) -> str:
+    """Name the markers a repair turn may actually use.
+
+    "must cite a supplied citation marker" restates the rule the response just
+    broke without naming a single value that would satisfy it, leaving the model
+    to guess at the spelling of ids it cannot see quoted anywhere. Listing them
+    turns the guess into a lookup.
+    """
+
+    if not supplied_ids:
+        return (
+            "no citations were supplied, so add the citation itself before "
+            "citing it"
+        )
+    shown = list(supplied_ids[:_MARKER_GUIDANCE_LIMIT])
+    listed = ", ".join(f"[{value}]" for value in shown)
+    if len(supplied_ids) > len(shown):
+        listed += f", … ({len(supplied_ids)} citations supplied in total)"
+    return f"the markers this response supplies are {listed}"
 
 
 def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -588,24 +662,32 @@ def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
             "from the supplied text. Operating effectiveness was not assessed."
         )
 
-    summary = "\n\n".join(summary_parts)
-    audit_notes = "\n\n".join(note_parts)
-    marker_ids = _citation_marker_ids("\n".join(cited_text))
-    supplied_ids = {
-        str(item.get("id") or "")
-        for item in payload.get("citations") or []
-        if isinstance(item, Mapping)
-    }
+    supplied_ids = _supplied_citation_ids(payload)
+    canonical = _citation_case_map(supplied_ids)
+    guidance = _marker_guidance(supplied_ids)
+    # Case is folded on the assembled Markdown as well as on the cited
+    # fragments, so what is rendered, what is validated here, and what the
+    # surviving-citation check reads later all carry the same canonical ids.
+    summary = _normalize_citation_markers("\n\n".join(summary_parts), canonical)
+    audit_notes = _normalize_citation_markers("\n\n".join(note_parts), canonical)
+    marker_ids = _citation_marker_ids(
+        _normalize_citation_markers("\n".join(cited_text), canonical)
+    )
+    errors: list[str] = []
     if not _citation_marker_ids(summary):
-        raise WorkerResponseValidationError(
-            "`summary_sections` must cite at least one supplied citation marker"
+        errors.append(
+            "`summary_sections` must cite at least one supplied citation "
+            f"marker — {guidance}"
         )
-    unknown = sorted(marker_ids - supplied_ids)
+    unknown = sorted(marker_ids - set(supplied_ids))
     if unknown:
-        raise WorkerResponseValidationError(
+        errors.append(
             "narrative citation marker(s) have no supplied citation: "
             + ", ".join(f"[{value}]" for value in unknown)
+            + f" — {guidance}"
         )
+    if errors:
+        raise WorkerResponseValidationError(errors)
     return summary, audit_notes, "structured_blocks_v1"
 
 
@@ -684,8 +766,18 @@ def _voucher_audit_notes(
         raise WorkerResponseValidationError(
             f"`audit_notes` has more than {NARRATIVE_MAX_AUDIT_NOTES} items"
         )
+    supplied_ids = _supplied_citation_ids(payload)
+    canonical = _citation_case_map(supplied_ids)
+    guidance = _marker_guidance(supplied_ids)
     validated: list[dict] = []
     cited_text: list[str] = []
+    # Every citation problem in the response is collected and raised together.
+    # Reported one at a time, a note missing markers in all three of its fields
+    # costs three round-trips to discover — more than the repair allowance —
+    # so the allowance is spent learning the shape of the error rather than
+    # fixing it. The policy already funds up to `max_validation_errors` per
+    # turn; this fills that budget instead of leaving it unused.
+    errors: list[str] = []
     for index, raw in enumerate(notes):
         if not isinstance(raw, Mapping):
             raise WorkerResponseValidationError(
@@ -707,23 +799,23 @@ def _voucher_audit_notes(
             ),
         }
         for key in ("observation", "why_it_matters", "follow_up"):
+            item[key] = _normalize_citation_markers(item[key], canonical)
             if not _citation_marker_ids(item[key]):
-                raise WorkerResponseValidationError(
-                    f"`audit_notes[{index}].{key}` must cite a supplied citation marker"
+                errors.append(
+                    f"`audit_notes[{index}].{key}` must cite a supplied "
+                    f"citation marker — {guidance}"
                 )
             cited_text.append(item[key])
         validated.append(item)
-    supplied_ids = {
-        str(item.get("id") or "")
-        for item in payload.get("citations") or []
-        if isinstance(item, Mapping)
-    }
-    unknown = sorted(_citation_marker_ids("\n".join(cited_text)) - supplied_ids)
+    unknown = sorted(_citation_marker_ids("\n".join(cited_text)) - set(supplied_ids))
     if unknown:
-        raise WorkerResponseValidationError(
+        errors.append(
             "audit-note citation marker(s) have no supplied citation: "
             + ", ".join(f"[{value}]" for value in unknown)
+            + f" — {guidance}"
         )
+    if errors:
+        raise WorkerResponseValidationError(errors)
     return (
         render_voucher_audit_notes(validated),
         validated,
@@ -748,16 +840,13 @@ def _validate_surviving_narrative_citations(
         )
     )
     markers = _citation_marker_ids(text)
-    surviving = {
-        str(item.get("id") or "")
-        for item in validated.get("citations") or []
-        if isinstance(item, Mapping)
-    }
-    missing = sorted(markers - surviving)
+    surviving = _supplied_citation_ids(validated)
+    missing = sorted(markers - set(surviving))
     if missing:
         raise WorkerResponseValidationError(
             "narrative citation marker(s) did not survive exact source validation: "
             + ", ".join(f"[{value}]" for value in missing)
+            + f" — {_marker_guidance(surviving)}"
         )
 
 
@@ -784,7 +873,19 @@ def _citation_submission_tool(
             "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "minLength": 1},
+                    # Constrained to the shape the narrative markers use, so the
+                    # provider settles the spelling rather than the validator
+                    # rejecting a response over it. An id is cited by writing it
+                    # in square brackets exactly as declared: id "c1" is [c1].
+                    "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^c[0-9]{1,3}$",
+                        "description": (
+                            "Lower-case 'c' followed by the citation's number, "
+                            "e.g. c1. Cite it in the narrative as [c1]."
+                        ),
+                    },
                     "page": {"type": "integer", "minimum": 1},
                     "excerpt": {"type": "string", "minLength": 1},
                 },
@@ -1196,9 +1297,13 @@ it matters. Do not conclude that a control operated or failed; that determinatio
 is made elsewhere by comparing this record against the accounting population.
 If there is no such observation, return an empty audit_notes array.
 
-Support every substantive audit-note statement with a citation marker such as
-[c1]. The registered evidence schema is authoritative for the neutral facts the
-voucher summary will display; do not duplicate those facts as audit notes.
+Every audit note must carry at least one citation marker in each of its
+observation, why_it_matters, and follow_up fields — all three, including a
+follow-up that reads as an action rather than a claim. A marker is a citation's
+own `id` in square brackets, written exactly as you declared it in citations:
+the citation with id `c1` is cited as [c1], never [C1] or [1]. The registered
+evidence schema is authoritative for the neutral facts the voucher summary will
+display; do not duplicate those facts as audit notes.
 
 citations is an array of objects with id, page, and a short exact `excerpt` copied
 verbatim from this chunk. Every excerpt must appear character for character in

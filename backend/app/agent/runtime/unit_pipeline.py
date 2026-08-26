@@ -816,6 +816,12 @@ class UnitPipeline:
                 "capability_id": request.capability_id,
                 "unit_id": request.unit_id,
                 "worker_id": request.worker_id,
+                # A repair happens inside one worker call, so the unit's own
+                # attempt counter stays at 1 however many turns the response
+                # took. Recording the worker's count keeps the repairs on a
+                # succeeded unit visible after the run, where until now only the
+                # aggregate `usage.retries` and the raw call log showed them.
+                "worker_attempts": worker_result.attempts,
                 "worker_response_hash": worker_result.response_hash,
                 "response_schema_hash": worker_result.response_schema_hash,
                 "execution_identity": execution_identity.to_dict(),

@@ -218,13 +218,20 @@ class DocumentWorkflowExecution(BaseRunner):
                 continue
             analyzed.append(document_id)
             try:
-                coverage = (
-                    document_analysis.load_analysis(subject, document_id).get("coverage")
-                    or {}
-                )
+                envelope = document_analysis.load_analysis(subject, document_id)
             except WorkspaceError:
-                coverage = {}
-            if coverage.get("state") != "complete":
+                envelope = {}
+            # `load_analysis` returns an envelope — document_id, revisions,
+            # generated, effective, candidate, review, status. Coverage lives on
+            # the analysis record inside it, never at the top level, so reading
+            # `envelope["coverage"]` yields None for every document and reports
+            # a fully covered run as entirely partial.
+            record = envelope.get("effective") or envelope.get("generated") or {}
+            state = str((record.get("coverage") or {}).get("state") or "")
+            # Only an explicit non-complete state is partial. An artifact with no
+            # coverage block at all is unknown, and "only part of this document
+            # was covered" would be a claim its record does not support.
+            if state and state != "complete":
                 partial.append(document_id)
         skipped = max(0, len(scope.document_ids) - len(analyzed))
         return {

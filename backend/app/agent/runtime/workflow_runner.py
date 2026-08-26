@@ -843,6 +843,9 @@ class WorkflowRunner:
 
     def _narrate_repair(self) -> Callable[[int, tuple[str, ...]], None]:
         def repaired(_attempt: int, errors: tuple[str, ...]) -> None:
+            # Only the first error is narrated — a repair turn now carries every
+            # problem the validator found, and the rest belong in the rejection
+            # sidecar rather than in the reader's activity feed.
             narration.say(
                 self.run,
                 self.runtime.emit,
