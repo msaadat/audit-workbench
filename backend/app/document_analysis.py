@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import uuid
 from collections.abc import Mapping
@@ -323,6 +324,57 @@ def generated_record(workspace: Workspace, document_id: str) -> dict | None:
         if artifact:
             return artifact
     return None
+
+
+# Audit notes are authored as a Markdown bullet list under one heading, one
+# bullet per observation, each shaped "<statement>. <why it matters>; <what to
+# obtain>. [C1]". A document with nothing to report says so in a plain
+# paragraph and therefore yields no bullets at all.
+_NOTE_BULLET = re.compile(r"^\s*[-*]\s+(?P<text>\S.*)$")
+_CITATION_MARKER = re.compile(r"\s*\[[A-Za-z0-9][A-Za-z0-9-]*\]")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def effective_audit_notes(workspace: Workspace, document_id: str) -> str:
+    """The audit notes as they stand, auditor edits included.
+
+    An override is what the auditor is prepared to stand behind, so it
+    outranks the generated text wherever one exists.
+    """
+    override = load_review(workspace, document_id).get("audit_notes_override")
+    if override is not None:
+        return str(override)
+    return str((generated_record(workspace, document_id) or {}).get(
+        "audit_notes_markdown"
+    ) or "")
+
+
+def audit_observations(workspace: Workspace, document_id: str) -> list[dict]:
+    """One record per observation the analysis recorded against a document.
+
+    A projection of text that already exists, split where the notes are
+    already split, so nothing here asserts anything the analysis did not. The
+    leading sentence becomes the label a reader scans and the remainder — why
+    it matters and what to obtain — becomes the detail underneath it.
+    """
+    observations: list[dict] = []
+    for line in effective_audit_notes(workspace, document_id).splitlines():
+        match = _NOTE_BULLET.match(line)
+        if match is None:
+            continue
+        body = " ".join(match.group("text").split())
+        # Citation ids anchor the note to a page; they read as noise in a
+        # one-line label, and the detail keeps them.
+        parts = _SENTENCE_END.split(_CITATION_MARKER.sub("", body).strip(), maxsplit=1)
+        statement = parts[0].strip()
+        if not statement:
+            continue
+        observations.append({
+            "document_id": document_id,
+            "statement": statement,
+            "detail": (parts[1].strip() if len(parts) > 1 else ""),
+        })
+    return observations
 
 
 # The generated-analysis fields that identify the outcome. Provider, model, and

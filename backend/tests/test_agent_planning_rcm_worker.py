@@ -25,6 +25,7 @@ from app.agent.workers import (
     WORKERS,
     WorkerRepairSeed,
     WorkerRequest,
+    WorkerResponseValidationError,
     WorkerRunError,
 )
 from app.agent.workers import planning
@@ -1176,3 +1177,129 @@ def test_rcm_worker_has_no_workspace_store_resolver_or_scheduler_dependency():
     )
     assert ".ws" not in source
     assert "load_workspace" not in source
+
+
+# --------------------------------------------------------------------------- #
+# Citing a criterion: the register, and what a row may point at
+# --------------------------------------------------------------------------- #
+SOP_SUMMARY = (
+    "DOCUMENT SUMMARY — Procurement SOP Extracts.docx\n"
+    "## Process\n"
+    "- Financial Authorities review the requisition. [C4]\n"
+    "- Procurement matches the invoice with the PO and GRN. [C7]\n"
+)
+MATRIX_SUMMARY = (
+    "DOCUMENT SUMMARY — Financial Approval Matrix.docx\n"
+    "## Limits\n- CFO approves to PKR 10,000,000. [C2]\n"
+)
+
+
+def _document_bundle(*summaries):
+    """A bundle carrying supplied document summaries, in order."""
+    base = _bundle()
+    items = list(base.items) + [
+        ContextBundleItem(
+            source_id="documents",
+            source_ref=f"document:{document_id}",
+            representation=ContextRepresentation("summary"),
+            content=content,
+            supplied_size=supplied_size(content),
+        )
+        for document_id, content in summaries
+    ]
+    return ContextBundle(
+        capability_id="planning.rcm_ready",
+        unit_id="rcm",
+        items=tuple(items),
+        supplied_size=total_supplied_size(item.supplied_size for item in items),
+    )
+
+
+def _sheet():
+    return planning.rcm_citation_sheet(
+        _request(_document_bundle(("d_sop", SOP_SUMMARY), ("d_matrix", MATRIX_SUMMARY)))
+    )
+
+
+def test_citation_sheet_numbers_documents_and_lists_only_their_own_anchors():
+    sheet = _sheet()
+
+    assert sheet == [
+        {
+            "ref": 1,
+            "document": "Procurement SOP Extracts.docx",
+            "document_id": "d_sop",
+            "citations": ["C4", "C7"],
+        },
+        {
+            "ref": 2,
+            "document": "Financial Approval Matrix.docx",
+            "document_id": "d_matrix",
+            "citations": ["C2"],
+        },
+    ]
+
+
+def test_citation_sheet_skips_a_document_with_nothing_to_cite():
+    sheet = planning.rcm_citation_sheet(
+        _request(_document_bundle(("d_plain", "DOCUMENT SUMMARY — Notes.docx\nNo anchors.")))
+    )
+
+    assert sheet == []
+
+
+def test_a_row_resolves_the_refs_it_chose_into_document_anchors():
+    resolved = planning._validated_criteria_refs(
+        {"criteria_refs": [{"document": 1, "citations": ["C7"]}]}, 1, _sheet()
+    )
+
+    assert resolved == [
+        {
+            "document_id": "d_sop",
+            "document": "Procurement SOP Extracts.docx",
+            "citation_id": "C7",
+        }
+    ]
+
+
+def test_a_row_citing_an_unsupplied_document_is_repaired_not_accepted():
+    with pytest.raises(WorkerResponseValidationError) as error:
+        planning._validated_criteria_refs(
+            {"criteria_refs": [{"document": 9, "citations": ["C7"]}]}, 3, _sheet()
+        )
+
+    assert "document ref 9" in str(error.value)
+    assert "[1, 2]" in str(error.value)
+
+
+def test_a_row_citing_an_anchor_the_document_does_not_carry_is_rejected():
+    # C7 is real, but it belongs to the SOP, not to the approval matrix. A
+    # criterion pointing at the wrong document is worse than one pointing
+    # nowhere.
+    with pytest.raises(WorkerResponseValidationError) as error:
+        planning._validated_criteria_refs(
+            {"criteria_refs": [{"document": 2, "citations": ["C7"]}]}, 4, _sheet()
+        )
+
+    assert "C7" in str(error.value)
+    assert "Financial Approval Matrix.docx" in str(error.value)
+
+
+def test_repeated_anchors_are_one_source_not_two():
+    resolved = planning._validated_criteria_refs(
+        {
+            "criteria_refs": [
+                {"document": 1, "citations": ["C7", "C7"]},
+                {"document": 1, "citations": ["C7"]},
+            ]
+        },
+        1,
+        _sheet(),
+    )
+
+    assert len(resolved) == 1
+
+
+def test_a_row_that_cites_nothing_carries_no_refs():
+    assert planning._validated_criteria_refs({}, 1, _sheet()) == []
+    assert planning._validated_criteria_refs({"criteria_refs": []}, 1, _sheet()) == []

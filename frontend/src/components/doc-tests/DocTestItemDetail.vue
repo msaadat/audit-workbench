@@ -15,6 +15,7 @@ import type {
   DocTestItem,
   EvidenceRef,
 } from '../../types'
+import ProvenanceRail from '../agent/ProvenanceRail.vue'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 import { plural, pluralWord, verb } from '../../format'
@@ -27,6 +28,8 @@ const props = defineProps<{
   running: boolean
   busy: boolean
   focusAssertionKey?: string | null
+  /** Optional so the component stays mountable in a bare test harness. */
+  workspaceId?: string
 }>()
 const emit = defineEmits<{
   anchor: [EvidenceRef]
@@ -825,6 +828,14 @@ onMounted(() => { void focusAssertion() })
         </template>
       </div>
 
+      <!-- Provenance belongs to the test definition, not to the item: the
+           agent wrote the test once and every item inherits it. -->
+      <ProvenanceRail
+        v-if="workspaceId"
+        :key="test.id"
+        :workspaceId="workspaceId"
+        :artifactRef="`doctest:${test.id}`"
+      />
     </aside>
   </div>
 </template>

@@ -8,6 +8,7 @@ import type { AgentDecision, AgentInteraction, AgentRun, AssistantRunProjection 
 import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentBlockerCard from './AgentBlockerCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
+import AgentNarration from './AgentNarration.vue'
 
 // showAttention: pending interactions/approvals normally render as their own
 // transcript items; only a foreign run card (another chat's active run, not
@@ -153,6 +154,15 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       <button v-else-if="canContinue" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="pi pi-arrow-right" /></button>
       <button v-else-if="canRetry" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="retryRun"><i class="pi pi-refresh" /></button>
     </div>
+
+    <!-- The steps, kept. The live activity strip and the streaming checklist
+         both replace themselves as a stage settles, so without this the only
+         durable record of a run was its opening and closing lines. -->
+    <AgentNarration
+      v-if="!showAttention && projection.narration?.length"
+      :entries="projection.narration"
+      :active="active"
+    />
 
     <!-- A run owned by another chat has neither its narration nor its closing
          message projected here, so its card carries the one-line result. -->

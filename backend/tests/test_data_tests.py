@@ -857,10 +857,14 @@ def test_document_test_findings_can_name_the_documents_they_rest_on(
     projection = adapters._finding_execution_projection(ws, f"doctest:{test['id']}")
 
     # "The supplied documentation did not establish X" is not actionable; the
-    # document's name is what makes it so.
+    # document's name is what makes it so — and the name is the file as it
+    # arrived, not the slug intake derived from it. A model handed the slug
+    # writes it into the finding: drafts in the procurement engagement read
+    # "the documents titled `minutes_of_meeting_head_procurment`".
     assert projection["items"][0]["documents"] == [
-        {"id": source["id"], "title": source["title"], "sha1": source["sha1"]}
+        {"id": source["id"], "title": "procurement_sop.txt", "sha1": source["sha1"]}
     ]
+    assert source["title"] == "procurement_sop"
 
 
 def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):

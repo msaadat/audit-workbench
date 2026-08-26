@@ -1057,3 +1057,45 @@ def test_the_apm_template_requires_the_analytics_section():
     assert headings.index("## Data analytics performed") < headings.index(
         "## Key risks and planned response"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Naming documents for the model
+# --------------------------------------------------------------------------- #
+def test_document_display_name_prefers_the_file_over_the_intake_slug():
+    document = {
+        "id": "d1",
+        "source": "Minutes of Meeting - CFO.docx",
+        "title": "minutes_of_meeting_cfo",
+    }
+
+    assert context_adapters._document_display_name(document) == (
+        "Minutes of Meeting - CFO.docx"
+    )
+    # The slug still names a document that arrived without a filename.
+    assert context_adapters._document_display_name(
+        {"id": "d1", "title": "minutes_of_meeting_cfo"}
+    ) == "minutes_of_meeting_cfo"
+    assert context_adapters._document_display_name(None, "d1") == "d1"
+    assert context_adapters._document_display_name({}, "") == ""
+
+
+def test_document_candidates_index_the_slug_even_though_they_stop_showing_it(
+    workspace_with_data,
+):
+    """Naming a document differently must not change which are selected."""
+    ws = workspace_with_data
+    source = documents.add_document(ws, "Procurement SOP Extracts.docx", b"The procedure text.")
+    documents.update_document(ws, source["id"], {"category": "policy"})
+    ws = workspaces.Workspace(ws.root)
+
+    candidates = context_adapters.apm_document_candidates(ws)
+    candidate = next(
+        item for item in candidates if item.source_ref == f"document:{source['id']}"
+    )
+
+    # What the model is handed.
+    assert candidate.metadata["title"] == "Procurement SOP Extracts.docx"
+    # What a lexical selector still matches on.
+    assert source["title"] in candidate.lexical_text
+    assert "Procurement SOP Extracts.docx" in candidate.lexical_text

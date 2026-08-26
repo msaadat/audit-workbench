@@ -8,6 +8,7 @@ enforce context policy, call a model, or duplicate domain retrieval logic.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
@@ -16,6 +17,7 @@ from ... import (
     cycle_vouching,
     doc_tests,
     document_context,
+    documents,
     intake,
     methodology,
     model_context,
@@ -54,6 +56,20 @@ def _normalized_document_ids(
     if missing:
         raise WorkspaceError(f"Document '{missing[0]}' not found.")
     return requested
+
+
+def _document_display_name(
+    document: Mapping[str, object] | None, fallback: str = ""
+) -> str:
+    """The name a reader — or a drafting model — recognises.
+
+    Delegates to :func:`documents.display_name`, which owns the precedence, so
+    a worker, a narration line and this adapter cannot drift apart on what a
+    document is called. The intake slug is still indexed for lexical selection
+    wherever it was before, so naming a document differently never changes
+    which documents are chosen.
+    """
+    return documents.display_name(document, fallback)
 
 
 def _planning_relevant(document: Mapping[str, object], curated: bool) -> bool:
@@ -136,7 +152,7 @@ def apm_document_candidates(
         category = str(document.get("category") or "")
         metadata = {
             "document_id": document_id,
-            "title": document.get("title") or document.get("source") or document_id,
+            "title": _document_display_name(document, document_id),
             "source": document.get("source") or "",
             "category": category,
             "text_state": document.get("text_state") or "",
@@ -159,6 +175,10 @@ def apm_document_candidates(
                     for value in (
                         metadata["title"],
                         metadata["source"],
+                        # The intake slug stays indexed even though it is no
+                        # longer the name shown: dropping it would quietly
+                        # change which documents a lexical selector matches.
+                        document.get("title"),
                         metadata["category"],
                         *representations.values(),
                     )
@@ -638,7 +658,7 @@ def planning_context_document_candidates(
         category = str(document.get("category") or "")
         metadata = {
             "document_id": document_id,
-            "title": document.get("title") or document.get("source") or document_id,
+            "title": _document_display_name(document, document_id),
             "category": category,
             "text_state": document.get("text_state") or "",
             "analysis_id": analysis.get("analysis_id"),
@@ -653,7 +673,12 @@ def planning_context_document_candidates(
                 metadata=metadata,
                 lexical_text="\n".join(
                     str(value or "")
-                    for value in (metadata["title"], category, *representations.values())
+                    for value in (
+                        metadata["title"],
+                        document.get("title"),
+                        category,
+                        *representations.values(),
+                    )
                 ),
             )
         )
@@ -982,12 +1007,15 @@ def document_test_document_candidates(
         )
         metadata = {
             "document_id": document_id,
-            "title": document.get("title") or document.get("source") or document_id,
+            "title": _document_display_name(document, document_id),
             "category": document.get("category") or "",
             "text_state": document.get("text_state") or "",
         }
         content = {
             **{key: document.get(key) for key in _DOCUMENT_TEST_DOCUMENT_FIELDS},
+            # The worker is handed both fields; naming them the same thing
+            # removes the chance of it quoting the slug as the document's name.
+            "title": metadata["title"],
             "analysis_id": context.get("analysis_id"),
             "citations": [
                 {key: citation.get(key) for key in ("id", "page", "excerpt")}
@@ -1007,6 +1035,7 @@ def document_test_document_candidates(
                     str(value or "")
                     for value in (
                         metadata["title"],
+                        document.get("title"),
                         metadata["category"],
                         content["summary"],
                     )
@@ -1454,9 +1483,9 @@ def _document_titles(workspace: Workspace, document_ids: Iterable[str]) -> list[
     """Name the documents behind a tested item, in stable order.
 
     A finding that says "the supplied documentation did not establish X" is not
-    actionable; one that names the document is. The title is workspace metadata
-    the evidence anchor already points at — this resolves the id the anchor
-    carries into the name a reader recognizes.
+    actionable; one that names the document is. This resolves the id the
+    evidence anchor carries into the file the auditor recognizes — not the
+    intake slug, which a drafting model will quote verbatim into the finding.
     """
     by_id = {str(item.get("id")): item for item in workspace.documents}
     named: dict[str, dict] = {}
@@ -1466,7 +1495,7 @@ def _document_titles(workspace: Workspace, document_ids: Iterable[str]) -> list[
         if key and key not in named:
             named[key] = {
                 "id": key,
-                "title": (document or {}).get("title") or key,
+                "title": _document_display_name(document, key),
                 "sha1": (document or {}).get("sha1"),
             }
     return list(named.values())

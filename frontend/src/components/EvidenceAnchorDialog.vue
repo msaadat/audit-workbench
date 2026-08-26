@@ -2,14 +2,34 @@
 import { computed } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
-import type { EvidenceRef } from '../types'
+import type { AuditDocument, EvidenceRef } from '../types'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 
-const props = defineProps<{ modelValue: boolean; anchor: EvidenceRef | null }>()
+const props = defineProps<{
+  modelValue: boolean
+  anchor: EvidenceRef | null
+  /**
+   * The document catalogue, when the opener has one. An anchor names its
+   * source by id; without the catalogue this dialog can only show the id
+   * back, which is the last screen of a chain that spent every earlier step
+   * naming things the auditor recognises.
+   */
+  documents?: AuditDocument[]
+}>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 const nav = useWorkspaceNav()
 const visible = computed({ get: () => props.modelValue, set: value => emit('update:modelValue', value) })
+
+const sourceLabel = computed(() => {
+  const anchor = props.anchor
+  if (!anchor) return ''
+  if (anchor.source_kind === 'document') {
+    const found = (props.documents ?? []).find(item => item.id === anchor.source_id)
+    if (found) return found.source || found.title
+  }
+  return `${anchor.source_kind} · ${anchor.source_id}`
+})
 
 async function openSource() {
   if (!props.anchor) return
@@ -32,7 +52,13 @@ async function copyCitation() {
   <Dialog v-model:visible="visible" modal header="Evidence source" :style="{ width: 'min(52rem, 94vw)' }">
     <div v-if="anchor" class="anchor-body">
       <div class="anchor-facts">
-        <span><small>Source</small><strong>{{ anchor.source_kind }} · {{ anchor.source_id }}</strong></span>
+        <span>
+          <small>Source</small>
+          <strong>{{ sourceLabel }}</strong>
+          <!-- The id stays, one line down: it identifies the anchor, but it
+               is not what the source is called. -->
+          <code class="source-id">{{ anchor.source_kind }}:{{ anchor.source_id }}</code>
+        </span>
         <span><small>Page</small><strong>{{ anchor.page || '—' }}</strong></span>
       </div>
       <div class="excerpt">

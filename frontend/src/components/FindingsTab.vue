@@ -18,6 +18,7 @@ import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AuditFinding, EvidenceRef, FindingsPayload, FindingSeverity, WorkspaceSummary } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
+import ProvenanceRail from './agent/ProvenanceRail.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -313,8 +314,9 @@ function openEvidence(value: EvidenceRef) {
           <details v-if="availableEvidence.length" class="evidence-picker"><summary>Add evidence already captured in fieldwork</summary><button v-for="option in availableEvidence" :key="option.anchor.id" @click="addEvidence(option.anchor)"><i class="pi pi-plus"/>{{ option.label }}</button></details>
         </div>
         </UiAdvancedSection>
-        <UiAdvancedSection title="Finding administration" description="Source, run provenance, and deletion">
+        <UiAdvancedSection title="Sources and provenance" description="What this draft was written from, and what was left out">
           <div class="admin-row"><span>Source: {{ selected.source }}</span><span v-if="selected.agent_run_id">Agent run: {{ selected.agent_run_id }}</span></div>
+          <ProvenanceRail :key="selected.id" :workspaceId="workspace.id" :artifactRef="`finding:${selected.id}`" class="detail-provenance" />
         </UiAdvancedSection>
       </section>
       <UiEmptyState v-else icon="pi pi-flag" title="No finding selected" description="Select a finding or add a manual finding." />
@@ -348,6 +350,7 @@ function openEvidence(value: EvidenceRef) {
 .response-editor { width:100%; font-size:var(--aw-text-sm) }
 .template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }
 .admin-row { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; color:var(--aw-muted); font-size:var(--aw-text-sm) }.admin-row .p-button { margin-left:auto }
+.detail-provenance { max-width:34rem; margin-top:.75rem }
 @media (max-width:1050px) { .findings-layout { grid-template-columns:1fr }.finding-rail { max-height:16rem }.link-grid { grid-template-columns:1fr }.link-grid .wide { grid-column:auto } }
 @media (max-width:700px) { .top-fields { grid-template-columns:1fr }.findings-head { align-items:flex-start; flex-direction:column }.detail-toolbar { flex-wrap:wrap } }
 </style>

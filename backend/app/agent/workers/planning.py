@@ -408,6 +408,11 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   business_cycle is derived from it locally.
 - criteria and control_owner are optional: cite or name only what the planning
   basis supplies, and leave the field empty otherwise rather than guessing.
+- Where criteria rests on a supplied document, also set criteria_refs, choosing
+  from CITABLE DOCUMENTS: one entry per document, `document` its `ref` number
+  and `citations` the `[C...]` ids you are relying on. Cite only ids listed for
+  that ref. Never write a document id. Omit criteria_refs where the criterion
+  does not rest on a supplied document.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
   percentage is not an exception rate; a maximum is not a policy limit.
 - One risk and one control per row. {JSON_RULES}"""
@@ -523,9 +528,17 @@ _RCM_ROW_KEYS = frozenset(
         "control_type",
         "control_attributes",
         "criteria",
+        "criteria_refs",
         "control_owner",
     }
 )
+
+# The source id the RCM scope supplies engagement documents under.
+RCM_DOCUMENT_SOURCE_ID = "documents"
+# Citation anchors are authored by document analysis as `[C7]` markers inside
+# the summary a worker reads, so the ids a row may cite are exactly the ids
+# present in the text it was shown.
+_CITATION_MARKER = re.compile(r"\[(C\d+)\]")
 # One initial call plus this many correction turns, mirrored into the registered
 # repair policy below. The worker needs it to know which attempt is its last, and
 # therefore when an unrepairable row should be quarantined rather than sink the
@@ -540,6 +553,107 @@ _RCM_REQUIRED_FIELDS = (
     "control_type",
 )
 _RCM_RISK_RATINGS = {"low", "medium", "high", "critical"}
+
+
+def rcm_citation_sheet(request: WorkerRequest) -> list[dict[str, Any]]:
+    """The numbered register an RCM row cites its criteria from.
+
+    One entry per supplied document, in bundle order, carrying the file's name
+    and the citation ids that actually appear in the text the worker was shown.
+    A worker chooses a ``ref`` and a citation id; it never writes a document id,
+    which is the ten-hex-character token that
+    ``docs/memo-structured-references.md`` established models corrupt.
+    """
+    sheet: list[dict[str, Any]] = []
+    for number, item in enumerate(
+        (
+            entry
+            for entry in request.context.items
+            if entry.source_id == RCM_DOCUMENT_SOURCE_ID
+            and str(entry.source_ref or "").startswith("document:")
+        ),
+        start=1,
+    ):
+        text = str(item.content or "")
+        citations = sorted(
+            set(_CITATION_MARKER.findall(text)),
+            key=lambda value: int(value[1:]),
+        )
+        if not citations:
+            continue
+        sheet.append({
+            "ref": number,
+            "document": prompts.summary_document_name(text)
+            or item.source_ref.split(":", 1)[1],
+            "document_id": item.source_ref.split(":", 1)[1],
+            "citations": citations,
+        })
+    return sheet
+
+
+def _validated_criteria_refs(
+    row: Mapping[str, Any], index: int, sheet: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Resolve a row's cited refs, rejecting anything the sheet cannot support.
+
+    An out-of-range ref is not a mistake to tolerate: a criterion that points at
+    the wrong document is worse than one that points nowhere, so it is raised
+    into the worker's own repair loop rather than dropped.
+    """
+    value = row.get("criteria_refs")
+    if value in (None, "", []):
+        return []
+    if not isinstance(value, list):
+        raise WorkerResponseValidationError(
+            f"RCM row {index} criteria_refs must be an array"
+        )
+    by_ref = {entry["ref"]: entry for entry in sheet}
+    resolved: list[dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            raise WorkerResponseValidationError(
+                f"RCM row {index} criteria_refs entries must be objects"
+            )
+        try:
+            ref = int(entry.get("document"))
+        except (TypeError, ValueError):
+            raise WorkerResponseValidationError(
+                f"RCM row {index} criteria_refs entry needs a numeric document ref"
+            ) from None
+        supplied = by_ref.get(ref)
+        if supplied is None:
+            raise WorkerResponseValidationError(
+                f"RCM row {index} cites document ref {ref}, which was not supplied; "
+                f"available refs are {sorted(by_ref) or 'none'}"
+            )
+        citations = entry.get("citations")
+        if not isinstance(citations, list) or not citations:
+            raise WorkerResponseValidationError(
+                f"RCM row {index} criteria_refs entry for ref {ref} needs citations"
+            )
+        allowed = set(supplied["citations"])
+        for citation in citations:
+            identifier = str(citation or "").strip()
+            if identifier not in allowed:
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} cites {identifier} in "
+                    f"'{supplied['document']}', which does not carry it"
+                )
+            resolved.append({
+                "document_id": supplied["document_id"],
+                "document": supplied["document"],
+                "citation_id": identifier,
+            })
+    # One row citing the same anchor twice is a duplicate, not two sources.
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for item in resolved:
+        key = (item["document_id"], item["citation_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
 
 
 def _current_rcm_rows(request: WorkerRequest) -> list[object]:
@@ -734,11 +848,14 @@ def _partition_rcm_rows(
         if isinstance(row, Mapping) and row.get("id")
     }
     answers = _tabular_answers(request)
+    sheet = rcm_citation_sheet(request)
     normalized: list[dict] = []
     failures: list[dict] = []
     for index, row in enumerate(rows or (), start=1):
         try:
-            normalized.append(_normalized_rcm_row(row, index, existing_ids, answers))
+            normalized.append(
+                _normalized_rcm_row(row, index, existing_ids, answers, sheet)
+            )
         except WorkerResponseValidationError as error:
             failures.append(
                 {
@@ -755,6 +872,7 @@ def _normalized_rcm_row(
     index: int,
     existing_ids: set[str],
     tabular_answers: list[tuple[str, set[str]]] | None = None,
+    citation_sheet: list[dict[str, Any]] | None = None,
 ) -> dict:
     """Validate and normalize exactly one proposed RCM row."""
 
@@ -824,6 +942,12 @@ def _normalized_rcm_row(
         "operation": operation,
         "business_cycle": expected_cycle,
         "control_attributes": attributes,
+        # Resolved from refs the row chose out of the supplied register, so the
+        # criterion carries a pointer to the sentence it rests on rather than
+        # only prose naming a document.
+        "criteria_refs": _validated_criteria_refs(
+            row, index, list(citation_sheet or [])
+        ),
     }
 
 
@@ -1102,6 +1226,13 @@ def _rcm_judgment_user(request: WorkerRequest) -> str:
             "ACTIVE RCM TEMPLATE (verbatim)": template,
             "REVISED APM": current_apm,
             "CURRENT RCM TO REVISE": _current_rcm_rows(request),
+            # The register a criterion cites from. Promoted out of the bundle
+            # so the row never has to name a document from its own contents,
+            # and never has to copy an id to point at one.
+            "CITABLE DOCUMENTS": [
+                {key: entry[key] for key in ("ref", "document", "citations")}
+                for entry in rcm_citation_sheet(request)
+            ],
             "RESOLVED CONTEXT": _context_without_sources(
                 request,
                 "rcm_template",

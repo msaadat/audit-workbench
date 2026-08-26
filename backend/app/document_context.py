@@ -6,6 +6,7 @@ import hashlib
 import time
 
 from . import document_analysis, document_search, documents
+from .agent.prompts import document_summary_heading
 from .workspaces import Workspace, WorkspaceError
 
 SMALL_DOCUMENT_CHARACTERS = 32_000
@@ -54,9 +55,15 @@ def apm_document_context(
         if include_audit_notes
         else {}
     )
+    record = next(
+        (item for item in workspace.documents if item.get("id") == document_id), None
+    )
+    name = documents.display_name(record, document_id)
     sections = []
     if summary.get("content"):
-        sections.append(f"DOCUMENT SUMMARY\n{summary['content']}")
+        sections.append(
+            f"{document_summary_heading(name)}\n{summary['content']}"
+        )
     if audit_notes.get("content"):
         sections.append(f"AUDIT NOTES\n{audit_notes['content']}")
     content = "\n\n".join(sections)

@@ -838,3 +838,65 @@ def test_context_note_gives_a_lone_unlabelled_source_an_article():
     text = narration.context_note(manifest, _Workspace())
 
     assert text.startswith("Reading the observation")
+
+
+# --------------------------------------------------------------------------- #
+# Milestone text: briefings, not machine descriptions
+# --------------------------------------------------------------------------- #
+def test_clip_trims_on_a_word_boundary():
+    text = "Governance metadata is not stated in the supplied document: owner and version"
+
+    assert narration.clip(text, 40) == "Governance metadata is not stated in…"
+    assert narration.clip(text, len(text)) == text
+    assert narration.clip("", 10) == ""
+
+
+def test_clip_falls_back_to_a_hard_cut_without_a_word_boundary():
+    assert narration.clip("x" * 40, 10) == "xxxxxxxxx…"
+
+
+def test_milestone_highlights_are_clipped_without_cutting_a_word():
+    run: dict = {"milestones": []}
+    entry = narration.milestone(
+        run,
+        lambda *args: None,
+        capability="planning.apm_ready",
+        stage_id="apm",
+        status="completed",
+        headline="Audit planning memorandum ready",
+        summary="Planning rests on 2 policy documents and 2 sets of minutes.",
+        highlights=[{
+            "severity": "warning",
+            "label": "Governance metadata is not stated in the supplied document: " + "detail " * 40,
+            "detail": "This matters for determining authorization and currency.",
+            "artifact_ref": "document:d1",
+        }],
+    )
+
+    assert entry is not None
+    label = entry["highlights"][0]["label"]
+    assert len(label) <= 160
+    assert label.endswith("…")
+    # A clipped label never ends mid-word.
+    assert not label[:-1].endswith(" ")
+    assert "detail detail" in label
+
+
+def test_milestone_keeps_at_most_three_highlights():
+    run: dict = {"milestones": []}
+    entry = narration.milestone(
+        run,
+        lambda *args: None,
+        capability="planning.rcm_ready",
+        stage_id="rcm",
+        status="completed",
+        headline="Risk and control matrix ready",
+        summary="27 rows.",
+        highlights=[
+            {"severity": "warning", "label": f"Risk {index}", "detail": ""}
+            for index in range(6)
+        ],
+    )
+
+    assert entry is not None
+    assert [item["label"] for item in entry["highlights"]] == ["Risk 0", "Risk 1", "Risk 2"]

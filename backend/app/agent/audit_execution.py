@@ -15,7 +15,10 @@ handler.
 
 from __future__ import annotations
 
-from .. import cycle_vouching, doc_tests, rcm_execution
+import re
+from collections.abc import Mapping
+
+from .. import cycle_vouching, doc_tests, document_analysis, rcm_execution
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import (
@@ -92,6 +95,152 @@ from .runtime import (
 )
 from .workers import WORKERS
 from .workers import planning as planning_workers
+
+# --------------------------------------------------------------------------- #
+# Milestone highlights
+# --------------------------------------------------------------------------- #
+# A milestone carries at most three highlights, which is a constraint worth
+# keeping: the point is the two or three things an auditor would say out loud
+# when handing the work over, not a second copy of the artifact. Everything
+# below is derived from durable local state, so a briefing never asserts
+# anything the workspace cannot already show.
+HIGHLIGHT_LIMIT = 3
+
+# Planning reads the governing material. Ordering by how directly a category
+# establishes control criteria puts the policy that sets the rule above the
+# meeting that discussed it.
+_PLANNING_CATEGORY_RANK = {
+    "policy": 0,
+    "regulation": 1,
+    "contract": 2,
+    "minutes": 3,
+    "prior_report": 4,
+    "background": 5,
+}
+
+
+def _planning_documents(workspace: Workspace) -> list[dict]:
+    """The governing documents planning rests on, most authoritative first."""
+    return sorted(
+        (
+            item for item in workspace.documents
+            if str(item.get("category") or "") in _PLANNING_CATEGORY_RANK
+        ),
+        key=lambda item: (
+            _PLANNING_CATEGORY_RANK[str(item.get("category"))],
+            str(item.get("source") or item.get("title") or "").casefold(),
+        ),
+    )
+
+
+def _document_observations(workspace: Workspace, documents: list[dict]) -> list[dict]:
+    """Every recorded observation across these documents, in document order."""
+    found: list[dict] = []
+    for item in documents:
+        for observation in document_analysis.audit_observations(
+            workspace, str(item.get("id") or "")
+        ):
+            found.append({**observation, "document": item})
+    return found
+
+
+def _observation_highlights(observations: list[dict]) -> list[dict]:
+    """One highlight per document, so three sources beat three notes on one.
+
+    A document with six observations is not six times as important as a
+    document with one; leading with each source's own first note tells a
+    reader which materials carry an issue at all, which is the question at
+    this stage.
+    """
+    highlights: list[dict] = []
+    seen: set[str] = set()
+    for observation in observations:
+        document = observation["document"]
+        document_id = str(document.get("id") or "")
+        if document_id in seen:
+            continue
+        seen.add(document_id)
+        # The document leads the detail. Two governing documents can raise the
+        # same gap — neither stating its own currency is exactly the planning
+        # conclusion — and without the source named, the two notes read as one
+        # sentence repeated rather than as a pattern across the material.
+        name = str(document.get("source") or document.get("title") or "").strip()
+        detail = observation["detail"]
+        highlights.append({
+            "severity": "warning",
+            "label": observation["statement"],
+            "detail": f"{name} — {detail}" if name and detail else (detail or name),
+            "artifact_ref": f"document:{document_id}",
+        })
+        if len(highlights) >= HIGHLIGHT_LIMIT:
+            break
+    return highlights
+
+
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _lead_sentence(text: str, *, section: str = "") -> str:
+    """The first sentence of a block, optionally of one Markdown section.
+
+    Findings carry their condition, criteria and cause under headings in one
+    narrative; a briefing wants the condition's opening line and nothing else.
+    """
+    body = str(text or "")
+    if section:
+        lines: list[str] = []
+        capturing = False
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                if capturing:
+                    break
+                capturing = section.casefold() in stripped.casefold()
+                continue
+            if capturing and stripped:
+                lines.append(stripped)
+        body = " ".join(lines)
+    body = " ".join(body.split())
+    if not body:
+        return ""
+    return re.split(r"(?<=[.!?])\s+", body, maxsplit=1)[0].strip()
+
+
+def _rcm_label(row: Mapping) -> str:
+    """What to call an RCM row in one line."""
+    for field in ("risk", "risk_description", "control", "process"):
+        value = _lead_sentence(str(row.get(field) or ""))
+        if value:
+            return value
+    return str(row.get("id") or "RCM row")
+
+
+def _category_breakdown(documents: list[dict]) -> str:
+    """"2 policy documents and 2 sets of minutes", from the categories present."""
+    labels = {
+        "policy": ("policy document", "policy documents"),
+        "regulation": ("regulation", "regulations"),
+        "contract": ("contract", "contracts"),
+        "minutes": ("set of minutes", "sets of minutes"),
+        "prior_report": ("prior report", "prior reports"),
+        "background": ("background document", "background documents"),
+    }
+    counts: dict[str, int] = {}
+    for item in documents:
+        category = str(item.get("category") or "")
+        counts[category] = counts.get(category, 0) + 1
+    parts = [
+        f"{total} {labels[category][0 if total == 1 else 1]}"
+        for category, total in sorted(
+            counts.items(), key=lambda pair: _PLANNING_CATEGORY_RANK.get(pair[0], 9)
+        )
+        if category in labels
+    ]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
 class AuditWorkflowExecution(ActionRunner):
@@ -225,22 +374,34 @@ class AuditWorkflowExecution(ActionRunner):
         if capability_id == "planning.apm_ready":
             updated = int(changes.get("apm_updated") or 0)
             proposed = int(changes.get("apm_proposed") or 0)
-            context = (subject.planning or {}).get("context") or {}
+            # What the memorandum rests on, and what its sources left open.
+            # The count of populated planning fields described the machine
+            # filling them in; neither an auditor nor a reviewer can act on it.
+            governing = _planning_documents(subject)
+            observations = _document_observations(subject, governing)
+            breakdown = _category_breakdown(governing)
+            summary = (
+                f"Planning rests on {breakdown}."
+                if breakdown
+                else "No governing documents were available to plan against."
+            )
+            if observations:
+                summary += (
+                    f" Their analysis recorded "
+                    f"{counted(len(observations), 'drafting or governance observation')} "
+                    "to confirm before the documents are relied on as control criteria."
+                )
             return {
                 "status": state,
                 "headline": "Audit planning memorandum ready",
-                "summary": (
-                    "Prepared the audit planning memorandum from "
-                    + counted(
-                        len([value for value in context.values() if str(value).strip()]),
-                        "planning field",
-                    )
-                    + "."
-                ),
+                "summary": summary,
                 "metrics": [
+                    {"label": "Governing documents", "value": len(governing)},
+                    {"label": "Observations to confirm", "value": len(observations)},
                     {"label": "Updated", "value": updated},
                     {"label": "Proposed for approval", "value": proposed},
                 ],
+                "highlights": _observation_highlights(observations),
                 "artifact_refs": refs or ["planning:apm"],
             }
         if capability_id == "planning.rcm_ready":
@@ -276,6 +437,39 @@ class AuditWorkflowExecution(ActionRunner):
                     {"label": "Preserved", "value": int(changes.get("rcm_preserved") or 0)},
                     {"label": "High or critical", "value": high},
                 ],
+                # An incomplete row blocks coverage, so it outranks a complete
+                # row however severe that row's risk.
+                "highlights": [
+                    {
+                        "severity": "error",
+                        "label": _rcm_label(row),
+                        "detail": "No risk or control description — this row cannot support coverage.",
+                        "artifact_ref": f"rcm:{row.get('id')}",
+                    }
+                    for row in subject.rcm
+                    if not str(row.get("risk") or row.get("risk_description") or "").strip()
+                    or not str(row.get("control") or row.get("control_description") or "").strip()
+                ][:HIGHLIGHT_LIMIT] + [
+                    {
+                        "severity": "warning",
+                        "label": _rcm_label(row),
+                        "detail": (
+                            f"{str(row.get('risk_rating') or '').capitalize()} risk"
+                            + (f" · {row.get('process')}" if row.get("process") else "")
+                        ),
+                        "artifact_ref": f"rcm:{row.get('id')}",
+                    }
+                    for row in sorted(
+                        subject.rcm,
+                        key=lambda item: (
+                            _SEVERITY_RANK.get(
+                                str(item.get("risk_rating") or "").casefold(), 9
+                            ),
+                            str(item.get("id") or ""),
+                        ),
+                    )
+                    if str(row.get("risk_rating") or "").casefold() in {"critical", "high"}
+                ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs,
             }
         if capability_id == "tests.specified":
@@ -305,6 +499,25 @@ class AuditWorkflowExecution(ActionRunner):
                     {"label": "Preserved", "value": int(changes.get("test_preserved") or 0)},
                     {"label": "RCM rows without tests", "value": uncovered},
                 ],
+                # A risk nobody can test is the fact worth carrying out of this
+                # stage; the tests that were built speak for themselves.
+                "highlights": [
+                    {
+                        "severity": "warning",
+                        "label": _rcm_label(row),
+                        "detail": "No test covers this row, so it cannot pass coverage.",
+                        "artifact_ref": f"rcm:{row.get('id')}",
+                    }
+                    for row in sorted(
+                        (item for item in subject.rcm if not (item.get("test_refs") or [])),
+                        key=lambda item: (
+                            _SEVERITY_RANK.get(
+                                str(item.get("risk_rating") or "").casefold(), 9
+                            ),
+                            str(item.get("id") or ""),
+                        ),
+                    )
+                ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs,
             }
         if capability_id == "fieldwork.executed":
@@ -338,6 +551,29 @@ class AuditWorkflowExecution(ActionRunner):
                         ),
                     },
                 ],
+                # Which tests stopped, and why. A count of failures tells an
+                # auditor to go looking; the titles tell them where.
+                "highlights": [
+                    {
+                        "severity": (
+                            "error" if unit.get("status") in {"failed", "conflict"}
+                            else "warning"
+                        ),
+                        "label": narration.subject_of(unit)
+                        or str(unit.get("title") or "Scheduled test"),
+                        "detail": narration.humanize(unit.get("error_code"))
+                        or str(unit.get("error") or "").strip()
+                        or f"Stopped as {narration.humanize(unit.get('status'))}.",
+                        "artifact_ref": next(
+                            iter(unit.get("result_refs") or []), ""
+                        ),
+                    }
+                    for unit in units
+                    if unit.get("status") in {
+                        "failed", "conflict", "blocked",
+                        "awaiting_input", "awaiting_confirmation",
+                    }
+                ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs,
             }
         if capability_id == "results.rolled_up":
@@ -366,6 +602,41 @@ class AuditWorkflowExecution(ActionRunner):
                     {"label": "Exceptions", "value": exceptions},
                     {"label": "Exception observations", "value": exception_observations},
                 ],
+                # Where the exceptions landed, worst first — the question an
+                # auditor asks the moment fieldwork stops.
+                "highlights": [
+                    {
+                        "severity": (
+                            "error"
+                            if str((row.get("execution_rollup") or {}).get("control_conclusion") or "")
+                            == "ineffective"
+                            else "warning"
+                        ),
+                        "label": _rcm_label(row),
+                        "detail": (
+                            f"{counted(int((row.get('execution_rollup') or {}).get('exceptions') or 0), 'exception')}"
+                            f" across "
+                            f"{counted(int((row.get('execution_rollup') or {}).get('completed') or 0), 'completed test')}"
+                            + (
+                                " — control concluded ineffective."
+                                if str((row.get("execution_rollup") or {}).get("control_conclusion") or "")
+                                == "ineffective"
+                                else "."
+                            )
+                        ),
+                        "artifact_ref": f"rcm:{row.get('id')}",
+                    }
+                    for row in sorted(
+                        (
+                            item for item in subject.rcm
+                            if int((item.get("execution_rollup") or {}).get("exceptions") or 0)
+                        ),
+                        key=lambda item: (
+                            -int((item.get("execution_rollup") or {}).get("exceptions") or 0),
+                            str(item.get("id") or ""),
+                        ),
+                    )
+                ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs,
             }
         if capability_id == "findings.drafted":
@@ -395,6 +666,32 @@ class AuditWorkflowExecution(ActionRunner):
                     {"label": "Drafts prepared", "value": len(findings)},
                     {"label": "Needs attention", "value": attention},
                 ],
+                # The most material drafts, named. A severity distribution says
+                # how many; only the titles say what.
+                "highlights": [
+                    {
+                        "severity": (
+                            "error"
+                            if str(item.get("severity") or "").casefold()
+                            in {"critical", "high"}
+                            else "warning"
+                        ),
+                        "label": str(item.get("title") or "Untitled finding"),
+                        "detail": _lead_sentence(
+                            str(item.get("narrative") or ""), section="Condition"
+                        ) or f"{str(item.get('severity') or 'unspecified').capitalize()} severity.",
+                        "artifact_ref": f"finding:{item.get('id')}",
+                    }
+                    for item in sorted(
+                        findings,
+                        key=lambda item: (
+                            _SEVERITY_RANK.get(
+                                str(item.get("severity") or "").casefold(), 9
+                            ),
+                            str(item.get("id") or ""),
+                        ),
+                    )
+                ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs,
             }
         if capability_id == "working_papers.generated":

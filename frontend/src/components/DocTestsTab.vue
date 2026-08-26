@@ -861,6 +861,7 @@ onUnmounted(unsubscribe)
           <DocTestItemDetail
             :key="currentItem.id"
             :test="currentTest"
+            :workspaceId="workspace.id"
             :item="currentItem"
             :documents="documents"
             :findings="linkedFindings"
@@ -898,6 +899,7 @@ onUnmounted(unsubscribe)
           v-if="currentTest && currentItem"
           :key="currentItem.id"
           :test="currentTest"
+          :workspaceId="workspace.id"
           :item="currentItem"
           :documents="documents"
           :findings="linkedFindings"
@@ -947,7 +949,7 @@ onUnmounted(unsubscribe)
       @create="createTest"
       @error="fail"
     />
-    <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" />
+    <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" :documents="documents" />
   </div>
 </template>
 

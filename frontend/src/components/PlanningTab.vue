@@ -15,7 +15,8 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditObservation, CycleVouchMetadata, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditDocument, AuditObservation, CriterionRef, CycleVouchMetadata, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
 import UiStatusLanes from './ui/UiStatusLanes.vue'
@@ -65,12 +66,16 @@ const completion = ref<RcmCompletion | null>(null)
 // Which subset of the matrix the bar has asked the grid to show. A view over
 // one array, so the counts above and the rows below can never disagree.
 const rcmFilter = ref<RcmFilter | null>(null)
-// Provenance is a reviewer's question, not an author's, so it stays closed
-// until asked for rather than taking a column from the editor by default.
 // Open by default. What the memorandum was drafted from is the first thing a
 // reviewer asks about it, and a panel behind a button is a panel nobody opens.
 const apmProvenanceOpen = ref(true)
 const workingPaper = ref<WorkingPaper | null>(null)
+// Criterion anchors name a document by id. The catalogue resolves it to the
+// file the auditor recognises; failing to load it costs the name and nothing
+// else, so it never blocks the matrix.
+const documents = ref<AuditDocument[]>([])
+const criterionOpen = ref(false)
+const criterion = ref<CriterionRef | null>(null)
 const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
 const visibleRcm = computed(() => filterRows(
@@ -110,7 +115,21 @@ async function reload() {
   if (requestedRcm && data.value.rcm.some(item => item.id === requestedRcm)) openRcm(data.value.rcm.find(item => item.id === requestedRcm)!)
   else if (observationParent) openRcm(observationParent)
 }
-onMounted(() => void reload().catch(error => fail('Could not load planning', error)))
+onMounted(() => {
+  void reload().catch(error => fail('Could not load planning', error))
+  void api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)
+    .then(result => { documents.value = result.items })
+    .catch(() => { documents.value = [] })
+})
+
+function documentName(id: string) {
+  const found = documents.value.find(item => item.id === id)
+  return found?.source || found?.title || id
+}
+function openCriterion(ref_: CriterionRef) {
+  criterion.value = ref_
+  criterionOpen.value = true
+}
 const unsubscribe = agent.onWorkspaceInvalidated(() => {
   void reload().catch(error => fail('Could not refresh planning', error))
 })
@@ -526,7 +545,24 @@ const rcmActions = computed(() => [
 
     <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
       <div v-if="selectedRcm" class="rcm-detail">
-        <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/></label></div>
+        <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/>
+          <!-- The sentence the criterion rests on, not a restatement of it.
+               Frozen when the row was written, so opening one shows what the
+               document said then and the hash reveals any drift since. -->
+          <span v-if="selectedRcm.criteria_refs?.length" class="criterion-refs">
+            <button
+              v-for="ref in selectedRcm.criteria_refs"
+              :key="ref.id"
+              type="button"
+              :title="ref.excerpt"
+              @click="openCriterion(ref)"
+            >
+              <i class="pi pi-link" />
+              <span>{{ documentName(ref.source_id) }}</span>
+              <code v-if="ref.citation_id">{{ ref.citation_id }}</code>
+              <small v-if="ref.page">p.{{ ref.page }}</small>
+            </button>
+          </span></label></div>
         <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" />
         <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
         <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
@@ -546,6 +582,7 @@ const rcmActions = computed(() => [
         <section v-if="selectedObservations.length" class="observations"><strong>Exception observations</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.outcome" :severity="item.outcome === 'exception' ? 'danger' : 'warn'"/><span>{{ item.summary }}</span><small>{{ item.classification.replaceAll('_', ' ') }}</small><span class="observation-actions"><Button label="Draft finding" icon="pi pi-sparkles" size="small" severity="secondary" :disabled="item.outcome !== 'exception'" @click="promoteObservation(item)"/></span></div></section>
       </div>
     </Dialog>
+    <EvidenceAnchorDialog v-model="criterionOpen" :anchor="criterion" :documents="documents" />
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>
     <Dialog v-model:visible="paperOpen" modal header="RCM working paper" :style="{ width: 'min(980px, 95vw)' }"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><SplitButton label="Copy" icon="pi pi-copy" :model="copyOptions" @click="copyPaper('markdown')"/></template></Dialog>
   </div>
@@ -556,6 +593,12 @@ const rcmActions = computed(() => [
 .apm-body.with-rail { grid-template-columns:minmax(0,1fr) 20rem }
 @container workspace-panel (max-width: 60rem) { .apm-body.with-rail { grid-template-columns:minmax(0,1fr) } }
 .detail-provenance { max-width:34rem }
+.criterion-refs { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem }
+.criterion-refs button { display:inline-flex; align-items:center; gap:.3rem; padding:.2rem .45rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); background:var(--aw-panel); color:var(--aw-teal); font-size:var(--aw-text-xs); font-weight:600; cursor:pointer }
+.criterion-refs button:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft) }
+.criterion-refs button:focus-visible { outline:2px solid var(--aw-teal); outline-offset:1px }
+.criterion-refs code { color:var(--aw-muted); font-family:var(--aw-font-mono); font-size:var(--aw-text-2xs) }
+.criterion-refs small { color:var(--aw-muted); font-size:var(--aw-text-2xs); font-weight:400 }
 .rcm-view { display:flex; flex-direction:column; gap:.85rem }
 .planning-tab { display:flex; flex-direction:column; gap: var(--aw-section-gap); min-height:100% }.muted { color:var(--aw-muted); font-size:var(--aw-text-sm) }.section-toolbar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span { flex:1 }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:var(--aw-text-sm) }.rcm-detail { display:flex; flex-direction:column; gap: var(--aw-section-gap) }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:var(--aw-ink-soft); font-size:var(--aw-text-sm); font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel) }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:var(--aw-text-sm) }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:var(--aw-panel); border-radius:var(--aw-radius-pill); padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control) }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
 </style>

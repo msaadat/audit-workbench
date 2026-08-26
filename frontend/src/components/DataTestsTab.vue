@@ -26,6 +26,7 @@ import type {
   TestConclusionState,
   WorkspaceSummary,
 } from '../types'
+import ProvenanceRail from './agent/ProvenanceRail.vue'
 import AnalyticsTestAuthor from './data-tests/AnalyticsTestAuthor.vue'
 import DataTestCreateDialog from './data-tests/DataTestCreateDialog.vue'
 import DataTestList from './data-tests/DataTestList.vue'
@@ -687,6 +688,15 @@ onUnmounted(unsubscribe)
                 <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="!selected.rcm_id || !selected.last_run" @click="() => draftFinding()" />
               </template>
             </div>
+
+            <!-- What the definition was written from. A test the agent wrote
+                 is a work product like any other, and the same question is
+                 asked of it. -->
+            <ProvenanceRail
+              :key="selected.id"
+              :workspaceId="workspace.id"
+              :artifactRef="`datatest:${selected.id}`"
+            />
           </aside>
         </section>
         <UiEmptyState

@@ -9,6 +9,7 @@ import re
 import threading
 import uuid
 import zipfile
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree
@@ -29,6 +30,20 @@ CATEGORIES = {
     "background", "policy", "regulation", "contract", "minutes", "voucher",
     "evidence", "prior_report", "correspondence", "other",
 }
+
+
+def display_name(document: object, fallback: str = "") -> str:
+    """The name a reader — or a model reading a document — recognises.
+
+    ``source`` is the file as it arrived, "Minutes of Meeting - CFO.docx".
+    ``title`` is a slug derived from it at intake, and anything handed the slug
+    quotes it back: findings once read "the documents titled
+    `minutes_of_meeting_head_procurment`".
+    """
+    record = document if isinstance(document, Mapping) else {}
+    return str(record.get("source") or record.get("title") or fallback or "")
+
+
 MIN_TEXT_CHARACTERS = 40
 ASSISTANT_DOCUMENT_CONTEXT_MAX_CHARACTERS = 80_000
 _append_lock = threading.Lock()

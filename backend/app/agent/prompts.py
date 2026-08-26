@@ -276,3 +276,34 @@ def fix_code_user(code: str, error: str, table_meta: dict | None) -> str:
     if table_meta:
         parts.append(f"Table metadata:\n{json.dumps(table_meta, indent=1, default=str)}")
     return "\n\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# Document blocks
+# --------------------------------------------------------------------------- #
+# A worker reads an engagement document as a block of text under this heading,
+# and the bundle item around it carries only the opaque `document:<id>` ref.
+# The heading is therefore the one place a worker can learn what to call the
+# material it is citing: without the file named there, a criterion can only be
+# named from the document's own contents, which is why RCM rows once read
+# "Procurement SOP Extract" rather than the file that was supplied.
+#
+# `document_context` authors the heading; planning workers read it back. It
+# lives here because both sides may import prompts, and neither may import the
+# other.
+DOCUMENT_SUMMARY_HEADING = "DOCUMENT SUMMARY"
+_NAMED_DOCUMENT_HEADING = re.compile(
+    rf"^{DOCUMENT_SUMMARY_HEADING} — (?P<name>.+)$", re.MULTILINE
+)
+
+
+def document_summary_heading(name: str) -> str:
+    """The heading for one supplied document summary."""
+    cleaned = " ".join(str(name or "").split())
+    return f"{DOCUMENT_SUMMARY_HEADING} — {cleaned}" if cleaned else DOCUMENT_SUMMARY_HEADING
+
+
+def summary_document_name(content: object) -> str:
+    """The file named on a supplied summary, read back by the worker citing it."""
+    match = _NAMED_DOCUMENT_HEADING.search(str(content or ""))
+    return match.group("name").strip() if match else ""

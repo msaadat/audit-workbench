@@ -379,8 +379,65 @@ RCM_ROW_FIELDS = (
 # a run that cannot cite a criterion never blanks an existing citation.
 RCM_OPTIONAL_ROW_FIELDS = (
     "criteria",
+    "criteria_refs",
     "control_owner",
 )
+
+
+def _resolved_criteria_refs(workspace: Workspace, spec: Mapping) -> list[dict]:
+    """Freeze each cited criterion into a typed evidence anchor.
+
+    The worker chooses a document and a citation id out of the register it was
+    supplied; neither carries a page or the sentence itself. Resolving them
+    here makes the row self-contained — a reader opens the criterion at the
+    page it rests on without a second lookup — and freezes the excerpt and the
+    source hash at the moment the criterion was set, so a later change to the
+    document is visible as drift rather than silently rewriting the criterion.
+    """
+    from ... import document_analysis
+    from ...evidence import document_anchor
+
+    references = spec.get("criteria_refs")
+    if not isinstance(references, list) or not references:
+        return []
+    by_id = {str(item.get("id")): item for item in workspace.documents}
+    citations_by_document: dict[str, dict[str, Mapping]] = {}
+    anchors: list[dict] = []
+    for reference in references:
+        if not isinstance(reference, Mapping):
+            continue
+        document_id = str(reference.get("document_id") or "")
+        citation_id = str(reference.get("citation_id") or "")
+        document = by_id.get(document_id)
+        if not document or not citation_id:
+            continue
+        if document_id not in citations_by_document:
+            try:
+                analysis = document_analysis.load_analysis(
+                    workspace, document_id, document=document
+                )
+            except WorkspaceError:
+                citations_by_document[document_id] = {}
+            else:
+                citations_by_document[document_id] = {
+                    str(item.get("id")): item
+                    for item in ((analysis.get("effective") or {}).get("citations") or [])
+                }
+        citation = citations_by_document[document_id].get(citation_id)
+        if citation is None:
+            # An id the register offered but the analysis no longer carries is
+            # a stale citation, not a criterion to invent a page for.
+            continue
+        anchors.append({
+            **document_anchor(
+                document,
+                int(citation.get("page") or 1),
+                str(citation.get("excerpt") or ""),
+                generated_by="planning.rcm",
+            ),
+            "citation_id": citation_id,
+        })
+    return anchors
 
 
 @dataclass
@@ -565,6 +622,9 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
         parent_sha1 = audit_hashes.apm_sha1(fresh)
         outcomes: list[dict] = []
         for spec in rows:
+            # Resolved inside the transaction, against the documents as they
+            # stand at commit.
+            spec = {**spec, "criteria_refs": _resolved_criteria_refs(fresh, spec)}
             existing, ambiguous = match_rcm_revision(fresh, spec, spec["semantic_id"])
             if ambiguous:
                 raise WorkspaceError(
@@ -589,10 +649,17 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                     existing["id"],
                     {
                         **{key: spec.get(key) for key in RCM_ROW_FIELDS},
+                        # A list field is present when it has entries; a string
+                        # field when it has non-blank text. Either way an empty
+                        # value leaves the existing citation alone.
                         **{
                             key: spec[key]
                             for key in RCM_OPTIONAL_ROW_FIELDS
-                            if str(spec.get(key) or "").strip()
+                            if (
+                                bool(spec.get(key))
+                                if isinstance(spec.get(key), list)
+                                else str(spec.get(key) or "").strip()
+                            )
                         },
                         "workflow_parent_sha1": parent_sha1,
                     },

@@ -122,7 +122,11 @@ const pendingIntent = computed(() => {
   return 'auto'
 })
 function openCitation(value: NonNullable<AssistantChatMessage['citations']>[number]) { anchor.value = value; anchorOpen.value = true }
-function documentTitle(id: string) { return props.documents.find(item => item.id === id)?.title ?? 'Unavailable document' }
+function documentTitle(id: string) {
+  // The file as it arrived, not the slug intake derived from it.
+  const found = props.documents.find(item => item.id === id)
+  return found?.source || found?.title || 'Unavailable document'
+}
 function messageTime(value: string) {
   const time = new Date(value)
   return Number.isNaN(time.getTime()) ? undefined : time.toLocaleString()
@@ -229,7 +233,7 @@ function messageTime(value: string) {
     </div>
     </div>
   </div>
-  <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" />
+  <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" :documents="documents" />
 </template>
 
 <style scoped>

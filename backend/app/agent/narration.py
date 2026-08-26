@@ -80,6 +80,22 @@ def say(run: dict, emit, text: str) -> dict | None:
     return message
 
 
+def clip(value: object, limit: int) -> str:
+    """Trim to a length without cutting a word in half.
+
+    Milestone text is model-authored and routinely lands a few characters over
+    a cap; a hard slice left a briefing ending mid-word, which reads as a bug
+    rather than as a summary. Falls back to a hard cut only when the text has
+    no word boundary to fall back to.
+    """
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 1]
+    spaced = head.rsplit(" ", 1)[0] if " " in head else head
+    return f"{spaced.rstrip(' ,;:—-')}…"
+
+
 def milestone(
     run: dict,
     emit,
@@ -108,8 +124,8 @@ def milestone(
         "capability": str(capability or "").strip(),
         "stage_id": str(stage_id or "").strip(),
         "status": str(status or "").strip(),
-        "headline": headline[:160],
-        "summary": summary[:1200],
+        "headline": clip(headline, 160),
+        "summary": clip(summary, 1200),
         "metrics": [
             {
                 "label": str(item.get("label") or "")[:80],
@@ -121,8 +137,8 @@ def milestone(
         "highlights": [
             {
                 "severity": str(item.get("severity") or "info"),
-                "label": str(item.get("label") or "")[:160],
-                "detail": str(item.get("detail") or "")[:320],
+                "label": clip(item.get("label"), 160),
+                "detail": clip(item.get("detail"), 320),
                 "artifact_ref": str(item.get("artifact_ref") or "") or None,
             }
             for item in (highlights or [])[:3]

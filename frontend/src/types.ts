@@ -308,6 +308,14 @@ export interface DocumentPage {
   no_usable_text_no_image?: boolean
 }
 
+/**
+ * An evidence anchor a criterion points at, carrying the `[C7]` marker the
+ * document analysis authored alongside the frozen page and excerpt.
+ */
+export interface CriterionRef extends EvidenceRef {
+  citation_id?: string
+}
+
 export interface EvidenceRef {
   id: string
   source_kind: 'document' | 'table' | 'analysis' | 'ruleset' | 'doctest' | 'procedure' | 'rcm' | 'datatest'
@@ -931,7 +939,12 @@ export interface RcmRow {
   control_type: string
   control_owner: string
   criteria: string
-  criteria_refs: unknown[]
+  /**
+   * The sentences a criterion rests on, frozen as typed anchors when the row
+   * was written: a page, an excerpt, and the source hash at that moment. The
+   * `citation_id` is the `[C7]` marker the analysis authored.
+   */
+  criteria_refs: CriterionRef[]
   test_refs: string[]
   execution_rollup: RcmExecutionRollup
   finding_refs: string[]
