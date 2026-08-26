@@ -3179,7 +3179,12 @@ def _memo_items(value: object) -> list[str]:
             for block in re.split(r"\n\s*\n|\n(?=\s*(?:[-*•]|\d+[.)])\s)", value)
         ]
         return [block for block in blocks if block]
-    if isinstance(value, list):
+    # ``tuple`` because the assembler runs from the semantic validator, and the
+    # registered response schema freezes its proposal first — so the array shape
+    # this is *mostly* called with never reaches here from a real memo. Matching
+    # only ``list`` emptied every ``further_work`` section a model ever wrote,
+    # and emptied it silently: the heading was still rendered above it.
+    if isinstance(value, (list, tuple)):
         return [
             str(item).strip()
             for item in value

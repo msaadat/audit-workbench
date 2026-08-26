@@ -852,6 +852,16 @@ def _partition_rcm_rows(
     normalized: list[dict] = []
     failures: list[dict] = []
     for index, row in enumerate(rows or (), start=1):
+        # Both callers reach here with different containers: the registered
+        # response schema freezes its proposal before the semantic validator
+        # runs, so every array in it arrives as a tuple, while the worker's own
+        # pre-serialization pass calls this with the plain output of
+        # ``json.loads``. Normalizing once, here, is what makes the two agree.
+        # They disagreed on a live matrix: nine rows whose ``criteria_refs``
+        # was a tuple failed an ``isinstance(..., list)`` the worker's own pass
+        # could never see, so the quarantine never engaged and all twenty-seven
+        # rows were discarded over citations that were correct.
+        row = _plain_json(row)
         try:
             normalized.append(
                 _normalized_rcm_row(row, index, existing_ids, answers, sheet)
@@ -860,7 +870,7 @@ def _partition_rcm_rows(
             failures.append(
                 {
                     "index": index,
-                    "row": _plain_json(row) if isinstance(row, Mapping) else row,
+                    "row": row,
                     "errors": list(error.errors),
                 }
             )

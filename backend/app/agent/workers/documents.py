@@ -1940,7 +1940,10 @@ def validate_voucher_proposal(
             for note in proposal.get("audit_notes") or []
             if isinstance(note, Mapping)
         ]
-        if isinstance(proposal.get("audit_notes"), list)
+        # The distinction being drawn is absent versus present-and-empty, so a
+        # frozen proposal's tuple has to read as present. Matching only ``list``
+        # made every structured note the model wrote arrive as no notes at all.
+        if isinstance(proposal.get("audit_notes"), (list, tuple))
         else None
     )
     return {
