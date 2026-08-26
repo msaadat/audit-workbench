@@ -5,6 +5,7 @@ must never depend on or mutate a user's real engagement data.
 """
 
 import polars as pl
+import pytest
 
 from app import (
     dashboard,
@@ -32,6 +33,29 @@ POPULATION_TESTS = (
     "Goods-receipt completeness",
     "Purchase-order amount integrity",
 )
+
+
+# Root Cause is deferred rather than asserted: fieldwork has the duplicate but
+# not yet the reason for it, which is what ``cause_pending`` records.
+DUPLICATE_INVOICE_NARRATIVE = """## Condition
+
+A duplicate invoice identifier exists in the supplied population.
+
+## Criteria
+
+Invoice identifiers must be unique before payment processing.
+
+## Root Cause
+
+## Risk
+
+Duplicate payment risk requires investigation; the exception could result in a
+duplicate disbursement.
+
+## Recommendation
+
+Investigate and prevent repeated invoice identifiers.
+"""
 
 
 def _procurement_workspace():
@@ -196,12 +220,27 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
         "conclusion": "The join diagnostics invalidated this result.",
         "control_conclusion": "not_applicable",
     })
+    # Evidence-aware vouching selects the rows that already carry documents, so
+    # its assurance scope is targeted rather than sampled. The narrative, the
+    # scope limitation, and the next action are still the auditor's to record;
+    # the population conclusion is the one thing the selection cannot support.
+    with pytest.raises(workspaces.WorkspaceError, match="Targeted evidence"):
+        doc_tests.update_test(
+            workspace,
+            document_test["id"],
+            {"control_conclusion": "partially_effective"},
+        )
     doc_tests.update_test(workspace, document_test["id"], {
         "conclusion": "Open evidence requests remain.",
-        "control_conclusion": "partially_effective",
+        "control_conclusion": "no_conclusion",
         "scope_limitations": "One selected transaction is awaiting source documents.",
         "next_action": "Obtain and inspect the open evidence request.",
     })
+    document_rollup = doc_tests.result_rollup(
+        doc_tests.load_test(workspace, document_test["id"])
+    )
+    assert document_rollup["assurance_scope"] == "targeted_evidence_only"
+    assert document_rollup["control_conclusion"] == "no_conclusion"
     rolled = rcm_execution.rollup(workspace)
     assert rolled["coverage"]["unspecified_tests"] == []
     assert all(item["outcome"] in {"exception", "needs_manual_check"} for item in workspace.observations)
@@ -213,12 +252,8 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
         {
             "title": "Duplicate invoice identifier requires follow-up",
             "severity": "medium",
-            "condition": "A duplicate invoice identifier exists in the supplied population.",
-            "criteria": "Invoice identifiers must be unique before payment processing.",
+            "narrative": DUPLICATE_INVOICE_NARRATIVE,
             "cause_pending": True,
-            "effect": "Duplicate payment risk requires investigation.",
-            "recommendation": "Investigate and prevent repeated invoice identifiers.",
-            "severity_rationale": "The exception could result in a duplicate disbursement.",
             "rcm_refs": [rows[1][0]["id"]],
             "test_refs": [finding_test["id"]],
             "execution_refs": [f"datatest:{finding_test['id']}:{finding_result['id']}"],
@@ -226,7 +261,9 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
                 {
                     "source_kind": "datatest",
                     "source_id": f"{finding_test['id']}:{finding_result['id']}",
-                    "source_sha1": finding_result["result_sha1"],
+                    # The anchor pins the result's evidentiary basis;
+                    # ``result_sha1`` covers the run stamp as well.
+                    "source_sha1": data_tests.result_evidence_sha1(finding_result),
                 }
             ],
             "auditor_confirmed": True,
@@ -250,4 +287,10 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
     assert finding["id"] in generated["markdown"]
     assert not any(issue["code"] == "unsupported_finding" for issue in quality["issues"])
     assert completion["status"] == "completed_with_open_items"
+    # The targeted test reaches the report as a disclosed limitation rather
+    # than as a control conclusion it was never entitled to carry.
+    assert any(
+        item["test_id"] == document_test["id"]
+        for item in report.build_context(workspace)["scope_limitations"]
+    )
     assert any(item["outcome"] == "exception" for item in workspace.observations)
