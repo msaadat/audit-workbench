@@ -42,3 +42,7 @@ For each significant process, state whether each of the following was considered
 - compliance with the entity's own stated policy, including whether the evidence that policy requires exists in the populations received at all.
 
 A lens with no applicable risk on this engagement is recorded as considered and not applicable, with the reason. Name the risk in the entity's own terms rather than restating the lens. -->
+
+## Planning assumptions and matters reported
+
+<!-- section: What this plan rests on that has not been established, and what it could not settle: information not supplied, a governing document whose version or approval is unconfirmed, an assumption the fieldwork will have to test, a scope, period or materiality decision still open. Anything assumed above belongs here as well as there. One bullet per matter, each stating the matter and why it has to be resolved before the plan is relied on — write it so a reviewer can act on it without reading the rest of the memorandum. A plan with nothing outstanding says so in a sentence and lists no bullets; do not pad the section to fill it. -->

@@ -742,6 +742,121 @@ def test_llm_output_ceiling_is_configurable_and_validated(monkeypatch):
         llm._max_output_tokens()
 
 
+def _sse(*frames: dict) -> list[bytes]:
+    return [f"data: {json.dumps(frame)}\n".encode() for frame in frames] + [b"data: [DONE]\n"]
+
+
+def test_llm_chat_asks_the_provider_for_its_reasoning(monkeypatch):
+    """Billed either way, so not asking only buys a blind spot."""
+
+    sent: dict = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+            ).encode()
+
+    def _capture(request, timeout):
+        sent.update(json.loads(request.data.decode()))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", _capture)
+
+    llm.chat([{"role": "user", "content": "hello"}])
+
+    assert sent["include_reasoning"] is True
+
+
+def test_streamed_reasoning_is_kept_for_the_record_and_out_of_the_answer():
+    """It reaches the debug payload, and neither the text nor the reader."""
+
+    shown: list[str] = []
+    payload, raw = llm._read_stream(
+        _sse(
+            {"choices": [{"delta": {"role": "assistant", "reasoning": "weighing "}}]},
+            {"choices": [{"delta": {"reasoning": "the options"}}]},
+            {"choices": [{"delta": {"content": "the answer"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ),
+        shown.append,
+    )
+
+    message = payload["choices"][0]["message"]
+    assert message["reasoning"] == "weighing the options"
+    # The answer is the answer: deliberation is not spliced into it, and a
+    # reader following the turn is never shown the model thinking out loud.
+    assert message["content"] == "the answer"
+    assert shown == ["the answer"]
+    assert raw == b"the answer"
+
+
+def test_a_streamed_runaway_is_still_an_empty_completion():
+    """The shape that matters: all reasoning, no answer.
+
+    Capturing the trace must not disturb how a runaway is recognised. If
+    reasoning counted as content, a model that deliberated to its limit and
+    answered nothing would read as a model that answered at length.
+    """
+
+    payload, _ = llm._read_stream(
+        _sse(
+            {"choices": [{"delta": {"role": "assistant", "reasoning": "round and "}}]},
+            {"choices": [{"delta": {"reasoning": "round it goes"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "length"}]},
+        ),
+        lambda piece: None,
+    )
+
+    assert payload["choices"][0]["message"]["content"] == ""
+    assert payload["choices"][0]["finish_reason"] == "length"
+    assert payload["choices"][0]["message"]["reasoning"] == "round and round it goes"
+
+
+def test_llm_chat_does_not_hand_reasoning_back_to_its_caller(monkeypatch):
+    """Durable in the debug record, absent from what flows into run state."""
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": "ok",
+                                "reasoning": "a" * 5000,
+                                "reasoning_details": [{"text": "b" * 5000}],
+                            },
+                        }
+                    ]
+                }
+            ).encode()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    message = llm.chat([{"role": "user", "content": "hello"}])
+
+    assert message["content"] == "ok"
+    assert not set(message) & set(llm.REASONING_KEYS)
+
+
 def test_llm_chat_wraps_remote_disconnect(monkeypatch):
     def fake_urlopen(request, timeout):
         raise http.client.RemoteDisconnected("Remote end closed connection without response")

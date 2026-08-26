@@ -370,6 +370,94 @@ def test_a_risk_section_that_enumerates_nothing_is_reported_not_ignored():
     ]
 
 
+# --------------------------------------------------------------------------- #
+# What the memorandum says it could not settle
+# --------------------------------------------------------------------------- #
+_MATTERS = """# APM
+
+## Key risks and planned response
+
+### Accounts payable
+
+Duplicate payment risk.
+
+## Planning assumptions and matters reported
+
+The table above is based on observed data. Where information was not available:
+
+- The approved version of the Financial Approval Matrix was not provided; the
+  extract lacks version metadata.
+- No explicit materiality threshold was provided.
+  - Materiality will be set during detailed planning.
+"""
+
+
+def test_planning_matters_reads_the_bullets_a_memorandum_left_open():
+    # A matter is a sentence, and a sentence wraps. Matching per line truncated
+    # the first matter at its line break, mid-clause.
+    assert planning.planning_matters(_MATTERS) == [
+        "The approved version of the Financial Approval Matrix was not provided; "
+        "the extract lacks version metadata.",
+        "No explicit materiality threshold was provided. Materiality will be set "
+        "during detailed planning.",
+    ]
+
+
+def test_a_nested_bullet_qualifies_a_matter_rather_than_adding_one():
+    # An indented item is the "and here is what that means" half of the matter
+    # above it. Counted separately it becomes a matter with no subject.
+    matters = planning.planning_matters(_MATTERS) or []
+
+    assert len(matters) == 2
+    assert matters[1].endswith("Materiality will be set during detailed planning.")
+
+
+def test_a_matter_is_carried_whole_where_a_risk_theme_is_carried_by_name():
+    """The two projections want different halves of a bold-led bullet.
+
+    A risk section enumerates themes and the bold lead is the theme's name; a
+    matters section enumerates matters and the text after the lead is the reason
+    the matter has to be resolved, which is exactly what a reader needs.
+    """
+    memo = (
+        "# APM\n\n## Planning assumptions and matters reported\n\n"
+        "- **Period unconfirmed.** It is proposed from observed ranges.\n"
+    )
+
+    assert planning.planning_matters(memo) == [
+        "**Period unconfirmed.** It is proposed from observed ranges."
+    ]
+
+
+def test_a_memorandum_with_no_matters_section_is_not_a_memorandum_with_none():
+    """``None`` and ``[]`` are different answers about a plan.
+
+    Every APM drafted before the template carried the section has no section to
+    read. Reporting that as "nothing outstanding" states a clean plan on a
+    memorandum that was never asked the question.
+    """
+    memo = "# APM\n\n## Key risks and planned response\n\n### Payables\n\nRisk.\n"
+
+    assert planning.planning_matters(memo) is None
+    assert planning.planning_matters(
+        "# APM\n\n## Planning assumptions and matters reported\n\n"
+        "Nothing remains outstanding at the date of this memorandum.\n"
+    ) == []
+
+
+def test_the_matters_section_is_found_by_what_its_heading_means():
+    # A firm renaming the section keeps the projection, the same way
+    # `planned_risk_themes` scopes by the word "risk".
+    for heading in (
+        "Limitations",
+        "Outstanding items",
+        "Matters for the auditee",
+        "Assumptions",
+    ):
+        memo = f"# APM\n\n## {heading}\n\n- The period is unconfirmed.\n"
+        assert planning.planning_matters(memo) == ["The period is unconfirmed."], heading
+
+
 def test_theme_ownership_survives_ordinary_variation_in_wording():
     """Inflection and spelling are not coverage gaps.
 

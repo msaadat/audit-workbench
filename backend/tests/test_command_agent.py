@@ -1433,6 +1433,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         "## Data analytics performed\n\nNo data analysis has been performed.\n\n"
         "## Fraud risk and management override\n\nManagement override is presumed.\n\n"
         "## Key risks and planned response\n\nTest approval compliance."
+        + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
     )
 
     def draft_apm(user):

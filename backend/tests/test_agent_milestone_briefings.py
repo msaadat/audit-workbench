@@ -6,6 +6,8 @@ things worth saying out loud when handing the work over, every one of them
 derived from durable local state rather than asserted.
 """
 
+from types import SimpleNamespace
+
 from app import document_analysis
 from app.agent import audit_execution as audit
 
@@ -13,10 +15,11 @@ from app.agent import audit_execution as audit
 class _Workspace:
     """Only the surface the briefing helpers touch."""
 
-    def __init__(self, documents=(), rcm=(), findings=()):
+    def __init__(self, documents=(), rcm=(), findings=(), planning=None):
         self.documents = list(documents)
         self.rcm = list(rcm)
         self.findings = list(findings)
+        self.planning = dict(planning or {})
 
 
 SOP_NOTES = """## Drafting and governance observations
@@ -95,42 +98,145 @@ def test_category_breakdown_describes_the_material_not_the_count():
     assert audit._category_breakdown([]) == ""
 
 
-def test_observation_highlights_take_one_note_per_document(monkeypatch):
-    _stub_notes(monkeypatch, {
-        "d_sop": SOP_NOTES, "d_matrix": MATRIX_NOTES, "d_min": QUIET_NOTES,
-    })
-    workspace = _Workspace(_documents())
-    documents = audit._planning_documents(workspace)
+APM = """# Audit Planning Memorandum
 
-    highlights = audit._observation_highlights(
-        audit._document_observations(workspace, documents)
+## Key risks and planned response
+
+### Authorisation against the approval matrix
+
+Approvals may exceed stated limits.
+
+### Completeness of the recorded population
+
+Transactions may be absent entirely.
+
+## Planning assumptions and matters reported
+
+Where information was not available:
+
+- The approved version of the Financial Approval Matrix was not provided; the
+  extract carries no version or effective date.
+- No explicit materiality threshold was provided.
+"""
+
+
+def _apm_milestone(workspace, units=()) -> dict:
+    """Project the planning milestone for a finished APM stage."""
+
+    execution = audit.AuditWorkflowExecution.__new__(audit.AuditWorkflowExecution)
+    return execution.milestone_projection(
+        workspace,
+        {"id": "run-milestone", "planning_changes": {"apm_updated": 1}},
+        # The projection reads only the capability's id; a registered capability
+        # would carry a scheduler's worth of unused bindings.
+        SimpleNamespace(id="planning.apm_ready"),
+        {"units": list(units)},
     )
 
-    # The SOP has two observations; breadth across sources beats depth in one.
-    assert len(highlights) == 2
+
+def _metric(milestone: dict, label: str):
+    return next(
+        (item["value"] for item in milestone["metrics"] if item["label"] == label),
+        None,
+    )
+
+
+def test_the_planning_milestone_describes_the_memorandum_it_filed():
+    """The row's artifact is the APM, so the row reads the APM.
+
+    It used to summarise the governing documents' *analysis* instead, which put
+    another stage's notes about the client's own minutes under a headline saying
+    the memorandum was ready — where they read as defects in the memorandum.
+    """
+    workspace = _Workspace(_documents(), planning={"apm_markdown": APM})
+
+    milestone = _apm_milestone(workspace)
+
+    assert milestone["summary"] == (
+        "Plans the engagement from 2 policy documents and 1 set of minutes, and "
+        "sets a planned response against 2 risks. 2 matters are recorded to "
+        "confirm before the plan is relied on."
+    )
+    assert _metric(milestone, "Risks assessed") == 2
+    assert _metric(milestone, "Matters to confirm") == 2
+
+
+def test_the_planning_highlights_are_what_the_memorandum_left_open():
+    workspace = _Workspace(_documents(), planning={"apm_markdown": APM})
+
+    highlights = _apm_milestone(workspace)["highlights"]
+
     assert [item["artifact_ref"] for item in highlights] == [
-        "document:d_matrix", "document:d_sop",
+        "planning:apm", "planning:apm",
     ]
-    # The source is named, so two documents raising the same gap read as a
-    # pattern rather than as one sentence printed twice.
-    assert highlights[0]["detail"].startswith("Financial Approval Matrix.docx — ")
-    assert highlights[1]["detail"].startswith("Procurement SOP Extracts.docx — ")
+    # A matter written as one sentence splits at its semicolon, so the highlight
+    # is a line to scan with the reason under it rather than one long label.
+    assert highlights[0]["label"] == (
+        "The approved version of the Financial Approval Matrix was not provided."
+    )
+    assert highlights[0]["detail"] == (
+        "The extract carries no version or effective date."
+    )
     assert all(item["severity"] == "warning" for item in highlights)
 
 
-def test_observation_highlights_stop_at_the_milestone_budget(monkeypatch):
-    documents = [
-        {"id": f"d{index}", "source": f"Policy {index}.docx", "category": "policy"}
-        for index in range(6)
-    ]
-    _stub_notes(monkeypatch, {item["id"]: MATRIX_NOTES for item in documents})
-    workspace = _Workspace(documents)
+def test_a_memorandum_with_no_matters_section_is_not_reported_as_having_none():
+    memo = "# APM\n\n## Key risks and planned response\n\n### Payables\n\nRisk.\n"
+    workspace = _Workspace(_documents(), planning={"apm_markdown": memo})
 
-    highlights = audit._observation_highlights(
-        audit._document_observations(workspace, audit._planning_documents(workspace))
+    milestone = _apm_milestone(workspace)
+
+    assert milestone["summary"].endswith(
+        "It has no section for matters left open, so nothing was recorded as "
+        "outstanding."
+    )
+    # Reported as 0, that metric would be a claim this memorandum never made.
+    assert _metric(milestone, "Matters to confirm") is None
+
+
+def test_a_risk_assessment_argued_as_prose_says_so_rather_than_counting_zero():
+    """Prose is a legitimate way to argue a risk assessment.
+
+    It is also the shape the RCM cannot build rows from, so a reader deciding
+    whether to run the matrix next needs to know before they do.
+    """
+    memo = (
+        "# APM\n\n## Key risks and planned response\n\n"
+        + "Approvals may exceed the limits the entity states, the recorded "
+        "population may be incomplete, and incompatible duties may sit with one "
+        "person. Each will be tested substantively against the transactions "
+        "received rather than by reliance on controls, because no control has "
+        "been walked through and none has been evidenced as operating.\n"
+    )
+    workspace = _Workspace(_documents(), planning={"apm_markdown": memo})
+
+    milestone = _apm_milestone(workspace)
+
+    assert "argued as prose under \u201cKey risks and planned response\u201d" in (
+        milestone["summary"]
+    )
+    # Prose is not a defect; a memorandum that assessed nothing at all is.
+    assert milestone["status"] == "completed"
+
+
+def test_a_memorandum_that_assesses_no_risk_is_not_reported_as_clean():
+    workspace = _Workspace(_documents(), planning={"apm_markdown": "# APM\n"})
+
+    milestone = _apm_milestone(workspace)
+
+    assert milestone["status"] == "completed_with_issues"
+    assert milestone["headline"] == (
+        "Audit planning memorandum ready — no risk assessed"
     )
 
-    assert len(highlights) == audit.HIGHLIGHT_LIMIT
+
+def test_the_planning_highlights_stop_at_the_milestone_budget():
+    memo = "# APM\n\n## Planning assumptions and matters reported\n\n" + "".join(
+        f"- Matter {index} was not provided.\n" for index in range(6)
+    )
+    workspace = _Workspace(_documents(), planning={"apm_markdown": memo})
+
+    assert len(_apm_milestone(workspace)["highlights"]) == audit.HIGHLIGHT_LIMIT
 
 
 # --------------------------------------------------------------------------- #

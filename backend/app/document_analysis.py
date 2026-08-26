@@ -375,14 +375,7 @@ def audit_observations(workspace: Workspace, document_id: str) -> list[dict]:
         # Citation ids anchor the note to a page; they read as noise in a
         # one-line label, and the detail keeps them.
         body = _CITATION_MARKER.sub("", " ".join(match.group("text").split())).strip()
-        lead = _BOLD_LEAD.match(body)
-        if lead:
-            statement = _plain(lead.group("lead"))
-            detail = _plain(body[lead.end():])
-        else:
-            parts = _SENTENCE_END.split(body, maxsplit=1)
-            statement = _plain(parts[0])
-            detail = _plain(parts[1] if len(parts) > 1 else "")
+        statement, detail = split_note(body)
         if not statement:
             continue
         observations.append({
@@ -391,6 +384,23 @@ def audit_observations(workspace: Workspace, document_id: str) -> list[dict]:
             "detail": detail,
         })
     return observations
+
+
+def split_note(text: str) -> tuple[str, str]:
+    """A note's leading statement and the reason under it.
+
+    The shape every milestone highlight is built in: a line a reader scans and
+    the why underneath it. Shared rather than reimplemented so a planning matter
+    and a document observation cannot drift into looking like different kinds of
+    thing. A bolded lead is the author saying which half is the statement; a
+    plain note is split at its first sentence.
+    """
+    body = " ".join(str(text or "").split())
+    lead = _BOLD_LEAD.match(body)
+    if lead:
+        return _plain(lead.group("lead")), _plain(body[lead.end():])
+    parts = _SENTENCE_END.split(body, maxsplit=1)
+    return _plain(parts[0]), _plain(parts[1] if len(parts) > 1 else "")
 
 
 # The generated-analysis fields that identify the outcome. Provider, model, and

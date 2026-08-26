@@ -1448,6 +1448,81 @@ def test_fully_covered_analyses_are_not_reported_as_partial():
     assert milestone["status"] == "completed"
 
 
+def test_the_analysis_milestone_counts_the_observations_it_recorded():
+    """The notes this stage wrote are reported by this stage.
+
+    They were once counted on the planning milestone, where a note about the
+    client's own minutes sat under a headline saying the audit planning
+    memorandum was ready and read as a defect in the memorandum.
+    """
+
+    ws = workspaces.create_workspace("Analysis observation milestone")
+    doc = documents.add_document(ws, "sop.txt", b"Procurement SOP extract")
+    extracted = documents.extract_document(ws, doc["id"])
+    document_analysis.persist_analysis(
+        ws,
+        doc,
+        extracted,
+        {
+            "summary_markdown": "An extract of the procurement SOP.",
+            "audit_notes_markdown": (
+                "## Drafting and governance observations\n"
+                "- Governance metadata is not stated. Obtain the controlled header.\n"
+                "- The Authority Matrix is referenced but not included. Obtain it.\n"
+            ),
+            "citations": [
+                {
+                    "id": "c1",
+                    "page": 1,
+                    "excerpt": "Procurement SOP extract",
+                    "source_sha1": doc["sha1"],
+                }
+            ],
+        },
+        provider="test",
+        model="test",
+        coverage={"state": "complete", "analyzed_pages": [1], "omitted_pages": []},
+    )
+
+    milestone = _analysis_milestone(ws, [doc["id"]])
+
+    assert _metric(milestone, "Observations recorded") == 2
+    assert "They record 2 observations across 1 document." in milestone["summary"]
+    # Observations are notes, not coverage gaps: they do not make the run dirty.
+    assert milestone["status"] == "completed"
+
+
+def test_an_analysis_that_found_nothing_says_nothing_about_observations():
+    ws = workspaces.create_workspace("Analysis quiet milestone")
+    doc = documents.add_document(ws, "note.txt", b"A short note")
+    extracted = documents.extract_document(ws, doc["id"])
+    document_analysis.persist_analysis(
+        ws,
+        doc,
+        extracted,
+        {
+            "summary_markdown": "A short note.",
+            "audit_notes_markdown": "No specific observations were identified.",
+            "citations": [
+                {
+                    "id": "c1",
+                    "page": 1,
+                    "excerpt": "A short note",
+                    "source_sha1": doc["sha1"],
+                }
+            ],
+        },
+        provider="test",
+        model="test",
+        coverage={"state": "complete", "analyzed_pages": [1], "omitted_pages": []},
+    )
+
+    milestone = _analysis_milestone(ws, [doc["id"]])
+
+    assert _metric(milestone, "Observations recorded") == 0
+    assert "They record" not in milestone["summary"]
+
+
 def test_genuinely_partial_coverage_is_still_reported():
     ws = workspaces.create_workspace("Partial coverage milestone")
     doc = documents.add_document(ws, "minutes.txt", b"Procurement planning minutes")

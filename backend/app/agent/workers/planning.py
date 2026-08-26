@@ -986,6 +986,72 @@ def planned_risk_themes(apm_markdown: str) -> list[str]:
     return list(dict.fromkeys(theme for theme in themes if theme))
 
 
+# What the memorandum could not settle lives under a section of its own. Which
+# words head it is a template choice — a firm may call it assumptions,
+# limitations, or matters for the auditee — so this is scoped by what the
+# heading means rather than by the shipped template's exact wording.
+_MATTERS_HEADING = re.compile(r"assumption|matters|limitation|outstanding", re.I)
+_LIST_MARKER = re.compile(r"^[-*]\s+(.*)$")
+
+
+def _list_items(body: str) -> list[str]:
+    """Top-level list items of a Markdown block, each carried whole.
+
+    Walked line by line rather than matched by one regex, because a matter is a
+    sentence and a sentence wraps: a bullet's continuation lines belong to it,
+    and a bullet indented under it qualifies it rather than adding one. A
+    per-line regex truncated both — the first at its line break, the second into
+    a matter of its own.
+    """
+    items: list[list[str]] = []
+    base: int | None = None
+    for raw in body.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        marker = _LIST_MARKER.match(stripped)
+        if marker and (base is None or indent <= base):
+            base = indent if base is None else min(base, indent)
+            items.append([marker.group(1).strip()])
+        elif items:
+            # A continuation, whether it wraps the sentence or nests under it.
+            items[-1].append(marker.group(1).strip() if marker else stripped)
+    return [" ".join(part for part in item if part).strip() for item in items]
+
+
+def planning_matters(apm_markdown: str) -> list[str] | None:
+    """The matters the memorandum recorded as unresolved, or None if it has no
+    section for them.
+
+    The distinction is the point. ``[]`` is the memorandum answering that
+    nothing is outstanding — the template asks for a sentence and no bullets in
+    that case — while ``None`` is a memorandum that was never asked, which is
+    every APM drafted before the section existed. Reporting both as "no matters"
+    would state a clean plan on a memorandum that simply has nothing to say.
+    """
+    found: list[str] = []
+    seen = False
+    for heading, body in _section_bodies(apm_markdown).items():
+        if not _MATTERS_HEADING.search(heading):
+            continue
+        seen = True
+        headed = [
+            match.group(2).strip()
+            for match in _HEADING.finditer(body)
+            if len(match.group(1)) == 3
+        ]
+        # Unlike a risk section — where bullets are detail beneath an
+        # enumerated theme and only the theme's name is wanted — here the
+        # bullets *are* the enumeration, and the sentence after the lead is the
+        # reason the matter has to be resolved.
+        found.extend(headed or _list_items(body))
+    if not seen:
+        return None
+    return list(dict.fromkeys(item for item in found if item))
+
+
 def unstructured_risk_sections(apm_markdown: str) -> list[str]:
     """Risk sections carrying substantive prose that enumerate no theme.
 

@@ -32,6 +32,7 @@ PLANNING_RESPONSES = {
             "## Data analytics performed\nNo data analysis has been performed.\n\n"
             "## Fraud risk and management override\nManagement override is presumed.\n\n"
             "## Key risks and planned response\nTest duplicate payments."
+            + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
         )
     },
     "agent:rcm": {
@@ -666,6 +667,7 @@ def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
                 "## Data analytics performed\n{{data_analytics}}\n\n"
                 "## Fraud risk and management override\n{{fraud_risk}}\n\n"
                 "## Key risks and planned response\n{{key_risks}}"
+                + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
             )
         },
     })

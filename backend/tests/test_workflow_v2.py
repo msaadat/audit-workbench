@@ -1494,6 +1494,7 @@ def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
         "## Data analytics performed\nNo data analysis has been performed.\n\n"
         "## Fraud risk and management override\nManagement override is presumed.\n\n"
         "## Key risks and planned response\nTest approval evidence."
+        + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
     )
     fake = FakeAgentLLM({"agent:apm": {"apm_markdown": response}})
     monkeypatch.setattr(llm, "chat", fake)
@@ -1557,6 +1558,7 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
         "## Data analytics performed\nNo data analysis has been performed.\n\n"
         "## Fraud risk and management override\nManagement override is presumed.\n\n"
         "## Key risks and planned response\nTest approval evidence."
+        + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
     )
     fake = FakeAgentLLM({"agent:apm": {"apm_markdown": response}})
     monkeypatch.setattr(llm, "chat", fake)
@@ -1638,6 +1640,7 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         "## Data analytics performed\nNo data analysis has been performed.\n\n"
         "## Fraud risk and management override\nManagement override is presumed.\n\n"
         "## Key risks and planned response\nTest approval evidence."
+        + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
     )
     command, stage, unit = _apm_only_runner(ws)
     captured = {}
@@ -2514,6 +2517,7 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
                     "## Data analytics performed\nNo data analysis has been performed.\n\n"
                     "## Fraud risk and management override\nManagement override is presumed.\n\n"
                     "## Key risks and planned response\nTest duplicate invoices."
+                    + "\n\n## Planning assumptions and matters reported\n- The approved policy version was not provided; its currency is assumed."
                 )
             },
             "agent:rcm": {

@@ -148,50 +148,6 @@ def _planning_documents(workspace: Workspace) -> list[dict]:
     )
 
 
-def _document_observations(workspace: Workspace, documents: list[dict]) -> list[dict]:
-    """Every recorded observation across these documents, in document order."""
-    found: list[dict] = []
-    for item in documents:
-        for observation in document_analysis.audit_observations(
-            workspace, str(item.get("id") or "")
-        ):
-            found.append({**observation, "document": item})
-    return found
-
-
-def _observation_highlights(observations: list[dict]) -> list[dict]:
-    """One highlight per document, so three sources beat three notes on one.
-
-    A document with six observations is not six times as important as a
-    document with one; leading with each source's own first note tells a
-    reader which materials carry an issue at all, which is the question at
-    this stage.
-    """
-    highlights: list[dict] = []
-    seen: set[str] = set()
-    for observation in observations:
-        document = observation["document"]
-        document_id = str(document.get("id") or "")
-        if document_id in seen:
-            continue
-        seen.add(document_id)
-        # The document leads the detail. Two governing documents can raise the
-        # same gap — neither stating its own currency is exactly the planning
-        # conclusion — and without the source named, the two notes read as one
-        # sentence repeated rather than as a pattern across the material.
-        name = str(document.get("source") or document.get("title") or "").strip()
-        detail = observation["detail"]
-        highlights.append({
-            "severity": "warning",
-            "label": observation["statement"],
-            "detail": f"{name} — {detail}" if name and detail else (detail or name),
-            "artifact_ref": f"document:{document_id}",
-        })
-        if len(highlights) >= HIGHLIGHT_LIMIT:
-            break
-    return highlights
-
-
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
@@ -228,6 +184,54 @@ def _rcm_label(row: Mapping) -> str:
         if value:
             return value
     return str(row.get("id") or "RCM row")
+
+
+def _quoted_headings(headings: list[str]) -> str:
+    """"Key risks and planned response", from the casefolded heading keys."""
+    named = [f"\u201c{heading[:1].upper()}{heading[1:]}\u201d" for heading in headings if heading]
+    if len(named) <= 1:
+        return named[0] if named else "its risk section"
+    return f"{', '.join(named[:-1])} and {named[-1]}"
+
+
+def _matters_sentence(matters: list[str] | None) -> str:
+    """What the memorandum says it still owes.
+
+    ``None`` and ``[]`` are different answers and are stated differently: a
+    memorandum drafted before the template carried a section for matters was
+    never asked, and reporting it as a plan with nothing outstanding would be a
+    claim it never made.
+    """
+    if matters is None:
+        return (
+            "It has no section for matters left open, so nothing was recorded "
+            "as outstanding."
+        )
+    if not matters:
+        return "It records nothing outstanding."
+    return (
+        f"{counted(len(matters), 'matter')} {verb(len(matters), 'is', 'are')} "
+        "recorded to confirm before the plan is relied on."
+    )
+
+
+# A matter is routinely written as one sentence whose clause after the
+# semicolon is exactly the "why this has to be resolved" half — "the extracts
+# lack version metadata, so the current versions are assumptions to be
+# confirmed". Splitting there is what keeps the highlight a scannable line with
+# a reason under it rather than one 190-character label.
+_CLAUSE_END = re.compile(r";\s+")
+
+
+def _split_note(text: str) -> tuple[str, str]:
+    """A planning matter as a highlight: the statement, then the reason."""
+    statement, detail = document_analysis.split_note(text)
+    if detail or not statement:
+        return statement, detail
+    parts = _CLAUSE_END.split(statement, maxsplit=1)
+    if len(parts) == 1:
+        return statement, ""
+    return f"{parts[0]}.", parts[1][:1].upper() + parts[1][1:]
 
 
 def _category_breakdown(documents: list[dict]) -> str:
@@ -379,34 +383,76 @@ class AuditWorkflowExecution(ActionRunner):
         if capability_id == "planning.apm_ready":
             updated = int(changes.get("apm_updated") or 0)
             proposed = int(changes.get("apm_proposed") or 0)
-            # What the memorandum rests on, and what its sources left open.
-            # The count of populated planning fields described the machine
-            # filling them in; neither an auditor nor a reviewer can act on it.
+            # Read the memorandum, not only the material it was drafted from.
+            # This row's artifact is the APM; summarising the governing
+            # documents' analysis put another stage's notes about the client's
+            # own minutes under a headline saying the memorandum is ready, where
+            # they read as a defect in the memorandum. Those notes belong to the
+            # document-analysis milestone, which now counts them.
+            markdown = str((subject.planning or {}).get("apm_markdown") or "")
             governing = _planning_documents(subject)
-            observations = _document_observations(subject, governing)
-            breakdown = _category_breakdown(governing)
+            risks = planning_workers.planned_risk_themes(markdown)
+            argued = planning_workers.unstructured_risk_sections(markdown)
+            matters = planning_workers.planning_matters(markdown)
+            basis = _category_breakdown(governing)
             summary = (
-                f"Planning rests on {breakdown}."
-                if breakdown
-                else "No governing documents were available to plan against."
+                f"Plans the engagement from {basis}"
+                if basis
+                else "Plans the engagement with no governing documents to work from"
             )
-            if observations:
+            if risks:
                 summary += (
-                    f" Their analysis recorded "
-                    f"{counted(len(observations), 'drafting or governance observation')} "
-                    "to confirm before the documents are relied on as control criteria."
+                    f", and sets a planned response against "
+                    f"{counted(len(risks), 'risk')}."
                 )
+            elif argued:
+                # Prose is a legitimate way to argue a risk assessment. It is
+                # also the shape the RCM cannot build rows from, so a reader
+                # deciding whether to run the matrix needs to know now.
+                summary += (
+                    f". Its risk assessment is argued as prose under "
+                    f"{_quoted_headings(argued)}, so it enumerates no risk for "
+                    "the matrix to build from."
+                )
+            else:
+                summary += " and enumerates no risk."
+            summary += " " + _matters_sentence(matters)
+            # A memorandum that assesses no risk at all is not a plan anyone can
+            # work from, whatever else it covers.
+            thin = not risks and not argued
+            metrics = [
+                {"label": "Risks assessed", "value": len(risks)},
+                {"label": "Governing documents", "value": len(governing)},
+                {"label": "Updated", "value": updated},
+                {"label": "Proposed for approval", "value": proposed},
+            ]
+            # Omitted rather than reported as zero on a memorandum that has no
+            # section for matters: "0" is an answer this one never gave.
+            if matters is not None:
+                metrics.insert(1, {"label": "Matters to confirm", "value": len(matters)})
             return {
-                "status": state,
-                "headline": "Audit planning memorandum ready",
+                "status": "completed_with_issues" if thin else state,
+                "headline": (
+                    "Audit planning memorandum ready — no risk assessed"
+                    if thin else "Audit planning memorandum ready"
+                ),
                 "summary": summary,
-                "metrics": [
-                    {"label": "Governing documents", "value": len(governing)},
-                    {"label": "Observations to confirm", "value": len(observations)},
-                    {"label": "Updated", "value": updated},
-                    {"label": "Proposed for approval", "value": proposed},
-                ],
-                "highlights": _observation_highlights(observations),
+                "metrics": metrics,
+                # What the memorandum itself says it could not settle. Same
+                # shape as any other highlight — a statement to scan and the
+                # reason under it — but sourced from the artifact on this row.
+                "highlights": [
+                    {
+                        "severity": "warning",
+                        "label": statement,
+                        "detail": detail,
+                        "artifact_ref": "planning:apm",
+                    }
+                    for statement, detail in (
+                        _split_note(item) for item in (matters or [])
+                    )
+                    if statement
+                ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs or ["planning:apm"],
             }
         if capability_id == "planning.rcm_ready":

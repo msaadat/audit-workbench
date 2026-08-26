@@ -213,10 +213,22 @@ class DocumentWorkflowExecution(BaseRunner):
 
         analyzed: list[str] = []
         partial: list[str] = []
+        # Observations the analysis recorded against the documents themselves —
+        # a policy with no version, minutes that do not say whether they are
+        # final. They were once counted on the planning milestone, where they
+        # read as defects in the memorandum rather than in the material it was
+        # drafted from. They are notes this stage wrote, so they are counted
+        # here, against the analyses that hold them.
+        noted: list[str] = []
+        observations = 0
         for document_id in scope.document_ids:
             if not has_generated_analysis(subject, document_id):
                 continue
             analyzed.append(document_id)
+            recorded = len(document_analysis.audit_observations(subject, document_id))
+            if recorded:
+                noted.append(document_id)
+                observations += recorded
             try:
                 envelope = document_analysis.load_analysis(subject, document_id)
             except WorkspaceError:
@@ -243,11 +255,17 @@ class DocumentWorkflowExecution(BaseRunner):
                 f"Generated analyses for {len(analyzed)} of "
                 f"{counted(len(scope.document_ids), 'scoped document')}. "
                 f"{len(partial)} have partial coverage and {skipped} were not analyzed. "
-                "Generated analyses remain subject to auditor review."
+                + (
+                    f"They record {counted(observations, 'observation')} across "
+                    f"{counted(len(noted), 'document')}. "
+                    if observations else ""
+                )
+                + "Generated analyses remain subject to auditor review."
             ),
             "metrics": [
                 {"label": "Documents in scope", "value": len(scope.document_ids)},
                 {"label": "Analyses generated", "value": len(analyzed)},
+                {"label": "Observations recorded", "value": observations},
                 {"label": "Partial coverage", "value": len(partial)},
                 {"label": "Not analyzed", "value": skipped},
             ],
