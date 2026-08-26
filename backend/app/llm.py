@@ -57,6 +57,10 @@ LOCAL_REQUEST_TIMEOUT = 300  # seconds
 # runaways are caught by the empty-completion check in the model gateway, which
 # can tell them from a long answer; this number cannot, and is not asked to.
 MAX_OUTPUT_TOKENS = 131_072
+# The keys a provider may carry chain-of-thought under. Collected for the debug
+# record and stripped from what `chat` returns: reasoning is a diagnostic, not
+# an answer, and a runaway's trace is half a megabyte no caller reads.
+REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
 MAX_REQUEST_ATTEMPTS = 3
 MAX_RETRY_DELAY = 2.0
 DEFAULT_RATE_LIMIT_COOLDOWN = 60.0  # seconds
@@ -600,6 +604,12 @@ def chat(
         "model": settings.model,
         "messages": messages,
         "max_tokens": _max_output_tokens(),
+        # Reasoning tokens are billed whether or not they are returned, so the
+        # only thing not asking for them buys is a blind spot. Without it, a
+        # completion that spent its whole budget deliberating arrives as an
+        # empty string with no way to see what it was deliberating about — and
+        # that is precisely the call worth reading. Debug record only.
+        "include_reasoning": True,
     }
     if temperature is not None:
         body["temperature"] = temperature
@@ -836,8 +846,15 @@ def chat(
             # correct text it never sent — which is how one RCM run spent both
             # of its attempts, and $0.09, on an empty string.
             finish_reason = choices[0].get("finish_reason")
+            # Stripped from the return value alone: ``finish_call`` above was
+            # handed the message whole, so the trace stays durable in the debug
+            # record while nothing downstream carries it into run state.
             return {
-                **message,
+                **{
+                    key: value
+                    for key, value in message.items()
+                    if key not in REASONING_KEYS
+                },
                 **({"usage": usage} if isinstance(usage, dict) else {}),
                 **({"finish_reason": str(finish_reason)} if finish_reason else {}),
             }
@@ -890,6 +907,7 @@ def _read_stream(
     payload so the existing provider-error path handles it.
     """
     content: list[str] = []
+    reasoning: list[str] = []
     finish_reason = None
     usage = None
     role = "assistant"
@@ -920,15 +938,28 @@ def _read_stream(
             if piece:
                 content.append(str(piece))
                 on_delta(str(piece))
+            # Reasoning streams on its own delta field. Kept apart from the text
+            # twice over: it never reaches ``on_delta``, because a reader
+            # following the turn is owed the answer and not the deliberation;
+            # and it never joins ``content``, because an empty completion is how
+            # a runaway is recognised, and folding its thinking into the text
+            # would make every runaway look like a model that answered at length.
+            for key in REASONING_KEYS:
+                thought = delta.get(key)
+                if isinstance(thought, str) and thought:
+                    reasoning.append(thought)
             if choice.get("finish_reason"):
                 finish_reason = choice["finish_reason"]
     text = "".join(content)
+    message: dict = {"role": role, "content": text}
+    if reasoning:
+        message["reasoning"] = "".join(reasoning)
     payload: dict = {
         "choices": [
             {
                 "index": 0,
                 "finish_reason": finish_reason,
-                "message": {"role": role, "content": text},
+                "message": message,
             }
         ]
     }
