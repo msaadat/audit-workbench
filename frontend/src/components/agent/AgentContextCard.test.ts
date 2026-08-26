@@ -108,3 +108,25 @@ describe('AgentContextCard', () => {
     )
   })
 })
+
+describe('AgentContextCard merged reads', () => {
+  it('describes itself when a merged group has no single sentence', () => {
+    const wrapper = mount(AgentContextCard, {
+      props: { context: context({ sentence: '', stage_title: 'Document chunk analysis' }) },
+    })
+
+    expect(wrapper.find('section').attributes('aria-label')).toBe(
+      "Reading 3 documents for Document chunk analysis. Holding back 2 vouchers, outside this step's scope.",
+    )
+  })
+
+  it('says nothing about holding back when nothing was held', () => {
+    const wrapper = mount(AgentContextCard, {
+      props: { context: context({ sentence: '', withheld: [] }) },
+    })
+
+    const label = wrapper.find('section').attributes('aria-label')
+    expect(label).toBe('Reading 3 documents for Audit planning memorandum.')
+    expect(wrapper.text()).not.toContain('Held back')
+  })
+})

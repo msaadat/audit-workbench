@@ -900,3 +900,91 @@ def test_milestone_keeps_at_most_three_highlights():
 
     assert entry is not None
     assert [item["label"] for item in entry["highlights"]] == ["Risk 0", "Risk 1", "Risk 2"]
+
+
+# --------------------------------------------------------------------------- #
+# Where the run's cards sort, and how many of them there are
+# --------------------------------------------------------------------------- #
+def test_run_card_sorts_after_the_context_it_read():
+    """A receipt belongs below everything the run has said, cards included."""
+    run = {
+        "created": "2026-08-14T06:00:00+00:00",
+        "messages": [{"role": "agent", "content": "Working.", "at": "2026-08-14T06:00:05+00:00"}],
+        "context_reads": [
+            {"at": "2026-08-14T06:00:10+00:00", "stage_title": "One"},
+            {"at": "2026-08-14T06:00:40+00:00", "stage_title": "Two"},
+        ],
+    }
+
+    anchor = assistant_chats._run_card_anchor(run, run["created"])
+
+    assert anchor == "2026-08-14T06:00:40+00:00"
+
+
+def test_context_reads_of_one_stage_become_one_card():
+    """A fan-out reads a document per unit; the auditor read them as a stage."""
+    reads = [
+        {
+            "at": "2026-08-14T06:00:10+00:00",
+            "stage_title": "Document chunk analysis",
+            "documents": [{"document_id": "d1", "name": "A.pdf"}],
+            "withheld": [],
+            "supporting": ["the planning context"],
+            "unavailable": [],
+            "sentence": "Reading 1 document.",
+        },
+        {
+            "at": "2026-08-14T06:00:20+00:00",
+            "stage_title": "Document chunk analysis",
+            "documents": [{"document_id": "d2", "name": "B.docx"}],
+            "withheld": [],
+            "supporting": ["the planning context"],
+            "unavailable": ["the methodology pack"],
+            "sentence": "Reading 1 document.",
+        },
+        {
+            "at": "2026-08-14T06:01:00+00:00",
+            "stage_title": "Audit planning memorandum",
+            "documents": [{"document_id": "d1", "name": "A.pdf"}],
+            "withheld": [{"document_id": "v1", "name": "V.pdf"}],
+            "supporting": [],
+            "unavailable": [],
+            "sentence": "Reading 1 document for Audit planning memorandum.",
+        },
+    ]
+
+    groups = assistant_chats._coalesced_context_reads(reads)
+
+    assert len(groups) == 2
+    assert [item["document_id"] for item in groups[0]["documents"]] == ["d1", "d2"]
+    # Anchored where the stage's reading began.
+    assert groups[0]["at"] == "2026-08-14T06:00:10+00:00"
+    # Supporting material is a set across the stage, not a repeated list.
+    assert groups[0]["supporting"] == ["the planning context"]
+    assert groups[0]["unavailable"] == ["the methodology pack"]
+    # One unit's sentence must not be presented as the whole stage's.
+    assert groups[0]["sentence"] == ""
+    # A stage read once keeps its own sentence and its own documents.
+    assert groups[1]["sentence"] == "Reading 1 document for Audit planning memorandum."
+    assert [item["document_id"] for item in groups[1]["withheld"]] == ["v1"]
+    assert "merged" not in groups[0]
+
+
+def test_a_document_read_twice_in_one_stage_is_listed_once():
+    reads = [
+        {
+            "at": "2026-08-14T06:00:10+00:00", "stage_title": "Chunks",
+            "documents": [{"document_id": "d1", "name": "A.pdf"}],
+            "withheld": [], "supporting": [], "unavailable": [], "sentence": "",
+        },
+        {
+            "at": "2026-08-14T06:00:20+00:00", "stage_title": "Chunks",
+            "documents": [{"document_id": "d1", "name": "A.pdf"}],
+            "withheld": [], "supporting": [], "unavailable": [], "sentence": "",
+        },
+    ]
+
+    groups = assistant_chats._coalesced_context_reads(reads)
+
+    assert len(groups) == 1
+    assert len(groups[0]["documents"]) == 1

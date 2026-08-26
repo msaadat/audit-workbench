@@ -67,6 +67,23 @@ const footer = computed(() => {
   return parts.join(' ')
 })
 
+/**
+ * The label a screen reader hears for the whole block.
+ *
+ * A single read carries its own prose sentence. A merged one — several units
+ * of a fan-out stage read as one card — has no single sentence to borrow, so
+ * the card describes itself from what it is showing.
+ */
+const label = computed(() => {
+  if (props.context.sentence) return props.context.sentence
+  const read = `Reading ${plural(props.context.documents.length, 'document')}`
+  const stage = props.context.stage_title ? ` for ${props.context.stage_title}` : ''
+  const held = props.context.withheld.length
+    ? `. Holding back ${withheldSummary.value}, outside this step's scope`
+    : ''
+  return `${read}${stage}${held}.`
+})
+
 function open(item: ContextDocument) {
   if (item.document_id) void nav.push('documents', { doc: item.document_id })
 }
@@ -76,7 +93,7 @@ function open(item: ContextDocument) {
   <!-- Labelled rather than aria-hidden with a sentence beside it: the cards
        are buttons, and hiding a focusable control from assistive technology
        makes it reachable by keyboard but silent when it gets focus. -->
-  <section class="context-read" :aria-label="context.sentence || 'Sources read'">
+  <section class="context-read" :aria-label="label">
     <header>
       <strong>Reading</strong>
       <span>

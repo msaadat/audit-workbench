@@ -11,6 +11,7 @@ import re
 import shutil
 import threading
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1140,7 +1141,58 @@ def _run_card_anchor(run: dict, fallback_created_at: object) -> str:
         candidate = str(approval.get("created") or "")
         if candidate > latest:
             latest = candidate
+    # A context read is something the run said, in cards rather than in a
+    # sentence. Leaving it out of the chase stranded the receipt mid-run: reads
+    # written before the last message sorted above the card and reads written
+    # after it sorted below, so the card appeared wedged between them.
+    for read in run.get("context_reads") or []:
+        candidate = str(read.get("at") or "")
+        if candidate > latest:
+            latest = candidate
     return latest
+
+
+def _coalesced_context_reads(reads: list) -> list[dict]:
+    """One card per stage, not one per unit.
+
+    A capability that fans out reads its documents a unit at a time, so a
+    sixteen-document analysis emitted sixteen cards each saying "Reading 1
+    document". The reading is per stage from the auditor's side: consecutive
+    reads for the same stage merge into the set of documents that stage saw,
+    anchored where its reading began.
+
+    The prose sentence belongs to a single read, so a merged group drops it
+    rather than presenting one unit's sentence as the group's; the card
+    describes itself from its own contents in that case.
+    """
+    groups: list[dict] = []
+    for read in reads:
+        if not isinstance(read, Mapping):
+            continue
+        entry = dict(read)
+        current = groups[-1] if groups else None
+        if current is None or current["stage_title"] != entry.get("stage_title"):
+            groups.append({**entry, "merged": 1})
+            continue
+        for field in ("documents", "withheld"):
+            seen = {
+                str(item.get("document_id"))
+                for item in current.get(field) or []
+            }
+            current[field] = list(current.get(field) or []) + [
+                item
+                for item in entry.get(field) or []
+                if str(item.get("document_id")) not in seen
+            ]
+        for field in ("supporting", "unavailable"):
+            current[field] = list(
+                dict.fromkeys(list(current.get(field) or []) + list(entry.get(field) or []))
+            )
+        current["merged"] += 1
+        current["sentence"] = ""
+    for group in groups:
+        group.pop("merged", None)
+    return groups
 
 
 def _run_start_anchor(run: dict, fallback_created_at: object) -> str:
@@ -1377,7 +1429,7 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 "reply_to_id": None, "artifact_ids": [], "outcome": None, "error": None,
                 "run_id": run["id"],
             })
-        for index, item in enumerate(run.get("context_reads") or []):
+        for index, item in enumerate(_coalesced_context_reads(run.get("context_reads") or [])):
             transcript.append({
                 "id": f"run:{run['id']}:context:{index}",
                 "type": "context",
