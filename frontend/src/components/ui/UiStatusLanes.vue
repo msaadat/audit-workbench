@@ -92,6 +92,15 @@ function blocked(action: StatusAction) {
         <p v-for="item in disclosures" :key="item.key" class="disclosure" :data-tone="item.tone">
           <span class="mark">{{ item.mark }}</span>
           <span class="grow">{{ item.message }}</span>
+          <button
+            v-if="item.action"
+            type="button"
+            class="settle"
+            :disabled="blocked(item.action)"
+            @click="emit('action', item.action)"
+          >
+            {{ item.action.label }}
+          </button>
           <button type="button" class="link" @click="toggle(item.filter)">
             {{ filter === item.filter ? 'Clear' : 'Show rows' }}
           </button>
@@ -160,6 +169,13 @@ function blocked(action: StatusAction) {
 .disclosure .grow { flex:1; min-width:0 }
 .disclosure .link { flex:none; padding:.1rem .25rem; border:0; border-radius:4px; background:none; color:var(--aw-teal); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); font-weight:600; cursor:pointer; white-space:nowrap }
 .disclosure .link:hover { background:var(--aw-teal-soft) }
+/* Bordered rather than bare, because it writes to the file while the link
+   beside it only changes what is on screen. Still quieter than a lane action:
+   the strip states a qualification, it does not report a gap. */
+.disclosure .settle { flex:none; padding:.14rem .45rem; border:1px solid var(--aw-border-strong); border-radius:var(--aw-radius-control); background:var(--aw-panel); color:var(--aw-ink-soft); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); font-weight:600; cursor:pointer; white-space:nowrap }
+.disclosure .settle:hover:not(:disabled) { border-color:var(--aw-teal); color:var(--aw-teal) }
+.disclosure .settle:focus-visible { outline:2px solid var(--aw-teal); outline-offset:1px }
+.disclosure .settle:disabled { opacity:.5; cursor:not-allowed }
 
 .filter-banner { display:flex; align-items:center; gap:.5rem; margin:0; padding:.4rem .7rem; border:1px solid var(--aw-teal-line); border-radius:var(--aw-radius-control); background:var(--aw-teal-soft); color:var(--aw-teal); font-size:var(--aw-text-sm) }
 .filter-banner button { margin-left:auto; padding:.1rem .3rem; border:0; border-radius:4px; background:none; color:var(--aw-teal); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); font-weight:600; cursor:pointer }

@@ -57,6 +57,7 @@ const generatingTests = ref(false)
 const generatingFindings = ref(false)
 const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
+const markingReviewed = ref(false)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
 // The completion gates the status bar reports. Fetched beside the planning
@@ -404,7 +405,51 @@ function runStatusAction(action: StatusAction) {
     case 'run_document_tests': return void runAllDocumentTests(action.ids)
     case 'refresh_rollup': return void refreshRollup()
     case 'draft_findings': return void generateAllFindings()
+    case 'mark_reviewed': return markRowsReviewed(action.ids ?? [])
   }
+}
+
+/**
+ * Sign off a set of rows in one pass.
+ *
+ * Blanket sign-off is a real audit act, not a tidy-up, so it asks first and
+ * says what it changes: a reviewed row is auditor-owned, and the planning
+ * executor preserves rather than rewrites a row whose `created_by` is no
+ * longer `agent`. The rows are walked one at a time because there is no bulk
+ * route, and a run that only got partway must still report which rows moved.
+ */
+function markRowsReviewed(ids: string[]) {
+  if (!ids.length) return
+  confirm.require({
+    header: 'Mark rows reviewed',
+    message: `Mark ${plural(ids.length, 'RCM row')} as reviewed? `
+      + 'Sign-off makes each row auditor-owned, so rerunning the agent will '
+      + 'preserve it rather than update it.',
+    icon: 'pi pi-check-circle',
+    acceptProps: { label: 'Mark reviewed' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      markingReviewed.value = true
+      const failed: string[] = []
+      try {
+        for (const id of ids) {
+          try {
+            await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, { review_status: 'reviewed' })
+          } catch { failed.push(id) }
+        }
+        await reload()
+        emit('changed')
+        toast.add({
+          severity: failed.length ? 'warn' : 'success',
+          summary: `${plural(ids.length - failed.length, 'row')} marked reviewed`,
+          detail: failed.length
+            ? `${plural(failed.length, 'row')} could not be updated: ${failed.join(', ')}`
+            : undefined,
+          life: failed.length ? 6000 : 2200,
+        })
+      } finally { markingReviewed.value = false }
+    },
+  })
 }
 
 async function openWorkingPaper() {
@@ -431,7 +476,8 @@ const agentBusy = computed(() => isActive.value || !agent.state.status?.configur
 // configured, so only work actually in flight disables the lane.
 const rcmBusy = computed(() => isActive.value
   || generatingTests.value || generatingFindings.value
-  || runningAllDataTests.value || runningAllDocumentTests.value)
+  || runningAllDataTests.value || runningAllDocumentTests.value
+  || markingReviewed.value)
 // An untouched memorandum gets an empty state rather than a blank editor: there
 // is nothing to attribute, nothing to save, and no reason to show a formatting
 // toolbar above nothing.

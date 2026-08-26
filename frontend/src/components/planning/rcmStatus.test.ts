@@ -219,6 +219,29 @@ describe('disclosures', () => {
     const executed = rcmStatus([row('R1', { test_rollups: [test({ test_id: 'T1' })] })])
     expect(executed.disclosures.map(item => item.key)).toContain('review')
   })
+
+  it('scopes sign-off to the rows the line just counted as unsigned', () => {
+    const rows = [
+      row('R1', { test_rollups: [test({ test_id: 'T1' })] }, { review_status: 'reviewed' }),
+      row('R2', {}, { review_status: 'prepared' }),
+      row('R3', {}),
+    ]
+    const review = rcmStatus(rows).disclosures.find(item => item.key === 'review')
+
+    expect(review?.message).toBe('1 of 3 rows reviewed. The rest are still marked draft.')
+    // `prepared` is a stage of unsigned, so it is in scope alongside `draft`.
+    expect(review?.action).toEqual({
+      key: 'mark_reviewed', label: 'Mark 2 rows reviewed', tone: 'ghost', ids: ['R2', 'R3'],
+    })
+  })
+
+  it('drops the sign-off action once every row is signed, leaving the count', () => {
+    const rows = [row('R1', { test_rollups: [test({ test_id: 'T1' })] }, { review_status: 'reviewed' })]
+    const review = rcmStatus(rows).disclosures.find(item => item.key === 'review')
+
+    expect(review?.message).toBe('1 of 1 row reviewed. The rest are still marked draft.')
+    expect(review?.action).toBeUndefined()
+  })
 })
 
 describe('row filters', () => {

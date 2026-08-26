@@ -27,6 +27,9 @@ const emit = defineEmits<{
 }>()
 
 const ratings = ['low', 'medium', 'high', 'critical']
+// The backend's REVIEW_STATUSES, in the order a row travels through them.
+const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
+function reviewLabel(status?: string) { return String(status || 'draft').replaceAll('_', ' ') }
 const nav = useWorkspaceNav()
 function openFinding(id: string) { void nav.replace('findings', { finding: id }) }
 function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_refs.length }
@@ -66,7 +69,16 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
       <Column header="Exceptions" style="min-width: 8rem"><template #body="{ data }"><Tag :value="exceptionsLabel(data)" :severity="(data.execution_rollup.completed ?? 0) && (data.execution_rollup.exceptions ?? 0) ? 'danger' : 'secondary'"/></template></Column>
       <Column header="Conclusion" style="min-width: 10rem"><template #body="{ data }"><Tag :value="data.execution_rollup.control_conclusion ?? 'no conclusion'" :severity="statusSeverity(data.execution_rollup.control_conclusion)"/></template></Column>
       <Column header="Findings" style="min-width: 9rem"><template #body="{ data }"><span class="refs"><button v-for="finding in findingRollups?.by_rcm[data.id] ?? []" :key="finding.id" type="button" class="finding" @click="openFinding(finding.id)">{{ finding.id }} · {{ finding.severity }}</button><span v-if="!(findingRollups?.by_rcm[data.id]?.length)" class="muted">None</span></span></template></Column>
-      <Column header="Review" style="min-width: 8rem"><template #body="{ data }"><Tag :value="data.review_status.replaceAll('_', ' ')" severity="secondary"/></template></Column>
+      <!-- Sign-off is an auditor decision, so it is set where it is read. It
+           was a read-only tag while every other column the auditor owns edited
+           in place, which left the detail dialog as the only way to move a row
+           off draft. -->
+      <Column header="Review" style="min-width: 10rem"><template #body="{ data }">
+        <Select v-model="data.review_status" :options="reviewStatuses" @change="emit('update', data.id, { review_status: data.review_status })">
+          <template #value="{ value }"><span class="review"><span class="dot" :data-review="value" />{{ reviewLabel(value) }}</span></template>
+          <template #option="{ option }"><span class="review"><span class="dot" :data-review="option" />{{ reviewLabel(option) }}</span></template>
+        </Select>
+      </template></Column>
       <Column frozen alignFrozen="right" style="min-width: 12rem"><template #body="{ data }"><div class="row-actions"><Button v-if="!testCount(data)" label="Generate test" icon="pi pi-sparkles" text size="small" :loading="props.generating" :disabled="!props.canGenerate" @click="emit('generate', [data.id])"/><Button icon="pi pi-eye" text size="small" @click="emit('open', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" @click="emit('remove', data.id)" /></div></template></Column>
     </DataTable>
   </div>
@@ -136,4 +148,11 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
 .dot[data-rating='medium'] { background: var(--aw-warn); }
 .dot[data-rating='high'] { background: var(--aw-danger); }
 .dot[data-rating='critical'] { background: var(--aw-danger-ink); }
+
+/* Same shape as the rating cell so the two auditor-owned selects read as one
+   kind of control. Only a signed row goes green: the three states before it
+   are stages of unsigned, not degrees of it. */
+.review { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--aw-text-sm); text-transform: capitalize; }
+.dot[data-review='review_required'] { background: var(--aw-warn); }
+.dot[data-review='reviewed'] { background: var(--aw-ok); }
 </style>

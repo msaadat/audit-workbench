@@ -60,6 +60,13 @@ export interface StatusDisclosure {
   tone: 'agent' | 'warn' | 'muted'
   message: string
   filter: string
+  /**
+   * What can be done about the disclosure, where anything can be. A lane's
+   * action closes a gap; this one settles a qualification the page is only
+   * obliged to state, so it stays a quiet control on the strip rather than
+   * being promoted into a lane it does not gate.
+   */
+  action?: StatusAction
 }
 
 export interface StatusModel {

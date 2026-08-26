@@ -98,4 +98,38 @@ describe('UiStatusLanes', () => {
     const active = mountLanes([lane()], { disclosures: [disclosure], filter: 'agent_concluded' })
     expect(active.find('.disclosure .link').text()).toBe('Clear')
   })
+
+  it('hands back a disclosure action, and shows none where the strip offers none', async () => {
+    const settled: StatusDisclosure = {
+      key: 'review', mark: 'Sign-off', tone: 'muted',
+      message: '1 of 3 rows reviewed.', filter: 'unreviewed_row',
+      action: { key: 'mark_reviewed', label: 'Mark 2 rows reviewed', tone: 'ghost', ids: ['R2', 'R3'] },
+    }
+
+    const wrapper = mountLanes([lane()], { disclosures: [settled] })
+    await wrapper.find('.disclosure .settle').trigger('click')
+    expect(wrapper.emitted('action')?.[0][0]).toMatchObject({
+      key: 'mark_reviewed', ids: ['R2', 'R3'],
+    })
+
+    // A disclosure with nothing to do about it keeps its filter and no button.
+    const stated = mountLanes([lane()], { disclosures: [{ ...settled, action: undefined }] })
+    expect(stated.find('.disclosure .settle').exists()).toBe(false)
+    expect(stated.find('.disclosure .link').exists()).toBe(true)
+  })
+
+  it('stops a disclosure action while work is in flight, as it does a lane action', () => {
+    const wrapper = mountLanes(
+      [lane()],
+      {
+        busy: true,
+        disclosures: [{
+          key: 'review', mark: 'Sign-off', tone: 'muted',
+          message: '1 of 3 rows reviewed.', filter: 'unreviewed_row',
+          action: { key: 'mark_reviewed', label: 'Mark 2 rows reviewed', tone: 'ghost' },
+        }],
+      },
+    )
+    expect(wrapper.find('.disclosure .settle').attributes('disabled')).toBeDefined()
+  })
 })

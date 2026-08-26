@@ -37,7 +37,7 @@ export type RcmFilter =
 /** What a lane's action asks for. `PlanningTab` owns how each is carried out. */
 export type RcmActionKey =
   | 'generate_tests' | 'run_data_tests' | 'run_document_tests'
-  | 'refresh_rollup' | 'draft_findings'
+  | 'refresh_rollup' | 'draft_findings' | 'mark_reviewed'
 
 interface Counts {
   rows: number
@@ -66,6 +66,7 @@ interface Counts {
   agentRows: number
   agentTests: number
   reviewedRows: number
+  unreviewedRows: string[]
 }
 
 function testRollups(row: RcmRow): TestRollup[] {
@@ -122,6 +123,7 @@ function tally(
     agentRows: 0,
     agentTests: (completion?.unreviewed_agent_conclusions ?? []).length,
     reviewedRows: 0,
+    unreviewedRows: [],
   }
 
   for (const row of rows) {
@@ -166,6 +168,7 @@ function tally(
     if (rollup.evidence_ceiling) counts.ceilingRows += 1
     if (agentRows.has(row.id)) counts.agentRows += 1
     if (row.review_status === 'reviewed') counts.reviewedRows += 1
+    else counts.unreviewedRows.push(row.id)
   }
 
   counts.findings = seenFindings.size
@@ -408,6 +411,17 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
       message: `${counts.reviewedRows} of ${counts.rows} ${
         pluralWord(counts.rows, 'row')} reviewed. The rest are still marked draft.`,
       filter: 'unreviewed_row',
+      // Scoped to the rows the sentence counted, so signing off from here can
+      // never reach a row the reader was not just told about. Dropped once
+      // there is nothing left to sign, rather than left as a dead button.
+      action: counts.unreviewedRows.length
+        ? {
+            key: 'mark_reviewed',
+            label: `Mark ${plural(counts.unreviewedRows.length, 'row')} reviewed`,
+            tone: 'ghost',
+            ids: counts.unreviewedRows,
+          }
+        : undefined,
     })
   }
   return items
