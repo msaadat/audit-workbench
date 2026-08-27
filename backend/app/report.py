@@ -1425,6 +1425,25 @@ def quality_checks(
     *,
     document_tests: rcm_execution.DocumentTestIndex | None = None,
 ) -> dict:
+    """Read-only support/citation checks over the drafted report.
+
+    The pass below resolves the same Document Test scope once per finding —
+    ``support_issues`` asks for the set of known test IDs, which lists and
+    hydrates every test — so a workspace with 35 findings re-materialized all
+    of them 35 times.  Nothing here writes a test, so the whole pass runs
+    inside the memoization scope that ``doc_tests`` already provides for
+    exactly this fan-out.
+    """
+    with doc_tests.request_cache_scope():
+        return _quality_checks(workspace, markdown, document_tests=document_tests)
+
+
+def _quality_checks(
+    workspace: Workspace,
+    markdown: str | None = None,
+    *,
+    document_tests: rcm_execution.DocumentTestIndex | None = None,
+) -> dict:
     document_tests = document_tests or rcm_execution.document_test_index(workspace)
     report = hydrate(workspace)
     text = report["markdown"] if markdown is None else str(markdown)

@@ -2191,6 +2191,28 @@ def load_workspace(workspace_id: str) -> Workspace:
     return Workspace(root)
 
 
+def read_revision(workspace_id: str) -> int:
+    """The stored revision, without hydrating the workspace's artifacts.
+
+    Constructing a ``Workspace`` globs and parses every artifact collection
+    under the root — hundreds of files — which the revision contract in
+    ``main`` does not need: it compares an integer and stamps an ETag.  Reading
+    the definition alone keeps that middleware off the artifact-hydration path,
+    which it was otherwise paying for twice on every workspace request.
+
+    Recovery is deliberately not run here.  ``recover_linked_writes`` resolves
+    interrupted artifact writes but never rewrites ``workspace.json``, so the
+    revision it would leave behind is the one already on disk; the route's own
+    ``load_workspace`` still performs the recovery pass before reading anything.
+    """
+    path = WORKSPACES_DIR / workspace_id / "workspace.json"
+    try:
+        definition = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise WorkspaceError(f"Workspace '{workspace_id}' not found.") from error
+    return int(definition.get("revision") or 0)
+
+
 def create_workspace(name: str, description: str = "") -> Workspace:
     name = str(name).strip()
     if not name:

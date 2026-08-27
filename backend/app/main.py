@@ -95,9 +95,9 @@ def create_app() -> FastAPI:
             return JSONResponse({"detail": str(error)}, status_code=400)
         current = None
         try:
-            from .workspaces import load_workspace
+            from .workspaces import read_revision
 
-            current = load_workspace(workspace_id).revision
+            current = read_revision(workspace_id)
             if request.method in {"POST", "PUT", "PATCH", "DELETE"} and expected is not None:
                 if current != expected:
                     conflict = WorkspaceConflict(expected, current)
@@ -126,9 +126,9 @@ def create_app() -> FastAPI:
             if token is not None:
                 reset_request_revision(token)
         try:
-            from .workspaces import load_workspace
+            from .workspaces import read_revision
 
-            current = load_workspace(workspace_id).revision
+            current = read_revision(workspace_id)
         except WorkspaceError:
             pass
         if current is not None:
