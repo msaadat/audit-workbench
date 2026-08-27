@@ -581,3 +581,55 @@ def test_a_pending_row_never_shows_a_capability_id(stub_store):
         label = row["filed"]["label"]
         assert label != row["capability"], label
         assert "." not in label, label
+
+
+def test_the_record_reads_each_expensive_source_once(stub_store, monkeypatch):
+    """The record asks the same two questions repeatedly; it may read once.
+
+    `_pending` tests every stage's presence, `_blocked_by` re-tests each one's
+    dependencies, and `_open_points` reads the roll-up again for the unread
+    -conclusion debt. Nothing recorded that the answer was already in hand, so
+    a real engagement rebuilt the document-test projection nine times and the
+    roll-up five times to draw one screen — sixteen seconds, over an input that
+    could not change while it was being read.
+    """
+    stub_store([])
+    calls = {"tests": 0, "completion": 0}
+
+    def count_tests(workspace):
+        calls["tests"] += 1
+        return [{"id": "D1", "status": "completed", "rcm_id": "R1"}]
+
+    def count_completion(workspace):
+        calls["completion"] += 1
+        return {"rcm_without_conclusion": [], "unreviewed_agent_conclusions": ["R1"]}
+
+    monkeypatch.setattr(engagement_record.doc_tests, "list_tests", count_tests)
+    monkeypatch.setattr(engagement_record.rcm_execution, "completion", count_completion)
+
+    engagement_record.record(_Workspace(rcm=[{"id": "R1"}], apm="# APM"))
+
+    assert calls == {"tests": 1, "completion": 1}
+
+
+def test_the_memo_does_not_outlive_the_call_that_opened_it(stub_store, monkeypatch):
+    """Two record calls are two reads: the second must see what changed.
+
+    The sources are files outside the manifest, so a cache kept between calls
+    would answer for a workspace that has since been written to.
+    """
+    stub_store([])
+    calls = {"completion": 0}
+
+    def count_completion(workspace):
+        calls["completion"] += 1
+        return {"rcm_without_conclusion": [], "unreviewed_agent_conclusions": []}
+
+    monkeypatch.setattr(engagement_record.rcm_execution, "completion", count_completion)
+    workspace = _Workspace(rcm=[{"id": "R1"}], apm="# APM")
+
+    engagement_record.record(workspace)
+    engagement_record.record(workspace)
+
+    assert calls["completion"] == 2
+    assert engagement_record._MEMO.get() is None

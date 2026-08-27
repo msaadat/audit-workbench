@@ -24,6 +24,8 @@ holding thirty-five. The record answers what the engagement holds.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
@@ -103,10 +105,7 @@ _SETTLED = ("completed", "completed_with_issues", "completed_with_open_items",
 
 def _counts(workspace: Workspace) -> dict[str, int]:
     """What the engagement holds right now, per work product."""
-    try:
-        document_tests = len(doc_tests.list_tests(workspace))
-    except Exception:
-        document_tests = 0
+    document_tests = len(_document_tests(workspace))
     data_tests = len(workspace.data_tests)
     return {
         "documents": len(workspace.documents),
@@ -259,6 +258,54 @@ def _report_markdown(workspace: Workspace) -> str:
 _UNRUN_TEST_STATUSES = frozenset({"", "draft", "ready"})
 
 
+# --------------------------------------------------------------------------- #
+# One call, one read
+# --------------------------------------------------------------------------- #
+# The presence tests are pure reads of the workspace as it stands, and the
+# record asks several of them several times: `_pending` tests every stage, then
+# `_blocked_by` re-tests each one's dependencies, and `_open_points` reads the
+# roll-up again for the unread-conclusion debt. Nothing recorded that these had
+# already been answered, so a six-table engagement with sixteen document tests
+# rebuilt the cycle-item projection seventy times and re-validated the same
+# evidence records thirty-eight thousand times — sixteen seconds to draw a
+# record whose inputs never changed while it was being drawn.
+#
+# The two reads that cost anything are memoized for the life of one `record()`
+# call and no longer: both read files outside the manifest, so a cache that
+# outlived the call would answer for a workspace that has since been written
+# to. This is the same bounded-lifetime argument `Workspace._table_signature_cache`
+# makes, taken one scope tighter because a run mutates doc tests through an
+# instance it keeps.
+_MEMO: ContextVar[dict[str, Any] | None] = ContextVar("record_memo", default=None)
+
+
+@contextmanager
+def _one_read():
+    token = _MEMO.set({})
+    try:
+        yield
+    finally:
+        _MEMO.reset(token)
+
+
+def _once(key: str, compute):
+    """``compute()``'s value, computed at most once inside :func:`_one_read`.
+
+    Outside one, every call recomputes: a stale answer is worse than a slow
+    one, and nothing but the record needs this.
+    """
+    memo = _MEMO.get()
+    if memo is None:
+        return compute()
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
+def _completion(workspace: Workspace) -> dict:
+    return _once("completion", lambda: rcm_execution.completion(workspace))
+
+
 def _fieldwork_ran(workspace: Workspace) -> bool:
     """Whether any specified test has been executed."""
     return any(
@@ -277,7 +324,7 @@ def _conclusions_set(workspace: Workspace) -> bool:
     """
     if not workspace.rcm:
         return False
-    completion = rcm_execution.completion(workspace)
+    completion = _completion(workspace)
     return not (completion.get("rcm_without_conclusion") or [])
 
 
@@ -340,10 +387,13 @@ _NOUNS = {
 
 
 def _document_tests(workspace: Workspace) -> list[dict]:
-    try:
-        return list(doc_tests.list_tests(workspace))
-    except Exception:
-        return []
+    def read() -> list[dict]:
+        try:
+            return list(doc_tests.list_tests(workspace))
+        except Exception:
+            return []
+
+    return _once("document_tests", read)
 
 
 def _plan_order() -> dict[str, int]:
@@ -474,7 +524,7 @@ def _open_points(workspace: Workspace) -> list[dict]:
     points: list[dict] = []
 
     try:
-        completion = rcm_execution.completion(workspace)
+        completion = _completion(workspace)
         unread = len(completion.get("unreviewed_agent_conclusions") or [])
         linked = _linked_test_count(workspace)
     except Exception:
@@ -542,68 +592,69 @@ def _linked_test_count(workspace: Workspace) -> int:
 
 def record(workspace: Workspace) -> dict:
     """Every work product the engagement filed, oldest settlement first."""
-    runs = store.list_runs(workspace)
-    counts = _counts(workspace)
+    with _one_read():
+        runs = store.list_runs(workspace)
+        counts = _counts(workspace)
 
-    by_capability: dict[str, list[dict]] = {}
-    contributing: set[str] = set()
-    for summary in runs:
-        # `list_runs` drops the milestone payload, so the full record is the
-        # only place the briefings live.
-        try:
-            run = store.load_run(workspace, str(summary.get("id") or ""))
-        except Exception:
-            continue
-        for row in _milestone_rows(run):
-            capability = str(row["milestone"].get("capability") or "").strip()
-            if not capability:
+        by_capability: dict[str, list[dict]] = {}
+        contributing: set[str] = set()
+        for summary in runs:
+            # `list_runs` drops the milestone payload, so the full record is the
+            # only place the briefings live.
+            try:
+                run = store.load_run(workspace, str(summary.get("id") or ""))
+            except Exception:
                 continue
-            by_capability.setdefault(capability, []).append(row)
-            contributing.add(row["run_id"])
+            for row in _milestone_rows(run):
+                capability = str(row["milestone"].get("capability") or "").strip()
+                if not capability:
+                    continue
+                by_capability.setdefault(capability, []).append(row)
+                contributing.add(row["run_id"])
 
-    entries = sorted(
-        (_entry(capability, rows, counts) for capability, rows in by_capability.items()),
-        key=lambda entry: str(entry["at"] or ""),
-    )
-    points = _open_points(workspace)
-    by_capability_point: dict[str, list[dict]] = {}
-    for point in points:
-        by_capability_point.setdefault(point["capability"], []).append(point)
-    for entry in entries:
-        entry["open_points"] = by_capability_point.get(entry["capability"], [])
-    # A debt whose stage is not on the record still has to be said; it hangs at
-    # the end rather than disappearing with the row it expected to find.
-    attached = {point["key"] for entry in entries for point in entry["open_points"]}
-    orphaned = [point for point in points if point["key"] not in attached]
+        entries = sorted(
+            (_entry(capability, rows, counts) for capability, rows in by_capability.items()),
+            key=lambda entry: str(entry["at"] or ""),
+        )
+        points = _open_points(workspace)
+        by_capability_point: dict[str, list[dict]] = {}
+        for point in points:
+            by_capability_point.setdefault(point["capability"], []).append(point)
+        for entry in entries:
+            entry["open_points"] = by_capability_point.get(entry["capability"], [])
+        # A debt whose stage is not on the record still has to be said; it hangs at
+        # the end rather than disappearing with the row it expected to find.
+        attached = {point["key"] for entry in entries for point in entry["open_points"]}
+        orphaned = [point for point in points if point["key"] not in attached]
 
-    pending = _pending(workspace)
-    # Review outranks unstarted work — see `_OPEN_RANK`.
-    first_runnable = next((row for row in pending if row["runnable"]), None)
-    upcoming = points[0] if points else None
-    next_step = (
-        {"kind": "open_point", **upcoming} if upcoming
-        else {"kind": "stage", **first_runnable} if first_runnable
-        else None
-    )
+        pending = _pending(workspace)
+        # Review outranks unstarted work — see `_OPEN_RANK`.
+        first_runnable = next((row for row in pending if row["runnable"]), None)
+        upcoming = points[0] if points else None
+        next_step = (
+            {"kind": "open_point", **upcoming} if upcoming
+            else {"kind": "stage", **first_runnable} if first_runnable
+            else None
+        )
 
-    measured = [entry["elapsed_ms"] for entry in entries if entry["elapsed_ms"] is not None]
-    return {
-        "entries": entries,
-        "pending": pending,
-        "open_points": points,
-        "orphaned_points": orphaned,
-        "next": next_step,
-        "catalog": _catalog(),
-        "counts": counts,
-        "totals": {
-            "work_products": len(entries),
-            "runs": len(runs),
-            # A run that committed nothing filed nothing; saying so is more
-            # honest than a record that silently drops a third of the history.
-            "runs_that_filed": len(contributing),
-            "attempts": sum(len(entry["attempts"]) for entry in entries),
-            "elapsed_ms": sum(measured) if measured else None,
-            "first_at": entries[0]["first_at"] if entries else None,
-            "last_at": entries[-1]["at"] if entries else None,
-        },
-    }
+        measured = [entry["elapsed_ms"] for entry in entries if entry["elapsed_ms"] is not None]
+        return {
+            "entries": entries,
+            "pending": pending,
+            "open_points": points,
+            "orphaned_points": orphaned,
+            "next": next_step,
+            "catalog": _catalog(),
+            "counts": counts,
+            "totals": {
+                "work_products": len(entries),
+                "runs": len(runs),
+                # A run that committed nothing filed nothing; saying so is more
+                # honest than a record that silently drops a third of the history.
+                "runs_that_filed": len(contributing),
+                "attempts": sum(len(entry["attempts"]) for entry in entries),
+                "elapsed_ms": sum(measured) if measured else None,
+                "first_at": entries[0]["first_at"] if entries else None,
+                "last_at": entries[-1]["at"] if entries else None,
+            },
+        }
