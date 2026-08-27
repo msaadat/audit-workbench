@@ -24,7 +24,7 @@ from ... import analytics
 from ...text import counted, verb
 from ...analysis_results import analysis_result_state, summary_basis_digest
 from ...workspaces import Workspace, WorkspaceError
-from .. import joins as join_diagnostics
+from .. import joins as join_diagnostics, register as assertion_register
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import analysis as analysis_workflow
 
@@ -369,6 +369,31 @@ def agent_analyses(workspace: Workspace, table_scope: TableScope) -> list[dict]:
     ]
 
 
+def unanswered_frames(
+    workspace: Workspace, table_scope: TableScope
+) -> tuple[str, ...]:
+    """Scoped frames that neither carry an analysis nor were settled without one.
+
+    Both stages that write analyses are phrased against this: a frame is
+    answered when something was saved against it, *or* when the definition
+    stage looked at it and recorded that nothing belongs there. Without the
+    second half a deliberate emptiness is indistinguishable from an untouched
+    frame, and the whole analysis chain reports itself unfinished forever —
+    the reading turn is re-billed on every run and the summary can never be
+    reached on its own. :func:`register.settle_frame` writes that record and
+    the frame's content signature reopens it when the data changes.
+    """
+    defined = {
+        str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
+    }
+    settled = assertion_register.settled_frames(workspace)
+    return tuple(
+        target
+        for target in definable_targets(workspace, table_scope)
+        if target not in defined and target not in settled
+    )
+
+
 def _forced(scope: dict) -> bool:
     return str(scope.get("generation_mode") or "") == "force"
 
@@ -563,9 +588,13 @@ def _register_ready(workspace: Workspace, scope: dict) -> Readiness:
     already analysed there is nothing for a reading to settle, and "bring the
     saved analyses up to date" must stay a request that bills nothing.
 
-    A frame that carries no analysis is the whole trigger. That is true of a
-    fresh engagement, and of one where a new table or join has appeared since —
-    which is exactly when the register should be read again.
+    A frame that is neither analysed nor settled without an analysis is the
+    whole trigger. That is true of a fresh engagement, and of one where a new
+    table or join has appeared since — which is exactly when the register
+    should be read again. It is deliberately not true of a frame the definition
+    stage already looked at and left empty on purpose: that emptiness is this
+    graph's answer for the frame, and reading it as outstanding is what made a
+    finished engagement re-spend the reading turn on every subsequent run.
     """
     table_scope = resolve_table_scope(workspace, scope)
     blocked = _no_tables(table_scope)
@@ -575,8 +604,15 @@ def _register_ready(workspace: Workspace, scope: dict) -> Readiness:
         str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
     }
     targets = definable_targets(workspace, table_scope)
-    missing = [target for target in targets if target not in defined]
-    details = {"frames": len(targets), "defined": len(defined)}
+    settled = assertion_register.settled_frames(workspace)
+    missing = unanswered_frames(workspace, table_scope)
+    details = {
+        "frames": len(targets),
+        "defined": len(defined),
+        # Frames answered by being left empty. Reported so a scope that looks
+        # under-analysed is visibly decided rather than silently skipped.
+        "settled": len([name for name in targets if name in settled]),
+    }
     if not missing:
         return Readiness("satisfied", details=details)
     return Readiness(
@@ -660,10 +696,16 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
         str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
     }
     targets = definable_targets(workspace, table_scope)
-    missing = [target for target in targets if target not in defined]
+    settled = assertion_register.settled_frames(workspace)
+    # A frame this stage already decided to leave empty is answered, exactly as
+    # one carrying a definition is. Counting it as missing would hold the
+    # capability short of satisfied forever and block execution and the summary
+    # behind it — see :func:`unanswered_frames`.
+    missing = unanswered_frames(workspace, table_scope)
     details = {
         "targets": len(targets),
         "defined": len(defined),
+        "settled": len([name for name in targets if name in settled]),
         # Frames in scope that no definition turn will be spent on. Reported so
         # a narrowed stage is visible rather than looking like full coverage.
         "skipped": len(table_scope.targets) - len(targets),

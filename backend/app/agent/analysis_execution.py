@@ -1236,6 +1236,16 @@ class AnalysisWorkflowExecution(BaseRunner):
                 f"The register places no assertion on '{target_frame}' that its "
                 "own measurements have not already saved.",
             )
+            # The frame is answered, and the answer is that it carries nothing.
+            # Left unrecorded it reads as un-analysed on every later run, and
+            # both readiness checks phrased as "does every scoped frame carry an
+            # analysis" hold the whole chain — register, definitions, execution,
+            # summary — short of satisfied forever.
+            register.settle_frame(
+                self.ws,
+                target_frame,
+                "the register placed no assertion this frame had not already saved",
+            )
             return DeterministicUnitResult("skipped")
         expected = parent_hashes(self.ws, [parent_ref])
         target = AnalysisDefinitionExecutorTarget(
@@ -1320,6 +1330,12 @@ class AnalysisWorkflowExecution(BaseRunner):
                 # Nothing to write because everything proposed is already saved
                 # against a frame built from the same tables. That is the
                 # de-duplication working, not an outcome needing an auditor.
+                register.settle_frame(
+                    self.ws,
+                    target_frame,
+                    "every analysis proposed here is already saved against a "
+                    "related frame",
+                )
                 return (
                     "skipped",
                     "Every proposed analysis is already covered by a related frame.",
@@ -1337,6 +1353,12 @@ class AnalysisWorkflowExecution(BaseRunner):
             # frame that adds no analysis of its own is a real answer about the
             # data, so the unit settles instead of failing the run.
             if NOTHING_NEW_TO_ANALYSE in str(error):
+                register.settle_frame(
+                    self.ws,
+                    target_frame,
+                    "every analysis this frame supports is already saved against "
+                    "a frame built from the same tables",
+                )
                 return (
                     "skipped",
                     "Every analysis this frame supports is already saved against "
@@ -1346,6 +1368,12 @@ class AnalysisWorkflowExecution(BaseRunner):
             # than by comparing them: every one of them flagged nearly its whole
             # population, which establishes nothing about any row in it.
             if NO_INFORMATIVE_ANALYSIS in str(error):
+                register.settle_frame(
+                    self.ws,
+                    target_frame,
+                    "no analysis proposed for this frame separated any of its "
+                    "rows from the rest",
+                )
                 return (
                     "skipped",
                     "No proposed analysis for this frame separated any of its "

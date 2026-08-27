@@ -35,12 +35,17 @@ not, because its worst case is the floor.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import joins as join_diagnostics, probes
 from .analysis_identity import analysis_semantic_id
-from ..workspaces import Workspace
+from .. import loader
+from ..workspaces import Workspace, WorkspaceError, write_json_atomic
 
 
 # How the sweep's own families read as a procedure title. The nomination
@@ -577,6 +582,103 @@ def from_payload(payload: Mapping[str, object] | None) -> Register:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Settled frames
+# --------------------------------------------------------------------------- #
+# A frame the definition stage deliberately left carrying nothing — because the
+# register placed no assertion on it, because every analysis it supports is
+# already saved against a frame built from the same tables, or because every
+# proposal made for it flagged so much of its population that it established
+# nothing — is decided, not outstanding. Nothing in the workspace recorded that
+# decision, and both ``analysis.register_ready`` and
+# ``analysis.definitions_ready`` are phrased as "does every scoped frame carry
+# an analysis". So a completed engagement read as unfinished on every later
+# run: the register stage re-expanded, re-spent its whole-engagement reading
+# turn, and the definition, execution and summary stages re-expanded behind it.
+# Measured on the procurement engagement, 7 of 17 definable frames were
+# deliberately empty, the chain never settled, and a rerun asked only for a
+# summary re-read the whole map first. This ledger is that missing record, and
+# it is the frame-scoped sibling of :func:`joins.settle_pair`.
+#
+# It lives beside the profile cache rather than in the manifest for the same
+# reason relationship evidence does: a judgement about what a frame can be
+# asked is a recomputable diagnostic about data files, not an engagement
+# artifact an auditor owns. Each record carries the frame's content signature,
+# so replacing a table — or rebuilding the join above it — reopens exactly the
+# question that data answered.
+_SETTLED_FRAMES_FILENAME = "analysis_frames.json"
+
+
+def _settled_frames_path(workspace: Workspace) -> Path:
+    return workspace.data_dir / loader.CACHE_DIRNAME / _SETTLED_FRAMES_FILENAME
+
+
+def _frame_signature(workspace: Workspace, frame: str) -> str:
+    digest = repr(workspace.content_signature(frame))
+    return hashlib.sha1(digest.encode()).hexdigest()[:16]
+
+
+def _read_settled_frames(workspace: Workspace) -> dict:
+    try:
+        payload = json.loads(
+            _settled_frames_path(workspace).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    frames = payload.get("frames")
+    return dict(frames) if isinstance(frames, dict) else {}
+
+
+def settled_frames(workspace: Workspace) -> set[str]:
+    """Frames recorded as carrying no analysis on purpose.
+
+    A record whose frame has changed, or whose frame is gone, is ignored rather
+    than deleted: the question it answered is open again, and the next run
+    answers it from the data that is there now.
+    """
+    settled: set[str] = set()
+    for name, record in _read_settled_frames(workspace).items():
+        if not isinstance(record, dict):
+            continue
+        try:
+            current = _frame_signature(workspace, str(name))
+        except (WorkspaceError, OSError):
+            continue
+        if record.get("signature") == current:
+            settled.add(str(name))
+    return settled
+
+
+def settle_frame(workspace: Workspace, frame: str, reason: str) -> None:
+    """Record that this frame is meant to carry no analysis, and why."""
+    try:
+        signature = _frame_signature(workspace, frame)
+    except (WorkspaceError, OSError):
+        return
+    frames = _read_settled_frames(workspace)
+    frames[str(frame)] = {
+        "signature": signature,
+        "reason": reason,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    path = _settled_frames_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(path, {"frames": frames})
+    except OSError:
+        pass  # best-effort, like the profile cache it sits beside
+
+
+def settled_reasons(workspace: Workspace) -> dict[str, str]:
+    """Why each currently-settled frame carries nothing, for the run record."""
+    current = settled_frames(workspace)
+    return {
+        name: str(record.get("reason") or "")
+        for name, record in _read_settled_frames(workspace).items()
+        if name in current and isinstance(record, dict)
+    }
+
+
 __all__ = [
     "Assertion",
     "Declined",
@@ -588,4 +690,7 @@ __all__ = [
     "default_register",
     "from_payload",
     "merge",
+    "settle_frame",
+    "settled_frames",
+    "settled_reasons",
 ]

@@ -22,6 +22,7 @@ from app.agent import narration, runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent import joins as join_diagnostics
 from app.agent import probes
+from app.agent import register as assertion_register
 from app.agent.analysis_execution import build_analysis_workflow_runner
 from app.agent.audit_execution import build_audit_workflow_runner
 from app.agent.capabilities import analysis as analysis_capabilities
@@ -2188,6 +2189,114 @@ def test_a_frame_whose_every_proposal_separates_nothing_settles(
     assert unit["status"] == "skipped"
     assert "separated any of its rows" in unit["error"]
     assert not workspaces.load_workspace(ws.id).analyses
+
+
+def test_a_frame_left_empty_on_purpose_does_not_reopen_the_chain(
+    workspace_with_data, monkeypatch
+):
+    """The regression: a deliberate emptiness has to be recorded as an answer.
+
+    Both ``analysis.register_ready`` and ``analysis.definitions_ready`` ask
+    whether every scoped frame carries an analysis. A frame this stage decided
+    to leave empty answers no, forever — so a finished engagement re-expanded
+    the register on every later run, re-spent its whole-engagement reading
+    turn, and dragged execution and the summary back through the scheduler
+    behind it. Measured on the procurement engagement, a rerun asked only for a
+    summary re-read the whole map first.
+    """
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+
+    def script(user: str) -> dict:
+        return {
+            "analyses": [
+                {
+                    "title": "Deliveries before their order",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "date_lag",
+                        "params": {"from_date": "delivered", "to_date": "ordered"},
+                    },
+                    "note": "A delivery cannot precede the order it fulfils.",
+                }
+            ]
+        }
+
+    _fake_model(monkeypatch, script)
+    scope = {"target_refs": ["table:orders"]}
+    run = _analysis_run(
+        ws,
+        command={"source": "chat", "text": "Analyse the tables", **scope},
+    )
+    registry = capability_registries.build_analysis_registry()
+
+    before = workspaces.load_workspace(ws.id)
+    assert registry.get("analysis.register_ready").readiness(before, scope).state == (
+        "missing"
+    )
+
+    _drive(ws, run, "analysis.definitions_ready")
+    assert _stage(run, "analysis.definitions_ready")["units"][0]["status"] == "skipped"
+
+    settled = workspaces.load_workspace(ws.id)
+    assert not settled.analyses
+    assert "orders" in assertion_register.settled_frames(settled)
+    assert "separated any of its rows" in (
+        assertion_register.settled_reasons(settled)["orders"]
+    )
+    assert analysis_capabilities.unanswered_frames(
+        settled, analysis_capabilities.resolve_table_scope(settled, scope)
+    ) == ()
+    # The whole point: with the frame answered, a rerun has nothing to redo
+    # here and reaches the summary on its own.
+    for capability_id in ("analysis.register_ready", "analysis.definitions_ready"):
+        readiness = registry.get(capability_id).readiness(settled, scope)
+        assert readiness.state == "satisfied", (capability_id, readiness.reasons)
+        assert readiness.details["settled"] == 1
+
+
+def test_replacing_the_data_reopens_a_frame_settled_without_an_analysis(
+    workspace_with_data, monkeypatch
+):
+    """The record answers for the data it was read from, and no other."""
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+
+    def script(user: str) -> dict:
+        return {
+            "analyses": [
+                {
+                    "title": "Deliveries before their order",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "date_lag",
+                        "params": {"from_date": "delivered", "to_date": "ordered"},
+                    },
+                    "note": "A delivery cannot precede the order it fulfils.",
+                }
+            ]
+        }
+
+    _fake_model(monkeypatch, script)
+    scope = {"target_refs": ["table:orders"]}
+    _drive(
+        ws,
+        _analysis_run(
+            ws, command={"source": "chat", "text": "Analyse the tables", **scope}
+        ),
+        "analysis.definitions_ready",
+    )
+    assert "orders" in assertion_register.settled_frames(
+        workspaces.load_workspace(ws.id)
+    )
+
+    ws.replace_table("orders", "orders.csv", ORDERS_CSV + b"R4,2026-04-01,2026-04-09,")
+    reopened = workspaces.load_workspace(ws.id)
+    assert assertion_register.settled_frames(reopened) == set()
+    registry = capability_registries.build_analysis_registry()
+    assert registry.get("analysis.register_ready").readiness(reopened, scope).state == (
+        "missing"
+    )
 
 
 def test_a_proposal_without_its_rationale_is_rejected(workspace_with_data):
