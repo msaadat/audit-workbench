@@ -17,6 +17,8 @@ interface ArtifactLink {
   label: string
   icon: string
   destination: WorkspaceDestination
+  /** Destination-owned query, for a link that names one row rather than a tab. */
+  state?: Record<string, string>
 }
 
 /** Turn the durable artifact references on a milestone into workspace links. */
@@ -29,6 +31,11 @@ function artifactLink(ref: string): ArtifactLink | null {
   }
   if (kind === 'rcm' || kind === 'observation') {
     return { label: 'View RCM', icon: 'pi pi-table', destination: 'rcm' }
+  }
+  // A generated working paper is read on the RCM row it was rendered from, so
+  // the link carries that row and the matrix opens the paper itself.
+  if (kind === 'working_paper' && id) {
+    return { label: 'View working paper', icon: 'pi pi-file', destination: 'rcm', state: { paper: id } }
   }
   if (kind === 'datatest') {
     return { label: 'View data tests', icon: 'pi pi-chart-bar', destination: 'data-tests' }
@@ -55,10 +62,17 @@ function artifactLink(ref: string): ArtifactLink | null {
 }
 
 const links = computed(() => {
+  // A milestone that generated papers for a dozen rows has no single row to
+  // open, so the link falls back to the matrix that lists all of them.
+  const manyPapers = props.milestone.artifact_refs
+    .filter(ref => ref.startsWith('working_paper:')).length > 1
   const seen = new Set<WorkspaceDestination>()
   return props.milestone.artifact_refs
     .map(artifactLink)
     .filter((item): item is ArtifactLink => item !== null)
+    .map(item => (manyPapers && item.state?.paper
+      ? { ...item, label: 'View working papers', state: undefined }
+      : item))
     .filter(item => !seen.has(item.destination) && seen.add(item.destination))
 })
 </script>
@@ -87,7 +101,7 @@ const links = computed(() => {
         <RouterLink
           v-for="link in links"
           :key="link.destination"
-          :to="nav.to(link.destination)"
+          :to="nav.to(link.destination, link.state)"
           class="artifact-link"
           :aria-label="link.label"
         >

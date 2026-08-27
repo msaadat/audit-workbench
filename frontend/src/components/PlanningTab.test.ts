@@ -52,7 +52,7 @@ vi.mock('./agent/ProvenanceRail.vue', () => ({ default: { template: '<div class=
 vi.mock('./planning/RcmGrid.vue', () => ({
   default: {
     props: ['rows', 'dataTests', 'documentTests', 'findingRollups', 'generating', 'canGenerate'],
-    emits: ['add', 'remove', 'update', 'open', 'generate'],
+    emits: ['add', 'remove', 'update', 'open', 'paper', 'generate'],
     template: '<div class="rcm-grid-stub">{{ rows.length }}</div>',
   },
 }))
@@ -94,11 +94,15 @@ const confirmRequire = vi.fn((options: { message: string; accept: () => unknown 
   void options.accept()
 })
 
-function mountTab(rows: RcmRow[]) {
+function mountTab(rows: RcmRow[], query: Record<string, string> = {}) {
+  routeState.query = query
   vi.spyOn(api, 'get').mockImplementation((url: string) => {
     if (url.endsWith('/planning')) return Promise.resolve(payload(rows) as never)
     if (url.endsWith('/documents')) return Promise.resolve({ items: [] } as never)
     if (url.endsWith('/doc-tests/meta')) return Promise.resolve({ cycle_vouch: {} } as never)
+    if (url.endsWith('/working-paper')) {
+      return Promise.resolve({ rcm_id: 'R1', markdown: '# Paper', html: '<h1>Paper</h1>' } as never)
+    }
     return Promise.resolve({} as never)
   })
   return mount(PlanningTab, {
@@ -163,5 +167,40 @@ describe('PlanningTab sign-off', () => {
 
     expect(wrapper.find('.disclosure').text()).toContain('1 of 1 row reviewed')
     expect(wrapper.find('.disclosure .settle').exists()).toBe(false)
+  })
+})
+
+describe('PlanningTab working paper', () => {
+  beforeEach(() => { vi.restoreAllMocks(); toastAdd.mockClear() })
+  afterEach(() => { vi.restoreAllMocks(); routeState.query = {} })
+
+  it('renders the paper a row asks for without going through the detail dialog', async () => {
+    const wrapper = mountTab([row('R1', 'draft'), row('R2', 'draft')])
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'RcmGrid' }).vm.$emit('paper', row('R2', 'draft'))
+    await flushPromises()
+
+    expect(vi.mocked(api.get).mock.calls.map(call => call[0]))
+      .toContain('/api/workspaces/WS-1/rcm/R2/working-paper')
+  })
+
+  // The link an agent milestone hands over has to land on the paper itself,
+  // not on the matrix with the paper still two clicks away.
+  it('opens the paper a deep link names', async () => {
+    mountTab([row('R1', 'draft'), row('R2', 'draft')], { paper: 'R2' })
+    await flushPromises()
+
+    expect(vi.mocked(api.get).mock.calls.map(call => call[0]))
+      .toContain('/api/workspaces/WS-1/rcm/R2/working-paper')
+  })
+
+  it('ignores a paper link naming a row the matrix no longer holds', async () => {
+    mountTab([row('R1', 'draft')], { paper: 'R9' })
+    await flushPromises()
+
+    expect(vi.mocked(api.get).mock.calls.map(call => call[0]))
+      .not.toContain('/api/workspaces/WS-1/rcm/R9/working-paper')
+    expect(toastAdd).not.toHaveBeenCalled()
   })
 })

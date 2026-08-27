@@ -71,6 +71,9 @@ const rcmFilter = ref<RcmFilter | null>(null)
 // reviewer asks about it, and a panel behind a button is a panel nobody opens.
 const apmProvenanceOpen = ref(true)
 const workingPaper = ref<WorkingPaper | null>(null)
+// Which row the open paper belongs to. Not `selectedRcmId`: the grid opens a
+// paper without opening the detail, so the two are only sometimes the same.
+const paperRowId = ref<string | null>(null)
 // Criterion anchors name a document by id. The catalogue resolves it to the
 // file the auditor recognises; failing to load it costs the name and nothing
 // else, so it never blocks the matrix.
@@ -110,11 +113,19 @@ async function reload() {
   }
   const requestedRcm = String(route.query.rcm || '')
   const requestedObservation = String(route.query.observation || '')
+  // Read before anything opens: `openRcm` rewrites the query, and the paper
+  // link would be gone by the time it was looked for.
+  const requestedPaper = String(route.query.paper || '')
   const observationParent = requestedObservation
     ? data.value.rcm.find(row => data.value?.observations.some(item => item.id === requestedObservation && item.rcm_id === row.id))
     : undefined
   if (requestedRcm && data.value.rcm.some(item => item.id === requestedRcm)) openRcm(data.value.rcm.find(item => item.id === requestedRcm)!)
   else if (observationParent) openRcm(observationParent)
+  // A working-paper link opens the paper itself, over the detail dialog when
+  // the same URL asked for one. Closing it drops the key, so a reload driven by
+  // an agent commit cannot reopen a paper the auditor has already put down.
+  const paperRow = requestedPaper ? data.value.rcm.find(item => item.id === requestedPaper) : undefined
+  if (paperRow && !paperOpen.value) void openWorkingPaper(paperRow)
 }
 onMounted(() => {
   void reload().catch(error => fail('Could not load planning', error))
@@ -452,10 +463,28 @@ function markRowsReviewed(ids: string[]) {
   })
 }
 
-async function openWorkingPaper() {
-  if (!selectedRcm.value) return
-  try { workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/working-paper`); paperOpen.value = true }
-  catch (error) { fail('Could not render the RCM working paper', error) }
+/**
+ * Render one row's working paper. The row is passed in so the grid can open it
+ * directly: the paper is a per-row work product, and reaching it only through
+ * the detail dialog put the engagement's most reviewable artifact two clicks
+ * and a scroll away from the matrix it belongs to.
+ */
+async function openWorkingPaper(row?: RcmRow) {
+  const target = row ?? selectedRcm.value
+  if (!target) return
+  try {
+    workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${target.id}/working-paper`)
+    paperRowId.value = target.id
+    paperOpen.value = true
+    // The detail dialog underneath keeps its own key, so closing the paper
+    // leaves the row it was opened from still addressed by the URL.
+    void nav.replace('rcm', { rcm: detailOpen.value ? selectedRcmId.value : '', paper: target.id })
+  } catch (error) { fail('Could not render the RCM working paper', error) }
+}
+/** Drop the deep link when the paper closes; a stale `paper` reopens on reload. */
+function closeWorkingPaper() {
+  paperRowId.value = null
+  void nav.replace('rcm', { rcm: detailOpen.value ? selectedRcmId.value : '' })
 }
 async function copyPaper(kind: 'markdown' | 'html') {
   if (!workingPaper.value) return
@@ -582,7 +611,7 @@ const rcmActions = computed(() => [
         @filter="rcmFilter = ($event as RcmFilter | null)"
         @action="runStatusAction"
       />
-      <RcmGrid :rows="visibleRcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
+      <RcmGrid :rows="visibleRcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @paper="openWorkingPaper" @generate="generatePlannedTests"/>
       <!-- A filter that hides every row would otherwise read as an empty RCM. -->
       <p v-if="data.rcm.length && !visibleRcm.length" class="empty">
         No row matches this filter. It was counted against the whole matrix, which may have moved since.
@@ -610,7 +639,7 @@ const rcmActions = computed(() => [
             </button>
           </span></label></div>
         <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" />
-        <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
+        <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper()"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
         <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
           <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ plural(item.exception_count, 'exception') }} · {{ item.open_exception_count }} open</span></div>
           <p class="planned-title">{{ item.title }}</p>
@@ -630,7 +659,7 @@ const rcmActions = computed(() => [
     </Dialog>
     <EvidenceAnchorDialog v-model="criterionOpen" :anchor="criterion" :documents="documents" />
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>
-    <Dialog v-model:visible="paperOpen" modal header="RCM working paper" :style="{ width: 'min(980px, 95vw)' }"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><SplitButton label="Copy" icon="pi pi-copy" :model="copyOptions" @click="copyPaper('markdown')"/></template></Dialog>
+    <Dialog v-model:visible="paperOpen" modal :header="paperRowId ? `${paperRowId} · RCM working paper` : 'RCM working paper'" :style="{ width: 'min(980px, 95vw)' }" @hide="closeWorkingPaper"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><SplitButton label="Copy" icon="pi pi-copy" :model="copyOptions" @click="copyPaper('markdown')"/></template></Dialog>
   </div>
 </template>
 

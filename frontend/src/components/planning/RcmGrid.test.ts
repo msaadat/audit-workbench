@@ -28,6 +28,11 @@ const DataTableStub = {
   provide() { return { gridRows: (this as unknown as { value: RcmRow[] }).value } },
   template: '<div class="table"><slot /></div>',
 }
+/** A Button that renders as one, so a row action can actually be clicked. */
+const ButtonStub = {
+  props: ['icon', 'label'],
+  template: '<button :data-icon="icon">{{ label }}</button>',
+}
 const ColumnStub = {
   inject: ['gridRows'],
   template: '<div class="col"><span v-for="data in gridRows" :key="data.id" class="cell">'
@@ -53,8 +58,9 @@ function mountGrid(rows: RcmRow[]) {
     global: {
       stubs: {
         DataTable: DataTableStub, Column: ColumnStub, Select: SelectStub,
-        Textarea: true, Tag: true, Button: true,
+        Textarea: true, Tag: true, Button: ButtonStub,
       },
+      directives: { tooltip: () => undefined },
     },
   })
 }
@@ -76,5 +82,27 @@ describe('RcmGrid review column', () => {
     await review.setValue('reviewed')
 
     expect(wrapper.emitted('update')?.[0]).toEqual(['R1', { review_status: 'reviewed' }])
+  })
+})
+
+describe('RcmGrid row actions', () => {
+  // The working paper is the row's reviewable output. Reaching it only through
+  // the detail dialog meant the matrix could list 27 rows and offer a way into
+  // none of their papers.
+  it('opens a row working paper from the row itself', async () => {
+    const wrapper = mountGrid([row()])
+
+    await wrapper.find('button[data-icon="pi pi-file"]').trigger('click')
+
+    expect(wrapper.emitted('paper')?.[0]).toEqual([expect.objectContaining({ id: 'R1' })])
+  })
+
+  it('keeps the paper action distinct from opening the detail', async () => {
+    const wrapper = mountGrid([row()])
+
+    await wrapper.find('button[data-icon="pi pi-eye"]').trigger('click')
+
+    expect(wrapper.emitted('open')?.[0]).toEqual([expect.objectContaining({ id: 'R1' })])
+    expect(wrapper.emitted('paper')).toBeUndefined()
   })
 })

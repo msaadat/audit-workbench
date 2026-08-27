@@ -23,6 +23,7 @@ const emit = defineEmits<{
   remove: [string]
   update: [string, Partial<RcmRow>]
   open: [RcmRow]
+  paper: [RcmRow]
   generate: [string[]]
 }>()
 
@@ -79,7 +80,7 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
           <template #option="{ option }"><span class="review"><span class="dot" :data-review="option" />{{ reviewLabel(option) }}</span></template>
         </Select>
       </template></Column>
-      <Column frozen alignFrozen="right" style="min-width: 12rem"><template #body="{ data }"><div class="row-actions"><Button v-if="!testCount(data)" label="Generate test" icon="pi pi-sparkles" text size="small" :loading="props.generating" :disabled="!props.canGenerate" @click="emit('generate', [data.id])"/><Button icon="pi pi-eye" text size="small" @click="emit('open', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" @click="emit('remove', data.id)" /></div></template></Column>
+      <Column frozen alignFrozen="right" style="min-width: 14rem"><template #body="{ data }"><div class="row-actions"><Button v-if="!testCount(data)" label="Generate test" icon="pi pi-sparkles" text size="small" :loading="props.generating" :disabled="!props.canGenerate" @click="emit('generate', [data.id])"/><Button icon="pi pi-eye" text size="small" aria-label="Open RCM detail" v-tooltip.top="'RCM detail'" @click="emit('open', data)"/><!-- The working paper is what a reviewer asks for by row, so it opens from the row rather than from two clicks inside the detail dialog. --><Button icon="pi pi-file" text size="small" aria-label="Open the RCM working paper" v-tooltip.top="'Working paper'" @click="emit('paper', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" aria-label="Remove RCM row" v-tooltip.top="'Remove row'" @click="emit('remove', data.id)" /></div></template></Column>
     </DataTable>
   </div>
 </template>

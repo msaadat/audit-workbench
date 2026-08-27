@@ -53,7 +53,9 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   // in the audit file rather than acting as the workspace landing page.
   dashboard: { surface: 'file', section: 'dashboard', keys: [] },
   apm: { surface: 'file', section: 'apm', keys: [] },
-  rcm: { surface: 'file', section: 'coverage', keys: ['rcm', 'observation'] },
+  // `paper` names the row whose working paper is open, so a rendered paper is
+  // a link someone can send rather than a dialog only they can see.
+  rcm: { surface: 'file', section: 'coverage', keys: ['rcm', 'observation', 'paper'] },
   // The derivation spine for one risk, source through to finding.
   chain: { surface: 'file', section: 'chain', keys: ['rcm'] },
   'doc-tests': { surface: 'file', section: 'doc-tests', keys: ['test', 'item', 'create', 'rcm'] },
