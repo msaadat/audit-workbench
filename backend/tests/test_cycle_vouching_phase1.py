@@ -744,3 +744,77 @@ def test_candidate_rejects_null_or_non_unique_transaction_row_keys(rows):
     assert manifest["rejected_candidates"][0]["reason"] == (
         "row_key_must_be_non_null_and_unique"
     )
+
+
+def test_a_prepared_evidence_set_is_validated_and_indexed_once():
+    """The per-row loop must not pay for the whole evidence base each row.
+
+    `link_cycle_records` is called once per population row, and it used to
+    re-validate every evidence record and rebuild the identifier index from
+    scratch on every call — work that depends only on the records, which do
+    not change between rows. On a five-test procurement worklist that was 263
+    index builds and 2,755 record validations to materialize one screen.
+    """
+    contract = _fixture("procurement_cycle_phase0.json")
+    records = contract["reduction"]["records"]
+    validations = {"count": 0}
+    real = cycle_vouching.validate_evidence_record
+
+    def counted(value, **kwargs):
+        validations["count"] += 1
+        return real(value, **kwargs)
+
+    prepared = cycle_vouching.prepare_linkage(
+        registry_ref=contract["registry"], records=records
+    )
+    cycle_vouching.validate_evidence_record = counted
+    try:
+        for _ in range(10):
+            cycle_vouching.link_cycle_records(
+                registry_ref=contract["registry"],
+                seeds=[
+                    {"kind": "procure_to_pay.internal_invoice_id", "value": "INV2024004"}
+                ],
+                prepared=prepared,
+            )
+    finally:
+        cycle_vouching.validate_evidence_record = real
+
+    assert validations["count"] == 0
+
+
+def test_a_prepared_traversal_reaches_exactly_what_an_unprepared_one_does():
+    """The fast path is the same traversal, not a different one."""
+    contract = _fixture("procurement_cycle_phase0.json")
+    records = contract["reduction"]["records"]
+    seeds = [{"kind": "procure_to_pay.internal_invoice_id", "value": "INV2024004"}]
+    roles = contract["cycle_test"]["definition"]["roles"]
+
+    unprepared = cycle_vouching.link_cycle_records(
+        registry_ref=contract["registry"], seeds=seeds, records=records, roles=roles
+    )
+    prepared = cycle_vouching.link_cycle_records(
+        registry_ref=contract["registry"],
+        seeds=seeds,
+        roles=roles,
+        prepared=cycle_vouching.prepare_linkage(
+            registry_ref=contract["registry"], records=records
+        ),
+    )
+
+    assert prepared == unprepared
+
+
+def test_preparing_still_refuses_an_evidence_set_from_another_registry():
+    """The cross-registry guard moved with the validation; it did not go away."""
+    contract = _fixture("procurement_cycle_phase0.json")
+    records = copy.deepcopy(contract["reduction"]["records"])
+    records[0]["registry"] = {
+        **records[0]["registry"],
+        "definition_hash": "0" * 64,
+    }
+
+    with pytest.raises(cycle_vouching.CycleSchemaError):
+        cycle_vouching.prepare_linkage(
+            registry_ref=contract["registry"], records=records
+        )

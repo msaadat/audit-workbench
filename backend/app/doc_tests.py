@@ -2391,7 +2391,7 @@ def unresolved_items(test: dict) -> list[dict]:
     """Items that carry no settled reading, with why each one is open."""
 
     if is_cycle_test(test):
-        return []
+        return cycle_vouching.unresolved_items(test)
     open_items = []
     for item in test.get("items") or []:
         state = project_item_state(item)
@@ -2418,6 +2418,8 @@ def unresolved_items(test: dict) -> list[dict]:
 
 
 def incomplete_checks(test: dict) -> int:
+    if is_cycle_test(test):
+        return cycle_vouching.unusable_result_items(test)
     return sum(
         any(
             check.get("verdict") in {"missing", "invalid"}
@@ -2437,12 +2439,7 @@ def conclusion_block(test: dict) -> str:
     """
 
     if is_cycle_test(test):
-        return (
-            ""
-            if result_rollup(test).get("conclusion_eligible")
-            else "Complete deterministic evaluation and current auditor "
-            "disposition are required before recording a control conclusion."
-        )
+        return cycle_vouching.conclusion_block(test)
     items = test.get("items") or []
     if not items or not all(item_execution_current(test, item) for item in items):
         return "Run every item before recording a control conclusion."
@@ -2473,9 +2470,11 @@ def record_conclusion_override(test: dict) -> None:
         )
         lines.extend(f"- {item['label']} ({item['reason']})" for item in open_items)
     if incomplete:
+        # A Cycle test's comparable unit is the assertion, not the check.
+        unit = "an assertion" if is_cycle_test(test) else "a check"
         lines.append(
             f"{counted(incomplete, 'item')} {verb(incomplete, 'carries', 'carry')} "
-            "a check that returned no usable result."
+            f"{unit} that returned no usable result."
         )
     test["scope_limitations"] = "\n".join(
         ([auditor_text, ""] if auditor_text else []) + lines

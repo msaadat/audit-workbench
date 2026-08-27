@@ -1141,9 +1141,21 @@ def build_identifier_index(
 ) -> dict[tuple[str, str, str], tuple[dict, ...]]:
     """Index only exact transaction identifiers under their pack hash."""
 
+    return _index_validated(
+        [validate_evidence_record(raw, registry=registry) for raw in records],
+        registry=registry,
+    )
+
+
+def _index_validated(
+    records: Iterable[Mapping[str, object]],
+    *,
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict[tuple[str, str, str], tuple[dict, ...]]:
+    """The index build, for records a caller has already validated."""
+
     edges: dict[tuple[str, str, str], list[dict]] = {}
-    for raw in records:
-        record = validate_evidence_record(raw, registry=registry)
+    for record in records:
         reference = _registry_reference(record["registry"], registry)
         if not registry.record_kind(reference.pack_id, record["record_kind"]).bindable:
             continue
@@ -1157,6 +1169,50 @@ def build_identifier_index(
         key: tuple(sorted(values, key=lambda item: (item["document_id"], item["record_id"])))
         for key, values in sorted(edges.items())
     }
+
+
+class PreparedLinkage:
+    """One evidence set, validated and indexed once for many seed traversals.
+
+    :func:`link_cycle_records` is called per population row, and every call
+    used to re-validate the whole evidence set and rebuild the identifier
+    index from it — work that depends only on the records, which do not change
+    between rows. On a five-test procurement engagement that was 263 index
+    builds and 2,755 record validations to materialize one worklist, and it is
+    the reason reading a chat or drawing the record took seconds.
+
+    Callers that traverse the same evidence set more than once build this once
+    and hand it to each call. Callers with a single traversal need not: passing
+    ``records`` alone still works and prepares one internally.
+    """
+
+    __slots__ = ("reference", "index")
+
+    def __init__(
+        self,
+        reference: RegistryReference,
+        index: dict[tuple[str, str, str], tuple[dict, ...]],
+    ):
+        self.reference = reference
+        self.index = index
+
+
+def prepare_linkage(
+    *,
+    registry_ref: object,
+    records: Iterable[object],
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> PreparedLinkage:
+    """Validate an evidence set against one registry and index it."""
+
+    reference = _registry_reference(registry_ref, registry)
+    record_values = [validate_evidence_record(value, registry=registry) for value in records]
+    if any(
+        _registry_reference(value["registry"], registry) != reference
+        for value in record_values
+    ):
+        raise CycleSchemaError("Cycle linkage cannot cross registry definitions.")
+    return PreparedLinkage(reference, _index_validated(record_values, registry=registry))
 
 
 def _seed_keys(
@@ -1181,20 +1237,28 @@ def link_cycle_records(
     *,
     registry_ref: object,
     seeds: Iterable[object],
-    records: Iterable[object],
+    records: Iterable[object] = (),
     roles: Iterable[object] = (),
     registry: CycleRegistry = DEFAULT_REGISTRY,
     max_hops: int = MAX_GRAPH_HOPS,
     max_records: int = MAX_CYCLE_RECORDS,
     max_edges: int = MAX_TRAVERSED_EDGES,
+    prepared: PreparedLinkage | None = None,
 ) -> dict:
-    """Traverse the bounded exact identifier/record graph breadth-first."""
+    """Traverse the bounded exact identifier/record graph breadth-first.
 
-    reference = _registry_reference(registry_ref, registry)
-    record_values = [validate_evidence_record(value, registry=registry) for value in records]
-    if any(_registry_reference(value["registry"], registry) != reference for value in record_values):
-        raise CycleSchemaError("Cycle linkage cannot cross registry definitions.")
-    index = build_identifier_index(record_values, registry=registry)
+    ``prepared`` is the same evidence set already validated and indexed — see
+    :class:`PreparedLinkage`. Supplying it is what keeps a per-row loop from
+    paying for the whole evidence base on every row; omitting it prepares one
+    for this call alone, which is the right thing for a single traversal.
+    """
+
+    if prepared is None:
+        prepared = prepare_linkage(
+            registry_ref=registry_ref, records=records, registry=registry
+        )
+    reference = prepared.reference
+    index = prepared.index
     queue = deque((key, []) for key in _seed_keys(reference, seeds, registry))
     visited_keys: set[tuple[str, str, str]] = set()
     reached: dict[str, dict] = {}
@@ -1482,6 +1546,14 @@ def generate_cycle_candidates(
         }
         limit_reviews = 0
         required_kinds = {str(role.get("record_kind") or "") for role in roles}
+        # The evidence set is the same for every row; validating and indexing
+        # it once is what keeps this loop linear in rows rather than in
+        # rows × records.
+        prepared = prepare_linkage(
+            registry_ref=reference.to_dict(),
+            records=record_values,
+            registry=registry,
+        )
         for row_index, row in enumerate(frame.iter_rows(named=True)):
             seeds = [
                 {"kind": key["identifier_kind"], "value": row.get(key["column"])}
@@ -1491,9 +1563,9 @@ def generate_cycle_candidates(
             linkage = link_cycle_records(
                 registry_ref=reference.to_dict(),
                 seeds=seeds,
-                records=record_values,
                 roles=roles,
                 registry=registry,
+                prepared=prepared,
             )
             if linkage["state"] == "needs_review" and linkage.get("limit"):
                 limit_reviews += 1
@@ -4519,6 +4591,25 @@ def _sample_row_indices(frame: pl.DataFrame, selection: Mapping[str, object]) ->
 def _current_records(workspace, registry_ref: object) -> tuple[list[dict], dict[str, str]]:
     from . import document_analysis
 
+    # Every cycle test on one registry reads the same evidence base, and each
+    # read loads every document analysis from disk again — sixteen documents
+    # re-parsed once per test, which for a five-test worklist was eighty
+    # `load_analysis` calls and several hundred JSON reads for one chat render.
+    # Inside a request cache scope the caller has promised no analysis is
+    # written, so the set is read once and copied out.
+    cache = _cache.get()
+    cache_key = None
+    if cache is not None:
+        try:
+            reference = _registry_reference(registry_ref, DEFAULT_REGISTRY)
+        except (CycleSchemaError, RegistryError):
+            reference = None
+        if reference is not None:
+            cache_key = ("current_records", id(workspace), reference.definition_hash)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+
     records = document_analysis.registry_evidence_records(workspace, registry_ref)
     extraction_hashes: dict[str, str] = {}
     for document in workspace.documents:
@@ -4535,6 +4626,8 @@ def _current_records(workspace, registry_ref: object) -> tuple[list[dict], dict[
             or artifact.get("source_sha1")
             or ""
         )
+    if cache_key is not None:
+        cache[cache_key] = copy.deepcopy((records, extraction_hashes))
     return records, extraction_hashes
 
 
@@ -4693,6 +4786,11 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
     reference = _registry_reference(validated["registry"], DEFAULT_REGISTRY)
     row_key = population["row_key"]
     key_specs = [row_key, *population["cycle_keys"]]
+    # Same evidence set for every selected row — prepared once, see
+    # :class:`PreparedLinkage`.
+    prepared = prepare_linkage(
+        registry_ref=validated["registry"], records=records
+    )
     materialized: list[dict] = []
     for source_row in selected_indices:
         row = frame.row(source_row, named=True)
@@ -4705,8 +4803,8 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
         linkage = link_cycle_records(
             registry_ref=validated["registry"],
             seeds=seeds,
-            records=records,
             roles=roles,
+            prepared=prepared,
         )
         if selection.get("mode") == "evidence_linked" and not linkage.get("records"):
             continue
@@ -5595,6 +5693,72 @@ def _assurance_label(scope: str) -> str:
     )
 
 
+# A deterministic result an auditor cannot use as it stands: the fact was not
+# found, could not be normalized, or the selector matched several differing
+# facts. It is evidence to weigh, not a verdict.
+_UNUSABLE_VERDICTS = frozenset(
+    {"missing_evidence", "invalid_extraction", "ambiguous"}
+)
+# Why an item is open, for the states where the runner has not produced a
+# current reading. Anything current reads as "runner: <state>", the same
+# phrasing the item-first side uses.
+_UNRESOLVED_READING = {
+    "not_run": "not run",
+    "stale": "evaluated against inputs that have since changed",
+}
+
+
+def conclusion_block(test: Mapping[str, object]) -> str:
+    """Why a Cycle test structurally cannot carry a conclusion, or an empty string.
+
+    The same single rule every other test kind keeps: a test that has not run
+    cannot conclude. An ambiguous or incomplete deterministic result is not a
+    structural bar — it is evidence the auditor weighs and, having concluded
+    anyway, discloses. Gating on it here left an item the auditor had already
+    reviewed and confirmed with nowhere to go, because no auditor action
+    rewrites the runner's reading: the evaluation is derived on every read.
+    """
+
+    items = list(test.get("items") or [])
+    if not items or not all(execution_current(item, cycle=True) for item in items):
+        return "Run every item before recording a control conclusion."
+    return ""
+
+
+def unresolved_items(test: Mapping[str, object]) -> list[dict]:
+    """Cycle items carrying no settled auditor reading, with why each is open."""
+
+    open_items = []
+    for item in test.get("items") or []:
+        if disposition_current(item, cycle=True):
+            continue
+        evaluation = str((item.get("evaluation") or {}).get("state") or "not_run")
+        open_items.append(
+            {
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or item.get("id") or "Cycle item"),
+                "reason": (
+                    "signed off against evidence that has since changed"
+                    if (item.get("disposition") or {}).get("stale")
+                    else _UNRESOLVED_READING.get(evaluation, f"runner: {evaluation}")
+                ),
+            }
+        )
+    return open_items
+
+
+def unusable_result_items(test: Mapping[str, object]) -> int:
+    """Items carrying at least one assertion the runner could not settle."""
+
+    return sum(
+        any(
+            result.get("verdict") in _UNUSABLE_VERDICTS
+            for result in (item.get("result_by_assertion") or {}).values()
+        )
+        for item in test.get("items") or []
+    )
+
+
 def result_rollup(test: Mapping[str, object]) -> dict:
     """Count cycle items and assertion cells as separate, non-additive units."""
 
@@ -5667,9 +5831,11 @@ def result_rollup(test: Mapping[str, object]) -> dict:
         and not item_counts["incomplete"]
         and not item_counts["needs_review"]
     )
-    control_conclusion = str(test.get("control_conclusion") or "no_conclusion")
-    if not conclusion_eligible:
-        control_conclusion = "no_conclusion"
+    control_conclusion = (
+        str(test.get("control_conclusion") or "no_conclusion")
+        if not conclusion_block(test)
+        else "no_conclusion"
+    )
     return {
         "items": len(items),
         "tested_items": tested_items,
@@ -5691,6 +5857,14 @@ def result_rollup(test: Mapping[str, object]) -> dict:
         "assurance_scope": scope,
         "assurance_label": _assurance_label(scope),
         "conclusion_eligible": conclusion_eligible,
+        # `conclusion_eligible` still means "clean": every item evaluated,
+        # dispositioned, and settled by the runner. Reporting the conclusion is
+        # the weaker test — an auditor may conclude over items the runner could
+        # not settle, and that conclusion has to reach the RCM rollup, the
+        # working paper, and the report, or overriding would silently achieve
+        # nothing. What travels with it is the disclosure.
+        "conclusion_disclosed": bool(test.get("conclusion_override")),
+        "unresolved_items": unresolved_items(test),
         "control_conclusion": control_conclusion,
         "assertion_mismatches": assertion_counts["mismatch"],
         # Common Document Test rollup fields remain canonical for consumers

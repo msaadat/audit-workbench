@@ -207,6 +207,117 @@ def test_evidence_aware_simple_vouching_is_concludable_the_same_way(
     assert rollup["open_exceptions"] == 1
 
 
+def _ambiguous_signed_cycle(contract: dict, monkeypatch) -> tuple[object, dict]:
+    """A Cycle item the runner could not settle that the auditor signed anyway.
+
+    An ambiguous assertion is the ordinary way this arises: a requisition whose
+    approval block carries three dates matches ``entry_quantifier: one`` against
+    none of them in particular, so the item evaluates ``needs_review`` however
+    the auditor reads the evidence.
+    """
+
+    workspace, test = _signed_cycle(contract, monkeypatch)
+    item = test["items"][0]
+    key = next(iter(item["result_by_assertion"]))
+    item["result_by_assertion"][key]["verdict"] = "ambiguous"
+    item["evaluation"]["state"] = "needs_review"
+    return workspace, doc_tests.save_test(workspace, test)
+
+
+def test_an_auditor_may_conclude_over_an_unsettled_cycle_item_and_it_is_disclosed(
+    contract, monkeypatch
+):
+    """Nothing an auditor can do rewrites the runner's reading.
+
+    ``evaluation`` is derived from the assertion verdicts on every read, so an
+    item the runner left ``needs_review`` stays that way no matter how the
+    auditor disposes it. Refusing the conclusion on that basis left a reviewed,
+    confirmed item with nowhere to go — the test could never conclude and the
+    auditor had no control that would change it. The judgment is theirs; what
+    the file owes is the disclosure.
+    """
+
+    workspace, test = _ambiguous_signed_cycle(contract, monkeypatch)
+    rollup = doc_tests.result_rollup(test)
+    assert rollup["needs_review_items"] == 1
+    assert rollup["pending_dispositions"] == 0
+    assert rollup["conclusion_eligible"] is False
+
+    updated = doc_tests.update_test(
+        workspace,
+        test["id"],
+        {"control_conclusion": "effective", "conclusion": "Approval preceded the order."},
+    )
+
+    assert updated["control_conclusion"] == "effective"
+    assert updated["control_conclusion_source"] == "auditor"
+    assert "an assertion that returned no usable result" in updated["scope_limitations"]
+    assert updated["conclusion_override"]["incomplete_check_items"] == 1
+
+    # And it survives the rollup, or overriding would achieve nothing downstream.
+    rollup = doc_tests.result_rollup(updated)
+    assert rollup["control_conclusion"] == "effective"
+    assert rollup["conclusion_disclosed"] is True
+    assert rollup["conclusion_eligible"] is False
+    # It reaches the RCM as the test's own conclusion. The row-level tally
+    # still counts only clean tests toward a control conclusion, which is what
+    # an item-first test carrying the same disclosure does — parity, not a
+    # cycle-specific rule.
+    row = rcm_execution.rollup(workspace)["rows"][0]
+    assert row["test_rollups"][0]["control_conclusion"] == "effective"
+    assert row["test_rollups"][0]["conclusion_eligible"] is False
+    assert row["control_conclusion"] == "no_conclusion"
+
+
+def test_a_signed_off_cycle_item_is_not_reported_as_unresolved(
+    contract, monkeypatch
+):
+    """The disclosure names what nobody settled, not what the runner disliked."""
+
+    workspace, test = _ambiguous_signed_cycle(contract, monkeypatch)
+
+    assert doc_tests.result_rollup(test)["unresolved_items"] == []
+
+    parked = doc_tests.update_item(
+        workspace, test["id"], test["items"][0]["id"], {"state": "pending"}
+    )
+    open_items = doc_tests.result_rollup(parked)["unresolved_items"]
+
+    assert [item["reason"] for item in open_items] == ["runner: needs_review"]
+    assert open_items[0]["id"] == test["items"][0]["id"]
+
+
+def test_resolving_the_ambiguity_clears_the_cycle_disclosure(contract, monkeypatch):
+    workspace, test = _ambiguous_signed_cycle(contract, monkeypatch)
+    doc_tests.update_test(workspace, test["id"], {"control_conclusion": "effective"})
+
+    # What an auditor actually does about this: re-author the assertion so the
+    # selector matches, then re-run. Here that is the settled verdict itself.
+    settled = doc_tests.load_test(workspace, test["id"])
+    item = settled["items"][0]
+    item["result_by_assertion"][next(iter(item["result_by_assertion"]))]["verdict"] = "match"
+    item["evaluation"]["state"] = "passed"
+    doc_tests.save_test(workspace, settled)
+    resolved = doc_tests.update_test(
+        workspace, test["id"], {"control_conclusion": "effective"}
+    )
+
+    assert resolved["scope_limitations"] == ""
+    assert "conclusion_override" not in resolved
+    assert doc_tests.result_rollup(resolved)["conclusion_eligible"] is True
+
+
+def test_an_unrun_cycle_test_still_cannot_carry_a_conclusion(contract, monkeypatch):
+    """The one structural rule the auditor does not get to override."""
+
+    workspace, test, _current = _workspace(contract, monkeypatch)
+
+    with pytest.raises(WorkspaceError, match="Run every item"):
+        doc_tests.update_test(
+            workspace, test["id"], {"control_conclusion": "effective"}
+        )
+
+
 def test_sampled_current_signed_cycle_can_carry_auditor_control_conclusion(
     contract, monkeypatch
 ):
