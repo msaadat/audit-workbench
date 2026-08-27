@@ -14,7 +14,6 @@ import type {
   EngagementRecordPayload, WorkspaceSummary,
 } from '../types'
 import UiEmptyState from './ui/UiEmptyState.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
 
 /**
  * The engagement record: what this engagement filed, and what it still owes.
@@ -311,6 +310,15 @@ function size(entry: EngagementRecordEntry): string {
 }
 
 /**
+ * The bare number inside the pill. The unit belongs to the work product, not to
+ * the count — `Analysis library · 24` is a unit, `Analysis library · 24
+ * analyses` is a sentence — so the spelled form moves to the pill's title.
+ */
+function tally(entry: EngagementRecordEntry): string {
+  return entry.filed?.count == null ? '' : String(entry.filed.count)
+}
+
+/**
  * What a collapsed row is standing in for. Silent at a single attempt, because
  * "1 attempt" on every row is noise that hides the rows where it matters.
  */
@@ -327,6 +335,103 @@ function toggle(entry: EngagementRecordEntry) {
   if (next.has(entry.id)) next.delete(entry.id)
   else next.add(entry.id)
   expanded.value = next
+}
+
+/* --- how much of a row is drawn -------------------------------------------- */
+
+/**
+ * A milestone's body — the sentence, the distribution, the highlights — folds
+ * away behind the row, leaving one line per work product. Ten stages of this
+ * engagement drew a ledger three screens tall; the same ten fit on one.
+ *
+ * `full` is the ledger as it was before the fold, kept because reading the
+ * record end to end is a real thing to want and clicking ten chevrons to do it
+ * is not. The choice is a display preference, so it outlives the workspace.
+ */
+type Density = 'concise' | 'full'
+const DENSITY_KEY = 'aw.record.density'
+
+function storedDensity(): Density {
+  try {
+    return window.localStorage.getItem(DENSITY_KEY) === 'full' ? 'full' : 'concise'
+  } catch {
+    // Private-mode storage throws rather than returning null.
+    return 'concise'
+  }
+}
+
+const density = ref<Density>(storedDensity())
+const openRows = ref<Set<string>>(new Set())
+
+function setDensity(value: Density) {
+  density.value = value
+  // Rows opened by hand under one density have nothing to say about the other.
+  openRows.value = new Set()
+  try {
+    window.localStorage.setItem(DENSITY_KEY, value)
+  } catch {
+    // A preference that cannot be stored is still a preference for this visit.
+  }
+}
+
+function isOpen(entry: EngagementRecordEntry): boolean {
+  return density.value === 'full' || openRows.value.has(entry.id)
+}
+
+function toggleRow(entry: EngagementRecordEntry) {
+  if (density.value === 'full') return
+  const next = new Set(openRows.value)
+  if (next.has(entry.id)) next.delete(entry.id)
+  else next.add(entry.id)
+  openRows.value = next
+}
+
+/**
+ * The row is the hit target, because a 30px line whose only handle is a 16px
+ * chevron is a row you miss. Anything that already does something on click —
+ * the pill, an open point — keeps its own job.
+ */
+function rowClick(entry: EngagementRecordEntry, event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('a, button')) return
+  toggleRow(entry)
+}
+
+interface RowChip { label: string; value: string; severity: string }
+
+/**
+ * What the folded body is standing in for, counted. Each chip keeps the colour
+ * the block it replaces had, so the rows worth opening are the amber ones; a
+ * row with nothing to say carries no chip, which is what makes that legible.
+ */
+function chips(entry: EngagementRecordEntry): RowChip[] {
+  const out: RowChip[] = []
+
+  // A distribution is led by its largest non-zero bucket. Zero critical is
+  // worth saying in the open row and worth nothing in a one-line summary, and a
+  // bucket whose value is not a number cannot be ranked against one that is.
+  const counted = entry.stats
+    .map(item => ({ ...item, count: typeof item.value === 'number' ? item.value : Number(item.value) }))
+    .filter(item => Number.isFinite(item.count) && item.count > 0)
+    .sort((a, b) => b.count - a.count)[0]
+  if (counted) {
+    out.push({ label: counted.label, value: String(counted.count), severity: counted.severity })
+  }
+
+  if (entry.highlights.length) {
+    const severity = entry.highlights.some(item => item.severity === 'error') ? 'error' : 'warning'
+    out.push({
+      label: entry.highlights.length === 1 ? 'flag' : 'flags',
+      value: String(entry.highlights.length),
+      severity,
+    })
+  }
+
+  if (entry.attempts.length > 1) {
+    out.push({ label: 'attempts', value: String(entry.attempts.length), severity: '' })
+  }
+
+  return out
 }
 
 function openPoint(point: EngagementOpenPoint) {
@@ -441,9 +546,26 @@ const pendingNote = computed(() => {
 
 <template>
   <div class="record">
-    <UiPageHeader title="Engagement record" eyebrow="What this engagement filed">
+    <!-- A page title the size of a headline, above a ledger, competes with the
+         ledger and wins. The tab bar already says which surface this is, so
+         what is left is the controls and a label small enough to be one. -->
+    <div class="bar">
+      <h2>Engagement record</h2>
+      <span class="grow"></span>
+      <div class="dens" role="group" aria-label="Row density">
+        <button
+          type="button"
+          :aria-pressed="density === 'concise'"
+          @click="setDensity('concise')"
+        >Concise</button>
+        <button
+          type="button"
+          :aria-pressed="density === 'full'"
+          @click="setDensity('full')"
+        >Full</button>
+      </div>
       <Button label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" outlined :loading="loading" @click="load" />
-    </UiPageHeader>
+    </div>
 
     <div v-if="loading && !data" class="loading"><i class="pi pi-spin pi-spinner" /> Reading the record…</div>
 
@@ -479,53 +601,19 @@ const pendingNote = computed(() => {
         />
       </section>
 
-      <!-- The single most blocking thing, restated as a sentence. Not a fourth
-           widget: it is the top-ranked item of the two registers below. -->
-      <section v-else-if="next" class="brief" :data-kind="next.kind">
-        <span class="mark"><i :class="next.kind === 'open_point' ? 'pi pi-exclamation-circle' : 'pi pi-play'" /></span>
-        <div class="txt">
-          <strong>{{ next.kind === 'open_point' ? next.message : next.headline }}</strong>
-          <span v-if="next.kind === 'stage'">Nothing is blocking it.</span>
-        </div>
-        <Button
-          v-if="next.kind === 'open_point'"
-          :label="next.action"
-          size="small"
-          @click="openPoint(next)"
-        />
-        <Button
-          v-else
-          label="Start"
-          icon="pi pi-play"
-          size="small"
-          :loading="starting === next.capability"
-          @click="start(next)"
-        />
-      </section>
-
-      <header class="summary">
-        <div class="stat">
-          <strong>{{ duration(totals?.elapsed_ms ?? null) }}</strong>
-          <span>of assistant time</span>
-        </div>
-        <div class="stat">
-          <strong>{{ totals?.work_products ?? 0 }}</strong>
-          <span>work products filed</span>
-        </div>
-        <p class="span">
-          {{ totalLine }}<template v-if="quietRuns">
-            · <span class="quiet">{{ plural(quietRuns, 'run') }} filed nothing</span></template>
-        </p>
-      </header>
-
       <ol class="ledger">
         <li class="head" aria-hidden="true">
-          <span>Time</span><span></span><span>Filed</span><span>What it did</span><span class="r">Took</span>
+          <span>Time</span><span></span><span>Filed</span><span>What it did</span><span class="r">Took</span><span></span>
         </li>
 
         <template v-for="(entry, index) in entries" :key="entry.id">
           <li v-if="dayBreak(index)" class="daybreak"><span>{{ dayBreak(index) }}</span></li>
-          <li class="row" :data-status="entry.status">
+          <li
+            class="row"
+            :class="{ shut: !isOpen(entry) }"
+            :data-status="entry.status"
+            @click="rowClick(entry, $event)"
+          >
             <span class="tm">{{ clock(entry.at) }}</span>
             <span class="gut"><i /></span>
 
@@ -536,19 +624,31 @@ const pendingNote = computed(() => {
                 :to="destinationOf(entry) ? nav.to(destinationOf(entry)!) : undefined"
                 class="card"
                 :class="{ linked: !!destinationOf(entry) }"
+                :title="size(entry) || null"
               >
                 <i :class="icon(entry.filed.label)" aria-hidden="true" />
                 <span class="mt">
                   <b>{{ entry.filed.label }}</b>
-                  <em v-if="size(entry)">{{ size(entry) }}</em>
+                  <em v-if="tally(entry)">{{ tally(entry) }}</em>
                 </span>
               </component>
               <span v-else class="none">—</span>
             </span>
 
             <span class="say">
-              <b class="ttl">{{ entry.headline }}</b>
-              <span class="dsc">{{ entry.summary }}</span>
+              <span class="saytop">
+                <b class="ttl">{{ entry.headline }}</b>
+                <!-- The folded body, counted. Colour survives the fold. -->
+                <template v-if="!isOpen(entry)">
+                  <span
+                    v-for="chip in chips(entry)"
+                    :key="chip.label"
+                    class="sig"
+                    :data-severity="chip.severity || null"
+                  ><b>{{ chip.value }}</b>{{ chip.label }}</span>
+                </template>
+              </span>
+              <span v-if="isOpen(entry)" class="dsc">{{ entry.summary }}</span>
 
               <!-- Filed once already, and being produced again right now. -->
               <span v-if="liveState(entry.capability)" class="again" :data-live="liveState(entry.capability)">
@@ -563,7 +663,7 @@ const pendingNote = computed(() => {
               <!-- A stage whose result is a distribution states it as one. A
                    matrix is read as "one critical, eight high" before any
                    single row is, and a paragraph cannot say that at a glance. -->
-              <ul v-if="entry.stats.length" class="tally">
+              <ul v-if="isOpen(entry) && entry.stats.length" class="tally">
                 <li
                   v-for="stat in entry.stats"
                   :key="stat.label"
@@ -574,7 +674,7 @@ const pendingNote = computed(() => {
                 </li>
               </ul>
 
-              <ul v-if="entry.highlights.length" class="hl">
+              <ul v-if="isOpen(entry) && entry.highlights.length" class="hl">
                 <li v-for="item in entry.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
                   <b>{{ item.label }}</b><span>{{ item.detail }}</span>
                 </li>
@@ -594,7 +694,7 @@ const pendingNote = computed(() => {
               </button>
 
               <button
-                v-if="attemptNote(entry)"
+                v-if="isOpen(entry) && attemptNote(entry)"
                 type="button"
                 class="tries"
                 :aria-expanded="expanded.has(entry.id)"
@@ -603,7 +703,7 @@ const pendingNote = computed(() => {
                 <i :class="expanded.has(entry.id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" aria-hidden="true" />
                 {{ attemptNote(entry) }}
               </button>
-              <ol v-if="expanded.has(entry.id)" class="attempts">
+              <ol v-if="isOpen(entry) && expanded.has(entry.id)" class="attempts">
                 <li v-for="attempt in entry.attempts" :key="attempt.run_id">
                   <span class="at">{{ when(attempt.at) }}</span>
                   <span class="st" :data-status="attempt.run_status">{{ attempt.run_status.replaceAll('_', ' ') }}</span>
@@ -613,6 +713,20 @@ const pendingNote = computed(() => {
             </span>
 
             <span class="took">{{ duration(entry.elapsed_ms) }}</span>
+
+            <!-- The row is the hit target; this is what says so. Hidden under
+                 Full, where every row is open and nothing can be shut. -->
+            <button
+              v-if="density === 'concise'"
+              type="button"
+              class="chev"
+              :aria-expanded="isOpen(entry)"
+              :aria-label="`${isOpen(entry) ? 'Collapse' : 'Expand'} ${entry.headline}`"
+              @click="toggleRow(entry)"
+            >
+              <i class="pi pi-chevron-right" aria-hidden="true" />
+            </button>
+            <span v-else></span>
           </li>
         </template>
 
@@ -630,6 +744,7 @@ const pendingNote = computed(() => {
             </button>
           </span>
           <span class="took"></span>
+          <span></span>
         </li>
 
         <!-- The ledger continues past the present into entries not yet written. -->
@@ -689,49 +804,109 @@ const pendingNote = computed(() => {
               />
               <span v-else class="waits">waits</span>
             </span>
+            <span></span>
           </li>
         </template>
       </ol>
+
+      <!-- The single most blocking thing, restated as a sentence. It sits under
+           the ledger rather than over it: the ledger is what the reader came
+           for, and every debt in this line is already drawn on the row that
+           owes it. A run in flight is not one of these — that is news, and it
+           stays at the top. -->
+      <section v-if="!live && next" class="brief" :data-kind="next.kind">
+        <span class="mark"><i :class="next.kind === 'open_point' ? 'pi pi-exclamation-circle' : 'pi pi-play'" /></span>
+        <div class="txt">
+          <strong>{{ next.kind === 'open_point' ? next.message : next.headline }}</strong>
+          <span v-if="next.kind === 'stage'">Nothing is blocking it.</span>
+        </div>
+        <Button
+          v-if="next.kind === 'open_point'"
+          :label="next.action"
+          size="small"
+          severity="secondary"
+          outlined
+          @click="openPoint(next)"
+        />
+        <Button
+          v-else
+          label="Start"
+          icon="pi pi-play"
+          size="small"
+          severity="secondary"
+          outlined
+          :loading="starting === next.capability"
+          @click="start(next)"
+        />
+      </section>
+
+      <!-- What the whole engagement cost, as a footnote to the ledger it is a
+           footnote to. It answered no question anyone arrives with, and it was
+           the first thing on the page. -->
+      <footer class="summary">
+        <span><b>{{ totals?.work_products ?? 0 }}</b> work products filed</span>
+        <span><b>{{ duration(totals?.elapsed_ms ?? null) }}</b> of assistant time</span>
+        <span class="grow"></span>
+        <span>
+          {{ totalLine }}<template v-if="quietRuns">
+            · <span class="quiet">{{ plural(quietRuns, 'run') }} filed nothing</span></template>
+        </span>
+      </footer>
     </template>
   </div>
 </template>
 
 <style scoped>
-.record { display: flex; flex-direction: column; min-height: 0; }
+.record { display: flex; flex-direction: column; gap: .55rem; min-height: 0; }
 .loading { display: grid; place-content: center; gap: .4rem; padding: 3rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
-/* --- the one thing to do next ------------------------------------------- */
+/* --- the strip above the ledger ------------------------------------------ */
+.bar { display: flex; align-items: center; gap: .5rem; }
+.bar h2 {
+  margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.grow { flex: 1; }
+
+/* --- how much of each row is drawn --------------------------------------- */
+.dens {
+  display: inline-flex; gap: 2px; padding: 2px;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-raised);
+}
+.dens button {
+  padding: .3rem .7rem; border: 0; border-radius: 6px; background: transparent;
+  color: var(--aw-muted); font: inherit; font-size: var(--aw-text-sm); font-weight: 600; cursor: pointer;
+}
+.dens button[aria-pressed="true"] { background: var(--aw-panel); color: var(--aw-teal-strong); box-shadow: var(--aw-shadow-sm); }
+.dens button:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+
+/* --- what is still owed, under the ledger -------------------------------- */
+/* Below the ledger it is a note, not a banner, so it is drawn as one: half the
+   padding it had, and its wording at the size of the rows it refers to. */
 .brief {
   display: flex;
   align-items: center;
-  gap: .75rem;
-  margin-bottom: .6rem;
-  padding: .75rem .9rem;
+  gap: .6rem;
+  padding: .45rem .6rem;
   border: 1px solid var(--aw-warn-line);
-  border-radius: var(--aw-radius-surface);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-warn-soft);
 }
 .brief[data-kind='stage'] { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
-.brief .mark {
-  display: grid; place-items: center; flex: 0 0 auto;
-  width: 1.75rem; height: 1.75rem; border-radius: var(--aw-radius-control);
-  background: var(--aw-panel); color: var(--aw-warn-ink); font-size: var(--aw-text-sm);
-}
+.brief .mark { flex: 0 0 auto; display: grid; place-items: center; color: var(--aw-warn-ink); font-size: var(--aw-text-sm); }
 .brief[data-kind='stage'] .mark { color: var(--aw-teal); }
-.brief .txt { flex: 1; min-width: 0; display: grid; gap: .1rem; }
-.brief strong { color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600; line-height: 1.35; }
+.brief .txt { flex: 1; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: .1rem .4rem; }
+.brief strong { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); font-weight: 600; line-height: 1.4; }
+.brief[data-kind='stage'] strong { color: var(--aw-teal-strong); }
 .brief span { color: var(--aw-ink-soft); font-size: var(--aw-text-xs); }
 
-/* --- the headline claim -------------------------------------------------- */
+/* --- what the whole engagement cost, as a footnote ----------------------- */
 .summary {
-  display: flex; align-items: baseline; flex-wrap: wrap; gap: .4rem 2rem;
-  margin-bottom: var(--aw-section-gap); padding: .9rem 1rem;
-  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel);
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: .2rem 1.2rem;
+  padding: 0 .2rem;
+  color: var(--aw-muted); font-size: var(--aw-text-xs);
 }
-.stat { display: flex; align-items: baseline; gap: .45rem; }
-.stat strong { font-size: var(--aw-text-2xl); font-weight: 600; line-height: 1; color: var(--aw-ink-strong); font-variant-numeric: tabular-nums; }
-.stat span { color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.span { flex: 1; margin: 0; text-align: right; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.summary b { color: var(--aw-ink-soft); font-weight: 600; font-variant-numeric: tabular-nums; }
 .quiet { color: var(--aw-muted-strong); }
 
 /* --- the ledger ---------------------------------------------------------- */
@@ -739,27 +914,31 @@ const pendingNote = computed(() => {
 
 .head, .row {
   display: grid;
-  grid-template-columns: 3.4rem 1rem 13rem minmax(0, 1fr) 4.5rem;
+  grid-template-columns: 4rem 1rem 17.5rem minmax(0, 1fr) 5rem 1.2rem;
   gap: 0 .6rem;
   align-items: start;
   padding: .7rem 1rem;
 }
+/* A shut row is one line, so its padding is the line's own breathing room
+   rather than the block of a row that runs to two hundred pixels. */
+.row.shut { padding-block: .42rem; cursor: pointer; }
+.row.shut:hover { background: color-mix(in srgb, var(--aw-raised) 55%, transparent); }
 .head {
-  padding-block: .5rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-raised);
-  color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700;
+  padding-block: .55rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-raised);
+  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
   letter-spacing: .08em; text-transform: uppercase;
 }
 .head .r { text-align: right; }
 .row + .row { border-top: 1px solid var(--aw-border); }
 
 .daybreak {
-  padding: .35rem 1rem; border-top: 1px solid var(--aw-border); background: var(--aw-raised);
-  color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700;
+  padding: .4rem 1rem; border-top: 1px solid var(--aw-border); background: var(--aw-raised);
+  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
   letter-spacing: .07em; text-transform: uppercase;
 }
 
-.tm { padding-top: .15rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-variant-numeric: tabular-nums; }
-.took { padding-top: .15rem; text-align: right; color: var(--aw-muted); font-size: var(--aw-text-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tm { padding-top: .2rem; color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; }
+.took { padding-top: .2rem; text-align: right; color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* the connecting spine. The gutter stretches or the line reaches 46px down a
    row that can run to 200. */
@@ -770,23 +949,59 @@ const pendingNote = computed(() => {
 .row[data-status="completed_with_issues"] .gut i,
 .row[data-status="needs_review"] .gut i { background: var(--aw-warn); }
 
+/* The work product is a pill: one unit, one line, the same object whether the
+   row is open or shut. Opening a row changes what the row says about the work,
+   never what was filed. */
 .made { min-width: 0; }
 .card {
-  display: flex; align-items: flex-start; gap: .4rem; padding: .4rem .5rem;
-  border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-control);
-  background: var(--aw-teal-soft); color: var(--aw-teal-strong); text-decoration: none;
+  display: inline-flex; align-items: center; gap: .45rem; max-width: 100%;
+  padding: .32rem .75rem .32rem .6rem;
+  border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-pill);
+  background: var(--aw-teal-soft); color: var(--aw-teal-strong);
+  text-decoration: none; white-space: nowrap;
 }
-.card.linked:hover { border-color: var(--aw-teal); background: var(--aw-panel); }
+.card.linked:hover { border-color: var(--aw-teal); background: var(--aw-panel); box-shadow: var(--aw-shadow-sm); }
 .card.linked:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
-.card > i { padding-top: .1rem; font-size: var(--aw-text-xs); }
-.mt { display: grid; gap: .1rem; min-width: 0; }
-.mt b { font-size: var(--aw-text-xs); font-weight: 600; line-height: 1.3; }
-.mt em { color: var(--aw-teal); font-size: var(--aw-text-2xs); font-style: normal; font-variant-numeric: tabular-nums; }
-.none { display: block; padding-top: .3rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.card > i { font-size: var(--aw-text-sm); }
+.mt { display: inline-flex; align-items: baseline; gap: .4rem; min-width: 0; }
+.mt b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--aw-text-base); font-weight: 600; line-height: 1.4; }
+/* The count belongs to the same unit, hung off a hairline rather than set
+   loose on a second line. */
+.mt em {
+  flex: 0 0 auto; padding-left: .4rem; border-left: 1px solid var(--aw-teal-line);
+  color: var(--aw-teal); font-size: var(--aw-text-sm); font-style: normal;
+  font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.none { display: block; padding-top: .3rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
 .say { display: grid; gap: .2rem; min-width: 0; justify-items: start; }
-.ttl { font-size: var(--aw-text-base); font-weight: 600; line-height: 1.3; color: var(--aw-ink-strong); }
-.dsc { max-width: 68ch; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.5; }
+.saytop { display: flex; align-items: baseline; flex-wrap: wrap; gap: .3rem .5rem; min-width: 0; }
+.ttl { font-size: var(--aw-text-md); font-weight: 600; line-height: 1.3; color: var(--aw-ink-strong); }
+.row.shut .ttl { font-size: var(--aw-text-base); font-weight: 500; color: var(--aw-ink); }
+.dsc { max-width: 72ch; color: var(--aw-ink-soft); font-size: var(--aw-text-base); line-height: 1.55; }
+
+/* What the folded body is standing in for, counted. A row with nothing to say
+   carries no chip, which is what makes the rows that do carry one findable. */
+.sig {
+  display: inline-flex; align-items: baseline; gap: .28rem;
+  padding: .08rem .45rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill);
+  background: var(--aw-raised); color: var(--aw-muted-strong);
+  font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap;
+}
+.sig b { font-variant-numeric: tabular-nums; }
+.sig[data-severity="warning"] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.sig[data-severity="error"] { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
+
+/* The affordance for a hit target that is the whole row. */
+.chev {
+  display: grid; place-items: center; width: 1.1rem; height: 1.1rem; padding: 0;
+  border: 0; border-radius: 4px; background: transparent; color: var(--aw-muted); cursor: pointer;
+}
+.chev i { font-size: var(--aw-text-xs); transition: transform .16s ease; }
+.row:not(.shut) .chev i { transform: rotate(90deg); }
+.row:hover .chev { color: var(--aw-teal); background: var(--aw-raised); }
+.chev:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .chev i { transition: none; } }
 
 /* The tally reads left to right as a distribution, so it is not the stacked
    bordered list every other block on this row uses. */
@@ -797,8 +1012,8 @@ const pendingNote = computed(() => {
   border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill);
   background: var(--aw-raised); color: var(--aw-muted-strong);
 }
-.tally b { font-size: var(--aw-text-sm); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--aw-ink-strong); }
-.tally span { font-size: var(--aw-text-2xs); letter-spacing: .04em; text-transform: uppercase; }
+.tally b { font-size: var(--aw-text-base); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--aw-ink-strong); }
+.tally span { font-size: var(--aw-text-xs); letter-spacing: .04em; text-transform: uppercase; }
 /* Zero of something severe is worth saying and not worth colouring. */
 .tally li[data-severity="warning"]:not([data-zero]) { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 .tally li[data-severity="warning"]:not([data-zero]) b { color: var(--aw-warn-ink); }
@@ -808,9 +1023,9 @@ const pendingNote = computed(() => {
 .hl { display: grid; gap: .25rem; margin: .3rem 0 0; padding: 0; list-style: none; }
 .hl li { display: grid; gap: .05rem; padding-left: .6rem; border-left: 2px solid var(--aw-warn-line); }
 .hl li[data-severity="error"] { border-left-color: var(--aw-danger-line); }
-.hl b { color: var(--aw-warn-ink); font-size: var(--aw-text-xs); font-weight: 600; line-height: 1.35; }
+.hl b { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); font-weight: 600; line-height: 1.4; }
 .hl li[data-severity="error"] b { color: var(--aw-danger-ink); }
-.hl span { max-width: 64ch; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); line-height: 1.4; }
+.hl span { max-width: 70ch; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.45; }
 
 /* an open point hanging off the row that created it */
 .open {
@@ -818,26 +1033,26 @@ const pendingNote = computed(() => {
   margin-top: .3rem; padding: .35rem .5rem;
   border: 0; border-left: 2px solid var(--aw-warn-line); border-radius: 0 var(--aw-radius-control) var(--aw-radius-control) 0;
   background: var(--aw-warn-soft); color: var(--aw-warn-ink);
-  font: inherit; font-size: var(--aw-text-xs); text-align: left; cursor: pointer;
+  font: inherit; font-size: var(--aw-text-sm); text-align: left; cursor: pointer;
 }
 .open:hover { background: var(--aw-panel); border-left-color: var(--aw-warn); }
 .open:focus-visible { outline: 2px solid var(--aw-warn); outline-offset: 1px; }
-.open > i { font-size: var(--aw-text-2xs); }
+.open > i { font-size: var(--aw-text-xs); }
 .open .ot { flex: 1; min-width: 0; line-height: 1.4; }
 .open .oa { display: inline-flex; align-items: center; gap: .25rem; flex: 0 0 auto; font-weight: 600; }
-.open .oa i { font-size: var(--aw-text-2xs); }
+.open .oa i { font-size: var(--aw-text-xs); }
 
 .tries {
   display: inline-flex; align-items: center; gap: .3rem; margin-top: .2rem; padding: .1rem 0;
   border: 0; background: transparent; color: var(--aw-muted);
-  font: inherit; font-size: var(--aw-text-2xs); cursor: pointer;
+  font: inherit; font-size: var(--aw-text-xs); cursor: pointer;
 }
 .tries:hover { color: var(--aw-teal); }
 .tries:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; border-radius: 2px; }
-.tries i { font-size: var(--aw-text-2xs); }
+.tries i { font-size: var(--aw-text-xs); }
 
 .attempts { display: grid; gap: .2rem; width: 100%; margin: .3rem 0 0; padding: .4rem .55rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); list-style: none; }
-.attempts li { display: flex; align-items: baseline; gap: .6rem; font-size: var(--aw-text-2xs); font-variant-numeric: tabular-nums; }
+.attempts li { display: flex; align-items: baseline; gap: .6rem; font-size: var(--aw-text-xs); font-variant-numeric: tabular-nums; }
 .attempts .at { min-width: 8rem; color: var(--aw-ink-soft); }
 .attempts .st { flex: 1; color: var(--aw-muted); }
 .attempts .st[data-status="cancelled"], .attempts .st[data-status="failed"] { color: var(--aw-warn-ink); }
@@ -848,7 +1063,7 @@ const pendingNote = computed(() => {
   display: flex; align-items: center; gap: .6rem;
   padding: .4rem 1rem; border-top: 1px solid var(--aw-border); background: var(--aw-canvas);
 }
-.nowline .lab { color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.nowline .lab { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .nowline .hr { flex: 1; height: 1px; background: repeating-linear-gradient(90deg, var(--aw-border-strong) 0 4px, transparent 4px 8px); }
 
 .row.ghost { background: var(--aw-canvas); }
@@ -884,13 +1099,13 @@ const pendingNote = computed(() => {
   margin-top: .3rem; padding: .15rem .45rem;
   border-radius: var(--aw-radius-pill);
   background: var(--aw-info-soft); color: var(--aw-info);
-  font-size: var(--aw-text-2xs); font-weight: 600;
+  font-size: var(--aw-text-xs); font-weight: 600;
 }
-.again i { font-size: var(--aw-text-2xs); }
+.again i { font-size: var(--aw-text-xs); }
 
 .going {
   display: inline-flex; align-items: center; gap: .3rem; justify-content: flex-end;
-  color: var(--aw-info); font-size: var(--aw-text-2xs); font-weight: 600;
+  color: var(--aw-info); font-size: var(--aw-text-xs); font-weight: 600;
 }
 
 .row.ghost[data-live] { background: var(--aw-info-soft); }
@@ -920,9 +1135,16 @@ const pendingNote = computed(() => {
 
 @container (max-width: 56rem) {
   .head { display: none; }
-  .row { grid-template-columns: 3.4rem 1rem minmax(0, 1fr); }
+  .row { grid-template-columns: 4rem 1rem minmax(0, 1fr) 1.2rem; }
   .row .took { grid-column: 3; text-align: left; }
   .row .made { grid-column: 3; }
   .row .say { grid-column: 3; }
+
+  /* A shut row stays one line here too: the pill shrink-wraps to its own text
+     and the headline takes what is left. */
+  .row.shut { grid-template-columns: 4rem 1rem auto minmax(5rem, 1fr) 4rem 1.2rem; }
+  .row.shut .made { grid-column: 3; }
+  .row.shut .say { grid-column: 4; }
+  .row.shut .took { grid-column: 5; text-align: right; }
 }
 </style>

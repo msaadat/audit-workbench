@@ -187,12 +187,24 @@ async function render(
   return wrapper
 }
 
+/**
+ * A milestone's body is folded away by default, so anything below the headline
+ * has to be asked for. Rows are shut on mount; this is how a test reads one.
+ */
+async function openRow(wrapper: Awaited<ReturnType<typeof render>>, index = 0) {
+  await wrapper.findAll('.row .chev')[index].trigger('click')
+  return wrapper
+}
+
 describe('EngagementRecordTab', () => {
   beforeEach(() => {
     get.mockReset(); push.mockReset(); send.mockReset()
     openDrawer.mockReset(); agentInit.mockReset()
     agentActive.value = false
     agentState.run = null
+    // Density is a stored preference, so one test choosing Full would otherwise
+    // decide what every test after it renders.
+    window.localStorage.clear()
   })
 
   it('states an irregular unit from the declared plural, not by appending s', async () => {
@@ -200,8 +212,10 @@ describe('EngagementRecordTab', () => {
       filed: { label: 'Analysis library', destination: 'analysis', unit: 'analysis', unit_plural: 'analyses', count: 28 },
     })])
 
-    expect(wrapper.text()).toContain('28 analyses')
-    expect(wrapper.text()).not.toContain('analysiss')
+    // The pill carries the bare count; the spelled unit is what it is named.
+    expect(wrapper.find('.card').attributes('title')).toBe('28 analyses')
+    expect(wrapper.find('.mt em').text()).toBe('28')
+    expect(wrapper.html()).not.toContain('analysiss')
   })
 
   it('renders sub-minute work in seconds rather than rounding it to 0m', async () => {
@@ -229,6 +243,9 @@ describe('EngagementRecordTab', () => {
       measured_attempts: 1,
     })])
 
+    // Shut, the count is a chip; opened, it says what the count is made of.
+    expect(wrapper.find('.sig').text()).toBe('3attempts')
+    await openRow(wrapper)
     expect(wrapper.text()).toContain('3 attempts · 2 not timed')
   })
 
@@ -244,6 +261,7 @@ describe('EngagementRecordTab', () => {
   it('reveals the individual runs behind a collapsed row on request', async () => {
     const wrapper = await render([entry()])
 
+    await openRow(wrapper)
     expect(wrapper.find('.attempts').exists()).toBe(false)
     await wrapper.find('.tries').trigger('click')
     expect(wrapper.findAll('.attempts li')).toHaveLength(2)
@@ -426,6 +444,96 @@ describe('EngagementRecordTab', () => {
     expect(wrapper.find('.nowline').exists()).toBe(false)
   })
 
+  /* --- how much of a row is drawn ----------------------------------------- */
+
+  it('states the headline of a shut row and folds the rest of it away', async () => {
+    const wrapper = await render([entry({
+      summary: 'Prepared 1 evidence-linked finding draft (1 critical).',
+      highlights: [{ severity: 'warning', label: 'Invoices over PO', detail: '3 of 52 rows', artifact_ref: '' }],
+    })])
+
+    expect(wrapper.find('.row').classes()).toContain('shut')
+    expect(wrapper.text()).toContain('Finding drafts prepared')
+    expect(wrapper.find('.dsc').exists()).toBe(false)
+    expect(wrapper.find('.hl').exists()).toBe(false)
+
+    await openRow(wrapper)
+    expect(wrapper.find('.row').classes()).not.toContain('shut')
+    expect(wrapper.find('.dsc').text()).toContain('evidence-linked finding draft')
+    expect(wrapper.findAll('.hl li')).toHaveLength(1)
+  })
+
+  it('counts what the fold hides, keeping the colour of what it stands for', async () => {
+    const wrapper = await render([entry({
+      stats: [
+        { label: 'critical', value: 0, severity: 'error' },
+        { label: 'high', value: 8, severity: 'warning' },
+        { label: 'medium', value: 3, severity: 'info' },
+      ],
+      highlights: [
+        { severity: 'warning', label: 'One', detail: 'a', artifact_ref: '' },
+        { severity: 'error', label: 'Two', detail: 'b', artifact_ref: '' },
+      ],
+    })])
+
+    const chips = wrapper.findAll('.sig')
+    // The largest non-zero bucket leads; zero critical says nothing here.
+    expect(chips[0].text()).toBe('8high')
+    expect(chips[0].attributes('data-severity')).toBe('warning')
+    // Two highlights, one of them severe: the pair is reported at its worst.
+    expect(chips[1].text()).toBe('2flags')
+    expect(chips[1].attributes('data-severity')).toBe('error')
+  })
+
+  it('leaves a row with nothing hidden unchipped, so a chip means something', async () => {
+    const wrapper = await render([entry({
+      stats: [],
+      highlights: [],
+      attempts: [{ run_id: 'r1', run_status: 'completed', at: '2026-08-14T11:05:00+00:00', elapsed_ms: 60_000 }],
+      measured_attempts: 1,
+    })])
+
+    expect(wrapper.find('.sig').exists()).toBe(false)
+  })
+
+  it('keeps an open point on the row even while the row is shut', async () => {
+    // The debt is the one thing on a row that asks something of the reader.
+    // Folding it away would be folding away the point of the page.
+    const wrapper = await render([entry({ open_points: [point()] })])
+
+    expect(wrapper.find('.row').classes()).toContain('shut')
+    expect(wrapper.find('.open').text()).toContain('41 of 60 conclusions')
+  })
+
+  it('opens a row clicked anywhere, and leaves the pill to its own link', async () => {
+    const wrapper = await render([entry()])
+
+    await wrapper.find('.row .say').trigger('click')
+    expect(wrapper.find('.dsc').exists()).toBe(true)
+
+    // The pill navigates; it must not also shut the row under the reader. The
+    // stubbed link is a real anchor, so the click is defused before jsdom
+    // tries to follow it — the row handler still sees it bubble.
+    const pill = wrapper.find('.row .card')
+    pill.element.addEventListener('click', event => event.preventDefault())
+    await pill.trigger('click')
+    expect(wrapper.find('.dsc').exists()).toBe(true)
+  })
+
+  it('opens every row under Full, and remembers that for the next visit', async () => {
+    const wrapper = await render([entry(), entry({ id: 'report:m2', capability: 'report.working_draft' })])
+
+    await wrapper.findAll('.dens button')[1].trigger('click')
+    expect(wrapper.findAll('.row.shut')).toHaveLength(0)
+    expect(wrapper.findAll('.dsc')).toHaveLength(2)
+    // Nothing is shut, so nothing offers to be opened.
+    expect(wrapper.find('.chev').exists()).toBe(false)
+    expect(window.localStorage.getItem('aw.record.density')).toBe('full')
+
+    const second = await render([entry()])
+    expect(second.find('.row.shut').exists()).toBe(false)
+  })
+
   /* --- a stage whose result is a distribution ----------------------------- */
 
   it('states a distribution as a tally rather than as another paragraph', async () => {
@@ -438,6 +546,7 @@ describe('EngagementRecordTab', () => {
       ],
     })])
 
+    await openRow(wrapper)
     const chips = wrapper.findAll('.tally li')
     expect(chips).toHaveLength(2)
     expect(chips[0].text()).toBe('1critical')
@@ -449,6 +558,7 @@ describe('EngagementRecordTab', () => {
       stats: [{ label: 'critical', value: 0, severity: 'error' }],
     })])
 
+    await openRow(wrapper)
     expect(wrapper.find('.tally li').attributes('data-zero')).toBe('1')
   })
 
