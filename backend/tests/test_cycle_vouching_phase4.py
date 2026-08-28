@@ -202,14 +202,37 @@ def test_grid_api_is_read_only_matches_item_projection_and_rejects_stale_results
             )
         )
 
+    # Results the current definition cannot account for are reported, not
+    # refused: the grid is the view the auditor repairs the drift from.
     stale = copy.deepcopy(test)
     stale["items"][0]["evaluation"]["definition_sha1"] = "sha1:other-definition"
     monkeypatch.setattr(doc_tests, "load_test", lambda *_args, **_kwargs: stale)
-    conflict = asyncio.run(
+    projected = asyncio.run(
         doc_test_routes.get_cycle_vouch_grid(workspace.id, test["id"])
     )
-    assert conflict.status_code == 409
-    assert json.loads(conflict.body)["code"] == "stale_definition"
+    assert projected["stale_definition"] is True
+    assert projected["stale_cell_count"] > 0
+    drifted = next(
+        row for row in projected["rows"] if row["item_id"] == stale["items"][0]["id"]
+    )
+    assert drifted["definition_stale"] is True
+    evaluated = [
+        key
+        for key, cell in drifted["cells"].items()
+        if cell["attribution_stale"]
+    ]
+    assert evaluated, "an evaluated cell should be flagged unattributable"
+    # An unattributable verdict must not be counted as the match it used to be.
+    for column in projected["columns"]:
+        if column["key"] in evaluated:
+            assert column["stale_cells"] >= 1
+            # Columns tally every item, not just the requested page.
+            assert (
+                sum(column["counts"].values()) + column["stale_cells"]
+                == projected["page"]["total"]
+            )
+    # Rows the drift does not touch still project normally.
+    assert all(row["label"] for row in projected["rows"])
 
 
 def test_summary_and_rollup_keep_tests_items_and_assertions_separate(

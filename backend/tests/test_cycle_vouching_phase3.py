@@ -453,3 +453,63 @@ def test_audit_completion_never_accepts_pending_or_stale_cycle_disposition(
     stale = rcm_execution.completion(workspace)
     assert stale["pending_cycle_dispositions"][0]["test_id"] == test["id"]
     assert verify_audit(workspace)["audit_complete"] is False
+
+
+def test_signoff_against_a_stale_evaluation_is_recorded_not_refused(
+    contract, monkeypatch
+):
+    """Evidence moving downgrades a cycle sign-off; it does not reject it.
+
+    Refusing the write lost the fact that an auditor had looked, which is the
+    thing the record most needs.  Everything the refusal protected is still
+    enforced downstream by the stale flag.
+    """
+
+    workspace, test, _current = _workspace(contract, monkeypatch)
+    fieldwork.run_document_test(
+        workspace, test["id"], unit_id="UNIT-CYCLE", run_id="RUN-CYCLE"
+    )
+    stored = doc_tests.load_test(workspace, test["id"])
+    item = stored["items"][0]
+    assert doc_tests.item_execution_current(stored, item)
+
+    # Move the inputs out from under the stored result, so re-materialization
+    # cannot reuse it and the evaluation no longer reads as current.
+    key = next(iter(item["result_by_assertion"]))
+    item["result_by_assertion"][key]["input_hashes"] = {"role": "sha1:moved"}
+    doc_tests.save_test(workspace, stored)
+
+    signed = doc_tests.update_item(
+        workspace, test["id"], item["id"], {"state": "confirmed"}
+    )
+    signed_item = signed["items"][0]
+
+    # The decision is on the record,
+    assert signed_item["disposition"]["state"] == "confirmed"
+    # flagged as made against inputs that have since moved,
+    assert signed_item["disposition"]["stale"] is True
+    assert "no longer current" in signed_item["runner_note"]
+    # and still counts as nothing downstream.
+    assert doc_tests.item_disposition_current(signed, signed_item) is False
+    assert signed["status"] == "review_required"
+    assert doc_tests.result_rollup(signed)["conclusion_eligible"] is False
+    assert rcm_execution.completion(workspace)["pending_cycle_dispositions"]
+    assert verify_audit(workspace)["audit_complete"] is False
+
+
+def test_signoff_on_a_current_evaluation_is_not_marked_stale(contract, monkeypatch):
+    """The downgrade must not flag a sign-off that is genuinely current."""
+
+    workspace, test, _current = _workspace(contract, monkeypatch)
+    fieldwork.run_document_test(
+        workspace, test["id"], unit_id="UNIT-CYCLE", run_id="RUN-CYCLE"
+    )
+    stored = doc_tests.load_test(workspace, test["id"])
+    signed = doc_tests.update_item(
+        workspace, test["id"], stored["items"][0]["id"], {"state": "confirmed"}
+    )
+
+    assert signed["items"][0]["disposition"]["stale"] is False
+    assert signed["items"][0]["runner_note"] == "Auditor sign-off."
+    assert signed["status"] == "completed"
+    assert doc_tests.item_disposition_current(signed, signed["items"][0])

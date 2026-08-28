@@ -104,6 +104,44 @@ def test_finding_crud_validates_typed_sources_and_rolls_up(workspace_with_data):
     assert ws.findings == []
 
 
+def test_a_finding_may_be_drafted_against_evidence_that_has_since_changed(
+    workspace_with_data,
+):
+    """`add` weighs a changed source the way `update` already does.
+
+    Whether the source still supports the finding is the auditor's call, made
+    against the warning; refusing to record the draft at all just meant the two
+    write paths disagreed about the same anchor.
+    """
+
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(
+        workspace_with_data
+    )
+    moved = {**anchor, "source_sha1": "0" * 40}
+    payload = {
+        **complete_finding_payload(rcm, procedure, execution, moved),
+        "evidence_refs": [moved],
+    }
+    item = findings.add(ws, payload)
+
+    assert item["evidence_refs"][0]["source_sha1"] == "0" * 40
+    # The signal is carried, not swallowed.
+    assert findings.evidence_warnings(ws, item) == [
+        f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' has changed since this finding was drafted."
+    ]
+    # A source that does not exist at all is still refused.
+    with pytest.raises(workspaces.WorkspaceError, match="does not exist"):
+        findings.add(
+            ws,
+            {
+                **complete_finding_payload(rcm, procedure, execution, anchor),
+                "id": "F-MISSING",
+                "semantic_id": "finding:missing-source",
+                "evidence_refs": [{**anchor, "source_id": "missing"}],
+            },
+        )
+
+
 def test_agent_finding_promotion_is_explicit_typed_and_idempotent(workspace_with_data):
     ws, _rcm, _procedure, _execution, analysis, _anchor = linked_workspace(workspace_with_data)
     run = store.new_run(ws, "auto")

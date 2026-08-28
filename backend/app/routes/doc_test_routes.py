@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import JSONResponse
 
 from .. import cycle_vouching, doc_tests, working_papers, workspaces
 from ..workspaces import WorkspaceError
@@ -122,16 +121,16 @@ async def get_cycle_vouch_grid(
     offset: int = 0,
     limit: int = 100,
 ):
-    """Project the current Cycle vouch result grid without executing or writing."""
+    """Project the current Cycle vouch result grid without executing or writing.
+
+    Results that cannot be attributed to the current definition are flagged in
+    the payload (``stale_definition``, and ``attribution_stale`` per cell)
+    rather than refused: the grid is the view an auditor repairs the drift from.
+    """
 
     test = doc_tests.load_test(_ws(workspace_id), test_id)
     try:
         return cycle_vouching.grid_projection(test, offset=offset, limit=limit)
-    except cycle_vouching.GridStaleDefinitionError as error:
-        return JSONResponse(
-            {"detail": str(error), "code": "stale_definition"},
-            status_code=409,
-        )
     except cycle_vouching.CycleSchemaError as error:
         raise WorkspaceError(str(error)) from error
 

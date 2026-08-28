@@ -37,6 +37,7 @@ const payload: CycleVouchGridPayload = {
       match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0,
       ambiguous: 0, not_run: 0,
     },
+    stale_cells: 0,
   }],
   rows: [{
     item_id: 'ITEM-1',
@@ -44,6 +45,7 @@ const payload: CycleVouchGridPayload = {
     evaluation_state: 'failed',
     disposition_state: 'pending',
     disposition_stale: false,
+    definition_stale: false,
     roles_present: ['payslip', 'bank_payment'],
     missing_roles: [],
     shared_record_facts: [],
@@ -53,6 +55,8 @@ const payload: CycleVouchGridPayload = {
         display: '1,000 vs 900',
         comparison_count: 2,
         evidence_count: 2,
+        stale: false,
+        attribution_stale: false,
         comparisons: [
           {
             role: 'payslip', document_id: 'DOC-PAYSLIP', verdict: 'match',
@@ -66,6 +70,8 @@ const payload: CycleVouchGridPayload = {
       },
     },
   }],
+  stale_definition: false,
+  stale_cell_count: 0,
   page: { offset: 0, limit: 100, total: 1 },
   truncated: false,
 }

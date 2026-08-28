@@ -823,6 +823,10 @@ export interface CycleVouchGridCell {
   comparison_count: number
   evidence_count: number
   comparisons: CycleVouchGridComparison[]
+  /** The runner's own flag that this cell needs re-running. */
+  stale: boolean
+  /** The stored verdict cannot be read under the current column definition. */
+  attribution_stale: boolean
 }
 
 export interface CycleVouchGridPayload {
@@ -842,7 +846,9 @@ export interface CycleVouchGridPayload {
     label: string
     operator: CycleOperator
     applicable_roles: string[]
+    /** Excludes unattributable cells: sum(counts) + stale_cells === row count. */
     counts: Record<CycleAssertionVerdict, number>
+    stale_cells: number
   }>
   rows: Array<{
     item_id: string
@@ -850,6 +856,7 @@ export interface CycleVouchGridPayload {
     evaluation_state: CycleEvaluationState
     disposition_state: CycleDispositionState
     disposition_stale: boolean
+    definition_stale: boolean
     roles_present: string[]
     missing_roles: string[]
     shared_record_facts: Array<{
@@ -863,6 +870,8 @@ export interface CycleVouchGridPayload {
     }>
     cells: Record<string, CycleVouchGridCell>
   }>
+  stale_definition: boolean
+  stale_cell_count: number
   page: { offset: number; limit: number; total: number }
   truncated: boolean
 }

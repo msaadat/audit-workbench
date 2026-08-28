@@ -390,7 +390,10 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
                 )
             ) is not None
         ]
-    evidence_refs = validate_evidence(workspace, evidence_values)
+    # A changed source is the auditor's call to weigh, not a reason to refuse
+    # the draft -- the same rule `update` already applies. `evidence_warnings`
+    # and the report's `stale_evidence` check carry the signal instead.
+    evidence_refs = validate_evidence(workspace, evidence_values, allow_changed=True)
     created = _now(workspace)
     item = {
         "id": str(payload.get("id") or f"F-{uuid.uuid4().hex[:6].upper()}"),

@@ -15,6 +15,7 @@ const rows: CycleVouchGridPayload['rows'] = [
     evaluation_state: 'failed',
     disposition_state: 'pending',
     disposition_stale: false,
+    definition_stale: false,
     roles_present: ['payslip', 'bank_payment'],
     missing_roles: [],
     shared_record_facts: [],
@@ -24,6 +25,8 @@ const rows: CycleVouchGridPayload['rows'] = [
         display: '1,000 vs 900',
         comparison_count: 2,
         evidence_count: 2,
+        stale: false,
+        attribution_stale: false,
         comparisons: [
           {
             role: 'payslip', document_id: 'DOC-PAYSLIP', verdict: 'match',
@@ -43,6 +46,7 @@ const rows: CycleVouchGridPayload['rows'] = [
     evaluation_state: 'incomplete',
     disposition_state: 'confirmed',
     disposition_stale: true,
+    definition_stale: false,
     roles_present: ['payslip'],
     missing_roles: ['bank_payment'],
     shared_record_facts: [],
@@ -50,6 +54,7 @@ const rows: CycleVouchGridPayload['rows'] = [
       amount: {
         verdict: 'missing_evidence', display: 'Bank payment missing',
         comparison_count: 1, evidence_count: 1, comparisons: [],
+        stale: false, attribution_stale: false,
       },
     },
   },

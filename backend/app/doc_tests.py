@@ -1652,16 +1652,18 @@ def update_item(
                 "An auditor may only set a cycle disposition to confirmed, "
                 "exception, or pending."
             )
-        # Re-materialize in memory before accepting sign-off.  A changed table,
-        # extraction, record hash, or role closure makes the prior result stale
-        # and must never be confirmed against yesterday's inputs.
+        # Re-materialize in memory before accepting sign-off, so the currency
+        # of the result is judged against the inputs as they stand now.  A
+        # changed table, extraction, record hash, or role closure leaves the
+        # sign-off recorded but stale, the way every other test kind already
+        # treats one: `disposition_current` rejects a stale disposition, which
+        # keeps the test out of `completed` and out of `conclusion_eligible`,
+        # so this never reaches a conclusion unnoticed.  Refusing the write
+        # instead only cost the auditor the record that they had looked.
         test["items"] = cycle_vouching.materialize_cycle_items(workspace, test)
         item = _item(test, item_id)
         evaluation = item.get("evaluation") or {}
-        if state != "pending" and not item_execution_current(test, item):
-            raise WorkspaceError(
-                "A cycle item must have a current deterministic evaluation before disposition."
-            )
+        execution_current = item_execution_current(test, item)
         if state == "pending":
             item["disposition"] = {
                 "state": "pending",
@@ -1673,9 +1675,14 @@ def update_item(
             item["disposition"] = {
                 "state": state,
                 "evaluated_definition_sha1": evaluation.get("definition_sha1"),
-                "stale": False,
+                "stale": not execution_current,
             }
-            item["runner_note"] = "Auditor sign-off."
+            item["runner_note"] = (
+                "Auditor sign-off."
+                if execution_current
+                else "Auditor sign-off recorded against an evaluation that is no "
+                "longer current; re-run the item and re-disposition it."
+            )
         test["status"] = (
             "completed"
             if test.get("items")

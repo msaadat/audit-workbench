@@ -55,10 +55,6 @@ class SelectionConfirmationRequired(CycleSchemaError):
         self.proposal = proposal
 
 
-class GridStaleDefinitionError(CycleSchemaError):
-    """Stored evaluated results cannot be projected against this definition."""
-
-
 SCHEMA_VERSION = 2
 CARDINALITIES = frozenset({"one", "many"})
 REUSE_RULES = frozenset({"exclusive", "allowed"})
@@ -5928,7 +5924,9 @@ def _grid_comparison(value: object) -> dict:
     }
 
 
-def _grid_cell(result: Mapping[str, object]) -> dict:
+def _grid_cell(
+    result: Mapping[str, object], *, attribution_stale: bool = False
+) -> dict:
     comparisons = [
         _grid_comparison(value) for value in result.get("comparisons") or []
     ]
@@ -5938,38 +5936,63 @@ def _grid_cell(result: Mapping[str, object]) -> dict:
         "comparison_count": len(comparisons),
         "evidence_count": len(result.get("evidence_refs") or []),
         "comparisons": comparisons,
+        # The runner's own "this needs re-running" flag, carried through.
+        "stale": bool(result.get("stale")),
+        # Set when the stored verdict cannot be read under the current column.
+        "attribution_stale": bool(attribution_stale),
     }
 
 
-def _assert_grid_definition_current(
+def _grid_attribution(
     test: Mapping[str, object],
     *,
     definition_sha1: str,
     assertions: Mapping[str, Mapping[str, object]],
-) -> None:
-    """Fail when evaluated cells cannot be attributed to current columns."""
+) -> dict[str, dict]:
+    """Locate evaluated cells that cannot be attributed to current columns.
 
+    This is what materialization discovers on the next write, where such a
+    result is reset to ``not_run`` and flagged stale.  The grid is a read, so
+    it reports the gap rather than refusing to render one: an auditor cannot
+    repair a definition drift they are not allowed to look at.  Callers must
+    not read an unattributable verdict as current -- :func:`grid_projection`
+    keeps those cells out of the column tallies for exactly that reason.
+    """
+
+    attribution: dict[str, dict] = {}
     for item in test.get("items") or []:
-        results = item.get("result_by_assertion") or {}
-        evaluated = any(
-            str(result.get("verdict") or "not_run") != "not_run"
-            for result in results.values()
-        )
+        results = {
+            str(key): value
+            for key, value in (item.get("result_by_assertion") or {}).items()
+        }
+        evaluated = {
+            key
+            for key, result in results.items()
+            if str(result.get("verdict") or "not_run") != "not_run"
+        }
         item_definition_sha1 = str(
             (item.get("evaluation") or {}).get("definition_sha1") or ""
         )
-        if evaluated and item_definition_sha1 != definition_sha1:
-            raise GridStaleDefinitionError(
-                "Cycle results were produced for a different test definition."
-            )
-        for key, result in results.items():
-            if str(result.get("verdict") or "not_run") == "not_run":
-                continue
-            assertion = assertions.get(str(key))
-            if assertion is None or result.get("assertion_sha1") != _sha1_hash(assertion):
-                raise GridStaleDefinitionError(
-                    "Cycle results cannot be attributed to the current assertion columns."
-                )
+        # A different test definition puts every evaluated cell on the item out
+        # of reach, not only the ones whose own assertion happens to have moved.
+        definition_stale = bool(
+            evaluated and item_definition_sha1 != definition_sha1
+        )
+        if definition_stale:
+            stale_keys = set(evaluated)
+        else:
+            stale_keys = {
+                key
+                for key in evaluated
+                if assertions.get(key) is None
+                or results[key].get("assertion_sha1")
+                != _sha1_hash(assertions[key])
+            }
+        attribution[str(item.get("id") or "")] = {
+            "definition_stale": definition_stale,
+            "stale_keys": stale_keys,
+        }
+    return attribution
 
 
 def grid_projection(
@@ -6005,7 +6028,7 @@ def grid_projection(
         str(assertion["key"]): assertion for assertion in assertion_values
     }
     definition_sha1 = cycle_definition_sha1(validated)
-    _assert_grid_definition_current(
+    attribution = _grid_attribution(
         test,
         definition_sha1=definition_sha1,
         assertions=assertions,
@@ -6027,8 +6050,16 @@ def grid_projection(
             elif operand.get("source") == "roles":
                 applicable_roles.extend(str(role) for role in operand.get("roles") or [])
         counts = {verdict: 0 for verdict in sorted(ASSERTION_VERDICTS)}
+        stale_cells = 0
         for item in items:
             result = (item.get("result_by_assertion") or {}).get(key) or {}
+            entry = attribution.get(str(item.get("id") or "")) or {}
+            if key in (entry.get("stale_keys") or frozenset()):
+                # An unattributable verdict is not evidence under this column,
+                # so it is held out rather than counted as the match it was.
+                # `sum(counts.values()) + stale_cells` is the item total.
+                stale_cells += 1
+                continue
             counts[str(result.get("verdict") or "not_run")] += 1
         columns.append(
             {
@@ -6037,12 +6068,15 @@ def grid_projection(
                 "operator": str(assertion.get("operator") or ""),
                 "applicable_roles": list(dict.fromkeys(applicable_roles)),
                 "counts": counts,
+                "stale_cells": stale_cells,
             }
         )
     page_items = items[offset : offset + limit]
     rows = []
     for item in page_items:
         results = item.get("result_by_assertion") or {}
+        item_attribution = attribution.get(str(item.get("id") or "")) or {}
+        item_stale_keys = item_attribution.get("stale_keys") or frozenset()
         rows.append(
             {
                 "item_id": str(item.get("id") or ""),
@@ -6081,8 +6115,14 @@ def grid_projection(
                     }
                     for fact in item.get("shared_record_facts") or []
                 ],
+                "definition_stale": bool(
+                    item_attribution.get("definition_stale")
+                ),
                 "cells": {
-                    key: _grid_cell(results.get(key) or {"verdict": "not_run"})
+                    key: _grid_cell(
+                        results.get(key) or {"verdict": "not_run"},
+                        attribution_stale=key in item_stale_keys,
+                    )
                     for key in assertions
                 },
             }
@@ -6104,6 +6144,14 @@ def grid_projection(
         "assertion_counts": dict(rollup["assertion_counts"]),
         "columns": columns,
         "rows": rows,
+        # Advisory, not blocking.  Refusing the whole grid over this withheld
+        # the only view an auditor could have used to repair it.
+        "stale_definition": any(
+            entry.get("definition_stale") for entry in attribution.values()
+        ),
+        "stale_cell_count": sum(
+            len(entry.get("stale_keys") or ()) for entry in attribution.values()
+        ),
         "page": {"offset": offset, "limit": limit, "total": total},
         "truncated": offset + len(rows) < total,
     }
