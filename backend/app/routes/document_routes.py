@@ -9,6 +9,8 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse
 
 from .. import document_analysis, document_search, documents, embedding, intake, methodology, workspaces
+# Aliased: this module already binds the name ``uploads`` to a request's files.
+from .. import uploads as upload_limits
 from ..text import counted, plural_word
 from ..agent import runner, store
 from ..agent.workflows import documents as documents_workflow
@@ -44,7 +46,12 @@ async def upload_documents(
     replace: bool = Form(False),
 ):
     ws = _ws(workspace_id)
-    uploads = [(file.filename or "document", await file.read()) for file in files]
+    incoming = [
+        (file.filename or "document", await upload_limits.read_upload(file))
+        for file in files
+    ]
+    upload_limits.check_quota(ws.owner_id, sum(len(body) for _, body in incoming))
+    uploads = incoming
     normalized_names = [name.casefold() for name, _ in uploads]
     if len(normalized_names) != len(set(normalized_names)):
         raise workspaces.WorkspaceError("Upload each document filename only once per batch.")
@@ -312,7 +319,9 @@ async def list_knowledge_packs(workspace_id: str):
 
 @router.post("/knowledge-packs")
 async def upload_knowledge_pack(workspace_id: str, file: UploadFile = File(...), name: str = Form(""), scope: str = Form("workspace")):
-    content = (await file.read()).decode("utf-8", errors="replace")
+    body = await upload_limits.read_upload(file)
+    upload_limits.check_quota(_ws(workspace_id).owner_id, len(body))
+    content = body.decode("utf-8", errors="replace")
     return methodology.save_pack(_ws(workspace_id), name or file.filename or "Methodology", content, scope=scope, source=file.filename or "")
 
 

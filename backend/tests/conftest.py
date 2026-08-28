@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import assistant_settings, llm, loader, workspaces  # noqa: E402
+from app import accounts, assistant_settings, config, db, llm, loader, registry, usage, workspaces  # noqa: E402
 from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
@@ -200,9 +200,23 @@ def _document_analysis_response(user: str) -> dict:
 
 @pytest.fixture(autouse=True)
 def isolated_workspaces(tmp_path, monkeypatch):
-    """Point workspace storage at a temp folder and clear the frame cache."""
-    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "Workspaces")
+    """Point every durable path at a temp folder and clear the frame cache.
+
+    ``config.DATA_ROOT`` is the single root the workspace tree, the control
+    plane database, and the settings document are all derived from, so one
+    monkeypatch isolates all three.  The control-plane connection is dropped on
+    both sides because it is cached per thread and per database path.
+    """
+    db.close_all()
+    registry.forget_reconciled()
+    usage.forget_owners()
+    monkeypatch.setattr(config, "DATA_ROOT", tmp_path)
+    monkeypatch.delenv("WORKBENCH_DB", raising=False)
+    monkeypatch.delenv("AUTH_MODE", raising=False)
     monkeypatch.setattr(assistant_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    # Single-user mode resolves to this account; creating it up front means a
+    # test that never touches a route still has an owner for its workspaces.
+    accounts.ensure_local_user()
     for provider in assistant_settings.PROVIDERS:
         monkeypatch.delenv(f"{provider.upper()}_MODEL", raising=False)
     # Sampling is configuration now, and it overrides the stored document, so a
@@ -210,6 +224,9 @@ def isolated_workspaces(tmp_path, monkeypatch):
     monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
     loader.clear_cache()
     yield
+    db.close_all()
+    registry.forget_reconciled()
+    usage.forget_owners()
 
 
 @pytest.fixture

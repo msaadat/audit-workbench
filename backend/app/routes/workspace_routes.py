@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, File, UploadFile
 
-from .. import workspaces
+from .. import uploads, workspaces
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
@@ -39,7 +39,8 @@ async def upload_tables(workspace_id: str, files: list[UploadFile] = File(...)):
     ws = workspaces.load_workspace(workspace_id)
     added = []
     for file in files:
-        content = await file.read()
+        content = await uploads.read_upload(file)
+        uploads.check_quota(ws.owner_id, len(content))
         added.append(ws.add_table(file.filename or "upload.csv", content))
     return {"added": added, "workspace": ws.summary()}
 
@@ -49,7 +50,8 @@ async def replace_table(
     workspace_id: str, table_name: str, file: UploadFile = File(...)
 ):
     ws = workspaces.load_workspace(workspace_id)
-    content = await file.read()
+    content = await uploads.read_upload(file)
+    uploads.check_quota(ws.owner_id, len(content))
     result = ws.replace_table(table_name, file.filename or "upload.csv", content)
     return {"replaced": result, "workspace": ws.summary()}
 

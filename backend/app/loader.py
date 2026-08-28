@@ -19,7 +19,9 @@ the stale file is swept away once the fresh one is written.
 from __future__ import annotations
 
 import math
+import os
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +31,45 @@ SUPPORTED_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm", ".xls")
 EXCEL_HEADER_SCAN_ROWS = 50
 CACHE_DIRNAME = ".cache"
 
-_cache: dict[tuple, pl.DataFrame] = {}
+# Insertion-ordered so the oldest entry is the first key: the cache is an LRU
+# bounded by total frame bytes, not by entry count. Unbounded was fine when one
+# person's frames were the only ones resident; with several auditors holding
+# 100MB+ populations at once it is the dominant memory risk on a shared server.
+_cache: "OrderedDict[tuple, pl.DataFrame]" = OrderedDict()
+
+DEFAULT_CACHE_BUDGET_MB = 2048
+
+
+def cache_budget_bytes() -> int:
+    raw = str(os.environ.get("WORKBENCH_FRAME_CACHE_MB") or "").strip()
+    try:
+        megabytes = int(float(raw)) if raw else DEFAULT_CACHE_BUDGET_MB
+    except ValueError:
+        megabytes = DEFAULT_CACHE_BUDGET_MB
+    return max(1, megabytes) * 1024 * 1024
+
+
+def _frame_bytes(frame: pl.DataFrame) -> int:
+    try:
+        return int(frame.estimated_size())
+    except Exception:
+        return 0
+
+
+def cache_bytes() -> int:
+    return sum(_frame_bytes(frame) for frame in _cache.values())
+
+
+def _evict_to_budget(budget: int | None = None) -> None:
+    """Drop least-recently-used frames until the cache fits its budget.
+
+    The frame just read is always kept, even when it alone exceeds the budget:
+    refusing to cache it would not free the memory the caller is already holding,
+    and would re-parse it on every request.
+    """
+    ceiling = cache_budget_bytes() if budget is None else budget
+    while len(_cache) > 1 and cache_bytes() > ceiling:
+        _cache.popitem(last=False)
 
 
 @dataclass(frozen=True)
@@ -257,6 +297,9 @@ def read_table(path: Path) -> pl.DataFrame:
 
     sig = _signature(path)
     if sig in _cache:
+        # Touch: most-recently-used entries move to the end, so eviction takes
+        # the frame nobody has asked for in the longest time.
+        _cache.move_to_end(sig)
         return _cache[sig]
 
     suffix = path.suffix.lower()
@@ -284,4 +327,5 @@ def read_table(path: Path) -> pl.DataFrame:
     # Drop stale in-memory entries for the same file before caching the new read.
     _clear_memory_cache(path)
     _cache[sig] = df
+    _evict_to_budget()
     return df

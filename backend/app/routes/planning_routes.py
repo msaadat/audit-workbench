@@ -9,7 +9,7 @@ import polars as pl
 from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from .. import doc_tests, findings, rcm_execution, templates_store, working_papers, workspaces
+from .. import doc_tests, findings, rcm_execution, templates_store, uploads, workspaces, working_papers
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["planning"])
 
@@ -67,7 +67,7 @@ async def export_apm(workspace_id: str):
 @router.post("/planning/apm/import")
 async def import_apm(workspace_id: str, file: UploadFile = File(...)):
     ws = _ws(workspace_id)
-    content = await file.read()
+    content = await uploads.read_upload(file)
     try:
         markdown = content.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -118,7 +118,7 @@ async def export_rcm(workspace_id: str):
 @router.post("/rcm/import")
 async def import_rcm(workspace_id: str, file: UploadFile = File(...)):
     ws = _ws(workspace_id)
-    content = await file.read()
+    content = await uploads.read_upload(file)
     suffix = (file.filename or "").lower()
     buffer = io.BytesIO(content)
     if suffix.endswith(".csv"):

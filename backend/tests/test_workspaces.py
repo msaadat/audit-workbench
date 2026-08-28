@@ -8,9 +8,13 @@ from app.workspaces import WorkspaceError
 
 def test_create_list_delete_workspace():
     ws = workspaces.create_workspace("My Audit", "FY26 revenue testing")
-    assert ws.id == "my-audit"
+    # Identity and location are separate: the id is a globally unique uid, and
+    # the readable slug names the directory inside the owner's home.
+    assert ws.dir_name == "my-audit"
+    assert ws.id == ws.uid and ws.uid.startswith("ws_")
+    assert ws.root.parent.parent.name == "local"
     listed = workspaces.list_workspaces()
-    assert [w["id"] for w in listed] == ["my-audit"]
+    assert [w["id"] for w in listed] == [ws.uid]
     assert listed[0]["description"] == "FY26 revenue testing"
 
     workspaces.delete_workspace("my-audit")

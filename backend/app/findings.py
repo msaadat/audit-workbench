@@ -267,8 +267,15 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
         issues.append("no execution-result reference")
     if not item.get("evidence_refs"):
         issues.append("no immutable evidence anchor")
+    # Resolved once, not once per reference: `_known_test_ids` lists and
+    # hydrates every Document Test, which for a cycle-vouching test re-validates
+    # every evidence record against every assertion. A finding carrying three
+    # test refs paid for that three times over, and callers that walk every
+    # finding paid for it again per finding. Left unresolved when there are no
+    # refs to check, so a draft without test links still costs nothing.
+    known_tests = _known_test_ids(workspace) if test_refs else set()
     for test_id in test_refs:
-        if test_id not in _known_test_ids(workspace):
+        if test_id not in known_tests:
             issues.append(f"missing test {test_id}")
             continue
         linked_row = _test_rcm_id(workspace, test_id)

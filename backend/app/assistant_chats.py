@@ -68,6 +68,26 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def _belongs_to(record: dict, workspace) -> bool:
+    """Whether a stored chat names the workspace it was found under.
+
+    A chat written before workspaces gained a globally unique ``uid`` recorded
+    the directory slug instead, so the slug is accepted alongside the uid.
+    Without this every pre-existing chat would become unreadable the moment
+    ``Workspace.id`` started carrying the uid.
+
+    The check is close to redundant either way — the file lives at
+    ``<ws.root>/AssistantChats/<chat_id>/chat.json``, so path containment
+    already establishes which workspace owns it — but it is cheap and it
+    catches a mis-copied folder.
+    """
+    stored = str(record.get("workspace_id") or "")
+    accepted = {workspace.uid, workspace.dir_name}
+    if getattr(workspace, "legacy_slug", ""):
+        accepted.add(workspace.legacy_slug)
+    return stored in accepted
+
+
 def _lock(path: Path) -> threading.RLock:
     key = str(path.resolve())
     with _file_locks_guard:
@@ -132,7 +152,7 @@ def _read(workspace: Workspace, chat_id: str, *, recover: bool = True) -> dict:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise WorkspaceError(f"Assistant chat '{chat_id}' is unreadable.") from error
-        if record.get("id") != chat_id or record.get("workspace_id") != workspace.id:
+        if record.get("id") != chat_id or not _belongs_to(record, workspace):
             raise WorkspaceError("Assistant chat identity does not match its workspace.")
         record.setdefault("composer_context", {"document_ids": []})
         record.setdefault("messages", [])

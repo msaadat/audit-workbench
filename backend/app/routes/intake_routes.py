@@ -6,7 +6,7 @@ import hashlib
 
 from fastapi import APIRouter, Body, File, Form, UploadFile
 
-from .. import intake, workspaces
+from .. import intake, uploads, workspaces
 from ..agent import runner
 
 router = APIRouter(prefix="/api/workspaces", tags=["folder-intake"])
@@ -71,12 +71,19 @@ async def upload_folder_file(
     target.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1()
     size = 0
+    cap = uploads.max_upload_bytes()
     try:
         with target.open("wb") as handle:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
+                if size > cap:
+                    raise workspaces.WorkspaceError(
+                        f"'{relative_path}' is larger than the "
+                        f"{uploads.describe_bytes(cap)} upload limit."
+                    )
                 digest.update(chunk)
                 handle.write(chunk)
+        uploads.check_quota(ws.owner_id, size)
         intake.mark_uploaded(ws, batch, item, digest.hexdigest(), size, target)
     except Exception:
         if not item.get("uploaded"):

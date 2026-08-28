@@ -52,7 +52,7 @@ def test_unsupported_or_missing_engine_fails_closed(workspace_with_data, engine)
     store.save_run(workspace_with_data, run)
 
     runner._execute(
-        workspace_with_data.id,
+        workspace_with_data,
         run["id"],
         runner.RunHandle(workspace_with_data.id, run["id"]),
     )

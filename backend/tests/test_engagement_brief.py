@@ -86,7 +86,7 @@ def test_a_dependency_never_appears_after_the_outcome_that_needs_it():
 # The cost line
 # --------------------------------------------------------------------------- #
 def test_with_no_history_the_estimate_refuses_to_produce_a_number(monkeypatch):
-    monkeypatch.setattr(engagement, "_comparable_runs", lambda: [])
+    monkeypatch.setattr(engagement, "_comparable_runs", lambda actor=None: [])
     estimate = engagement.cost_estimate()
 
     assert estimate["state"] == "insufficient_history"
@@ -98,14 +98,14 @@ def test_with_no_history_the_estimate_refuses_to_produce_a_number(monkeypatch):
 
 
 def test_one_run_is_not_enough_to_estimate_from(monkeypatch):
-    monkeypatch.setattr(engagement, "_comparable_runs", lambda: [
+    monkeypatch.setattr(engagement, "_comparable_runs", lambda actor=None: [
         {"usage": {"llm_turns": 100}, "duration_ms": 600_000},
     ])
     assert engagement.cost_estimate()["state"] == "insufficient_history"
 
 
 def test_an_estimate_reports_the_median_and_the_worst_case(monkeypatch):
-    monkeypatch.setattr(engagement, "_comparable_runs", lambda: [
+    monkeypatch.setattr(engagement, "_comparable_runs", lambda actor=None: [
         {"usage": {"llm_turns": 100}, "duration_ms": 600_000},    # 10 min
         {"usage": {"llm_turns": 200}, "duration_ms": 1_200_000},  # 20 min
         {"usage": {"llm_turns": 150}, "duration_ms": 1_800_000},  # 30 min

@@ -13,6 +13,7 @@ import { api } from '../api'
 import { documentStatus } from '../composables/documentStatus'
 import { TERMINAL_STATUSES, useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
+import { useSession } from '../composables/useSession'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AIActivityEvent, AgentRun, AssistantProvider, AssistantStatus, AuditDocument, DocumentAnalysisCitation, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
@@ -56,6 +57,12 @@ const notesDraft = ref('')
 const analysisBusy = ref(false)
 const compareCandidate = ref(false)
 const fullVisualCoverage = ref(false)
+const session = useSession()
+// Single-user installations run as an administrator, so this is transparent
+// locally and only bites once real accounts exist.
+const canConfigureVision = computed(
+  () => session.state.singleUser || session.state.user?.is_admin === true,
+)
 const visionSettingsOpen = ref(false)
 const settingsStatus = ref<AssistantStatus | null>(null)
 const visionProvider = ref('')
@@ -712,13 +719,23 @@ onUnmounted(() => {
                 v-tooltip.bottom="`Opt in to visual analysis of text-bearing pages, bounded to ${visualPageLimit} pages for this document.`"
                 @click="fullVisualCoverage = !fullVisualCoverage"
               />
+              <!-- The vision profile is part of the server-wide assistant
+                   configuration, so only an administrator may change it. A
+                   non-admin still needs to know whether it is available. -->
               <Button
+                v-if="canConfigureVision"
                 :label="visionAvailable ? 'Vision configured' : 'Configure vision'"
                 :icon="visionAvailable ? 'pi pi-eye' : 'pi pi-cog'"
                 size="small"
                 severity="secondary"
                 text
                 @click="openVisionSettings"
+              />
+              <Tag
+                v-else
+                :value="visionAvailable ? 'Vision configured' : 'Vision not configured'"
+                :severity="visionAvailable ? 'secondary' : 'warn'"
+                v-tooltip.bottom="'Set by an administrator for the whole server.'"
               />
               <Button v-if="!analysis?.generated" label="Analyse" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
               <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" />

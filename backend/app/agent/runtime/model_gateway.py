@@ -535,6 +535,19 @@ class DefaultModelGateway:
             or provider_usage.get("output_tokens")
             or 0
         )
+        # Attribution for the shared, administrator-owned provider key. The run
+        # budget below is per-run; this is per-user and outlives the run.
+        from ... import usage as usage_ledger
+
+        usage_ledger.record(
+            workspace_uid=self.workspace_id,
+            run_id=str(self.run.get("id") or ""),
+            provider=str(profile.get("provider") or profile.get("backend") or ""),
+            model=str(profile.get("model") or ""),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
         token_budget_exceeded = self._record_model_usage(
             worker=tag,
             request_characters=request_characters,

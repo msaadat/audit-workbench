@@ -51,7 +51,7 @@ def refresh_workspace(host: ExecutionHost) -> Workspace:
 
     state = host.run.setdefault("workflow", {})
     previous = int(state.get("workspace_revision") or 0)
-    host.ws = load_workspace(host.ws.id)
+    host.ws = host.ws.reload()
     state["workspace_revision"] = host.ws.revision
     if host.ws.revision != previous:
         host.emit(

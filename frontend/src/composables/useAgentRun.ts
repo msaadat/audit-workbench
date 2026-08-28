@@ -340,6 +340,23 @@ async function loadRuns(workspaceId: string) {
   return store.runs
 }
 
+/**
+ * Drop every live stream and cached store. Called on sign-out: these maps are
+ * module-global and keyed by workspace id, so without this the next account to
+ * sign in on the same page would inherit the previous one's open EventSources
+ * and agent state.
+ */
+export function resetAgentState() {
+  for (const workspaceId of [...sources.keys()]) disconnect(workspaceId)
+  for (const timer of refetchTimers.values()) window.clearTimeout(timer)
+  for (const timer of invalidationTimers.values()) window.clearTimeout(timer)
+  refetchTimers.clear()
+  invalidationTimers.clear()
+  stores.clear()
+  listeners.clear()
+  invalidationListeners.clear()
+}
+
 export function useAgentRun(workspaceId: string) {
   const store = state(workspaceId)
 

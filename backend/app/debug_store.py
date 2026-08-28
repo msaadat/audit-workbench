@@ -113,8 +113,16 @@ def workspace_root(workspace_id: str) -> Path:
                 stored = {}
             if str(stored.get("id") or candidate.name) == value:
                 return candidate
-    from . import workspaces
-    root = workspaces.WORKSPACES_DIR / value
+    # Telemetry runs on agent daemon threads with no request principal, and the
+    # route that reached it has already resolved and authorized the workspace.
+    # The registry lookup gets back to the root without either re-authorizing or
+    # joining a path under the data root.
+    from . import registry
+
+    row = registry.locate(value)
+    if row is None:
+        raise WorkspaceError(f"Workspace '{value}' not found.")
+    root = registry.workspace_root(row["owner_id"], row["dir_name"])
     if not (root / "workspace.json").exists():
         raise WorkspaceError(f"Workspace '{value}' not found.")
     return root

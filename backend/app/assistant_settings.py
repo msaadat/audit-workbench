@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 
-from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
+from . import config  # noqa: F401  # data_root() and .env loading
 
 PROVIDERS = {
     "groq": {
@@ -114,13 +114,10 @@ DEFAULT_SETTINGS = {
     "provider": DEFAULT_PROVIDER,
     "model": PROVIDERS[DEFAULT_PROVIDER]["default_model"],
 }
+# Assistant configuration is admin-owned and global: there is deliberately no
+# per-user copy, so this stays a single document at the data root.
 SETTINGS_PATH = Path(
-    os.environ.get("WORKBENCH_SETTINGS", "")
-    or Path(
-        os.environ.get("WORKBENCH_DATA", "")
-        or Path(__file__).resolve().parents[2] / "Workspaces"
-    )
-    / "settings.json"
+    os.environ.get("WORKBENCH_SETTINGS", "") or config.data_root() / "settings.json"
 )
 
 

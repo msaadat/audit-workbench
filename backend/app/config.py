@@ -16,6 +16,24 @@ DOTENV_FILES = (
     PROJECT_ROOT / "backend" / ".env",
 )
 
+# The one root every durable path is derived from: workspace trees live under
+# ``<DATA_ROOT>/Users/<user_id>/Workspaces/``, the control-plane database at
+# ``<DATA_ROOT>/workbench.db``, and admin-owned assistant settings at
+# ``<DATA_ROOT>/settings.json``.
+#
+# Resolved per call rather than captured at import: ``load_env_files`` runs at
+# the bottom of this module, so a ``WORKBENCH_DATA`` set only in ``.env`` is
+# not in the environment yet while this module's body is executing.  Setting
+# ``DATA_ROOT`` overrides the environment outright, which is how tests repoint
+# every durable path with one monkeypatch.
+DATA_ROOT: Path | None = None
+
+
+def data_root() -> Path:
+    if DATA_ROOT is not None:
+        return Path(DATA_ROOT)
+    return Path(os.environ.get("WORKBENCH_DATA", "") or PROJECT_ROOT / "Workspaces")
+
 
 def load_env_files() -> None:
     for path in DOTENV_FILES:

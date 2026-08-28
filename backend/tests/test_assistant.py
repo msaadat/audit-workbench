@@ -13,6 +13,17 @@ from app.sandbox import SandboxError, run as sandbox_run
 from app.workspaces import WorkspaceError
 
 
+def _admin_request():
+    """The minimum a route needs: a request whose state names an admin."""
+    from types import SimpleNamespace
+
+    from app.auth import Principal
+
+    return SimpleNamespace(
+        state=SimpleNamespace(principal=Principal(user_id="local", is_admin=True))
+    )
+
+
 # ------------------------------------------------------------------- sandbox
 def test_sandbox_runs_polars_and_captures_stdout():
     frames = {"transactions": pl.DataFrame({"amount": [1, 2, 3]})}
@@ -451,8 +462,11 @@ def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
 async def test_assistant_settings_endpoint_persists_provider_model(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-key")
 
+    # Assistant configuration is administrator-only, so the route needs a
+    # request carrying an admin principal.
     body = await assistant_routes.assistant_settings(
-        {"provider": "mistral", "model": "mistral-small-latest"}
+        {"provider": "mistral", "model": "mistral-small-latest"},
+        request=_admin_request(),
     )
 
     assert body["configured"] is True

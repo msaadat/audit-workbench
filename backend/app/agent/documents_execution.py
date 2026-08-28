@@ -23,7 +23,7 @@ import uuid
 from .. import cycle_vouching, document_analysis, document_media
 from ..text import counted
 from ..workspace_transactions import parent_hashes
-from ..workspaces import Workspace, WorkspaceError, load_workspace
+from ..workspaces import Workspace, WorkspaceError
 from . import narration, store, workflow
 from .base import BaseRunner
 from .workflow import semantic_unit_id
@@ -365,7 +365,7 @@ class DocumentWorkflowExecution(BaseRunner):
             document_id,
             force=workflow_scope(self.run).get("generation_mode") == "force",
         )
-        self.ws = load_workspace(self.ws.id)
+        self.ws = self.ws.reload()
         state = str(extracted.get("state") or "")
         if state == "failed":
             reason = str(

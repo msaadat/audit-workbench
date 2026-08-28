@@ -440,7 +440,19 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
     remains is what a reader of the report could be told: the planning basis,
     the matrix and what each control concluded, what each test found, the
     confirmed findings, and the limitations bounding all of it.
+
+    The pass resolves the same Document Test scope once per confirmed finding —
+    ``support_issues`` asks for the set of known test IDs, which lists and
+    hydrates every test, and cycle-vouching tests re-validate every evidence
+    record on each hydration.  Nothing here writes a test, so the whole pass
+    runs inside the memoization scope ``doc_tests`` already provides for this
+    fan-out, as ``quality_checks`` does for the identical reason.
     """
+    with doc_tests.request_cache_scope():
+        return _build_context(workspace, workflow=workflow)
+
+
+def _build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict:
     document_tests = rcm_execution.document_test_index(workspace)
     rolled = rcm_execution.rollup(workspace, document_tests=document_tests)
     completion = rcm_execution.completion(workspace, document_tests=document_tests)

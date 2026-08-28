@@ -276,7 +276,7 @@ def test_execute_dispatches_by_explicit_engine_only(
     monkeypatch.setattr(module, class_name, StubRunner)
 
     runner._execute(
-        workspace_with_data.id,
+        workspace_with_data,
         run["id"],
         runner.RunHandle(workspace_with_data.id, run["id"]),
     )
@@ -305,7 +305,7 @@ def test_execute_fails_closed_without_a_supported_explicit_engine(
     store.save_run(workspace_with_data, run)
 
     runner._execute(
-        workspace_with_data.id,
+        workspace_with_data,
         run["id"],
         runner.RunHandle(workspace_with_data.id, run["id"]),
     )
@@ -360,7 +360,7 @@ def test_terminal_crash_still_launches_the_next_queued_follow_up(
     monkeypatch.setattr(runner, "start_command_run", capture_start)
 
     runner._execute(
-        workspace_with_data.id,
+        workspace_with_data,
         run["id"],
         runner.RunHandle(workspace_with_data.id, run["id"]),
     )

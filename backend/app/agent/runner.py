@@ -22,7 +22,7 @@ import re
 import threading
 
 from .. import debug_store, llm
-from ..workspaces import Workspace, WorkspaceError, load_workspace
+from ..workspaces import Workspace, WorkspaceError
 from . import store
 from .runtime import submit_approval_response, submit_interaction_response
 
@@ -34,8 +34,9 @@ class AgentBusyError(RuntimeError):
 class RunHandle:
     """In-memory control state for one live run."""
 
-    def __init__(self, workspace_id: str, run_id: str):
+    def __init__(self, workspace_id: str, run_id: str, owner_id: str = ""):
         self.workspace_id = workspace_id
+        self.owner_id = owner_id
         self.run_id = run_id
         self.thread: threading.Thread | None = None
         self.cancel = threading.Event()
@@ -56,11 +57,42 @@ _HANDLES: dict[str, RunHandle] = {}
 _HANDLES_LOCK = threading.Lock()
 
 
-def _max_concurrent() -> int:
+def _int_env(name: str, default: int) -> int:
     try:
-        return max(1, int(os.environ.get("AGENT_MAX_CONCURRENT") or 1))
+        return max(1, int(os.environ.get(name) or default))
     except ValueError:
-        return 1
+        return default
+
+
+def _max_concurrent() -> int:
+    """The process-wide ceiling: a resource limit, not a fairness rule."""
+    return _int_env("AGENT_MAX_CONCURRENT", 4)
+
+
+def _max_concurrent_per_user() -> int:
+    """How many runs one auditor may have in flight.
+
+    Defaults to one, which is the behaviour a single-user installation always
+    had.  It is the per-user limit rather than the global one that expresses
+    "wait for your run to finish" — before this, one auditor's run made every
+    other auditor on the server wait too.
+    """
+    return _int_env("AGENT_MAX_CONCURRENT_PER_USER", 1)
+
+
+def _admission_error(live: list["RunHandle"], owner_id: str) -> str | None:
+    """Why this run cannot start now, or ``None`` if it may."""
+    if len([h for h in live if h.owner_id == owner_id]) >= _max_concurrent_per_user():
+        return (
+            "You already have an agent run in progress. Wait for it to finish, "
+            "or pause or cancel it first."
+        )
+    if len(live) >= _max_concurrent():
+        return (
+            "The server is running as many agent runs as it is configured to "
+            "handle. Try again shortly."
+        )
+    return None
 
 
 def live_handles() -> list[RunHandle]:
@@ -107,11 +139,9 @@ def start_run(
             "An agent run is already active in this workspace. Wait for it, "
             "or pause/cancel it first."
         )
-    if len(live) >= _max_concurrent():
-        raise AgentBusyError(
-            "The agent is busy with another workspace right now; try again "
-            "when that run finishes."
-        )
+    refusal = _admission_error(live, workspace.owner_id)
+    if refusal:
+        raise AgentBusyError(refusal)
     model_profiles = llm.model_profile_snapshot()
     run = store.new_run(
         workspace, mode, context, parent_run_id, kind=kind,
@@ -121,7 +151,7 @@ def start_run(
     run["model_profiles_snapshotted"] = True
     store.save_run(workspace, run)
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
-    _launch(workspace.id, run["id"])
+    _launch(workspace, run["id"])
     return run
 
 
@@ -148,16 +178,18 @@ def start_command_run(
             "The agent's LLM is not configured. Set an API key for the "
             "assistant provider (or AGENT_PROVIDER/AGENT_MODEL) first."
         )
-    # One live run per workspace, and a process-wide cap. Callers turn the
-    # busy signal into a queued command on the active run rather than an error.
+    # One live run per workspace, a per-user limit, and a process-wide ceiling.
+    # Callers turn the busy signal into a queued command on the active run
+    # rather than an error.
     live = live_handles()
     if any(handle.workspace_id == workspace.id for handle in live):
         raise AgentBusyError(
             "An agent run is already active in this workspace. New chat commands "
             "are queued on that run."
         )
-    if len(live) >= _max_concurrent():
-        raise AgentBusyError("The agent is busy with another workspace right now; try again when it finishes.")
+    refusal = _admission_error(live, workspace.owner_id)
+    if refusal:
+        raise AgentBusyError(refusal)
     command = dict(command)
     context = dict(context or {})
     if not command.get("planning_basis_run_id") and not context.get("planning_basis_run_id"):
@@ -177,7 +209,7 @@ def start_command_run(
 
     resolve_route(workspace, run)
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
-    _launch(workspace.id, run["id"])
+    _launch(workspace, run["id"])
     return run
 
 
@@ -192,7 +224,7 @@ def resume_run(workspace: Workspace, run_id: str) -> dict:
         raise WorkspaceError("This run has finished; start a follow-up run instead.")
     recover_workspace(workspace)
     run = store.load_run(workspace, run_id)
-    _launch(workspace.id, run_id)
+    _launch(workspace, run_id)
     return run
 
 
@@ -577,10 +609,17 @@ def steer(
     return {"handled": "queued", "run": run}
 
 
-def _launch(workspace_id: str, run_id: str) -> None:
-    handle = RunHandle(workspace_id, run_id)
+def _launch(workspace: Workspace, run_id: str) -> None:
+    """Start the run thread, handing it the workspace rather than an ID.
+
+    A daemon thread has no request context, so in multi-user mode it has no
+    principal and cannot resolve an ID to a root.  It does not need to: the
+    caller already holds an authorized ``Workspace``, and re-reading it from
+    disk is what ``reload()`` is for.
+    """
+    handle = RunHandle(workspace.id, run_id, owner_id=workspace.owner_id)
     thread = threading.Thread(
-        target=_execute, args=(workspace_id, run_id, handle), daemon=True,
+        target=_execute, args=(workspace, run_id, handle), daemon=True,
         name=f"agent-run-{run_id}",
     )
     handle.thread = thread
@@ -589,9 +628,10 @@ def _launch(workspace_id: str, run_id: str) -> None:
     thread.start()
 
 
-def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
+def _execute(seed: Workspace, run_id: str, handle: RunHandle) -> None:
+    workspace_id = seed.id
     try:
-        workspace = load_workspace(workspace_id)
+        workspace = seed.reload()
         run = store.load_run(workspace, run_id)
         with debug_store.trace_context(
             workspace_id=workspace_id, workspace_root=str(workspace.root), run_id=run_id, chat_id=run.get("chat_id"),
@@ -628,7 +668,7 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
                 debug_store.capture_structural_state(workspace, trigger="run_completion", run_id=run_id)
     except Exception as error:  # last-resort: never leave a run stuck 'active'
         try:
-            workspace = load_workspace(workspace_id)
+            workspace = seed.reload()
             run = store.load_run(workspace, run_id)
             if run["status"] not in store.TERMINAL_STATUSES:
                 run["status"] = "failed"
@@ -647,7 +687,7 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
             if current is handle:
                 _HANDLES.pop(run_id, None)
         try:
-            workspace = load_workspace(workspace_id)
+            workspace = seed.reload()
             finished = store.load_run(workspace, run_id)
             if store.is_command_run(finished) and finished["status"] in store.TERMINAL_STATUSES:
                 _launch_next_command(workspace, finished)

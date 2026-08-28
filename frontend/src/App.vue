@@ -1,10 +1,34 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import Toast from 'primevue/toast'
 import ConfirmDialog from 'primevue/confirmdialog'
 
+import UiOverflowMenu from './components/ui/UiOverflowMenu.vue'
+import { useSession } from './composables/useSession'
+
 const route = useRoute()
+const router = useRouter()
+const session = useSession()
+
+// Single-user installations have nobody to switch to, so the account control
+// stays hidden and the local-first product looks exactly as it did.
+const showAccount = computed(() => !session.state.singleUser && session.state.user !== null)
+const accountLabel = computed(
+  () => session.state.user?.display_name || session.state.user?.email || 'Account',
+)
+const accountActions = computed(() => [
+  { label: session.state.user?.email ?? '', disabled: true },
+  { separator: true },
+  {
+    label: 'Sign out',
+    icon: 'pi pi-sign-out',
+    command: async () => {
+      await session.signOut()
+      await router.replace({ name: 'login' })
+    },
+  },
+])
 // Every workspace surface brings its own engagement header; the debug console
 // deliberately keeps the global one.
 const WORKSPACE_ROUTES = [
@@ -23,6 +47,12 @@ const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?
     <a href="/about.html" class="about-link">
       <i class="pi pi-info-circle" /> About
     </a>
+    <UiOverflowMenu
+      v-if="showAccount"
+      :items="accountActions"
+      :label="accountLabel"
+      tooltip="Account"
+    />
   </header>
   <main :class="{ 'workspace-main': inWorkspace }">
     <router-view />

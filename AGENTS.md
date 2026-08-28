@@ -53,9 +53,20 @@ report unchanged.
 backend/app/
 |- main.py                     - app factory; mounts all /api routers; serves
 |                                frontend/dist with SPA history fallback; adds
-|                                optimistic workspace revision middleware
+|                                the principal scope and optimistic workspace
+|                                revision middleware
+|- db.py                       - SQLite control plane: connections, pragmas,
+|                                user_version migrations. Identity and indexes
+|                                only; audit content stays on the filesystem
+|- accounts.py                 - admin-provisioned user records, scrypt
+|                                passwords, the local single-user account
+|- auth.py                     - Principal, AUTH_MODE, request-scoped principal
+|- registry.py                 - the Users/<owner>/Workspaces/<dir> layout and
+|                                the uid -> location registry; the only module
+|                                that joins a path under the data root
 |- workspaces.py               - Workspace model, persistence, revisioned save
-|                                semantics, IDs, CRUD helpers, audit entities
+|                                semantics, the open_workspace resolver, CRUD
+|                                helpers, audit entities
 |- workspace_transactions.py   - compare-and-swap mutation helper used by the
 |                                workflow engine for conflict-aware commits
 |- loader.py                   - typed CSV/TSV/Excel loading and frame cache
@@ -255,9 +266,68 @@ frontend/src/
 
 ## 3. Runtime Model
 
+### Tenancy
+
+- `AUTH_MODE` is `single_user` (default) or `multi_user`. Single-user resolves
+  every request to one local account and shows no login.
+- `workspaces.open_workspace(actor, ref)` is the **only** path from a workspace
+  reference to a filesystem root. It validates the reference, resolves it
+  through the registry, checks access, and asserts path containment. The
+  architecture tests in `test_tenancy.py` fail the build if another module
+  joins a path under the data root.
+- Identity is separate from location: `uid` is globally unique and appears in
+  URLs, `dir_name` is the per-owner slug that names the directory, and `name`
+  is display text. `legacy_slug` keeps pre-migration links resolving.
+- Background work never needs a principal. Agent runs execute on daemon threads
+  that no request context reaches, so internal reloads use `Workspace.reload()`
+  — holding a `Workspace` is itself proof the resolver authorized that root.
+- `registry.reconcile()` rebuilds the registry from disk and stamps identity
+  into any manifest missing it. It is both disaster recovery and the migration
+  step for workspaces moved into a home by hand.
+
+### Authentication
+
+- Sessions are rows in the control plane, not signed tokens, so sign-out and
+  account suspension genuinely revoke rather than advise. Only the token hash
+  is stored.
+- The cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when the request
+  arrived over HTTPS. Cookies rather than a bearer header is forced: the
+  frontend streams agent and debug events over `EventSource`, which cannot set
+  request headers.
+- CSRF has two locks: `SameSite=Lax` withholds the cookie from cross-site
+  POSTs, and `main.py` refuses any state-changing request whose `Origin` names
+  a different site.
+- In `multi_user` the API is closed by default — the middleware refuses every
+  `/api/**` request without a principal, except `/api/auth/*`. A route cannot
+  accidentally be public by forgetting a check.
+- Accounts are admin-provisioned. There is no self-service registration route;
+  `backend/manage.py` creates the first administrator, and `/api/admin/*`
+  creates the rest or issues invitations.
+
+### Sandboxed execution
+
+- `sandbox.run` is the single choke point for auditor- and model-authored
+  Python: data tests, dashboard tiles, agent analyses, and `/run-python` all
+  reach the interpreter through it.
+- Single-user executes in-process, which is the original guard-rail and the
+  original threat model — the snippet runs under the account that owns the data.
+- Multi-user executes in a short-lived bubblewrap child: `--unshare-all` (no
+  network), `--clearenv`, and a mount namespace containing only the interpreter,
+  Polars, the `app` package under a synthetic root, and one exchange directory.
+  The dotenv file, the `Workspaces` tree, and `workbench.db` are not mounted.
+- Frames cross as Arrow files in the exchange directory, narrowed by
+  `referenced_frames` to what the snippet actually names. Dynamic `tables`
+  access forfeits the narrowing rather than risking a `KeyError`.
+- `RLIMIT_AS` / `RLIMIT_CPU` / `RLIMIT_FSIZE` are applied inside the child, not
+  through `preexec_fn`, which is unsafe in a process running agent threads.
+- Without bubblewrap a shared server refuses to run Python. A bare subprocess is
+  not a boundary: it shares the server's UID and can read the dotenv the parent's
+  environment was scrubbed of.
+
 ### Workspace and persistence
 
-- Every workspace is persisted on disk under `Workspaces/<id>/`.
+- Every workspace is persisted on disk under
+  `<data root>/Users/<owner_id>/Workspaces/<dir_name>/`.
 - Workspace writes are revisioned. `main.py` exposes `ETag` /
   `X-Workspace-Revision`, and mutating requests may supply `If-Match` to get
   strict optimistic concurrency.

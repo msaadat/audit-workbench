@@ -146,19 +146,26 @@ def plan_outcomes(template: str = DEFAULT_TEMPLATE) -> list[dict[str, str]]:
     return outcomes
 
 
-def _comparable_runs() -> list[dict]:
+def _comparable_runs(actor=None) -> list[dict]:
     """Completed full-audit runs that actually did work.
 
     Every filter here removes a run that would mislead rather than inform. A
     narrower run measures a fraction of the graph; a run that reused everything
     and called no model measures nothing at all. Extrapolating a whole audit
     from either is how a number that looks measured ends up being invented.
+
+    Scoped to one auditor's own workspaces. This used to walk every workspace on
+    the machine, which on a shared server would have measured — and reported —
+    other people's engagements back to whoever asked. The estimate is thinner as
+    a result, which is the correct answer rather than a regression.
     """
     comparable: list[dict] = []
     scanned = 0
-    for entry in workspaces.list_workspaces():
+    for entry in workspaces.list_workspaces(actor):
         try:
-            workspace = workspaces.load_workspace(str(entry.get("id")))
+            workspace = workspaces.open_workspace(
+                actor or workspaces._actor(), str(entry.get("id"))
+            )
         except WorkspaceError:
             continue
         for summary in store.list_runs(workspace):
@@ -179,16 +186,17 @@ def _comparable_runs() -> list[dict]:
     return comparable
 
 
-def cost_estimate() -> dict[str, Any]:
-    """How long past full audits took, measured — or a refusal to guess."""
-    runs = _comparable_runs()
+def cost_estimate(actor=None) -> dict[str, Any]:
+    """How long this auditor's past full audits took, or a refusal to guess."""
+    runs = _comparable_runs(actor)
     if len(runs) < _MIN_RUNS_FOR_ESTIMATE:
         return {
             "state": "insufficient_history",
             "runs_observed": len(runs),
             "reason": (
-                "No completed full audit has run on this machine yet, so there is "
-                "nothing to measure from. This engagement will be the first."
+                "You have no completed full audit to measure from yet, so there "
+                "is nothing to base an estimate on. This engagement will be the "
+                "first."
             ),
         }
     calls = [int((run.get("usage") or {}).get("llm_turns") or 0) for run in runs]
@@ -196,7 +204,7 @@ def cost_estimate() -> dict[str, Any]:
     return {
         "state": "measured",
         "runs_observed": len(runs),
-        "basis": "completed full-audit runs on this machine",
+        "basis": "your completed full-audit runs",
         "median_model_calls": int(statistics.median(calls)),
         "median_minutes": round(statistics.median(minutes), 1),
         "slowest_minutes": round(max(minutes), 1),
@@ -245,7 +253,8 @@ def gates(mode: str) -> dict[str, Any]:
     }
 
 
-def plan_preview(template: str = DEFAULT_TEMPLATE, mode: str = "auto") -> dict[str, Any]:
+def plan_preview(template: str = DEFAULT_TEMPLATE, mode: str = "auto",
+                 actor=None) -> dict[str, Any]:
     """Everything the brief screen states before the auditor approves."""
     return {
         "template": template,
@@ -253,7 +262,7 @@ def plan_preview(template: str = DEFAULT_TEMPLATE, mode: str = "auto") -> dict[s
         # is the shape every existing consumer reads.
         "outcomes": plan_outcomes(template),
         "phases": plan_phases(template),
-        "estimate": cost_estimate(),
+        "estimate": cost_estimate(actor),
         "destination": destination(),
         "gates": gates(mode),
     }

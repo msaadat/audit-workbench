@@ -16,9 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import accounts, auth, registry
+from .auth import AuthError, PermissionError_
 from .explore import QueryError
 from .llm import LLMError
+from .routes.admin_routes import router as admin_router
 from .routes.agent_routes import router as agent_router
+from .routes.auth_routes import router as auth_router
 from .routes.analyses_routes import router as analyses_router
 from .routes.analysis_routes import router as analysis_router
 from .routes.assistant_routes import router as assistant_router
@@ -48,6 +52,37 @@ from .workspaces import (
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _WORKSPACE_PATH = re.compile(r"^/api/workspaces/([^/]+)(?:/|$)")
 
+# The Vite dev server is a different origin from the API in development, so it
+# is both a CORS origin and an accepted Origin for state-changing requests.
+DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+# Reachable without a session: the login screen has to be able to sign in, ask
+# who it is, and accept an invitation.
+ANONYMOUS_API_PATHS = ("/api/auth/login", "/api/auth/logout", "/api/auth/me")
+ANONYMOUS_API_PREFIXES = ("/api/auth/invite/",)
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _is_anonymous_path(path: str) -> bool:
+    return path in ANONYMOUS_API_PATHS or path.startswith(ANONYMOUS_API_PREFIXES)
+
+
+def _origin_is_trusted(request: Request) -> bool:
+    """Reject a state-changing request that a different site initiated.
+
+    SameSite=Lax already withholds the session cookie from cross-site POSTs;
+    this is the second lock.  A missing ``Origin`` is allowed because non-browser
+    clients omit it, and a request with no browser behind it has no ambient
+    cookie to abuse in the first place.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    if origin in DEV_ORIGINS:
+        return True
+    host = request.headers.get("host")
+    return bool(host) and origin.split("://", 1)[-1] == host
+
 
 def _expected_revision(request: Request) -> int | None:
     raw = request.headers.get("if-match") or request.headers.get("x-workspace-revision")
@@ -70,7 +105,8 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=DEV_ORIGINS,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["ETag", "X-Workspace-Revision"],
@@ -136,6 +172,51 @@ def create_app() -> FastAPI:
             response.headers["X-Workspace-Revision"] = str(current)
         return response
 
+    @app.middleware("http")
+    async def principal_scope(request: Request, call_next):
+        """Establish who this request acts as, for the whole request.
+
+        Declared after the revision middleware so it wraps it: the revision
+        contract resolves workspaces itself and must run inside an established
+        principal.  In single-user mode this is the local account, so behavior
+        is unchanged; Phase 3 replaces the resolution with a session lookup.
+        """
+        # Brought up here rather than in the factory: ``app = create_app()``
+        # runs at import, before a data root is settled.  Both calls are
+        # idempotent and memoised, so this costs a set lookup per request.
+        registry.ensure_reconciled()
+        path = request.url.path
+        if request.method in UNSAFE_METHODS and not _origin_is_trusted(request):
+            return JSONResponse(
+                {"detail": "Cross-site request refused."}, status_code=403
+            )
+        principal = auth.resolve_request_principal(request)
+        request.state.principal = principal
+        if principal is None and path.startswith("/api/") and not _is_anonymous_path(path):
+            # Answered here rather than deep in a route so that every API
+            # surface — including the ones that never touch a workspace — is
+            # closed by default rather than by remembering to check.
+            return JSONResponse(
+                {"detail": "Sign in to continue.", "code": "unauthenticated"},
+                status_code=401,
+            )
+        with auth.principal_scope(principal):
+            return await call_next(request)
+
+    @app.exception_handler(AuthError)
+    async def unauthenticated(request: Request, error: Exception):
+        return JSONResponse(
+            {"detail": str(error), "code": "unauthenticated"}, status_code=401
+        )
+
+    @app.exception_handler(PermissionError_)
+    async def forbidden(request: Request, error: Exception):
+        return JSONResponse({"detail": str(error)}, status_code=403)
+
+    @app.exception_handler(accounts.AccountError)
+    async def account_error(request: Request, error: Exception):
+        return JSONResponse({"detail": str(error)}, status_code=400)
+
     @app.exception_handler(WorkspaceError)
     @app.exception_handler(QueryError)
     @app.exception_handler(SandboxError)
@@ -173,6 +254,8 @@ def create_app() -> FastAPI:
     async def analysis_conflict(request: Request, error: Exception):
         return JSONResponse({"detail": str(error)}, status_code=409)
 
+    app.include_router(auth_router)
+    app.include_router(admin_router)
     app.include_router(workspace_router)
     app.include_router(analysis_router)
     app.include_router(dashboard_router)

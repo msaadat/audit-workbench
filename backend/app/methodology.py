@@ -24,7 +24,14 @@ def _root(workspace: Workspace, scope: str) -> Path:
     if scope == "workspace":
         return workspace.root / "KnowledgePacks"
     if scope == "reusable":
-        return workspaces.WORKSPACES_DIR.parent / "KnowledgePacks"
+        # "Reusable" means reusable across this auditor's engagements, not
+        # across everyone on the server.  Hanging it off the owner's home keeps
+        # a pack one user uploaded from appearing in another user's picker; in
+        # a single-user installation there is exactly one home, so this is the
+        # same folder it always was.
+        from . import registry
+
+        return registry.user_home(workspace.owner_id) / "KnowledgePacks"
     raise WorkspaceError("Knowledge-pack scope must be workspace or reusable.")
 
 

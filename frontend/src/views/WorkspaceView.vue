@@ -13,6 +13,7 @@ import { useAppearance } from '../composables/useAppearance'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
+import { useSession } from '../composables/useSession'
 
 /**
  * The workspace shell. It owns the engagement header, the surface switcher, the
@@ -22,6 +23,17 @@ import { workspaceContextKey } from '../composables/useWorkspaceContext'
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
+const session = useSession()
+// The workspace shell replaces the global header, so sign-out has to be
+// reachable from here too — otherwise a signed-in auditor inside an engagement
+// has no way out.
+const showAccount = computed(() => !session.state.singleUser && session.state.user !== null)
+
+async function signOut() {
+  await session.signOut()
+  await router.replace({ name: 'login' })
+}
+
 const route = useRoute()
 const router = useRouter()
 const nav = useWorkspaceNav()
@@ -195,6 +207,14 @@ onUnmounted(() => {
       <router-link :to="`/workspace/${props.id}/debug`" class="header-link" aria-label="Debug console" title="Debug console"><i class="pi pi-code" /></router-link>
       <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
       <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
+      <button
+        v-if="showAccount"
+        type="button"
+        class="header-link"
+        :aria-label="`Sign out (${session.state.user?.email ?? ''})`"
+        :title="`Sign out (${session.state.user?.email ?? ''})`"
+        @click="signOut"
+      ><i class="pi pi-sign-out" /></button>
     </header>
 
     <div class="workspace-layout">

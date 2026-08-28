@@ -1176,7 +1176,7 @@ class CommandRouter(BaseRunner):
             command["text"] = (
                 f"{command.get('text') or ''}\n\nClarification: {answer}".strip()
             )
-            fresh = load_workspace(self.ws.id)
+            fresh = self.ws.reload()
             bundle = context_bundles.command_router(
                 command,
                 self._state(fresh),

@@ -34,7 +34,7 @@ from pathlib import Path
 
 import polars as pl
 
-from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
+from . import config  # noqa: F401  # loads .env before any path is resolved
 from . import loader, profiler
 from .field_names import resolve_columns
 from .text import counted, plural_word
@@ -259,10 +259,9 @@ RCM_IMPORT_FIELDS = (
     "control_attributes",
     "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
 )
-WORKSPACES_DIR = Path(
-    os.environ.get("WORKBENCH_DATA", "")
-    or Path(__file__).resolve().parents[2] / "Workspaces"
-)
+# Workspace *layout* now lives in :mod:`.registry`, which owns the
+# ``Users/<owner>/Workspaces/<dir_name>`` shape and the only path joins under
+# the data root.  Nothing here should reconstruct a root from an ID.
 
 
 def workspace_write_lock(root: Path) -> threading.RLock:
@@ -772,8 +771,25 @@ class Workspace:
         self._table_signature_cache: dict[str, tuple] = {}
         self.schema_version = int(definition.get("schema_version") or 1)
         self.revision = int(definition.get("revision") or 0)
-        self.id: str = definition.get("id") or self.root.name
-        self.name: str = definition.get("name") or self.id
+        # Identity and location are separate.  ``uid`` is globally unique,
+        # opaque, and what URLs and future sharing key on; ``dir_name`` is the
+        # readable per-owner slug that names the directory.  ``id`` remains the
+        # handle the whole application already passes around — it just carries
+        # the uid now — so no downstream call site had to change.
+        self.uid: str = str(
+            definition.get("uid") or definition.get("id") or self.root.name
+        )
+        self.id: str = self.uid
+        self.dir_name: str = self.root.name
+        # Falls back to the home the root sits in, so a manifest that has not
+        # been through the reconcile pass yet still knows who owns it.
+        self.owner_id: str = str(
+            definition.get("owner_id") or self.root.parent.parent.name
+        )
+        # Set for workspaces that predate the uid, so links carrying the old
+        # slug still resolve.
+        self.legacy_slug: str = str(definition.get("legacy_slug") or "")
+        self.name: str = definition.get("name") or self.dir_name
         self.description: str = definition.get("description") or ""
         self.created: str = definition.get("created") or ""
         self.tables: list[dict] = list(definition.get("tables") or [])
@@ -868,6 +884,27 @@ class Workspace:
             if status is not None:
                 item["status"] = status
 
+    def reload(self) -> "Workspace":
+        """Re-read this workspace from disk.
+
+        The internal callers that used to say ``load_workspace(ws.id)`` were
+        never performing a lookup — they already held the workspace and wanted
+        a fresh copy of it.  Rebuilding from ``self.root`` says exactly that,
+        and it is what keeps agent runs working: they execute on daemon threads
+        that no request context reaches, so a reload that needed a principal
+        would have nowhere to get one.  Holding a ``Workspace`` is itself the
+        proof that the resolver already authorized this root.
+
+        The interrupted-write recovery pass runs here for the same reason
+        ``open_workspace`` runs it: these callers are re-reading the workspace
+        from disk, and that is exactly where a half-finished artifact write has
+        to be resolved before anything reads it.
+        """
+        from .workspace_transactions import recover_linked_writes
+
+        recover_linked_writes(self.root)
+        return Workspace(self.root)
+
     # ------------------------------------------------------------- persistence
     @property
     def data_dir(self) -> Path:
@@ -906,7 +943,10 @@ class Workspace:
         definition = {
             "schema_version": SCHEMA_VERSION,
             "revision": current + 1,
-            "id": self.id,
+            "id": self.uid,
+            "uid": self.uid,
+            "owner_id": self.owner_id,
+            **({"legacy_slug": self.legacy_slug} if self.legacy_slug else {}),
             "name": self.name,
             "description": self.description,
             "created": self.created,
@@ -2157,16 +2197,54 @@ class Workspace:
 
 
 # -------------------------------------------------------------------- registry
-def list_workspaces() -> list[dict]:
-    if not WORKSPACES_DIR.exists():
-        return []
+#
+# ``open_workspace`` is the single authorized path from a workspace reference to
+# a filesystem root.  No other module may join a path under the data root; the
+# architecture test in ``test_tenancy.py`` enforces that.
+#
+# The ``actor``-less forms below are the request-boundary convenience: they use
+# the ambient principal, which in single-user mode is the local account.  They
+# are what let 200 endpoints and the existing suite keep their signatures while
+# the tenancy seam lands.  Phase 3 gives routes an explicit ``Principal``
+# dependency, after which these become the offline/CLI forms.
+
+
+def _actor(actor=None):
+    from .auth import current_principal
+
+    return actor or current_principal()
+
+
+def open_workspace(actor, workspace_ref: str) -> Workspace:
+    """Resolve a reference to a workspace this actor is allowed to open.
+
+    A reference the actor may not open is reported as missing rather than
+    forbidden, so identifiers are not enumerable across tenants.
+    """
+    from .registry import accessible, resolve_ref, workspace_root
+
+    row = resolve_ref(actor.user_id, workspace_ref)
+    if row is None or not accessible(actor, row):
+        raise WorkspaceError(f"Workspace '{workspace_ref}' not found.")
+    root = workspace_root(row["owner_id"], row["dir_name"])
+    if not (root / "workspace.json").exists():
+        raise WorkspaceError(f"Workspace '{workspace_ref}' not found.")
+    from .workspace_transactions import recover_linked_writes
+
+    recover_linked_writes(root)
+    return Workspace(root)
+
+
+def list_workspaces(actor=None) -> list[dict]:
+    from .registry import list_visible, workspace_root
+
     items = []
-    for folder in sorted(WORKSPACES_DIR.iterdir()):
-        if not (folder / "workspace.json").exists():
-            continue
+    for row in list_visible(_actor(actor).user_id):
         try:
-            ws = Workspace(folder)
+            ws = Workspace(workspace_root(row["owner_id"], row["dir_name"]))
         except Exception:
+            # A registered folder that has gone missing or unreadable must not
+            # take down the whole listing.
             continue
         items.append(
             {
@@ -2181,17 +2259,11 @@ def list_workspaces() -> list[dict]:
     return items
 
 
-def load_workspace(workspace_id: str) -> Workspace:
-    root = WORKSPACES_DIR / workspace_id
-    if not (root / "workspace.json").exists():
-        raise WorkspaceError(f"Workspace '{workspace_id}' not found.")
-    from .workspace_transactions import recover_linked_writes
-
-    recover_linked_writes(root)
-    return Workspace(root)
+def load_workspace(workspace_id: str, actor=None) -> Workspace:
+    return open_workspace(_actor(actor), workspace_id)
 
 
-def read_revision(workspace_id: str) -> int:
+def read_revision(workspace_id: str, actor=None) -> int:
     """The stored revision, without hydrating the workspace's artifacts.
 
     Constructing a ``Workspace`` globs and parses every artifact collection
@@ -2205,7 +2277,12 @@ def read_revision(workspace_id: str) -> int:
     revision it would leave behind is the one already on disk; the route's own
     ``load_workspace`` still performs the recovery pass before reading anything.
     """
-    path = WORKSPACES_DIR / workspace_id / "workspace.json"
+    from .registry import accessible, resolve_ref, workspace_root
+
+    row = resolve_ref(_actor(actor).user_id, workspace_id)
+    if row is None or not accessible(_actor(actor), row):
+        raise WorkspaceError(f"Workspace '{workspace_id}' not found.")
+    path = workspace_root(row["owner_id"], row["dir_name"]) / "workspace.json"
     try:
         definition = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -2213,21 +2290,28 @@ def read_revision(workspace_id: str) -> int:
     return int(definition.get("revision") or 0)
 
 
-def create_workspace(name: str, description: str = "") -> Workspace:
+def create_workspace(name: str, description: str = "", actor=None) -> Workspace:
+    from .registry import new_workspace_uid, register, user_workspaces_dir, workspace_root
+
+    principal = _actor(actor)
     name = str(name).strip()
     if not name:
         raise WorkspaceError("Workspace name is required.")
-    workspace_id = slugify(name)
-    root = WORKSPACES_DIR / workspace_id
+    dir_name = slugify(name)
+    user_workspaces_dir(principal.user_id).mkdir(parents=True, exist_ok=True)
+    root = workspace_root(principal.user_id, dir_name)
     if root.exists():
-        raise WorkspaceError(f"A workspace named '{workspace_id}' already exists.")
+        raise WorkspaceError(f"A workspace named '{dir_name}' already exists.")
+    uid = new_workspace_uid()
     (root / "Data").mkdir(parents=True)
     (root / "workspace.json").write_text(
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
                 "revision": 0,
-                "id": workspace_id,
+                "id": uid,
+                "uid": uid,
+                "owner_id": principal.user_id,
                 "name": name,
                 "description": str(description).strip(),
                 "created": date.today().isoformat(),
@@ -2238,13 +2322,17 @@ def create_workspace(name: str, description: str = "") -> Workspace:
         ),
         encoding="utf-8",
     )
+    register(principal.user_id, uid, dir_name, name=name)
     return Workspace(root)
 
 
-def delete_workspace(workspace_id: str) -> None:
-    ws = load_workspace(workspace_id)
+def delete_workspace(workspace_id: str, actor=None) -> None:
+    from .registry import unregister
+
+    ws = open_workspace(_actor(actor), workspace_id)
     for entry in ws.tables:
         path = ws.data_dir / entry["file"]
         if path.exists():
             loader.clear_cache(path)
     shutil.rmtree(ws.root, ignore_errors=True)
+    unregister(ws.uid)
