@@ -19,11 +19,15 @@ from ...workspaces import Workspace
 from ..workflow import UnitSpec, canonical_sha1
 
 
+# Mirrors ``workspace_transactions._RCM_MATERIAL_FIELDS``, including its
+# omission of ``review_status``: sign-off says who has read the row, not what
+# the row asserts, so it must not invalidate work generated from the row's
+# risk-and-control definition.
 _RCM_MATERIAL_FIELDS = (
     "id", "process", "risk", "risk_rating", "business_cycle",
     "control_attributes", "control",
     "control_type", "control_owner", "criteria", "criteria_refs",
-    "evidence_refs", "review_status",
+    "evidence_refs",
 )
 
 

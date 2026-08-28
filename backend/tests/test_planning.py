@@ -804,7 +804,7 @@ def _rcm_import_csv(rows: list[dict]) -> bytes:
     columns = [
         "id", "process", "risk", "risk_rating", "assertion", "control",
         "control_type", "control_owner", "criteria", "prepared_by",
-        "reviewed_by", "review_status",
+        "review_status",
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns)
@@ -854,7 +854,7 @@ def test_rcm_export_import_round_trip():
         "id": row["id"], "process": "Cash", "risk": "Cash is misstated",
         "risk_rating": "high", "assertion": "Existence",
         "control": "Bank reconciliation", "control_type": "Manual detective",
-        "control_owner": "Controller", "review_status": "prepared",
+        "control_owner": "Controller", "review_status": "reviewed",
     }])
     imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})
     assert imported.status_code == 200
@@ -864,7 +864,7 @@ def test_rcm_export_import_round_trip():
     updated_row = next(item for item in body["rcm"] if item["id"] == row["id"])
     assert updated_row["risk_rating"] == "high"
     assert updated_row["control"] == "Bank reconciliation"
-    assert updated_row["review_status"] == "prepared"
+    assert updated_row["review_status"] == "reviewed"
     assert updated_row["created_by"] == "user"
 
 
@@ -899,5 +899,14 @@ def test_rcm_import_rejects_invalid_enum_values():
     imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})
     assert imported.status_code == 400
 
+    # Sign-off is two states, and storing an unrecognised one as `draft` would
+    # hide what the auditor meant by it.
+    content = _rcm_import_csv([
+        {"id": row["id"], "process": "Cash", "risk": "Cash is misstated", "review_status": "signed"},
+    ])
+    imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})
+    assert imported.status_code == 400
+
     unchanged = client.get(f"{base}/rcm").json()["items"][0]
     assert unchanged["risk_rating"] == "medium"
+    assert unchanged["review_status"] == "draft"

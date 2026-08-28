@@ -75,7 +75,7 @@ function row(id: string, review: RcmRow['review_status']): RcmRow {
         scope_limitations: '', finding_refs: [],
       }],
     },
-    finding_refs: [], evidence_refs: [], prepared_by: null, reviewed_by: null,
+    finding_refs: [], evidence_refs: [], prepared_by: null,
     review_status: review, updated: '',
   } as unknown as RcmRow
 }
@@ -123,7 +123,7 @@ describe('PlanningTab sign-off', () => {
 
   it('signs off every unreviewed row the strip counted, and says what that costs', async () => {
     const patch = vi.spyOn(api, 'patch').mockResolvedValue({} as never)
-    const wrapper = mountTab([row('R1', 'reviewed'), row('R2', 'draft'), row('R3', 'prepared')])
+    const wrapper = mountTab([row('R1', 'reviewed'), row('R2', 'draft'), row('R3', 'draft')])
     await flushPromises()
 
     const settle = wrapper.find('.disclosure .settle')

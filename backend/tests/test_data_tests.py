@@ -923,6 +923,49 @@ def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
     )
 
 
+def test_signing_off_an_rcm_row_does_not_stale_a_finding_anchored_to_it(
+    workspace_with_data,
+):
+    """Sign-off is an annotation about a row, not a change to what it asserts.
+
+    ``review_status`` used to sit in the RCM material projection, so marking a
+    row reviewed rewrote its hash and every finding resting on that row reported
+    changed evidence — an auditor reading the file produced the warning.
+    """
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    anchor_sha1 = findings.artifact(ws, "rcm", row["id"])["sha1"]
+
+    created = findings.add(
+        ws,
+        {
+            "title": "Control is not evidenced",
+            "severity": "medium",
+            "cause_pending": True,
+            "narrative": (
+                "## Condition\n\nThe control leaves no record.\n\n"
+                "## Criteria\n\nControls must be evidenced.\n\n"
+                "## Root Cause\n\n"
+                "## Risk\n\nUndetected bypass.\n\n"
+                "## Recommendation\n\nRetain approval evidence.\n"
+            ),
+            "rcm_refs": [row["id"]],
+            "evidence_refs": [
+                {"source_kind": "rcm", "source_id": row["id"], "source_sha1": anchor_sha1}
+            ],
+        },
+    )
+
+    ws.update_rcm(row["id"], {"review_status": "reviewed"})
+    assert findings.artifact(ws, "rcm", row["id"])["sha1"] == anchor_sha1
+    assert findings.evidence_warnings(ws, created) == []
+
+    # What the row asserts is still part of the basis, and still moves it.
+    ws.update_rcm(row["id"], {"risk": "Transactions may bypass approval limits"})
+    assert findings.artifact(ws, "rcm", row["id"])["sha1"] != anchor_sha1
+    assert findings.evidence_warnings(ws, created)
+
+
 def test_exploratory_data_test_runs_without_counting_as_rcm_execution(workspace_with_data):
     ws = workspace_with_data
     item = data_tests.create(

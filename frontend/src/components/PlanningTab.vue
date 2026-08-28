@@ -80,7 +80,7 @@ const paperRowId = ref<string | null>(null)
 const documents = ref<AuditDocument[]>([])
 const criterionOpen = ref(false)
 const criterion = ref<CriterionRef | null>(null)
-const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
+const reviewStatuses = ['draft', 'reviewed']
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
 const visibleRcm = computed(() => filterRows(
   data.value?.rcm ?? [], rcmFilter.value, data.value?.finding_rollups, completion.value,

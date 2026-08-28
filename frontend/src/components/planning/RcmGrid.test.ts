@@ -46,7 +46,7 @@ function row(overrides: Partial<RcmRow> = {}): RcmRow {
     control_attributes: [], control: '', control_type: '', control_owner: '',
     criteria: '', criteria_refs: [], test_refs: [],
     execution_rollup: { tests: 0, completed: 0, exceptions: 0, test_rollups: [] },
-    finding_refs: [], evidence_refs: [], prepared_by: null, reviewed_by: null,
+    finding_refs: [], evidence_refs: [], prepared_by: null,
     review_status: 'draft', updated: '',
     ...overrides,
   } as unknown as RcmRow
@@ -70,8 +70,9 @@ describe('RcmGrid review column', () => {
     const wrapper = mountGrid([row()])
     const review = wrapper.findAll('select').at(-1)
 
-    expect(review?.attributes('data-options'))
-      .toBe('draft,prepared,review_required,reviewed')
+    // Sign-off is binary. The retired middle states counted as neither signed
+    // nor outstanding, so a row parked in one fell out of both tallies.
+    expect(review?.attributes('data-options')).toBe('draft,reviewed')
     expect((review?.element as HTMLSelectElement).value).toBe('draft')
   })
 

@@ -29,7 +29,7 @@ const emit = defineEmits<{
 
 const ratings = ['low', 'medium', 'high', 'critical']
 // The backend's REVIEW_STATUSES, in the order a row travels through them.
-const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
+const reviewStatuses = ['draft', 'reviewed']
 function reviewLabel(status?: string) { return String(status || 'draft').replaceAll('_', ' ') }
 const nav = useWorkspaceNav()
 function openFinding(id: string) { void nav.replace('findings', { finding: id }) }
@@ -151,9 +151,8 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
 .dot[data-rating='critical'] { background: var(--aw-danger-ink); }
 
 /* Same shape as the rating cell so the two auditor-owned selects read as one
-   kind of control. Only a signed row goes green: the three states before it
-   are stages of unsigned, not degrees of it. */
+   kind of control. Only a signed row goes green; draft keeps the neutral dot,
+   because unsigned is the starting state rather than a warning. */
 .review { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--aw-text-sm); text-transform: capitalize; }
-.dot[data-review='review_required'] { background: var(--aw-warn); }
 .dot[data-review='reviewed'] { background: var(--aw-ok); }
 </style>

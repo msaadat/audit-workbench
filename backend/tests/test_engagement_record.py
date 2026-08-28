@@ -390,6 +390,31 @@ def test_a_debt_whose_stage_never_filed_is_still_reported(stub_store):
     result = engagement_record.record(_Workspace(rcm=[{"id": "R1", "review_status": "draft"}]))
 
     assert [point["key"] for point in result["orphaned_points"]] == ["draft_rcm"]
+    # The absolute claim is only made where it holds.
+    assert result["orphaned_points"][0]["message"] == (
+        "1 of 1 rows are still marked draft. None has been reviewed."
+    )
+
+
+def test_a_part_reviewed_matrix_does_not_claim_nothing_was_reviewed(stub_store):
+    """The count and the claim after it must describe the same matrix."""
+    stub_store([])
+    result = engagement_record.record(_Workspace(rcm=[
+        {"id": "R1", "review_status": "reviewed"},
+        {"id": "R2", "review_status": "draft"},
+    ]))
+
+    point = next(item for item in result["orphaned_points"] if item["key"] == "draft_rcm")
+    assert point["message"] == "1 of 2 rows are still marked draft."
+
+
+def test_a_fully_reviewed_matrix_leaves_no_sign_off_debt(stub_store):
+    stub_store([])
+    result = engagement_record.record(_Workspace(rcm=[
+        {"id": "R1", "review_status": "reviewed"},
+    ]))
+
+    assert [point["key"] for point in result["orphaned_points"]] == []
 
 
 def test_review_outranks_unstarted_work_as_the_next_step(stub_store):

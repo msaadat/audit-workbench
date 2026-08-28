@@ -559,14 +559,19 @@ def _open_points(workspace: Workspace) -> list[dict]:
             "destination": "findings",
         })
 
-    draft = [row for row in workspace.rcm if str(row.get("review_status") or "") == "draft"]
+    # Unsigned rather than literally ``draft``, which is the same predicate the
+    # planning status bar filters on. The two must agree: a row this counts as
+    # outstanding is a row that screen offers to sign.
+    draft = [row for row in workspace.rcm if str(row.get("review_status") or "") != "reviewed"]
     if draft:
         points.append({
             "key": "draft_rcm",
             "capability": "planning.rcm_ready",
             "message": (
-                f"{len(draft)} of {len(workspace.rcm)} rows are still marked "
-                "draft. None has been reviewed."
+                f"{len(draft)} of {len(workspace.rcm)} rows are still marked draft."
+                # Only true while nothing has been signed. Stated unconditionally,
+                # it contradicted its own first sentence on a part-reviewed matrix.
+                + (" None has been reviewed." if len(draft) == len(workspace.rcm) else "")
             ),
             "action": "Review rows",
             "destination": "rcm",

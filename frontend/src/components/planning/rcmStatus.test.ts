@@ -26,7 +26,7 @@ function row(id: string, rollup: Partial<RcmExecutionRollup>, overrides: Partial
       test_rollups: tests,
       ...rollup,
     },
-    finding_refs: [], evidence_refs: [], prepared_by: null, reviewed_by: null,
+    finding_refs: [], evidence_refs: [], prepared_by: null,
     review_status: 'draft', updated: '',
     ...overrides,
   } as RcmRow
@@ -223,13 +223,12 @@ describe('disclosures', () => {
   it('scopes sign-off to the rows the line just counted as unsigned', () => {
     const rows = [
       row('R1', { test_rollups: [test({ test_id: 'T1' })] }, { review_status: 'reviewed' }),
-      row('R2', {}, { review_status: 'prepared' }),
+      row('R2', {}, { review_status: 'draft' }),
       row('R3', {}),
     ]
     const review = rcmStatus(rows).disclosures.find(item => item.key === 'review')
 
     expect(review?.message).toBe('1 of 3 rows reviewed. The rest are still marked draft.')
-    // `prepared` is a stage of unsigned, so it is in scope alongside `draft`.
     expect(review?.action).toEqual({
       key: 'mark_reviewed', label: 'Mark 2 rows reviewed', tone: 'ghost', ids: ['R2', 'R3'],
     })

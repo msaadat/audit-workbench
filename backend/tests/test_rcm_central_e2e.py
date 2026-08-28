@@ -134,7 +134,7 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
                 "risk": title,
                 "risk_rating": "high" if index < 6 else "medium",
                 "control": f"Management reviews {title.casefold()}.",
-                "review_status": "prepared",
+                "review_status": "reviewed",
             }
         )
         test = data_tests.create(

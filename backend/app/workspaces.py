@@ -251,7 +251,12 @@ CONTROL_CONCLUSIONS = {
     "no_conclusion",
     "not_applicable",
 }
-REVIEW_STATUSES = {"draft", "prepared", "review_required", "reviewed"}
+# Sign-off on an RCM row, and nothing finer. The intermediate ``prepared`` and
+# ``review_required`` states were neither written by anything nor read by
+# anything: the engagement record counts ``draft`` and the planning status bar
+# counts ``reviewed``, so a row parked in between fell out of the "still draft"
+# tally without ever counting as signed off.
+REVIEW_STATUSES = {"draft", "reviewed"}
 # The plain-content RCM columns a spreadsheet export/reimport round-trips.
 # Identity (id/semantic_id), provenance, and reference fields (test_refs,
 # execution_rollup, finding_refs, evidence_refs) are deliberately excluded —
@@ -259,7 +264,7 @@ REVIEW_STATUSES = {"draft", "prepared", "review_required", "reviewed"}
 RCM_IMPORT_FIELDS = (
     "process", "risk", "risk_rating", "business_cycle", "control", "control_type",
     "control_attributes",
-    "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
+    "control_owner", "criteria", "prepared_by", "review_status",
 )
 # Workspace *layout* now lives in :mod:`.registry`, which owns the
 # ``Users/<owner>/Workspaces/<dir_name>`` shape and the only path joins under
@@ -742,7 +747,6 @@ def _rcm_row_defaults(item: dict, *, now: str) -> dict:
     item.setdefault("finding_refs", [])
     item.setdefault("evidence_refs", [])
     item.setdefault("prepared_by", None)
-    item.setdefault("reviewed_by", None)
     item.setdefault("review_status", "draft")
     item.setdefault("updated", now)
     review = str(item.get("review_status") or "draft").lower()
@@ -1924,7 +1928,6 @@ class Workspace:
             "finding_refs": [str(ref) for ref in (payload.get("finding_refs") or [])],
             "evidence_refs": list(payload.get("evidence_refs") or []),
             "prepared_by": payload.get("prepared_by"),
-            "reviewed_by": payload.get("reviewed_by"),
             "review_status": str(payload.get("review_status") or "draft"),
             "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
             "updated": now,
@@ -1943,7 +1946,7 @@ class Workspace:
             "attributes_status", "attributes_error",
             "control", "control_type",
             "control_owner", "criteria", "criteria_refs", "test_refs",
-            "evidence_refs", "prepared_by", "reviewed_by", "review_status",
+            "evidence_refs", "prepared_by", "review_status",
             "workflow_parent_sha1",
         }
         if set(changes) - allowed or ("workflow_parent_sha1" in changes and not agent):
@@ -1973,7 +1976,7 @@ class Workspace:
                 item[key] = [dict(attribute) for attribute in value]
             elif key == "evidence_refs":
                 item[key] = normalize_many(value or [], require_hash=True)
-            elif key in ("prepared_by", "reviewed_by"):
+            elif key == "prepared_by":
                 item[key] = str(value).strip() if value not in (None, "") else None
             else:
                 item[key] = str(value or "")
@@ -2034,7 +2037,7 @@ class Workspace:
                     value = str(value or "draft").lower()
                     if value not in REVIEW_STATUSES:
                         raise WorkspaceError(f"Row {row_id}: unknown review status '{value}'.")
-                elif field in ("prepared_by", "reviewed_by"):
+                elif field == "prepared_by":
                     value = str(value).strip() if value not in (None, "") else None
                 elif field == "control_attributes":
                     try:

@@ -950,8 +950,8 @@ export interface RcmRow {
   finding_refs: string[]
   evidence_refs: EvidenceRef[]
   prepared_by: string | null
-  reviewed_by: string | null
-  review_status: 'draft' | 'prepared' | 'review_required' | 'reviewed'
+  /** Sign-off, and nothing finer: a row is either signed or it is not. */
+  review_status: 'draft' | 'reviewed'
   updated: string
 }
 
@@ -1113,7 +1113,6 @@ export interface RcmExecutionRollup {
   evidence_ceiling?: string
   /** False when the ceiling is recorded beside a conclusion the auditor owns. */
   evidence_ceiling_applied?: boolean
-  review_status?: string
   test_rollups?: TestRollup[]
 }
 

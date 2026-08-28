@@ -825,7 +825,11 @@ def rollup(
             # added and removed without a roll-up, so a count frozen into the
             # row would drift from the findings. ``findings.rollups`` derives
             # ``by_rcm`` fresh on every read; that is the count to display.
-            "review_status": row.get("review_status") or "draft",
+            #
+            # No ``review_status`` here either, for the same reason one level
+            # down: sign-off is not an execution outcome, and the copy this
+            # roll-up used to freeze into the row went unread — every reader
+            # takes it from the row itself, where the auditor sets it.
             "test_rollups": test_rollups,
         }
         row["execution_rollup"] = row_rollup

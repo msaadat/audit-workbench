@@ -252,11 +252,15 @@ def material_projection(value: object) -> object:
     return value
 
 
+# ``review_status`` is deliberately absent. Sign-off is an annotation the
+# auditor makes *about* a row, not part of what the row asserts, and hashing it
+# made marking a row reviewed read as "the evidence changed" — conflicting an
+# in-flight commit against that row and staling any finding anchored to it.
 _RCM_MATERIAL_FIELDS = (
     "id", "process", "risk", "risk_rating", "business_cycle",
     "control_attributes", "control",
     "control_type", "control_owner", "criteria", "criteria_refs",
-    "evidence_refs", "review_status",
+    "evidence_refs",
 )
 
 

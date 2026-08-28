@@ -457,9 +457,11 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
     )
     lines.extend(
         [
+            # No reviewer line: nothing ever captured a name for one, so the
+            # paper printed "Not assigned" beside rows marked reviewed. Sign-off
+            # states itself; a signer the product cannot name is not claimed.
             "", "## Review", "",
             f"Prepared by: {row.get('prepared_by') or 'Not assigned'}", "",
-            f"Reviewed by: {row.get('reviewed_by') or 'Not assigned'}", "",
             f"Review status: {row.get('review_status') or 'draft'}", "",
             "## Immutable execution hashes", "",
         ]
