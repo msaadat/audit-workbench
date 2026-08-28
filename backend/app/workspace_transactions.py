@@ -21,6 +21,7 @@ from .workspaces import (
     Workspace,
     WorkspaceConflict,
     WorkspaceError,
+    clear_artifact_cache,
     load_workspace,
     workspace_write_lock,
     write_json_atomic,
@@ -180,12 +181,19 @@ def rollback_linked_write(write: LinkedWrite) -> None:
 
 
 def recover_linked_writes(root: Path) -> None:
-    """Resolve prepared linked writes left by an interrupted desktop process."""
+    """Resolve prepared linked writes left by an interrupted desktop process.
+
+    This is the one path that restores artifact files without advancing the
+    workspace revision, so anything it resolves has to invalidate the parsed
+    artifacts cached against that revision.
+    """
     root = root.resolve()
     with workspace_write_lock(root):
         journal_dir = root / JOURNAL_DIRNAME
         if not journal_dir.is_dir():
             return
+        if any(journal_dir.glob("txn-*.json")):
+            clear_artifact_cache(root)
         try:
             current_revision = int(
                 json.loads((root / "workspace.json").read_text(encoding="utf-8")).get("revision")

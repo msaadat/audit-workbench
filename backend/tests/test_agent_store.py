@@ -42,14 +42,26 @@ def test_events_append_and_cursor(workspace_with_data):
     assert len(tail) == 1 and tail[0]["type"] == "task_update"
 
 
-def test_read_events_skips_torn_line(workspace_with_data):
-    run = store.new_run(workspace_with_data, "auto")
-    store.append_event(workspace_with_data, run["id"], "run_status", {"status": "queued"})
-    path = store.run_dir(workspace_with_data, run["id"]) / "events.jsonl"
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write('{"seq": 2, "type": "trunc')  # crash mid-append
-    events = store.read_events(workspace_with_data, run["id"])
-    assert len(events) == 1
+def test_events_are_scoped_and_sequenced_per_run(workspace_with_data):
+    """What the torn-line test used to cover, in the terms that now apply.
+
+    An interrupted append could leave the JSONL log with half a line, so reading
+    it had to tolerate one. A row is written whole or not at all, so the risk
+    that remains is a shared sequence: two runs writing at once must not consume
+    each other's numbers or read each other's events.
+    """
+    first = store.new_run(workspace_with_data, "auto")
+    second = store.new_run(workspace_with_data, "auto")
+    for index in range(3):
+        store.append_event(workspace_with_data, first["id"], "run_status", {"n": index})
+        store.append_event(workspace_with_data, second["id"], "task_update", {"n": index})
+
+    first_events = store.read_events(workspace_with_data, first["id"])
+    second_events = store.read_events(workspace_with_data, second["id"])
+    assert [event["seq"] for event in first_events] == [1, 2, 3]
+    assert [event["seq"] for event in second_events] == [1, 2, 3]
+    assert {event["type"] for event in first_events} == {"run_status"}
+    assert {event["type"] for event in second_events} == {"task_update"}
 
 
 def test_list_runs_newest_first(workspace_with_data):

@@ -4,12 +4,15 @@ Each run lives in its own folder next to the workspace definition::
 
     Workspaces/<workspace-id>/AgentRuns/<run-id>/
         run.json       ← full run state, rewritten atomically per transition
-        events.jsonl   ← append-only event log, one JSON object per line
 
 ``run.json`` is the authoritative record (plan, approvals, messages, findings,
-summary); ``events.jsonl`` is the replayable feed the frontend streams over
-SSE — reconnecting clients pass the last seen ``seq`` and read forward from
-disk, so no event is ever lost to a dropped connection or restart.
+summary) and stays a file: it is the run's durable output, replaceable and
+readable without the application.
+
+The replayable event feed the frontend streams over SSE is not — it lives in
+the workspace's telemetry database, keyed by run.  Reconnecting clients pass
+the last seen ``seq`` and read forward, which is an indexed range read there
+and was a full scan of a growing log here.
 
 Only the run's worker thread writes ``run.json`` while the run is live; the
 API layer goes through the runner's control surface instead of writing here.
@@ -24,6 +27,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import telemetry_db
 from ..workspaces import Workspace, WorkspaceError, write_json_atomic
 
 RUNS_DIRNAME = "AgentRuns"
@@ -88,9 +92,6 @@ PARTIAL_STATUSES = frozenset(
 
 _event_locks: dict[str, threading.Lock] = {}
 _event_locks_guard = threading.Lock()
-# Last sequence number written per run folder, guarded by that folder's event
-# lock. Absent means "not yet read from disk", never "zero".
-_event_sequences: dict[str, int] = {}
 _run_locks: dict[str, threading.RLock] = {}
 _run_locks_guard = threading.Lock()
 
@@ -492,54 +493,41 @@ def read_sidecar(workspace: Workspace, run_id: str, ref: dict) -> object:
 
 # ------------------------------------------------------------------- events
 def append_event(workspace: Workspace, run_id: str, type_: str, data: dict) -> dict:
-    """Append one event and return it (with its sequence number). Sequence
-    numbers continue from the current line count, so they stay contiguous even
-    across process restarts.
+    """Append one event and return it, with its per-run sequence number.
 
-    The count is read from disk once per run folder and then carried in memory.
-    Counting lines on every append re-read the whole log each time, which made
-    the cost of writing a run's events quadratic in their number — and a run
-    that streams its model output writes a great many.
+    The next sequence number comes from the run's own rows inside the insert's
+    transaction, so it stays contiguous across process restarts without the
+    in-memory counter the append-only log needed to avoid re-counting its lines
+    on every write.
     """
-    folder = run_dir(workspace, run_id)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "events.jsonl"
-    with _event_lock(folder):
-        key = str(folder)
-        seq = _event_sequences.get(key)
-        if seq is None:
-            seq = _line_count(path)
-        seq += 1
-        _event_sequences[key] = seq
+    handle = telemetry_db.connect(workspace.root)
+    with _event_lock(run_dir(workspace, run_id)):
+        seq = int(handle.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0])
         event = {"seq": seq, "at": utcnow(), "type": type_, "data": data}
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, default=str) + "\n")
+        handle.execute(
+            "INSERT INTO run_events(run_id, seq, at, type, data) VALUES(?, ?, ?, ?, ?)",
+            (run_id, seq, event["at"], type_, telemetry_db.dumps(data)),
+        )
+        handle.commit()
     return event
 
 
-def _line_count(path: Path) -> int:
-    if not path.exists():
-        return 0
-    with path.open("rb") as handle:
-        return sum(1 for _ in handle)
-
-
 def read_events(workspace: Workspace, run_id: str, after: int = 0) -> list[dict]:
-    """All events with ``seq > after``, in order. Tolerates a torn final line
-    (a crash mid-append) by skipping unparseable lines."""
-    path = run_dir(workspace, run_id) / "events.jsonl"
-    if not path.exists():
-        return []
-    events = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("seq", 0) > after:
-                events.append(event)
-    return events
+    """All events with ``seq > after``, in order."""
+    return [
+        {
+            "seq": row["seq"], "at": row["at"], "type": row["type"],
+            "data": telemetry_db.loads(row["data"], {}),
+        }
+        for row in telemetry_db.connect(workspace.root).execute(
+            "SELECT seq, at, type, data FROM run_events"
+            " WHERE run_id = ? AND seq > ? ORDER BY seq",
+            (run_id, int(after or 0)),
+        )
+    ]
 
 
 # ----------------------------------------------------------------- recovery

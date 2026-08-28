@@ -17,6 +17,7 @@ reference base tables or other joins. Frames are resolved lazily through
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import io
 import json
@@ -28,6 +29,7 @@ import time
 import tokenize
 import uuid
 import threading
+from collections import OrderedDict
 from contextvars import ContextVar, Token
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -415,6 +417,162 @@ def _write_planning_artifact(root: Path, planning: dict) -> None:
     os.replace(tmp, apm_path)
 
 
+# Every artifact hydrated on first access rather than at construction.  See
+# ``Workspace.__getattr__``.
+_LAZY_ARTIFACTS = frozenset({"planning", *_ARTIFACT_COLLECTIONS, *_ARTIFACT_OBJECTS})
+
+# Parsed artifacts keyed by ``(root, revision, name)``.  Artifacts cannot change
+# without the manifest revision changing with them: ``_save_locked`` writes the
+# sidecars and then ``workspace.json``, and nothing else under the root writes a
+# collection.  That makes the revision a sound key for the parsed form.
+#
+# Entries are shared and never mutated — hydration hands out a copy and keeps
+# the cached object as the pristine state the save-time diff compares against.
+#
+# The cache assumes a single writing process, which the in-process
+# ``workspace_write_lock`` already assumes.  ``recover_linked_writes`` is the one
+# path that can restore artifact files without advancing the revision, so it
+# drops the affected root's entries explicitly.
+_ARTIFACT_CACHE_LIMIT = 128
+_artifact_cache: "OrderedDict[tuple[str, int, str], tuple]" = OrderedDict()
+_artifact_cache_guard = threading.Lock()
+
+
+def _canonical_artifact(value: object) -> object:
+    """The JSON-canonical form the save-time diff compares.
+
+    Hydration and the save-time projection must agree exactly, or an untouched
+    workspace would rewrite every sidecar: a tuple that survives normalization
+    is a tuple on one side and a list on the other.
+    """
+    return json.loads(json.dumps(value, sort_keys=True, default=str))
+
+
+def _read_artifact(root: Path, name: str) -> tuple[object, object]:
+    """Parse one artifact into its ``(value, pristine)`` pair.
+
+    ``pristine`` is what a later save diffs against.  It is normally the very
+    same object as ``value``; where hydration retires a legacy field, it is a
+    variant that still carries the field, so the next ordinary save rewrites the
+    sidecar without it.
+    """
+    if name == "planning":
+        planning = {
+            **_PLANNING_DEFAULT, "apm_markdown": "",
+            **_load_planning_artifact(root),
+        }
+        planning["context"] = {
+            **_PLANNING_DEFAULT["context"], **dict(planning.get("context") or {}),
+        }
+        value = _canonical_artifact(planning)
+        status = value.pop("status", None)
+        return value, (value if status is None else {**copy.deepcopy(value), "status": status})
+
+    if name in _ARTIFACT_OBJECTS:
+        value = _canonical_artifact(_load_artifact_object(root, name))
+        if name != "report":
+            return value, value
+        status = value.pop("status", None)
+        return value, (value if status is None else {**copy.deepcopy(value), "status": status})
+
+    items = _load_artifact_collection(root, name)
+    if name == "documents":
+        # Document versions were removed in favor of explicit in-place
+        # replacement. Keep only the current member of each legacy chain and
+        # hydrate it into the simpler document shape. A later save persists the
+        # migration while old evidence IDs remain visibly unavailable.
+        superseded_ids = {
+            str(item.get("supersedes")) for item in items if item.get("supersedes")
+        }
+        kept = []
+        for stored in items:
+            if str(stored.get("id")) in superseded_ids:
+                continue
+            document = dict(stored)
+            document.pop("version", None)
+            document.pop("supersedes", None)
+            document.setdefault("updated", None)
+            kept.append(document)
+        items = kept
+    elif name == "rcm":
+        hydrated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        items = [
+            _normalize_rcm_row(dict(row), now=hydrated_at, strict=False) for row in items
+        ]
+    elif name == "work_program":
+        # Legacy evidence strings remain represented through a typed wrapper;
+        # all subsequent writes validate the durable anchor shape.
+        from .evidence import normalize_many
+        for item in items:
+            item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
+            item.setdefault("methodology_refs", [])
+    elif name == "findings":
+        from .evidence import normalize_many
+        legacy_statuses = {
+            str(item.get("id")): item.get("status")
+            for item in items
+            if item.get("status") is not None
+        }
+        for item in items:
+            item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
+            item.setdefault("rcm_refs", [])
+            item.setdefault("procedure_refs", [])
+            item.setdefault("test_refs", [])
+            item.setdefault("execution_refs", [])
+            item.setdefault("cause_pending", False)
+            _migrate_finding_narrative(item)
+            # Legacy/manual origin is not equivalent to a formal auditor
+            # confirmation. Unsupported records stay visible as drafts.
+            item.setdefault("auditor_confirmed", False)
+            item.pop("planned_test_refs", None)
+            item.pop("status", None)
+            item.setdefault("source", "manual")
+        value = _canonical_artifact(items)
+        if not legacy_statuses:
+            return value, value
+        pristine = copy.deepcopy(value)
+        for item in pristine:
+            status = legacy_statuses.get(str(item.get("id")))
+            if status is not None:
+                item["status"] = status
+        return value, pristine
+
+    value = _canonical_artifact(items)
+    return value, value
+
+
+def _cached_artifact(root: Path, revision: int, name: str) -> tuple[object, object]:
+    key = (str(root), int(revision), name)
+    with _artifact_cache_guard:
+        entry = _artifact_cache.get(key)
+        if entry is not None:
+            _artifact_cache.move_to_end(key)
+            return entry
+    entry = _read_artifact(root, name)
+    with _artifact_cache_guard:
+        _artifact_cache[key] = entry
+        _artifact_cache.move_to_end(key)
+        while len(_artifact_cache) > _ARTIFACT_CACHE_LIMIT:
+            _artifact_cache.popitem(last=False)
+    return entry
+
+
+def clear_artifact_cache(root: Path | None = None) -> None:
+    """Drop cached artifacts for one root, or all of them.
+
+    Needed only where artifact files change without the revision changing:
+    interrupted-write recovery, and tests that repoint or rewrite a data root
+    behind the application.
+    """
+    with _artifact_cache_guard:
+        if root is None:
+            _artifact_cache.clear()
+            return
+        prefix = str(Path(root).resolve())
+        for key in [key for key in _artifact_cache if key[0] == prefix]:
+            del _artifact_cache[key]
+
+
 def _migrate_artifacts(root: Path, definition: dict) -> dict:
     """Move v1-v3 embedded audit records to v4 sidecars before loading.
 
@@ -479,22 +637,34 @@ def sync_workspace(target: "Workspace", source: "Workspace") -> "Workspace":
         return current
 
     list_keys = {
-        "tables": "name", "joins": "name", "tiles": "id", "analyses": "id",
-        "rulesets": "id", "documents": "id", "rcm": "id", "work_program": "id",
-        "data_tests": "id", "observations": "id", "evidence_requests": "id",
-        "findings": "id",
+        "tables": "name", "joins": "name",
+        **{name: key for name, (_, key) in _ARTIFACT_COLLECTIONS.items()},
     }
+    object_keys = ("planning", *_ARTIFACT_OBJECTS)
+    # Only artifacts the target actually hydrated are merged.  Anything it never
+    # read holds no references for a caller to keep alive, so leaving it absent
+    # is both correct and cheaper: a later access re-reads it at the source's
+    # revision instead of being refreshed here.
     for attribute, key in list_keys.items():
-        merge_list(getattr(target, attribute), getattr(source, attribute), key)
-    for attribute in ("planning", "report", "dashboard_advice", "analysis_summary"):
+        if attribute in target.__dict__:
+            merge_list(getattr(target, attribute), getattr(source, attribute), key)
+    for attribute in object_keys:
+        if attribute not in target.__dict__:
+            continue
         current = getattr(target, attribute)
         current.clear()
         current.update(getattr(source, attribute))
+    carried = {*list_keys, *object_keys, "_loaded", "_artifact_snapshot", "_hydrate_guard"}
     for attribute, value in source.__dict__.items():
-        if attribute not in list_keys and attribute not in {
-            "planning", "report", "dashboard_advice", "analysis_summary",
-        }:
+        if attribute not in carried:
             setattr(target, attribute, value)
+    # Baselines follow the artifacts that were merged.  Reading the source above
+    # hydrated it for exactly those names, so its snapshot has them.
+    target._artifact_snapshot = {
+        name: snapshot
+        for name, snapshot in source._artifact_snapshot.items()
+        if name in target._loaded
+    }
     return target
 
 
@@ -768,6 +938,11 @@ class Workspace:
         definition = _migrate_artifacts(
             self.root, json.loads(self.definition_path.read_text(encoding="utf-8"))
         )
+        # Set before anything else can miss an attribute: ``__getattr__``
+        # consults these, so they must exist before the first lazy name.
+        self._loaded: set[str] = set()
+        self._artifact_snapshot: dict = {}
+        self._hydrate_guard = threading.RLock()
         self._table_signature_cache: dict[str, tuple] = {}
         self.schema_version = int(definition.get("schema_version") or 1)
         self.revision = int(definition.get("revision") or 0)
@@ -794,95 +969,54 @@ class Workspace:
         self.created: str = definition.get("created") or ""
         self.tables: list[dict] = list(definition.get("tables") or [])
         self.joins: list[dict] = list(definition.get("joins") or [])
-        self.tiles: list[dict] = _load_artifact_collection(self.root, "tiles")
-        self.analyses: list[dict] = _load_artifact_collection(self.root, "analyses")
-        self.rulesets: list[dict] = _load_artifact_collection(self.root, "rulesets")
-        # Full-audit-cycle records hydrate defensively so every pre-extension
-        # workspace remains readable without a migration step.
-        stored_documents = _load_artifact_collection(self.root, "documents")
-        # Document versions were removed in favor of explicit in-place
-        # replacement. Keep only the current member of each legacy chain and
-        # hydrate it into the simpler document shape. A later save persists the
-        # migration while old evidence IDs remain visibly unavailable.
-        superseded_ids = {
-            str(item.get("supersedes"))
-            for item in stored_documents
-            if item.get("supersedes")
-        }
-        self.documents: list[dict] = []
-        for stored in stored_documents:
-            if str(stored.get("id")) in superseded_ids:
-                continue
-            document = dict(stored)
-            document.pop("version", None)
-            document.pop("supersedes", None)
-            document.setdefault("updated", None)
-            self.documents.append(document)
-        self.planning: dict = {
-            **_PLANNING_DEFAULT,
-            "apm_markdown": "",
-            **_load_planning_artifact(self.root),
-        }
-        self.planning["context"] = {
-            **_PLANNING_DEFAULT["context"],
-            **dict(self.planning.get("context") or {}),
-        }
-        hydrated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        self.rcm: list[dict] = [
-            _normalize_rcm_row(dict(row), now=hydrated_at, strict=False)
-            for row in _load_artifact_collection(self.root, "rcm")
-        ]
-        self.work_program: list[dict] = _load_artifact_collection(self.root, "work_program")
-        self.data_tests: list[dict] = _load_artifact_collection(self.root, "data_tests")
-        self.observations: list[dict] = _load_artifact_collection(self.root, "observations")
-        self.evidence_requests: list[dict] = _load_artifact_collection(self.root, "evidence_requests")
-        self.findings: list[dict] = _load_artifact_collection(self.root, "findings")
-        self.dashboard_advice: dict = _load_artifact_object(self.root, "dashboard_advice")
-        self.analysis_summary: dict = _load_artifact_object(self.root, "analysis_summary")
-        legacy_finding_statuses = {
-            str(item.get("id")): item.get("status")
-            for item in self.findings
-            if item.get("status") is not None
-        }
-        # Legacy evidence strings remain represented through a typed wrapper;
-        # all subsequent writes validate the durable anchor shape.
-        from .evidence import normalize_many
-        for item in self.work_program:
-            item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
-            item.setdefault("methodology_refs", [])
-        for item in self.findings:
-            item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
-            item.setdefault("rcm_refs", [])
-            item.setdefault("procedure_refs", [])
-            item.setdefault("test_refs", [])
-            item.setdefault("execution_refs", [])
-            item.setdefault("cause_pending", False)
-            _migrate_finding_narrative(item)
-            # Legacy/manual origin is not equivalent to a formal auditor
-            # confirmation. Unsupported records stay visible as drafts.
-            item.setdefault("auditor_confirmed", False)
-            item.pop("planned_test_refs", None)
-            item.pop("status", None)
-            item.setdefault("source", "manual")
-        self.report: dict = _load_artifact_object(self.root, "report")
-        legacy_artifact_statuses = {
-            "planning": self.planning.get("status"),
-            "report": self.report.get("status"),
-            "findings": legacy_finding_statuses,
-        }
-        self.planning.pop("status", None)
-        self.report.pop("status", None)
-        self._artifact_snapshot = self._artifact_state()
-        # Keep removed legacy statuses in the prior snapshot so the next
-        # ordinary save rewrites the sidecars without those retired fields.
-        if legacy_artifact_statuses["planning"] is not None:
-            self._artifact_snapshot["planning"]["status"] = legacy_artifact_statuses["planning"]
-        if legacy_artifact_statuses["report"] is not None:
-            self._artifact_snapshot["report"]["status"] = legacy_artifact_statuses["report"]
-        for item in self._artifact_snapshot["findings"]:
-            status = legacy_artifact_statuses["findings"].get(str(item.get("id")))
-            if status is not None:
-                item["status"] = status
+        # Artifact collections, objects, and planning are deliberately not read
+        # here.  Most routes name one or two of the thirteen, and an agent run
+        # reloads its workspace on every commit, so parsing every sidecar under
+        # the root at construction was a fixed cost paid by requests that never
+        # looked at the result.  ``__getattr__`` reads an artifact the first time
+        # it is named and records the pristine state its save diffs against.
+
+    # ------------------------------------------------------------- hydration
+    def __getattr__(self, name: str):
+        """Hydrate an artifact the first time it is named.
+
+        Python calls this only when normal lookup fails, and the hydrated value
+        is stored in ``__dict__``, so it runs at most once per artifact per
+        instance and every later read is an ordinary attribute access.
+        """
+        if name.startswith("_") or name not in _LAZY_ARTIFACTS:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        return self._hydrate(name)
+
+    def __setattr__(self, name: str, value) -> None:
+        """Record an artifact's stored state before it is replaced wholesale.
+
+        A caller that assigns over an artifact instead of mutating it would
+        otherwise leave the save-time diff with no ``before`` for that name, and
+        a collection whose members were dropped that way would keep its orphaned
+        sidecars on disk.
+        """
+        if (
+            name in _LAZY_ARTIFACTS
+            and "_loaded" in self.__dict__
+            and name not in self.__dict__
+        ):
+            self._hydrate(name)
+        object.__setattr__(self, name, value)
+
+    def _hydrate(self, name: str):
+        with self._hydrate_guard:
+            if name in self._loaded:
+                return self.__dict__[name]
+            value, pristine = _cached_artifact(self.root.resolve(), self.revision, name)
+            # The cached pair is shared and never mutated: the caller works on a
+            # copy, and the pristine side becomes this instance's save baseline.
+            object.__setattr__(self, name, copy.deepcopy(value))
+            self._artifact_snapshot[name] = pristine
+            self._loaded.add(name)
+            return self.__dict__[name]
 
     def reload(self) -> "Workspace":
         """Re-read this workspace from disk.
@@ -995,16 +1129,18 @@ class Workspace:
             pass
 
     def _artifact_state(self) -> dict:
-        """Canonical in-memory projection of sidecar-backed audit artifacts."""
-        return json.loads(json.dumps({
-            "planning": self.planning,
-            **{name: getattr(self, name) for name in _ARTIFACT_COLLECTIONS},
-            **{name: getattr(self, name) for name in _ARTIFACT_OBJECTS},
-        }, sort_keys=True, default=str))
+        """Canonical projection of the artifacts this instance actually read.
+
+        An artifact that was never hydrated cannot have been mutated, so it is
+        absent from both sides of the save-time diff and costs nothing.
+        """
+        return _canonical_artifact(
+            {name: self.__dict__[name] for name in sorted(self._loaded)}
+        )
 
     def _changed_artifact_writes(self, before: dict, after: dict) -> list[tuple[Path, str, object]]:
         writes: list[tuple[Path, str, object]] = []
-        if before.get("planning") != after.get("planning"):
+        if "planning" in self._loaded and before.get("planning") != after.get("planning"):
             writes.extend([
                 (self.root / "Planning" / "context.json", "json", {
                     key: value for key, value in self.planning.items() if key != "apm_markdown"
@@ -1012,6 +1148,8 @@ class Workspace:
                 (self.root / "Planning" / "APM.md", "text", self.planning.get("apm_markdown") or ""),
             ])
         for collection, (_, identity_key) in _ARTIFACT_COLLECTIONS.items():
+            if collection not in self._loaded:
+                continue
             prior = {str(item[identity_key]): item for item in before.get(collection, [])}
             current = {str(item[identity_key]): item for item in after.get(collection, [])}
             removed = prior.keys() - current.keys()
@@ -1025,7 +1163,7 @@ class Workspace:
                     "ids": [str(item[identity_key]) for item in after.get(collection, [])],
                 }))
         for name in _ARTIFACT_OBJECTS:
-            if before.get(name) != after.get(name):
+            if name in self._loaded and before.get(name) != after.get(name):
                 writes.append((_artifact_object_path(self.root, name), "json", getattr(self, name)))
         return writes
 

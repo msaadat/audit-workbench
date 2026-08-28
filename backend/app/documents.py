@@ -6,7 +6,6 @@ import hashlib
 import json
 import mimetypes
 import re
-import threading
 import uuid
 import zipfile
 from collections.abc import Mapping
@@ -16,7 +15,7 @@ from xml.etree import ElementTree
 
 from pypdf import PdfReader
 
-from . import debug_store, llm
+from . import debug_store, llm, telemetry_db
 from .agent import prompts
 from .evidence import document_anchor
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
@@ -46,7 +45,6 @@ def display_name(document: object, fallback: str = "") -> str:
 
 MIN_TEXT_CHARACTERS = 40
 ASSISTANT_DOCUMENT_CONTEXT_MAX_CHARACTERS = 80_000
-_append_lock = threading.Lock()
 
 
 def utcnow() -> str:
@@ -410,15 +408,6 @@ def _select_pages(extracted: dict, pages: list[int] | None) -> list[dict]:
     return [available[page] for page in requested]
 
 
-def _append_jsonl(path: Path, event: dict) -> dict:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _append_lock:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-            handle.flush()
-    return event
-
-
 def prompt_content(
     workspace: Workspace,
     source_ref: str,
@@ -598,24 +587,37 @@ def assistant_document_citations(
 
 def append_activity(workspace: Workspace, **fields) -> dict:
     event = {"id": f"AI-{uuid.uuid4().hex[:10].upper()}", "at": utcnow(), **fields}
-    return _append_jsonl(workspace.root / "AIActivity" / "events.jsonl", event)
-
-
-def list_jsonl(path: Path, cursor: int = 0, limit: int = 100) -> dict:
-    cursor = max(0, int(cursor or 0)); limit = min(250, max(1, int(limit or 100)))
-    if not path.exists():
-        return {"items": [], "next_cursor": None}
-    lines = path.read_text(encoding="utf-8").splitlines()
-    items = [json.loads(line) for line in lines[cursor:cursor + limit] if line.strip()]
-    next_cursor = cursor + len(items) if cursor + len(items) < len(lines) else None
-    return {"items": items, "next_cursor": next_cursor}
+    handle = telemetry_db.connect(workspace.root)
+    handle.execute(
+        "INSERT INTO activity_events(at, payload) VALUES(?, ?)",
+        (event["at"], telemetry_db.dumps(event)),
+    )
+    handle.commit()
+    return event
 
 
 def activities(workspace: Workspace, cursor: int = 0, limit: int = 100, document_id: str | None = None) -> dict:
-    result = list_jsonl(workspace.root / "AIActivity" / "events.jsonl", cursor, limit)
+    """One page of the AI activity feed, oldest first.
+
+    Paging used to read and split the whole log to hand back a hundred rows.
+    The document filter still applies to the page rather than to the query,
+    which is the behaviour the tab was built against.
+    """
+    cursor = max(0, int(cursor or 0))
+    limit = min(250, max(1, int(limit or 100)))
+    handle = telemetry_db.connect(workspace.root)
+    total = handle.execute("SELECT COUNT(*) FROM activity_events").fetchone()[0]
+    items = [
+        telemetry_db.loads(row["payload"], {})
+        for row in handle.execute(
+            "SELECT payload FROM activity_events ORDER BY seq LIMIT ? OFFSET ?",
+            (limit, cursor),
+        )
+    ]
+    next_cursor = cursor + len(items) if cursor + len(items) < total else None
     if document_id:
-        result["items"] = [item for item in result["items"] if document_id in (item.get("document_ids") or [])]
-    return result
+        items = [item for item in items if document_id in (item.get("document_ids") or [])]
+    return {"items": items, "next_cursor": next_cursor}
 
 
 def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[int] | None,

@@ -2,8 +2,12 @@
 
 The store is deliberately independent from the agent event ledger: every LLM
 caller can participate, including short-lived assistant and report requests.
-Files are append-only or atomically replaced and all process-local writes are
-serialized per workspace so concurrent document analysis remains readable.
+
+Records live in the workspace's telemetry database (:mod:`.telemetry_db`).  They
+are written once and then read back filtered, paged, and pruned, which is what
+a table answers cheaply and a directory of JSON files does not: listing calls
+used to parse every stored response body just to build a summary row, and
+retention meant restating a directory listing or rewriting a whole log.
 """
 
 from __future__ import annotations
@@ -21,7 +25,8 @@ import time
 import uuid
 from typing import Any, Iterator
 
-from .workspaces import WorkspaceError, write_json_atomic
+from . import telemetry_db
+from .workspaces import WorkspaceError
 
 SESSION_ID = uuid.uuid4().hex
 DEBUG_DIRNAME = "Debug"
@@ -54,15 +59,12 @@ TELEMETRY_LEVELS = (TELEMETRY_OFF, TELEMETRY_CALLS, TELEMETRY_FULL)
 DEFAULT_TELEMETRY_LEVEL = TELEMETRY_CALLS
 TELEMETRY_ENV_VAR = "DEBUG_TELEMETRY"
 
-# Retention caps per workspace. The store is local and append-only, so without
-# a bound it grows for the life of the engagement.
-MAX_CALL_RECORDS = 500
-MAX_TRANSITION_RECORDS = 500
-# Two per transition (before and after), so this cap is deliberately double the
-# transition cap; a transition whose snapshot has aged out still carries its own
-# inline ``changes`` list.
-MAX_SNAPSHOT_FILES = 1000
-MAX_EVENT_LINES = 20_000
+# Retention caps are declared beside the schema they bound; re-exported here
+# because the console's retention notice reads them off this module.
+MAX_CALL_RECORDS = telemetry_db.MAX_CALL_RECORDS
+MAX_TRANSITION_RECORDS = telemetry_db.MAX_TRANSITION_RECORDS
+MAX_SNAPSHOT_FILES = telemetry_db.MAX_SNAPSHOT_FILES
+MAX_EVENT_LINES = telemetry_db.MAX_EVENT_LINES
 _SWEEP_INTERVAL = 200
 _sweep_counters: dict[str, int] = {}
 _sweep_guard = threading.Lock()
@@ -129,7 +131,17 @@ def workspace_root(workspace_id: str) -> Path:
 
 
 def debug_root(workspace_id: str) -> Path:
+    """The legacy telemetry folder.
+
+    Retained because the one-time import in :mod:`.telemetry_db` reads from it
+    and :func:`clear` removes it; nothing reads telemetry from here any more.
+    """
     return workspace_root(workspace_id) / DEBUG_DIRNAME
+
+
+def connection(workspace_id: str):
+    """This thread's telemetry connection for one workspace."""
+    return telemetry_db.connect(workspace_root(workspace_id))
 
 
 @contextmanager
@@ -212,15 +224,19 @@ def append_event(workspace_id: str, type_: str, data: dict) -> dict:
     event = {"id": uuid.uuid4().hex, "at": utcnow(), "type": type_, "data": sanitize(data)}
     if not calls_enabled():
         return event
-    root = debug_root(workspace_id)
-    path = root / "events.jsonl"
-    raw = json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
-    with _lock(root):
-        root.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
+    data = event["data"] if isinstance(event["data"], dict) else {}
+    correlation = data.get("correlation") or {}
+    connection(workspace_id).execute(
+        "INSERT INTO debug_events(id, at, type, run_id, call_id, data)"
+        " VALUES(?, ?, ?, ?, ?, ?)",
+        (
+            event["id"], event["at"], type_,
+            correlation.get("run_id") if isinstance(correlation, dict) else None,
+            data.get("call_id"),
+            telemetry_db.dumps(event["data"]),
+        ),
+    )
+    connection(workspace_id).commit()
     _note_write(workspace_id)
     return event
 
@@ -232,7 +248,6 @@ def start_call(request: dict, settings: Any, *, extra: dict | None = None) -> tu
         # Every caller guards its later tracing on a non-null call id, so
         # returning none here disables the whole call-tracing path at once.
         return None, None
-    root = debug_root(workspace_id)
     call_id = f"call_{uuid.uuid4().hex}"
     safe_request = sanitize(request)
     raw = _canonical(safe_request)
@@ -257,22 +272,32 @@ def start_call(request: dict, settings: Any, *, extra: dict | None = None) -> tu
         "response_size_bytes": None, "response_sha256": None,
         "terminal_error": None,
     }
-    path = root / "LLMCalls" / f"{call_id}.json"
-    with _lock(root):
-        write_json_atomic(path, record)
+    handle = connection(workspace_id)
+    handle.execute(telemetry_db.CALL_UPSERT, telemetry_db.call_row(record))
+    handle.commit()
     append_event(workspace_id, "llm_call_started", {"call_id": call_id, "correlation": context})
     return call_id, record
 
 
 def update_call(workspace_id: str, call_id: str, updater) -> dict:
-    root = debug_root(workspace_id)
-    path = root / "LLMCalls" / f"{call_id}.json"
-    with _lock(root):
-        if not path.exists():
+    """Read-modify-write one call trace under the workspace's write lock.
+
+    The lock is what keeps two attempts on the same call from interleaving; the
+    surrounding transaction is what keeps a reader from seeing the half-updated
+    row.
+    """
+    handle = connection(workspace_id)
+    with _lock(workspace_root(workspace_id)):
+        row = handle.execute(
+            "SELECT record FROM llm_calls WHERE id = ?", (call_id,)
+        ).fetchone()
+        if row is None:
             raise WorkspaceError(f"Debug call '{call_id}' not found.")
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = telemetry_db.loads(row["record"], {})
         updater(record)
-        write_json_atomic(path, sanitize(record))
+        stored = sanitize(record)
+        handle.execute(telemetry_db.CALL_UPSERT, telemetry_db.call_row(stored))
+        handle.commit()
         return record
 
 
@@ -313,12 +338,15 @@ def write_snapshot(workspace_id: str, payload: dict, *, kind: str = "workspace")
         return {"sha1": "", "path": "", "kind": kind}
     safe = sanitize(payload)
     digest = sha1(safe)
-    root = debug_root(workspace_id)
-    path = root / "StateSnapshots" / f"{digest}.json"
-    envelope = {"sha1": digest, "kind": kind, "captured_at": utcnow(), "payload": safe}
-    with _lock(root):
-        if not path.exists():
-            write_json_atomic(path, envelope)
+    handle = connection(workspace_id)
+    # Snapshots are content-addressed, so a repeat is the same bytes: the first
+    # writer's capture time is the one that means anything.
+    handle.execute(
+        "INSERT OR IGNORE INTO state_snapshots(sha1, kind, captured_at, payload)"
+        " VALUES(?, ?, ?, ?)",
+        (digest, kind, utcnow(), telemetry_db.dumps(safe)),
+    )
+    handle.commit()
     return {"sha1": digest, "path": f"StateSnapshots/{digest}.json", "kind": kind}
 
 
@@ -377,9 +405,9 @@ def record_transition(workspace_id: str, before: dict | None, after: dict,
         "changes": changes,
         "counts": {name: sum(item["change"] == name for item in changes) for name in ("added", "removed", "updated")},
     }
-    root = debug_root(workspace_id)
-    with _lock(root):
-        write_json_atomic(root / "StateTransitions" / f"{transition_id}.json", record)
+    handle = connection(workspace_id)
+    handle.execute(telemetry_db.TRANSITION_UPSERT, telemetry_db.transition_row(record))
+    handle.commit()
     append_event(workspace_id, "state_transition", {"transition_id": transition_id, "trigger": trigger, "kind": kind, "correlation": record["correlation"], "changed_paths": record["changed_paths"]})
     return record
 
@@ -401,10 +429,13 @@ def record_run_save(workspace_id: str, run_id: str, before: dict | None, after: 
                 "revision": revision, "captured_at": utcnow(), "goal": after.get("goal"),
                 "command": after.get("command"), "actions": after.get("actions") or [],
             }
-            root = debug_root(workspace_id)
-            with _lock(root):
-                path = root / "GraphSnapshots" / run_id / f"{int(revision or 0):06d}.json"
-                if not path.exists(): write_json_atomic(path, sanitize(graph))
+            handle = connection(workspace_id)
+            handle.execute(
+                "INSERT OR IGNORE INTO graph_snapshots(run_id, revision, payload)"
+                " VALUES(?, ?, ?)",
+                (run_id, int(revision or 0), telemetry_db.dumps(sanitize(graph))),
+            )
+            handle.commit()
 
 
 def _file_sha1(path: Path, cache: dict) -> str | None:
@@ -427,10 +458,12 @@ def capture_structural_state(workspace: Any, *, trigger: str, run_id: str | None
         # This walks every table and join and loads frames to measure them, so
         # it is the single most expensive telemetry call in the store.
         return {"sha1": "", "path": "", "kind": "structural"}
-    root = debug_root(workspace.id)
-    cache_path = root / "FileSignatures.json"
-    try: file_cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError): file_cache = {}
+    handle = connection(workspace.id)
+    file_cache = {
+        row["key"]: row["sha1"]
+        for row in handle.execute("SELECT key, sha1 FROM file_signatures")
+    }
+    known = set(file_cache)
     tables = []
     from . import loader
     for entry in workspace.tables:
@@ -466,8 +499,12 @@ def capture_structural_state(workspace: Any, *, trigger: str, run_id: str | None
             except OSError: continue
             artifacts.append({"path": str(path.relative_to(workspace.root)), "size": stat.st_size,
                               "mtime_ns": stat.st_mtime_ns, "sha1": _file_sha1(path, file_cache)})
-    try: write_json_atomic(cache_path, file_cache)
-    except OSError: pass
+    added = [(key, value) for key, value in file_cache.items() if key not in known]
+    if added:
+        handle.executemany(
+            "INSERT OR REPLACE INTO file_signatures(key, sha1) VALUES(?, ?)", added
+        )
+        handle.commit()
     try:
         definition = json.loads(workspace.definition_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError): definition = {}
@@ -486,25 +523,47 @@ def capture_structural_state(workspace: Any, *, trigger: str, run_id: str | None
 
 
 def recover_interrupted(workspace_id: str) -> int:
-    root = debug_root(workspace_id)
-    calls = root / "LLMCalls"
-    if not calls.exists(): return 0
-    count = 0
-    for path in calls.glob("*.json"):
-        try: record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError): continue
-        if record.get("status") == "running" and record.get("session_id") != SESSION_ID:
-            def apply(item: dict) -> None:
-                item["status"] = "interrupted"; item["finished_at"] = utcnow()
-                item["terminal_error"] = "Backend stopped before this call completed."
-            update_call(workspace_id, record["id"], apply); count += 1
-    return count
+    """Close out calls a previous process left running.
+
+    Selecting the affected ids is now a two-column indexed read rather than a
+    parse of every stored trace, which matters because the calls listing runs
+    this first on every request.
+    """
+    stale = [
+        row["id"]
+        for row in connection(workspace_id).execute(
+            "SELECT id FROM llm_calls WHERE status = 'running' AND session_id != ?",
+            (SESSION_ID,),
+        )
+    ]
+
+    def apply(item: dict) -> None:
+        item["status"] = "interrupted"
+        item["finished_at"] = utcnow()
+        item["terminal_error"] = "Backend stopped before this call completed."
+
+    for call_id in stale:
+        update_call(workspace_id, call_id, apply)
+    return len(stale)
+
+
+TELEMETRY_TABLES = (
+    "llm_calls", "debug_events", "state_snapshots", "state_transitions",
+    "graph_snapshots", "file_signatures",
+)
 
 
 def clear(workspace_id: str) -> None:
+    """Drop this workspace's debug telemetry, including any legacy folder."""
     import shutil
+
+    handle = connection(workspace_id)
+    for table in TELEMETRY_TABLES:
+        handle.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed table names
+    handle.commit()
     root = debug_root(workspace_id)
-    if root.exists(): shutil.rmtree(root)
+    if root.exists():
+        shutil.rmtree(root)
 
 
 def _note_write(workspace_id: str) -> None:
@@ -522,70 +581,39 @@ def _note_write(workspace_id: str) -> None:
         pass
 
 
-def _prune_directory(folder: Path, keep: int) -> int:
-    """Delete all but the ``keep`` most recently modified files in ``folder``."""
-    if not folder.is_dir():
-        return 0
-    entries = []
-    for path in folder.glob("*.json"):
-        try:
-            entries.append((path.stat().st_mtime_ns, path))
-        except OSError:
-            continue
-    if len(entries) <= keep:
-        return 0
-    entries.sort(reverse=True)
-    removed = 0
-    for _, path in entries[keep:]:
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            continue
-    return removed
-
-
-def _truncate_events(path: Path, keep: int) -> int:
-    """Keep the newest ``keep`` event lines, rewriting the log atomically."""
-    if not path.is_file():
-        return 0
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            lines = handle.readlines()
-    except OSError:
-        return 0
-    if len(lines) <= keep:
-        return 0
-    tail = lines[-keep:]
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:6]}.tmp")
-    try:
-        tmp.write_text("".join(tail), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        return 0
-    return len(lines) - len(tail)
-
-
 def prune(workspace_id: str) -> dict[str, int]:
     """Bound the local telemetry store to its retention caps.
 
-    Newest-first by modification time, so an in-flight call is never the record
-    that gets dropped. Returns what was removed so the debug console can say so
-    rather than presenting a truncated history as complete.
+    Newest-first, so an in-flight call is never the record that gets dropped.
+    Returns what was removed so the debug console can say so rather than
+    presenting a truncated history as complete.
+
+    Retention used to mean listing a directory to find its oldest files and
+    rewriting a whole event log to drop its head; it is now four bounded
+    deletes.
     """
-    root = debug_root(workspace_id)
-    if not root.exists():
-        return {}
-    with _lock(root):
-        removed = {
-            "calls": _prune_directory(root / "LLMCalls", MAX_CALL_RECORDS),
-            "transitions": _prune_directory(
-                root / "StateTransitions", MAX_TRANSITION_RECORDS
-            ),
-            "snapshots": _prune_directory(
-                root / "StateSnapshots", MAX_SNAPSHOT_FILES
-            ),
-            "events": _truncate_events(root / "events.jsonl", MAX_EVENT_LINES),
-        }
-    return {key: value for key, value in removed.items() if value}
+    handle = connection(workspace_id)
+    removed = {
+        "calls": handle.execute(
+            "DELETE FROM llm_calls WHERE id NOT IN ("
+            " SELECT id FROM llm_calls ORDER BY started_at DESC LIMIT ?)",
+            (MAX_CALL_RECORDS,),
+        ).rowcount,
+        "transitions": handle.execute(
+            "DELETE FROM state_transitions WHERE id NOT IN ("
+            " SELECT id FROM state_transitions ORDER BY at DESC LIMIT ?)",
+            (MAX_TRANSITION_RECORDS,),
+        ).rowcount,
+        "snapshots": handle.execute(
+            "DELETE FROM state_snapshots WHERE sha1 NOT IN ("
+            " SELECT sha1 FROM state_snapshots ORDER BY captured_at DESC LIMIT ?)",
+            (MAX_SNAPSHOT_FILES,),
+        ).rowcount,
+        "events": handle.execute(
+            "DELETE FROM debug_events WHERE seq NOT IN ("
+            " SELECT seq FROM debug_events ORDER BY seq DESC LIMIT ?)",
+            (MAX_EVENT_LINES,),
+        ).rowcount,
+    }
+    handle.commit()
+    return {key: value for key, value in removed.items() if value > 0}

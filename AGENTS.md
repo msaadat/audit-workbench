@@ -58,6 +58,9 @@ backend/app/
 |- db.py                       - SQLite control plane: connections, pragmas,
 |                                user_version migrations. Identity and indexes
 |                                only; audit content stays on the filesystem
+|- telemetry_db.py             - per-workspace SQLite for telemetry and event
+|                                logs (debug calls/events, state, AI activity,
+|                                run events) plus the one-time legacy import
 |- accounts.py                 - admin-provisioned user records, scrypt
 |                                passwords, the local single-user account
 |- auth.py                     - Principal, AUTH_MODE, request-scoped principal
@@ -113,7 +116,8 @@ backend/app/
 |- templates_store.py          - editable markdown template persistence and the
 |                                shared `##`-section parsing those templates
 |                                define (headings, bodies, scaffold)
-|- debug_store.py              - local telemetry storage for calls/events/state
+|- debug_store.py              - telemetry writes for calls/events/state, into
+|                                the workspace telemetry database
 |- debug_service.py            - debug read models, timing, causal analysis
 |- model_context.py            - shared model-context helpers
 |- embedding.py                - local embedding utilities
@@ -167,7 +171,8 @@ backend/app/
    |- routing.py               - the only classifier: pure deterministic
    |                             precedence, the bounded router worker, and
    |                             route/engine persistence
-   |- store.py                 - durable run storage in AgentRuns/
+   |- store.py                 - durable run records in AgentRuns/; the run's
+   |                             event stream lives in telemetry_db
    |- base.py                  - the shared run-projection base: plan/tasks,
    |                             artifacts, approval batches, proposal items,
    |                             and model-call provenance, over an injected
@@ -328,6 +333,16 @@ frontend/src/
 
 - Every workspace is persisted on disk under
   `<data root>/Users/<owner_id>/Workspaces/<dir_name>/`.
+- Audit artifacts are files; telemetry and event logs are rows. Findings, RCM
+  rows, tests, and the rest stay independently replaceable JSON sidecars, which
+  is what keeps them atomic, revisioned, and readable without the app. The debug
+  console's traces, the AI activity feed, and run event streams live in that
+  folder's `telemetry.db`, because they are written once and then read filtered,
+  paged, and pruned. Losing that database costs history, not evidence.
+- `Workspace` hydrates artifacts lazily: naming `ws.findings` reads the Findings
+  sidecars, and an artifact never named is never parsed. The parsed form is
+  cached against the manifest revision, so repeated loads at the same revision
+  reuse it. A save diffs only what was hydrated.
 - Workspace writes are revisioned. `main.py` exposes `ETag` /
   `X-Workspace-Revision`, and mutating requests may supply `If-Match` to get
   strict optimistic concurrency.
@@ -659,8 +674,10 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
 
 ### Events and live UI
 
-- Runs persist `run.json`, `events.jsonl`, and sidecars under
-  `Workspaces/<id>/AgentRuns/<run_id>/`.
+- Runs persist `run.json` and sidecars under
+  `Workspaces/<id>/AgentRuns/<run_id>/`. The replayable event stream is in the
+  workspace's `telemetry.db`, keyed by run, so reading forward from a cursor is
+  an indexed range read rather than a scan of a growing log.
 - The UI consumes SSE from `agent_routes.py`; events are replayable by cursor or
   `Last-Event-ID`.
 - `useAgentRun.ts` is the shared client-side run bus for tabs and the assistant

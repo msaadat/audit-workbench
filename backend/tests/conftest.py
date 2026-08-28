@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import accounts, assistant_settings, config, db, llm, loader, registry, usage, workspaces  # noqa: E402
+from app import accounts, assistant_settings, config, db, llm, loader, registry, telemetry_db, usage, workspaces  # noqa: E402
 from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
@@ -208,6 +208,7 @@ def isolated_workspaces(tmp_path, monkeypatch):
     both sides because it is cached per thread and per database path.
     """
     db.close_all()
+    telemetry_db.close_all()
     registry.forget_reconciled()
     usage.forget_owners()
     monkeypatch.setattr(config, "DATA_ROOT", tmp_path)
@@ -223,10 +224,13 @@ def isolated_workspaces(tmp_path, monkeypatch):
     # developer's own export would otherwise decide what the suite asserts.
     monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
     loader.clear_cache()
+    workspaces.clear_artifact_cache()
     yield
     db.close_all()
+    telemetry_db.close_all()
     registry.forget_reconciled()
     usage.forget_owners()
+    workspaces.clear_artifact_cache()
 
 
 @pytest.fixture

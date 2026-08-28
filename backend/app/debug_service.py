@@ -3,20 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
-from pathlib import Path
 from typing import Any
 
-from . import debug_store
+from . import debug_store, telemetry_db
 from .agent import store as agent_store
 from .workspaces import Workspace, WorkspaceError
-
-
-def _read(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise WorkspaceError(f"Debug record '{path.name}' is unreadable.") from error
 
 
 def _dt(value: str | None) -> datetime | None:
@@ -31,89 +22,150 @@ def _ms(start: str | None, end: str | None) -> float:
     return max(0.0, (right - left).total_seconds() * 1000)
 
 
-def _page(items: list, cursor: int, limit: int) -> dict:
-    cursor = max(0, int(cursor or 0)); limit = min(250, max(1, int(limit or 100)))
-    selected = items[cursor:cursor + limit]
-    return {"items": selected, "cursor": cursor,
-            "next_cursor": cursor + len(selected) if cursor + len(selected) < len(items) else None,
-            "total": len(items)}
+# The summary the console lists.  Deliberately every column except ``record``:
+# the stored request and response bodies are the bulk of a trace and no listing
+# needs them.
+_CALL_SUMMARY_COLUMNS = (
+    "id, status, started_at, finished_at, duration_ms, provider, model, profile,"
+    " finish_reason, usage, attempt_count, terminal_error, correlation,"
+    " request_size_bytes, response_size_bytes"
+)
+
+
+def _call_filters(run_id, status, stage, purpose) -> tuple[str, list]:
+    clauses, params = [], []
+    for column, value in (
+        ("run_id", run_id), ("status", status), ("stage", stage), ("purpose", purpose),
+    ):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+
+def _call_summary(row) -> dict:
+    attempts = int(row["attempt_count"] or 0)
+    return {
+        "id": row["id"], "status": row["status"],
+        "started_at": row["started_at"], "finished_at": row["finished_at"],
+        "duration_ms": row["duration_ms"], "provider": row["provider"],
+        "model": row["model"], "profile": row["profile"],
+        "finish_reason": row["finish_reason"],
+        "usage": telemetry_db.loads(row["usage"]),
+        "attempt_count": attempts,
+        "retry_count": max(0, attempts - 1),
+        "error": row["terminal_error"],
+        "correlation": telemetry_db.loads(row["correlation"], {}),
+        "request_size_bytes": row["request_size_bytes"],
+        "response_size_bytes": row["response_size_bytes"],
+    }
 
 
 def list_calls(workspace: Workspace, *, cursor: int = 0, limit: int = 100,
                run_id: str | None = None, status: str | None = None,
                stage: str | None = None, purpose: str | None = None) -> dict:
     debug_store.recover_interrupted(workspace.id)
-    root = debug_store.debug_root(workspace.id) / "LLMCalls"
-    items = []
-    if root.exists():
-        for path in root.glob("*.json"):
-            try: item = _read(path)
-            except WorkspaceError: continue
-            correlation = item.get("correlation") or {}
-            if run_id and correlation.get("run_id") != run_id: continue
-            if status and item.get("status") != status: continue
-            if stage and correlation.get("stage") != stage: continue
-            if purpose and correlation.get("purpose") != purpose: continue
-            items.append({
-                "id": item["id"], "status": item.get("status"),
-                "started_at": item.get("started_at"), "finished_at": item.get("finished_at"),
-                "duration_ms": item.get("duration_ms"), "provider": item.get("provider"),
-                "model": item.get("model"), "profile": item.get("profile"),
-                "finish_reason": item.get("finish_reason"), "usage": item.get("usage"),
-                "attempt_count": len(item.get("attempts") or []),
-                "retry_count": max(0, len(item.get("attempts") or []) - 1),
-                "error": item.get("terminal_error"), "correlation": correlation,
-                "request_size_bytes": item.get("request_size_bytes"),
-                "response_size_bytes": item.get("response_size_bytes"),
-            })
-    items.sort(key=lambda item: item.get("started_at") or "", reverse=True)
-    return _page(items, cursor, limit)
+    handle = debug_store.connection(workspace.id)
+    where, params = _call_filters(run_id, status, stage, purpose)
+    cursor = max(0, int(cursor or 0))
+    limit = min(250, max(1, int(limit or 100)))
+    total = handle.execute(
+        f"SELECT COUNT(*) FROM llm_calls{where}", params  # noqa: S608 - fixed clauses
+    ).fetchone()[0]
+    rows = handle.execute(
+        f"SELECT {_CALL_SUMMARY_COLUMNS} FROM llm_calls{where}"  # noqa: S608
+        " ORDER BY started_at DESC LIMIT ? OFFSET ?",
+        [*params, limit, cursor],
+    ).fetchall()
+    items = [_call_summary(row) for row in rows]
+    return {
+        "items": items, "cursor": cursor, "total": total,
+        "next_cursor": cursor + len(items) if cursor + len(items) < total else None,
+    }
 
 
 def get_call(workspace: Workspace, call_id: str) -> dict:
     if not call_id.startswith("call_"):
         raise WorkspaceError("Invalid debug call reference.")
-    path = debug_store.debug_root(workspace.id) / "LLMCalls" / f"{call_id}.json"
-    if not path.exists(): raise WorkspaceError(f"Debug call '{call_id}' not found.")
-    return _read(path)
+    row = debug_store.connection(workspace.id).execute(
+        "SELECT record FROM llm_calls WHERE id = ?", (call_id,)
+    ).fetchone()
+    if row is None:
+        raise WorkspaceError(f"Debug call '{call_id}' not found.")
+    return telemetry_db.loads(row["record"], {})
 
 
 def list_events(workspace: Workspace, *, cursor: int = 0, limit: int = 100,
                 type_: str | None = None, run_id: str | None = None,
                 call_id: str | None = None) -> dict:
-    path = debug_store.debug_root(workspace.id) / "events.jsonl"
-    items = []
-    if path.exists():
-        for index, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
-            if not line.strip(): continue
-            try: item = json.loads(line)
-            except json.JSONDecodeError: continue
-            item["seq"] = index + 1
-            data = item.get("data") or {}
-            correlation = data.get("correlation") or {}
-            if type_ and item.get("type") != type_: continue
-            if run_id and correlation.get("run_id") != run_id: continue
-            if call_id and data.get("call_id") != call_id: continue
-            items.append(item)
-    return _page(items, cursor, limit)
+    """One page of the debug event log, reading forward from ``cursor``.
+
+    ``cursor`` is a sequence number, not an offset into the filtered list.  The
+    two used to coincide because ``seq`` was the line number, which is why the
+    SSE stream could feed the last ``seq`` it emitted back in as a cursor; now
+    that ``seq`` is durable, forward-reading is what that contract needs, and a
+    filtered page no longer skips events by counting them twice.
+    """
+    handle = debug_store.connection(workspace.id)
+    cursor = max(0, int(cursor or 0))
+    limit = min(250, max(1, int(limit or 100)))
+    filters, filter_params = [], []
+    for column, value in (("type", type_), ("run_id", run_id), ("call_id", call_id)):
+        if value:
+            filters.append(f"{column} = ?")
+            filter_params.append(value)
+    # ``total`` counts everything the filter matches, as the file-backed reader
+    # reported it; ``remaining`` is what is still ahead of the cursor and is what
+    # decides whether there is a next page.
+    filter_where = (" WHERE " + " AND ".join(filters)) if filters else ""
+    total = handle.execute(
+        f"SELECT COUNT(*) FROM debug_events{filter_where}",  # noqa: S608 - fixed clauses
+        filter_params,
+    ).fetchone()[0]
+    where = " WHERE " + " AND ".join(["seq > ?", *filters])
+    params = [cursor, *filter_params]
+    remaining = handle.execute(
+        f"SELECT COUNT(*) FROM debug_events{where}", params  # noqa: S608
+    ).fetchone()[0]
+    rows = handle.execute(
+        f"SELECT seq, id, at, type, data FROM debug_events{where}"  # noqa: S608
+        " ORDER BY seq LIMIT ?",
+        [*params, limit],
+    ).fetchall()
+    items = [
+        {
+            "seq": row["seq"], "id": row["id"], "at": row["at"], "type": row["type"],
+            "data": telemetry_db.loads(row["data"], {}),
+        }
+        for row in rows
+    ]
+    return {
+        "items": items, "cursor": cursor, "total": total,
+        "next_cursor": items[-1]["seq"] if len(items) < remaining else None,
+    }
 
 
 def _transitions(workspace: Workspace, *, run_id: str | None = None) -> list[dict]:
-    root = debug_store.debug_root(workspace.id) / "StateTransitions"
-    result = []
-    if root.exists():
-        for path in root.glob("*.json"):
-            try: item = _read(path)
-            except WorkspaceError: continue
-            if run_id and (item.get("correlation") or {}).get("run_id") != run_id: continue
-            result.append(item)
-    return sorted(result, key=lambda item: item.get("at") or "")
+    where, params = ("", [])
+    if run_id:
+        where, params = " WHERE run_id = ?", [run_id]
+    return [
+        telemetry_db.loads(row["record"], {})
+        for row in debug_store.connection(workspace.id).execute(
+            f"SELECT record FROM state_transitions{where} ORDER BY at",  # noqa: S608
+            params,
+        )
+    ]
 
 
 def _graph_snapshots(workspace: Workspace, run_id: str) -> list[dict]:
-    root = debug_store.debug_root(workspace.id) / "GraphSnapshots" / run_id
-    if not root.exists(): return []
-    return [_read(path) for path in sorted(root.glob("*.json"))]
+    return [
+        telemetry_db.loads(row["payload"], {})
+        for row in debug_store.connection(workspace.id).execute(
+            "SELECT payload FROM graph_snapshots WHERE run_id = ? ORDER BY revision",
+            (run_id,),
+        )
+    ]
 
 
 def _agent_events(workspace: Workspace, run_id: str) -> list[dict]:
@@ -292,14 +344,26 @@ def _retention_notice() -> str:
 
 
 def snapshot(workspace: Workspace, digest: str) -> dict:
-    if len(digest) != 40 or any(ch not in "0123456789abcdef" for ch in digest): raise WorkspaceError("Invalid state snapshot reference.")
-    path = debug_store.debug_root(workspace.id) / "StateSnapshots" / f"{digest}.json"
-    if not path.exists(): raise WorkspaceError(f"State snapshot '{digest}' not found.")
-    return _read(path)
+    if len(digest) != 40 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise WorkspaceError("Invalid state snapshot reference.")
+    row = debug_store.connection(workspace.id).execute(
+        "SELECT sha1, kind, captured_at, payload FROM state_snapshots WHERE sha1 = ?",
+        (digest,),
+    ).fetchone()
+    if row is None:
+        raise WorkspaceError(f"State snapshot '{digest}' not found.")
+    return {
+        "sha1": row["sha1"], "kind": row["kind"], "captured_at": row["captured_at"],
+        "payload": telemetry_db.loads(row["payload"]),
+    }
 
 
 def transition(workspace: Workspace, transition_id: str) -> dict:
-    if not transition_id.startswith("transition_"): raise WorkspaceError("Invalid state transition reference.")
-    path = debug_store.debug_root(workspace.id) / "StateTransitions" / f"{transition_id}.json"
-    if not path.exists(): raise WorkspaceError(f"State transition '{transition_id}' not found.")
-    return _read(path)
+    if not transition_id.startswith("transition_"):
+        raise WorkspaceError("Invalid state transition reference.")
+    row = debug_store.connection(workspace.id).execute(
+        "SELECT record FROM state_transitions WHERE id = ?", (transition_id,)
+    ).fetchone()
+    if row is None:
+        raise WorkspaceError(f"State transition '{transition_id}' not found.")
+    return telemetry_db.loads(row["record"], {})

@@ -134,8 +134,10 @@ loader use only the Python standard library.
 - **Backend** — Python 3.12, FastAPI, Polars (the only data engine),
   XlsxWriter/fastexcel, pypdf, Pillow, and pypdfium2.
 - **Frontend** — Vue 3, TypeScript, Vite, PrimeVue 4, and Chart.js.
-- **Storage** — local JSON plus workspace source/evidence files under
-  `Workspaces/` by default; set `WORKBENCH_DATA` to override the root.
+- **Storage** — local JSON artifacts plus workspace source/evidence files under
+  `Workspaces/` by default; set `WORKBENCH_DATA` to override the root. SQLite
+  holds the control plane (`workbench.db`) and each workspace's telemetry and
+  event logs (`telemetry.db`).
 
 ## Development
 
