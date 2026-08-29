@@ -22,7 +22,16 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from app import cycle_vouching, document_analysis, document_context, documents, llm, workspaces
+from app import (
+    cycle_vouching,
+    document_analysis,
+    document_classification,
+    document_context,
+    document_schemas,
+    documents,
+    llm,
+    workspaces,
+)
 from app.agent import runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent.capabilities import documents as document_capabilities
@@ -1490,3 +1499,141 @@ def test_map_json_still_accepts_a_fenced_object_and_rejects_a_non_object():
         match="must be a JSON object",
     ):
         document_workers._json_object('["not", "an", "object"]')
+
+
+# ------------------------------------------------- partial dependency policy
+def test_every_edge_in_the_document_graph_is_partial():
+    """The rule the map states, enforced rather than restated.
+
+    ``_PARTIAL_DEPENDENCIES`` opens with "every edge in this graph is partial"
+    and used to list three of the seven. The four it omitted were the upstream
+    ones, so a single failed sample failed the ``schemas_sampled`` stage,
+    blocked induction, blocked chunking, and blocked every analysis in the run.
+    Prose cannot hold a map to a graph; this can.
+    """
+    from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
+    from app.agent.workflows import documents as documents_workflow
+
+    edges = {
+        (capability, dependency)
+        for capability, dependencies in documents_workflow.DEPENDENCIES.items()
+        for dependency in dependencies
+    }
+    declared = {
+        (capability, dependency)
+        for capability, dependencies in _PARTIAL_DEPENDENCIES.items()
+        for dependency in dependencies
+    }
+
+    assert edges - declared == set(), "these edges still block the whole run"
+    assert declared - edges == set(), "these name a dependency the graph does not have"
+
+
+def test_one_failed_sample_no_longer_blocks_induction():
+    """The starvation this map exists to prevent, at the edge that had it.
+
+    A failed unit leaves its stage ``failed``; without a partial edge every
+    later capability is refused. Induction re-expands against the samples that
+    did land, so a type nobody could read costs that type and nothing else.
+    """
+    from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
+
+    def may_proceed(capability_id: str, dependency_id: str) -> bool:
+        return dependency_id in _PARTIAL_DEPENDENCIES.get(capability_id, set())
+
+    assert may_proceed("documents.schemas_induced", "documents.schemas_sampled")
+    assert may_proceed("documents.analysis_chunks_ready", "documents.schemas_induced")
+    assert may_proceed("documents.schemas_sampled", "documents.types_classified")
+    assert may_proceed("documents.types_classified", "documents.text_ready")
+
+
+def test_an_unrelated_dependency_is_not_waved_through():
+    """Partial is a property of these edges, not a blanket permission."""
+    from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
+
+    assert "documents.text_ready" not in _PARTIAL_DEPENDENCIES.get(
+        "documents.analysis_reviewed", set()
+    )
+
+
+def test_a_voucher_with_no_schema_is_named_rather_than_quietly_narrated():
+    """The other half of completing the partial-dependency map.
+
+    ``analysis_profile`` reads a voucher under ``structured`` only where its
+    type has an induced schema, and under ``standard`` otherwise — a readable
+    narrative analysis that is explicitly not cycle evidence. While a failed
+    sample blocked every later stage that document never arrived here; now it
+    does, so the run has to say what it is about to do with it. Trading a loud
+    stop for a silent downgrade would have been the worse of the two.
+    """
+    ws, voucher = _voucher_workspace("Unstructured voucher")
+    document_classification.assign(
+        ws, voucher["id"], "goods_receipt", assigned_by="auditor", confidence="high"
+    )
+
+    assert document_capabilities.analysis_profile(ws, voucher["id"]) == "standard"
+
+    warnings: list[str] = []
+
+    class _Adapter:
+        ws = None
+        run = {"document_analysis": {}}
+
+        def scope(self):
+            return SimpleNamespace(document_ids=[voucher["id"]], ambiguity=None)
+
+        def _title(self, _document_id):
+            return "GRN2024004.txt"
+
+        def warn(self, text):
+            warnings.append(text)
+
+        def save(self):
+            return None
+
+    adapter = _Adapter()
+    adapter.ws = ws
+    DocumentWorkflowExecution._warn_unstructured_vouchers(adapter)
+
+    assert len(warnings) == 1
+    assert "goods_receipt" in warnings[0]
+    assert "no induced schema" in warnings[0]
+    assert "not cycle evidence" in warnings[0]
+
+
+def test_a_voucher_read_under_its_schema_is_not_warned_about():
+    ws, voucher = _voucher_workspace("Structured voucher")
+    document_classification.assign(
+        ws, voucher["id"], "goods_receipt", assigned_by="auditor", confidence="high"
+    )
+    document_schemas.save_schema(
+        ws,
+        "goods_receipt",
+        [{"name": "receipt_number", "role": "identifier", "value_type": "identifier"}],
+    )
+
+    assert document_capabilities.analysis_profile(ws, voucher["id"]) == "structured"
+
+    warnings: list[str] = []
+
+    class _Adapter:
+        ws = None
+        run = {"document_analysis": {}}
+
+        def scope(self):
+            return SimpleNamespace(document_ids=[voucher["id"]], ambiguity=None)
+
+        def _title(self, _document_id):
+            return "GRN2024004.txt"
+
+        def warn(self, text):
+            warnings.append(text)
+
+        def save(self):
+            return None
+
+    adapter = _Adapter()
+    adapter.ws = ws
+    DocumentWorkflowExecution._warn_unstructured_vouchers(adapter)
+
+    assert warnings == []

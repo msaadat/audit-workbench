@@ -26,6 +26,7 @@ from .. import (
     document_media,
     document_schemas,
     document_types,
+    intake,
 )
 from ..text import counted
 from ..workspace_transactions import parent_hashes
@@ -39,6 +40,7 @@ from .capabilities.documents import (
     MAX_SCOPE_DOCUMENTS,
     STAGE_CHECKPOINTS,
     DocumentScope,
+    analysis_profile,
     analysis_unit_specs,
     analyzable,
     chunk_specs,
@@ -1519,6 +1521,63 @@ class DocumentWorkflowExecution(BaseRunner):
         )
 
     # ------------------------------------------------------------ checkpoint
+    def _warn_unstructured_vouchers(self) -> None:
+        """Name the transaction evidence about to be read without its schema.
+
+        ``analysis_profile`` reads a voucher under ``structured`` only where its
+        type has an induced schema, and under ``standard`` otherwise. The second
+        is a readable narrative analysis and explicitly not cycle evidence, so a
+        voucher that lands there has dropped out of the strongest evidence path
+        the engagement has — and nothing about the analysis it does get says so.
+
+        That downgrade was unreachable while a failed sample blocked every later
+        stage; completing ``_PARTIAL_DEPENDENCIES`` is what lets these documents
+        through, so this is the other half of that change rather than a separate
+        improvement. Reported per document type, because the repair is per type:
+        induce the schema, and the vouchers of that type are read under it.
+
+        Warned before chunking rather than after analysis, so the run says what
+        is about to happen while an auditor can still stop it.
+        """
+
+        state = self.run.setdefault("document_analysis", {})
+        if state.get("unstructured_vouchers_reported"):
+            return
+        document_scope = self.scope()
+        downgraded: dict[str, list[str]] = {}
+        for document_id in document_scope.document_ids:
+            document = next(
+                (
+                    item
+                    for item in self.ws.documents
+                    if str(item.get("id")) == document_id
+                ),
+                None,
+            )
+            if document is None:
+                continue
+            if str(document.get("category") or "") not in intake.VOUCHER_DOCUMENT_CATEGORIES:
+                continue
+            if analysis_profile(self.ws, document_id) == "structured":
+                continue
+            document_type = (
+                document_classification.document_type(self.ws, document_id) or "unclassified"
+            )
+            downgraded.setdefault(document_type, []).append(self._title(document_id))
+        if not downgraded:
+            return
+        state["unstructured_vouchers_reported"] = True
+        for document_type, titles in sorted(downgraded.items()):
+            self.warn(
+                f"{counted(len(titles), 'document')} held as transaction evidence "
+                f"({', '.join(sorted(titles)[:3])}"
+                f"{', …' if len(titles) > 3 else ''}) will be analysed as narrative "
+                f"because document type '{document_type}' has no induced schema. "
+                "A narrative analysis is not cycle evidence, so these documents "
+                "cannot be tie-matched until the schema is induced."
+            )
+        self.save()
+
     def _scope_checkpoint(self) -> None:
         """Settle an ambiguous document scope before any capability fans out.
 
@@ -1660,12 +1719,31 @@ class DocumentWorkflowExecution(BaseRunner):
         )
 
 
-# Every edge in this graph is partial. One document with no extractable text, or
-# one chunk that could not be analyzed, must not stop the documents the run can
-# still analyze: each later capability re-expands against what the earlier one
-# actually produced.
+# Every edge in this graph is partial. One document with no extractable text,
+# one type whose sample could not be read, or one chunk that could not be
+# analyzed, must not stop the documents the run can still analyze: each later
+# capability re-expands against what the earlier one actually produced.
+#
+# The map used to say that and list three of the seven edges, which left the
+# four upstream ones fully blocking. One failed sample then failed the
+# ``schemas_sampled`` stage, blocked induction, blocked chunking, and blocked
+# every analysis in the run — the whole engagement starved by one document.
+#
+# Completing it is only half the repair. Unblocking a stage that used to stop
+# means a voucher whose type has no schema now *reaches* analysis, and
+# ``analysis_profile`` reads it under ``standard`` rather than ``structured``:
+# a narrative analysis, which is not cycle evidence. That is a quieter failure
+# than the starvation it replaces, so ``_warn_unstructured_vouchers`` reports it
+# by name. Removing a blockage without reporting what now flows past it would
+# have traded a loud stop for a silent downgrade.
 _PARTIAL_DEPENDENCIES = {
-    "documents.analysis_chunks_ready": {"documents.text_ready"},
+    "documents.types_classified": {"documents.text_ready"},
+    "documents.schemas_sampled": {"documents.types_classified"},
+    "documents.schemas_induced": {"documents.schemas_sampled"},
+    "documents.analysis_chunks_ready": {
+        "documents.text_ready",
+        "documents.schemas_induced",
+    },
     "documents.analysis_generated": {"documents.analysis_chunks_ready"},
     "documents.analysis_reviewed": {"documents.analysis_generated"},
 }
@@ -1783,6 +1861,8 @@ def build_documents_workflow_runner(
         _stage: dict,
     ) -> None:
         adapter.ws = subject
+        if capability.id == "documents.analysis_chunks_ready":
+            adapter._warn_unstructured_vouchers()
         checkpoint = STAGE_CHECKPOINTS.get(capability.id)
         if checkpoint is not None:
             checkpoint_handlers[checkpoint]()
