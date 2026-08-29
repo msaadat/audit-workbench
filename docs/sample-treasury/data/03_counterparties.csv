@@ -1,0 +1,11 @@
+COUNTERPARTY_ID,COUNTERPARTY_NAME,COUNTERPARTY_TYPE,CREDIT_RATING,EXPOSURE_LIMIT_PKR,LIMIT_EXPIRY_DATE,STATUS,STATUS_EFFECTIVE_DATE
+CP-001,Sterling Union Bank Limited,Bank,AA-,3000000000,2025-12-31,Active,
+CP-002,Harbour National Bank,Bank,A+,2500000000,2025-12-31,Active,
+CP-003,Pinnacle Commercial Bank,Bank,A,2000000000,2025-12-31,Active,
+CP-004,Horizon Bank Limited,Bank,AA,3500000000,2025-12-31,Active,
+CP-005,Crescent Investment Bank,Bank,A-,1500000000,2025-12-31,Active,
+CP-006,Apex Islamic Bank,Bank,A,1800000000,2025-12-31,Active,
+CP-007,Frontier Development Bank,Bank,BBB+,800000000,2025-04-30,Active,
+CP-008,Northgate Bank Limited,Bank,BBB,600000000,2025-12-31,Suspended,2025-03-14
+CP-009,Cedar Commercial Bank,Bank,A-,1000000000,2025-12-31,Active,
+CP-010,State Bank Treasury Operations,Central Bank,SOV,40000000000,2025-12-31,Active,

@@ -1,0 +1,23 @@
+STAFF_ID,NAME,JOB_TITLE,DESK,SUPERVISOR_ID
+TS-001,Nadia Rahman,Chief Financial Officer,Executive,
+TS-002,Imran Qadir,Head of Treasury,Front Office,TS-001
+TS-003,Faisal Karim,Chief Dealer - FX,Front Office,TS-002
+TS-004,Ayesha Malik,Senior Dealer - FX,Front Office,TS-003
+TS-005,Bilal Ahmed,Dealer - FX,Front Office,TS-003
+TS-006,Hina Shah,Chief Dealer - Money Market,Front Office,TS-002
+TS-007,Omar Siddiqui,Senior Dealer - Money Market,Front Office,TS-006
+TS-008,Zara Iqbal,Dealer - Money Market,Front Office,TS-006
+TS-009,Kamran Yousuf,Dealer - Fixed Income,Front Office,TS-002
+TS-010,Sana Tariq,Junior Dealer - FX,Front Office,TS-003
+TS-011,Adnan Raza,Head of Treasury Middle Office,Middle Office,TS-019
+TS-012,Mehreen Aslam,Treasury Risk Analyst,Middle Office,TS-011
+TS-013,Usman Sheikh,Market Risk Analyst,Middle Office,TS-011
+TS-014,Rehan Baig,Head of Treasury Operations,Back Office,TS-001
+TS-015,Farah Nadeem,Confirmations Officer,Back Office,TS-014
+TS-016,Junaid Alvi,Senior Confirmations Officer,Back Office,TS-014
+TS-017,Saima Butt,Settlements Officer,Back Office,TS-014
+TS-018,Tariq Mehmood,Senior Settlements Officer,Back Office,TS-014
+TS-019,Nida Hasan,Head of Risk,Executive,TS-001
+TS-020,Shahid Anwar,Treasury Operations Officer,Back Office,TS-014
+TS-021,Yasir Kamal,Nostro Reconciliation Officer,Back Office,TS-014
+TS-022,Lubna Farooq,Compliance Officer,Compliance,TS-001

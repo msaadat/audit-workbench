@@ -1,0 +1,15 @@
+PARAMETER_ID,PARAMETER,VALUE,UNIT,POLICY_CLAUSE
+POL-01,Permitted deviation from market mid rate - FX,25,basis points,6.3
+POL-02,Permitted deviation from market mid rate - money market and T-bills,15,basis points,6.3
+POL-03,Confirmation despatch deadline after deal date,1,business days,7.2
+POL-04,Counterparty confirmation must be received before value date,1,boolean (1 = required),7.4
+POL-05,Authorised dealing hours - start,09:00,time,5.2
+POL-06,Authorised dealing hours - end,17:00,time,5.2
+POL-07,Dealing permitted on non-business days,0,boolean (1 = permitted),5.2
+POL-08,Deal capture deadline after execution,15,minutes,5.4
+POL-09,Dual signature threshold for payment release,250000000,PKR,8.5
+POL-10,Settlement permitted only to an approved standing instruction,1,boolean (1 = required),8.3
+POL-11,Standing settlement instruction amendment cooling-off period,2,business days,8.4
+POL-12,Front office staff may confirm or settle deals,0,boolean (1 = permitted),4.1
+POL-13,Deal amendment or cancellation requires operations approval,1,boolean (1 = required),5.6
+POL-14,Settlement must fall on the contracted value date,1,boolean (1 = required),8.1
