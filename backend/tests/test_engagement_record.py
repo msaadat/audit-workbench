@@ -12,6 +12,9 @@ the places the projection deliberately refuses to state something it cannot
 stand behind.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from app import engagement_record
@@ -22,7 +25,12 @@ class _Workspace:
     """Only the surface the record's counters and presence tests touch."""
 
     def __init__(self, *, rcm=(), findings=(), documents=(), analyses=(),
-                 data_tests=(), tiles=(), tables=(), apm="", planning=None):
+                 data_tests=(), tiles=(), tables=(), apm="", planning=None,
+                 root=None):
+        # Only the document-analysis presence test reaches the disk, and it
+        # reads a missing folder as "no analysis", so a workspace with no
+        # documents never needs a real one.
+        self.root = Path(root) if root else Path("/nonexistent")
         self.rcm = list(rcm)
         self.findings = list(findings)
         self.documents = list(documents)
@@ -392,6 +400,48 @@ def test_fieldwork_does_not_borrow_the_document_test_registers_size(stub_store):
     assert rows["fieldwork.executed"]["filed"]["count"] is None
     assert rows["fieldwork.executed"]["filed"]["label"] == "Fieldwork results"
     assert rows["doc_tests.executed"]["filed"]["count"] == 0
+
+
+def _with_documents(root, count, *, analysed=0):
+    """A workspace holding `count` documents, `analysed` of which have one filed."""
+    documents = [{"id": f"D{index}"} for index in range(count)]
+    for document in documents[:analysed]:
+        folder = Path(root) / "Documents" / ".analysis" / document["id"]
+        (folder / "generated").mkdir(parents=True, exist_ok=True)
+        (folder / "generated" / "a1.json").write_text(
+            json.dumps({"summary_markdown": "Filed."}), encoding="utf-8"
+        )
+        (folder / "index.json").write_text(
+            json.dumps({"active_analysis_id": "a1"}), encoding="utf-8"
+        )
+    return _Workspace(documents=documents, root=root)
+
+
+def test_importing_documents_does_not_file_analyses_of_them(stub_store, tmp_path):
+    """Sizing the analyses row by `documents` read the import as the work.
+
+    Eight files landed and the ledger drew "Document analyses — 8" as filed
+    work, one line above the row's own readiness saying eight documents had no
+    generated analysis, and counted it among the work products held.
+    """
+    stub_store([])
+    result = engagement_record.record(_with_documents(tmp_path, 8))
+    rows = _rows(result)
+
+    assert rows["documents.analysis_generated"]["held"] is False
+    assert rows["documents.analysis_generated"]["filed"]["count"] == 0
+    assert rows["documents.analysis_generated"]["readiness"]["details"]["generated"] == 0
+    assert result["totals"]["work_products"] == 1
+    # The catalogue beside the sources still counts every document imported.
+    assert result["counts"]["documents"] == 8
+
+
+def test_the_analyses_row_is_sized_by_the_analyses_that_exist(stub_store, tmp_path):
+    stub_store([])
+    rows = _rows(engagement_record.record(_with_documents(tmp_path, 8, analysed=3)))
+
+    assert rows["documents.analysis_generated"]["filed"]["count"] == 3
+    assert rows["documents.analysis_generated"]["held"] is True
 
 
 def test_the_conclusions_row_is_not_sized_into_existence_by_the_matrix(stub_store):

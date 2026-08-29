@@ -32,6 +32,7 @@ from typing import Any
 from . import doc_tests, engagement, rcm_execution, report
 from .agent import capabilities as audit_capabilities
 from .agent import store
+from .agent.capabilities.documents import has_generated_analysis
 from .agent.workflows import audit as audit_workflow
 from .workspaces import Workspace
 
@@ -80,9 +81,15 @@ _SPINE: dict[str, dict[str, Any]] = {
             {"label": "Tables", "destination": "data", "count": "tables"},
         ),
     },
+    # Sized by the analyses that exist, never by the documents they would be
+    # written about. Counting `documents` here read the import as the work:
+    # eight files landed and the row drew "Document analyses — 8" in the colour
+    # reserved for filed work, on an engagement whose own readiness block on the
+    # same row said "8 documents have no generated analysis". A stage is held
+    # when its work product exists, and an unanalysed document is not one.
     "documents.analysis_generated": {
         "label": "Document analyses", "destination": "documents",
-        "unit": "document", "count": "documents",
+        "unit": "document", "count": "document_analyses",
     },
     "analysis.executed": {
         "label": "Analysis library", "destination": "analysis",
@@ -167,6 +174,7 @@ def _counts(workspace: Workspace) -> dict[str, int]:
     data_tests = len(workspace.data_tests)
     return {
         "documents": len(workspace.documents),
+        "document_analyses": _document_analyses(workspace),
         "tables": len(workspace.table_names()),
         "analyses": len(workspace.analyses),
         "rcm": len(workspace.rcm),
@@ -429,6 +437,24 @@ def _document_tests(workspace: Workspace) -> list[dict]:
             return []
 
     return _once("document_tests", read)
+
+
+def _document_analyses(workspace: Workspace) -> int:
+    """How many documents hold a generated analysis.
+
+    The same test the capability's own readiness runs, rather than a second
+    reading of what "analysed" means: the row's count and the sentence beside
+    it are drawn from one answer, so they cannot disagree on screen again.
+
+    Cheap enough to ask per document — each is a small index read that already
+    degrades to "absent" on its own when the file is missing — and memoized for
+    the life of one `record()` call, which `_readiness` then repeats for free
+    inside the same `_one_read`.
+    """
+    return _once("document_analyses", lambda: sum(
+        1 for item in workspace.documents
+        if has_generated_analysis(workspace, str(item.get("id") or ""))
+    ))
 
 
 def _plan_order() -> dict[str, int]:
