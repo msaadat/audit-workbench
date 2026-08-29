@@ -22,16 +22,16 @@ const payload: CycleVouchGridPayload = {
   assurance_label: 'Targeted evidence - not a sample',
   tested_item_counts: { failed: 1 },
   assertion_counts: {
-    match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0,
+    match: 0, mismatch: 1, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0,
     ambiguous: 0, not_run: 0, total: 1,
   },
   columns: [{
     key: 'amount',
     label: 'Amount agrees',
-    operator: 'numeric_within',
+    requirement: 'The records must agree.',
     applicable_roles: ['payslip', 'bank_payment'],
     counts: {
-      match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0,
+      match: 0, mismatch: 1, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0,
       ambiguous: 0, not_run: 0,
     },
     stale_cells: 0,

@@ -27,6 +27,38 @@ from app import (
 
 from tests.test_cycle_linking import extract  # noqa: F401 - the reduction path
 
+
+def evaluate(ws, test, verdicts=None):
+    """Evaluate with the reader's verdicts supplied, keyed by item label.
+
+    Agreement is judged against the values rather than computed from an
+    operator, so a test wanting a settled item has to say what the reader
+    concluded. A first pass binds the evidence and reports what is still
+    awaiting a verdict; the second supplies one. A label maps to one verdict for
+    the whole item, or to a verdict per assertion. Anything unnamed agrees.
+    """
+    def verdict_for(label, key):
+        wanted = (verdicts or {}).get(label, "match")
+        if isinstance(wanted, dict):
+            return wanted.get(key, "match")
+        return wanted
+
+    probe = cycle_vouching.evaluate_cycle_test(ws, test)
+    judgments = {
+        item["id"]: {
+            key: {
+                "verdict": verdict_for(item.get("label"), key),
+                "reason": "Supplied by the fixture.",
+            }
+            for key, result in (item.get("result_by_assertion") or {}).items()
+            if result.get("verdict") == "not_run"
+        }
+        for item in probe["items"]
+    }
+    return cycle_vouching.evaluate_cycle_test(ws, test, judgments=judgments)
+
+
+
 PAYMENT_FIELDS = [
     {"name": "payment_reference", "role": "identifier", "value_type": "identifier",
      "cardinality": "one", "verbatim": True, "confidence": "high"},
@@ -72,23 +104,20 @@ def treasury_rules(**overrides) -> dict:
         }],
         "assertions": [
             {
-                "id": "as_amount", "label": "Amount is the amount authorised",
+                "id": "as_amount", "requirement": "The records must agree.", "label": "Amount is the amount authorised",
                 "left": {"role": "instruction", "field": "amount"},
                 "right": {"role": "mandate", "field": "amount"},
-                "operator": "numeric_within", "tolerance": {"absolute": 0},
                 "rationale": "A payment may not exceed what was authorised.",
             },
             {
-                "id": "as_sequence", "label": "Authorised before paid",
+                "id": "as_sequence", "requirement": "The records must agree.", "label": "Authorised before paid",
                 "left": {"role": "mandate", "field": "approved_on"},
                 "right": {"role": "instruction", "field": "value_date"},
-                "operator": "date_on_or_before",
                 "rationale": "Authority cannot be granted after the money moved.",
             },
             {
-                "id": "as_approver", "label": "An approver is named",
+                "id": "as_approver", "requirement": "The records must agree.", "label": "An approver is named",
                 "left": {"role": "mandate", "field": "approver"},
-                "operator": "present",
                 "rationale": "An unsigned mandate authorises nobody.",
             },
         ],
@@ -154,7 +183,7 @@ def test_a_cycle_nobody_shipped_a_pack_for_runs_end_to_end(treasury):
     ws, row = treasury
     approve(ws)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, build(ws, row))
+    evaluated = evaluate(ws, build(ws, row), {"TT-9002": {"as_sequence": "mismatch"}})
     verdicts = {
         item["label"]: {
             key: result["verdict"]
@@ -183,7 +212,7 @@ def test_the_treasury_gap_is_named_rather_than_passing_quietly(treasury):
     ws, row = treasury
     approve(ws)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, build(ws, row))
+    evaluated = evaluate(ws, build(ws, row))
     unmandated = next(
         item for item in evaluated["items"] if item["label"] == "TT-9003"
     )

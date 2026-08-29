@@ -1,7 +1,7 @@
 """The vocabulary-agnostic half of cycle evidence testing.
 
 What survives here never depended on where the vocabulary came from: value
-normalization, the six comparison operators, the deterministic sampler, the
+normalization, the deterministic sampler, the
 citation catalogue, the result rollup, the grid projection, and the state
 words an auditor's dispositions are recorded in.
 
@@ -75,18 +75,6 @@ ASSERTIONS = frozenset(
         "Operational",
     }
 )
-# Derived from the one operator table every prompt also renders from, so the
-# gate and the instructions cannot drift apart.
-#: The comparison vocabulary the operators below implement. Kept identical to
-#: ``cycle_rulesets.OPERATORS``, which is what an approved rule may name.
-OPERATORS = frozenset({
-    "equal_exact",
-    "equal_normalized",
-    "numeric_within",
-    "date_on_or_before",
-    "date_within",
-    "present",
-})
 ENTRY_QUANTIFIERS = frozenset({"one", "any", "all"})
 ROLE_QUANTIFIERS = frozenset({"all", "any"})
 NORMALIZATION_STATUSES = frozenset({"normalized", "invalid"})
@@ -97,16 +85,31 @@ CURRENT_EVALUATION_STATES = frozenset(
     {"passed", "failed", "incomplete", "needs_review"}
 )
 DISPOSITION_STATES = frozenset({"pending", "confirmed", "exception"})
+#: ``cannot_determine`` is the reader's answer, and it is a real answer rather
+#: than a failure to produce one: the operands resolved, and what they state
+#: still does not settle the requirement — a reference ambiguous in a way only
+#: scanning produces, a field too damaged to read. It is deliberately distinct
+#: from ``missing_evidence`` and ``invalid_extraction``, which are resolution
+#: failures decided locally before anything is judged. All three roll up to
+#: ``incomplete``: none of them is a tested pass.
 ASSERTION_VERDICTS = frozenset(
     {
         "match",
         "mismatch",
+        "cannot_determine",
         "missing_evidence",
         "invalid_extraction",
         "ambiguous",
         "not_run",
     }
 )
+#: What the reader may return for a pair it was asked to judge, and how each
+#: lands in the durable vocabulary above.
+JUDGED_VERDICTS = {
+    "agrees": "match",
+    "disagrees": "mismatch",
+    "cannot_determine": "cannot_determine",
+}
 
 MAX_GRAPH_HOPS = 6
 MAX_CYCLE_RECORDS = 25
@@ -461,18 +464,44 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
     return cycle_linking.materialize_cycle_items(workspace, test)
 
 
-def evaluate_cycle_item(workspace, test: Mapping[str, object], item: dict) -> dict:
+def evaluate_cycle_item(
+    workspace,
+    test: Mapping[str, object],
+    item: dict,
+    *,
+    judgments: Mapping[str, Mapping[str, object]] | None = None,
+) -> dict:
     from . import cycle_linking
 
-    return cycle_linking.evaluate_cycle_item(workspace, test, item)
+    return cycle_linking.evaluate_cycle_item(
+        workspace, test, item, judgments=judgments
+    )
 
 
-def evaluate_cycle_test(workspace, test: Mapping[str, object]) -> dict:
-    """Materialize current inputs and evaluate only work that is not current."""
+def judgment_request(workspace, test: Mapping[str, object], item_id: str) -> dict:
+    """One item's pending checks, with the values each one reads."""
 
     from . import cycle_linking
 
-    return cycle_linking.evaluate_cycle_test(workspace, test)
+    return cycle_linking.judgment_request(workspace, test, item_id)
+
+
+def evaluate_cycle_test(
+    workspace,
+    test: Mapping[str, object],
+    *,
+    judgments: Mapping[str, Mapping[str, Mapping[str, object]]] | None = None,
+) -> dict:
+    """Materialize current inputs and evaluate only work that is not current.
+
+    ``judgments`` is keyed by item id and then by assertion id. Without it the
+    evidence still binds and anything awaiting a verdict stays ``not_run``,
+    which is what makes this safe to call from a read.
+    """
+
+    from . import cycle_linking
+
+    return cycle_linking.evaluate_cycle_test(workspace, test, judgments=judgments)
 
 
 def mutate_cycle_assertions(workspace, test, assertions, **_kwargs):
@@ -571,7 +600,7 @@ def _aggregate_evaluation(item: Mapping[str, object]) -> str:
         or item.get("linkage_state") == "needs_review"
     ):
         return "needs_review"
-    if verdicts & {"missing_evidence", "invalid_extraction"}:
+    if verdicts & {"missing_evidence", "invalid_extraction", "cannot_determine"}:
         return "incomplete"
     return "passed"
 
@@ -660,70 +689,6 @@ def _bounded_value(value: object) -> object:
     return plain
 
 
-def _comparison(operator: str, left: object, right: object, tolerance: object) -> str:
-    if operator == "present":
-        if left in (None, ""):
-            return "missing_evidence"
-        return "match"
-    if operator == "equal_exact":
-        # Two extractions of one quantity may normalize to 25 and 25.0. Those
-        # are the same number and comparing their text is a false mismatch, so
-        # already-typed numbers compare numerically. Strings stay textual: an
-        # identifier is exact by definition and must not acquire numeric
-        # equality on the way past.
-        if all(
-            isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
-            for value in (left, right)
-        ):
-            return "match" if Decimal(str(left)) == Decimal(str(right)) else "mismatch"
-        return "match" if str(left) == str(right) else "mismatch"
-    if operator == "equal_normalized":
-        normalize = lambda value: " ".join(
-            re.sub(
-                r"\s+",
-                " ",
-                unicodedata.normalize("NFKC", str(value or "")).strip(),
-            )
-            .casefold()
-            .split()
-        )
-        return "match" if normalize(left) == normalize(right) else "mismatch"
-    if operator == "numeric_within":
-        try:
-            left_number = Decimal(str(left).replace(",", ""))
-            right_number = Decimal(str(right).replace(",", ""))
-        except (InvalidOperation, ValueError):
-            return "invalid_extraction"
-        config = tolerance if isinstance(tolerance, Mapping) else {}
-        absolute = Decimal(str(config.get("absolute") or 0))
-        percent = Decimal(str(config.get("percent") or 0))
-        allowed = max(absolute, abs(left_number) * percent / Decimal("100"))
-        return "match" if abs(left_number - right_number) <= allowed else "mismatch"
-
-    def parsed(value: object) -> date | None:
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, date):
-            return value
-        try:
-            return datetime.fromisoformat(str(value)[:10]).date()
-        except ValueError:
-            return None
-
-    left_date, right_date = parsed(left), parsed(right)
-    if left_date is None or right_date is None:
-        return "invalid_extraction"
-    if operator == "date_on_or_before":
-        return "match" if left_date <= right_date else "mismatch"
-    if operator == "date_within":
-        return (
-            "match"
-            if abs((left_date - right_date).days) <= int(tolerance or 0)
-            else "mismatch"
-        )
-    raise CycleSchemaError(f"Unsupported assertion operator '{operator}'.")
-
-
 # Item-first tests now carry the same two fields as cycle items, so both sides
 # of these predicates read the same shape; only the state vocabularies differ.
 _ITEM_PENDING_EVALUATIONS = {"not_run"}
@@ -784,11 +749,12 @@ def _assurance_label(scope: str) -> str:
     )
 
 
-# A deterministic result an auditor cannot use as it stands: the fact was not
-# found, could not be normalized, or the selector matched several differing
-# facts. It is evidence to weigh, not a verdict.
+# A result an auditor cannot use as it stands: the fact was not found, could not
+# be normalized, the selector matched several differing facts, or the reader had
+# both values and still could not settle the requirement. Evidence to weigh,
+# not a verdict.
 _UNUSABLE_VERDICTS = frozenset(
-    {"missing_evidence", "invalid_extraction", "ambiguous"}
+    {"missing_evidence", "invalid_extraction", "ambiguous", "cannot_determine"}
 )
 # Why an item is open, for the states where the runner has not produced a
 # current reading. Anything current reads as "runner: <state>", the same
@@ -906,7 +872,8 @@ def result_rollup(test: Mapping[str, object]) -> dict:
     )
     incomplete_items = sum(
         any(
-            result.get("verdict") in {"missing_evidence", "invalid_extraction"}
+            result.get("verdict")
+            in {"missing_evidence", "invalid_extraction", "cannot_determine"}
             for result in (item.get("result_by_assertion") or {}).values()
         )
         for item in current_items
@@ -971,6 +938,7 @@ def result_rollup(test: Mapping[str, object]) -> dict:
                 "missing_evidence",
                 "invalid_extraction",
                 "ambiguous",
+                "cannot_determine",
             )
         ),
         "confirmed": disposition_counts["confirmed"],
@@ -1184,7 +1152,9 @@ def grid_projection(
             {
                 "key": key,
                 "label": str(assertion.get("label") or key),
-                "operator": str(assertion.get("operator") or ""),
+                "requirement": str(
+                    assertion.get("requirement") or assertion.get("rationale") or ""
+                ),
                 "applicable_roles": list(dict.fromkeys(applicable_roles)),
                 "counts": counts,
                 "stale_cells": stale_cells,
@@ -1294,7 +1264,10 @@ def metadata() -> dict:
         "sampling_methods": sorted(SAMPLING_METHODS),
         "assurance_scopes": sorted(ASSURANCE_SCOPES),
         "assertions": sorted(ASSERTIONS),
-        "operators": sorted(OPERATORS),
+        # What a reader may answer for a pair it was asked to judge. There is no
+        # comparison operator to publish: agreement is settled against the
+        # values, not chosen from a vocabulary when the rule is written.
+        "verdicts": sorted(JUDGED_VERDICTS),
         "limits": {
             "max_graph_hops": MAX_GRAPH_HOPS,
             "max_cycle_records": MAX_CYCLE_RECORDS,

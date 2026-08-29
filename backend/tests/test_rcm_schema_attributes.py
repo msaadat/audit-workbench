@@ -32,8 +32,7 @@ def attribute(**overrides) -> dict:
             "key": "totals_agree",
             "left": {"document_type": "vendor_invoice", "field": "total_amount"},
             "right": {"document_type": "purchase_order", "field": "total_amount"},
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 1},
+            "rationale": "The records must agree.",
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }
@@ -85,7 +84,7 @@ def test_a_field_no_schema_states_fails_closed(engagement):
         "key": "totals_agree",
         "left": {"document_type": "vendor_invoice", "field": "grand_total"},
         "right": {"document_type": "purchase_order", "field": "total_amount"},
-        "operator": "numeric_within",
+        "rationale": "The records must agree.",
     }]))
 
     assert any("does not state" in item and "grand_total" in item for item in errors)
@@ -96,7 +95,7 @@ def test_a_document_type_with_no_schema_says_what_to_do(engagement):
         "key": "totals_agree",
         "left": {"document_type": "goods_receipt", "field": "total_amount"},
         "right": {"document_type": "purchase_order", "field": "total_amount"},
-        "operator": "numeric_within",
+        "rationale": "The records must agree.",
     }]))
 
     assert any("Classify and induce" in item for item in errors)
@@ -107,19 +106,41 @@ def test_shape_alone_is_checked_without_an_engagement():
 
     validated = cycle_vouching.validate_control_attributes([attribute()])
 
-    assert validated[0]["required_comparisons"][0]["operator"] == "numeric_within"
+    assert validated[0]["required_comparisons"][0]["key"] == "totals_agree"
 
 
-def test_an_unsupported_operator_is_named_with_the_ones_that_are(engagement):
+def test_a_comparison_that_says_only_which_fields_is_refused(engagement):
+    """The rationale carries what the operator used to pretend to carry.
+
+    An attribute naming two fields and nothing else describes no requirement: a
+    reader cannot tell what the fields were supposed to show, and neither can
+    the pass that judges them.
+    """
+
     errors = errors_for(engagement, attribute(required_comparisons=[{
         "key": "totals_agree",
         "left": {"document_type": "vendor_invoice", "field": "total_amount"},
         "right": {"document_type": "purchase_order", "field": "total_amount"},
-        "operator": "equals",
     }]))
 
-    assert any("'equals' is not supported" in item for item in errors)
-    assert any("numeric_within" in item for item in errors)
+    assert any("rationale is required" in item for item in errors)
+
+
+def test_a_comparison_may_not_state_how_to_compare(engagement):
+    """Deciding exact against normalized equality is not an audit judgment, and
+    cannot be made at authoring time in any case - no value has been seen."""
+
+    errors = errors_for(engagement, attribute(required_comparisons=[{
+        "key": "totals_agree",
+        "left": {"document_type": "vendor_invoice", "field": "total_amount"},
+        "right": {"document_type": "purchase_order", "field": "total_amount"},
+        "rationale": "The amount billed must be the amount ordered.",
+        # Built by name so the fixture sweep cannot quietly drop the very key
+        # this test exists to see refused.
+        **{"oper" + "ator": "equal_exact"},
+    }]))
+
+    assert any("unexpected key 'operator'" in item for item in errors)
 
 
 def test_every_unexpected_key_is_reported_not_just_the_first(engagement):
@@ -160,8 +181,7 @@ def test_the_operands_may_be_written_either_way_round(engagement):
             "key": "totals_agree",
             "left": {"document_type": "purchase_order", "field": "total_amount"},
             "right": {"document_type": "vendor_invoice", "field": "total_amount"},
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 1},
+            "rationale": "The records must agree.",
         }])]},
         ["RCM-1:invoice_match"],
     )
@@ -180,7 +200,7 @@ def test_a_neighbouring_assertion_does_not_count_as_coverage(engagement):
             "key": "vendors_agree",
             "left": {"document_type": "vendor_invoice", "field": "vendor_id"},
             "right": {"document_type": "purchase_order", "field": "vendor_id"},
-            "operator": "equal_normalized",
+            "rationale": "The records must agree.",
         }])]},
         ["RCM-1:invoice_match"],
     )
@@ -189,20 +209,27 @@ def test_a_neighbouring_assertion_does_not_count_as_coverage(engagement):
     assert [item["key"] for item in uncovered] == ["vendors_agree"]
 
 
-def test_a_different_tolerance_is_a_different_requirement(engagement):
+def test_an_assertion_over_the_named_fields_covers_the_requirement(engagement):
+    """Coverage is about which fields are read, not about how they compare.
+
+    The approved assertion and the requirement name the same two fields, so the
+    requirement is answered. Coverage used to demand the operators match too,
+    and that is what a matrix could not satisfy: the author had to guess exact
+    against normalized before any value existed to look at.
+    """
+
     ruleset = approved(engagement)
     comparisons = cycle_linking.required_comparisons_for(
         {"id": "RCM-1", "control_attributes": [attribute(required_comparisons=[{
             "key": "totals_agree",
             "left": {"document_type": "vendor_invoice", "field": "total_amount"},
             "right": {"document_type": "purchase_order", "field": "total_amount"},
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 500},
+            "rationale": "The amount billed must be the amount ordered.",
         }])]},
         ["RCM-1:invoice_match"],
     )
 
-    assert cycle_linking.uncovered_comparisons(ruleset, comparisons)
+    assert cycle_linking.uncovered_comparisons(ruleset, comparisons) == []
 
 
 def test_only_the_cited_requirements_are_demanded(engagement):
@@ -212,7 +239,7 @@ def test_only_the_cited_requirements_are_demanded(engagement):
             "key": "vendors_agree",
             "left": {"document_type": "vendor_invoice", "field": "vendor_id"},
             "right": {"document_type": "purchase_order", "field": "vendor_id"},
-            "operator": "equal_normalized",
+            "rationale": "The records must agree.",
         }]),
     ]}
 
@@ -255,14 +282,14 @@ def test_an_uncovered_requirement_refuses_the_build_and_says_where_to_fix_it(eng
             "key": "vendors_agree",
             "left": {"document_type": "vendor_invoice", "field": "vendor_id"},
             "right": {"document_type": "purchase_order", "field": "vendor_id"},
-            "operator": "equal_normalized",
+            "rationale": "The records must agree.",
         }])],
     })
 
     with pytest.raises(cycle_vouching.CycleSchemaError) as raised:
         build(engagement, row, [f"{row['id']}:invoice_match"])
 
-    assert "vendor_invoice.vendor_id equal_normalized" in str(raised.value)
+    assert "vendor_invoice.vendor_id agrees with purchase_order.vendor_id" in str(raised.value)
     assert "cycle rules review" in str(raised.value)
 
 
@@ -274,7 +301,7 @@ def test_a_requirement_no_ruleset_answers_is_reported_not_silently_passed(engage
             "key": "vendors_agree",
             "left": {"document_type": "vendor_invoice", "field": "vendor_id"},
             "right": {"document_type": "purchase_order", "field": "vendor_id"},
-            "operator": "equal_normalized",
+            "rationale": "The records must agree.",
         }])],
     }
     approved(engagement)
@@ -347,14 +374,16 @@ def test_the_catalog_shows_only_what_a_comparison_can_address(engagement):
     assert sorted(field) == ["label", "name", "role", "value_type"]
 
 
-def test_the_schema_evidence_prompt_states_the_operator_vocabulary():
+def test_the_schema_evidence_prompt_states_the_comparison_contract():
     from app.agent.workers import planning as planning_worker
 
     prompt = planning_worker.RCM_SCHEMA_EVIDENCE_SYSTEM
 
     assert "required_comparisons" in prompt
-    assert "numeric_within" in prompt
     assert "document_type" in prompt
+    # Nothing asks the author to choose a comparison operator any more.
+    assert "numeric_within" not in prompt
+    assert "equal_exact" not in prompt
     # The vocabulary is per workspace, so it must not be baked into the prompt.
     assert "vendor_invoice" not in prompt
 
@@ -380,8 +409,7 @@ def test_the_contract_is_written_onto_the_attribute_that_asked_for_it():
             "key": "totals_agree",
             "left": {"document_type": "vendor_invoice", "field": "total_amount"},
             "right": {"document_type": "purchase_order", "field": "total_amount"},
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 1},
+            "rationale": "The records must agree.",
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }]})
@@ -451,9 +479,9 @@ def _linkage_comparison(**overrides):
     comparison = {
         "key": "link_purchase_order",
         "left": {"document_type": "goods_receipt",
+        "rationale": "The records must agree.",
                  "field": "purchase_order_number"},
         "right": {"document_type": "purchase_order", "field": "order_number"},
-        "operator": "equal_exact",
     }
     comparison.update(overrides)
     return comparison
@@ -473,27 +501,31 @@ def test_a_join_key_answers_the_requirement_that_two_documents_reference_each_ot
     ) == []
 
 
-def test_a_normalized_join_does_not_answer_an_exact_requirement():
-    """It bound the pair on folded values and says nothing about the printed ones."""
+def test_a_join_answers_the_requirement_whatever_mode_bound_it():
+    """A check reading the fields the cycle was linked on cannot fail.
 
-    ruleset = _linkage_ruleset()
-    ruleset["join_keys"][0]["match"] = "normalized_equal"
-    assert cycle_linking.uncovered_comparisons(
-        ruleset, [_linkage_comparison()]
-    ) != []
-    # The normalized requirement it does answer.
-    assert cycle_linking.uncovered_comparisons(
-        ruleset, [_linkage_comparison(operator="equal_normalized")]
-    ) == []
+    Coverage used to ask what the join's ``match`` mode *proved* - a normalized
+    join established nothing about the printed values, so it answered only a
+    normalized requirement. That algebra went with the operators it compared,
+    and what remains is the guard that always mattered: this pair exists only
+    because those two fields already matched.
+    """
 
-
-def test_a_join_key_answers_nothing_but_equality():
-    """It says these two references are the same, and nothing about an amount."""
-
-    for operator in ("numeric_within", "date_on_or_before", "present"):
+    for mode in ("normalized_equal", "exact_equal"):
+        ruleset = _linkage_ruleset()
+        ruleset["join_keys"][0]["match"] = mode
         assert cycle_linking.uncovered_comparisons(
-            _linkage_ruleset(), [_linkage_comparison(operator=operator)]
-        ) != [], f"{operator} must not be covered by a join"
+            ruleset, [_linkage_comparison()]
+        ) == [], f"a {mode} join binds the pair"
+
+
+def test_a_join_does_not_answer_the_requirement_that_a_field_be_stated():
+    """A join binds two references. That one of them is present is another
+    question, and one a cycle can genuinely fail."""
+
+    assert cycle_linking.uncovered_comparisons(
+        _linkage_ruleset(), [_linkage_comparison(right=None)]
+    ) != []
 
 
 def test_a_join_key_over_other_fields_answers_nothing():

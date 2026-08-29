@@ -895,10 +895,30 @@ PRESETS.register(
                     # saying which. Starved, the source reports as starved.
                     budget=ContextBudget(max_items=1, max_characters=64_000),
                 ),
+                ContextSource(
+                    id="cycle_requirements",
+                    source_type="artifacts",
+                    # Not required: an engagement may propose rules before its
+                    # matrix asks anything of them, and a proposal written from
+                    # the vocabulary alone is still a proposal. Where the matrix
+                    # does ask, this is what the rules have to answer.
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    # Planning content, which is what the matrix is. Not
+                    # ``current_artifact``: that representation travels under
+                    # document-text permission, and nothing here is read from a
+                    # document — these are the field references the matrix
+                    # names, in the vocabulary the schemas already declare.
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=24_000),
+                ),
             ),
-            budget=ContextBudget(max_items=1, max_characters=64_000),
-            # The schemas, and nothing they were induced from.
-            privacy=ContextPrivacy(allow_document_schemas=True),
+            budget=ContextBudget(max_items=2, max_characters=88_000),
+            # The schemas, what the matrix asks of them, and nothing either was
+            # induced or drafted from.
+            privacy=ContextPrivacy(
+                allow_document_schemas=True, allow_planning_context=True
+            ),
         ),
     )
 )
@@ -1040,6 +1060,35 @@ PRESETS.register(
             # worker binds every citation to a page it was actually supplied, so
             # a bounded answer stays grounded rather than failing the unit.
             budget=ContextBudget(max_items=61, max_characters=30_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="fieldwork.cycle_vouch",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="cycle_item",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    # One candidate: the whole linked cycle and its pending
+                    # checks. Splitting it per check would ask each half of a
+                    # comparison separately, and the reader needs both sides —
+                    # and the rest of the cycle — to tell a difference in
+                    # presentation from a difference in fact.
+                    budget=ContextBudget(max_items=1, max_characters=40_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=40_000),
+            # Extracted document facts, not page text: the fields were already
+            # read under an induced schema, and it is those values and the
+            # source lines they came from that are judged.
             privacy=ContextPrivacy(allow_document_text=True),
         ),
     )

@@ -260,21 +260,29 @@ def _context_spec(
                 )
             declaration = declaration[kind]
         elif manifest is not None:
-            matches: list[ContextSpec] = []
+            # Keyed by spec, not by kind: two unit kinds may legitimately read
+            # the same declared context, and finding that one spec twice is not
+            # an ambiguity — it is the same answer arrived at twice. Counting
+            # entries rather than distinct specs refused every resume for a
+            # capability whose kinds shared a preset.
+            matches: dict[str, ContextSpec] = {}
             for value in declaration.values():
                 spec = (
                     presets.compile(value)
                     if isinstance(value, str)
                     else value
                 )
-                if isinstance(spec, ContextSpec) and _spec_hash(spec) == manifest.context_spec_hash:
-                    matches.append(spec)
+                if not isinstance(spec, ContextSpec):
+                    continue
+                spec_hash = _spec_hash(spec)
+                if spec_hash == manifest.context_spec_hash:
+                    matches[spec_hash] = spec
             if len(matches) != 1:
                 raise ContextResolutionError(
                     "Context manifest does not identify exactly one declared "
                     "per-unit context binding."
                 )
-            return matches[0]
+            return next(iter(matches.values()))
         else:
             raise ContextResolutionError(
                 "Per-unit context binding requires a unit or manifest identity."

@@ -59,7 +59,6 @@ from .cycle_vouching import (
 from .cycle_vouching import _aggregate_evaluation as aggregate_evaluation
 from .cycle_vouching import _bounded_value as bounded_value
 from .cycle_vouching import _cache as _request_cache
-from .cycle_vouching import _comparison as compare_values
 from .cycle_vouching import _dedupe_evidence as dedupe_evidence
 from .cycle_vouching import _evidence_catalog as evidence_catalog
 from .cycle_vouching import _frame_signature as frame_signature
@@ -1031,8 +1030,28 @@ def evaluate_cycle_item(
     item: dict,
     *,
     prepared: PreparedCycle | None = None,
+    judgments: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict:
-    """Evaluate pending or stale assertions locally, retaining every sub-result."""
+    """Bind each assertion to its evidence, and record the verdict it carries.
+
+    Resolution is local and stays local: which document fills a role, which
+    field an operand reads, and whether that field yielded exactly one usable
+    value are questions about the records, and they decide ``missing_evidence``,
+    ``ambiguous`` and ``invalid_extraction`` here.
+
+    Whether two resolved values *agree* is not that kind of question. It used to
+    be answered by a comparison operator chosen when the matrix was written, and
+    on real documents that operator was wrong more often than right: an amount
+    printed 'PKR 2,000,000.00' against '2,000,000.00', a vendor carrying its
+    code in one record and not the other, a date no ISO parser accepts. Those
+    are differences in presentation, and every one of them was reported as an
+    exception against documents that agreed. Agreement is now judged against the
+    values, by ``fieldwork.cycle_vouch``, and arrives here in ``judgments``.
+
+    An assertion whose operands resolved but which no judgment covers is left
+    ``not_run`` — pending, exactly as it reads before any evaluation. Nothing
+    infers agreement from the absence of a verdict.
+    """
 
     validated = validate_cycle_test(workspace, test)
     ruleset = validated["ruleset"]
@@ -1065,10 +1084,13 @@ def evaluate_cycle_item(
             for entry in left.get("entries") or []
             for anchor in entry.get("evidence_refs") or []
         ]
+        judgment = dict((judgments or {}).get(key) or {})
         if assertion.get("right") is None:
             # ``resolve_operand`` already decided this: it resolves only when
-            # exactly one usable value exists, and otherwise names why.
+            # exactly one usable value exists, and otherwise names why. That a
+            # field was stated is settled by reading it, so nothing is judged.
             verdict = "match" if left["state"] == "resolved" else str(left["state"])
+            judgment = {}
         else:
             right = resolve_operand(
                 prepared, item, assertion.get("right") or {}, catalog
@@ -1087,18 +1109,17 @@ def evaluate_cycle_item(
                 if "invalid_extraction" in states
                 else "missing_evidence"
                 if "missing_evidence" in states
-                else compare_values(
-                    str(assertion.get("operator") or ""),
-                    left["value"],
-                    right["value"],
-                    assertion.get("tolerance"),
-                )
+                else str(judgment.get("verdict") or "not_run")
             )
         result = {
             "ruleset_hash": ruleset_hash,
             "assertion_sha1": assertion_sha1,
             "input_hashes": inputs,
             "verdict": verdict,
+            # Why the reader reached this verdict, in its own words. A judged
+            # verdict that cannot say what it compared is not evidence of
+            # anything, so the reason travels with it into the working paper.
+            "reason": str(judgment.get("reason") or ""),
             "display": " vs ".join(
                 str(bounded_value(entry.get("value")))
                 for entry in comparisons
@@ -1131,8 +1152,20 @@ def evaluate_cycle_item(
     return item
 
 
-def evaluate_cycle_test(workspace, test: Mapping[str, object]) -> dict:
-    """Materialize current inputs and evaluate only work that is not current."""
+def evaluate_cycle_test(
+    workspace,
+    test: Mapping[str, object],
+    *,
+    judgments: Mapping[str, Mapping[str, Mapping[str, object]]] | None = None,
+) -> dict:
+    """Materialize current inputs and evaluate only work that is not current.
+
+    ``judgments`` is keyed by item id and then by assertion id. Called without
+    it — a projection, a readiness probe, a reader opening the test — every
+    assertion still binds its evidence, and the ones awaiting a verdict stay
+    ``not_run``. That is what makes this safe to call from a read: it resolves,
+    it never asks the model anything, and it never invents agreement.
+    """
 
     output = dict(test)
     output["items"] = materialize_cycle_items(workspace, output)
@@ -1140,7 +1173,13 @@ def evaluate_cycle_test(workspace, test: Mapping[str, object]) -> dict:
     prepared = prepare(workspace, validated["ruleset"])
     for item in output["items"]:
         if execution_pending(item, cycle=True):
-            evaluate_cycle_item(workspace, output, item, prepared=prepared)
+            evaluate_cycle_item(
+                workspace,
+                output,
+                item,
+                prepared=prepared,
+                judgments=(judgments or {}).get(str(item.get("id"))),
+            )
     dispositions_current = bool(output["items"]) and all(
         disposition_current(item, cycle=True) for item in output["items"]
     )
@@ -1470,7 +1509,13 @@ CONTROL_ATTRIBUTE_KEYS = frozenset({
     "required_comparisons",
 })
 
-COMPARISON_KEYS = frozenset({"key", "left", "right", "operator", "tolerance", "rationale"})
+#: A comparison names the fields that must agree and says why, and deliberately
+#: does not name how to compare them. Choosing between exact and normalized
+#: equality is not an audit judgment and cannot be made here in any case: the
+#: author is writing the matrix, long before anyone has seen that one document
+#: prints 'PKR 2,000,000.00' where another prints '2,000,000.00'. Agreement is
+#: judged against the values, where the values are.
+COMPARISON_KEYS = frozenset({"key", "left", "right", "rationale"})
 
 #: How a control's requirement is answered. Only the first reaches the cycle
 #: engine; the rest name work performed and evidenced elsewhere.
@@ -1482,14 +1527,6 @@ EVIDENCE_KINDS = frozenset({
     "inquiry",
     "mixed",
 })
-
-#: Operators whose operands may be written either way round. Coverage compares a
-#: required comparison to an approved assertion, and an equality stated in the
-#: other order is the same requirement.
-SYMMETRIC_OPERATORS = frozenset({
-    "equal_exact", "equal_normalized", "numeric_within", "date_within",
-})
-
 
 def schema_backed(attribute: Mapping[str, object]) -> bool:
     """Whether one control attribute states comparisons the cycle engine runs."""
@@ -1567,7 +1604,8 @@ def validate_required_comparisons(
         if unknown:
             errors.extend(
                 f"{entry_label} has unexpected key '{name}'. A comparison has "
-                "key, left, right, operator, tolerance, and rationale."
+                "key, left, right, and rationale. It does not name how to "
+                "compare: say which fields must agree and why."
                 for name in unknown
             )
             continue
@@ -1579,38 +1617,35 @@ def validate_required_comparisons(
             errors.append(f"{entry_label}.key '{key}' is used twice.")
             continue
         seen.add(key)
-        operator = str(raw.get("operator") or "")
-        if operator not in cycle_rulesets.OPERATORS:
+        rationale = str(raw.get("rationale") or "").strip()
+        if not rationale:
+            # The rationale carries what the operator used to pretend to carry.
+            # "The invoice is settled for the amount the order committed" states
+            # a requirement a reader can act on; ``equal_exact`` states a string
+            # operation nobody asked for.
             errors.append(
-                f"{entry_label}.operator '{operator}' is not supported. It must be "
-                f"one of: {', '.join(sorted(cycle_rulesets.OPERATORS))}."
+                f"{entry_label}.rationale is required: say what these fields "
+                "must show, in the terms the control is written in."
             )
             continue
         before = len(errors)
         left = _comparison_operand(workspace, raw.get("left"), f"{entry_label}.left", errors)
-        if operator in cycle_rulesets.UNARY_OPERATORS:
-            if raw.get("right") is not None:
-                errors.append(
-                    f"{entry_label} uses '{operator}', which reads one operand."
-                )
-                continue
-            right = None
-        else:
-            if raw.get("right") is None:
-                errors.append(f"{entry_label} uses '{operator}' and needs a right side.")
-                continue
-            right = _comparison_operand(
+        # One operand is the requirement that a field be stated at all; two is
+        # the requirement that they agree.
+        right = (
+            None
+            if raw.get("right") is None
+            else _comparison_operand(
                 workspace, raw.get("right"), f"{entry_label}.right", errors
             )
+        )
         if len(errors) != before:
             continue
         comparisons.append({
             "key": key,
             "left": left,
             "right": right,
-            "operator": operator,
-            "tolerance": raw.get("tolerance"),
-            "rationale": str(raw.get("rationale") or "").strip(),
+            "rationale": rationale,
         })
     return comparisons
 
@@ -1732,12 +1767,18 @@ def assertion_covers(
     comparison: Mapping[str, object],
     roles: Mapping[str, Mapping[str, object]],
 ) -> bool:
-    """Whether one approved assertion answers one required comparison exactly."""
+    """Whether one approved assertion answers one required comparison exactly.
 
-    if str(assertion.get("operator") or "") != str(comparison.get("operator") or ""):
-        return False
-    if plain_json(assertion.get("tolerance")) != plain_json(comparison.get("tolerance")):
-        return False
+    Selector-exact on the operands, which is now the whole of it. Coverage used
+    to require the assertion's comparison operator to equal the requirement's,
+    and that is what a matrix could not reliably satisfy: the operator asked the
+    author to choose between exact and normalized equality before any value had
+    been seen, so a requirement written ``equal_exact`` went unanswered by the
+    approved rule that read the very same two fields. Agreement is now judged
+    against the values, so what an assertion has to establish is that it reads
+    the fields the requirement names.
+    """
+
     actual_left, actual_right = _assertion_signature(assertion, roles)
 
     def wanted(operand: object) -> tuple[str, str] | None:
@@ -1752,9 +1793,10 @@ def assertion_covers(
     expected_right = wanted(comparison.get("right"))
     if actual_left == expected_left and actual_right == expected_right:
         return True
+    # Reading two fields is symmetric: which side was written first is not part
+    # of what the assertion establishes.
     return bool(
-        str(comparison.get("operator") or "") in SYMMETRIC_OPERATORS
-        and expected_right is not None
+        expected_right is not None
         and actual_left == expected_right
         and actual_right == expected_left
     )
@@ -1768,22 +1810,9 @@ def _comparison_text(comparison: Mapping[str, object]) -> str:
             return "?"
         return f"{operand.get('document_type')}.{operand.get('field')}"
 
-    operator = str(comparison.get("operator") or "")
     if comparison.get("right") is None:
-        return f"{side(comparison.get('left'))} {operator}"
-    return (
-        f"{side(comparison.get('left'))} {operator} "
-        f"{side(comparison.get('right'))}"
-    )
-
-
-#: What an approved join key proves about the pair it bound. A join on
-#: normalized equality does not establish that the printed values were equal,
-#: so it answers only the normalized comparison; an exact join establishes both.
-_JOIN_COVERAGE = {
-    "exact_equal": frozenset({"equal_exact", "equal_normalized"}),
-    "normalized_equal": frozenset({"equal_normalized"}),
-}
+        return f"{side(comparison.get('left'))} must be present"
+    return f"{side(comparison.get('left'))} agrees with {side(comparison.get('right'))}"
 
 
 def join_key_covers(
@@ -1801,18 +1830,14 @@ def join_key_covers(
     exception — the same defect the data-test validity gate refuses — and read
     as coverage while proving nothing.
 
-    Still selector-exact on the operands, and never for anything but equality:
-    a join says these two references are the same, and says nothing about an
-    amount, a date, or the presence of an approval.
+    Selector-exact on the operands, which is now the entire test. It used to ask
+    in addition what the join's ``match`` mode *proved* — a normalized join
+    establishes nothing about the printed values, so it answered only a
+    normalized requirement. That algebra is gone with the operators it compared:
+    a check reading exactly the two fields the cycle was linked on cannot fail
+    whatever mode bound them, and that is the whole of what this refuses.
     """
 
-    operator = str(comparison.get("operator") or "")
-    if operator not in _JOIN_COVERAGE.get(
-        str(join_key.get("match") or "normalized_equal"), frozenset()
-    ):
-        return False
-    if plain_json(comparison.get("tolerance")):
-        return False
     actual_left, actual_right = _assertion_signature(join_key, roles)
 
     def wanted(operand: object) -> tuple[str, str] | None:
@@ -1963,3 +1988,88 @@ def schema_catalog(workspace) -> list[dict]:
             ],
         })
     return catalog
+
+
+# --------------------------------------------------------------------------- #
+# what a reader is asked to judge
+# --------------------------------------------------------------------------- #
+def judgment_request(workspace, test: Mapping[str, object], item_id: str) -> dict:
+    """One item's pending checks, with the values each one reads.
+
+    Built from a local evaluation, so the operands are bound exactly as the
+    stored result binds them and the reader is asked about nothing else. Only
+    assertions left ``not_run`` appear: a verdict already reached is not
+    re-asked, and a resolution failure is not a question about agreement.
+
+    ``raw_value`` is what travels, not the normalized form. The whole reason
+    this is judged rather than computed is that presentation carries the
+    difficulty — a currency prefix, a vendor code, a scanned date — and a reader
+    handed the folded value would be answering an easier question than the one
+    the documents pose.
+    """
+
+    output = dict(test)
+    output["items"] = materialize_cycle_items(workspace, output)
+    validated = validate_cycle_test(workspace, output)
+    item = next(
+        (
+            value
+            for value in output["items"]
+            if str(value.get("id")) == str(item_id)
+        ),
+        None,
+    )
+    if item is None:
+        raise CycleSchemaError(f"This cycle test has no item '{item_id}'.")
+    evaluate_cycle_item(
+        workspace, output, item, prepared=prepare(workspace, validated["ruleset"])
+    )
+    by_id = {
+        str(assertion["id"]): assertion
+        for assertion in validated["ruleset"].get("assertions") or []
+    }
+    roles = {
+        str(role.get("name")): str(role.get("document_type") or "")
+        for role in validated["ruleset"].get("roles") or []
+    }
+    checks = []
+    for key, result in (item.get("result_by_assertion") or {}).items():
+        if str(result.get("verdict")) != "not_run":
+            continue
+        assertion = by_id.get(str(key)) or {}
+        operands = []
+        for comparison in result.get("comparisons") or []:
+            side = str(comparison.get("side") or "")
+            operand = assertion.get(side) or {}
+            role = str(operand.get("role") or "")
+            entries = comparison.get("entries") or []
+            first = entries[0] if entries else {}
+            anchors = first.get("evidence_refs") or []
+            operands.append({
+                "operand": f"{role}.{operand.get('field')}",
+                "document_type": roles.get(role, ""),
+                "value": first.get("raw_value"),
+                # The source line the value was read from. It is what lets the
+                # reader notice a value that does not match its own evidence.
+                "excerpt": str((anchors[0] or {}).get("excerpt") or "") if anchors else "",
+            })
+        checks.append({
+            "check_id": str(key),
+            "label": str(assertion.get("label") or ""),
+            "requirement": str(
+                assertion.get("requirement") or assertion.get("rationale") or ""
+            ),
+            "operands": operands,
+        })
+    return {
+        "item_id": str(item_id),
+        "anchor": plain_json(item.get("frozen_row") or {}),
+        "documents": sorted(
+            {
+                str(binding.get("document_id") or "")
+                for binding in item.get("role_bindings") or []
+                if binding.get("document_id")
+            }
+        ),
+        "checks": checks,
+    }

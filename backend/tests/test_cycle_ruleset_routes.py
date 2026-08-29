@@ -83,10 +83,8 @@ def _payload(join_field: str = "order_number") -> dict:
             "right": {"role": "order", "field": join_field},
         }],
         "assertions": [{
-            "id": "as_total", "operator": "numeric_within",
-            "left": {"role": "invoice", "field": "total_amount"},
+            "id": "as_total", "requirement": "The records must agree.", "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "tolerance": {"absolute": 1},
         }],
     }
 

@@ -428,11 +428,15 @@ row_index and attribute_key copied exactly from the request, plus:
 - required_comparisons: a non-empty array of objects, each with
   - key: a short snake_case name for this comparison, unique within the attribute
   - left: {{{{"document_type": "<type>", "field": "<field>"}}}}
-  - right: the same shape, omitted only for `present`
-  - operator: one of {', '.join(sorted(cycle_rulesets.OPERATORS))}
-  - tolerance: omitted, or {{{{"absolute": n}}}} / {{{{"percent": n}}}} for
-    numeric_within, or {{{{"days": n}}}} for date_within
-  - rationale: one sentence on why the requirement needs this to hold
+  - right: the same shape, omitted where the requirement is only that the field
+    be stated at all
+  - rationale: one sentence saying what these fields must show for the
+    requirement to hold
+
+Name the fields and say what they must show. Do not say how to compare them:
+whether two values agree is settled later, against the values themselves, by a
+reader that can see one document prints an amount with its currency and another
+without. You are writing the matrix and have seen neither document.
 
 State only what the requirement itself asks. A comparison that is merely nearby
 — the vendor names agreeing when the requirement is about amounts — proves
@@ -941,7 +945,30 @@ def planned_risk_themes(apm_markdown: str) -> list[str]:
             headed
             or [match.group(1).strip() for match in _BOLD_LED_ITEM.finditer(body)]
         )
-    return list(dict.fromkeys(theme for theme in themes if theme))
+    return _distinct_themes(dict.fromkeys(theme for theme in themes if theme))
+
+
+def _distinct_themes(themes) -> list[str]:
+    """Drop a theme that only restates a fuller one in the same memorandum.
+
+    A memo names its lens in full under the first process it applies to and
+    abbreviates it under the rest — "Segregation of incompatible duties." then
+    "Segregation." three times. Exact-string dedup keeps both, and the pair does
+    not behave alike: the fuller one is owned by the row that answers it while
+    the bare one, carrying a single abstract noun no row writes, is owned by
+    nothing. That failed matrices for their vocabulary rather than their
+    coverage. The fuller wording is kept because it is the memo's own statement
+    of the theme; the abbreviation is shorthand for it.
+    """
+    tokens = {theme: _comparable(theme) for theme in themes}
+    return [
+        theme
+        for theme in themes
+        if tokens[theme]
+        and not any(
+            other != theme and tokens[theme] < tokens[other] for other in themes
+        )
+    ]
 
 
 # What the memorandum could not settle lives under a section of its own. Which
@@ -1010,6 +1037,39 @@ def planning_matters(apm_markdown: str) -> list[str] | None:
     return list(dict.fromkeys(item for item in found if item))
 
 
+# A bullet's bold lead names the theme; the sentence after it is what the memo
+# actually committed to. ``_BOLD_LED_ITEM`` captures only the name, which is
+# what the enumeration should report — but scoring coverage against a name
+# alone asks a matrix to repeat a label rather than answer a commitment, and
+# fraud-frame labels ("Opportunity.") are words no control matrix will ever
+# write. Both are captured here so ownership can read the commitment.
+_BOLD_LED_BODY = re.compile(
+    r"^\s*[-*]\s+\*\*\s*(.+?)\s*:?\s*\*\*(.*?)(?=^\s*[-*]\s+\*\*|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def risk_theme_texts(apm_markdown: str) -> dict[str, str]:
+    """Each theme with the prose stating what the memo planned for it.
+
+    Keyed by the same name :func:`planned_risk_themes` reports, so a caller can
+    score against the commitment and still name the theme the way the memo did.
+    A theme carrying no body — a sub-heading, or a bullet that is only a label —
+    maps to itself, which is the most that can be read of it.
+    """
+    texts: dict[str, str] = {}
+    for heading, body in _section_bodies(apm_markdown).items():
+        if "risk" not in heading:
+            continue
+        if [match for match in _HEADING.finditer(body) if len(match.group(1)) == 3]:
+            continue
+        for match in _BOLD_LED_BODY.finditer(body):
+            name = match.group(1).strip()
+            if name:
+                texts.setdefault(name, f"{name} {match.group(2).strip()}".strip())
+    return texts
+
+
 def unstructured_risk_sections(apm_markdown: str) -> list[str]:
     """Risk sections carrying substantive prose that enumerate no theme.
 
@@ -1032,6 +1092,21 @@ def unstructured_risk_sections(apm_markdown: str) -> list[str]:
 _MIN_STEM = 5
 
 
+# Words a theme and a row share by writing English, not by covering the same
+# risk. Scoring counted them, so a padded theme was owned by any row at all:
+# "Compliance with the entity's own stated policy." passed on ``the``, while
+# "Compliance." — the same lens, stated bare — failed. A match has to mean a
+# shared audit word to mean anything.
+_FUNCTION_WORDS = frozenset({
+    "also", "all", "and", "any", "are", "been", "being", "but", "can", "could",
+    "each", "for", "from", "had", "has", "have", "how", "into", "its", "may",
+    "might", "must", "nor", "not", "onto", "own", "shall", "should", "some",
+    "such", "than", "that", "the", "their", "them", "then", "there", "these",
+    "they", "this", "those", "upon", "was", "were", "what", "when", "where",
+    "which", "who", "whom", "whose", "why", "will", "with", "would",
+})
+
+
 def _comparable(value: object) -> set[str]:
     """Tokens normalized enough to survive ordinary variation in wording.
 
@@ -1043,6 +1118,7 @@ def _comparable(value: object) -> set[str]:
     return {
         token.replace("isa", "iza").replace("ise", "ize").replace("yse", "yze")
         for token in relevance_tokens(value)
+        if token not in _FUNCTION_WORDS
     }
 
 
@@ -1059,15 +1135,28 @@ def _shares(left: set[str], right: set[str]) -> int:
     return matched
 
 
-def _theme_ownership(themes: list[str], rows: list[dict]) -> list[tuple[str, int]]:
-    """Each theme with the best overlap any one row achieves against it."""
+def _theme_ownership(
+    themes: list[str],
+    rows: list[dict],
+    texts: Mapping[str, str] | None = None,
+) -> list[tuple[str, int]]:
+    """Each theme with the best overlap any one row achieves against it.
+
+    Read across the control as well as the process and risk, because that is
+    what the failure this raises tells the model to fix — "add a row whose risk
+    *and control* concern each" — and a row that answered the theme in its
+    control was being failed for it. ``texts`` supplies what the memo said about
+    each theme where the caller has it; a theme falls back to its own name.
+    """
     owned = [
-        _comparable(row.get("process")) | _comparable(row.get("risk"))
+        _comparable(row.get("process"))
+        | _comparable(row.get("risk"))
+        | _comparable(row.get("control"))
         for row in rows
     ]
     scored = []
     for theme in themes:
-        tokens = _comparable(theme)
+        tokens = _comparable((texts or {}).get(theme) or theme)
         if not tokens:
             continue
         best = max((_shares(tokens, row_tokens) for row_tokens in owned), default=0)
@@ -1075,7 +1164,9 @@ def _theme_ownership(themes: list[str], rows: list[dict]) -> list[tuple[str, int
     return scored
 
 
-def _unowned_themes(themes: list[str], rows: list[dict]) -> list[str]:
+def _unowned_themes(
+    themes: list[str], rows: list[dict], texts: Mapping[str, str] | None = None
+) -> list[str]:
     """Risk themes the APM plans for that no proposed row so much as mentions.
 
     The matrix is the APM's risk assessment made testable. A theme the memo
@@ -1090,7 +1181,7 @@ def _unowned_themes(themes: list[str], rows: list[dict]) -> list[str]:
     """
     return [
         theme
-        for theme, best in _theme_ownership(themes, rows)
+        for theme, best in _theme_ownership(themes, rows, texts)
         if best < MIN_THEME_MATCH
     ]
 
@@ -1101,6 +1192,15 @@ def weakly_owned_themes(apm_markdown: str, rows: list[dict]) -> list[str]:
     Reported to the auditor rather than enforced. On a matrix that genuinely
     covered every theme, three of ten sat here — so this cannot decide whether
     a matrix is acceptable, and saying so is the whole of its usefulness.
+
+    Scored against the theme's name alone, unlike the gate in
+    :func:`_unowned_themes`. The gate asks whether the matrix converted the
+    memo's commitment at all, which is a question about the commitment; this
+    asks whether the connection is thin, and against a whole paragraph of body
+    prose two shared words are free, which would retire the report without
+    anything saying so. Naming the lens is the thin-coverage signal worth
+    keeping: a matrix that answers "Segregation of incompatible duties." while
+    never writing the word is exactly what an auditor should be told.
     """
     return [
         theme
@@ -1174,8 +1274,9 @@ def document_level_errors(
         row for row in _current_rcm_rows(request) if isinstance(row, Mapping)
     ]
     everything = [*existing, *rows]
-    themes = planned_risk_themes(str(_resolved_item(request, "current_apm") or ""))
-    unowned = _unowned_themes(themes, everything)
+    apm = str(_resolved_item(request, "current_apm") or "")
+    themes = planned_risk_themes(apm)
+    unowned = _unowned_themes(themes, everything, risk_theme_texts(apm))
     if unowned:
         errors.append(
             "the planning memorandum plans a response for "

@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import cycle_linking, cycle_vouching, doc_tests, sandbox
-from ...text import relevance_tokens
+from ...text import counted, relevance_tokens
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -1440,6 +1440,7 @@ WORKERS.register(GENERATE_WORKER)
 # --------------------------------------------------------------------------- #
 LINKAGE_WORKER_ID = "tests.cycle_linkage"
 CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
+CYCLE_REQUIREMENT_SOURCE_ID = "cycle_requirements"
 
 LINKAGE_SYSTEM = f"""[agent:cycle_linkage]
 Describe how this engagement's documents relate, as rules an auditor can review.
@@ -1469,6 +1470,17 @@ Propose only what the fields support. A rule naming a field a type does not carr
 cannot run, and a plausible rule that never runs is worse than an absent one —
 it reads as a passing test.
 
+Where required comparisons are supplied, they are what the matrix has already
+decided this cycle must demonstrate, and your assertions must answer every one
+of them: an assertion reading exactly the two fields a comparison names, or
+exactly the one field it names where it asks only that a field be stated. Answer
+them in the matrix's own operands rather than equivalent ones — a receipt naming
+its order and an order naming its receipt are different facts, and only one of
+them is what was asked for.
+
+A comparison whose pair a join key already binds needs no assertion: the join
+established it, and repeating it files a check that cannot fail.
+
 Give every rule a short lower_snake_case id and a one-sentence rationale saying
 why it holds. The rationale is what an auditor reads when deciding whether to
 approve it, so state the reason, not the mechanics.
@@ -1482,18 +1494,20 @@ Keys:
   join_keys     array of {{"id", "left": {{"role", "field"}},
                 "right": {{"role", "field"}}, "rationale"}}
   assertions    array of {{"id", "label", "left": {{"role", "field"}},
-                "right": {{"role", "field"}} or null, "operator", "tolerance",
+                "right": {{"role", "field"}} or null, "requirement",
                 "rationale"}}
 
-operator is one of: equal_exact, equal_normalized, numeric_within,
-date_on_or_before, date_within, present. Only `present` takes no right operand;
-every other operator needs one.
+requirement says what these fields must show for the control to hold, in the
+terms the control is written in — "the invoice is settled for the amount the
+order committed". Do not say how to compare them. Whether two values agree is
+settled later against the values themselves, by a reader that can see one
+document prints an amount with its currency and another without, and that one
+scanned date carries a stray space. You are proposing rules for approval and
+have read neither document.
 
-tolerance is omitted or null unless the operator takes one, and is always an
-object naming which kind: {{"absolute": n}} or {{"percent": n}} for
-numeric_within, {{"days": n}} for date_within. A bare number does not say
-whether 0.01 means a hundredth of a currency unit or one percent of the
-amount, and those are different rules."""
+Give an assertion a right operand when the requirement is that two fields
+agree, and omit it — null — when the requirement is that a field be stated at
+all."""
 
 
 def _linkage_operand(raw: object, label: str) -> dict[str, Any]:
@@ -1549,8 +1563,9 @@ def _linkage_response_schema(response: str) -> Mapping[str, Any]:
                 if right is not None
                 else None
             ),
-            "operator": str(raw.get("operator") or "").strip(),
-            "tolerance": raw.get("tolerance"),
+            "requirement": str(
+                raw.get("requirement") or raw.get("rationale") or ""
+            ).strip(),
             "rationale": str(raw.get("rationale") or "").strip(),
         })
     if not assertions:
@@ -1587,6 +1602,28 @@ def _supplied_schemas(request: WorkerRequest) -> list[object]:
     if isinstance(item, Mapping):
         return list(item.get("schemas") or [])
     return list(item or [])
+
+
+def _supplied_requirements(request: WorkerRequest) -> list[dict]:
+    """What the matrix asks this cycle to demonstrate, if it asks anything.
+
+    Optional by declaration: an engagement may proposes rules before its matrix
+    asks anything of them. Where it does ask, these are what the assertions have
+    to answer, and they are read through one accessor by both the prompt and the
+    validator so a proposal is judged against exactly what it was shown.
+    """
+
+    try:
+        item = _resolved_item(request, CYCLE_REQUIREMENT_SOURCE_ID)
+    except WorkerContractError:
+        return []
+    if isinstance(item, Mapping):
+        return [
+            dict(value)
+            for value in item.get("required_comparisons") or []
+            if isinstance(value, Mapping)
+        ]
+    return []
 
 
 def validate_linkage_proposal(
@@ -1641,38 +1678,75 @@ def validate_linkage_proposal(
         field_of(item["left"], f"Assertion '{item['id']}' left")
         if item.get("right") is not None:
             field_of(item["right"], f"Assertion '{item['id']}' right")
-        # The same shape ``cycle_rulesets`` will demand at commit. Checked here
-        # so a wrong one is repaired in the bounded loop this worker already
-        # has, rather than validating cleanly and then failing the unit at the
-        # store — which is where a bare `0.01` landed on the first live run.
-        tolerance = item.get("tolerance")
-        if tolerance is None:
-            continue
-        if not isinstance(tolerance, Mapping):
+        # The tolerance a numeric comparison used to carry is gone with the
+        # operator that took one. A rule states what the fields must show; how
+        # close two amounts have to be is part of that sentence, and is read
+        # with the values rather than parsed out of the rule.
+        if not str(item.get("requirement") or item.get("rationale") or "").strip():
             raise WorkerResponseValidationError(
-                f"Assertion '{item['id']}' states tolerance "
-                f"{tolerance!r}, which does not say what kind it is. Use "
-                '{"absolute": n} or {"percent": n} for numeric_within, '
-                '{"days": n} for date_within.'
+                f"Assertion '{item['id']}' states no requirement. Say what these "
+                "fields must show for the control to hold."
             )
-        named = {
-            key: value
-            for key, value in tolerance.items()
-            if key in ("absolute", "percent", "days") and value is not None
-        }
-        if not named:
-            raise WorkerResponseValidationError(
-                f"Assertion '{item['id']}' states a tolerance naming none of "
-                "absolute, percent or days."
-            )
-        for key, value in named.items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-                raise WorkerResponseValidationError(
-                    f"Assertion '{item['id']}' tolerance.{key} must be a "
-                    "non-negative number."
-                )
     field_of(proposal["anchor"], "The anchor")
+    _refuse_uncovered_requirements(proposal, request)
     return proposal
+
+
+def _refuse_uncovered_requirements(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> None:
+    """Refuse a proposal that leaves a matrix requirement unanswered.
+
+    The same check ``tests.specified`` runs, run here instead. It used to fire
+    three stages downstream, by which time the ruleset had been approved and an
+    approved ruleset is immutable — so the repair was a successor proposal and a
+    second signature, for a defect the worker's own bounded loop could have
+    fixed for one attempt. Nothing about the check changed; only when it is
+    asked.
+
+    Scoped to what the worker was shown. A requirement naming a document type
+    this cycle does not carry is not this proposal's to answer.
+    """
+
+    required = _supplied_requirements(request)
+    if not required:
+        return
+    document_types = {
+        str(role.get("document_type") or "") for role in proposal.get("roles") or []
+    }
+
+    def in_scope(comparison: Mapping[str, Any]) -> bool:
+        sides = [comparison.get("left"), comparison.get("right")]
+        return all(
+            str((side or {}).get("document_type") or "") in document_types
+            for side in sides
+            if isinstance(side, Mapping)
+        )
+
+    comparisons = [item for item in required if in_scope(item)]
+    if not comparisons:
+        return
+    uncovered = cycle_linking.uncovered_comparisons(proposal, comparisons)
+    if not uncovered:
+        return
+    named = "; ".join(
+        f"{item.get('control_attribute')}.{item.get('comparison')} "
+        f"({(item.get('left') or {}).get('document_type')}."
+        f"{(item.get('left') or {}).get('field')}"
+        + (
+            f" with {(item.get('right') or {}).get('document_type')}."
+            f"{(item.get('right') or {}).get('field')})"
+            if item.get("right")
+            else " stated at all)"
+        )
+        for item in uncovered
+    )
+    raise WorkerResponseValidationError(
+        f"The proposal answers {counted(len(required) - len(uncovered), 'required comparison')} "
+        f"of {len(required)}. Add an assertion for each of these, reading exactly "
+        f"the fields named: {named}. An assertion that merely repeats a join key "
+        "is not one of them — the join already binds that pair."
+    )
 
 
 def run_linkage_worker(

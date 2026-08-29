@@ -37,10 +37,12 @@ from .capabilities.doc_tests import (
     scoped_tests,
     unexecuted_items,
 )
-from .context import ContextResolver, document_qa_scope
+from .context import ContextResolver, cycle_vouch_scope, document_qa_scope
 from .executors import EXECUTORS
 from .executors.fieldwork import (
+    CycleVouchExecutorTarget,
     DocumentQaExecutorTarget,
+    cycle_vouch_item_ref,
     document_qa_answer_ref,
     document_test_ref,
     run_document_test,
@@ -157,6 +159,81 @@ def bind_document_qa(
     )
 
 
+def bind_cycle_vouch(
+    adapter,
+    capability: workflow.Capability,
+    unit: dict,
+    *,
+    task: dict,
+) -> BoundUnitPipeline:
+    """Bind one linked cycle's judgment to the shared ``UnitPipeline``.
+
+    The verdicts come from the registered ``fieldwork.cycle_vouch`` worker
+    through the injected gateway and the declared cycle context, and the
+    registered executor owns the guarded merge back into the Document Test.
+    Routed the same way document Q&A is, and for the same reason: a cycle that
+    is not waiting on evidence has model work to do, so reaching the provider
+    from the local execution path would be an unbudgeted call.
+    """
+    test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
+    item_id = unit_ref(unit, "cycleitem:").split(":", 1)[1]
+    expected_test = parent_hashes(adapter.ws, [f"doctest:{test_id}"])
+    target = CycleVouchExecutorTarget(adapter.ws, adapter.run["id"], test_id, item_id)
+
+    def context_provider():
+        return resolve_context(
+            adapter,
+            adapter.context_resolver,
+            capability,
+            unit,
+            cycle_vouch_scope(adapter.ws, test_id, item_id),
+        )
+
+    def on_committed(_stage, _unit, _outcome) -> DeterministicUnitResult:
+        adapter.ws = target.workspace
+        adapter.emit(
+            "workspace_changed",
+            {"kind": "doctest", "id": test_id, "action": "cycle_judged"},
+        )
+        return DeterministicUnitResult(
+            "succeeded", (cycle_vouch_item_ref(test_id, item_id),)
+        )
+
+    return BoundUnitPipeline(
+        request=UnitPipelineRequest(
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            worker_id="fieldwork.cycle_vouch",
+            executor_id="fieldwork.cycle_vouch",
+            unit_input={
+                "kind": unit.get("kind"),
+                "input_sha1": unit.get("input_sha1"),
+                "parent_refs": list(unit.get("parent_refs") or []),
+            },
+            activity={
+                "artifact_refs": list(unit.get("parent_refs") or []),
+                "task_id": task["id"],
+            },
+            expected_revision=adapter.ws.revision,
+            expected_parents=expected_test,
+            capability_definition_hash=workflow.capability_definition_hash(capability),
+            # A verdict is fieldwork, not an artifact the auditor pre-approves;
+            # the disposition on the item is where they sign off.
+            approval_kind=None,
+            proposal_reference=unit.get("proposal_sidecar"),
+            receipt_reference=unit.get("receipt_sidecar"),
+        ),
+        context_provider=context_provider,
+        context_identity_provider=lambda manifest: (
+            adapter.context_resolver.execution_identity(capability, manifest)
+        ),
+        target=target,
+        approval_provider=None,
+        readiness_provider=None,
+        on_committed=on_committed,
+    )
+
+
 def bind_document_test_unit(
     adapter,
     capability: workflow.Capability,
@@ -179,6 +256,8 @@ def bind_document_test_unit(
         )
     if unit["kind"] in {"document_qa_execution", "document_llm_execution"}:
         return bind_document_qa(adapter, capability, unit, task=task)
+    if unit["kind"] == "cycle_vouch_execution":
+        return bind_cycle_vouch(adapter, capability, unit, task=task)
     test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
     try:
         outcome = run_document_test(

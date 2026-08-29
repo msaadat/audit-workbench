@@ -107,72 +107,59 @@ def test_an_empty_raw_value_is_refused_rather_than_normalized():
         )
 
 
-# ----------------------------------------------------------------- operators
-def test_equal_exact_compares_typed_numbers_numerically_and_text_textually():
-    """Two extractions of one quantity may normalize to 25 and 25.0."""
+# ------------------------------------------------------------------ verdicts
+def test_cannot_determine_is_a_verdict_and_not_a_pass():
+    """The reader had both values and still could not settle the requirement.
 
-    assert cycle_vouching._comparison("equal_exact", 25, 25.0, None) == "match"
-    assert cycle_vouching._comparison("equal_exact", 25, 26, None) == "mismatch"
-    # An identifier stays exact: the live PO/P0 typo must remain a mismatch.
-    assert (
-        cycle_vouching._comparison("equal_exact", "PO2024004", "P02024004", None)
-        == "mismatch"
-    )
-    assert cycle_vouching._comparison("equal_exact", True, 1, None) == "mismatch"
+    Distinct from ``missing_evidence`` and ``invalid_extraction``, which are
+    resolution failures decided before anything is judged — but it lands where
+    they land, because none of the three is a tested pass.
+    """
 
+    assert "cannot_determine" in cycle_vouching.ASSERTION_VERDICTS
+    item = {"result_by_assertion": {"a": {"verdict": "cannot_determine"}}}
 
-def test_equal_normalized_folds_case_and_spacing():
-    assert (
-        cycle_vouching._comparison(
-            "equal_normalized", "OfficeSupply  Co.", "officesupply co.", None
-        )
-        == "match"
-    )
+    assert cycle_vouching._aggregate_evaluation(item) == "incomplete"
 
 
-def test_numeric_within_honours_the_larger_of_absolute_and_percent():
-    assert (
-        cycle_vouching._comparison(
-            "numeric_within", "1000", "1005", {"absolute": 10, "percent": 0}
-        )
-        == "match"
-    )
-    assert (
-        cycle_vouching._comparison(
-            "numeric_within", "1000", "1005", {"absolute": 0, "percent": 1}
-        )
-        == "match"
-    )
-    assert (
-        cycle_vouching._comparison(
-            "numeric_within", "1000", "1005", {"absolute": 1, "percent": 0}
-        )
-        == "mismatch"
-    )
+def test_a_disagreement_fails_the_item_even_beside_one_it_could_not_settle():
+    item = {
+        "result_by_assertion": {
+            "a": {"verdict": "cannot_determine"},
+            "b": {"verdict": "mismatch"},
+        }
+    }
+
+    assert cycle_vouching._aggregate_evaluation(item) == "failed"
 
 
-def test_a_value_that_will_not_type_is_invalid_evidence_not_a_mismatch():
-    """Saying 'mismatch' would report a finding the documents do not support."""
+def test_an_unjudged_assertion_leaves_the_item_pending():
+    """Nothing infers agreement from the absence of a verdict."""
 
-    assert (
-        cycle_vouching._comparison("numeric_within", "not a number", "5", None)
-        == "invalid_extraction"
-    )
-    assert (
-        cycle_vouching._comparison("date_on_or_before", "whenever", "2024-04-01", None)
-        == "invalid_extraction"
-    )
+    item = {"result_by_assertion": {"a": {"verdict": "not_run"}}}
+
+    assert cycle_vouching._aggregate_evaluation(item) == "not_run"
+    assert cycle_vouching.execution_pending(item, cycle=True)
 
 
-def test_present_reads_one_operand():
-    assert cycle_vouching._comparison("present", "PO-1", None, None) == "match"
-    assert cycle_vouching._comparison("present", "", None, None) == "missing_evidence"
+def test_the_judged_vocabulary_maps_onto_the_durable_one():
+    """What a reader may answer, and what each answer means in the record."""
+
+    assert set(cycle_vouching.JUDGED_VERDICTS) == {
+        "agrees",
+        "disagrees",
+        "cannot_determine",
+    }
+    assert set(cycle_vouching.JUDGED_VERDICTS.values()) <= cycle_vouching.ASSERTION_VERDICTS
+    assert cycle_vouching.JUDGED_VERDICTS["agrees"] == "match"
+    assert cycle_vouching.JUDGED_VERDICTS["disagrees"] == "mismatch"
 
 
-def test_the_operator_vocabulary_matches_what_a_rule_may_name():
-    from app import cycle_rulesets
+def test_no_comparison_operator_survives_on_the_module():
+    """Agreement is judged against the values, so nothing here computes it."""
 
-    assert cycle_vouching.OPERATORS == cycle_rulesets.OPERATORS
+    assert not hasattr(cycle_vouching, "OPERATORS")
+    assert not hasattr(cycle_vouching, "_comparison")
 
 
 # ------------------------------------------------------------ state accessors
@@ -219,3 +206,17 @@ def test_assurance_scope_is_structurally_derived():
     )
     with pytest.raises(cycle_vouching.CycleSchemaError):
         cycle_vouching.assurance_scope_for({"mode": "whatever"})
+
+
+def test_the_published_vocabulary_is_what_a_reader_may_answer():
+    """The UI binds its pickers to this, so a stale key here is a broken screen.
+
+    Caught late: nothing exercised ``metadata()`` while the operator table was
+    being removed, so it referenced a name that no longer existed and every
+    caller would have raised. It is asserted now rather than left to a caller.
+    """
+
+    published = cycle_vouching.metadata()
+
+    assert published["verdicts"] == sorted(cycle_vouching.JUDGED_VERDICTS)
+    assert "operators" not in published

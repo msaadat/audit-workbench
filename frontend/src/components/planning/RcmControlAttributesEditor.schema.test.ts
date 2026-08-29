@@ -87,7 +87,6 @@ describe('RcmControlAttributesEditor, against induced schemas', () => {
         key: 'totals_agree',
         left: { document_type: 'vendor_invoice', field: 'total_amount' },
         right: { document_type: 'purchase_order', field: 'total_amount' },
-        operator: 'numeric_within',
       }],
     })])
 
@@ -110,11 +109,12 @@ describe('RcmControlAttributesEditor, against induced schemas', () => {
       .addComparison(0)
 
     const comparison = (emitted(wrapper)[0] as never as {
-      required_comparisons: Array<{ left: unknown; right: unknown; operator: string }>
+      required_comparisons: Array<{ left: unknown; right: unknown; operator?: string }>
     }).required_comparisons[0]
     expect(comparison.left).toEqual({ document_type: 'vendor_invoice', field: 'invoice_number' })
     expect(comparison.right).toEqual({ document_type: 'purchase_order', field: 'order_number' })
-    expect(comparison.operator).toBe('equal_exact')
+    // How to compare is not authored here: it is settled against the values.
+    expect(comparison.operator).toBeUndefined()
   })
 
   // A field name means nothing away from the type that states it, so carrying
@@ -125,7 +125,6 @@ describe('RcmControlAttributesEditor, against induced schemas', () => {
         key: 'totals_agree',
         left: { document_type: 'vendor_invoice', field: 'total_amount' },
         right: { document_type: 'purchase_order', field: 'total_amount' },
-        operator: 'numeric_within',
       }],
     })])
 
@@ -139,19 +138,18 @@ describe('RcmControlAttributesEditor, against induced schemas', () => {
     expect(comparison.left).toEqual({ document_type: 'purchase_order', field: 'order_number' })
   })
 
-  it('drops the right operand for a unary operator', async () => {
+  it('drops the right operand when the requirement reads one field', async () => {
     const wrapper = render([cycleAttribute({
       required_comparisons: [{
         key: 'has_order',
         left: { document_type: 'vendor_invoice', field: 'invoice_number' },
         right: { document_type: 'purchase_order', field: 'order_number' },
-        operator: 'equal_exact',
       }],
     })])
 
     await (wrapper.vm as never as {
-      setOperator: (a: number, c: number, op: string) => void
-    }).setOperator(0, 0, 'present')
+      setComparesTwo: (a: number, c: number, comparesTwo: boolean) => void
+    }).setComparesTwo(0, 0, false)
 
     const comparison = (emitted(wrapper)[0] as never as {
       required_comparisons: Array<{ right: unknown }>

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from ... import doc_tests as doc_test_service
 from ...text import counted, verb
+from ... import cycle_vouching
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import doc_tests as doc_tests_workflow
@@ -190,6 +191,19 @@ def _unknown_tests(test_scope: DocTestScope) -> Readiness | None:
 # --------------------------------------------------------------------------- #
 # Shared unit expansion (also used by the audit graph's fieldwork.executed)
 # --------------------------------------------------------------------------- #
+#: What each model-facing document-test unit kind reads, keyed by kind because
+#: they do not read the same thing: a document assessment reads pages, and a
+#: cycle judgment reads one linked cycle's pending checks and the values they
+#: bind. Declared beside the expansion that produces the kinds, and imported by
+#: the audit graph, so the two graphs cannot drift into disagreeing about what
+#: a kind is given.
+DOCUMENT_TEST_CONTEXT = {
+    "document_qa_execution": "fieldwork.document_qa",
+    "document_llm_execution": "fieldwork.document_qa",
+    "cycle_vouch_execution": "fieldwork.cycle_vouch",
+}
+
+
 def document_test_units(
     workspace: Workspace,
     test_id: str,
@@ -276,6 +290,23 @@ def document_test_units(
                 {"test_id": test_id},
             )
         ]
+    if test.get("kind") == "cycle_vouch" and not doc_test_service.evidence_blocked(test):
+        # One unit per linked cycle, because one model pass judges one cycle:
+        # the reader needs the whole cycle in front of it to tell a difference
+        # in presentation from a difference in fact.
+        judgment_units = [
+            UnitSpec(
+                semantic_unit_id("cycle_vouch_execution", test_id, item["id"]),
+                "cycle_vouch_execution",
+                f"Vouch cycle {item.get('label') or item['id']}",
+                test_refs + (f"cycleitem:{item['id']}",),
+                {"test_sha1": test.get("sha1"), "item_id": item["id"]},
+            )
+            for item in test.get("items") or []
+            if forced or cycle_vouching.execution_pending(item, cycle=True)
+        ]
+        if judgment_units:
+            return judgment_units
     already_checked = bool(test.get("items")) and all(
         doc_test_service.item_execution_current(test, item)
         for item in test.get("items") or []
@@ -464,10 +495,7 @@ def _doc_tests_executed() -> Capability:
         doc_tests_workflow.dependencies("doc_tests.executed"),
         _executed_ready,
         _execution_units,
-        # Only the document Q&A unit kind calls the model, so this is the one
-        # declaration the capability needs; the other kinds are deterministic
-        # local computation with no model-facing context at all.
-        context="fieldwork.document_qa",
+        context=DOCUMENT_TEST_CONTEXT,
         invalidate_on=("definition", "evidence"),
     )
 

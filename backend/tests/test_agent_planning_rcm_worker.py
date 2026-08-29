@@ -180,15 +180,12 @@ def _three_way_comparisons():
             "key": "totals_agree",
             "left": {"document_type": "vendor_invoice", "field": "total_amount"},
             "right": {"document_type": "purchase_order", "field": "total_amount"},
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 1},
             "rationale": "The amount billed must be the amount ordered.",
         },
         {
             "key": "quantities_agree",
             "left": {"document_type": "goods_receipt", "field": "quantity"},
             "right": {"document_type": "purchase_order", "field": "quantity"},
-            "operator": "equal_exact",
             "rationale": "Only what was received may be billed.",
         },
     ]
@@ -1102,7 +1099,6 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
         "key": "totals_agree",
         "left": {"document_type": "vendor_invoice", "field": "total_amount"},
         "right": {"document_type": "purchase_order", "field": "total_amount"},
-        "operator": "equals",
     }])
     gateway = _Gateway(
         [
@@ -1135,9 +1131,10 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
     assert result.repaired is True
     repair_request = json.loads(gateway.calls[2]["user"])
     errors = repair_request["ROWS TO CORRECT"][0]["errors"]
-    assert any("'equals' is not supported" in error for error in errors)
-    # The repair turn is given the vocabulary, not just the violation.
-    assert "numeric_within" in gateway.calls[2]["system"]
+    assert any("rationale is required" in error for error in errors)
+    # The repair turn is given the contract, not just the violation.
+    assert "required_comparisons" in gateway.calls[2]["system"]
+    assert "Do not say how to compare them" in gateway.calls[2]["system"]
     assert result.proposal["rows"][0]["risk"] == "Duplicate payments are processed"
 
 
@@ -1366,3 +1363,93 @@ def test_repeated_anchors_are_one_source_not_two():
 def test_a_row_that_cites_nothing_carries_no_refs():
     assert planning._validated_criteria_refs({}, 1, _sheet()) == []
     assert planning._validated_criteria_refs({"criteria_refs": []}, 1, _sheet()) == []
+
+
+# The shipped template's risk section names each lens in full under the first
+# process it applies to and abbreviates it under the rest. Both forms reached
+# scoring as separate themes, and they did not behave alike.
+_ABBREVIATED = """# APM
+
+## Fraud risk and management override
+
+* **Opportunity.** After-the-event approvals and the absence of any systematic
+  exception review leave settlement possible without supporting evidence. The
+  planned response is to vouch payments to approval and receipt evidence.
+
+## Key risks and planned response
+
+**Requisition and approval**
+
+- **Segregation of incompatible duties.** The approvers differed from the
+  requester on every comparable row.
+- **Compliance with the entity's own stated policy.** The SOP requires an
+  outcome to be recorded for every approved requisition.
+
+**Purchase order**
+
+- **Segregation.** Considered; no incompatible combination evidenced.
+- **Compliance.** The SOP requires orders only with active vendors.
+"""
+
+
+def test_an_abbreviated_lens_is_the_same_theme_as_the_one_it_shortens():
+    """A memo that shortens its own lens has not added a theme.
+
+    "Segregation." carries one abstract noun a matrix never writes, so it was
+    owned by nothing while "Segregation of incompatible duties." — the same
+    lens, the same sentence away — was owned by the row that answers it. The
+    matrix was failed for its vocabulary rather than its coverage.
+    """
+    themes = planning.planned_risk_themes(_ABBREVIATED)
+
+    assert "Segregation." not in themes
+    assert "Compliance." not in themes
+    assert "Segregation of incompatible duties." in themes
+    assert "Compliance with the entity's own stated policy." in themes
+
+
+def test_a_theme_is_owned_by_answering_it_not_by_repeating_its_name():
+    """Coverage is what the memo committed to, not the label over it.
+
+    A fraud-frame label is a word no control matrix writes: no row states a
+    risk of "opportunity". Scoring the name alone demanded the matrix repeat a
+    heading, and the bullet's own sentence — the commitment — went unread.
+    """
+    rows = [
+        {
+            "process": "Invoice processing and payment",
+            "risk": "An invoice may be settled without evidence that goods arrived.",
+            "control": (
+                "Settlement requires approval and a matching receipt, and "
+                "exceptions are reviewed."
+            ),
+        }
+    ]
+    themes = planning.planned_risk_themes(_ABBREVIATED)
+    texts = planning.risk_theme_texts(_ABBREVIATED)
+
+    assert "Opportunity." in themes
+    assert planning._unowned_themes(["Opportunity."], rows) == ["Opportunity."]
+    assert planning._unowned_themes(["Opportunity."], rows, texts) == []
+
+
+def test_a_row_answering_in_its_control_owns_the_theme():
+    """The failure tells the model to fix the risk *and control*; both are read."""
+    rows = [
+        {
+            "process": "Purchase order",
+            "risk": "An order may be placed outside the delegation levels.",
+            "control": "Segregation of duties is enforced between raising and approving.",
+        }
+    ]
+
+    assert planning._unowned_themes(["Segregation of incompatible duties."], rows) == []
+
+
+def test_shared_function_words_are_not_coverage():
+    """A theme and a row share "the" by writing English, not by covering a risk."""
+    rows = [{"process": "Payments", "risk": "The vendor may be paid in the wrong currency."}]
+
+    assert planning._unowned_themes(["Compliance with the entity's own stated policy."], rows) == [
+        "Compliance with the entity's own stated policy."
+    ]

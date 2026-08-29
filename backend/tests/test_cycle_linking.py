@@ -107,10 +107,9 @@ def ruleset_payload(**overrides) -> dict:
             "rationale": "An invoice cites the order it bills against.",
         }],
         "assertions": [{
-            "id": "as_total", "label": "Totals agree",
+            "id": "as_total", "requirement": "The records must agree.", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 1},
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }

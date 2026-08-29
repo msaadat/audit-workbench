@@ -51,20 +51,40 @@ class _Request:
     which is what re-expands the unit when one is re-derived.
     """
 
-    def __init__(self, *, schemas=(), **unit_input):
+    def __init__(self, *, schemas=(), requirements=None, **unit_input):
         self.unit_input = unit_input
         # One atomic item carrying every type, the shape the adapter supplies:
         # a cycle describes how the whole set relates, so a vocabulary admitted
         # piecemeal would yield a proposal missing a role and not say which.
-        self.context = _Context(
-            [_ContextItem("cycle_schemas", {"schemas": list(schemas)})]
-            if schemas
-            else []
-        )
+        items = []
+        if schemas:
+            items.append(_ContextItem("cycle_schemas", {"schemas": list(schemas)}))
+        if requirements is not None:
+            items.append(
+                _ContextItem(
+                    "cycle_requirements", {"required_comparisons": list(requirements)}
+                )
+            )
+        self.context = _Context(items)
 
 
-def _request():
-    return _Request(schemas=SCHEMAS)
+def _request(requirements=None):
+    return _Request(schemas=SCHEMAS, requirements=requirements)
+
+
+def _requirement(**overrides) -> dict:
+    """One thing the matrix has decided this cycle must demonstrate."""
+    item = {
+        "rcm_id": "RCM-1",
+        "control_attribute": "invoice_match",
+        "requirement": "The invoice agrees to the order it bills against.",
+        "comparison": "totals_agree",
+        "left": {"document_type": "vendor_invoice", "field": "total_amount"},
+        "right": {"document_type": "purchase_order", "field": "total_amount"},
+        "why": "The amount billed must be the amount ordered.",
+    }
+    item.update(overrides)
+    return item
 
 
 def _proposal(**overrides) -> dict:
@@ -85,10 +105,9 @@ def _proposal(**overrides) -> dict:
             "rationale": "An invoice cites the order it bills against.",
         }],
         "assertions": [{
-            "id": "as_total", "label": "Totals agree",
+            "id": "as_total", "requirement": "The records must agree.", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 1},
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }
@@ -101,7 +120,7 @@ def test_a_complete_proposal_parses():
     parsed = _linkage_response_schema(json.dumps(_proposal()))
     assert parsed["cycle_label"] == "Procure to pay"
     assert parsed["join_keys"][0]["match"] == "normalized_equal"
-    assert parsed["assertions"][0]["operator"] == "numeric_within"
+    assert parsed["assertions"][0]["requirement"] == "The records must agree."
 
 
 def test_a_cycle_that_tests_nothing_is_refused():
@@ -194,10 +213,9 @@ def test_two_roles_may_share_a_document_type():
             "rationale": "Both bill the same order.",
         }],
         assertions=[{
-            "id": "as_total", "label": "Totals agree",
+            "id": "as_total", "requirement": "The records must agree.", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "revised_invoice", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 0},
             "rationale": "A revision must not change the amount billed.",
         }],
     )
@@ -206,9 +224,9 @@ def test_two_roles_may_share_a_document_type():
 
 def test_a_present_assertion_needs_no_right_operand():
     payload = _proposal(assertions=[{
-        "id": "as_approval", "label": "Approved",
+        "id": "as_approval", "requirement": "The records must agree.", "label": "Approved",
         "left": {"role": "invoice", "field": "approval"}, "right": None,
-        "operator": "present", "tolerance": None,
+        "tolerance": None,
         "rationale": "Approval evidences the authorization control operated.",
     }])
     parsed = _linkage_response_schema(json.dumps(payload))
@@ -262,8 +280,6 @@ def _cycle_row():
                                  "field": "total_amount"},
                         "right": {"document_type": "purchase_order",
                                   "field": "total_amount"},
-                        "operator": "numeric_within",
-                        "tolerance": {"absolute": 1.0},
                         "rationale": "The amount billed must be the amount ordered.",
                     }
                 ],
@@ -296,7 +312,6 @@ def _approve_ruleset(ws):
             "id": "as", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 1.0},
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }, proposed_by="agent")
@@ -367,6 +382,33 @@ def test_a_matrix_asking_for_no_linked_evidence_expands_nothing():
     assert capability.expand_units(ws, {}) == []
 
 
+def _linkage_ruleset_payload() -> dict:
+    """The smallest ruleset this engagement's schemas support."""
+    return {
+        "cycle_label": "Procure to pay",
+        "roles": [
+            {"name": "invoice", "document_type": "vendor_invoice",
+             "cardinality": "one", "required": True},
+            {"name": "order", "document_type": "purchase_order",
+             "cardinality": "one", "required": True},
+        ],
+        "anchor": {"table": "invoice_data", "column": "INVOICE_NO",
+                   "role": "invoice", "field": "invoice_number"},
+        "join_keys": [{
+            "id": "jk", "left": {"role": "invoice", "field": "invoice_number"},
+            "right": {"role": "order", "field": "order_number"},
+            "match": "normalized_equal", "rationale": "An invoice cites its order.",
+        }],
+        "assertions": [{
+            "id": "as", "label": "Totals agree",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": {"role": "order", "field": "total_amount"},
+            "requirement": "The amount billed must be the amount ordered.",
+            "rationale": "The amount billed must be the amount ordered.",
+        }],
+    }
+
+
 def test_a_proposal_that_already_exists_is_not_proposed_again():
     from app.agent.capabilities import tests as test_capabilities
     from app import cycle_rulesets
@@ -392,7 +434,6 @@ def test_a_proposal_that_already_exists_is_not_proposed_again():
             "id": "as", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 1.0},
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }, proposed_by="agent")
@@ -405,22 +446,47 @@ def test_a_proposal_that_already_exists_is_not_proposed_again():
     assert capability.expand_units(ws, {}) == []
 
 
-def test_a_bare_number_tolerance_is_refused_before_the_store_sees_it():
-    """The first live proposal stated `tolerance: 0.01` and validated cleanly.
+def test_an_approved_ruleset_asks_for_nothing_further():
+    """Approval is the auditor's to give, and the run does not wait for it.
 
-    It then failed at the store, which requires the kind to be named — so the
-    unit died after its repair allowance was already spent, on a defect the
-    loop existed to fix. The worker now holds the shape the store holds.
+    Proposing the rules is the whole of what this outcome owes. Approval decides
+    whether they become *effective* — which is what a cycle test is built
+    against — but an audit run that gated on it would be a run waiting on a
+    person, and it is deliberately not one.
+    """
+    from app.agent.capabilities import tests as test_capabilities
+    from app import cycle_rulesets
+
+    ws = _cycle_workspace()
+    ws.rcm = [_cycle_row()]
+    record = cycle_rulesets.save(ws, _linkage_ruleset_payload(), proposed_by="agent")
+    cycle_rulesets.approve(ws, record["ruleset_id"], approved_by="auditor@example.com")
+
+    capability = next(
+        item for item in test_capabilities.capabilities()
+        if item.id == "tests.cycle_ruleset_proposed"
+    )
+
+    assert capability.readiness(ws, {}).state == "satisfied"
+    assert capability.expand_units(ws, {}) == []
+
+
+def test_an_assertion_states_what_the_fields_must_show():
+    """The worker holds the shape the store holds, so a repair is spent here.
+
+    This gate replaces a tolerance check. A bare `tolerance: 0.01` used to
+    validate cleanly and then fail at the store, killing the unit after its
+    repair allowance was spent — but tolerance went with the operator that took
+    one. How close two amounts must be is part of the sentence the rule states,
+    read alongside the values, not a number parsed out of the rule.
     """
 
-    with pytest.raises(WorkerResponseValidationError, match="what kind it is"):
+    with pytest.raises(WorkerResponseValidationError, match="states no requirement"):
         validate_linkage_proposal(
             _proposal(assertions=[{
                 "id": "totals", "label": "Totals agree",
                 "left": {"role": "invoice", "field": "total_amount"},
                 "right": {"role": "order", "field": "total_amount"},
-                "operator": "numeric_within", "tolerance": 0.01,
-                "rationale": "The amount billed must be the amount ordered.",
             }]),
             _request(),
         )
@@ -432,7 +498,6 @@ def test_a_named_tolerance_passes():
             "id": "totals", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 0.01},
             "rationale": "The amount billed must be the amount ordered.",
         }]),
         _request(),
@@ -474,3 +539,131 @@ def test_approving_rules_reopens_the_rows_that_settled_for_a_fallback():
     plain = {"id": "RCM-9", "control_attributes": [
         {"key": "manual", "evidence_kind": "manual_inspection"}]}
     assert test_capabilities._awaits_cycle_test(ws, plain, fallback) is False
+
+
+# ------------------------------------------------- answering what was asked
+def test_a_proposal_leaving_a_matrix_requirement_unanswered_is_refused():
+    """The check that used to fire three stages downstream fires here.
+
+    It fired at ``tests.specified``, by which time the ruleset had been approved
+    and an approved ruleset is immutable — so repairing a gap cost a successor
+    proposal and a second signature, for a defect this worker's own bounded loop
+    could fix for one attempt. The proposal below binds the documents and
+    asserts nothing about the amounts the matrix asked it to compare.
+    """
+
+    with pytest.raises(WorkerResponseValidationError, match="answers 0 required comparisons of 1"):
+        validate_linkage_proposal(
+            _proposal(assertions=[{
+                "id": "approval_present", "label": "Approval present",
+                "left": {"role": "invoice", "field": "approval"},
+                "right": None,
+                "requirement": "The invoice carries an approval.",
+            }]),
+            _request(requirements=[_requirement()]),
+        )
+
+
+def test_the_refusal_names_the_fields_the_assertion_has_to_read():
+    """A repair turn acts on operands, not on a count."""
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        validate_linkage_proposal(
+            _proposal(assertions=[{
+                "id": "approval_present", "label": "Approval present",
+                "left": {"role": "invoice", "field": "approval"},
+                "right": None,
+                "requirement": "The invoice carries an approval.",
+            }]),
+            _request(requirements=[_requirement()]),
+        )
+
+    message = str(raised.value)
+    assert "invoice_match.totals_agree" in message
+    assert "vendor_invoice.total_amount with purchase_order.total_amount" in message
+
+
+def test_an_answered_requirement_passes():
+    """The assertion reads exactly the two fields the comparison names."""
+
+    proposal = validate_linkage_proposal(
+        _proposal(assertions=[{
+            "id": "totals", "label": "Totals agree",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": {"role": "order", "field": "total_amount"},
+            "requirement": "The amount billed must be the amount ordered.",
+        }]),
+        _request(requirements=[_requirement()]),
+    )
+
+    assert proposal["assertions"][0]["id"] == "totals"
+
+
+def test_a_requirement_a_join_already_binds_needs_no_assertion():
+    """Repeating a join key files a check that cannot fail.
+
+    The pair exists only because those two fields matched, so an assertion over
+    them would read as coverage while being incapable of finding an exception —
+    and demanding one is how a gate turns into busywork.
+    """
+
+    proposal = validate_linkage_proposal(
+        _proposal(assertions=[{
+            "id": "totals", "label": "Totals agree",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": {"role": "order", "field": "total_amount"},
+            "requirement": "The amount billed must be the amount ordered.",
+        }]),
+        _request(requirements=[
+            _requirement(),
+            _requirement(
+                comparison="links_to_order",
+                left={"document_type": "vendor_invoice", "field": "order_number"},
+                right={"document_type": "purchase_order", "field": "order_number"},
+            ),
+        ]),
+    )
+
+    assert proposal["assertions"][0]["id"] == "totals"
+
+
+def test_a_requirement_outside_this_cycle_is_not_this_proposal_to_answer():
+    """A comparison naming a document type the cycle does not carry."""
+
+    proposal = validate_linkage_proposal(
+        _proposal(assertions=[{
+            "id": "totals", "label": "Totals agree",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": {"role": "order", "field": "total_amount"},
+            "requirement": "The amount billed must be the amount ordered.",
+        }]),
+        _request(requirements=[
+            _requirement(),
+            _requirement(
+                comparison="payroll_rate",
+                left={"document_type": "payslip", "field": "gross_pay"},
+                right={"document_type": "employment_contract", "field": "rate"},
+            ),
+        ]),
+    )
+
+    assert proposal["assertions"][0]["id"] == "totals"
+
+
+def test_a_proposal_is_still_valid_where_the_matrix_asks_nothing():
+    """Rules may be proposed before a matrix asks anything of them."""
+
+    proposal = validate_linkage_proposal(_proposal(), _request())
+
+    assert proposal["assertions"]
+
+
+def test_the_prompt_tells_the_worker_what_the_requirements_are_for():
+    from app.agent.workers.tests import LINKAGE_SYSTEM
+
+    assert "must answer every one" in LINKAGE_SYSTEM
+    # Answering an equivalent pair is what produced the live mismatch: the
+    # matrix wanted the receipt to name its order, the proposal bound the order
+    # naming its receipt, and neither turn had seen the other.
+    assert "in the matrix's own operands" in LINKAGE_SYSTEM
+    assert "needs no assertion" in LINKAGE_SYSTEM

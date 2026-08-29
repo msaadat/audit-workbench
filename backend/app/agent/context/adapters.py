@@ -3013,10 +3013,71 @@ def document_classification_scope(
 
 
 CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
+CYCLE_REQUIREMENT_SOURCE_ID = "cycle_requirements"
+
+
+def _cycle_requirement_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """What the matrix asks this engagement's cycle to demonstrate.
+
+    Supplied because a ruleset exists to answer the matrix, and a worker shown
+    only the vocabulary was being asked to guess the question. It guessed a
+    reasonable cycle and answered a different one: the matrix required the goods
+    receipt to name its purchase order, the proposal bound the pair by the
+    order naming its receipt, and nothing tested the inspection the matrix asked
+    for. Neither turn was wrong on its own; they were never shown each other.
+
+    Carried as the comparisons themselves rather than the rows, so the worker
+    reads operands in the same vocabulary it writes assertions in.
+    """
+
+    from ... import cycle_linking
+
+    required: list[dict] = []
+    for row in workspace.rcm or []:
+        for attribute in row.get("control_attributes") or []:
+            if not isinstance(attribute, Mapping):
+                continue
+            if attribute.get("evidence_kind") != "transaction_cycle":
+                continue
+            for comparison in attribute.get("required_comparisons") or []:
+                if not isinstance(comparison, Mapping):
+                    continue
+                left = comparison.get("left") or {}
+                right = comparison.get("right")
+                required.append({
+                    "rcm_id": str(row.get("id") or ""),
+                    "control_attribute": str(attribute.get("key") or ""),
+                    "requirement": str(attribute.get("requirement") or ""),
+                    "comparison": str(comparison.get("key") or ""),
+                    "left": {
+                        "document_type": str(left.get("document_type") or ""),
+                        "field": str(left.get("field") or ""),
+                    },
+                    "right": (
+                        {
+                            "document_type": str((right or {}).get("document_type") or ""),
+                            "field": str((right or {}).get("field") or ""),
+                        }
+                        if isinstance(right, Mapping)
+                        else None
+                    ),
+                    "why": str(comparison.get("rationale") or ""),
+                })
+    if not required:
+        return ()
+    content = {"required_comparisons": required}
+    return (
+        ContextCandidate(
+            source_ref="workspace:rcm",
+            source=content,
+            representations={"planning_context": content},
+            metadata={"comparisons": len(required)},
+        ),
+    )
 
 
 def cycle_linkage_scope(workspace: Workspace) -> ContextScope:
-    """The vocabulary a cycle proposal may be written against.
+    """The vocabulary a cycle proposal may be written against, and what it must answer.
 
     One candidate per induced schema, carrying the type and its fields — the
     whole vocabulary, because a rule naming anything else cannot be evaluated.
@@ -3028,8 +3089,14 @@ def cycle_linkage_scope(workspace: Workspace) -> ContextScope:
     from ... import cycle_linking
 
     schemas = cycle_linking.schema_catalog(workspace)
+    requirements = _cycle_requirement_candidates(workspace)
     if not schemas:
-        return ContextScope(candidates={CYCLE_SCHEMA_SOURCE_ID: ()})
+        return ContextScope(
+            candidates={
+                CYCLE_SCHEMA_SOURCE_ID: (),
+                CYCLE_REQUIREMENT_SOURCE_ID: requirements,
+            }
+        )
     # One item carrying every type, not one per type. A cycle is a statement
     # about how the whole set relates, so the vocabulary is atomic: a budget
     # that dropped one schema would leave a proposal describing a cycle with a
@@ -3049,7 +3116,8 @@ def cycle_linkage_scope(workspace: Workspace) -> ContextScope:
                         ]
                     },
                 ),
-            )
+            ),
+            CYCLE_REQUIREMENT_SOURCE_ID: requirements,
         }
     )
 
@@ -3345,3 +3413,34 @@ __all__ = [
     "rcm_current_row_candidates",
     "rcm_scope",
 ]
+
+
+CYCLE_VOUCH_ITEM_SOURCE_ID = "cycle_item"
+
+
+def cycle_vouch_scope(workspace: Workspace, test_id: str, item_id: str) -> ContextScope:
+    """The pending checks of one linked cycle, with the values each one reads.
+
+    One candidate carrying the whole item, not one per check: a reader deciding
+    whether an amount agrees needs the rest of the cycle in front of it, and
+    splitting the grid would ask each half of a comparison separately.
+    """
+    test = doc_tests.load_test(workspace, str(test_id))
+    projection = cycle_vouching.judgment_request(workspace, test, str(item_id))
+    return ContextScope(
+        candidates={
+            CYCLE_VOUCH_ITEM_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=f"cycleitem:{item_id}",
+                    source=projection,
+                    representations={"current_artifact": projection},
+                    metadata={
+                        "document_test_id": str(test_id),
+                        "item_id": str(item_id),
+                        "checks": len(projection.get("checks") or []),
+                    },
+                ),
+            ),
+        },
+        selector_context={"cycle_vouch_item": str(item_id)},
+    )

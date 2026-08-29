@@ -43,22 +43,6 @@ STATUSES = frozenset({"proposed", "approved", "rejected", "superseded"})
 #: How a join key compares two identifier values.
 MATCH_MODES = frozenset({"normalized_equal", "exact_equal"})
 
-#: The comparison vocabulary. Deliberately duplicated rather than imported from
-#: ``cycle_registry``: this module must not depend on the package it replaces.
-#: Phase 7 binds these ids to the retained operator implementations.
-OPERATORS = frozenset({
-    "equal_exact",
-    "equal_normalized",
-    "numeric_within",
-    "date_on_or_before",
-    "date_within",
-    "present",
-})
-
-#: Operators that read a single operand. ``right`` must be absent for these and
-#: present for every other operator.
-UNARY_OPERATORS = frozenset({"present"})
-
 CARDINALITIES = frozenset({"one", "many"})
 
 
@@ -225,21 +209,6 @@ def _validate_join_keys(
     return keys
 
 
-def _validate_tolerance(value: object, label: str) -> dict | None:
-    if value is None:
-        return None
-    item = _object(value, label)
-    tolerance = {}
-    for name in ("absolute", "percent", "days"):
-        if item.get(name) is None:
-            continue
-        raw = item.get(name)
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < 0:
-            raise RulesetError(f"{label}.{name} must be a non-negative number.")
-        tolerance[name] = raw
-    return tolerance or None
-
-
 def _validate_assertions(
     value: object, roles: Mapping[str, dict], workspace: Workspace
 ) -> list[dict]:
@@ -255,22 +224,23 @@ def _validate_assertions(
         if assertion_id in seen:
             raise RulesetError(f"Assertion '{assertion_id}' is declared twice.")
         seen.add(assertion_id)
-        operator = str(item.get("operator") or "")
-        if operator not in OPERATORS:
-            raise RulesetError(f"Assertion '{assertion_id}' has unsupported operator '{operator}'.")
+        # An assertion names the fields and says what they must show. It does
+        # not name how to compare them: the auditor approving these rules is
+        # approving what the cycle must demonstrate, and exact-against-
+        # normalized equality is neither their judgment to make nor answerable
+        # before a value has been read.
+        requirement = str(item.get("requirement") or item.get("rationale") or "").strip()
+        if not requirement:
+            raise RulesetError(
+                f"Assertion '{assertion_id}' states no requirement. Say what these "
+                "fields must show for the control to hold."
+            )
         left = _role_field(item.get("left"), f"assertions[{index}].left", roles, workspace)
         right_raw = item.get("right")
-        if operator in UNARY_OPERATORS:
-            if right_raw is not None:
-                raise RulesetError(
-                    f"Assertion '{assertion_id}' uses '{operator}', which reads one operand."
-                )
+        if right_raw is None:
+            # One operand is the requirement that the field be stated at all.
             right = None
         else:
-            if right_raw is None:
-                raise RulesetError(
-                    f"Assertion '{assertion_id}' uses '{operator}' and needs a right operand."
-                )
             right = _role_field(right_raw, f"assertions[{index}].right", roles, workspace)
             if right == left:
                 raise RulesetError(
@@ -281,8 +251,7 @@ def _validate_assertions(
             "label": str(item.get("label") or "").strip(),
             "left": left,
             "right": right,
-            "operator": operator,
-            "tolerance": _validate_tolerance(item.get("tolerance"), f"assertions[{index}].tolerance"),
+            "requirement": requirement,
             "rationale": str(item.get("rationale") or "").strip(),
         })
     return assertions

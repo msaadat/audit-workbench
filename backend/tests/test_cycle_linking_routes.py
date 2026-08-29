@@ -130,8 +130,7 @@ def test_editing_assertions_on_the_test_points_at_the_rules(client, engagement):
         json={
             "expected_test_sha1": current["sha1"],
             "assertion": {
-                "key": "as_new", "operator": "present",
-                "left": {"source": "role", "role": "invoice"},
+                "key": "as_new", "left": {"source": "role", "role": "invoice"},
             },
         },
     )

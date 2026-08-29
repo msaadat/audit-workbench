@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Button from 'primevue/button'
-import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 
 import type {
-  CycleOperator,
   CycleVouchMetadata,
   DocumentSchemaCatalogEntry,
   RcmControlAttribute,
@@ -33,7 +31,10 @@ const evidenceKinds = computed(() => props.metadata?.registry?.evidence_kinds ??
   { id: 'inquiry', label: 'Inquiry' },
   { id: 'mixed', label: 'Mixed evidence' },
 ])
-const comparisonOperators: CycleOperator[] = ['equal_exact', 'equal_normalized', 'numeric_within', 'date_on_or_before', 'date_within', 'present']
+const comparisonShapes = [
+  { label: 'two fields agree', value: true },
+  { label: 'a field is stated', value: false },
+]
 
 const schemaCatalog = computed(() => props.schemas ?? [])
 const documentTypeOptions = computed(() =>
@@ -103,17 +104,17 @@ function setOperand(
   })
 }
 
-function setOperator(attributeIndex: number, comparisonIndex: number, operator: CycleOperator) {
-  const comparison = comparisons(props.modelValue[attributeIndex])[comparisonIndex]
-  const changes: Partial<RcmSchemaComparison> = { operator }
-  if (operator === 'present') changes.right = null
-  else if (!comparison.right) {
-    const type = documentTypeOptions.value[1]?.value ?? documentTypeOptions.value[0]?.value ?? ''
-    changes.right = { document_type: type, field: schemaFieldOptions(type)[0]?.value ?? '' }
+/** A comparison reads one field or two: that it is stated, or that they agree.
+ *  How to compare them is settled against the values, not chosen here. */
+function setComparesTwo(attributeIndex: number, comparisonIndex: number, comparesTwo: boolean) {
+  if (!comparesTwo) {
+    replaceComparison(attributeIndex, comparisonIndex, { right: null })
+    return
   }
-  changes.tolerance =
-    operator === 'numeric_within' ? { absolute: 0 } : operator === 'date_within' ? { days: 0 } : null
-  replaceComparison(attributeIndex, comparisonIndex, changes)
+  const type = documentTypeOptions.value[1]?.value ?? documentTypeOptions.value[0]?.value ?? ''
+  replaceComparison(attributeIndex, comparisonIndex, {
+    right: { document_type: type, field: schemaFieldOptions(type)[0]?.value ?? '' },
+  })
 }
 
 function addComparison(attributeIndex: number) {
@@ -127,7 +128,6 @@ function addComparison(attributeIndex: number) {
         key: `comparison_${existing.length + 1}`,
         left: { document_type: leftType, field: schemaFieldOptions(leftType)[0]?.value ?? '' },
         right: { document_type: rightType, field: schemaFieldOptions(rightType)[0]?.value ?? '' },
-        operator: 'equal_exact' as CycleOperator,
         rationale: '',
       },
     ],
@@ -196,19 +196,17 @@ function remove(index: number) {
         </small>
         <article v-for="(comparison, comparisonIndex) in comparisons(attribute)" :key="comparisonIndex" class="comparison">
           <label>Key<InputText :modelValue="comparison.key" @update:modelValue="replaceComparison(index, comparisonIndex, { key: String($event) })" /></label>
-          <label>Operator<Select :modelValue="comparison.operator" :options="comparisonOperators" @update:modelValue="setOperator(index, comparisonIndex, $event as CycleOperator)" /></label>
+          <label>Requires<Select :modelValue="Boolean(comparison.right)" :options="comparisonShapes" optionLabel="label" optionValue="value" @update:modelValue="setComparesTwo(index, comparisonIndex, Boolean($event))" /></label>
           <span />
           <label>Left document<Select :modelValue="comparison.left.document_type" :options="documentTypeOptions" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'left', { document_type: String($event) })" /></label>
           <label>Left field<Select :modelValue="comparison.left.field" :options="schemaFieldOptions(comparison.left.document_type)" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'left', { field: String($event) })" /></label>
           <span />
-          <template v-if="comparison.operator !== 'present' && comparison.right">
+          <template v-if="comparison.right">
             <label>Right document<Select :modelValue="comparison.right.document_type" :options="documentTypeOptions" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'right', { document_type: String($event) })" /></label>
             <label>Right field<Select :modelValue="comparison.right.field" :options="schemaFieldOptions(comparison.right.document_type)" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'right', { field: String($event) })" /></label>
             <span />
           </template>
-          <label v-if="comparison.operator === 'numeric_within'">Absolute tolerance<InputNumber :modelValue="comparison.tolerance?.absolute ?? 0" :min="0" @update:modelValue="replaceComparison(index, comparisonIndex, { tolerance: { ...(comparison.tolerance ?? {}), absolute: Number($event ?? 0) } })" /></label>
-          <label v-if="comparison.operator === 'date_within'">Day tolerance<InputNumber :modelValue="comparison.tolerance?.days ?? 0" :min="0" :useGrouping="false" @update:modelValue="replaceComparison(index, comparisonIndex, { tolerance: { days: Number($event ?? 0) } })" /></label>
-          <label class="wide">Why the requirement needs this<InputText :modelValue="comparison.rationale ?? ''" @update:modelValue="replaceComparison(index, comparisonIndex, { rationale: String($event) })" /></label>
+          <label class="wide">What these fields must show<InputText :modelValue="comparison.rationale ?? ''" @update:modelValue="replaceComparison(index, comparisonIndex, { rationale: String($event) })" /></label>
           <Button icon="pi pi-trash" label="Remove comparison" text severity="danger" size="small" @click="removeComparison(index, comparisonIndex)" />
         </article>
         <small v-if="!comparisons(attribute).length && documentTypeOptions.length" class="warn">

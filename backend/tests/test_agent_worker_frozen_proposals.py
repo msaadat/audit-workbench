@@ -112,6 +112,50 @@ def _document_qa(getfixture):
     return proposal, request
 
 
+@builds("fieldwork.cycle_vouch")
+def _cycle_vouch(getfixture):
+    from app.agent.workers.fieldwork import CYCLE_VOUCH_ITEM_SOURCE_ID
+
+    class _Item:
+        source_id = CYCLE_VOUCH_ITEM_SOURCE_ID
+        content = {
+            "item_id": "itm_1",
+            "documents": ["doc_1", "doc_2"],
+            "checks": [{
+                "check_id": "as_total",
+                "requirement": "The invoice is settled for the amount ordered.",
+                "operands": [
+                    {
+                        "operand": "invoice.total_amount",
+                        "value": "PKR 2,000,000.00",
+                        "excerpt": "Total PKR 2,000,000.00",
+                    },
+                    {
+                        "operand": "order.total_amount",
+                        "value": "2,000,000.00",
+                        "excerpt": "Order total 2,000,000.00",
+                    },
+                ],
+            }],
+        }
+
+    class _Request:
+        context = type("Bundle", (), {"items": (_Item(),)})()
+
+    proposal = {
+        "cells": [{
+            "check_id": "as_total",
+            "verdict": "agrees",
+            "compared": [
+                {"operand": "invoice.total_amount", "value": "PKR 2,000,000.00"},
+                {"operand": "order.total_amount", "value": "2,000,000.00"},
+            ],
+            "reason": "Both records state 2,000,000.00; only the currency is printed.",
+        }],
+    }
+    return proposal, _Request()
+
+
 # --------------------------------------------------------------------------- #
 # intake
 # --------------------------------------------------------------------------- #
@@ -592,10 +636,9 @@ def _cycle_linkage(getfixture):
             "rationale": "An invoice cites the order it bills against.",
         }],
         "assertions": [{
-            "id": "as_total", "label": "Totals agree",
+            "id": "as_total", "requirement": "The records must agree.", "label": "Totals agree",
             "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "order", "field": "total_amount"},
-            "operator": "numeric_within", "tolerance": {"absolute": 1},
             "rationale": "The amount billed must be the amount ordered.",
         }],
     }

@@ -22,7 +22,7 @@ from ..workflow import (
     semantic_unit_id,
 )
 from ..workflows import audit as audit_workflow
-from .doc_tests import document_test_units
+from .doc_tests import DOCUMENT_TEST_CONTEXT, document_test_units
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
 from ._shared import target_rcm_ids as _target_rcm_ids
@@ -130,10 +130,7 @@ def _fieldwork_executed() -> Capability:
         audit_workflow.dependencies("fieldwork.executed"),
         _execution_ready,
         _execution_units,
-        # Only the document Q&A unit kind calls the model, so this is the one
-        # declaration the capability needs; the other kinds are deterministic
-        # local computation with no model-facing context at all.
-        context="fieldwork.document_qa",
+        context=DOCUMENT_TEST_CONTEXT,
         invalidate_on=("test", "evidence"),
     )
 

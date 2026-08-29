@@ -64,6 +64,7 @@ const verdictOptions: Array<{ value: '' | CycleAssertionVerdict; label: string }
   { value: '', label: 'Any verdict' },
   { value: 'match', label: 'Match' },
   { value: 'mismatch', label: 'Mismatch' },
+  { value: 'cannot_determine', label: 'Could not determine' },
   { value: 'missing_evidence', label: 'Missing evidence' },
   { value: 'invalid_extraction', label: 'Invalid extraction' },
   { value: 'ambiguous', label: 'Ambiguous' },
@@ -313,7 +314,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
             <th class="sticky disposition-column" scope="col">Disposition</th>
             <th v-for="column in payload.columns" :key="column.key" class="assertion-column" scope="col">
               <strong>{{ column.label }}</strong>
-              <small>{{ label(column.operator) }}<template v-if="column.applicable_roles.length"> · {{ column.applicable_roles.map(label).join(', ') }}</template></small>
+              <small>{{ column.requirement }}<template v-if="column.applicable_roles.length"> · {{ column.applicable_roles.map(label).join(', ') }}</template></small>
               <div class="column-counts" :aria-label="`${column.label} full-test verdict summary`">
                 <button
                   v-for="option in verdictOptions.filter(option => option.value && column.counts[option.value])"

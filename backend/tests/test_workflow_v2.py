@@ -2650,7 +2650,6 @@ def test_the_rcm_evidence_turn_is_shown_this_engagement_s_schema_fields(monkeypa
                                      "field": "total_amount"},
                             "right": {"document_type": "vendor_invoice",
                                       "field": "total_amount"},
-                            "operator": "equal_normalized",
                             "rationale": "The amount billed must be the amount ordered.",
                         }
                     ],

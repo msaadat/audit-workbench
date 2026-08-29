@@ -1457,8 +1457,7 @@ def _approved_rules(**overrides):
             "role": "invoice", "field": "invoice_number",
         },
         "assertions": [{
-            "id": "as_total", "label": "Totals agree",
-            "operator": "numeric_within",
+            "id": "as_total", "requirement": "The records must agree.", "label": "Totals agree",
             "rationale": "The amount billed must be the amount ordered.",
         }],
         "reach": {
@@ -1486,8 +1485,6 @@ def _cycle_row(**overrides):
                 "key": "totals_agree",
                 "left": {"document_type": "vendor_invoice", "field": "total_amount"},
                 "right": {"document_type": "purchase_order", "field": "total_amount"},
-                "operator": "numeric_within",
-                "tolerance": {"absolute": 1},
             }],
         }],
     }

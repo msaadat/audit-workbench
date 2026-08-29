@@ -74,7 +74,7 @@ const summary: DocTestSummaryPayload = {
     not_run: 0, stale: 0, confirmed: 0, exceptions: 0, pending_disposition: 1,
   },
   assertion_counts: {
-    match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0,
+    match: 0, mismatch: 1, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0,
     ambiguous: 0, not_run: 0, total: 1,
   },
   entries: [{
@@ -92,7 +92,7 @@ const summary: DocTestSummaryPayload = {
     disposition_counts: { pending: 1 },
     assertion_columns: 1,
     assertion_counts: {
-      match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0,
+      match: 0, mismatch: 1, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0,
       ambiguous: 0, not_run: 0, total: 1,
     },
     coverage: { selected_rows: 1 },
@@ -115,10 +115,10 @@ const grid = {
   coverage: { selected_rows: 1 }, selection_basis: 'evidence_linked',
   assurance_scope: 'targeted_evidence_only', assurance_label: 'Targeted evidence - not a sample',
   tested_item_counts: { failed: 1 },
-  assertion_counts: { match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0, ambiguous: 0, not_run: 0, total: 1 },
+  assertion_counts: { match: 0, mismatch: 1, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0, ambiguous: 0, not_run: 0, total: 1 },
   columns: [{
     key: 'amount', label: 'Amount agrees', operator: 'numeric_within', applicable_roles: ['payslip'],
-    counts: { match: 0, mismatch: 1, missing_evidence: 0, invalid_extraction: 0, ambiguous: 0, not_run: 0 },
+    counts: { match: 0, mismatch: 1, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0, ambiguous: 0, not_run: 0 },
   }],
   rows: [{
     item_id: 'ITEM-1', label: 'PAY-001', evaluation_state: 'failed', disposition_state: 'pending',
@@ -209,7 +209,7 @@ describe('DocTestsTab Cycle vouch navigation', () => {
         not_run: 0, stale: 0, confirmed: 0, exceptions: 0, pending_disposition: 0,
       },
       assertion_counts: {
-        match: 0, mismatch: 0, missing_evidence: 0, invalid_extraction: 0,
+        match: 0, mismatch: 0, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0,
         ambiguous: 0, not_run: 0, total: 0,
       },
       entries: [{
@@ -300,7 +300,7 @@ describe('DocTestsTab conclusion filter', () => {
       not_run: 0, stale: 0, confirmed: 1, exceptions: 2, pending_disposition: 0,
     },
     assertion_counts: {
-      match: 0, mismatch: 0, missing_evidence: 0, invalid_extraction: 0,
+      match: 0, mismatch: 0, cannot_determine: 0, missing_evidence: 0, invalid_extraction: 0,
       ambiguous: 0, not_run: 0, total: 0,
     },
     entries: [

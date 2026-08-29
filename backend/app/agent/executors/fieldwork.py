@@ -562,3 +562,192 @@ __all__ = [
     "result_ref",
     "roll_up_results",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# fieldwork.cycle_vouch executor
+# --------------------------------------------------------------------------- #
+CYCLE_VOUCH_EXECUTOR_ID = "fieldwork.cycle_vouch"
+
+
+def cycle_vouch_item_ref(test_id: str, item_id: str) -> str:
+    """The stable reference for one judged cycle item."""
+
+    return f"doctest:{test_id}:cycleitem:{item_id}"
+
+
+@dataclass
+class CycleVouchExecutorTarget:
+    """Mutable target for one judged cycle item commit."""
+
+    workspace: Workspace
+    run_id: str
+    test_id: str
+    item_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Cycle vouch executor target requires a Workspace.")
+        for field_name in ("run_id", "test_id", "item_id"):
+            value = str(getattr(self, field_name) or "").strip()
+            if not value:
+                raise ValueError(
+                    f"Cycle vouch executor target requires a {field_name}."
+                )
+            setattr(self, field_name, value)
+
+
+def _validated_cycle_vouch(
+    request: ExecutorRequest, target: object
+) -> tuple[CycleVouchExecutorTarget, dict[str, dict]]:
+    if not isinstance(target, CycleVouchExecutorTarget):
+        raise WorkspaceError(
+            "Cycle vouch executor requires a CycleVouchExecutorTarget."
+        )
+    parent_ref = document_test_ref(target.test_id)
+    if set(request.expected_parents) != {parent_ref}:
+        raise WorkspaceError(
+            "Cycle vouch executor requires exactly its Document Test parent hash."
+        )
+    judgments: dict[str, dict] = {}
+    for cell in _plain_json(request.proposal.get("cells") or []):
+        if not isinstance(cell, Mapping):
+            continue
+        verdict = cycle_vouching.JUDGED_VERDICTS.get(str(cell.get("verdict") or ""))
+        if verdict is None:
+            raise WorkspaceError(
+                "The accepted cycle vouch proposal carries an unknown verdict."
+            )
+        judgments[str(cell.get("check_id") or "")] = {
+            "verdict": verdict,
+            "reason": str(cell.get("reason") or ""),
+        }
+    if not judgments:
+        raise WorkspaceError("The accepted cycle vouch proposal judged nothing.")
+    return target, judgments
+
+
+def execute_cycle_vouch(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Commit one item's judged verdicts under its Document Test parent guard.
+
+    The verdicts are merged by re-evaluating the test with this item's judgments
+    supplied, so every stored result is rebuilt from the evidence as it stands at
+    commit time and carries the input hashes that decide staleness. A judgment
+    naming an assertion the item no longer holds simply never lands: the merge is
+    driven by the assertions, not by the proposal.
+    """
+    target, judgments = _validated_cycle_vouch(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        test = doc_tests.load_test(fresh, target.test_id)
+        evaluated = cycle_vouching.evaluate_cycle_test(
+            fresh, test, judgments={target.item_id: judgments}
+        )
+        doc_tests.save_test(fresh, evaluated)
+        return next(
+            (
+                item
+                for item in evaluated.get("items") or []
+                if str(item.get("id")) == target.item_id
+            ),
+            {},
+        )
+
+    committed = mutate(
+        target.workspace, commit, expected_parents=request.expected_parents
+    )
+    target.workspace = committed.workspace
+    refs = [document_test_ref(target.test_id)]
+    item = committed.value or {}
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=state["revision_before"],
+        workspace_revision_after=committed.workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(committed.workspace, refs),
+        output={
+            "status": "judged",
+            "id": target.test_id,
+            "item_id": target.item_id,
+            "item_ref": cycle_vouch_item_ref(target.test_id, target.item_id),
+            "state": str((item.get("evaluation") or {}).get("state") or ""),
+            "action": "judged",
+        },
+    )
+
+
+def reconcile_cycle_vouch(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    """Classify an interrupted judgment commit without mutating state.
+
+    An unchanged parent proves the commit never landed. A changed parent is
+    reconcilable only when this item already carries a current evaluation with
+    nothing left awaiting a verdict; anything else is a real conflict.
+    """
+    target, _judgments = _validated_cycle_vouch(request, raw_target)
+    parent_ref = document_test_ref(target.test_id)
+    current = Workspace(target.workspace.root)
+    if parent_hashes(current, [parent_ref])[parent_ref] == request.expected_parents[parent_ref]:
+        # The guarded parent is untouched, so the commit never landed and the
+        # unit is free to run again.
+        return ExecutorReconciliation("not_applied")
+    test = doc_tests.load_test(current, target.test_id)
+    item = next(
+        (
+            value
+            for value in test.get("items") or []
+            if str(value.get("id")) == target.item_id
+        ),
+        None,
+    )
+    if item is None or cycle_vouching.execution_pending(item, cycle=True):
+        return ExecutorReconciliation(
+            "conflict", reason="The cycle item is still awaiting a verdict."
+        )
+    return ExecutorReconciliation(
+        "already_applied",
+        result=ExecutorResult(
+            executor_id=request.executor_id,
+            capability_id=request.capability_id,
+            unit_id=request.unit_id,
+            workspace_revision_before=current.revision,
+            workspace_revision_after=current.revision,
+            artifact_refs=[parent_ref],
+            applied_parents=dict(request.expected_parents),
+            postcondition_hashes=parent_hashes(current, [parent_ref]),
+            output={
+                "status": "judged",
+                "id": target.test_id,
+                "item_id": target.item_id,
+                "item_ref": cycle_vouch_item_ref(target.test_id, target.item_id),
+                "state": str((item.get("evaluation") or {}).get("state") or ""),
+                "action": "judged",
+            },
+        ),
+        reason="The accepted cycle judgment already holds.",
+    )
+
+
+CYCLE_VOUCH_EXECUTOR = ExecutorDefinition(
+    executor_id=CYCLE_VOUCH_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_cycle_vouch,
+    reconciler=reconcile_cycle_vouch,
+)
+
+EXECUTORS.register(CYCLE_VOUCH_EXECUTOR)
+
+__all__ += [
+    "CYCLE_VOUCH_EXECUTOR",
+    "CYCLE_VOUCH_EXECUTOR_ID",
+    "CycleVouchExecutorTarget",
+    "cycle_vouch_item_ref",
+    "execute_cycle_vouch",
+    "reconcile_cycle_vouch",
+]

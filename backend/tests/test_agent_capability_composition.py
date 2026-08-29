@@ -118,10 +118,16 @@ _DECLARED = {
         "tests.generate",
         ("rcm",),
     ),
+    # Keyed by unit kind: a document assessment and a cycle judgment are both
+    # model-facing here and read different context.
     "fieldwork.executed": (
         "execution",
         "mixed_execution",
-        "fieldwork.document_qa",
+        {
+            "document_qa_execution": "fieldwork.document_qa",
+            "document_llm_execution": "fieldwork.document_qa",
+            "cycle_vouch_execution": "fieldwork.cycle_vouch",
+        },
         ("test", "evidence"),
     ),
     "results.rolled_up": ("rollup", "rollup", None, ("execution",)),

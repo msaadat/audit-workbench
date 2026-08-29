@@ -28,6 +28,38 @@ from tests.test_cycle_linking import (  # noqa: F401 - fixture and helpers reuse
 from app import document_schemas
 
 
+def evaluate(ws, test, verdicts=None):
+    """Evaluate with the reader's verdicts supplied, keyed by item label.
+
+    Agreement is judged against the values rather than computed from an
+    operator, so a test wanting a settled item has to say what the reader
+    concluded. A first pass binds the evidence and reports what is still
+    awaiting a verdict; the second supplies one. A label maps to one verdict for
+    the whole item, or to a verdict per assertion. Anything unnamed agrees.
+    """
+    def verdict_for(label, key):
+        wanted = (verdicts or {}).get(label, "match")
+        if isinstance(wanted, dict):
+            return wanted.get(key, "match")
+        return wanted
+
+    probe = cycle_vouching.evaluate_cycle_test(ws, test)
+    judgments = {
+        item["id"]: {
+            key: {
+                "verdict": verdict_for(item.get("label"), key),
+                "reason": "Supplied by the fixture.",
+            }
+            for key, result in (item.get("result_by_assertion") or {}).items()
+            if result.get("verdict") == "not_run"
+        }
+        for item in probe["items"]
+    }
+    return cycle_vouching.evaluate_cycle_test(ws, test, judgments=judgments)
+
+
+
+
 @pytest.fixture
 def engagement():
     """Three invoices in the ledger, two of them fully evidenced."""
@@ -161,7 +193,7 @@ def test_the_cycle_evaluates_end_to_end(engagement):
     approved(ws)
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test, {"INV-2": "mismatch"})
     verdicts = {
         item["label"]: item["result_by_assertion"]["as_total"]["verdict"]
         for item in evaluated["items"]
@@ -180,7 +212,7 @@ def test_a_verdict_carries_the_rules_it_was_produced_under(engagement):
     ruleset = approved(ws)
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     result = evaluated["items"][0]["result_by_assertion"]["as_total"]
 
     assert result["ruleset_hash"] == ruleset["ruleset_hash"]
@@ -192,7 +224,7 @@ def test_a_comparison_cites_the_pages_it_read(engagement):
     approved(ws)
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     matched = next(item for item in evaluated["items"] if item["label"] == "INV-1")
 
     assert matched["evidence_refs"]
@@ -209,10 +241,9 @@ def test_a_date_that_will_not_type_is_invalid_evidence_not_a_mismatch(engagement
     extract(ws, "po9.txt", "purchase_order", order_number="PO-9",
             total_amount="90", order_date="2024-04-01")
     ruleset = approved(ws, assertions=[{
-        "id": "as_sequence", "label": "Order precedes invoice",
+        "id": "as_sequence", "requirement": "The records must agree.", "label": "Order precedes invoice",
         "left": {"role": "order", "field": "order_date"},
         "right": {"role": "invoice", "field": "invoice_date"},
-        "operator": "date_on_or_before",
         "rationale": "Goods cannot be billed before they were ordered.",
     }])
     ws.replace_table(
@@ -222,7 +253,7 @@ def test_a_date_that_will_not_type_is_invalid_evidence_not_a_mismatch(engagement
     )
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     verdict = evaluated["items"][0]["result_by_assertion"]["as_sequence"]["verdict"]
 
     assert ruleset["status"] == "approved"
@@ -235,7 +266,7 @@ def test_an_ambiguous_role_never_produces_a_verdict(engagement):
     approved(ws)
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     first = next(item for item in evaluated["items"] if item["label"] == "INV-1")
 
     assert first["linkage_state"] == "needs_review"
@@ -249,7 +280,7 @@ def test_the_test_round_trips_through_storage(engagement):
     approved(ws)
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     doc_tests.save_test(ws, evaluated)
     reloaded = doc_tests.load_test(ws, test["id"])
 
@@ -264,7 +295,7 @@ def test_a_result_from_other_rules_is_refused_on_read(engagement):
     ws, row = engagement
     approved(ws)
     test = build(ws, row)
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     evaluated["items"][0]["result_by_assertion"]["as_total"]["ruleset_hash"] = "sha256:other"
     doc_tests.save_test(ws, evaluated)
 
@@ -279,8 +310,7 @@ def test_assertions_are_edited_on_the_ruleset_not_the_test(engagement):
 
     with pytest.raises(cycle_vouching.CycleSchemaError, match="cycle rules review"):
         cycle_vouching.mutate_cycle_assertions(ws, test, [{
-            "key": "as_new", "operator": "present",
-            "left": {"source": "role", "role": "invoice"},
+            "key": "as_new", "left": {"source": "role", "role": "invoice"},
         }])
 
 
@@ -289,7 +319,7 @@ def test_the_rollup_counts_assertion_cells_without_the_registry(engagement):
     approved(ws)
     test = build(ws, row)
 
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test, {"INV-2": "mismatch"})
     rollup = cycle_vouching.result_rollup(evaluated)
 
     assert rollup["assertion_columns"] == 1
@@ -303,16 +333,15 @@ def test_superseding_the_rules_reopens_the_test(engagement):
     ws, row = engagement
     approved(ws)
     test = build(ws, row)
-    cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluate(ws, test)
 
     approved(ws, assertions=[{
-        "id": "as_total", "label": "Totals agree",
+        "id": "as_total", "requirement": "The records must agree.", "label": "Totals agree",
         "left": {"role": "invoice", "field": "total_amount"},
         "right": {"role": "order", "field": "total_amount"},
-        "operator": "numeric_within", "tolerance": {"absolute": 25},
         "rationale": "This vendor rounds freight to the nearest 25.",
     }])
-    reevaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    reevaluated = evaluate(ws, test)
 
     assert reevaluated["ruleset_superseded"] is True
     assert reevaluated["status"] == "review_required"
@@ -332,7 +361,7 @@ def test_a_reextraction_that_changes_a_value_stales_the_stored_verdict(engagemen
     ws, row = engagement
     approved(ws)
     test = build(ws, row)
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
     assert evaluated["items"][0]["result_by_assertion"]["as_total"]["verdict"] != "not_run"
 
     extract(ws, "po1-revised.txt", "purchase_order",
@@ -350,7 +379,7 @@ def test_the_grid_projects_the_ruleset_columns(engagement):
     ws, row = engagement
     approved(ws)
     test = build(ws, row)
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test, {"INV-2": "mismatch"})
 
     grid = cycle_vouching.grid_projection(evaluated, workspace=ws)
 
@@ -365,7 +394,7 @@ def test_a_grid_cell_is_attributable_to_the_definition_it_was_evaluated_under(en
     ws, row = engagement
     approved(ws)
     test = build(ws, row)
-    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    evaluated = evaluate(ws, test)
 
     grid = cycle_vouching.grid_projection(evaluated, workspace=ws)
     row_one = next(item for item in grid["rows"] if item["label"] == "INV-1")
@@ -384,7 +413,7 @@ def test_the_working_paper_names_the_rules_and_who_approved_them(engagement):
     ws, row = engagement
     ruleset = approved(ws)
     test = build(ws, row)
-    doc_tests.save_test(ws, cycle_vouching.evaluate_cycle_test(ws, test))
+    doc_tests.save_test(ws, evaluate(ws, test))
 
     markdown = working_papers.render_rcm_markdown(ws, str(row["id"]))
 
@@ -393,3 +422,95 @@ def test_the_working_paper_names_the_rules_and_who_approved_them(engagement):
     assert "Population: invoices keyed by INVOICE_NO" in markdown
     # Every binding says which approved rule reached it.
     assert "jk_order=po-1" in markdown
+
+
+# ------------------------------------------------------------- the judgment
+def test_an_unjudged_cycle_settles_nothing(engagement):
+    """Called without judgments, evaluation binds evidence and stops there.
+
+    This is what makes it safe on a read path — a projection, a readiness
+    probe, a reader opening the test. Every operand resolves, nothing reaches
+    the provider, and no assertion acquires a verdict it was never given.
+    """
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+
+    evaluated = cycle_vouching.evaluate_cycle_test(ws, test)
+    matched = next(item for item in evaluated["items"] if item["label"] == "INV-1")
+
+    assert matched["result_by_assertion"]["as_total"]["verdict"] == "not_run"
+    assert matched["evaluation"]["state"] == "not_run"
+    # The evidence still bound, which is what the judgment will be asked about.
+    assert matched["evidence_refs"]
+
+
+def test_a_resolution_failure_is_never_put_to_the_reader(engagement):
+    """Whether a field was stated is settled by reading it, not by judgment.
+
+    INV-3 binds no order, so there is nothing to compare. Supplying a verdict
+    for it must not turn a gap into a pass.
+    """
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+
+    evaluated = evaluate(ws, test, {"INV-3": "match"})
+    unbound = next(item for item in evaluated["items"] if item["label"] == "INV-3")
+
+    assert unbound["result_by_assertion"]["as_total"]["verdict"] == "missing_evidence"
+
+
+def test_a_judged_verdict_carries_the_reason_it_was_reached(engagement):
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+
+    evaluated = evaluate(ws, test)
+    matched = next(item for item in evaluated["items"] if item["label"] == "INV-1")
+    result = matched["result_by_assertion"]["as_total"]
+
+    assert result["verdict"] == "match"
+    assert result["reason"] == "Supplied by the fixture."
+
+
+def test_the_request_carries_what_the_documents_printed(engagement):
+    """The reader is asked about the raw values, not the folded ones.
+
+    Folding is what the old comparison did, and folding before asking would
+    hand the reader an easier question than the documents pose: the currency
+    prefix, the appended vendor code and the scanned stray space are the whole
+    difficulty, and they are gone from the normalized form.
+    """
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+    bound = next(
+        item
+        for item in cycle_vouching.evaluate_cycle_test(ws, test)["items"]
+        if item["label"] == "INV-1"
+    )
+
+    request = cycle_vouching.judgment_request(ws, test, bound["id"])
+    check = request["checks"][0]
+
+    assert check["check_id"] == "as_total"
+    assert check["requirement"]
+    assert [operand["operand"] for operand in check["operands"]] == [
+        "invoice.total_amount",
+        "order.total_amount",
+    ]
+    assert all("value" in operand for operand in check["operands"])
+
+
+def test_only_what_awaits_a_verdict_is_asked_about(engagement):
+    """A verdict already reached is not re-asked, and is not re-billed."""
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+    settled = evaluate(ws, test)
+    item = next(value for value in settled["items"] if value["label"] == "INV-1")
+
+    request = cycle_vouching.judgment_request(ws, settled, item["id"])
+
+    assert request["checks"] == []

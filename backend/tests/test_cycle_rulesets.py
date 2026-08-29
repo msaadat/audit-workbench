@@ -50,10 +50,8 @@ def _payload(**overrides) -> dict:
              "match": "normalized_equal", "rationale": "An invoice cites its order."},
         ],
         "assertions": [
-            {"id": "as_total", "label": "Totals agree", "operator": "numeric_within",
-             "left": {"role": "invoice", "field": "total_amount"},
-             "right": {"role": "order", "field": "total_amount"},
-             "tolerance": {"absolute": 1.0}},
+            {"id": "as_total", "requirement": "The records must agree.", "label": "Totals agree", "left": {"role": "invoice", "field": "total_amount"},
+             "right": {"role": "order", "field": "total_amount"}},
         ],
     }
     payload.update(overrides)
@@ -113,35 +111,51 @@ def test_anchor_must_be_an_identifier(ws):
 
 
 # --------------------------------------------------------------- assertions
-def test_unary_operator_rejects_a_right_operand(ws):
-    payload = _payload()
-    payload["assertions"][0].update({"operator": "present", "tolerance": None})
-    with pytest.raises(RulesetError, match="reads one operand"):
-        cycle_rulesets.save(ws, payload)
+def test_an_assertion_reading_one_field_needs_no_right_operand(ws):
+    """Omitting the right side is the requirement that a field be stated."""
 
-
-def test_present_assertion_needs_no_right_operand(ws):
     payload = _payload()
     payload["assertions"][0] = {
-        "id": "as_approval", "operator": "present",
-        "left": {"role": "order", "field": "approval"}, "right": None,
+        "id": "as_approval",
+        "requirement": "The order carries an approval.",
+        "left": {"role": "order", "field": "approval"},
+        "right": None,
     }
     record = cycle_rulesets.save(ws, payload)
+
     assert record["assertions"][0]["right"] is None
 
 
-def test_binary_operator_requires_a_right_operand(ws):
+def test_an_assertion_states_what_the_fields_must_show(ws):
+    """An approved rule a reader cannot act on is not an approved rule.
+
+    The requirement carries what the comparison operator used to pretend to
+    carry. "The invoice is settled for the amount the order committed" is
+    something an auditor can approve and a reader can apply; `equal_exact` was
+    a string operation neither of them asked for.
+    """
+
     payload = _payload()
-    payload["assertions"][0]["right"] = None
-    with pytest.raises(RulesetError, match="needs a right operand"):
+    payload["assertions"][0].pop("requirement", None)
+    payload["assertions"][0].pop("rationale", None)
+
+    with pytest.raises(RulesetError, match="states no requirement"):
         cycle_rulesets.save(ws, payload)
 
 
-def test_unknown_operator_is_rejected(ws):
+def test_an_assertion_may_not_state_how_to_compare(ws):
+    """Approving a ruleset is approving what the cycle must demonstrate.
+
+    Exact against normalized equality is not the auditor's judgment to make,
+    and could not be made here in any case: no value has been read yet.
+    """
+
     payload = _payload()
-    payload["assertions"][0]["operator"] = "roughly_similar"
-    with pytest.raises(RulesetError, match="unsupported operator"):
-        cycle_rulesets.save(ws, payload)
+    payload["assertions"][0]["operator"] = "equal_exact"
+    record = cycle_rulesets.save(ws, payload)
+
+    assert "operator" not in record["assertions"][0]
+    assert "tolerance" not in record["assertions"][0]
 
 
 def test_duplicate_role_and_rule_ids_are_rejected(ws):
@@ -166,10 +180,8 @@ def test_two_roles_may_share_a_document_type(ws):
             "right": {"role": "revised_invoice", "field": "purchase_order_number"},
         }],
         assertions=[{
-            "id": "as_total", "operator": "numeric_within",
-            "left": {"role": "invoice", "field": "total_amount"},
+            "id": "as_total", "requirement": "The records must agree.", "left": {"role": "invoice", "field": "total_amount"},
             "right": {"role": "revised_invoice", "field": "total_amount"},
-            "tolerance": {"absolute": 0},
         }],
     )
     record = cycle_rulesets.save(ws, payload)

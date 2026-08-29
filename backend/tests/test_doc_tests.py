@@ -62,7 +62,7 @@ def test_local_multi_document_matching_records_anchors_and_conflicts(workspace_w
             "label": "Invoice 1001", "frozen": {"invoice_no": 1001, "amount": 150.0},
             "checks": [
                 {"field": "invoice_no", "expected": 1001, "method": "normalized"},
-                {"field": "amount", "expected": 150.0, "method": "numeric_tolerance", "tolerance": {"absolute": 0}},
+                {"field": "amount", "expected": 150.0, "method": "numeric_tolerance"},
             ],
         }],
     })

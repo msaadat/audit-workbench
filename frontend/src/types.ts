@@ -382,7 +382,7 @@ export interface CycleVouchMetadata {
   sampling_methods: Array<'random' | 'interval' | 'stratified'>
   assurance_scopes: string[]
   assertions: string[]
-  operators: CycleOperator[]
+  verdicts: CycleVerdict[]
   limits: {
     max_graph_hops: number
     max_cycle_records: number
@@ -535,9 +535,11 @@ export interface DocTestDisposition {
 }
 export type CycleEvaluationState = 'not_run' | 'passed' | 'failed' | 'incomplete' | 'needs_review' | 'stale'
 export type CycleDispositionState = 'pending' | 'confirmed' | 'exception'
-export type CycleAssertionVerdict = 'match' | 'mismatch' | 'missing_evidence' | 'invalid_extraction' | 'ambiguous' | 'not_run'
+export type CycleAssertionVerdict = 'match' | 'mismatch' | 'cannot_determine' | 'missing_evidence' | 'invalid_extraction' | 'ambiguous' | 'not_run'
 export type CycleAssuranceScope = 'targeted_evidence_only' | 'sampled_population'
-export type CycleOperator = 'equal_exact' | 'equal_normalized' | 'numeric_within' | 'date_on_or_before' | 'date_within' | 'present'
+/** What a reader may answer for a pair it was asked to judge. Agreement is
+ *  settled against the values, so there is no comparison operator here. */
+export type CycleVerdict = 'agrees' | 'disagrees' | 'cannot_determine'
 export type CycleReuseRule = 'exclusive' | 'allowed'
 
 export interface CycleSelectionConfirmation {
@@ -850,7 +852,7 @@ export interface CycleVouchGridPayload {
   columns: Array<{
     key: string
     label: string
-    operator: CycleOperator
+    requirement: string
     applicable_roles: string[]
     /** Excludes unattributable cells: sum(counts) + stale_cells === row count. */
     counts: Record<CycleAssertionVerdict, number>
@@ -992,7 +994,7 @@ export interface RcmSchemaComparison {
   key: string
   left: RcmSchemaOperand
   right?: RcmSchemaOperand | null
-  operator: CycleOperator
+  requirement: string
   tolerance?: Record<string, number> | null
   rationale?: string
 }
