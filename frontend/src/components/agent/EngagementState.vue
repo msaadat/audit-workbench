@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 
 import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
-import type { DashboardPhase, DashboardSection } from '../../types'
+import type { EngagementPhase, EngagementSection } from '../../types'
 import { engagementStatus } from './engagementStatus'
 import type { PhaseAction, PhaseRow } from './engagementStatus'
 
@@ -17,8 +17,8 @@ import type { PhaseAction, PhaseRow } from './engagementStatus'
  */
 
 const props = defineProps<{
-  phases: DashboardPhase[]
-  sections?: Record<string, DashboardSection>
+  phases: EngagementPhase[]
+  sections?: Record<string, EngagementSection>
   busy?: boolean
 }>()
 
@@ -37,13 +37,13 @@ function toggle(row: PhaseRow) {
   opened.value = { ...opened.value, [row.id]: !isOpen(row) }
 }
 
-const stateIcon: Record<DashboardPhase['state'], string> = {
+const stateIcon: Record<EngagementPhase['state'], string> = {
   not_started: 'pi pi-circle',
   in_progress: 'pi pi-clock',
   complete: 'pi pi-check-circle',
   attention: 'pi pi-exclamation-triangle',
 }
-const stateLabel: Record<DashboardPhase['state'], string> = {
+const stateLabel: Record<EngagementPhase['state'], string> = {
   not_started: 'Not started',
   in_progress: 'In progress',
   complete: 'Complete',

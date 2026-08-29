@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { DashboardPhase, DashboardSection } from '../../types'
+import type { EngagementPhase, EngagementSection } from '../../types'
 import EngagementState from './EngagementState.vue'
 
 vi.mock('../../composables/useWorkspaceNavigation', () => ({
@@ -9,11 +9,11 @@ vi.mock('../../composables/useWorkspaceNavigation', () => ({
 }))
 
 function phase(
-  id: DashboardPhase['id'],
-  state: DashboardPhase['state'],
+  id: EngagementPhase['id'],
+  state: EngagementPhase['state'],
   counts: Record<string, number> = {},
   issues: string[] = [],
-): DashboardPhase {
+): EngagementPhase {
   return {
     id,
     label: id[0].toUpperCase() + id.slice(1),
@@ -24,12 +24,12 @@ function phase(
     issues,
     target: { tab: id === 'fieldwork' ? 'doc-tests' : id, query: {} },
     sub: [],
-  } as DashboardPhase
+  } as EngagementPhase
 }
 
 function render(
-  phases: DashboardPhase[],
-  sections: Record<string, DashboardSection> = {},
+  phases: EngagementPhase[],
+  sections: Record<string, EngagementSection> = {},
   busy = false,
 ) {
   return mount(EngagementState, {
@@ -46,7 +46,7 @@ const partWorked = () => [
   phase('report', 'not_started', {}),
 ]
 
-const dataSection = (overrides: Partial<DashboardSection> = {}): DashboardSection => ({
+const dataSection = (overrides: Partial<EngagementSection> = {}): EngagementSection => ({
   id: 'data-tests', label: 'Data tests', state: 'attention', complete: false, issues: [],
   counts: { total: 39, concluded: 36 }, ...overrides,
 })

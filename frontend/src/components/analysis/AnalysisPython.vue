@@ -18,7 +18,6 @@ import type {
 } from '../../types'
 import ChartView from '../ChartView.vue'
 import CodeEditor from '../CodeEditor.vue'
-import PinDialog from '../PinDialog.vue'
 import AnalysisOutcome from './AnalysisOutcome.vue'
 import { provenance } from './classification'
 
@@ -45,8 +44,6 @@ const loadingCurrent = ref(false)
 const running = ref(false)
 const saving = ref(false)
 const exporting = ref(false)
-const showPin = ref(false)
-const pinning = ref(false)
 
 // What returned rows mean. The auditor declares it, because only the auditor
 // knows whether this procedure hunts exceptions or produces context — and the
@@ -182,7 +179,7 @@ async function save() {
 function confirmDelete() {
   confirm.require({
     header: 'Delete analysis',
-    message: `Delete "${props.analysis.title}"? Pinned dashboard copies are unaffected.`,
+    message: `Delete "${props.analysis.title}"?`,
     icon: 'pi pi-exclamation-triangle',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
@@ -195,26 +192,6 @@ function confirmDelete() {
       }
     },
   })
-}
-
-async function pinTile({ title: pinTitle, note }: { title: string; note: string }) {
-  pinning.value = true
-  try {
-    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
-      kind: 'python',
-      table: props.analysis.table,
-      title: pinTitle,
-      note,
-      spec: { code: code.value },
-      viz: props.analysis.viz,
-    })
-    showPin.value = false
-    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: pinTitle, life: 3000 })
-  } catch (error) {
-    fail('Pin failed', error)
-  } finally {
-    pinning.value = false
-  }
 }
 
 /** Export the saved procedure's full result — not the previewed slice of it. */
@@ -272,7 +249,6 @@ async function openRun(runId: string) {
       :loading="saving"
       @click="save"
     />
-    <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" outlined @click="showPin = true" />
     <Button v-if="frame" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
     <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="confirmDelete" />
   </div>
@@ -326,12 +302,6 @@ async function openRun(runId: string) {
     <i class="pi pi-spin pi-spinner" /> Loading current result…
   </div>
 
-  <PinDialog
-    v-model:visible="showPin"
-    :defaultTitle="title || analysis.title || 'Python result'"
-    :saving="pinning"
-    @pin="pinTile"
-  />
 </template>
 
 <style scoped>

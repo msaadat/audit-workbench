@@ -185,7 +185,6 @@ def test_workflow_owned_generators_are_not_registered_actions():
             "rollup_rcm_results",
             "generate_all_rcm_working_papers",
             "generate_report",
-            "curate_dashboard",
             "verify_audit_completion",
         }
     )
@@ -197,7 +196,6 @@ def test_workflow_owned_generators_are_not_registered_actions():
         "create_document_test",
         "attach_document_to_test",
         "generate_rcm_working_paper",
-        "pin_dashboard_tile",
         "edit_report",
         "reconcile_report",
     } <= registered

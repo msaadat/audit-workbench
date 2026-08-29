@@ -9,7 +9,6 @@ import { useAssistantChat } from '../../composables/useAssistantChat'
 import type { AssistantArtifact, SavedAnalysis } from '../../types'
 import ChartView from '../ChartView.vue'
 import CodeEditor from '../CodeEditor.vue'
-import PinDialog from '../PinDialog.vue'
 
 const props = defineProps<{ workspaceId: string; artifact: AssistantArtifact }>()
 const chat = useAssistantChat(props.workspaceId)
@@ -17,8 +16,6 @@ const toast = useToast()
 const code = ref(props.artifact.code ?? '')
 const saving = ref(false)
 const rerunning = ref(false)
-const pinOpen = ref(false)
-const pinning = ref(false)
 
 watch(() => props.artifact.code, value => { code.value = value ?? '' })
 
@@ -54,21 +51,6 @@ async function saveAnalysis() {
   finally { saving.value = false }
 }
 
-async function pin({ title, note }: { title: string; note: string }) {
-  pinning.value = true
-  try {
-    const artifact = await persistCode() ?? props.artifact
-    await api.post(`/api/workspaces/${props.workspaceId}/tiles`, {
-      kind: artifact.kind, table: artifact.table, title, note,
-      spec: artifact.kind === 'python' ? { code: artifact.code } : artifact.spec,
-      viz: artifact.viz,
-    })
-    pinOpen.value = false
-    toast.add({ severity: 'success', summary: 'Pinned to dashboard', life: 2200 })
-  } catch (error) { fail('Pin failed', error) }
-  finally { pinning.value = false }
-}
-
 function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
 }
@@ -81,7 +63,6 @@ function fail(summary: string, error: unknown) {
       <Tag v-if="artifact.verdict" :value="artifact.verdict_text || artifact.verdict" :severity="severity[artifact.verdict]" />
       <span class="grow" />
       <Button v-if="artifact.kind !== 'query'" icon="pi pi-save" text size="small" :loading="saving" v-tooltip.top="'Save to analyses'" @click="saveAnalysis" />
-      <Button icon="pi pi-thumbtack" text size="small" severity="secondary" v-tooltip.top="'Pin to dashboard'" @click="pinOpen = true" />
     </header>
     <div v-if="artifact.stats?.length" class="stats">
       <span v-for="stat in artifact.stats" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span>
@@ -94,7 +75,6 @@ function fail(summary: string, error: unknown) {
     <p v-if="artifact.last_error" class="error"><i class="pi pi-exclamation-triangle" /> {{ artifact.last_error }}</p>
     <ChartView v-if="artifact.frame" :frame="artifact.frame" :viz="artifact.viz" height="230px" />
   </article>
-  <PinDialog v-model:visible="pinOpen" :defaultTitle="artifact.title" :saving="pinning" @pin="pin" />
 </template>
 
 <style scoped>

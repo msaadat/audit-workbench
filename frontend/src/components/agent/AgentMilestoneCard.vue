@@ -55,9 +55,6 @@ function artifactLink(ref: string): ArtifactLink | null {
   if (kind === 'report') {
     return { label: 'View report', icon: 'pi pi-file-edit', destination: 'report' }
   }
-  if (kind === 'dashboard' || kind === 'tile' || (kind === 'audit' && id === 'verification')) {
-    return { label: 'View dashboard', icon: 'pi pi-th-large', destination: 'dashboard' }
-  }
   return null
 }
 

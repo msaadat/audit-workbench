@@ -42,7 +42,7 @@ const router = createRouter({
         { path: 'file/:section', name: 'workspace-file', component: AuditFileView, props: true },
         { path: 'bench/:section', name: 'workspace-bench', component: WorkbenchView, props: true },
         // Bare surface paths land on their first section.
-        { path: 'file', redirect: to => `/workspace/${to.params.id}/file/dashboard` },
+        { path: 'file', redirect: to => `/workspace/${to.params.id}/file/apm` },
         { path: 'bench', redirect: to => `/workspace/${to.params.id}/bench/documents` },
       ],
     },

@@ -442,14 +442,6 @@ function deleteTest() {
     },
   })
 }
-async function pin() {
-  if (!selected.value?.last_run) return
-  try {
-    await api.post(`/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}/pin`, {})
-    toast.add({ severity: 'success', summary: 'Pinned to the dashboard', life: 1800 })
-    emit('changed')
-  } catch (error) { fail('Could not pin the result', error) }
-}
 async function draftFinding(regenerate = false) {
   if (!selected.value?.rcm_id || !selected.value.last_run) return
   try {
@@ -619,7 +611,6 @@ onUnmounted(unsubscribe)
               <Button label="Run" icon="pi pi-play" size="small" :loading="running" :disabled="runningAll" @click="runTest" />
               <Button label="Edit definition" icon="pi pi-sliders-h" size="small" outlined @click="openDefinition" />
               <Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" size="small" outlined @click="openRcm" />
-              <Button label="Pin" icon="pi pi-thumbtack" size="small" outlined :disabled="!selected.last_run" @click="pin" />
             </div>
 
             <div class="rail-group">

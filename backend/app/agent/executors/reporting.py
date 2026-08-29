@@ -7,12 +7,6 @@ deterministic execution path — ``audit.verified`` (read-only),
 ``working_papers.generated`` (per-RCM commit), and ``report.working_draft``
 (deterministic assembly with auditor-edit reconciliation).
 
-``curate_dashboard`` pins RCM-linked result tiles under a parent guard. It is
-no longer bound to a capability: dashboard curation was removed from the audit
-graph because arranging tiles establishes nothing an audit conclusion rests on.
-The function and the tiles it writes remain, so curation can be driven from the
-dashboard itself rather than scheduled as a stage of every engagement.
-
 ``execute_finding`` is the one registered pipeline executor here: it commits a
 finding draft under its observation parent guard after deriving every reference
 from the observation itself.
@@ -25,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .. import capabilities as audit_capabilities
-from ... import dashboard, doc_tests, findings, rcm_execution, report, working_papers
+from ... import doc_tests, findings, rcm_execution, report, working_papers
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError
 from .model import (
@@ -39,7 +33,6 @@ from .model import (
 
 VERIFICATION_REF = "audit:verification"
 WORKING_PAPER_REF_PREFIX = "working_paper"
-DASHBOARD_TILE_REF_PREFIX = "tile"
 
 
 def working_paper_ref(rcm_id: str) -> str:
@@ -60,26 +53,6 @@ def generate_working_paper(workspace: Workspace, rcm_id: str) -> str:
 
     working_papers.generate_rcm(workspace, rcm_id)
     return working_paper_ref(rcm_id)
-
-
-def dashboard_tile_ref(tile_id: str) -> str:
-    """The stable artifact reference for one curated dashboard tile."""
-
-    return f"{DASHBOARD_TILE_REF_PREFIX}:{tile_id}"
-
-
-def curate_dashboard(workspace: Workspace, run_id: str | None = None) -> list[str]:
-    """Curate RCM dashboard tiles; return their stable artifact references.
-
-    Deterministic and self-committing: ``dashboard.curate_rcm_tiles`` scores the
-    current RCM-linked results and pins the strongest under a commit guarded on
-    the RCM's material hash, so a changed RCM basis surfaces as a
-    :class:`WorkspaceConflict` instead of pinning against a stale matrix. No model
-    call is involved.
-    """
-
-    result = dashboard.curate_rcm_tiles(workspace, run_id=run_id)
-    return [dashboard_tile_ref(tile["id"]) for tile in result["tiles"]]
 
 
 REPORT_DRAFT_REF = "report:draft"
@@ -480,7 +453,6 @@ EXECUTORS.register(FINDING_EXECUTOR)
 
 
 __all__ = [
-    "DASHBOARD_TILE_REF_PREFIX",
     "FINDING_EXECUTOR",
     "FINDING_EXECUTOR_ID",
     "FINDING_FIELDS",
@@ -488,8 +460,6 @@ __all__ = [
     "REPORT_DRAFT_REF",
     "VERIFICATION_REF",
     "WORKING_PAPER_REF_PREFIX",
-    "curate_dashboard",
-    "dashboard_tile_ref",
     "execute_finding",
     "finding_ref",
     "finding_semantic_id",

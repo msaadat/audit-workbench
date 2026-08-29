@@ -1,4 +1,4 @@
-from app import dashboard, data_tests, doc_tests, documents, rcm_execution, working_papers
+from app import data_tests, doc_tests, documents, engagement_progress, rcm_execution, working_papers
 
 
 def _row(ws):
@@ -217,7 +217,7 @@ def test_dashboard_status_loads_the_document_test_worklist_once(
     monkeypatch.setattr(doc_tests, "list_tests", tracked_list_tests)
     monkeypatch.setattr(doc_tests, "load_test", tracked_load_test)
 
-    dashboard.engagement_status_payload(ws)
+    engagement_progress.engagement_status_payload(ws)
 
     assert list_calls == 1
     assert load_calls == len(rows)

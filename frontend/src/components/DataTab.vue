@@ -176,7 +176,6 @@ async function renameTable() {
         name: string
         updated: {
           joins: number
-          tiles: number
           analyses: number
           rulesets: number
           python_snippets: number
@@ -196,7 +195,6 @@ async function renameTable() {
 
     const total =
       renamed.updated.joins +
-      renamed.updated.tiles +
       renamed.updated.analyses +
       renamed.updated.rulesets
     const codeDetail = renamed.updated.python_snippets
@@ -610,7 +608,7 @@ function rangeText(p: ColumnProfile): string {
         @keyup.enter="renameTable"
       />
       <p class="muted">
-        Saved dashboard tiles, analyses, joins and validation rulesets will be rebound to the new name.
+        Saved analyses, joins and validation rulesets will be rebound to the new name.
       </p>
     </div>
     <template #footer>

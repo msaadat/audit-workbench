@@ -50,7 +50,7 @@ export function capabilityLabel(capabilityId: string): string {
 
 /**
  * Drop a label into mid-sentence case without flattening acronyms —
- * "RCM working papers" has to survive, "Dashboard curation" should not shout.
+ * "RCM working papers" has to survive without shouting.
  */
 function midSentence(label: string): string {
   const [first = ''] = label.split(' ')

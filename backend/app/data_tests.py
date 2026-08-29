@@ -1668,9 +1668,6 @@ def commit_result(
         }
         item.pop("runs", None)
         item["last_run"] = latest
-        for tile in fresh.tiles:
-            if tile.get("data_test_id") == data_test_id:
-                tile["result_ref"] = f"datatest:{data_test_id}:{candidate['id']}"
         # Running records what the run found and nothing else. Concluding is a
         # separate act with its own author — see :func:`auto_disposition` for
         # the unattended path and :func:`update` for the auditor's.

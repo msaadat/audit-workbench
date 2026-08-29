@@ -34,7 +34,7 @@ structurally. The privacy choke points
 are the assistant context builders and the bounded agent context bundles.
 
 **Current product shape:** The original data-workbench surfaces still exist
-(`Data`, `Query`, saved analyses, dashboard tiles), but the shipped product is
+(`Data`, `Query`, saved analyses), but the shipped product is
 now centered on an RCM-driven audit workflow: planning context and APM, RCM
 rows, the Document and Data Tests that cover them, execution rollups,
 working-paper generation, findings, and report drafting. A test is one durable
@@ -77,11 +77,14 @@ backend/app/
 |- explore.py                  - declarative query engine and frame payloads
 |- analytics.py                - canned analytics registry and result metadata
 |- validation.py               - durable table validation rules and run support
-|- dashboard.py                - dashboard tiles and saved analysis payloads
-|- engagement_progress.py      - the index card's phase states: a screen over
-|                                stored fields settles amber, anything it
-|                                cannot settle escalates to `dashboard`, and
-|                                the answer is memoized per workspace revision
+|- analysis_payloads.py        - recompute a saved analysis's spec into a
+|                                render-ready payload; a broken spec degrades
+|                                to an error card
+|- engagement_progress.py      - phase state at two prices: the console's
+|                                item-level derivation, and the index card's
+|                                screen over stored fields that settles amber,
+|                                escalates anything else to the derivation
+|                                beside it, and memoizes per workspace revision
 |- analysis_results.py         - the saved-analysis execution contract: run it,
 |                                bound it, record it, classify it
 |- analysis_memo.py            - the EDA memo's embed grammar: parsing and
@@ -130,7 +133,6 @@ backend/app/
 |  |- workspace_routes.py      - workspace/table/join CRUD
 |  |- analysis_routes.py       - table preview/profile/query/analytics/export
 |  |- analyses_routes.py       - saved analyses CRUD, execution, and export
-|  |- dashboard_routes.py      - dashboard tiles and engagement status
 |  |- validation_routes.py     - validation rules and runs
 |  |- assistant_routes.py      - legacy ask/run-python assistant endpoints
 |  |- assistant_chat_routes.py - durable unified assistant chat API
@@ -221,18 +223,27 @@ frontend/src/
 |  |                             states (data, planning, fieldwork,
 |  |                             report) in the console rail's colours,
 |  |                             taken from the backend, never recomputed
-|  |- WorkspaceView.vue        - main engagement shell and tab navigation
+|  |- WorkspaceView.vue        - engagement shell: header, surface switcher
+|  |                             (Record / Assistant / Workbench), assistant
+|  |                             drawer, import
+|  |- AuditFileView.vue        - the section host under /file/<section>: which
+|  |                             component answers for which work product. Its
+|  |                             rail is gone — the record is the index, the
+|  |                             chain is reached from the record's bar, and
+|  |                             this provides `pageBackKey` so every page
+|  |                             below draws a crumb back to the record
+|  |- WorkbenchView.vue        - documents/tables/query/analysis, still railed
 |  `- DebugView.vue            - local telemetry console
 |- composables/
 |  |- useAgentRun.ts           - shared run store, SSE connection, live refresh
 |  |- useAssistantChat.ts      - durable chat state and send/retry/artifacts
-|  |- useWorkspaceNavigation.ts - workspace query-string tab state
+|  |- useWorkspaceNavigation.ts - destination-keyed routing; owns which
+|  |                             surface each destination lives on
 |  |- useFileDrop.ts           - global drag/drop import helpers
 |  `- documentStatus.ts        - document/test status helpers
 `- components/
-   |- DashboardTab.vue         - dashboard and engagement home
    |- DataTab.vue              - data upload/list/remove
-   |- QueryTab.vue             - interactive query builder and pin flow
+   |- QueryTab.vue             - interactive query builder
    |- AnalysisTab.vue          - analysis triage rail, filters, and editors
    |- PlanningTab.vue          - planning context, APM, RCM, linked tests
    |- DocumentsTab.vue         - document inventory and review
@@ -320,7 +331,7 @@ frontend/src/
 ### Sandboxed execution
 
 - `sandbox.run` is the single choke point for auditor- and model-authored
-  Python: data tests, dashboard tiles, agent analyses, and `/run-python` all
+  Python: data tests, agent analyses, and `/run-python` all
   reach the interpreter through it.
 - Single-user executes in-process, which is the original guard-rail and the
   original threat model — the snippet runs under the account that owns the data.
@@ -633,7 +644,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `{workflow, action, intake, analysis}`. Eight workflow-owned generators left
   the action catalog — `generate_apm`, `infer_relationships`,
   `run_document_test`, `rollup_rcm_results`, `generate_all_rcm_working_papers`,
-  `generate_report`, `curate_dashboard`, `verify_audit_completion` — so no
+  `generate_report`, `verify_audit_completion` — so no
   request is claimed by both engines; target-specific operations on the same
   families stayed. Removing `run_document_test` also closed the last path by
   which a Q&A worklist could reach the provider outside the registered
@@ -712,8 +723,8 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
 - Exports re-run the computation; responses stay stateless per request.
 - Analytics are registry-driven. Add a backend function plus param metadata;
   the SPA form renders from metadata.
-- Saved analyses and dashboard tiles are spec-not-data. They recompute against
-  current workspace frames.
+- Saved analyses are spec-not-data. They recompute against current workspace
+  frames.
 - A saved analysis has exactly one recorded outcome, its bounded `last_result`,
   and `app/analysis_results.py` owns that contract end to end — computing,
   bounding, recording, and classifying it. Both origins go through it: the
@@ -746,8 +757,8 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   The memo is a **derived, read-only artifact** (`Analyses/.summary.json`, one
   `_ARTIFACT_OBJECTS` entry): there is no editor, no `PUT`, and no
   `created_by` ownership flip, so regenerating always replaces it and it cannot
-  drift from the results it cites. `dashboard_advice` is the lifecycle
-  precedent; the worker/executor contract is the modern one.
+  drift from the results it cites. The worker/executor contract is the modern
+  one for this shape.
   Its structure is fixed in code (`workers.analysis.SUMMARY_SECTIONS`) and
   enforced by the semantic validator, which also rejects any `embed` fence
   citing a procedure the bundle did not supply — a citation that resolves to

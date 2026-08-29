@@ -814,4 +814,22 @@ describe('EngagementRecordTab', () => {
     expect(wrapper.find('.row.ghost').attributes('data-live')).toBeUndefined()
     wrapper.unmount()
   })
+
+  /**
+   * The chain is the one destination the ledger cannot draw as a row: it files
+   * nothing, so there is no work product for a row to be about. With the audit
+   * file's rail gone, this link is the only way to reach it.
+   */
+  it('offers the chain from the bar, because no row can carry it', async () => {
+    const wrapper = await render([filed()])
+
+    const chain = wrapper.find('a.chain')
+    expect(chain.exists()).toBe(true)
+    expect(chain.text()).toContain('Chain')
+    expect(chain.attributes('href')).toBe('/chain')
+    // It is a link, not one of the bar's buttons: it navigates rather than
+    // acting on the record, so it must survive a middle-click.
+    expect(chain.element.tagName).toBe('A')
+    wrapper.unmount()
+  })
 })

@@ -23,7 +23,6 @@ export type WorkspaceSurface = 'home' | 'console' | 'file' | 'bench'
 export type WorkspaceDestination =
   | 'console'
   | 'record'
-  | 'dashboard'
   | 'apm'
   | 'rcm'
   | 'chain'
@@ -49,9 +48,6 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   // What the engagement holds, keyed by work product rather than by the chat
   // that asked for it. Drawn from the audit graph, with run history layered on.
   record: { surface: 'home', section: '', keys: [] },
-  // The dashboard reads the engagement's own results, so it sits in the audit
-  // file rather than acting as the workspace landing page.
-  dashboard: { surface: 'file', section: 'dashboard', keys: [] },
   apm: { surface: 'file', section: 'apm', keys: [] },
   // `paper` names the row whose working paper is open, so a rendered paper is
   // a link someone can send rather than a dialog only they can see.
@@ -72,7 +68,7 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
 
 /** Sections in rail order, per surface. */
 export const FILE_SECTIONS = [
-  'dashboard', 'apm', 'coverage', 'data-tests', 'doc-tests', 'findings', 'chain', 'report',
+  'apm', 'coverage', 'data-tests', 'doc-tests', 'findings', 'chain', 'report',
 ] as const
 export const BENCH_SECTIONS = ['documents', 'tables', 'query', 'analysis'] as const
 

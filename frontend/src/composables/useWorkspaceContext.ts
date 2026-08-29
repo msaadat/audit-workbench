@@ -1,6 +1,6 @@
 import type { InjectionKey, Ref } from 'vue'
 
-import type { DashboardPhase, DashboardSection, WorkspaceSummary } from '../types'
+import type { EngagementPhase, EngagementSection, WorkspaceSummary } from '../types'
 
 /**
  * What the workspace shell owns and every surface needs: the loaded workspace,
@@ -10,13 +10,11 @@ import type { DashboardPhase, DashboardSection, WorkspaceSummary } from '../type
  */
 export interface WorkspaceContext {
   workspace: Ref<WorkspaceSummary>
-  /** Phase status in backend order, for rails and progress summaries. */
-  phases: Ref<DashboardPhase[]>
-  /** The same phases keyed by id, for per-entry status markers. */
-  phaseById: Ref<Partial<Record<DashboardPhase['id'], DashboardPhase>>>
-  /** Per-rail-section state, for entries whose phase is broader than the tab
-   *  they open — a rail badge should answer for the tab it sits on. */
-  sectionById: Ref<Record<string, DashboardSection>>
+  /** Phase status in backend order, for the console rail. */
+  phases: Ref<EngagementPhase[]>
+  /** Per-section state, where a phase is broader than the one work product it
+   *  is being read against — "Fieldwork" spans data tests and RCM coverage. */
+  sectionById: Ref<Record<string, EngagementSection>>
   /** Reload the workspace summary and phase status together. */
   reload: () => Promise<void>
   /** Reload phase status only, after an edit that cannot change counts. */

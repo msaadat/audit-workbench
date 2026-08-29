@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import type { DashboardPhase, DashboardSection } from '../../types'
+import type { EngagementPhase, EngagementSection } from '../../types'
 import { engagementStatus } from './engagementStatus'
 
 function phase(
-  id: DashboardPhase['id'],
-  state: DashboardPhase['state'],
+  id: EngagementPhase['id'],
+  state: EngagementPhase['state'],
   counts: Record<string, number> = {},
-  overrides: Partial<DashboardPhase> = {},
-): DashboardPhase {
+  overrides: Partial<EngagementPhase> = {},
+): EngagementPhase {
   return {
     id,
     label: id[0].toUpperCase() + id.slice(1),
@@ -20,18 +20,18 @@ function phase(
     target: { tab: id === 'fieldwork' ? 'doc-tests' : id, query: {} },
     sub: [],
     ...overrides,
-  } as DashboardPhase
+  } as EngagementPhase
 }
 
 function section(
   id: string,
-  state: DashboardSection['state'],
-  overrides: Partial<DashboardSection> = {},
-): DashboardSection {
+  state: EngagementSection['state'],
+  overrides: Partial<EngagementSection> = {},
+): EngagementSection {
   return { id, label: id, state, complete: state === 'complete', issues: [], ...overrides }
 }
 
-const rows = (phases: DashboardPhase[], sections?: Record<string, DashboardSection>) =>
+const rows = (phases: EngagementPhase[], sections?: Record<string, EngagementSection>) =>
   Object.fromEntries(engagementStatus(phases, sections).rows.map(row => [row.id, row]))
 
 /** The live procurement file: everything gated complete. */
@@ -146,7 +146,7 @@ describe('what each row draws', () => {
 })
 
 describe('rail actions', () => {
-  const sections = (overrides: Partial<DashboardSection>) => ({
+  const sections = (overrides: Partial<EngagementSection>) => ({
     'data-tests': section('data-tests', 'attention', {
       counts: { total: 39, concluded: 36 }, ...overrides,
     }),

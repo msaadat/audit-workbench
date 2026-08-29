@@ -501,6 +501,33 @@ button, input, textarea, select { font: inherit; }
 /* Workspace surfaces (audit file, workbench): a section rail beside one
    section panel. Shared here rather than duplicated in each surface view. */
 .ui-surface { display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; }
+/* A surface whose chrome is a bar across the top rather than a rail down the
+   side, so the panel gets the full width and the bar gets its own row. */
+.ui-surface--stacked { flex-direction: column; }
+
+/* --- the crumb bar ------------------------------------------------------- */
+/* What the audit file's rail used to do, in one row. It is a bar rather than a
+   line of small print because it is the only navigation on the surface: it has
+   to be findable without being looked for, which the caption it replaced was
+   not. */
+.crumb {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: .5rem;
+  padding: .55rem 1.25rem;
+  border-bottom: 1px solid var(--aw-border);
+  background: var(--aw-panel);
+  font-size: var(--aw-text-sm);
+}
+.crumb__back {
+  display: inline-flex; align-items: center; gap: .4rem;
+  color: var(--aw-teal); font-weight: 600; text-decoration: none;
+  padding: .15rem .35rem; margin-left: -.35rem; border-radius: var(--aw-radius-control);
+}
+.crumb__back:hover { background: var(--aw-teal-soft); }
+.crumb__back:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+.crumb__sep { color: var(--aw-border-strong); }
+.crumb__cur { color: var(--aw-ink); font-weight: 600; }
+@media (max-width: 46rem) { .crumb { padding-inline: .85rem; } }
 .ui-surface__rail {
   flex: 0 0 12.5rem;
   display: flex;

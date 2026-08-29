@@ -6,7 +6,7 @@ import Button from 'primevue/button'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import type { DashboardPhase, DashboardSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
+import type { EngagementPhase, EngagementSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { useAppearance } from '../composables/useAppearance'
@@ -44,9 +44,8 @@ const folderImportOpen = ref(false)
 const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
 const dropActive = ref(false)
 let dragDepth = 0
-const phases = ref<DashboardPhase[]>([])
-const phaseById = computed(() => Object.fromEntries(phases.value.map(phase => [phase.id, phase])) as Partial<Record<DashboardPhase['id'], DashboardPhase>>)
-const sectionById = ref<Record<string, DashboardSection>>({})
+const phases = ref<EngagementPhase[]>([])
+const sectionById = ref<Record<string, EngagementSection>>({})
 
 const agent = useAgentRun(props.id)
 
@@ -62,7 +61,7 @@ const surface = computed(() => {
 
 async function loadEngagementStatus() {
   try {
-    const payload = await api.get<EngagementStatusPayload>(`/api/workspaces/${props.id}/dashboard/status`)
+    const payload = await api.get<EngagementStatusPayload>(`/api/workspaces/${props.id}/engagement/status`)
     phases.value = payload.phases
     sectionById.value = payload.sections ?? {}
   } catch {
@@ -92,7 +91,6 @@ provide(workspaceContextKey, {
   // holds for every consumer.
   workspace: workspace as unknown as import('vue').Ref<WorkspaceSummary>,
   phases,
-  phaseById,
   sectionById,
   reload,
   reloadStatus: loadEngagementStatus,
@@ -177,9 +175,6 @@ onUnmounted(() => {
         </router-link>
         <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
           <i class="pi pi-sparkles" /><span>Assistant</span>
-        </router-link>
-        <router-link :to="nav.to('dashboard')" :class="{ active: surface === 'file' }">
-          <i class="pi pi-book" /><span>Audit file</span>
         </router-link>
         <router-link :to="nav.to('documents')" :class="{ active: surface === 'bench' }">
           <i class="pi pi-wrench" /><span>Workbench</span>

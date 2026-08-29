@@ -126,9 +126,11 @@ _SPINE: dict[str, dict[str, Any]] = {
     },
     # Read-only: verification commits nothing, so there is no artifact whose
     # absence a reader could act on. It stays on the record as a row history can
-    # attach to, and is never drawn as work the engagement owes.
+    # attach to, and is never drawn as work the engagement owes. Its destination
+    # is empty because there is genuinely nothing to open — it used to point at
+    # the dashboard, which was neither its output nor anywhere it was explained.
     "audit.verified": {
-        "label": "Verification", "destination": "dashboard",
+        "label": "Verification", "destination": "",
         "unit": "", "count": None,
     },
 }
@@ -151,7 +153,6 @@ def _counts(workspace: Workspace) -> dict[str, int]:
         "document_tests": document_tests,
         "tests": data_tests + document_tests,
         "findings": len(workspace.findings),
-        "tiles": len(workspace.tiles),
     }
 
 

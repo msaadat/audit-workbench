@@ -145,7 +145,7 @@ def _record_atomic_artifact_transition(path: Path, before: dict | None, payload:
         pass
 
 
-# Provenance keys accepted on saved items (tiles/analyses/rulesets/joins).
+# Provenance keys accepted on saved items (analyses/rulesets/joins).
 # An item carrying agent_run_id was created by an agent run; semantic_id is a
 # stable slug the agent uses to reconcile reruns instead of duplicating work.
 def _apply_provenance(item: dict, payload: dict) -> dict:
@@ -285,7 +285,6 @@ def workspace_write_lock(root: Path) -> threading.RLock:
 # application already consumes, which keeps read-side call sites simple while
 # avoiding a monolithic audit-record write for every edit.
 _ARTIFACT_COLLECTIONS: dict[str, tuple[str, str]] = {
-    "tiles": ("Dashboard/Tiles", "id"),
     "analyses": ("Analyses", "id"),
     "rulesets": ("Validation/Rulesets", "id"),
     "documents": ("Documents/.inventory", "id"),
@@ -298,7 +297,6 @@ _ARTIFACT_COLLECTIONS: dict[str, tuple[str, str]] = {
 }
 _ARTIFACT_OBJECTS: dict[str, str] = {
     "report": "Reports/current.json",
-    "dashboard_advice": "Dashboard/advice.json",
     # The exploratory-analysis memo. A single derived artifact, read-only to
     # the auditor and regenerated from the results rather than edited, so
     # unlike the APM it needs no separate ``.md`` file to edit and no
@@ -1236,7 +1234,7 @@ class Workspace:
     def replace_table(self, name: str, filename: str, content: bytes) -> dict:
         """Swap the data behind an existing base table, keeping its ``name``.
 
-        Saved queries/tiles/analyses/joins link to a table by name and recompute
+        Saved queries/analyses/joins link to a table by name and recompute
         live, so replacing the file content updates every one of them at once.
         The new file is validated in a temp file first; only a successful parse
         commits the swap, so a bad upload never destroys the existing data.
@@ -1305,8 +1303,8 @@ class Workspace:
         """Rename a base table or join and migrate saved references.
 
         Stored work links by table name, so this updates the workspace metadata
-        in one commit: joins that depend on the table, saved dashboard tiles,
-        saved analyses, and validation rulesets. Python snippets are edited
+        in one commit: joins that depend on the table, saved analyses, and
+        validation rulesets. Python snippets are edited
         conservatively for exact table lookups and unshadowed bare table names.
         """
         entry = self._table_entry(name)
@@ -1323,7 +1321,6 @@ class Workspace:
                 "name": target,
                 "updated": {
                     "joins": 0,
-                    "tiles": 0,
                     "analyses": 0,
                     "rulesets": 0,
                     "python_snippets": 0,
@@ -1334,7 +1331,6 @@ class Workspace:
 
         updated = {
             "joins": 0,
-            "tiles": 0,
             "analyses": 0,
             "rulesets": 0,
             "data_tests": 0,
@@ -1358,7 +1354,6 @@ class Workspace:
                 updated["joins"] += 1
 
         for collection_name, collection in (
-            ("tiles", self.tiles),
             ("analyses", self.analyses),
         ):
             for item in collection:
@@ -1505,87 +1500,11 @@ class Workspace:
             raise WorkspaceError(f"No join named '{name}'.")
         self.remove_table(name)
 
-    # ------------------------------------------------------------------- tiles
-    # A tile pins a *spec* (a query or an analytics run), never data: the
-    # dashboard recomputes tiles on load, so it stays live when files change
-    # and every tile is reproducible.
-    def add_tile(self, payload: dict) -> dict:
-        kind = payload.get("kind")
-        if kind not in ("query", "analytics", "python", "pivot", "validation"):
-            raise WorkspaceError(
-                "Tile kind must be 'query', 'pivot', 'analytics', 'python' or 'validation'."
-            )
-        table = payload.get("table")
-        # Python tiles carry their own code and may reference any table(s), so
-        # a bound table is optional (and only used as a label) for them.
-        if kind == "python":
-            table = table if table in self.table_names() else None
-        elif table not in self.table_names():
-            raise WorkspaceError(f"Unknown table '{table}'.")
-        title = str(payload.get("title") or "").strip()
-        if not title:
-            raise WorkspaceError("Tile title is required.")
-        if kind == "python" and not str((payload.get("spec") or {}).get("code") or "").strip():
-            raise WorkspaceError("A Python tile needs code.")
-
-        tile = _apply_provenance(
-            {
-                "id": str(payload.get("id") or uuid.uuid4().hex[:10]),
-                "title": title,
-                "kind": kind,
-                "table": table,
-                "spec": dict(payload.get("spec") or {}),
-                "viz": dict(payload.get("viz") or {"type": "table"}),
-                "note": str(payload.get("note") or "").strip(),
-                "created": date.today().isoformat(),
-                **{
-                    key: payload[key]
-                    for key in ("data_test_id", "analysis_id", "rcm_id", "result_ref")
-                    if payload.get(key)
-                },
-            },
-            payload,
-        )
-        self.tiles.append(tile)
-        self.save()
-        return tile
-
-    def _tile(self, tile_id: str) -> dict:
-        tile = next((t for t in self.tiles if t["id"] == tile_id), None)
-        if tile is None:
-            raise WorkspaceError("Tile not found.")
-        return tile
-
-    def update_tile(self, tile_id: str, changes: dict) -> dict:
-        tile = self._tile(tile_id)
-        _user_touch(tile)
-        if "title" in changes:
-            title = str(changes["title"] or "").strip()
-            if not title:
-                raise WorkspaceError("Tile title is required.")
-            tile["title"] = title
-        if "note" in changes:
-            tile["note"] = str(changes["note"] or "").strip()
-        if "viz" in changes and isinstance(changes["viz"], dict):
-            tile["viz"] = dict(changes["viz"])
-        if "move" in changes:
-            step = int(changes["move"])
-            index = self.tiles.index(tile)
-            target = max(0, min(len(self.tiles) - 1, index + step))
-            self.tiles.insert(target, self.tiles.pop(index))
-        self.save()
-        return tile
-
-    def remove_tile(self, tile_id: str) -> None:
-        self.tiles.remove(self._tile(tile_id))
-        self.save()
-
     # --------------------------------------------------------------- analyses
-    # A saved analysis is the working-set sibling of a tile: same spec-not-data
-    # model (recomputed live), but it lives in the Analysis tab's rail rather
-    # than the dashboard. It comes from either the predefined library
-    # (kind 'analytics') or AI-assisted code (kind 'python'). Pinning promotes
-    # a copy to a dashboard tile; the two collections stay independent.
+    # A saved analysis pins a *spec*, never data: it is recomputed on load, so
+    # it stays live when files change and every analysis is reproducible. It
+    # comes from either the predefined library (kind 'analytics') or
+    # AI-assisted code (kind 'python').
     @staticmethod
     def _outcome_policy(value: object) -> dict:
         """Validate the audit meaning declared for a procedure's returned rows.
@@ -1847,11 +1766,10 @@ class Workspace:
 
     # -------------------------------------------------------------- provenance
     def find_semantic(self, collection: str, semantic_id: str) -> dict | None:
-        """Find a saved item by its agent semantic id ('tiles', 'analyses',
+        """Find a saved item by its agent semantic id ('analyses',
         'rulesets', 'joins', 'rcm', or 'procedures'). Used by agent reruns to reconcile instead of
         duplicating outputs."""
         items = {
-            "tiles": self.tiles,
             "analyses": self.analyses,
             "rulesets": self.rulesets,
             "joins": self.joins,
@@ -2331,7 +2249,6 @@ class Workspace:
             "description": self.description,
             "created": self.created,
             "tables": tables,
-            "tile_count": len(self.tiles),
             "document_count": len(self.documents),
             "finding_count": len(self.findings),
         }

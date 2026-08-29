@@ -11,13 +11,14 @@ from app.agent.runtime import WorkflowRunner
 
 
 FORBIDDEN_DOMAIN_PREFIXES = (
-    "app.dashboard",
+    "app.analysis_payloads",
     "app.data_tests",
     "app.doc_tests",
     "app.document_analysis",
     "app.document_context",
     "app.document_search",
     "app.documents",
+    "app.engagement_progress",
     "app.findings",
     "app.planning",
     "app.rcm_execution",

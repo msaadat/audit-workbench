@@ -15,7 +15,7 @@ import re
 
 from fastapi import APIRouter, Body
 
-from .. import analysis_results, dashboard, workspaces
+from .. import analysis_payloads, analysis_results, workspaces
 from .analysis_routes import excel_response
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["analyses"])
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["analyses"])
 async def get_analyses(workspace_id: str):
     """List saved analyses without running any of them."""
     ws = workspaces.load_workspace(workspace_id)
-    return dashboard.analyses_payload(ws)
+    return analysis_payloads.analyses_payload(ws)
 
 
 @router.get("/analyses/summary")
@@ -67,7 +67,7 @@ async def get_analysis(workspace_id: str, analysis_id: str):
     procedure's recorded conclusion is a separate, deliberate act — ``/execute``.
     """
     ws = workspaces.load_workspace(workspace_id)
-    return dashboard.analysis_payload(ws, ws._analysis(analysis_id))
+    return analysis_payloads.analysis_payload(ws, ws._analysis(analysis_id))
 
 
 @router.get("/analyses/{analysis_id}/exceptions")
@@ -107,7 +107,7 @@ async def execute_analysis(workspace_id: str, analysis_id: str):
     # Same shape as the detail endpoint, carrying the rows this execution
     # produced rather than recomputing them a second time to say so.
     return {
-        **dashboard.analysis_payload(ws, executed.analysis, computed=executed.payload),
+        **analysis_payloads.analysis_payload(ws, executed.analysis, computed=executed.payload),
     }
 
 
@@ -153,14 +153,14 @@ async def execute_analyses(workspace_id: str, payload: dict = Body(default={})):
 async def add_analysis(workspace_id: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     analysis = ws.add_analysis(payload)
-    return dashboard.analysis_payload(ws, analysis)
+    return analysis_payloads.analysis_payload(ws, analysis)
 
 
 @router.patch("/analyses/{analysis_id}")
 async def update_analysis(workspace_id: str, analysis_id: str, changes: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     analysis = ws.update_analysis(analysis_id, changes)
-    return dashboard.analysis_payload(ws, analysis)
+    return analysis_payloads.analysis_payload(ws, analysis)
 
 
 @router.post("/analyses/{analysis_id}/export")
@@ -173,37 +173,9 @@ async def export_analysis(workspace_id: str, analysis_id: str):
     """
     ws = workspaces.load_workspace(workspace_id)
     analysis = ws._analysis(analysis_id)
-    frame = dashboard.analysis_export_frame(ws, analysis)
+    frame = analysis_payloads.analysis_export_frame(ws, analysis)
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(analysis.get("title") or analysis_id))
     return excel_response(frame, f"{name}.xlsx")
-
-
-@router.post("/analyses/{analysis_id}/pin")
-async def pin_analysis(workspace_id: str, analysis_id: str, payload: dict = Body(default={} )):
-    """Promote a saved analysis to a live, recomputable dashboard tile."""
-    ws = workspaces.load_workspace(workspace_id)
-    analysis = ws._analysis(analysis_id)
-    last_result = analysis.get("last_result") or {}
-    title = str(payload.get("title") or analysis.get("title") or "").strip()
-    note = str(payload.get("note") or analysis.get("note") or "").strip()
-    tile = ws.add_tile(
-        {
-            "kind": analysis.get("kind"),
-            "table": analysis.get("table"),
-            "title": title,
-            "note": note,
-            "spec": dict(analysis.get("spec") or {}),
-            "viz": dict(analysis.get("viz") or {"type": "table"}),
-            "analysis_id": analysis_id,
-            "result_ref": (
-                f"analysis:{analysis_id}:{last_result.get('run_id')}"
-                if last_result.get("run_id") else f"analysis:{analysis_id}"
-            ),
-        }
-    )
-    return dashboard.tile_payload(ws, tile)
-
-
 @router.delete("/analyses/{analysis_id}")
 async def remove_analysis(workspace_id: str, analysis_id: str):
     ws = workspaces.load_workspace(workspace_id)

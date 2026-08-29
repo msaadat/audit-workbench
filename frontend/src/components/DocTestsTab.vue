@@ -224,7 +224,7 @@ async function loadSummary() {
   )
   summary.value = await api.get<DocTestSummaryPayload>(`/api/workspaces/${props.workspace.id}/doc-tests/summary`)
   const items = summary.value.entries
-  // A dashboard/deep link can point to a test the current filter hides. Keep
+  // A deep link can point to a test the current filter hides. Keep
   // the requested test visible instead of letting the selection watcher
   // replace it with the first item that happens to match.
   const requested = requestedTestId.value

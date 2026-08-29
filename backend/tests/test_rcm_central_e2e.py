@@ -8,7 +8,6 @@ import polars as pl
 import pytest
 
 from app import (
-    dashboard,
     data_tests,
     doc_tests,
     documents,
@@ -275,11 +274,6 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
     papers = [working_papers.generate_rcm(workspace, row["id"]) for row, _test in rows]
     assert len(papers) == 11
     assert all((workspace.root / "WorkingPapers" / f"{row[0]['id']}.json").exists() for row in rows)
-
-    curated = dashboard.curate_rcm_tiles(workspace, run_id="synthetic-procurement")
-    assert 4 <= len(curated["tiles"]) <= 6
-    assert all(tile.get("rcm_id") for tile in curated["tiles"])
-    assert all(tile["data_test_id"] != invalid_test["id"] for tile in curated["tiles"])
 
     generated = report.generate(workspace, use_model=False)
     quality = report.quality_checks(workspace)

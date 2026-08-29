@@ -103,34 +103,3 @@ async def run_all_rcm_data_tests(workspace_id: str, payload: dict = Body(default
 async def get_data_test_result(workspace_id: str, data_test_id: str, run_id: str):
     return data_tests.load_result(_ws(workspace_id), data_test_id, run_id)
 
-
-@router.post("/data-tests/{data_test_id}/pin")
-async def pin_data_test(
-    workspace_id: str, data_test_id: str, payload: dict = Body(default={})
-):
-    ws = _ws(workspace_id)
-    item = data_tests._record(ws, data_test_id)
-    if not item.get("last_run"):
-        raise workspaces.WorkspaceError("Run the Data Test before pinning it.")
-    kind = {"polars": "python", "analytics": "analytics", "validation": "validation"}[
-        item["engine"]
-    ]
-    spec = dict(item["spec"])
-    if kind == "analytics":
-        spec = {"test": spec["test_id"], "params": spec.get("params") or {}}
-    elif kind == "python":
-        spec = {"code": data_tests.spec_as_python_code(item["spec"])}
-    tile = ws.add_tile(
-        {
-            "kind": kind,
-            "table": item["table_refs"][0] if item["table_refs"] else None,
-            "title": str(payload.get("title") or item["title"]),
-            "note": str(payload.get("note") or ""),
-            "spec": spec,
-            "viz": dict(payload.get("viz") or {"type": "table"}),
-            "data_test_id": item["id"],
-            "rcm_id": item["rcm_id"],
-            "result_ref": f"datatest:{item['id']}:{item['last_run']['id']}",
-        }
-    )
-    return tile

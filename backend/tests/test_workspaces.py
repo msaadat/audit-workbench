@@ -68,13 +68,13 @@ def test_add_table_rejects_unreadable_and_unsupported(workspace_with_data):
 
 def test_replace_table_keeps_name_and_updates_data(workspace_with_data):
     ws = workspace_with_data
-    # A saved tile bound to the table by name — the whole point of replacing.
-    ws.add_tile(
+    # A saved analysis bound to the table by name — the point of replacing.
+    ws.add_analysis(
         {
-            "kind": "query",
+            "kind": "analytics",
             "table": "transactions",
             "title": "By customer",
-            "spec": {"group_by": ["cust_id"], "aggs": [{"column": "amount", "func": "sum"}]},
+            "spec": {"test": "sign_scan", "params": {"column": "amount"}},
         }
     )
     assert ws.get_frame("transactions").height == 6
@@ -87,7 +87,7 @@ def test_replace_table_keeps_name_and_updates_data(workspace_with_data):
     # Same name, new data — reload from disk to prove it persisted.
     reloaded = workspaces.load_workspace(ws.id)
     assert reloaded.get_frame("transactions").height == 2
-    # The saved tile still resolves against the fresh data.
+    # The saved analysis still resolves against the fresh data.
     assert "transactions" in reloaded.table_names()
 
 
@@ -157,10 +157,7 @@ def test_rename_table_updates_saved_references(workspace_with_data):
             "right_on": ["id"],
         }
     )
-    query_tile = ws.add_tile(
-        {"kind": "query", "table": "transactions", "title": "By customer", "spec": {}}
-    )
-    python_tile = ws.add_tile(
+    bound = ws.add_analysis(
         {
             "kind": "python",
             "table": "transactions",
@@ -183,16 +180,15 @@ def test_rename_table_updates_saved_references(workspace_with_data):
     assert result["name"] == "ledger_entries"
     assert result["updated"] == {
         "joins": 1,
-        "tiles": 2,
-        "analyses": 1,
+        "analyses": 2,
         "rulesets": 1,
         "python_snippets": 2,
     }
     reloaded = workspaces.load_workspace(ws.id)
     assert reloaded.table_names() == ["ledger_entries", "customers", "tx_enriched"]
     assert reloaded._join_entry(join["name"])["left"] == "ledger_entries"
-    assert reloaded._tile(query_tile["id"])["table"] == "ledger_entries"
-    assert reloaded._tile(python_tile["id"])["spec"]["code"] == "result = tables['ledger_entries'].head(1)"
+    assert reloaded._analysis(bound["id"])["table"] == "ledger_entries"
+    assert reloaded._analysis(bound["id"])["spec"]["code"] == "result = tables['ledger_entries'].head(1)"
     assert reloaded._analysis(analysis["id"])["spec"]["code"] == "result = ledger_entries.select(pl.len())"
     assert reloaded._ruleset(ruleset["id"])["table"] == "ledger_entries"
     assert reloaded.get_frame("tx_enriched").height == 6

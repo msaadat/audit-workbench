@@ -454,33 +454,6 @@ def test_history_is_capped(workspace_with_data):
     assert len(ws.rulesets[0]["runs"]) == ws.RUN_HISTORY_MAX
 
 
-def test_validation_tile_computes(workspace_with_data):
-    from app import dashboard
-
-    ws = workspace_with_data
-    tile = ws.add_tile(
-        {
-            "kind": "validation",
-            "table": "transactions",
-            "title": "TX validation",
-            "spec": {
-                "rules": [
-                    {"id": "a", "column": "amount", "check": "numeric_sign",
-                     "params": {"mode": "positive"}, "severity": "fail", "enabled": True},
-                    {"id": "b", "column": None, "check": "unique_key",
-                     "params": {"columns": ["invoice_no"]}, "severity": "fail", "enabled": True},
-                ]
-            },
-        }
-    )
-    payload = dashboard.tile_payload(ws, tile)
-    assert payload["error"] is None
-    assert payload["verdict"] == "fail"  # invoice 1006 duplicated
-    assert "1 passed" in payload["verdict_text"]
-    assert payload["frame"]["columns"][:2] == ["field", "rule"]
-    assert any(s["label"] == "Rules passed" for s in payload["stats"])
-
-
 def test_report_is_multi_sheet(workspace_with_data):
     import io
     import zipfile

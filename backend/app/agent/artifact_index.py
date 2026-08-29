@@ -79,8 +79,6 @@ def build(workspace: Workspace) -> dict:
         entries.append(_entry("analysis", item["id"], item.get("title") or item["id"], item, body=str(item.get("note") or ""), linked=[f"table:{item['table']}"] if item.get("table") else []))
     for item in workspace.rulesets:
         entries.append(_entry("ruleset", item["id"], item.get("title") or item["id"], item, body=str(item.get("note") or ""), linked=[f"table:{item['table']}"]))
-    for item in workspace.tiles:
-        entries.append(_entry("tile", item["id"], item.get("title") or item["id"], item, body=str(item.get("note") or ""), linked=[f"table:{item['table']}"] if item.get("table") else []))
     for item in workspace.documents:
         entries.append(_entry("document", item["id"], item.get("title") or item.get("filename") or item["id"], item, body=str(item.get("category") or "")))
     for item in workspace.data_tests:

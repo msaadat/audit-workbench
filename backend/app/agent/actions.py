@@ -257,7 +257,7 @@ def allocate_create_id(action: dict) -> None:
     }
     if not args.get("id") and action["type"] in prefixes:
         args["id"] = prefixes[action["type"]] + uuid.uuid4().hex[:6].upper()
-    elif not args.get("id") and action["type"] in {"create_validation_rules", "create_custom_analysis", "pin_dashboard_tile"}:
+    elif not args.get("id") and action["type"] in {"create_validation_rules", "create_custom_analysis"}:
         args["id"] = uuid.uuid4().hex[:10]
     if action["type"] == "create_document_test":
         for item in args.get("items") or []:
@@ -274,7 +274,6 @@ CREATE_TARGET_KINDS = {
     "create_document_test": "doctest",
     "create_finding": "finding",
     "draft_finding_from_observation": "finding",
-    "pin_dashboard_tile": "tile",
 }
 
 # Some mutation actions write to a stable singleton rather than allocating an
@@ -387,7 +386,7 @@ def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | N
     collections = {
         "rcm": workspace.rcm, "procedure": workspace.work_program,
         "finding": workspace.findings, "analysis": workspace.analyses,
-        "ruleset": workspace.rulesets, "tile": workspace.tiles,
+        "ruleset": workspace.rulesets,
         "document": workspace.documents, "datatest": workspace.data_tests,
         "observation": workspace.observations,
     }
@@ -411,13 +410,13 @@ def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | N
 def expected_postcondition(action: dict) -> dict:
     """Deterministic postcondition persisted before a mutation is called."""
     type_, args = action["type"], action.get("args") or {}
-    if type_.startswith("delete_") or type_ == "remove_dashboard_tile":
+    if type_.startswith("delete_"):
         return {"absent": True}
     create_kinds = {
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
         "draft_finding_from_observation": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
-        "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile", "create_join": "table",
+        "create_custom_analysis": "analysis", "create_join": "table",
         "create_data_test": "datatest",
     }
     if type_ in create_kinds:
@@ -428,7 +427,7 @@ def expected_postcondition(action: dict) -> dict:
         return {"fields": {"context": args.get("changes") or {}}}
     if type_ == "edit_apm":
         return {"fields": {"apm_markdown": args.get("apm_markdown")}}
-    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "edit_data_test"}:
+    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_document_test", "edit_data_test"}:
         return {"fields": dict(args.get("changes") or {})}
     if type_ == "update_test_comparisons":
         return {"fields": {"checks": args.get("checks") or []}}
@@ -602,25 +601,6 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
                     raise WorkspaceError(
                         "Generated validation rule failed semantic preflight: " + "; ".join(issues)
                     )
-        elif type_ == "pin_dashboard_tile":
-            table = args.get("table")
-            if table not in workspace.table_names():
-                return
-            frame = workspace.get_frame(table)
-            kind = args.get("kind")
-            spec = dict(args.get("spec") or {})
-            if kind == "query":
-                args["spec"] = explore.canonicalize_query_spec(frame, spec)
-            elif kind == "analytics":
-                spec["params"] = analytics.canonicalize_params(
-                    frame, spec.get("test"), spec.get("params")
-                )
-                args["spec"] = spec
-            elif kind == "validation":
-                spec["rules"] = validation.canonicalize_rules(
-                    frame, spec.get("rules") or [], resolve=workspace.get_frame, strict=True
-                )
-                args["spec"] = spec
     except WorkspaceError:
         raise
     except ValueError as error:
@@ -786,14 +766,6 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         item = artifact_snapshot(workspace, "analysis", target_id)
         result, stdout = sandbox.run(item["spec"]["code"], {name: workspace.get_frame(name) for name in workspace.table_names()})
         return _receipt(action, item, refs=[f"analysis:{target_id}"], result={"frame": model_context.project_frame(result), "stdout": (stdout or "")[:4_000], "stdout_truncated": len(stdout or "") > 4_000})
-    if type_ == "pin_dashboard_tile":
-        item = workspace.add_tile({**args, "agent_run_id": run["id"]})
-        return _receipt(action, item, refs=[f"tile:{item['id']}"])
-    if type_ == "edit_dashboard_tile":
-        item = workspace.update_tile(target_id, args["changes"])
-        return _receipt(action, item, refs=[f"tile:{target_id}"])
-    if type_ == "remove_dashboard_tile":
-        workspace.remove_tile(target_id); return _receipt(action, refs=[f"tile:{target_id}"])
     if type_ == "create_document_test":
         kind = args.get("kind")
         # Explicitly planned items already have durable IDs allocated by the
@@ -898,7 +870,7 @@ def _reconcile(workspace: Workspace, action: dict) -> str:
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
         "draft_finding_from_observation": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
-        "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile",
+        "create_custom_analysis": "analysis",
         "create_data_test": "datatest",
     }
     if action["type"] == "create_join":
@@ -910,7 +882,7 @@ def _reconcile(workspace: Workspace, action: dict) -> str:
             return "retry"
         return "already_applied" if postcondition_matches(existing, action.get("postcondition") or {}) else "conflict"
     current = artifact_snapshot(workspace, str(kind), str(item_id)) if kind and item_id else None
-    if action["type"].startswith("delete_") or action["type"] == "remove_dashboard_tile":
+    if action["type"].startswith("delete_"):
         return "already_applied" if current is None else "retry"
     if postcondition_matches(current, action.get("postcondition") or {}):
         return "already_applied"
@@ -928,7 +900,7 @@ def _restore_snapshot(workspace: Workspace, kind: str, item_id: str, before: dic
         workspace.planning = copy.deepcopy(before); workspace.save(); return workspace.planning
     collections = {
         "rcm": workspace.rcm, "procedure": workspace.work_program, "finding": workspace.findings,
-        "analysis": workspace.analyses, "ruleset": workspace.rulesets, "tile": workspace.tiles,
+        "analysis": workspace.analyses, "ruleset": workspace.rulesets,
         "datatest": workspace.data_tests, "observation": workspace.observations,
     }
     if kind in collections:
@@ -1074,9 +1046,6 @@ _register(
 _register("create_custom_analysis", "Create an in-memory sandboxed Polars analysis (no imports or file I/O; assign result)", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
 _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("analysis",))
-_register("pin_dashboard_tile", "Pin a dashboard tile", "create", required=("kind", "title", "spec"))
-_register("edit_dashboard_tile", "Edit a dashboard tile", "reversible_mutation", ("tile",), ("changes",), {"changes": OBJ})
-_register("remove_dashboard_tile", "Remove a dashboard tile", "destructive", ("tile",))
 _register(
     "create_document_test", "Create a document test", "create",
     required=("kind", "title"),

@@ -54,7 +54,7 @@ const starting = ref('')
 const expanded = ref<Set<string>>(new Set())
 
 const KNOWN_DESTINATIONS: readonly string[] = [
-  'dashboard', 'apm', 'rcm', 'chain', 'doc-tests', 'data-tests',
+  'apm', 'rcm', 'chain', 'doc-tests', 'data-tests',
   'findings', 'report', 'documents', 'data', 'query', 'analysis',
 ]
 
@@ -592,6 +592,14 @@ const pendingNote = computed(() => {
         >Full</button>
       </div>
       <Button label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" outlined :loading="loading" @click="load" />
+      <!-- The one thing the record cannot draw as a row. Every other work
+           product is a row here, because a row is something the engagement
+           holds; the chain is a way of reading one risk across all of them,
+           so it files nothing and has nowhere on the ledger to sit. It is a
+           link rather than a button because it is a place, not an action. -->
+      <RouterLink :to="nav.to('chain')" class="chain">
+        <i class="pi pi-sitemap" aria-hidden="true" />Chain
+      </RouterLink>
     </div>
 
     <div v-if="loading && !data" class="loading"><i class="pi pi-spin pi-spinner" /> Reading the record…</div>
@@ -880,6 +888,21 @@ const pendingNote = computed(() => {
 }
 .dens button[aria-pressed="true"] { background: var(--aw-panel); color: var(--aw-teal-strong); box-shadow: var(--aw-shadow-sm); }
 .dens button:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+
+/* --- the chain, which is a lens rather than a work product --------------- */
+/* Sized and weighted like the Refresh button beside it so the bar reads as one
+   row of controls, but drawn as a link because it navigates. */
+.chain {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .3rem .7rem;
+  border: 1px solid var(--aw-teal); border-radius: var(--aw-radius-control);
+  color: var(--aw-teal); background: transparent;
+  font-size: var(--aw-text-sm); font-weight: 600; text-decoration: none;
+  white-space: nowrap;
+}
+.chain:hover { background: var(--aw-teal-soft); }
+.chain:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
+.chain .pi { font-size: var(--aw-text-sm); }
 
 /* --- what is still owed, under the ledger -------------------------------- */
 /* Below the ledger it is a note, not a banner, so it is drawn as one: half the

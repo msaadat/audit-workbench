@@ -414,16 +414,16 @@ def execute_analysis(
 ) -> AnalysisRun:
     """Compute one saved analysis locally and return its bounded result.
 
-    Execution goes through ``dashboard.compute_payload``, the same spec-not-data
+    Execution goes through ``analysis_payloads.compute_payload``, the same spec-not-data
     recomputation the Analysis tab and dashboard tiles use, so analytics run
     through the analytics registry and Polars code through the guarded local
     sandbox. Nothing leaves the machine.
     """
-    # Imported here rather than at module scope: ``dashboard`` reaches the agent
+    # Imported here rather than at module scope: ``analysis_payloads`` reaches back here
     # capability registries, which read this module's classification helpers.
-    from . import dashboard
+    from . import analysis_payloads
 
-    payload = dashboard.compute_payload(workspace, dict(analysis))
+    payload = analysis_payloads.compute_payload(workspace, dict(analysis))
     result = bounded_result(
         payload, run_id=run_id, workspace=workspace, analysis=analysis
     )
@@ -585,14 +585,14 @@ def execute_and_record(workspace: Workspace, analysis_id: str) -> ExecutedAnalys
     outside the workspace write lock — the same ordering the workflow executor
     uses.
     """
-    from . import dashboard
+    from . import analysis_payloads
 
     analysis = next(
         (item for item in workspace.analyses if str(item.get("id")) == analysis_id), None
     )
     if analysis is None:
         raise WorkspaceError("Analysis not found.")
-    payload = dashboard.compute_payload(workspace, dict(analysis))
+    payload = analysis_payloads.compute_payload(workspace, dict(analysis))
     result = bounded_result(
         payload, run_id=manual_run_id(), workspace=workspace, analysis=analysis
     )

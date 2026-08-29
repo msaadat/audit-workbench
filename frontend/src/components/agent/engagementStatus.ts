@@ -1,5 +1,5 @@
 import { plural, pluralWord, verb } from '../../format'
-import type { DashboardPhase, DashboardSection, DashboardTarget } from '../../types'
+import type { EngagementPhase, EngagementSection, NavigationTarget } from '../../types'
 import { portion } from '../ui/statusLanes'
 import type { Tone } from '../ui/statusLanes'
 
@@ -18,7 +18,7 @@ import type { Tone } from '../ui/statusLanes'
  * put on the wire.
  */
 
-export type PhaseState = DashboardPhase['state']
+export type PhaseState = EngagementPhase['state']
 
 /**
  * How much of a row is drawn. Complete work collapses to its totals and opens
@@ -36,7 +36,7 @@ export interface PhaseChip {
   /** The fraction the chip leads with, where it has one: `36/39`. */
   detail: string
   tone: Tone
-  target: DashboardTarget
+  target: NavigationTarget
 }
 
 export interface PhaseAction {
@@ -48,7 +48,7 @@ export interface PhaseAction {
 }
 
 export interface PhaseRow {
-  id: DashboardPhase['id']
+  id: EngagementPhase['id']
   label: string
   state: PhaseState
   display: RowDisplay
@@ -63,7 +63,7 @@ export interface PhaseRow {
   chips: PhaseChip[]
   issues: string[]
   actions: PhaseAction[]
-  target: DashboardTarget
+  target: NavigationTarget
 }
 
 /**
@@ -74,7 +74,7 @@ export interface PhaseRow {
 export interface EngagementDisclosure {
   key: string
   message: string
-  target: DashboardTarget
+  target: NavigationTarget
 }
 
 export interface EngagementStatus {
@@ -86,7 +86,7 @@ export interface EngagementStatus {
   disclosures: EngagementDisclosure[]
 }
 
-function count(phase: DashboardPhase, key: string): number {
+function count(phase: EngagementPhase, key: string): number {
   return phase.counts?.[key] ?? 0
 }
 
@@ -102,7 +102,7 @@ function joinTail(parts: string[]): string {
   return parts.filter(Boolean).join(' · ')
 }
 
-function planningRow(phase: DashboardPhase, display: RowDisplay): PhaseRow {
+function planningRow(phase: EngagementPhase, display: RowDisplay): PhaseRow {
   const rows = count(phase, 'rcm_rows')
   const tests = count(phase, 'tests')
   return {
@@ -136,8 +136,8 @@ function planningRow(phase: DashboardPhase, display: RowDisplay): PhaseRow {
 }
 
 function fieldworkRow(
-  phase: DashboardPhase,
-  sections: Record<string, DashboardSection>,
+  phase: EngagementPhase,
+  sections: Record<string, EngagementSection>,
   display: RowDisplay,
 ): PhaseRow {
   const linked = count(phase, 'tests_linked')
@@ -211,7 +211,7 @@ function fieldworkRow(
   }
 }
 
-function reportRow(phase: DashboardPhase, display: RowDisplay): PhaseRow {
+function reportRow(phase: EngagementPhase, display: RowDisplay): PhaseRow {
   const findings = count(phase, 'findings')
   const errors = count(phase, 'quality_errors')
   return {
@@ -239,12 +239,12 @@ function reportRow(phase: DashboardPhase, display: RowDisplay): PhaseRow {
  * The phase the engagement is actually sitting on: the first that is not
  * complete. Everything before it rests, everything after it waits.
  */
-function currentIndex(phases: DashboardPhase[]): number {
+function currentIndex(phases: EngagementPhase[]): number {
   const index = phases.findIndex(phase => phase.state !== 'complete')
   return index === -1 ? phases.length : index
 }
 
-function disclosuresFor(phases: DashboardPhase[]): EngagementDisclosure[] {
+function disclosuresFor(phases: EngagementPhase[]): EngagementDisclosure[] {
   const items: EngagementDisclosure[] = []
   const fieldwork = phases.find(phase => phase.id === 'fieldwork')
   const report = phases.find(phase => phase.id === 'report')
@@ -277,8 +277,8 @@ function disclosuresFor(phases: DashboardPhase[]): EngagementDisclosure[] {
 }
 
 export function engagementStatus(
-  phases: DashboardPhase[],
-  sections: Record<string, DashboardSection> = {},
+  phases: EngagementPhase[],
+  sections: Record<string, EngagementSection> = {},
 ): EngagementStatus {
   const current = currentIndex(phases)
   const rows = phases.map((phase, index) => {

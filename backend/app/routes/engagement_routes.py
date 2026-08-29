@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Query
 
-from .. import engagement, engagement_record, workspaces
+from .. import engagement, engagement_progress, engagement_record, workspaces
 
 router = APIRouter(prefix="/api", tags=["engagement"])
 
@@ -30,6 +30,18 @@ async def get_engagement_record(workspace_id: str):
     """
     ws = workspaces.load_workspace(workspace_id)
     return engagement_record.record(ws)
+
+
+@router.get("/workspaces/{workspace_id}/engagement/status")
+async def get_engagement_status(workspace_id: str):
+    """Phase and section states, derived from committed workspace state.
+
+    Read by the workspace shell and the console rail. It moved here from
+    `/dashboard/status` when the dashboard was removed: the status never
+    described the dashboard, only the engagement behind it.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    return engagement_progress.engagement_status_payload(ws)
 
 
 @router.post("/workspaces/{workspace_id}/engagement/brief")

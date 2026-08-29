@@ -7,7 +7,7 @@ import pytest
 
 from app import analysis_results, assistant, assistant_settings, documents, llm, tooling, workspaces
 from app.agent import store
-from app.dashboard import tile_payload
+from app.analysis_payloads import compute_payload
 from app.routes import assistant_routes
 from app.sandbox import SandboxError, run as sandbox_run
 from app.workspaces import WorkspaceError
@@ -403,26 +403,26 @@ def test_python_tool_makes_pinnable_artifact(workspace_with_data):
     assert content["result"]["rows"]  # 3 rows ≤ small-result cap → visible
 
 
-# --------------------------------------------------------------- python tiles
-def test_python_tile_computes_live(workspace_with_data):
+# ------------------------------------------------------------ python analyses
+def test_python_analysis_computes_live(workspace_with_data):
     ws = workspace_with_data
-    tile = ws.add_tile(
+    analysis = ws.add_analysis(
         {
             "kind": "python",
             "title": "Totals by customer",
             "spec": {"code": "result = transactions.group_by('cust_id').agg(pl.col('amount').sum())"},
         }
     )
-    assert tile["table"] is None  # python tiles need no bound table
-    payload = tile_payload(ws, tile)
+    assert analysis["table"] is None  # python analyses need no bound table
+    payload = compute_payload(ws, analysis)
     assert payload["error"] is None
     assert payload["frame"]["columns"] == ["cust_id", "amount"]
     assert payload["code"].startswith("result =")
 
 
-def test_python_tile_requires_code(workspace_with_data):
+def test_python_analysis_requires_code(workspace_with_data):
     with pytest.raises(WorkspaceError, match="needs code"):
-        workspace_with_data.add_tile({"kind": "python", "title": "Empty", "spec": {}})
+        workspace_with_data.add_analysis({"kind": "python", "title": "Empty", "spec": {}})
 
 
 # ----------------------------------------------------------------- llm status

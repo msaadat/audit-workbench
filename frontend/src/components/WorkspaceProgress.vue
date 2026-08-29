@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { DashboardPhase, WorkspaceProgress } from '../types'
+import type { EngagementPhase, WorkspaceProgress } from '../types'
 
 /**
  * Where an engagement stands, in four colours and no figures.
@@ -19,7 +19,7 @@ import type { DashboardPhase, WorkspaceProgress } from '../types'
  * card can state.
  */
 
-type State = DashboardPhase['state'] | 'unknown'
+type State = EngagementPhase['state'] | 'unknown'
 
 const props = defineProps<{
   tables: number

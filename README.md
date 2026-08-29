@@ -27,17 +27,15 @@ engagement values.
   group-by aggregations, split-by cross-tabs, sorting, server pagination,
   group-row drill-down, charts, and Excel exports.
 - **Data Tests** — create durable exploratory or RCM-linked analytics,
-  validation, and visible Polars definitions. Exploratory tests can be run and
-  pinned but do not count as audit coverage or support formal findings. Runs preserve bounded result and exception artifacts,
+  validation, and visible Polars definitions. Exploratory tests can be run but
+  do not count as audit coverage or support formal findings. Runs preserve
+  bounded result and exception artifacts,
   histories, hashes, table fingerprints, and semantic-validity checks. The
   analytics library includes 15 tests: Benford and last-two-digit analysis,
   duplicates, sequence gaps, reproducible sampling, period comparison, round
   numbers, outliers, threshold clustering, weekend postings, date-lag or
   backdating, stratification, completeness, negative/zero scan, and rare
-  values. Results can be saved, exported, and pinned.
-- **Dashboard** — pin reproducible queries or let the audit run curate four to
-  six useful RCM-linked Data Test results using deterministic risk, exception,
-  visualization, and management-relevance scoring.
+  values. Results can be saved and exported.
 - **Documents and evidence** — ingest PDF, TXT/Markdown, DOCX, and common image
   formats; preview extracted pages, explicitly confirm replacements, ask cited
   questions, and navigate immutable typed evidence anchors. AI-activity logs retain provider,
@@ -66,7 +64,7 @@ engagement values.
 - **Durable audit-assistant runs** — auto or permission-mode runs can build an
   RCM-centric plan, create and execute linked Data/Document Tests, roll up
   outcomes, pause for observation disposition, generate RCM working papers,
-  curate a dashboard, and draft and quality-check the report. Mandatory output
+  and draft and quality-check the report. Mandatory output
   and completion stages remain deterministic even if model expansion fails.
   Runs support SSE replay, pause/resume/cancel, steering, editable approvals,
   restart recovery, and user-safe rerun reconciliation.

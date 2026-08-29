@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app import analysis_results, workspaces
 from app.analysis_results import analyses_summary_payload, analysis_input_sha1
 from app.agent.executors.analysis import run_analysis
-from app.dashboard import analyses_payload, analysis_payload
+from app.analysis_payloads import analyses_payload, analysis_payload
 from app.main import create_app
 from app.workspaces import WorkspaceError
 
@@ -538,28 +538,6 @@ def test_resaving_an_unchanged_definition_keeps_its_result(workspace_with_data):
     assert ws.analyses[0].get("last_result") is None
 
 
-def test_pin_analysis_from_summary_creates_dashboard_tile(workspace_with_data):
-    ws = workspace_with_data
-    analysis = _library_analysis(ws)
-    analysis["last_result"] = {"run_id": "run-pin"}
-    ws.save()
-    client = TestClient(create_app())
-
-    response = client.post(f"/api/workspaces/{ws.id}/analyses/{analysis['id']}/pin", json={})
-
-    assert response.status_code == 200
-    fresh = workspaces.load_workspace(ws.id)
-    assert len(fresh.tiles) == 1
-    assert fresh.tiles[0]["analysis_id"] == analysis["id"]
-    assert fresh.tiles[0]["result_ref"] == f"analysis:{analysis['id']}:run-pin"
-    assert response.json()["error"] is None
-
-
-# --------------------------------------------------------- exception evidence
-# A procedure that concludes "2 rows are duplicated" is not reviewable until an
-# auditor can see *which* rows. Every exception-producing analytics test already
-# computes that frame; these cover it reaching durable state, staying bounded,
-# staying attached to the exact result it supports, and being discarded with it.
 def _evidence_file(ws, analysis_id):
     return workspaces.analysis_evidence_path(ws.root, analysis_id)
 

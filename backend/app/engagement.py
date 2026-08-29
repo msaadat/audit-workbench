@@ -1,7 +1,7 @@
 """What the agent would do with a new engagement, before it does any of it.
 
 Creating a workspace used to ask for a name and drop the auditor on an empty
-dashboard. The one thing the agent genuinely cannot infer is *what are we
+surface. The one thing the agent genuinely cannot infer is *what are we
 auditing and why* — everything else it can read off the folder — so that is
 what the brief collects, and this module answers the two questions an auditor
 asks before letting it start: what will you do, and what will it cost?
@@ -64,7 +64,6 @@ _PHASE_OF_DOMAIN = {
     "results": "fieldwork",
     "findings": "fieldwork",
     "working_papers": "writeup",
-    "dashboard": "writeup",
     "report": "writeup",
     "audit": "writeup",
 }
@@ -97,7 +96,7 @@ PLAN_PHASES: tuple[dict[str, str], ...] = (
     {
         "id": "writeup",
         "title": "Write it up",
-        "summary": "Produce the working papers, curate the dashboard, and draft the report with its quality checks.",
+        "summary": "Produce the working papers, and draft the report with its quality checks.",
     },
     {
         "id": _UNGROUPED_PHASE,

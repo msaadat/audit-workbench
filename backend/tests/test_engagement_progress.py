@@ -12,8 +12,8 @@ to the derivation it is standing in for.
 
 import pytest
 
-from app import data_tests, dashboard, doc_tests, engagement_progress, rcm_execution
-from app import workspaces as workspace_module
+from app import data_tests, doc_tests, engagement_progress, rcm_execution
+from app import engagement_progress, workspaces as workspace_module
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,7 @@ def no_escalation(monkeypatch):
 def _console_states(workspace) -> dict:
     return {
         phase["id"]: phase["state"]
-        for phase in dashboard.engagement_status_payload(workspace)["phases"]
+        for phase in engagement_progress.engagement_status_payload(workspace)["phases"]
     }
 
 

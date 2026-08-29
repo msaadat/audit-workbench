@@ -140,7 +140,7 @@ function messageTime(value: string) {
     <div ref="inner" class="transcript-inner">
     <!-- Nothing imported yet: every suggestion and workflow below would need
          source material to run, so the console offers the one step that has to
-         come first. Same action, icon and framing as the audit-file dashboard's
+         come first. Same action, icon and framing the audit file's onboarding had
          onboarding card, so the two surfaces agree on what step one is. -->
     <div v-if="empty && needsSources" class="empty-state">
       <span class="empty-icon"><i class="pi pi-folder-open" /></span>

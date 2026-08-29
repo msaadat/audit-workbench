@@ -12,7 +12,6 @@ import Tag from 'primevue/tag'
 import { api, ApiError } from '../api'
 import type { AggSpec, ColumnSchema, FilterSpec, QueryResult, VizSpec, WorkspaceSummary } from '../types'
 import ChartView from './ChartView.vue'
-import PinDialog from './PinDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
@@ -50,8 +49,6 @@ const wasGrouped = ref(false)
 const vizType = ref<VizSpec['type']>('table')
 const vizX = ref<string | null>(null)
 const vizY = ref<string[]>([])
-const showPin = ref(false)
-const pinning = ref(false)
 
 type ZoneName = 'filters' | 'group' | 'split' | 'aggs' | 'sort'
 const drag = ref<{ field: string; from: ZoneName | 'list'; index: number } | null>(null)
@@ -457,37 +454,7 @@ function fmt(value: string | number | boolean | null): string {
   return String(value)
 }
 
-// ------------------------------------------------------------- pin & export
-async function pinTile({ title, note }: { title: string; note: string }) {
-  if (!table.value) return
-  pinning.value = true
-  try {
-    const tileSpec = { ...spec() }
-    delete (tileSpec as Record<string, unknown>).page
-    delete (tileSpec as Record<string, unknown>).page_size
-    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
-      kind: 'query',
-      table: table.value,
-      title,
-      note,
-      spec: tileSpec,
-      viz: currentViz.value,
-    })
-    showPin.value = false
-    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: title, life: 3000 })
-  } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Pin failed', detail, life: 6000 })
-  } finally {
-    pinning.value = false
-  }
-}
-
-const pinTitle = computed(() => {
-  if (isPivot.value) return `${table.value}: ${groupBy.value.join(', ') || 'group'} × ${splitField.value}`
-  return wasGrouped.value ? `${table.value}: by ${groupBy.value.join(', ') || 'group'}` : `${table.value}: filtered rows`
-})
-
+// ------------------------------------------------------------------ export
 function onPage(event: DataTablePageEvent) {
   page.value = event.page + 1
   pageSize.value = event.rows
@@ -560,14 +527,6 @@ async function exportExcel() {
       :disabled="!result"
       v-tooltip.bottom="'Full result to Excel'"
       @click="exportExcel"
-    />
-    <Button
-      label="Pin"
-      icon="pi pi-thumbtack"
-      severity="secondary"
-      :disabled="!result"
-      v-tooltip.bottom="'Pin this query to the dashboard'"
-      @click="showPin = true"
     />
     <Button icon="pi pi-undo" severity="secondary" text :disabled="!filters.length && !groupBy.length && !aggs.length && !splitField && !sortSpec.length" v-tooltip.bottom="'Clear query'" @click="clearQuery" />
   </div>
@@ -877,13 +836,6 @@ async function exportExcel() {
       </details>
     </aside>
   </div>
-
-  <PinDialog
-    v-model:visible="showPin"
-    :defaultTitle="pinTitle"
-    :saving="pinning"
-    @pin="pinTile"
-  />
 </template>
 
 <style scoped>

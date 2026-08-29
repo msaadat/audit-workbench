@@ -1,9 +1,9 @@
 /** Where each phase stands, for the index card's strip. States are the
  *  backend's own, taken verbatim — the index never recomputes a phase. */
 export interface WorkspaceProgress {
-  planning: DashboardPhase['state']
-  fieldwork: DashboardPhase['state']
-  report: DashboardPhase['state']
+  planning: EngagementPhase['state']
+  fieldwork: EngagementPhase['state']
+  report: EngagementPhase['state']
 }
 
 export interface WorkspaceListItem {
@@ -43,7 +43,6 @@ export interface WorkspaceSummary {
   description: string
   created: string
   tables: TableInfo[]
-  tile_count?: number
   document_count?: number
   finding_count?: number
 }
@@ -102,7 +101,6 @@ export interface DocumentAnalysisCitation {
   evidence_kind?: 'text' | 'visual'
   description?: string
   region?: { x: number; y: number; width: number; height: number } | null
-  tile_order?: number
   variant?: string
   prepared_sha256?: string
   generated_description?: boolean
@@ -1619,41 +1617,22 @@ export interface VizSpec {
   y?: string[]
 }
 
-export interface DashboardTile {
-  id: string
-  title: string
-  kind: 'query' | 'analytics' | 'python' | 'pivot' | 'validation'
-  table: string | null
-  note: string
-  viz: VizSpec
-  created: string
-  error: string | null
-  frame?: FramePayload | null
-  total_rows?: number
-  verdict?: 'ok' | 'warn' | 'fail' | 'info'
-  verdict_text?: string
-  stats?: StatChip[]
-  code?: string
-  stdout?: string | null
-}
-
-export interface DashboardTarget {
-  // `data-tests` is in the backend's `ALLOWED_ACTION_TABS` and resolves through
-  // `useWorkspaceNavigation`; it was missing here only because no payload had
-  // named it yet.
-  tab: 'dashboard' | 'planning' | 'documents' | 'doc-tests' | 'data-tests' | 'data' | 'query' | 'validation' | 'analysis' | 'findings' | 'report'
+export interface NavigationTarget {
+  // Resolved through `useWorkspaceNavigation`, which owns which surface each
+  // of these currently lives on.
+  tab: 'planning' | 'documents' | 'doc-tests' | 'data-tests' | 'data' | 'query' | 'validation' | 'analysis' | 'findings' | 'report'
   query: Record<string, string>
 }
 
-export interface DashboardSubPhase {
+export interface EngagementSubPhase {
   id: string
   label: string
   state: 'not_started' | 'in_progress' | 'complete' | 'attention'
   complete: boolean
-  target: DashboardTarget
+  target: NavigationTarget
 }
 
-export interface DashboardPhase {
+export interface EngagementPhase {
   id: 'planning' | 'fieldwork' | 'report'
   label: string
   state: 'not_started' | 'in_progress' | 'complete' | 'attention'
@@ -1661,16 +1640,16 @@ export interface DashboardPhase {
   summary: string
   counts: Record<string, number>
   issues: string[]
-  target: DashboardTarget
-  sub: DashboardSubPhase[]
+  target: NavigationTarget
+  sub: EngagementSubPhase[]
 }
 
 /** A rail entry's own state, where a phase is broader than the tab it opens.
  *  Keyed by rail section id. */
-export interface DashboardSection {
+export interface EngagementSection {
   id: string
   label: string
-  state: DashboardPhase['state']
+  state: EngagementPhase['state']
   complete: boolean
   issues: string[]
   /** `total` and `concluded`, so a chip reads "36/39" without recounting the
@@ -1683,69 +1662,10 @@ export interface DashboardSection {
 }
 
 export interface EngagementStatusPayload {
-  phases: DashboardPhase[]
-  sections?: Record<string, DashboardSection>
+  phases: EngagementPhase[]
+  sections?: Record<string, EngagementSection>
 }
 
-export interface DashboardAction {
-  id: string
-  title: string
-  reason: string
-  priority: 'high' | 'medium' | 'low'
-  source: 'deterministic' | 'ai'
-  target: DashboardTarget
-}
-
-export interface DashboardAttention {
-  id: string
-  severity: 'error' | 'warning' | 'info'
-  title: string
-  message: string
-  target: DashboardTarget
-}
-
-export interface DashboardAdvice {
-  items: DashboardAction[]
-  generated_at: string
-  provider: string
-  model: string
-  input_hash: string
-  stale: boolean
-}
-
-export interface DashboardOverview {
-  tables: number
-  readable_tables: number
-  table_errors: number
-  rows: number
-  documents: number
-  rcm_rows: number
-  tests: number
-  data_tests: number
-  document_tests: number
-  findings: number
-  pinned_tiles: number
-  report_errors: number
-  report_warnings: number
-}
-
-export interface DashboardPayload {
-  overview: DashboardOverview
-  phases: DashboardPhase[]
-  actions: DashboardAction[]
-  attention: DashboardAttention[]
-  ai_advice: DashboardAdvice | null
-  tiles: DashboardTile[]
-}
-
-// A saved analysis: the computed payload the Analysis rail + detail render.
-// Same spec-recompute shape as DashboardTile, restricted to the two kinds the
-// Analysis tab creates, plus a `source` for the rail icon.
-/**
- * A saved analysis as the rail lists it: definition and recorded outcome, never
- * result data. `GET /analyses` executes nothing, so the compute-only fields
- * below arrive solely from the detail endpoint (`AnalysisDetail`).
- */
 export interface SavedAnalysis {
   id: string
   title: string
@@ -1925,7 +1845,7 @@ export interface ValidationRule {
 }
 
 // A saved rule set: field-wise checks bound to a table by name, stored as a
-// spec (like analyses/tiles) and recomputed live on every run.
+// spec (like analyses) and recomputed live on every run.
 export interface RuleSet {
   id: string
   title: string
@@ -2823,7 +2743,7 @@ export interface AgentEvent {
 }
 
 export interface WorkspaceChange {
-  kind: 'table' | 'join' | 'ruleset' | 'analysis' | 'tile' | string
+  kind: 'table' | 'join' | 'ruleset' | 'analysis' | string
   id: string
   action: 'created' | 'updated' | 'removed' | string
 }

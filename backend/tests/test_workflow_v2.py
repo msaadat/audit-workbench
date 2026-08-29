@@ -10,7 +10,7 @@ import httpx
 import polars as pl
 import pytest
 
-from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
+from app import data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
 from app.agent import action_runner, context_bundles, routing, runner, store, workflow
 from app.agent import capabilities as audit_capabilities
 from app.agent.audit_execution import (
@@ -743,7 +743,7 @@ def test_planning_and_engagement_status_reads_do_not_advance_revision():
         transport = httpx.ASGITransport(app=create_app())
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             status, planning = await asyncio.gather(
-                client.get(f"/api/workspaces/{ws.id}/dashboard/status"),
+                client.get(f"/api/workspaces/{ws.id}/engagement/status"),
                 client.get(f"/api/workspaces/{ws.id}/planning"),
             )
             first_rollup = await client.post(f"/api/workspaces/{ws.id}/rcm/rollup")

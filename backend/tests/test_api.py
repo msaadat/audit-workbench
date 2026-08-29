@@ -64,7 +64,8 @@ def test_schema_preview_profile(client, ws_id):
 
 def test_rename_table_api_rebinds_workspace_items(client, ws_id):
     ws = workspaces.load_workspace(ws_id)
-    ws.add_tile({"kind": "query", "table": "transactions", "title": "TX", "spec": {}})
+    ws.add_analysis({"kind": "analytics", "table": "transactions", "title": "TX",
+                     "spec": {"test": "sign_scan", "params": {"column": "amount"}}})
 
     response = client.patch(
         f"/api/workspaces/{ws_id}/tables/transactions",
@@ -74,9 +75,9 @@ def test_rename_table_api_rebinds_workspace_items(client, ws_id):
     assert response.status_code == 200
     body = response.json()
     assert body["renamed"]["name"] == "ledger"
-    assert body["renamed"]["updated"]["tiles"] == 1
+    assert body["renamed"]["updated"]["analyses"] == 1
     assert [t["name"] for t in body["workspace"]["tables"]] == ["ledger"]
-    assert workspaces.load_workspace(ws_id).tiles[0]["table"] == "ledger"
+    assert workspaces.load_workspace(ws_id).analyses[0]["table"] == "ledger"
 
 
 def test_query_and_export(client, ws_id):

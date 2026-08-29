@@ -43,7 +43,7 @@ const mode = agent.launchMode
 const shell = inject(workspaceContextKey, undefined)
 // An engagement with no tables and no documents cannot run any of the work the
 // assistant would otherwise offer, so the empty thread points at importing
-// instead. Matches the audit-file dashboard's own onboarding condition.
+// instead. Matches the onboarding condition the audit file used to carry.
 const needsSources = computed(() => !props.workspace.tables.length && !props.workspace.document_count)
 
 const activeChat = computed(() => chats.state.chat)

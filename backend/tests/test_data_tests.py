@@ -5,7 +5,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import (
-    dashboard,
     data_tests,
     doc_tests,
     documents,
@@ -989,7 +988,6 @@ def test_exploratory_data_test_runs_without_counting_as_rcm_execution(workspace_
     assert result["rcm_id"] is None
     assert result["exception_count"] == 2
     assert rcm_execution.coverage(ws)["invalid_test_parents"] == []
-    assert dashboard.curate_rcm_tiles(ws)["curation"]["created_count"] == 0
     # An exploratory test is not audit coverage, so it reaches no RCM row and
     # therefore never reaches the report.
     assert item["id"] not in {
@@ -1067,7 +1065,7 @@ def test_table_rename_updates_data_test_references_and_invalidates_latest_status
     assert item["status"] == "ready"
 
 
-def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
+def test_data_test_api_create_run_and_reopen(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
     client = TestClient(create_app())
@@ -1085,14 +1083,6 @@ def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
     reopened = client.get(f"{base}/data-tests/{created['id']}/runs/{result['id']}")
     assert reopened.status_code == 200
     assert reopened.json()["result_sha1"] == result["result_sha1"]
-
-    pinned = client.post(
-        f"{base}/data-tests/{created['id']}/pin",
-        json={"title": "RCM duplicate invoices"},
-    )
-    assert pinned.status_code == 200
-    assert pinned.json()["result_ref"] == f"datatest:{created['id']}:{result['id']}"
-    assert pinned.json()["rcm_id"] == row["id"]
 
     exploratory = client.post(
         f"{base}/data-tests",
@@ -1113,11 +1103,7 @@ def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
         f"{base}/data-tests/{exploratory.json()['id']}/run"
     )
     assert exploratory_run.status_code == 200
-    exploratory_pin = client.post(
-        f"{base}/data-tests/{exploratory.json()['id']}/pin", json={}
-    )
-    assert exploratory_pin.status_code == 200
-    assert exploratory_pin.json().get("rcm_id") is None
+    assert exploratory_run.json()["rcm_id"] is None
 
 
 def test_data_test_api_runs_all_rcm_linked_tests_and_skips_exploratory(workspace_with_data):

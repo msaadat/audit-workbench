@@ -19,7 +19,6 @@ import type {
   ValidationRun,
   WorkspaceSummary,
 } from '../../types'
-import PinDialog from '../PinDialog.vue'
 import CheckDialog from './CheckDialog.vue'
 import RunResults from './RunResults.vue'
 import ValidationGrid from './ValidationGrid.vue'
@@ -57,8 +56,6 @@ const dialogVisible = ref(false)
 const dialogColumn = ref<string | null>(null)
 const dialogRule = ref<ValidationRule | null>(null)
 
-const showPin = ref(false)
-const pinning = ref(false)
 // History arrives with saved-spec runs; seed it from the stored rule set.
 const history = ref<RunSummary[]>([...(props.ruleset?.runs ?? [])])
 // Ghost suggestions derived from the table profile — accepted or dismissed
@@ -226,26 +223,6 @@ async function exportReport() {
   }
 }
 
-async function pinTile({ title: pinTitle, note }: { title: string; note: string }) {
-  if (!table.value || rules.value.length === 0) return
-  pinning.value = true
-  try {
-    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
-      kind: 'validation',
-      table: table.value,
-      title: pinTitle,
-      note,
-      spec: { rules: rules.value },
-    })
-    showPin.value = false
-    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: pinTitle, life: 3000 })
-  } catch (error) {
-    fail('Pin failed', error)
-  } finally {
-    pinning.value = false
-  }
-}
-
 // ------------------------------------------------------------- suggestions
 // Conservative, profile-driven proposals: only what the current data already
 // satisfies (so accepting them starts green and guards future refreshes).
@@ -380,15 +357,6 @@ function fail(summary: string, error: unknown) {
       @click="save"
     />
     <Button
-      label="Pin"
-      icon="pi pi-thumbtack"
-      severity="secondary"
-      size="small"
-      :disabled="rules.length === 0 || !table"
-      @click="showPin = true"
-      v-tooltip.bottom="'Pin a live validation tile to the dashboard'"
-    />
-    <Button
       label="Report"
       icon="pi pi-file-excel"
       severity="secondary"
@@ -464,13 +432,6 @@ function fail(summary: string, error: unknown) {
     :boundTable="table"
     :history="history"
     @rebind="rebind"
-  />
-
-  <PinDialog
-    v-model:visible="showPin"
-    :defaultTitle="title || 'Validation rules'"
-    :saving="pinning"
-    @pin="pinTile"
   />
 
   <CheckDialog

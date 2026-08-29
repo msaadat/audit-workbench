@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import assistant, dashboard, debug_store, doc_tests, llm
+from . import assistant, debug_store, doc_tests, engagement_progress, llm
 from .agent import commands, narration, routing, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
@@ -1016,7 +1016,7 @@ def _status_label(value: str) -> str:
 
 def _audit_status_text(workspace: Workspace) -> str:
     """Render the deterministic engagement projection as a concise chat reply."""
-    phases = dashboard.engagement_status_payload(workspace).get("phases") or []
+    phases = engagement_progress.engagement_status_payload(workspace).get("phases") or []
     states = {str(phase.get("state") or "") for phase in phases}
     if "attention" in states:
         overall = "Needs attention"

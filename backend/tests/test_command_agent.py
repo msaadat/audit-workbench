@@ -35,7 +35,7 @@ def test_registry_and_graph_reject_invalid_contracts(workspace_with_data):
     assert {item.type for item in actions.REGISTRY.all()} >= {"edit_finding", "delete_finding", "edit_report"}
     # Generation of a workflow-owned deliverable is not an action (P11.2A).
     assert {item.type for item in actions.REGISTRY.all()}.isdisjoint({
-        "generate_apm", "generate_report", "curate_dashboard", "rollup_rcm_results",
+        "generate_apm", "generate_report", "rollup_rcm_results",
         "verify_audit_completion", "infer_relationships", "run_document_test",
         "generate_all_rcm_working_papers",
     })

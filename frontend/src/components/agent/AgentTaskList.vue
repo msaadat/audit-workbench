@@ -49,7 +49,6 @@ const refNouns: Record<string, [string, string]> = {
   join: ['join', 'joins'],
   ruleset: ['ruleset', 'rulesets'],
   analysis: ['analysis', 'analyses'],
-  tile: ['tile', 'tiles'],
   check: ['check', 'checks'],
 }
 
