@@ -1618,9 +1618,10 @@ export interface VizSpec {
 }
 
 export interface NavigationTarget {
-  // Resolved through `useWorkspaceNavigation`, which owns which surface each
-  // of these currently lives on.
-  tab: 'planning' | 'documents' | 'doc-tests' | 'data-tests' | 'data' | 'query' | 'validation' | 'analysis' | 'findings' | 'report'
+  // A destination name, resolved through `useWorkspaceNavigation`, which owns
+  // which surface each of these currently lives on. The field is still called
+  // `tab` because it is the wire name the backend sends.
+  tab: 'apm' | 'rcm' | 'chain' | 'documents' | 'doc-tests' | 'data-tests' | 'data' | 'query' | 'analysis' | 'findings' | 'report'
   query: Record<string, string>
 }
 

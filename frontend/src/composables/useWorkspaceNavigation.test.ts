@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   BENCH_SECTIONS,
   FILE_SECTIONS,
-  destinationForLegacyTab,
   destinationForSection,
+  routeForTarget,
   surfacePath,
   workspaceRoute,
 } from './useWorkspaceNavigation'
@@ -27,13 +27,16 @@ describe('surfacePath', () => {
     expect(surfacePath('procurement', 'console')).toBe('/workspace/procurement/console')
   })
 
-  it('keeps section paths under their surface', () => {
-    expect(surfacePath('procurement', 'file', 'coverage')).toBe('/workspace/procurement/file/coverage')
-    expect(surfacePath('procurement', 'bench', 'documents')).toBe('/workspace/procurement/bench/documents')
+  it('names a work product directly under the workspace', () => {
+    // The audit file is a host, not a surface, so it contributes no segment:
+    // a reader sees the work product they asked for and nothing else.
+    expect(surfacePath('procurement', 'file', 'coverage')).toBe('/workspace/procurement/coverage')
+    expect(surfacePath('procurement', 'file', 'apm')).toBe('/workspace/procurement/apm')
   })
 
-  it('falls back to the bare surface when no section is named', () => {
-    expect(surfacePath('procurement', 'file')).toBe('/workspace/procurement/file')
+  it('keeps bench sections under the bench, which is still a surface', () => {
+    expect(surfacePath('procurement', 'bench', 'documents')).toBe('/workspace/procurement/bench/documents')
+    expect(surfacePath('procurement', 'bench')).toBe('/workspace/procurement/bench')
   })
 })
 
@@ -52,7 +55,7 @@ describe('workspaceRoute', () => {
 
   it('carries only the query keys the destination owns', () => {
     expect(workspaceRoute('procurement', 'rcm', { rcm: 'RCM-F08A71', test: 'DT-1' })).toEqual({
-      path: '/workspace/procurement/file/coverage',
+      path: '/workspace/procurement/coverage',
       query: { rcm: 'RCM-F08A71' },
     })
   })
@@ -82,14 +85,25 @@ describe('rail sections', () => {
   })
 })
 
-describe('legacy ?tab= links', () => {
-  it('still resolves the destinations that were retired from the rail', () => {
-    expect(destinationForLegacyTab('validation')).toBe('data')
-    expect(destinationForLegacyTab('planning')).toBe('apm')
-    expect(destinationForLegacyTab('planning', { view: 'rcm' })).toBe('rcm')
+describe('server-supplied targets', () => {
+  /**
+   * The backend names destinations directly now. These pin the two phase
+   * targets that used to arrive as `planning` and `planning?view=rcm`, because
+   * nothing translates that vocabulary any more — a backend that still sent it
+   * would route the whole planning phase to the assistant, silently.
+   */
+  it('routes a phase target to the work product it names', () => {
+    expect(routeForTarget('procurement', { tab: 'apm' })).toEqual({
+      path: '/workspace/procurement/apm', query: {},
+    })
+    expect(routeForTarget('procurement', { tab: 'rcm', query: { rcm: 'RCM-F08A71' } })).toEqual({
+      path: '/workspace/procurement/coverage', query: { rcm: 'RCM-F08A71' },
+    })
   })
 
-  it('sends an unknown tab to the assistant rather than nowhere', () => {
-    expect(destinationForLegacyTab('not-a-tab')).toBe('console')
+  it('sends an unknown target to the assistant rather than nowhere', () => {
+    expect(routeForTarget('procurement', { tab: 'not-a-destination' })).toEqual({
+      path: '/workspace/procurement/console', query: {},
+    })
   })
 })

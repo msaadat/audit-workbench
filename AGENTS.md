@@ -226,7 +226,7 @@ frontend/src/
 |  |- WorkspaceView.vue        - engagement shell: header, surface switcher
 |  |                             (Record / Assistant / Workbench), assistant
 |  |                             drawer, import
-|  |- AuditFileView.vue        - the section host under /file/<section>: which
+|  |- AuditFileView.vue        - the section host under /<section>: which
 |  |                             component answers for which work product. Its
 |  |                             rail is gone — the record is the index, the
 |  |                             chain is reached from the record's bar, and

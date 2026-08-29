@@ -1,15 +1,15 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { LocationQuery, LocationQueryRaw, RouteLocationRaw } from 'vue-router'
+import type { LocationQueryRaw, RouteLocationRaw } from 'vue-router'
 
 type QueryValue = string | number | null | undefined
 
 /**
  * Workspace navigation is destination-keyed, not path-keyed. Callers name where
  * they want to go ("rcm", "doc-tests") and this module owns which surface that
- * destination currently lives on. Phase 1 of docs/agentic-ux-plan.md moved every
- * destination from a `?tab=` query onto a real route; keeping the destination
- * names stable meant the ~25 call sites only changed shape, not intent.
+ * destination currently lives on. Destinations are the only vocabulary: the
+ * `?tab=` queries they replaced are gone from the router, from the backend's
+ * navigation targets, and from this module.
  */
 
 /**
@@ -17,6 +17,11 @@ type QueryValue = string | number | null | undefined
  * own path rather than the root: the landing question is "what was done here",
  * and the chat answers a different one — it is also always a click away in the
  * sidecar drawer on every surface but its own.
+ *
+ * `file` is a host rather than a place: it names which component answers for a
+ * work product, and its sections sit directly under the workspace. The audit
+ * file stopped being a surface when the record became the index, and the
+ * `/file/` segment outlived the thing it named.
  */
 export type WorkspaceSurface = 'home' | 'console' | 'file' | 'bench'
 
@@ -72,27 +77,8 @@ export const FILE_SECTIONS = [
 ] as const
 export const BENCH_SECTIONS = ['documents', 'tables', 'query', 'analysis'] as const
 
-/**
- * Destinations retired from the rail but still reachable from old URLs and
- * bookmarks. `planning` additionally depended on a `view=rcm` query.
- */
-const LEGACY_TABS: Record<string, WorkspaceDestination> = {
-  validation: 'data',
-  planning: 'apm',
-}
-
 function isDestination(value: string): value is WorkspaceDestination {
   return value in DESTINATIONS
-}
-
-/** Resolve a legacy `?tab=` value (plus its query) to a destination. */
-export function destinationForLegacyTab(
-  tab: string,
-  query: LocationQuery = {},
-): WorkspaceDestination {
-  if (tab === 'planning' && query.view === 'rcm') return 'rcm'
-  if (tab in LEGACY_TABS) return LEGACY_TABS[tab]
-  return isDestination(tab) ? tab : 'console'
 }
 
 /** Reverse lookup used by the surface rails to mark the active entry. */
@@ -110,6 +96,8 @@ export function surfacePath(workspaceId: string, surface: WorkspaceSurface, sect
   const base = `/workspace/${workspaceId}`
   if (surface === 'home') return base
   if (surface === 'console') return `${base}/console`
+  // Work products are named directly: `/workspace/x/apm`, not `/x/file/apm`.
+  if (surface === 'file') return `${base}/${section}`
   return section ? `${base}/${surface}/${section}` : `${base}/${surface}`
 }
 
@@ -137,31 +125,17 @@ export function workspaceRoute(
   return { path: surfacePath(workspaceId, spec.surface, spec.section), query: ownedQuery(destination, state) }
 }
 
-/** Carry a deep-linked URL's destination-owned query onto the new route. */
-export function workspaceRouteFromQuery(
-  workspaceId: string,
-  destination: WorkspaceDestination,
-  current: LocationQuery,
-): RouteLocationRaw {
-  const state: Record<string, QueryValue> = {}
-  for (const key of DESTINATIONS[destination].keys) {
-    const value = current[key]
-    state[key] = Array.isArray(value) ? value[0] : value
-  }
-  return workspaceRoute(workspaceId, destination, state)
-}
-
 /**
- * Resolve a server-supplied navigation target. The backend still names
- * destinations with the pre-surface vocabulary (`planning`, `validation`), so
- * targets go through the same legacy mapping as bookmarked URLs.
+ * Resolve a server-supplied navigation target. The backend names destinations,
+ * so this is a validation step rather than a translation: a target this build
+ * does not know falls back to the console instead of routing nowhere.
  */
 export function routeForTarget(
   workspaceId: string,
   target: { tab: string; query?: Record<string, string> },
 ): RouteLocationRaw {
   const query = target.query ?? {}
-  return workspaceRoute(workspaceId, destinationForLegacyTab(target.tab, query), query)
+  return workspaceRoute(workspaceId, isDestination(target.tab) ? target.tab : 'console', query)
 }
 
 /**

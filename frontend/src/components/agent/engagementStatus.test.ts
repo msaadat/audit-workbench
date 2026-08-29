@@ -39,8 +39,8 @@ const live = () => [
   phase('planning', 'complete', { rcm_rows: 27, tests: 60 }, {
     sub: [
       { id: 'eda', label: 'EDA', state: 'complete', complete: true, target: { tab: 'analysis', query: {} } },
-      { id: 'apm', label: 'APM', state: 'complete', complete: true, target: { tab: 'planning', query: {} } },
-      { id: 'rcm', label: 'RCM', state: 'complete', complete: true, target: { tab: 'planning', query: { view: 'rcm' } } },
+      { id: 'apm', label: 'APM', state: 'complete', complete: true, target: { tab: 'apm', query: {} } },
+      { id: 'rcm', label: 'RCM', state: 'complete', complete: true, target: { tab: 'rcm', query: {} } },
     ],
   }),
   phase('fieldwork', 'complete', {
@@ -182,7 +182,7 @@ describe('disclosures', () => {
       '41 of 60 conclusions were set by the assistant and never read.',
     ])
     // A disclosure points at the page that can settle it.
-    expect(model.disclosures.map(item => item.target.tab)).toEqual(['findings', 'planning'])
+    expect(model.disclosures.map(item => item.target.tab)).toEqual(['findings', 'rcm'])
   })
 
   it('agrees in number with itself when only one finding is owed', () => {

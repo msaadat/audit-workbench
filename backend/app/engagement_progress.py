@@ -53,7 +53,11 @@ _cache_guard = threading.Lock()
 # --------------------------------------------------------------------------- #
 # The derivation: item-level truth, at the console's price
 # --------------------------------------------------------------------------- #
-PHASE_TABS = {"planning": "planning", "fieldwork": "doc-tests", "report": "report"}
+# Where each phase opens. These name the frontend's navigation destinations
+# (see `useWorkspaceNavigation`), not the tab shell they used to name: the
+# frontend resolves a target straight to a route and no longer translates a
+# retired vocabulary on the way.
+PHASE_DESTINATIONS = {"planning": "apm", "fieldwork": "doc-tests", "report": "report"}
 
 # The statuses a test can rest at. Everything else is work still running,
 # and every reader of a phase gate needs the same list.
@@ -65,8 +69,11 @@ TERMINAL_TEST_STATUSES = {
 }
 
 
-def _target(tab: str, **query: str) -> dict:
-    return {"tab": tab, "query": {key: value for key, value in query.items() if value}}
+def _target(destination: str, **query: str) -> dict:
+    return {
+        "tab": destination,
+        "query": {key: value for key, value in query.items() if value},
+    }
 
 
 def _phase(phase_id: str, state: str, complete: bool, summary: str,
@@ -74,7 +81,7 @@ def _phase(phase_id: str, state: str, complete: bool, summary: str,
     return {
         "id": phase_id, "label": phase_id.title(), "state": state,
         "complete": complete, "summary": summary, "counts": counts,
-        "issues": issues, "target": _target(PHASE_TABS[phase_id]),
+        "issues": issues, "target": _target(PHASE_DESTINATIONS[phase_id]),
         "sub": sub or [],
     }
 
@@ -403,8 +410,8 @@ def _engagement_state_uncached(workspace: Workspace) -> dict:
                {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues,
                sub=[
                    _subphase("eda", "EDA", eda_started, eda_issues, _target("analysis")),
-                   _subphase("apm", "APM", started_apm, issues_apm, _target("planning")),
-                   _subphase("rcm", "RCM", rcm_started, issues_rcm, _target("planning", view="rcm")),
+                   _subphase("apm", "APM", started_apm, issues_apm, _target("apm")),
+                   _subphase("rcm", "RCM", rcm_started, issues_rcm, _target("rcm")),
                ]),
         _phase("fieldwork", fieldwork_state, fieldwork_complete, fieldwork_summary,
                {"data_tests": len(workspace.data_tests), "document_tests": len(tests),

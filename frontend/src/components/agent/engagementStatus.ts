@@ -269,7 +269,7 @@ function disclosuresFor(phases: EngagementPhase[]): EngagementDisclosure[] {
         key: 'agent',
         message: `${unread} of ${linked} ${pluralWord(linked, 'conclusion')} ${
           verb(unread, 'was', 'were')} set by the assistant and never read.`,
-        target: { tab: 'planning', query: { view: 'rcm' } },
+        target: { tab: 'rcm', query: {} },
       })
     }
   }

@@ -7,15 +7,7 @@ import EngagementRecordView from './views/EngagementRecordView.vue'
 import AuditFileView from './views/AuditFileView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import DebugView from './views/DebugView.vue'
-import {
-  destinationForLegacyTab,
-  workspaceRouteFromQuery,
-} from './composables/useWorkspaceNavigation'
 import { loadIdentity, useSession } from './composables/useSession'
-
-const WORKSPACE_ROUTES = [
-  'workspace', 'workspace-console', 'workspace-file', 'workspace-bench',
-]
 
 const router = createRouter({
   history: createWebHistory(),
@@ -39,11 +31,15 @@ const router = createRouter({
         // path. Both keep the shell, so the assistant drawer rides along.
         { path: '', name: 'workspace', component: EngagementRecordView, props: true },
         { path: 'console', name: 'workspace-console', component: ConsoleView, props: true },
-        { path: 'file/:section', name: 'workspace-file', component: AuditFileView, props: true },
         { path: 'bench/:section', name: 'workspace-bench', component: WorkbenchView, props: true },
-        // Bare surface paths land on their first section.
-        { path: 'file', redirect: to => `/workspace/${to.params.id}/file/apm` },
         { path: 'bench', redirect: to => `/workspace/${to.params.id}/bench/documents` },
+        // Work products sit directly under the workspace. They were grouped
+        // under `file/` while the audit file was a surface with its own rail;
+        // the record is the index now, so the grouping named nothing a reader
+        // could see. This wildcard is matched last: every static sibling above
+        // outranks it, and `AuditFileView` sends a section it does not answer
+        // for back to the first one.
+        { path: ':section', name: 'workspace-file', component: AuditFileView, props: true },
       ],
     },
   ],
@@ -74,23 +70,6 @@ router.beforeEach(async to => {
     return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } }
   }
   return true
-})
-
-/**
- * `?tab=` URLs predate the surface routes and are still in bookmarks, saved
- * report links, and the docs. Redirect them onto the destination they named,
- * carrying only the query keys that destination owns.
- *
- * This is a global guard rather than a per-route `beforeEnter`: a legacy link
- * followed from inside the workspace only changes the query, and `beforeEnter`
- * does not re-run while the matched route record stays the same.
- */
-router.beforeEach(to => {
-  if (!to.query.tab) return true
-  if (!WORKSPACE_ROUTES.includes(String(to.name ?? ''))) return true
-  const destination = destinationForLegacyTab(String(to.query.tab), to.query)
-  // The rewritten location drops `tab`, so the next pass falls straight through.
-  return workspaceRouteFromQuery(String(to.params.id ?? ''), destination, to.query)
 })
 
 export default router
