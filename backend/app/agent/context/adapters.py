@@ -3012,6 +3012,48 @@ def document_classification_scope(
     )
 
 
+CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
+
+
+def cycle_linkage_scope(workspace: Workspace) -> ContextScope:
+    """The vocabulary a cycle proposal may be written against.
+
+    One candidate per induced schema, carrying the type and its fields — the
+    whole vocabulary, because a rule naming anything else cannot be evaluated.
+    No rows and no document text: rules describe what the documents *are*, and
+    a proposal authored from what they happen to contain would fit itself to
+    this corpus rather than to the cycle.
+    """
+
+    from ... import cycle_linking
+
+    schemas = cycle_linking.schema_catalog(workspace)
+    if not schemas:
+        return ContextScope(candidates={CYCLE_SCHEMA_SOURCE_ID: ()})
+    # One item carrying every type, not one per type. A cycle is a statement
+    # about how the whole set relates, so the vocabulary is atomic: a budget
+    # that dropped one schema would leave a proposal describing a cycle with a
+    # role missing and no way to say which one, which is worse than not
+    # proposing at all.
+    content = {"schemas": schemas}
+    return ContextScope(
+        candidates={
+            CYCLE_SCHEMA_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="workspace:schemas",
+                    source=content,
+                    representations={"cycle_schema": content},
+                    metadata={
+                        "document_types": [
+                            item["document_type"] for item in schemas
+                        ]
+                    },
+                ),
+            )
+        }
+    )
+
+
 def document_structured_chunk_scope(
     workspace: Workspace,
     document_id: str,
@@ -3245,6 +3287,7 @@ __all__ = [
     "APM_POPULATION_SOURCE_ID",
     "APM_TEMPLATE_SOURCE_ID",
     "APM_CURRENT_ARTIFACT_SOURCE_ID",
+    "CYCLE_SCHEMA_SOURCE_ID",
     "DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID",
     "DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID",
     "DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID",

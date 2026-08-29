@@ -28,6 +28,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'planning.context_ready': 'Planning context',
   'planning.apm_ready': 'Audit planning memorandum',
   'planning.rcm_ready': 'Risk and control matrix',
+  'tests.cycle_ruleset_proposed': 'Cycle rules proposed for review',
   'tests.specified': 'Executable test specifications',
   'tests.promoted_from_analysis': 'Analyses placed in the matrix',
   'fieldwork.executed': 'Fieldwork execution',

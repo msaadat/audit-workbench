@@ -19,7 +19,10 @@ from __future__ import annotations
 
 from ... import (
     analysis_promotion,
+    cycle_linking,
     cycle_measurement,
+    cycle_rulesets,
+    document_schemas,
     doc_tests,
     rcm_execution,
 )
@@ -31,6 +34,7 @@ from ._shared import rows as _rows
 from ._shared import target_rcm_ids as _target_rcm_ids
 
 CAPABILITY_IDS: tuple[str, ...] = (
+    "tests.cycle_ruleset_proposed",
     "tests.specified",
     "tests.promoted_from_analysis",
 )
@@ -98,14 +102,45 @@ def _unvouched_types(workspace: Workspace) -> list[str]:
 # --------------------------------------------------------------------------- #
 # tests.specified
 # --------------------------------------------------------------------------- #
+def _awaits_cycle_test(workspace: Workspace, row: dict, tests: list[dict]) -> bool:
+    """Whether this row's evidence strategy became available after its test.
+
+    A ``transaction_cycle`` attribute generated a fallback while no ruleset was
+    approved — correctly, and the run said so at the time. Approving one is a
+    change in what the row *can* be answered with, and a row still holding the
+    fallback is not covered in the sense this capability means: its requirement
+    is answered by prose where linked evidence now exists.
+
+    Keyed on the row and the effective ruleset rather than on the test's age:
+    what matters is whether the strongest available evidence path is the one in
+    use, which is a question about now, not about ordering.
+    """
+
+    if cycle_rulesets.effective(workspace) is None:
+        return False
+    declares = any(
+        isinstance(attribute, dict)
+        and cycle_linking.schema_backed(attribute)
+        and attribute.get("evidence_kind") == "transaction_cycle"
+        for attribute in row.get("control_attributes") or []
+    )
+    if not declares:
+        return False
+    return not any(str(item.get("test_kind") or "") == "cycle_vouch" for item in tests)
+
+
 def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
     rows = _rows(workspace, scope)
     total = len(rows)
     grouped = _by_row(_scoped_manifest(workspace, scope))
     ready = 0
     review_required = 0
+    awaiting_cycle = 0
     for row in rows:
         tests = grouped.get(row["id"], [])
+        if _awaits_cycle_test(workspace, row, tests):
+            awaiting_cycle += 1
+            continue
         if any(item["executable"] for item in tests):
             ready += 1
             continue
@@ -117,6 +152,17 @@ def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
             for item in tests
         ):
             review_required += 1
+    if awaiting_cycle:
+        return Readiness(
+            "missing",
+            (
+                f"{counted(awaiting_cycle, 'RCM row')} "
+                f"{verb(awaiting_cycle, 'declares', 'declare')} transaction-cycle "
+                "evidence and still hold the test generated before a cycle "
+                "ruleset was approved",
+            ),
+            details={"ready": ready, "total": total, "awaiting_cycle": awaiting_cycle},
+        )
     if total and ready == total:
         unvouched = _unvouched_types(workspace)
         if unvouched:
@@ -171,7 +217,7 @@ def _generation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             item["status"] == "draft" and item.get("created_by") != "agent"
             for item in tests
         )
-        if covered:
+        if covered and not _awaits_cycle_test(workspace, row, tests):
             if not force and not upgradeable_draft:
                 continue
         elif auditor_draft_blocks:
@@ -246,6 +292,140 @@ def _promotion_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     ]
 
 
+# --------------------------------------------------------------------------- #
+# tests.cycle_ruleset_proposed
+# --------------------------------------------------------------------------- #
+def _cycle_attributes(workspace: Workspace) -> list[dict]:
+    """The matrix's transaction-cycle attributes — what a ruleset exists to serve.
+
+    Keyed on the matrix rather than on the extracted records, unlike
+    ``_unvouched_types``: this asks what the engagement has *decided* it needs
+    linked evidence for, which is the question a proposal answers. The other
+    asks whether that decision was made at all, and the two must not be the
+    same reading or neither can check the other.
+    """
+
+    found: list[dict] = []
+    for row in workspace.rcm or []:
+        for attribute in row.get("control_attributes") or []:
+            if (
+                isinstance(attribute, dict)
+                and cycle_linking.schema_backed(attribute)
+                and attribute.get("evidence_kind") == "transaction_cycle"
+            ):
+                found.append(attribute)
+    return found
+
+
+def _ruleset_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Whether this engagement has the cycle rules its matrix asks for.
+
+    Satisfied where nothing asks: an engagement whose matrix classifies no
+    attribute as transaction-cycle evidence needs no rules, and blocking it on
+    a proposal nobody will read would make every audit wait on a cycle it does
+    not have. Where the matrix *does* ask, an unproposed ruleset is missing
+    work the agent can do — as distinct from the approval that follows it,
+    which it cannot.
+    """
+
+    if not _cycle_attributes(workspace):
+        return Readiness("satisfied")
+    if not document_schemas.list_schemas(workspace):
+        # The vocabulary a proposal is written against does not exist yet.
+        # Reported rather than blocking: classification and induction are the
+        # repair, and they are their own capabilities.
+        return Readiness(
+            "review_required",
+            (
+                "The matrix asks for transaction-cycle evidence and no document "
+                "schema has been induced, so no cycle rules can be written.",
+            ),
+        )
+    if cycle_rulesets.list_rulesets(workspace):
+        return Readiness("satisfied")
+    return Readiness(
+        "missing",
+        ("No cycle ruleset has been proposed for this engagement.",),
+    )
+
+
+def _ruleset_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit, because a workspace holds one cycle.
+
+    The guarded parents are the matrix rows whose attributes ask for linked
+    evidence: those are the question the rules answer, and a rewritten row must
+    conflict a proposal written against the old one.
+
+    Schema staleness is carried by the input payload instead, because a schema
+    is not a workspace artifact and ``parent_hashes`` has nothing to say about
+    a side store — the same reason the schema freeze posts its own content hash.
+    Stamping each schema's hash here means a re-derived schema moves the unit's
+    ``input_sha1`` and the proposal re-expands, rather than an auditor
+    approving rules against a vocabulary that has since moved.
+    """
+
+    if not _cycle_attributes(workspace):
+        return []
+    schemas = document_schemas.list_schemas(workspace)
+    if not schemas or cycle_rulesets.list_rulesets(workspace):
+        return []
+    rows = tuple(
+        f"rcm:{row['id']}"
+        for row in workspace.rcm or []
+        if any(
+            isinstance(attribute, dict)
+            and cycle_linking.schema_backed(attribute)
+            and attribute.get("evidence_kind") == "transaction_cycle"
+            for attribute in row.get("control_attributes") or []
+        )
+    )
+    vocabulary = sorted(
+        (
+            {
+                "document_type": str(item.get("document_type") or ""),
+                "schema_hash": str(item.get("schema_hash") or ""),
+            }
+            for item in schemas
+            if item.get("document_type")
+        ),
+        key=lambda item: item["document_type"],
+    )
+    return [
+        UnitSpec(
+            semantic_unit_id("cycle_ruleset", "proposal"),
+            "cycle_ruleset_proposal",
+            "Propose the cycle rules for this engagement",
+            rows,
+            {"schemas": vocabulary},
+        )
+    ]
+
+
+def _cycle_ruleset_proposed() -> Capability:
+    return Capability(
+        "tests.cycle_ruleset_proposed",
+        "cycle_ruleset",
+        "Cycle rules proposed for review",
+        "cycle_ruleset_proposal",
+        audit_workflow.dependencies("tests.cycle_ruleset_proposed"),
+        _ruleset_ready,
+        _ruleset_units,
+        # The schemas travel as declared context, so their provenance is
+        # recorded like every other supplied source. Their *identity* rides on
+        # the unit's input payload instead — the hashes are stamped there, so a
+        # re-derived schema moves ``input_sha1`` and re-proposes rather than
+        # leaving an auditor approving rules against a vocabulary that moved.
+        context="tests.cycle_linkage",
+        # One unit, and it commits. Serialized for the same reason every
+        # committing capability is.
+        barrier="all_settled_then_validate",
+        # Rules are written to answer the matrix's comparisons, so a rewritten
+        # matrix is a different question and the proposal answering the old one
+        # is not an answer to it.
+        invalidate_on=("rcm",),
+    )
+
+
 def _analysis_promoted() -> Capability:
     return Capability(
         "tests.promoted_from_analysis",
@@ -288,6 +468,7 @@ def _tests_specified() -> Capability:
 
 
 _BUILDERS = {
+    "tests.cycle_ruleset_proposed": _cycle_ruleset_proposed,
     "tests.specified": _tests_specified,
     "tests.promoted_from_analysis": _analysis_promoted,
 }

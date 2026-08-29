@@ -1777,6 +1777,63 @@ def _comparison_text(comparison: Mapping[str, object]) -> str:
     )
 
 
+#: What an approved join key proves about the pair it bound. A join on
+#: normalized equality does not establish that the printed values were equal,
+#: so it answers only the normalized comparison; an exact join establishes both.
+_JOIN_COVERAGE = {
+    "exact_equal": frozenset({"equal_exact", "equal_normalized"}),
+    "normalized_equal": frozenset({"equal_normalized"}),
+}
+
+
+def join_key_covers(
+    join_key: Mapping[str, object],
+    comparison: Mapping[str, object],
+    roles: Mapping[str, Mapping[str, object]],
+) -> bool:
+    """Whether one approved join key answers one required comparison.
+
+    A matrix requirement that two documents reference each other is answered by
+    the join that binds them, not by an assertion repeating it. The distinction
+    matters the other way round from usual: an assertion duplicating a join key
+    *cannot fail*, because the pair it would test exists only because the join
+    already matched. Demanding one would file a test incapable of finding an
+    exception — the same defect the data-test validity gate refuses — and read
+    as coverage while proving nothing.
+
+    Still selector-exact on the operands, and never for anything but equality:
+    a join says these two references are the same, and says nothing about an
+    amount, a date, or the presence of an approval.
+    """
+
+    operator = str(comparison.get("operator") or "")
+    if operator not in _JOIN_COVERAGE.get(
+        str(join_key.get("match") or "normalized_equal"), frozenset()
+    ):
+        return False
+    if plain_json(comparison.get("tolerance")):
+        return False
+    actual_left, actual_right = _assertion_signature(join_key, roles)
+
+    def wanted(operand: object) -> tuple[str, str] | None:
+        if not isinstance(operand, Mapping):
+            return None
+        return (
+            str(operand.get("document_type") or ""),
+            str(operand.get("field") or ""),
+        )
+
+    expected = (wanted(comparison.get("left")), wanted(comparison.get("right")))
+    if expected[1] is None:
+        return False
+    # A join is symmetric by construction: it binds a pair, and which side was
+    # written first is not part of what it establishes.
+    return (actual_left, actual_right) == expected or (
+        actual_right,
+        actual_left,
+    ) == expected
+
+
 def uncovered_comparisons(
     ruleset: Mapping[str, object], comparisons: Iterable[Mapping[str, object]]
 ) -> list[dict]:
@@ -1789,11 +1846,18 @@ def uncovered_comparisons(
 
     roles = {str(role.get("name")): role for role in ruleset.get("roles") or []}
     assertions = list(ruleset.get("assertions") or [])
+    join_keys = list(ruleset.get("join_keys") or [])
     return [
         dict(comparison)
         for comparison in comparisons or []
         if not any(
             assertion_covers(assertion, comparison, roles) for assertion in assertions
+        )
+        # A requirement that two documents reference each other is answered by
+        # the join that binds them. See ``join_key_covers``: the assertion it
+        # would otherwise demand is one that cannot fail.
+        and not any(
+            join_key_covers(join_key, comparison, roles) for join_key in join_keys
         )
     ]
 

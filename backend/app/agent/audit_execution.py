@@ -18,7 +18,14 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-from .. import cycle_linking, cycle_vouching, doc_tests, document_analysis, rcm_execution
+from .. import (
+    cycle_linking,
+    cycle_vouching,
+    doc_tests,
+    document_analysis,
+    rcm_execution,
+    tooling,
+)
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import (
@@ -49,6 +56,7 @@ from .documents_execution import (
 )
 from .context import (
     ContextResolver,
+    cycle_linkage_scope,
     apm_document_methodology_scope,
     apm_table_profile_candidates,
     finding_draft_scope,
@@ -68,7 +76,7 @@ from .executors.planning import (
     PlanningContextExecutorTarget,
     RcmExecutorTarget,
 )
-from .executors.tests import TestGenerateExecutorTarget
+from .executors.tests import CycleRulesetExecutorTarget, TestGenerateExecutorTarget
 from .executors.reporting import (
     VERIFICATION_REF,
     FindingExecutorTarget,
@@ -1276,6 +1284,87 @@ class AuditWorkflowExecution(ActionRunner):
             on_committed=on_committed,
         )
 
+    def _bind_cycle_ruleset(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the one unit that proposes this engagement's cycle rules.
+
+        The schemas travel on the unit input rather than through a declared
+        context, and they are the unit's guarded parents: rules naming a field
+        are only rules while that field is what the schema says it is, so a
+        re-derived schema must conflict this commit rather than leave a
+        proposal an auditor would approve against a vocabulary that moved.
+        """
+
+        self.ws = subject
+        parents = list(unit.get("parent_refs") or [])
+        expected_parents = parent_hashes(self.ws, parents)
+        target = CycleRulesetExecutorTarget(self.ws, self.run["id"])
+        task = self.add_task(
+            "cycle_ruleset", "workflow:cycle_ruleset", "Cycle rules for review"
+        )
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            output = (outcome.receipt.output if outcome.receipt else {}) or {}
+            ruleset_id = str(output.get("ruleset_id") or "")
+            if ruleset_id:
+                self.record_artifact(
+                    "cycle_ruleset", ruleset_id, "", "created", None
+                )
+                # Proposed is not approved, and a reader of the run should not
+                # have to know the difference from the artifact alone.
+                self.warn(
+                    f"Cycle rules {ruleset_id} are proposed and await an "
+                    "auditor's approval; until they are approved no cycle test "
+                    "can be generated from them."
+                )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="tests.cycle_linkage",
+                executor_id="tests.cycle_ruleset",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": parents,
+                    # The population an anchor is matched from. Schema only —
+                    # no rows reach a proposal, which is authored from what the
+                    # data *is*, never from what it happens to contain. The
+                    # document schemas arrive as declared context instead.
+                    "tables": tooling.table_schemas(self.ws),
+                },
+                activity={
+                    "artifact_refs": ["workflow:cycle_ruleset"],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_parents,
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=None,
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=lambda: resolve_context(
+                self, self.context_resolver, capability, unit,
+                cycle_linkage_scope(self.ws),
+            ),
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=None,
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
+
     def _bind_test_generate(
         self,
         subject: Workspace,
@@ -1851,6 +1940,10 @@ def build_audit_workflow_runner(
         "planning.rcm_ready": (
             adapter._bind_rcm,
             {"worker": "planning.rcm", "executor": "planning.rcm"},
+        ),
+        "tests.cycle_ruleset_proposed": (
+            adapter._bind_cycle_ruleset,
+            {"worker": "tests.cycle_linkage", "executor": "tests.cycle_ruleset"},
         ),
         "tests.specified": (
             adapter._bind_test_generate,

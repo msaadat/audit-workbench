@@ -1487,7 +1487,13 @@ Keys:
 
 operator is one of: equal_exact, equal_normalized, numeric_within,
 date_on_or_before, date_within, present. Only `present` takes no right operand;
-every other operator needs one."""
+every other operator needs one.
+
+tolerance is omitted or null unless the operator takes one, and is always an
+object naming which kind: {{"absolute": n}} or {{"percent": n}} for
+numeric_within, {{"days": n}} for date_within. A bare number does not say
+whether 0.01 means a hundredth of a currency unit or one percent of the
+amount, and those are different rules."""
 
 
 def _linkage_operand(raw: object, label: str) -> dict[str, Any]:
@@ -1570,6 +1576,19 @@ def _linkage_response_schema(response: str) -> Mapping[str, Any]:
     }
 
 
+def _supplied_schemas(request: WorkerRequest) -> list[object]:
+    """The engagement's vocabulary, as one atomic supplied item.
+
+    Read through one accessor by both the prompt and the validator, so what a
+    proposal is judged against is exactly what it was shown.
+    """
+
+    item = _resolved_item(request, CYCLE_SCHEMA_SOURCE_ID)
+    if isinstance(item, Mapping):
+        return list(item.get("schemas") or [])
+    return list(item or [])
+
+
 def validate_linkage_proposal(
     proposal: Mapping[str, Any], request: WorkerRequest
 ) -> Mapping[str, Any]:
@@ -1584,7 +1603,7 @@ def validate_linkage_proposal(
         str(item.get("document_type")): {
             str(field.get("name")): field for field in item.get("fields") or []
         }
-        for item in request.unit_input.get("schemas") or []
+        for item in _supplied_schemas(request)
     }
     roles = {
         str(role.get("name")): str(role.get("document_type"))
@@ -1622,6 +1641,36 @@ def validate_linkage_proposal(
         field_of(item["left"], f"Assertion '{item['id']}' left")
         if item.get("right") is not None:
             field_of(item["right"], f"Assertion '{item['id']}' right")
+        # The same shape ``cycle_rulesets`` will demand at commit. Checked here
+        # so a wrong one is repaired in the bounded loop this worker already
+        # has, rather than validating cleanly and then failing the unit at the
+        # store — which is where a bare `0.01` landed on the first live run.
+        tolerance = item.get("tolerance")
+        if tolerance is None:
+            continue
+        if not isinstance(tolerance, Mapping):
+            raise WorkerResponseValidationError(
+                f"Assertion '{item['id']}' states tolerance "
+                f"{tolerance!r}, which does not say what kind it is. Use "
+                '{"absolute": n} or {"percent": n} for numeric_within, '
+                '{"days": n} for date_within.'
+            )
+        named = {
+            key: value
+            for key, value in tolerance.items()
+            if key in ("absolute", "percent", "days") and value is not None
+        }
+        if not named:
+            raise WorkerResponseValidationError(
+                f"Assertion '{item['id']}' states a tolerance naming none of "
+                "absolute, percent or days."
+            )
+        for key, value in named.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise WorkerResponseValidationError(
+                    f"Assertion '{item['id']}' tolerance.{key} must be a "
+                    "non-negative number."
+                )
     field_of(proposal["anchor"], "The anchor")
     return proposal
 
@@ -1633,9 +1682,14 @@ def run_linkage_worker(
 ) -> str:
     """Send the engagement's schemas and ask how its documents relate."""
 
+    # Unwrapped, not just listed: ``WorkerRequest`` returns a recursively
+    # immutable input, so each entry arrives as ``MappingProxyType`` and
+    # ``json.dumps`` refuses it. The same shape stopped the RCM's schema
+    # catalog reaching its authoring turn, and stayed invisible there because
+    # the only catalog ever serialized was the empty one.
     payload = {
-        "schemas": list(request.unit_input.get("schemas") or []),
-        "tables": list(request.unit_input.get("tables") or []),
+        "schemas": _plain_json(_supplied_schemas(request)),
+        "tables": _plain_json(list(request.unit_input.get("tables") or [])),
     }
     user = json.dumps(payload, indent=1, default=str)
     if attempt.is_repair:

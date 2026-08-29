@@ -423,3 +423,85 @@ def test_an_already_contracted_attribute_is_not_asked_again():
     rows = [{"control_attributes": [attribute()]}]
 
     assert planning_worker._cycle_attribute_requests(rows) == []
+
+
+# ------------------------------------------- a linkage requirement is a join
+# The matrix authored `link_purchase_order` — that a goods receipt references
+# its order — as a required comparison. The approved rules expressed it as the
+# join key that binds the two, and the build refused for want of an assertion.
+
+def _linkage_ruleset():
+    return {
+        "roles": [
+            {"name": "receipt", "document_type": "goods_receipt",
+             "cardinality": "one", "required": True},
+            {"name": "order", "document_type": "purchase_order",
+             "cardinality": "one", "required": True},
+        ],
+        "join_keys": [{
+            "id": "po_to_grn", "match": "exact_equal",
+            "left": {"role": "order", "field": "order_number"},
+            "right": {"role": "receipt", "field": "purchase_order_number"},
+        }],
+        "assertions": [],
+    }
+
+
+def _linkage_comparison(**overrides):
+    comparison = {
+        "key": "link_purchase_order",
+        "left": {"document_type": "goods_receipt",
+                 "field": "purchase_order_number"},
+        "right": {"document_type": "purchase_order", "field": "order_number"},
+        "operator": "equal_exact",
+    }
+    comparison.update(overrides)
+    return comparison
+
+
+def test_a_join_key_answers_the_requirement_that_two_documents_reference_each_other():
+    """The assertion it would otherwise demand is one that cannot fail.
+
+    The pair an assertion would test exists only because the join already
+    matched, so repeating the equality files a test incapable of finding an
+    exception — coverage that proves nothing, which is the same defect the
+    data-test validity gate refuses.
+    """
+
+    assert cycle_linking.uncovered_comparisons(
+        _linkage_ruleset(), [_linkage_comparison()]
+    ) == []
+
+
+def test_a_normalized_join_does_not_answer_an_exact_requirement():
+    """It bound the pair on folded values and says nothing about the printed ones."""
+
+    ruleset = _linkage_ruleset()
+    ruleset["join_keys"][0]["match"] = "normalized_equal"
+    assert cycle_linking.uncovered_comparisons(
+        ruleset, [_linkage_comparison()]
+    ) != []
+    # The normalized requirement it does answer.
+    assert cycle_linking.uncovered_comparisons(
+        ruleset, [_linkage_comparison(operator="equal_normalized")]
+    ) == []
+
+
+def test_a_join_key_answers_nothing_but_equality():
+    """It says these two references are the same, and nothing about an amount."""
+
+    for operator in ("numeric_within", "date_on_or_before", "present"):
+        assert cycle_linking.uncovered_comparisons(
+            _linkage_ruleset(), [_linkage_comparison(operator=operator)]
+        ) != [], f"{operator} must not be covered by a join"
+
+
+def test_a_join_key_over_other_fields_answers_nothing():
+    """Selector-exact still: a neighbouring join is a different linkage."""
+
+    assert cycle_linking.uncovered_comparisons(
+        _linkage_ruleset(),
+        [_linkage_comparison(
+            left={"document_type": "goods_receipt", "field": "grn_number"}
+        )],
+    ) != []

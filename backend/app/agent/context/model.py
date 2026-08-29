@@ -261,6 +261,12 @@ class ContextPrivacy(_JSONModel):
     # formulas, comments, extracted document text) is a different content class
     # with no representation registered at all.
     allow_file_metadata: bool = False
+    # The field names, roles and value types an induced document schema states.
+    # Its own permission because it is its own content class: induction read the
+    # documents to derive it, but what travels is the shape they share and never
+    # a value any of them printed. A context permitted to see a schema is not
+    # thereby permitted to see the text it was induced from.
+    allow_document_schemas: bool = False
     allow_table_metadata: bool = False
     allow_table_profiles: bool = False
     allow_table_aggregates: bool = False
@@ -316,6 +322,7 @@ class ContextPrivacy(_JSONModel):
         "allow_document_text",
         "allow_document_images",
         "allow_file_metadata",
+        "allow_document_schemas",
         "allow_table_metadata",
         "allow_table_profiles",
         "allow_table_aggregates",

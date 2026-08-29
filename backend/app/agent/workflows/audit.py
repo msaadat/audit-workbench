@@ -97,7 +97,15 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "documents.types_classified",
         "documents.schemas_induced",
     ),
-    "tests.specified": ("planning.rcm_ready",),
+    # Rules are written against the matrix's comparisons and the induced
+    # vocabulary, so both must exist first. Proposing is not approving: this
+    # edge buys an engagement a reviewable proposal, and the approval that
+    # makes it able to produce a result stays an auditor's, off this graph.
+    "tests.cycle_ruleset_proposed": (
+        "planning.rcm_ready",
+        "documents.schemas_induced",
+    ),
+    "tests.specified": ("planning.rcm_ready", "tests.cycle_ruleset_proposed"),
     # Placing an exploratory procedure needs the matrix to place it in. It sits
     # after test generation so a promoted test is written against a matrix whose
     # own tests already exist, and before fieldwork so a promoted test is

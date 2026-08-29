@@ -736,3 +736,34 @@ def test_run_runtime_owns_manifest_persistence_boundary(workspace_with_data):
     reference = runtime.persist_context_manifest(manifest)
 
     assert runtime.load_context_manifest(reference) == manifest
+
+
+def test_every_privacy_permission_survives_serialization():
+    """A permission missing from ``_FIELDS`` is granted in memory and lost on disk.
+
+    ``to_dict`` enumerates an explicit tuple rather than the dataclass fields,
+    so adding a permission without adding it there yields an object that reads
+    ``True`` in the preset and ``False`` everywhere the spec is persisted and
+    reloaded — which is where resolution actually checks it. The failure
+    surfaces as the preset being refused for a permission it visibly grants.
+    """
+
+    from dataclasses import fields as dataclass_fields
+
+    declared = {
+        item.name
+        for item in dataclass_fields(ContextPrivacy)
+        if item.name.startswith("allow_")
+    }
+    assert declared == set(ContextPrivacy._FIELDS), (
+        "ContextPrivacy._FIELDS must list every allow_* permission; missing: "
+        + ", ".join(sorted(declared - set(ContextPrivacy._FIELDS)))
+    )
+
+    # And the round trip actually carries them.
+    granted = ContextPrivacy(
+        **{name: True for name in declared}
+    )
+    restored = ContextPrivacy.from_dict(granted.to_dict())
+    for name in declared:
+        assert getattr(restored, name) is True, f"{name} was lost in the round trip"

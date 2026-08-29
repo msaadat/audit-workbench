@@ -44,6 +44,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "vision_transcript": "allow_document_text",
     "page_image": "allow_document_images",
     "file_metadata": "allow_file_metadata",
+    "cycle_schema": "allow_document_schemas",
     "table_metadata": "allow_table_metadata",
     "table_profile": "allow_table_profiles",
     # Derived strictly by aggregating table profiles, so it is the same content
@@ -871,6 +872,33 @@ PRESETS.register(
                 allow_table_profiles=True,
                 allow_small_table_rows=True,
             ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="tests.cycle_linkage",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="cycle_schemas",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("cycle_schema"),),
+                    # One item, carrying every induced type. The vocabulary is
+                    # atomic for this worker: a cycle is a statement about how
+                    # the whole set relates, so a budget that admitted some of
+                    # it would produce a proposal missing a role with nothing
+                    # saying which. Starved, the source reports as starved.
+                    budget=ContextBudget(max_items=1, max_characters=64_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=64_000),
+            # The schemas, and nothing they were induced from.
+            privacy=ContextPrivacy(allow_document_schemas=True),
         ),
     )
 )

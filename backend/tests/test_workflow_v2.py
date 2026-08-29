@@ -436,7 +436,11 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
             "documents.types_classified",
             "documents.schemas_induced",
         ),
-        "tests.specified": ("planning.rcm_ready",),
+        "tests.cycle_ruleset_proposed": (
+        "planning.rcm_ready",
+        "documents.schemas_induced",
+    ),
+    "tests.specified": ("planning.rcm_ready", "tests.cycle_ruleset_proposed"),
         "tests.promoted_from_analysis": ("tests.specified",),
         "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
         "results.rolled_up": ("fieldwork.executed",),
@@ -482,6 +486,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
+        "tests.cycle_ruleset_proposed",
         "tests.specified",
         "tests.promoted_from_analysis",
         "fieldwork.executed",
@@ -532,6 +537,11 @@ def test_partial_goal_prunes_current_prerequisites():
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
+        # In the closure, and reused rather than staged: this matrix classifies
+        # no attribute as transaction-cycle evidence, so there are no cycle
+        # rules for anyone to write. An engagement without a cycle must not
+        # wait on a proposal nobody would read.
+        "tests.cycle_ruleset_proposed",
         "tests.specified",
     ]
     assert reused == resolved[:-1]

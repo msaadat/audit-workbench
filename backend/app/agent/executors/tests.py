@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ... import cycle_vouching, data_tests, doc_tests
+from ... import cycle_rulesets, cycle_vouching, data_tests, doc_tests
 from ...workspace_transactions import (
     ParentConflict,
     canonical_sha1,
@@ -633,6 +633,171 @@ def reconcile_test_generation(
     )
 
 
+# --------------------------------------------------------------------------- #
+# tests.cycle_ruleset
+# --------------------------------------------------------------------------- #
+CYCLE_RULESET_EXECUTOR_ID = "tests.cycle_ruleset"
+
+
+@dataclass
+class CycleRulesetExecutorTarget:
+    """Mutable target for one proposed cycle ruleset."""
+
+    workspace: Workspace
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Cycle ruleset target requires a Workspace.")
+        run_id = str(self.run_id or "").strip()
+        if not run_id:
+            raise ValueError("Cycle ruleset target requires a run_id.")
+        self.run_id = run_id
+
+
+def cycle_ruleset_ref(ruleset_id: str) -> str:
+    return f"cycle_ruleset:{ruleset_id}"
+
+
+def _cycle_ruleset_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    record: Mapping[str, object],
+) -> ExecutorResult:
+    ref = cycle_ruleset_ref(str(record.get("ruleset_id") or ""))
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=[ref],
+        applied_parents=dict(request.expected_parents),
+        # A ruleset lives in a side store, so ``parent_hashes`` has nothing to
+        # say about it; its own rules hash is the honest postcondition. The
+        # hash deliberately excludes ``measured``, so a fan-out that moved
+        # because documents arrived does not read as a different commit.
+        postcondition_hashes={
+            ref: hashlib.sha1(
+                str(record.get("ruleset_hash") or "").encode("utf-8")
+            ).hexdigest()
+        },
+        output={
+            "status": "proposed",
+            "ruleset_id": str(record.get("ruleset_id") or ""),
+            "ruleset_hash": str(record.get("ruleset_hash") or ""),
+            "cycle_label": str(record.get("cycle_label") or ""),
+            "roles": len(list(record.get("roles") or [])),
+            "join_keys": len(list(record.get("join_keys") or [])),
+            "assertions": len(list(record.get("assertions") or [])),
+        },
+    )
+
+
+def execute_cycle_ruleset(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Store one model-proposed cycle ruleset. Proposing is never approving.
+
+    The record lands with ``status: proposed`` and no approver, which is the
+    whole point of the separation: an agent authors rules, and only an auditor
+    reading the measured fan-out can make them able to produce a result.
+    """
+
+    if not isinstance(raw_target, CycleRulesetExecutorTarget):
+        raise WorkspaceError("Unsupported cycle ruleset target.")
+    proposal = request.proposal
+    if not isinstance(proposal, Mapping):
+        raise WorkspaceError("A cycle ruleset commit requires a proposal.")
+    target = raw_target
+    state: dict[str, object] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        return cycle_rulesets.save(
+            fresh, _plain_json(proposal), proposed_by="agent"
+        )
+
+    # Through the transaction even though the ruleset lands in a side store,
+    # for the reason the schema freeze is: it takes the write lock, re-checks
+    # the schemas it was written against have not moved underneath, and
+    # publishes a revision so the proposal is an event rather than a file.
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _cycle_ruleset_result(
+        request,
+        committed.workspace,
+        revision_before=int(state["revision_before"]),
+        record=dict(committed.value),
+    )
+
+
+def reconcile_cycle_ruleset(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted proposal commit.
+
+    Keyed on the rules hash rather than on the ruleset id: the id is minted at
+    save time, so a resumed run cannot know the one its interrupted attempt
+    produced. A stored proposal asserting exactly these rules *is* this commit,
+    and re-running would file a second identical proposal for an auditor to
+    choose between for no reason.
+    """
+
+    if not isinstance(raw_target, CycleRulesetExecutorTarget):
+        raise WorkspaceError("Unsupported cycle ruleset target.")
+    target = raw_target
+    proposal = request.proposal
+    if not isinstance(proposal, Mapping):
+        return ExecutorReconciliation("not_applied")
+    current = Workspace(target.workspace.root)
+    try:
+        expected = cycle_rulesets.validate(current, _plain_json(proposal))
+    except WorkspaceError:
+        # The schemas moved under the proposal, so it is not this commit and
+        # cannot become it. Re-running is what reports that honestly.
+        return ExecutorReconciliation("not_applied")
+    stored = next(
+        (
+            record
+            for record in cycle_rulesets.list_rulesets(current)
+            if str(record.get("ruleset_hash") or "")
+            == str(expected.get("ruleset_hash") or "")
+        ),
+        None,
+    )
+    if stored is None:
+        return ExecutorReconciliation("not_applied")
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_cycle_ruleset_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            record=stored,
+        ),
+        reason="This run's cycle ruleset proposal already holds.",
+    )
+
+
+CYCLE_RULESET_EXECUTOR = ExecutorDefinition(
+    executor_id=CYCLE_RULESET_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_cycle_ruleset,
+    reconciler=reconcile_cycle_ruleset,
+)
+
+EXECUTORS.register(CYCLE_RULESET_EXECUTOR)
+
+
 GENERATE_EXECUTOR = ExecutorDefinition(
     executor_id=GENERATE_EXECUTOR_ID,
     concurrency=ExecutorConcurrency("parent_hashes"),
@@ -644,6 +809,9 @@ EXECUTORS.register(GENERATE_EXECUTOR)
 
 
 __all__ = [
+    "CYCLE_RULESET_EXECUTOR",
+    "CYCLE_RULESET_EXECUTOR_ID",
+    "CycleRulesetExecutorTarget",
     "GENERATE_EXECUTOR",
     "GENERATE_EXECUTOR_ID",
     "TestGenerateExecutorTarget",
