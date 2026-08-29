@@ -90,10 +90,14 @@ _SPINE: dict[str, dict[str, Any]] = {
     "documents.analysis_generated": {
         "label": "Document analyses", "destination": "documents",
         "unit": "document", "count": "document_analyses",
+        "headline": "Analyse the imported documents",
+        "prompt": "Analyse the documents.",
     },
     "analysis.executed": {
         "label": "Analysis library", "destination": "analysis",
         "unit": "analysis", "unit_plural": "analyses", "count": "analyses",
+        "headline": "Analyse the imported tables",
+        "prompt": "Analyse the imported tables.",
         # The bench beside the library. A query is not an artifact the
         # engagement holds — nothing is filed by running one — so it is marked
         # a tool and drawn as one, or the record would start claiming the
@@ -408,6 +412,18 @@ _HOLDS: dict[str, Any] = {
     # real; requiring both would report an engagement as empty while it holds
     # everything it is going to.
     "sources.imported": lambda ws: bool(ws.documents or ws.table_names()),
+    # ``None`` where there is nothing of that kind to analyse, which is the
+    # answer the capabilities' own readiness gives: with no document in scope
+    # `documents.analysis_generated` reads `satisfied`. Left to the count alone
+    # both stages read as owed on an engagement carrying only the other kind of
+    # source, and a documents-only engagement was offered a run over tables it
+    # does not have. Not ``True`` either: a vacuous stage has filed nothing, and
+    # saying it holds a work product puts a second entry in the totals of an
+    # engagement that holds one.
+    "analysis.executed":
+        lambda ws: True if ws.analyses else (None if not ws.table_names() else False),
+    "documents.analysis_generated":
+        lambda ws: True if _document_analyses(ws) else (None if not ws.documents else False),
     "planning.apm_ready":
         lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
     "fieldwork.executed": _fieldwork_ran,
@@ -419,6 +435,11 @@ _HOLDS: dict[str, Any] = {
 # Only the wording lives here; which stage waits for which comes from the graph.
 _NOUNS = {
     "sources.imported": "the sources",
+    # Both analysis stages are prerequisites a reader can see and start — the
+    # library and the per-document analyses are drawn on this ledger with their
+    # own counts — so a stage waiting on one says which.
+    "analysis.executed": "the analyses",
+    "documents.analysis_generated": "the document analyses",
     "planning.apm_ready": "the memorandum",
     "planning.rcm_ready": "the matrix",
     "tests.specified": "the tests",
@@ -618,18 +639,42 @@ def _blocked_by(workspace: Workspace, capability: str, counts: dict[str, int]) -
     Only a dependency the record can test the presence of is reported. The rest
     are machine steps whose absence is not observable, and naming one would tell
     a reader to wait for something they cannot see or start.
+
+    The walk goes *through* those machine steps rather than stopping at them,
+    which is the difference between naming a blocker and losing it. The APM
+    depends on `planning.context_ready`, which is not a row on this ledger; one
+    hop found nothing nameable and the record told an engagement holding
+    eighty-four unanalysed documents that nothing was blocking the memorandum.
+    Two hops reach `documents.analysis_generated`, which is drawn, is counted,
+    and is exactly what the reader has to run first.
     """
     waiting: list[str] = []
-    for dependency in _dependencies(capability):
-        if dependency not in _NOUNS:
-            continue
-        # A presence test that cannot answer must not invent a blocker either,
-        # so only a dependency known to be absent is named.
-        if _holds(workspace, dependency, counts) is not False:
-            continue
-        noun = _NOUNS.get(dependency, "an earlier stage")
-        if noun not in waiting:
-            waiting.append(noun)
+    seen: set[str] = set()
+
+    def walk(target: str) -> None:
+        for dependency in _dependencies(target):
+            if dependency in seen:
+                continue
+            seen.add(dependency)
+            if dependency not in _NOUNS:
+                # Unnameable. A stage the ledger does not draw at all is a
+                # machine step standing between two things it does draw, so the
+                # walk continues past it; one the ledger draws without a noun
+                # has been left deliberately unnameable and ends the branch.
+                if dependency not in _SPINE:
+                    walk(dependency)
+                continue
+            # A presence test that cannot answer must not invent a blocker
+            # either, so only a dependency known to be absent is named. A
+            # dependency that is held ends the branch: what it was itself
+            # waiting for stopped mattering when it was filed.
+            if _holds(workspace, dependency, counts) is not False:
+                continue
+            noun = _NOUNS[dependency]
+            if noun not in waiting:
+                waiting.append(noun)
+
+    walk(capability)
     if not waiting:
         return ""
     if len(waiting) == 1:
@@ -645,18 +690,22 @@ def _holds(workspace: Workspace, capability: str, counts: dict[str, int]) -> boo
     sized by the matrix it concludes on, so twenty-two rows would otherwise
     read as twenty-two conclusions the moment the matrix existed.
 
-    ``None`` is a third answer, and a load-bearing one: a presence test that
-    raised does not know, and "does not know" must never collapse into "absent".
-    A row that cannot tell is drawn without a count and without an invitation to
-    run it, because inviting an auditor to redo work that may already exist is
-    the worse of the two failures.
+    ``None`` is a third answer, and a load-bearing one. Two things give it: a
+    presence test that raised does not know, and "does not know" must never
+    collapse into "absent"; and a stage with nothing of its kind to work on has
+    nothing to hold *and* nothing to owe. A row answering ``None`` is drawn
+    without an invitation to run it and is counted among neither the work
+    products held nor the work outstanding — which is right for both, because
+    inviting an auditor to redo work that may already exist and inviting one to
+    analyse documents they never imported are the same kind of mistake.
     """
     test = _HOLDS.get(capability)
     if test is not None:
         try:
-            return bool(test(workspace))
+            answer = test(workspace)
         except Exception:
             return None
+        return None if answer is None else bool(answer)
     key = (_SPINE.get(capability) or {}).get("count")
     return bool(counts.get(key)) if key else False
 

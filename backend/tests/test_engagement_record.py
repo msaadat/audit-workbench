@@ -645,7 +645,7 @@ def test_a_stage_with_no_work_product_is_owed(stub_store):
 
 
 def test_a_stage_the_record_cannot_ask_for_is_never_drawn_as_owed(stub_store):
-    """Verification commits nothing and the machine steps narrate nothing.
+    """Verification commits nothing and document tests narrate nothing here.
 
     As rows they belong on the ledger; as debts they would be permanent, since
     no button and no absence a reader could act on corresponds to them.
@@ -654,15 +654,52 @@ def test_a_stage_the_record_cannot_ask_for_is_never_drawn_as_owed(stub_store):
     result = engagement_record.record(_Workspace())
     owed = _owed(result)
 
-    for capability in ("audit.verified", "documents.analysis_generated",
-                       "analysis.executed", "doc_tests.executed"):
+    for capability in ("audit.verified", "doc_tests.executed"):
         assert capability not in owed, capability
         assert _rows(result)[capability]["runnable"] is False
 
 
+def test_a_stage_with_nothing_of_its_kind_is_neither_held_nor_owed(stub_store, tmp_path):
+    """An engagement carrying one kind of source owes nothing on the other.
+
+    Sized by its count alone, the analyses row reads absent on a
+    documents-only engagement and the ledger offers a run over tables that were
+    never imported. Answering "held" instead would be the opposite mistake: it
+    puts a work product in the totals of an engagement that filed one.
+    """
+    stub_store([])
+    result = engagement_record.record(_with_documents(tmp_path, 8))
+    row = _rows(result)["analysis.executed"]
+
+    assert row["held"] is False
+    assert row["runnable"] is False
+    assert "analysis.executed" not in _owed(result)
+    assert result["totals"]["work_products"] == 1
+
+
+def test_analysing_the_sources_is_the_next_step_once_they_are_imported(stub_store):
+    """The two analysis stages had no imperative, so the record skipped them.
+
+    Every other absent stage carries one. Without it neither could ever be
+    `runnable`, and the first stage the ledger could offer on a freshly
+    imported engagement was the memorandum — three stages down, and blocked.
+    """
+    stub_store([])
+    result = engagement_record.record(_Workspace(tables=["ledger"]))
+    rows = _rows(result)
+
+    assert rows["analysis.executed"]["runnable"] is True
+    assert rows["analysis.executed"]["start"] == {
+        "prompt": "Analyse the imported tables.", "outcomes": ["analysis.executed"],
+    }
+    assert result["next"]["capability"] == "analysis.executed"
+
+
 def test_a_stage_waiting_on_an_earlier_one_says_so_instead_of_offering_a_button(stub_store):
     stub_store([])
-    rows = _rows(engagement_record.record(_Workspace()))
+    rows = _rows(engagement_record.record(
+        _Workspace(tables=["ledger"], analyses=[{}])
+    ))
 
     assert rows["planning.apm_ready"]["runnable"] is True
     assert rows["planning.apm_ready"]["blocked_reason"] == ""
@@ -737,6 +774,36 @@ def test_a_stage_with_several_prerequisites_names_all_the_missing_ones(stub_stor
     assert rows["report.working_draft"]["blocked_reason"] == (
         "Waits for the conclusions and the findings."
     )
+
+
+def test_a_blocker_behind_a_machine_step_is_still_named(stub_store, tmp_path):
+    """The APM depends on `planning.context_ready`, which is not a row here.
+
+    Looking one hop deep found nothing nameable and stopped, so an engagement
+    holding eighty-four unanalysed documents was told the memorandum had
+    nothing blocking it — and the memorandum was offered as the next stage,
+    ahead of the analyses the graph says it reads.
+    """
+    stub_store([])
+    rows = _rows(engagement_record.record(_with_documents(tmp_path, 8)))
+
+    assert rows["planning.apm_ready"]["blocked_reason"] == (
+        "Waits for the document analyses."
+    )
+    assert rows["planning.apm_ready"]["runnable"] is False
+
+
+def test_the_walk_through_a_machine_step_reaches_the_sources(stub_store):
+    """Two machine steps deep, and the head of the graph is still the answer.
+
+    `sources.imported` earns its edge so that an empty engagement says planning
+    is waiting rather than offering to write a memorandum about nothing. The
+    one-hop walk lost that too.
+    """
+    stub_store([])
+    rows = _rows(engagement_record.record(_Workspace()))
+
+    assert rows["planning.apm_ready"]["blocked_reason"] == "Waits for the sources."
 
 
 def test_a_prerequisite_the_record_cannot_see_is_not_named_as_a_blocker(stub_store):
@@ -896,7 +963,9 @@ def test_review_outranks_unstarted_work_as_the_next_step(stub_store):
 
 def test_with_nothing_open_the_next_step_is_the_first_runnable_stage(stub_store):
     stub_store([])
-    result = engagement_record.record(_Workspace(tables=["ledger"]))
+    result = engagement_record.record(
+        _Workspace(tables=["ledger"], analyses=[{}])
+    )
 
     assert result["next"]["kind"] == "stage"
     assert result["next"]["capability"] == "planning.apm_ready"
