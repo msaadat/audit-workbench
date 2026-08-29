@@ -319,6 +319,34 @@ def test_a_stage_the_record_has_not_learned_yet_shows_its_own_briefing(stub_stor
     assert "working_papers.generated" not in engagement_record._SPINE
     assert row["filed"] is None
     assert row["history"]["headline"] == "A stage the record has never seen"
+    # Present and empty, not absent. A reader of one row is entitled to the
+    # shape of every other: the record view reads `stage.links.length` and
+    # `stage.action` unguarded because the contract says they are always there.
+    # Omitted, this row emptied the whole Record view the first time an
+    # engagement filed working papers — which is a registered capability with
+    # no spine row, so every complete engagement reaches it.
+    assert row["links"] == []
+    assert row["action"] == ""
+
+
+def test_every_stage_row_carries_the_same_keys(stub_store):
+    """The spine row is the shape; a row outside it must not be a subset.
+
+    Two constructors build these rows and only one of them was complete, which
+    is exactly the divergence a reader cannot see and a template cannot survive.
+    """
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00")]),
+    ])
+    rows = _rows(engagement_record.record(_Workspace()))
+    spine = set(rows["sources.imported"])
+    assert set(rows["working_papers.generated"]) == spine
+
+    for capability, row in rows.items():
+        for key in ("stats", "highlights", "links", "open_points"):
+            assert isinstance(row[key], list), f"{capability}.{key}"
+        assert isinstance(row["action"], str), f"{capability}.action"
 
 
 def test_a_stage_the_workflows_no_longer_declare_is_not_drawn(stub_store):

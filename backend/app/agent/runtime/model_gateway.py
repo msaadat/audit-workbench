@@ -496,6 +496,13 @@ class DefaultModelGateway:
                             chat_kwargs["tools"] = tools
                             if tool_choice is not None:
                                 chat_kwargs["tool_choice"] = tool_choice
+                        elif getattr(self.context, "json_response", False):
+                            # Set by the worker registry for the span of a
+                            # worker call, the same way required capabilities
+                            # are. Every registered worker parses its response
+                            # as JSON, so the constraint is theirs to ask for
+                            # and no prose caller of this gateway inherits it.
+                            chat_kwargs["response_format"] = {"type": "json_object"}
                         # A tool-capable turn returns a structured call, not
                         # prose, so there is nothing a reader could follow.
                         if stream is not None and not tools:

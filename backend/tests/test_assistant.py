@@ -790,6 +790,47 @@ def test_llm_chat_asks_the_provider_for_its_reasoning(monkeypatch):
     assert sent["include_reasoning"] is True
 
 
+def test_llm_reasoning_can_be_switched_off_for_the_whole_request(monkeypatch):
+    """Off is non-thinking mode, not a hidden trace: the tokens go unspent."""
+
+    monkeypatch.setenv("LLM_REASONING", "off")
+    assert llm._reasoning_parameters() == {"reasoning": {"enabled": False}}
+    # Asking for the trace back would contradict asking for no trace at all.
+    assert "include_reasoning" not in llm._reasoning_parameters()
+
+    monkeypatch.setenv("LLM_REASONING", "on")
+    assert llm._reasoning_parameters() == {"include_reasoning": True}
+
+    monkeypatch.setenv("LLM_REASONING", "low")
+    assert llm._reasoning_parameters() == {
+        "reasoning": {"max_tokens": llm.REASONING_EFFORT_TOKENS["low"]}
+    }
+    # An effort implies reasoning is on, so it does not also ask for the trace.
+    assert "include_reasoning" not in llm._reasoning_parameters()
+
+    # Every effort is an absolute budget, well under the output ceiling. A
+    # provider's own effort levels are a *share* of that ceiling, and this one
+    # is enormous on purpose: "medium" against it let one test-generation call
+    # spend 160,880 tokens deliberating against a 131,072 limit and return
+    # nothing at all.
+    for effort in llm.REASONING_EFFORTS:
+        monkeypatch.setenv("LLM_REASONING", effort)
+        sent = llm._reasoning_parameters()["reasoning"]
+        assert sent["max_tokens"] == llm.REASONING_EFFORT_TOKENS[effort]
+        assert sent["max_tokens"] < llm.MAX_OUTPUT_TOKENS
+        # The provider refuses a request carrying both, so a budget is
+        # expressed one way only: "Only one of reasoning.effort and
+        # reasoning.max_tokens can be specified".
+        assert "effort" not in sent
+
+    monkeypatch.setenv("LLM_REASONING", "4096")
+    assert llm._reasoning_parameters() == {"reasoning": {"max_tokens": 4096}}
+
+    monkeypatch.setenv("LLM_REASONING", "quietly")
+    with pytest.raises(llm.LLMError, match="must be"):
+        llm._reasoning_parameters()
+
+
 def test_streamed_reasoning_is_kept_for_the_record_and_out_of_the_answer():
     """It reaches the debug payload, and neither the text nor the reader."""
 

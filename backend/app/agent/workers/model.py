@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -135,6 +136,61 @@ _FENCED_JSON = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL | re.IGNOR
 _JSON_ERROR_WINDOW = 120
 
 
+#: The four characters JSON accepts as whitespace. Named because ASCII space
+#: is itself a ``Zs``, so the category test below would otherwise strip it.
+_JSON_WHITESPACE = " \t\n\r"
+#: Unicode categories a tokenizer emits that JSON has no place for: zero-width
+#: and bidi format marks (``Cf``), the non-ASCII spaces and separators
+#: (``Zs``/``Zl``/``Zp``) that look like whitespace without being any of the
+#: four characters above, and the combining marks (``Mn``/``Mc``/``Me``) that
+#: render as nothing at all with no base character to attach to. All three
+#: kinds were observed in one run: 40 zero-width spaces and 5 combining dots
+#: below, every one of them between a colon and its value.
+_JSON_INVISIBLE_CATEGORIES = frozenset(
+    {"Cf", "Zs", "Zl", "Zp", "Mn", "Mc", "Me"}
+)
+
+
+def _without_invisible_noise(value: str) -> str:
+    r"""Drop invisible non-JSON characters sitting outside string literals.
+
+    A model emitting ``"page":  \u200b1`` has produced something no parser
+    accepts and no reader can see, so quoting the region back for repair asks
+    it to correct a character it cannot observe — which it duly re-emits. Four
+    of eight document analyses failed that way in one run, every call finishing
+    cleanly on ``stop``.
+
+    Only outside a string literal, and only these categories: inside a string
+    the same character is content this has no business rewriting, and a
+    document that genuinely prints one should extract with it intact. Valid
+    JSON cannot carry them outside a string, so this is a no-op on anything
+    that would have parsed.
+    """
+
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for char in value:
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif (
+            char not in _JSON_WHITESPACE
+            and unicodedata.category(char) in _JSON_INVISIBLE_CATEGORIES
+        ):
+            continue
+        out.append(char)
+    return "".join(out)
+
+
 def decode_json_response(response: object) -> object:
     """Parse a fenced-or-bare JSON response, saying where it broke if it did.
 
@@ -150,8 +206,14 @@ def decode_json_response(response: object) -> object:
     fenced = _FENCED_JSON.fullmatch(value)
     if fenced:
         value = fenced.group(1).strip()
+    value = _without_invisible_noise(value)
     try:
-        return json.loads(value)
+        # ``strict=False`` accepts a raw control character inside a string
+        # literal, which is the one malformation here that is unambiguous: a
+        # newline the model failed to escape is a newline, and the alternative
+        # is discarding a whole document analysis over how it was transported.
+        # It relaxes nothing else — every other defect still raises below.
+        return json.loads(value, strict=False)
     except json.JSONDecodeError as error:
         window = value[
             max(0, error.pos - _JSON_ERROR_WINDOW) : error.pos + _JSON_ERROR_WINDOW
@@ -164,6 +226,33 @@ def decode_json_response(response: object) -> object:
             "exactly what they opened, and that every quote and backslash "
             "inside a code string is escaped."
         ) from error
+
+
+def submission_response(message: object, expected_tool: str) -> str:
+    """Extract the one required submission from a forced tool call.
+
+    Shared rather than copied per worker family: the sentinel below is what
+    routes a missing or duplicated call into the ordinary repair loop, and two
+    implementations of that would drift apart exactly where a stored proposal
+    could not tell them apart.
+    """
+
+    if not isinstance(message, Mapping):
+        return ""
+    matches = [
+        item
+        for item in message.get("tool_calls") or []
+        if isinstance(item, Mapping)
+        and isinstance(item.get("function"), Mapping)
+        and item["function"].get("name") == expected_tool
+    ]
+    if len(matches) == 1:
+        arguments = matches[0]["function"].get("arguments")
+        return arguments if isinstance(arguments, str) else json.dumps(arguments)
+    # Do not silently accept JSON prose when this worker explicitly required a
+    # tool call. Returning this sentinel routes the issue through the normal
+    # bounded schema-repair loop rather than committing an unchecked response.
+    return json.dumps({"_submission_error": f"Call {expected_tool} exactly once."})
 
 
 class WorkerRunError(RuntimeError):
@@ -477,6 +566,15 @@ class WorkerDefinition:
     repair_policy: WorkerRepairPolicy
     implementation: WorkerImplementation = field(repr=False, compare=False)
     required_model_capabilities: tuple[str, ...] = ()
+    #: Whether this worker's response is a JSON document. True for every worker
+    #: but the APM, whose contract is Markdown — its prompt asks for the
+    #: memorandum "as Markdown only, without a JSON wrapper", and its schema
+    #: reads a JSON envelope only as a legacy shape. Constraining that one to
+    #: JSON produced a complete 16,000-character memorandum filed under a key
+    #: the model chose for itself, which the template check then failed. Not
+    #: derived from the response schema: every schema here can parse JSON, so
+    #: parsing it is no evidence that JSON is what was asked for.
+    json_response: bool = True
     semantic_validator: SemanticValidator | None = field(
         default=None, repr=False, compare=False
     )
@@ -663,10 +761,20 @@ class WorkerRegistry:
                 if gateway_context is not None
                 else None
             )
+            previous_json_response = (
+                getattr(gateway_context, "json_response", None)
+                if gateway_context is not None
+                else None
+            )
             if gateway_context is not None:
                 gateway_context.required_model_capabilities = (
                     definition.required_model_capabilities
                 )
+                # Scoped to the call rather than set on the gateway, for the
+                # same reason capabilities are: the gateway is shared, and
+                # neither a prose caller nor a Markdown worker must inherit a
+                # JSON worker's constraint.
+                gateway_context.json_response = definition.json_response
             try:
                 response = definition.implementation(request, gateway, attempt)
             finally:
@@ -680,6 +788,13 @@ class WorkerRegistry:
                         gateway_context.required_model_capabilities = (
                             previous_capabilities
                         )
+                    if previous_json_response is None:
+                        try:
+                            del gateway_context.json_response
+                        except AttributeError:
+                            pass
+                    else:
+                        gateway_context.json_response = previous_json_response
             if not isinstance(response, str):
                 raise WorkerContractError(
                     f"Worker '{definition.worker_id}' must return response text."

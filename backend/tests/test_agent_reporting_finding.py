@@ -33,15 +33,54 @@ from app.workspace_transactions import parent_hashes
 
 
 class _Gateway:
+    """The finding worker submits through a forced tool call.
+
+    Scripted responses stay plain JSON strings, which is what the worker's
+    schema reads; this wraps each one as the tool call the provider would have
+    returned, so a test says what the model answered rather than how the
+    submission is carried.
+    """
+
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
 
-    def complete(self, system, user, activity=None, *, attempt=1):
+    def complete(
+        self,
+        system,
+        user,
+        activity=None,
+        *,
+        attempt=1,
+        tools=None,
+        tool_choice=None,
+        return_message=False,
+        **kwargs,
+    ):
         self.calls.append(
-            {"system": system, "user": user, "activity": activity, "attempt": attempt}
+            {
+                "system": system,
+                "user": user,
+                "activity": activity,
+                "attempt": attempt,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
         )
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if not return_message:
+            return response
+        name = (tool_choice or {}).get("function", {}).get("name", "")
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": name, "arguments": response},
+                }
+            ],
+        }
 
 
 # The shipped finding template, reduced to the part the worker contract needs:
@@ -406,3 +445,47 @@ def test_finding_executor_reconciles_an_interrupted_commit_idempotently(
     assert recovered.result.output["id"] == target.workspace.findings[0]["id"]
     # The observation-derived id keeps a repeated commit from drafting twice.
     assert len(target.workspace.findings) == 1
+
+
+def test_the_finding_submission_is_shape_enforced_by_the_provider():
+    """Four of nineteen drafts answered with a differently-shaped object.
+
+    Each parsed perfectly well and each failed `the response must be a JSON
+    object with a `finding` object`, spending its whole repair allowance on a
+    shape the provider could have refused outright. `response_format` buys
+    syntactic validity and nothing about structure; a forced submission call is
+    what the analysis workers already use for exactly this.
+    """
+
+    tool = reporting_worker._finding_submission_tool()
+    assert tool["function"]["name"] == reporting_worker.FINDING_SUBMISSION_TOOL
+    parameters = tool["function"]["parameters"]
+    assert parameters["required"] == ["finding"]
+    assert parameters["additionalProperties"] is False
+
+    finding = parameters["properties"]["finding"]
+    assert finding["additionalProperties"] is False
+    assert sorted(finding["required"]) == [
+        "cause_pending", "narrative", "severity", "title",
+    ]
+    # A severity outside the supported set stops being expressible rather than
+    # being caught by the validator afterwards.
+    assert set(finding["properties"]["severity"]["enum"]) == set(
+        reporting_worker._FINDING_SEVERITIES
+    )
+    # The narrative stays free Markdown: its sections are the supplied
+    # template's headings, so pinning them here would put one firm's template
+    # into this module.
+    assert "enum" not in finding["properties"]["narrative"]
+
+
+def test_the_worker_forces_that_submission_call():
+    gateway = _Gateway([json.dumps({"finding": _draft()})])
+    WORKERS.execute(_request(), gateway)
+    call = gateway.calls[0]
+    assert call["tool_choice"]["function"]["name"] == (
+        reporting_worker.FINDING_SUBMISSION_TOOL
+    )
+    assert call["tools"][0]["function"]["name"] == (
+        reporting_worker.FINDING_SUBMISSION_TOOL
+    )

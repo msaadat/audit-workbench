@@ -441,8 +441,18 @@ class DocumentWorkflowExecution(BaseRunner):
                     (),
                     f"No schema is current for '{document_type}'.",
                 )
+            chunks = list(
+                analysis_unit_specs(self.ws, document_id, workflow_scope(self.run))
+            )
             structured_input = {
                 "document_type": document_type,
+                # Induction read this document's fields, and this chunk is the
+                # whole document. Both together are what make an empty
+                # extraction a contradiction rather than a quiet page — see
+                # ``validate_structured_proposal``.
+                "schema_sampled_this_document": document_id
+                in list(schema.get("derived_from") or []),
+                "sole_chunk": len(chunks) == 1,
                 "schema_fields": list(schema.get("fields") or []),
                 "schema_descriptor": schema_descriptor(
                     document_type, schema.get("fields") or []

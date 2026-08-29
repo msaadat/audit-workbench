@@ -27,6 +27,7 @@ from .model import (
     WorkerResponseSchema,
     WorkerResponseValidationError,
     decode_json_response,
+    submission_response,
 )
 
 
@@ -179,6 +180,62 @@ def validate_finding_proposal(
     return {"finding": finding}
 
 
+FINDING_SUBMISSION_TOOL = "submit_finding"
+
+
+def _finding_submission_tool() -> dict[str, Any]:
+    """The provider-enforced shape of one drafted finding.
+
+    Asking in prose for an object with a `finding` key, and validating it
+    afterwards, leaves the model free to answer with a differently-shaped
+    object that parses perfectly well — four of nineteen drafts did exactly
+    that and spent their whole repair allowance on it. Constraining the shape
+    at the provider is the mechanism the analysis workers already use, and it
+    retires the failure rather than catching it.
+
+    `narrative` stays free Markdown: its sections are the supplied template's
+    headings, so a firm that renames one moves the requirement with it, and
+    pinning them here would put that firm's template into this module.
+    """
+
+    return {
+        "type": "function",
+        "function": {
+            "name": FINDING_SUBMISSION_TOOL,
+            "description": (
+                "Submit the drafted finding, grounded in the supplied "
+                "observation and its immutable execution result."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "finding": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "minLength": 1},
+                            "severity": {
+                                "type": "string",
+                                "enum": sorted(_FINDING_SEVERITIES),
+                            },
+                            "narrative": {"type": "string", "minLength": 1},
+                            "cause_pending": {"type": "boolean"},
+                        },
+                        "required": [
+                            "title",
+                            "severity",
+                            "narrative",
+                            "cause_pending",
+                        ],
+                        "additionalProperties": False,
+                    }
+                },
+                "required": ["finding"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def run_finding_worker(
     request: WorkerRequest,
     gateway: ModelGateway,
@@ -220,12 +277,19 @@ def run_finding_worker(
             "selected_items": request.context.supplied_size.items,
         },
     )
-    return gateway.complete(
+    message = gateway.complete(
         FINDING_SYSTEM,
         user,
         activity,
         attempt=attempt.number,
+        tools=[_finding_submission_tool()],
+        tool_choice={
+            "type": "function",
+            "function": {"name": FINDING_SUBMISSION_TOOL},
+        },
+        return_message=True,
     )
+    return submission_response(message, FINDING_SUBMISSION_TOOL)
 
 
 FINDING_RESPONSE_SCHEMA = WorkerResponseSchema(

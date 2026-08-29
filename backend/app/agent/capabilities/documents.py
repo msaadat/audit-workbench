@@ -373,8 +373,38 @@ def has_generated_analysis(workspace: Workspace, document_id: str) -> bool:
     Existence only. Whether that analysis is substantively current with respect
     to a changed source or a newer prompt is deliberately not assessed here — the
     auditor decides when to force a regeneration.
+
+    A superseded *schema* stamp is the one exception, and it is a different
+    question — see :func:`has_usable_analysis`.
     """
     return document_analysis.generated_record(workspace, document_id) is not None
+
+
+def has_usable_analysis(workspace: Workspace, document_id: str) -> bool:
+    """Whether a generated analysis exists that can still be used as evidence.
+
+    A stale source or an older prompt leaves an analysis that is merely out of
+    date, and the auditor decides what to do about it. A structured extraction
+    whose ``schema_ref`` no longer matches the live schema is not out of date —
+    it is excluded from evidence outright, because reinterpreting values under
+    fields they were never read against is exactly what the stamp prevents.
+
+    Readiness has to ask the second question or the exclusion is silent: with
+    five schemas re-derived, every voucher extraction in an engagement was
+    superseded, ``documents.analysis_generated`` still reported satisfied,
+    every capability was reused, no unit expanded, and the run completed having
+    left the workspace with no usable cycle evidence at all. The interlock that
+    would have re-generated each chunk — the schema descriptor moving the unit's
+    input hash — never got the chance, because the capability was reused whole
+    before any unit ran.
+    """
+
+    record = document_analysis.generated_record(workspace, document_id)
+    if record is None:
+        return False
+    if str(record.get("analysis_profile") or "") != "structured":
+        return True
+    return document_schemas.is_current(workspace, record.get("schema_ref"))
 
 
 # --------------------------------------------------------------------------- #
@@ -736,7 +766,7 @@ def _chunks_ready(workspace: Workspace, scope: dict) -> Readiness:
     pending = [
         document_id
         for document_id in document_scope.document_ids
-        if not has_generated_analysis(workspace, document_id)
+        if not has_usable_analysis(workspace, document_id)
         and analyzable(workspace, document_id) is not None
         and bool(analysis_unit_specs(workspace, document_id, scope))
     ]
@@ -766,7 +796,7 @@ def _chunk_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     forced = _forced(scope)
     units: list[UnitSpec] = []
     for document_id in document_scope.document_ids:
-        if not forced and has_generated_analysis(workspace, document_id):
+        if not forced and has_usable_analysis(workspace, document_id):
             continue
         title = known[document_id].get("title") or document_id
         for chunk in analysis_unit_specs(workspace, document_id, scope):
@@ -848,7 +878,7 @@ def _generated_ready(workspace: Workspace, scope: dict) -> Readiness:
     analyzed = [
         document_id
         for document_id in document_scope.document_ids
-        if has_generated_analysis(workspace, document_id)
+        if has_usable_analysis(workspace, document_id)
     ]
     # A document with no extractable text is deliberately *not* treated as
     # satisfied. It has no analysis and never will without auditor action, so the
@@ -885,7 +915,7 @@ def _generated_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             {"document_id": document_id},
         )
         for document_id in document_scope.document_ids
-        if forced or not has_generated_analysis(workspace, document_id)
+        if forced or not has_usable_analysis(workspace, document_id)
     ]
 
 
@@ -1017,6 +1047,7 @@ __all__ = [
     "capabilities",
     "chunk_specs",
     "has_generated_analysis",
+    "has_usable_analysis",
     "page_limit",
     "visual_page_limit",
     "resolve_document_scope",

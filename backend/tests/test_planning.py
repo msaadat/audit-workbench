@@ -599,7 +599,8 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
     valid_apm = PLANNING_RESPONSES["agent:apm"]["apm_markdown"]
     apm_calls = []
 
-    def chat(messages, tools=None, temperature=0.0, profile="assistant", on_delta=None):
+    def chat(messages, tools=None, temperature=0.0, profile="assistant", on_delta=None,
+             tool_choice=None, response_format=None):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
         if tag == "agent:apm":

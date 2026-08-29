@@ -786,6 +786,15 @@ def _stages(
             "headline": "",
             "blocked_reason": "",
             "start": None,
+            # Present and empty, not absent. Every row the record draws carries
+            # the same keys, and a reader of one is entitled to the shape of
+            # the others: the frontend reads `stage.links.length` unguarded,
+            # because the contract says it is always a list. Omitting it here
+            # emptied the whole Record view the first time an engagement filed
+            # a stage outside the spine — working papers, which is registered
+            # and deliberately has no spine row.
+            "action": "",
+            "links": [],
             "filed": None,
             "readiness": {"state": "", "reasons": [], "details": {}},
             "summary": str(filed.get("summary") or ""),

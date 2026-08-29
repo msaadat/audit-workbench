@@ -44,6 +44,7 @@ from .model import (
     WorkerResponseSchema,
     WorkerResponseValidationError,
     decode_json_response,
+    submission_response,
 )
 
 CHUNK_WORKER_ID = "documents.analysis_chunk"
@@ -633,27 +634,6 @@ def _citation_submission_tool(
             },
         },
     }
-
-
-def _submission_response(message: object, expected_tool: str) -> str:
-    """Extract the one required document-worker submission from a response."""
-
-    if not isinstance(message, Mapping):
-        return ""
-    matches = [
-        item
-        for item in message.get("tool_calls") or []
-        if isinstance(item, Mapping)
-        and isinstance(item.get("function"), Mapping)
-        and item["function"].get("name") == expected_tool
-    ]
-    if len(matches) == 1:
-        arguments = matches[0]["function"].get("arguments")
-        return arguments if isinstance(arguments, str) else json.dumps(arguments)
-    # Do not silently accept JSON prose when this worker explicitly required a
-    # tool call.  Returning this sentinel routes the issue through the normal
-    # bounded schema-repair loop rather than committing an unchecked response.
-    return json.dumps({"_submission_error": f"Call {expected_tool} exactly once."})
 
 
 def _repair_note(attempt: WorkerAttempt, instruction: str) -> str:
@@ -1837,6 +1817,122 @@ def _structured_response_schema(response: str) -> Mapping[str, Any]:
     }
 
 
+STRUCTURED_SUBMISSION_TOOL = "submit_structured_extraction"
+
+
+def _structured_submission_tool(field_names: Sequence[str]) -> dict[str, Any]:
+    """The provider-enforced shape for one schema-guided extraction.
+
+    The analysis workers have had this since they were written; the document
+    workers were given the pieces — ``_citation_submission_tool``,
+    ``_submission_response`` — and never wired to them, which is why they are
+    the family that returns unparseable JSON. Asking in prose for an object and
+    validating it afterwards leaves a bare token where a value belongs, or a
+    stray colon between two keys, entirely possible; both were observed here,
+    and each cost a document its whole repair allowance.
+
+    ``name`` is an enum of this type's own fields, so "names a field this type
+    does not carry" stops being a thing the model can do rather than a thing
+    the validator catches. ``additional_fields`` keeps a free name on purpose —
+    it exists precisely for facts the schema has no room for.
+    """
+
+    stated = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "enum": list(field_names)},
+            "entry": {"type": "integer", "minimum": 1},
+            "value": {"type": "string", "minLength": 1},
+            # Required, and empty where the field is interpretive: demanding a
+            # quote for a value the document never prints is unsatisfiable, and
+            # that judgement belongs to the schema rather than to this shape.
+            "citation": {"type": "string"},
+        },
+        "required": ["name", "entry", "value", "citation"],
+        "additionalProperties": False,
+    }
+    escaped = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "value_type": {"type": "string", "enum": list(_VALUE_TYPES)},
+            "entry": {"type": "integer", "minimum": 1},
+            "value": {"type": "string", "minLength": 1},
+            "citation": {"type": "string", "minLength": 1},
+        },
+        "required": ["name", "value_type", "entry", "value", "citation"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "function",
+        "function": {
+            "name": STRUCTURED_SUBMISSION_TOOL,
+            "description": (
+                "Submit every record this chunk states, under the fields this "
+                "document type carries. Submit an empty records array only "
+                "when the chunk states no record at all."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "records": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "fields": {"type": "array", "items": stated},
+                                "additional_fields": {
+                                    "type": "array",
+                                    "items": escaped,
+                                },
+                            },
+                            "required": ["fields", "additional_fields"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "citations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "minLength": 1},
+                                "page": {"type": "integer", "minimum": 1},
+                                "excerpt": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": CITATION_EXCERPT_CHARACTERS,
+                                },
+                            },
+                            "required": ["id", "page", "excerpt"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "audit_notes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["records", "citations", "audit_notes"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _supplied_structured_chunk(request: WorkerRequest) -> Mapping[str, Any]:
+    """The one chunk this extraction was scoped to, with its text.
+
+    ``document_structured_chunk_scope`` supplies exactly this, and the preset
+    budgets it above the chunk size so a citation can never bind to text the
+    worker only saw truncated. Raising when it is absent keeps that a contract
+    rather than a silently empty extraction.
+    """
+
+    chunk = _resolved_item(request, DOCUMENT_STRUCTURED_SOURCE_ID)
+    if not str(chunk.get("text") or ""):
+        raise WorkerContractError(
+            "The supplied structured chunk carries no text."
+        )
+    return chunk
+
+
 def validate_structured_proposal(
     proposal: Mapping[str, Any], request: WorkerRequest
 ) -> Mapping[str, Any]:
@@ -1851,12 +1947,31 @@ def validate_structured_proposal(
         str(field.get("name")): field
         for field in request.unit_input.get("schema_fields") or []
     }
+    records = list(proposal.get("records") or [])
+    if (
+        not records
+        and request.unit_input.get("schema_sampled_this_document")
+        and request.unit_input.get("sole_chunk")
+    ):
+        # An empty records array is normally a complete answer: a page of prose
+        # inside a transaction document states no record. Not here. This
+        # document is one the type's schema was induced *from*, so a sample
+        # read its fields off this very text, and this chunk is the whole
+        # document — there is no other page the records could be on. Accepting
+        # it stored three vouchers as analysed, structured, schema-stamped and
+        # empty, which is the silent degradation this profile exists to remove.
+        raise WorkerResponseValidationError(
+            "records is empty, but this document's own fields are what the "
+            f"'{request.unit_input.get('document_type')}' schema was induced "
+            "from, and this chunk is the whole document. Extract the record it "
+            "states; report only fields the chunk actually prints."
+        )
     citations = {
         str(item.get("id"))
         for item in proposal.get("citations") or []
         if isinstance(item, Mapping)
     }
-    for index, record in enumerate(proposal.get("records") or []):
+    for index, record in enumerate(records):
         for field in record.get("fields") or []:
             name = str(field.get("name"))
             definition = known.get(name)
@@ -1898,18 +2013,30 @@ def run_structured_worker(
 ) -> str:
     """Extract one chunk against its document type's frozen schema."""
 
+    # The chunk itself, not just its identifiers. This worker is asked to
+    # extract what the chunk states and to quote it character for character,
+    # and it was being sent 68 bytes of ids: document, chunk, page. An empty
+    # records array was then the only honest answer available to it, which is
+    # exactly what five vouchers returned — and, before the contradiction check
+    # above existed, what got stored as their completed structured analysis.
+    chunk = _supplied_structured_chunk(request)
     payload = {
         "document_id": str(request.unit_input.get("document_id") or ""),
         "chunk_id": str(request.unit_input.get("chunk_id") or ""),
         "page": request.unit_input.get("page"),
     }
-    user = json.dumps(payload, indent=1, default=str)
+    user = (
+        f"{json.dumps(payload, indent=1, default=str)}\n\n"
+        f"RAW SOURCE CHUNK:\n{chunk['text']}"
+    )
     if attempt.is_repair:
         user += (
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
             + ". Return a complete corrected JSON object."
         )
+        if attempt.previous_response:
+            user += "\n\nYOUR PREVIOUS RESPONSE:\n" + attempt.previous_response
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -1921,9 +2048,25 @@ def run_structured_worker(
         },
     )
     descriptor = str(request.unit_input.get("schema_descriptor") or "")
-    return gateway.complete(
-        _structured_system(descriptor), user, activity, attempt=attempt.number
+    field_names = [
+        str(field.get("name"))
+        for field in request.unit_input.get("schema_fields") or []
+        if str(field.get("name") or "")
+    ]
+    tool = _structured_submission_tool(field_names)
+    message = gateway.complete(
+        _structured_system(descriptor),
+        user,
+        activity,
+        attempt=attempt.number,
+        tools=[tool],
+        tool_choice={
+            "type": "function",
+            "function": {"name": STRUCTURED_SUBMISSION_TOOL},
+        },
+        return_message=True,
     )
+    return submission_response(message, STRUCTURED_SUBMISSION_TOOL)
 
 
 STRUCTURED_RESPONSE_SCHEMA = WorkerResponseSchema(

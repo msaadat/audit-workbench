@@ -223,6 +223,9 @@ def isolated_workspaces(tmp_path, monkeypatch):
     # Sampling is configuration now, and it overrides the stored document, so a
     # developer's own export would otherwise decide what the suite asserts.
     monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
+    # Likewise reasoning: a checkout running end-to-end trials with it switched
+    # off must not turn the default the suite pins into whatever is in .env.
+    monkeypatch.delenv("LLM_REASONING", raising=False)
     loader.clear_cache()
     workspaces.clear_artifact_cache()
     yield
@@ -353,6 +356,7 @@ class FakeAgentLLM:
         profile="assistant",
         tool_choice=None,
         on_delta=None,
+        response_format=None,
     ):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
@@ -363,6 +367,7 @@ class FakeAgentLLM:
                 "messages": messages,
                 "tools": tools,
                 "tool_choice": tool_choice,
+                "response_format": response_format,
                 "streamed": on_delta is not None,
             }
         )

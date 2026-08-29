@@ -74,9 +74,29 @@ def _fake(monkeypatch, sample_responses, *, reconcile=None):
         },
         # Once a schema exists the documents route to the structured profile,
         # which is the point of inducing one. These tests are about induction,
-        # so the extraction states no record — a truthful answer that keeps them
-        # independent of whichever fields a case happened to induce.
-        STRUCTURED_TAG: {"records": [], "audit_notes": [], "citations": []},
+        # so the record states its fact under additional_fields: that keeps them
+        # independent of whichever fields a case happened to induce, while
+        # still stating a record. It cannot be an empty extraction — induction
+        # read these documents' own fields, so returning nothing for them is the
+        # contradiction ``validate_structured_proposal`` now refuses.
+        STRUCTURED_TAG: {
+            "records": [
+                {
+                    "fields": [],
+                    "additional_fields": [
+                        {
+                            "name": "stated_reference",
+                            "value_type": "identifier",
+                            "value": "INV-1040",
+                            "entry": 1,
+                            "citation": "1",
+                        }
+                    ],
+                }
+            ],
+            "audit_notes": [],
+            "citations": [{"id": "1", "page": 1, "excerpt": "Invoice No."}],
+        },
     }
     if reconcile is not None:
         overrides[RECONCILE_TAG] = reconcile
@@ -291,7 +311,27 @@ def test_planning_material_is_classified_but_never_induced(monkeypatch):
                               value_type="identifier")]
         },
         MAP_TAG: narrate,
-        STRUCTURED_TAG: {"records": [], "audit_notes": [], "citations": []},
+        # The invoice is the only document induction sampled, so it is the only
+        # one routed here — and it must state its record for the same reason as
+        # above. The two planning documents never reach this worker at all.
+        STRUCTURED_TAG: {
+            "records": [
+                {
+                    "fields": [],
+                    "additional_fields": [
+                        {
+                            "name": "stated_reference",
+                            "value_type": "identifier",
+                            "value": "INV-1040",
+                            "entry": 1,
+                            "citation": "1",
+                        }
+                    ],
+                }
+            ],
+            "audit_notes": [],
+            "citations": [{"id": "1", "page": 1, "excerpt": "Invoice No."}],
+        },
     })
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
@@ -335,3 +375,62 @@ def test_a_single_document_type_freezes_low_confidence(monkeypatch):
     assert finished["status"] == "completed"
     reloaded = workspaces.load_workspace(ws.id)
     assert document_schemas.get_schema(reloaded, "vendor_invoice")["low_confidence"] is True
+
+
+# ----------------------------------------- what the extraction is actually sent
+def test_the_structured_extraction_is_sent_the_chunk_it_must_quote(monkeypatch):
+    """It was sent 68 bytes of identifiers and no text at all.
+
+    The worker is told to extract what the chunk states and to quote it
+    character for character, and its user turn carried only document id, chunk
+    id and page. An empty records array was then the only honest answer
+    available to it — which is what five vouchers returned on a live run, and
+    what got stored as their completed structured analysis.
+    """
+
+    ws, created = _workspace(count=1)
+    fake = _fake(monkeypatch, [
+        [_field("invoice_number", role="identifier", value_type="identifier")],
+    ])
+    _run(ws, created)
+
+    sent = [call for call in fake.calls if call["tag"] == STRUCTURED_TAG]
+    assert sent, "the structured worker never ran"
+    user = "\n".join(
+        str(message.get("content"))
+        for call in sent
+        for message in call["messages"]
+        if message.get("role") == "user"
+    )
+    assert "Invoice No. INV-1040" in user
+    assert "RAW SOURCE CHUNK" in user
+
+
+def test_the_structured_extraction_is_shape_enforced_by_the_provider(monkeypatch):
+    """Prose asking for JSON is what the analysis workers stopped relying on.
+
+    A forced submission call constrains the shape at the provider instead, so a
+    bare token where a value belongs cannot be returned at all. Field names are
+    an enum of this type's own fields, which retires "names a field this type
+    does not carry" as something the model is able to do.
+    """
+
+    ws, created = _workspace(count=1)
+    fake = _fake(monkeypatch, [
+        [_field("invoice_number", role="identifier", value_type="identifier")],
+    ])
+    _run(ws, created)
+
+    call = next(call for call in fake.calls if call["tag"] == STRUCTURED_TAG)
+    assert call["tool_choice"]["function"]["name"] == "submit_structured_extraction"
+    parameters = call["tools"][0]["function"]["parameters"]
+    assert parameters["required"] == ["records", "citations", "audit_notes"]
+    assert parameters["additionalProperties"] is False
+    stated = parameters["properties"]["records"]["items"]["properties"]["fields"]
+    assert stated["items"]["properties"]["name"]["enum"] == ["invoice_number"]
+    # The escape hatch keeps a free name: it exists for facts the schema has no
+    # room for, so constraining it to the schema would close the hatch.
+    escaped = parameters["properties"]["records"]["items"]["properties"][
+        "additional_fields"
+    ]
+    assert "enum" not in escaped["items"]["properties"]["name"]

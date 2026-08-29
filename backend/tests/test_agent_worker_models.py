@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import inspect
 from dataclasses import FrozenInstanceError
 
@@ -500,3 +501,90 @@ def test_a_clean_response_is_never_marked_partial():
     registry.register(_definition(implementation))
 
     assert registry.execute(_request(), _Gateway()).partial is False
+
+
+class TestInvisibleCharactersInJsonResponses:
+    """Characters the model emits, cannot see, and therefore cannot repair.
+
+    Every one of these was taken from a live run in which eight documents were
+    analysed, every call finished cleanly on ``stop``, and four responses were
+    discarded: two documents failed outright and a third gave up on repair and
+    returned an empty envelope that was recorded as a successful extraction.
+    """
+
+    def test_a_zero_width_space_before_a_value_is_dropped(self):
+        # Observed 40 times in one run, always between a colon and its value.
+        payload = worker_model.decode_json_response('{"page": ​1}')
+        assert payload == {"page": 1}
+
+    def test_a_combining_mark_before_a_value_is_dropped(self):
+        # Observed 5 times in the same run. It renders as nothing at all with
+        # no base character to attach to.
+        payload = worker_model.decode_json_response('{"page": ̣1}')
+        assert payload == {"page": 1}
+
+    def test_a_raw_newline_inside_a_string_is_accepted(self):
+        payload = worker_model.decode_json_response('{"excerpt": "one\ntwo"}')
+        assert payload == {"excerpt": "one\ntwo"}
+
+    def test_an_invisible_character_inside_a_string_is_content_and_survives(self):
+        # Inside a literal the same character is what the document printed, and
+        # rewriting it would change an excerpt the citation rule matches exactly.
+        payload = worker_model.decode_json_response('{"excerpt": "June ​27"}')
+        assert payload == {"excerpt": "June ​27"}
+
+    def test_a_visible_wrong_character_still_raises(self):
+        # U+2011 for a minus and a fullwidth colon standing where a value
+        # belongs were both observed. They are left alone deliberately: the
+        # model can see them in the quoted repair window, so the repair loop
+        # can act on them — which is exactly what it cannot do for the four
+        # cases above.
+        with pytest.raises(worker_model.WorkerResponseValidationError):
+            worker_model.decode_json_response('{"page": ‑2}')
+        with pytest.raises(worker_model.WorkerResponseValidationError):
+            worker_model.decode_json_response('{"citation": ：}')
+
+    def test_valid_json_is_untouched(self):
+        source = '{"a": [1, 2], "b": "x\\ty", "c": {"d": null}}'
+        assert worker_model.decode_json_response(source) == json.loads(source)
+
+    def test_the_fenced_envelope_still_works(self):
+        payload = worker_model.decode_json_response(
+            '```json\n{"page": ​1}\n```'
+        )
+        assert payload == {"page": 1}
+
+
+class TestJsonModeIsPerWorker:
+    """One worker's response is Markdown, and constraining it broke the APM.
+
+    Every response schema in this package can parse JSON, so "it parses JSON"
+    is no evidence that JSON is what the worker asked for. The APM prompt says
+    the memorandum comes back "as Markdown only, without a JSON wrapper"; its
+    schema reads a JSON envelope only as a legacy shape. Asking the provider to
+    constrain that call returned a complete 16,000-character memorandum under a
+    key the model invented, and the template check failed on an empty document.
+    """
+
+    def test_the_apm_worker_is_not_constrained_to_json(self):
+        from app.agent.workers import planning as planning_worker
+
+        assert planning_worker.APM_WORKER.json_response is False
+
+    def test_every_other_worker_is(self):
+        from app.agent.workers import WORKERS
+
+        prose = {
+            worker_id
+            for worker_id, definition in WORKERS._definitions.items()
+            if not definition.json_response
+        }
+        assert prose == {"planning.apm"}
+
+    def test_the_default_is_json(self):
+        assert (
+            worker_model.WorkerDefinition.__dataclass_fields__[
+                "json_response"
+            ].default
+            is True
+        )

@@ -1107,12 +1107,6 @@ class AuditWorkflowExecution(ActionRunner):
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
-                    # The vocabulary a transaction-cycle attribute may address.
-                    # On the unit input rather than in the prompt because it is
-                    # per-workspace, and covered by the unit's own input hash so
-                    # a re-derived schema re-runs the matrix rather than leaving
-                    # a requirement pointing at a field that moved.
-                    "schema_catalog": cycle_linking.schema_catalog(self.ws),
                 },
                 activity={
                     "artifact_refs": ["planning:apm"],
@@ -1244,6 +1238,20 @@ class AuditWorkflowExecution(ActionRunner):
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
+                    # The vocabulary a transaction-cycle attribute may address.
+                    # On the unit input rather than in the prompt because it is
+                    # per-workspace, and covered by the unit's own input hash so
+                    # a re-derived schema re-runs the matrix rather than leaving
+                    # a requirement pointing at a field that moved.
+                    #
+                    # It belongs to *this* unit: ``_with_evidence_contracts``
+                    # reads it, and it is the RCM worker that runs. Sent with
+                    # the APM instead, the evidence turn was handed an empty
+                    # vocabulary under a prompt promising it the engagement's
+                    # fields, and every transaction-cycle attribute came back
+                    # `unsupported` — correctly, and for a reason no reader of
+                    # the matrix could have guessed.
+                    "schema_catalog": cycle_linking.schema_catalog(self.ws),
                 },
                 activity={
                     "artifact_refs": ["planning:apm"],

@@ -285,3 +285,155 @@ def test_extraction_runs_against_the_schema_and_carries_its_stamp(monkeypatch):
     measured = document_schemas.escape_rate(reloaded, "vendor_invoice", [artifact])
     assert measured["fields"][0]["name"] == "vat_amount"
     assert measured["rate"] == 1.0
+
+
+# ------------------------------------------- the empty extraction that was not
+# Found by a live run, not by this suite. Three vouchers — a purchase
+# requisition, a vendor invoice and a goods receipt — were stored as analysed,
+# `analysis_profile: structured`, a valid `schema_ref` stamped, and zero
+# records. Two of the three returned the empty envelope on the first attempt
+# with no error at all; the third gave up on repair and returned it. The run
+# reported success and the documents contributed no evidence to anything.
+
+def _sampled_request(**overrides):
+    """A chunk that is the whole of a document induction read its fields from."""
+
+    values = {
+        "schema_fields": SCHEMA_FIELDS,
+        "document_type": "vendor_invoice",
+        "schema_sampled_this_document": True,
+        "sole_chunk": True,
+    }
+    values.update(overrides)
+    return _Request(**values)
+
+
+def test_an_empty_extraction_of_a_sampled_document_is_refused():
+    """Induction read this document's fields; nothing to extract contradicts it."""
+
+    with pytest.raises(WorkerResponseValidationError, match="induced\\s+from"):
+        validate_structured_proposal({"records": [], "citations": []},
+                                     _sampled_request())
+
+
+def test_an_empty_extraction_is_a_complete_answer_for_any_other_document():
+    """A page of prose inside a transaction document states no record, and
+    reporting that as a coverage gap would invent a hole extraction never had."""
+
+    assert validate_structured_proposal(
+        {"records": [], "citations": []},
+        _sampled_request(schema_sampled_this_document=False),
+    ) is not None
+
+
+def test_a_further_page_may_be_empty_even_on_a_sampled_document():
+    """The contradiction needs both halves: only where this chunk is the whole
+    document is there no other page the records could be on."""
+
+    assert validate_structured_proposal(
+        {"records": [], "citations": []},
+        _sampled_request(sole_chunk=False),
+    ) is not None
+
+
+def test_a_sampled_document_stating_a_record_passes():
+    assert validate_structured_proposal(
+        _proposal([{"name": "invoice_number", "entry": 1, "value": "INV-1",
+                    "citation": "c1"}]),
+        _sampled_request(),
+    )
+
+
+# ------------------------------------------- readiness and the superseded stamp
+def test_a_superseded_schema_stamp_makes_an_analysis_unusable():
+    """Found on a live engagement, where it cost the whole cycle evidence set.
+
+    Five schemas were re-derived, so every voucher extraction was stamped
+    against a superseded version. ``documents.analysis_generated`` still
+    reported satisfied, every capability was reused, no unit expanded, and the
+    run completed having left no usable cycle evidence. The interlock that
+    re-generates a chunk when its schema moves — the descriptor changing the
+    unit's input hash — never ran, because the capability was reused whole
+    before any unit did.
+    """
+
+    from app import document_analysis, document_schemas, documents, workspaces
+    from app.agent.capabilities.documents import (
+        has_generated_analysis,
+        has_usable_analysis,
+    )
+
+    ws = workspaces.create_workspace("Superseded stamp")
+    document = documents.add_document(
+        ws, "invoice.txt", b"Invoice No. INV-1042\nTotal Due USD 100.00",
+        category="voucher",
+    )
+    document_schemas.save_schema(ws, "vendor_invoice", [
+        {"name": "invoice_number", "role": "identifier", "value_type": "identifier",
+         "cardinality": "one", "verbatim": True, "confidence": "high"},
+    ])
+    ws = workspaces.load_workspace(ws.id)
+    schema = document_schemas.load_schema(ws, "vendor_invoice")
+
+    document_analysis.persist_analysis(
+        ws, document,
+        {"pages": [{"page": 1, "text": "Invoice No. INV-1042"}]},
+        {
+            "summary_markdown": "An invoice.",
+            "audit_notes_markdown": "Structured evidence.",
+            "analysis_profile": "structured",
+            "schema_ref": {
+                "document_type": "vendor_invoice",
+                "schema_version": schema["schema_version"],
+                "schema_hash": schema["schema_hash"],
+            },
+            "records": [],
+            "citations": [],
+        },
+        provider="test", model="test",
+    )
+    ws = workspaces.load_workspace(ws.id)
+    assert has_usable_analysis(ws, document["id"]) is True
+
+    # The schema gains a field, so the stamp the extraction carries is superseded.
+    document_schemas.save_schema(ws, "vendor_invoice", [
+        {"name": "invoice_number", "role": "identifier", "value_type": "identifier",
+         "cardinality": "one", "verbatim": True, "confidence": "high"},
+        {"name": "total_amount", "role": "attribute", "value_type": "number",
+         "cardinality": "one", "verbatim": True, "confidence": "high"},
+    ])
+    ws = workspaces.load_workspace(ws.id)
+
+    # The analysis still exists — that question is unchanged, and an auditor
+    # still reviews it. What changed is whether it can serve as evidence.
+    assert has_generated_analysis(ws, document["id"]) is True
+    assert has_usable_analysis(ws, document["id"]) is False
+
+
+def test_a_narrative_analysis_is_unaffected_by_any_schema():
+    """It carries no stamp, so there is nothing for a schema to supersede."""
+
+    from app import document_analysis, document_schemas, documents, workspaces
+    from app.agent.capabilities.documents import has_usable_analysis
+
+    ws = workspaces.create_workspace("Narrative unaffected")
+    document = documents.add_document(
+        ws, "policy.txt", b"Procurement policy\nApprovals are required.",
+        category="policy",
+    )
+    document_analysis.persist_analysis(
+        ws, document,
+        {"pages": [{"page": 1, "text": "Procurement policy"}]},
+        {
+            "summary_markdown": "A policy. [1]",
+            "audit_notes_markdown": "Nothing is demonstrated by it alone.",
+            "citations": [{"id": "1", "page": 1, "excerpt": "Procurement policy"}],
+        },
+        provider="test", model="test",
+    )
+    document_schemas.save_schema(ws, "vendor_invoice", [
+        {"name": "invoice_number", "role": "identifier", "value_type": "identifier",
+         "cardinality": "one", "verbatim": True, "confidence": "high"},
+    ])
+    ws = workspaces.load_workspace(ws.id)
+    assert has_usable_analysis(ws, document["id"]) is True

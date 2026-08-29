@@ -190,6 +190,67 @@ def _max_output_tokens() -> int:
     return limit
 
 
+#: What each effort name is worth, in reasoning tokens. Absolute budgets rather
+#: than the provider's own effort levels, which are a *share of the output
+#: ceiling* — and this codebase sets that ceiling enormously high on purpose so
+#: a long answer can never be truncated. "medium" against it authorised tens of
+#: thousands of reasoning tokens, and one test-generation call spent 160,880 of
+#: them and returned an empty string. Naming the budget here keeps the ceiling
+#: protecting the answer instead of funding the deliberation that crowds it out.
+#:
+#: Sent as ``reasoning.max_tokens``. The two cannot be combined: a request
+#: carrying both ``effort`` and ``max_tokens`` is refused outright.
+REASONING_EFFORT_TOKENS = {
+    "minimal": 1_024,
+    "low": 2_048,
+    "medium": 8_192,
+    "high": 24_576,
+}
+#: Deliberation budgets addressable by name, cheapest first.
+REASONING_EFFORTS = tuple(REASONING_EFFORT_TOKENS)
+
+
+def _reasoning_parameters() -> dict:
+    """What to send about reasoning, per ``LLM_REASONING``.
+
+    Default ``on``: reasoning tokens are billed whether or not they are
+    returned, so the only thing not asking for them buys is a blind spot.
+    Without it, a completion that spent its whole budget deliberating arrives
+    as an empty string with no way to see what it was deliberating about — and
+    that is precisely the call worth reading. Debug record only.
+
+    ``off`` asks a hybrid model to answer without deliberating at all, which is
+    a different request from hiding the trace: OpenRouter maps
+    ``reasoning.enabled: false`` onto the model's non-thinking mode, and the
+    tokens are neither spent nor billed.
+
+    An effort name — one of :data:`REASONING_EFFORTS` — buys a bounded amount
+    of it instead. That middle ground is worth having because the two ends are
+    both wrong for exercising a pipeline: full deliberation is slow enough to
+    discourage running the thing at all, and none at all costs correctness in
+    the place it is least affordable. A model told not to think holds a
+    response schema less reliably, and structured extraction is the most
+    schema-demanding call here — an observed run lost two of eight documents
+    to malformed JSON, not to anything the pipeline did.
+    """
+    configured = _env("LLM_REASONING").lower()
+    if not configured or configured in {"on", "1", "true", "yes"}:
+        return {"include_reasoning": True}
+    if configured in {"off", "0", "false", "no"}:
+        return {"reasoning": {"enabled": False}}
+    budget = REASONING_EFFORT_TOKENS.get(configured)
+    if budget is None and configured.isdigit():
+        budget = int(configured)
+    if budget:
+        # A budget implies reasoning is on, so the trace comes back for the
+        # debug record without asking for it a second way.
+        return {"reasoning": {"max_tokens": budget}}
+    raise LLMError(
+        "LLM_REASONING must be 'on', 'off', a number of reasoning tokens, or "
+        "one of " + ", ".join(REASONING_EFFORTS) + "."
+    )
+
+
 def configured_temperature() -> float | None:
     """The sampling temperature to send, or ``None`` to send none at all.
 
@@ -558,6 +619,7 @@ def chat(
     profile: str | dict = "assistant",
     tool_choice: str | dict | None = None,
     on_delta: Callable[[str], None] | None = None,
+    response_format: dict | None = None,
 ) -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
@@ -604,18 +666,21 @@ def chat(
         "model": settings.model,
         "messages": messages,
         "max_tokens": _max_output_tokens(),
-        # Reasoning tokens are billed whether or not they are returned, so the
-        # only thing not asking for them buys is a blind spot. Without it, a
-        # completion that spent its whole budget deliberating arrives as an
-        # empty string with no way to see what it was deliberating about — and
-        # that is precisely the call worth reading. Debug record only.
-        "include_reasoning": True,
+        **_reasoning_parameters(),
     }
     if temperature is not None:
         body["temperature"] = temperature
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice or "auto"
+    elif response_format is not None:
+        # Constrained decoding, not a stronger request. A model asked in prose
+        # for JSON can still emit a bare token where a value belongs or a
+        # stray colon between two keys — both observed here, and both fatal to
+        # a response the repair loop then spends its whole allowance on. Not
+        # sent alongside tools: a tool call is already a structured return, and
+        # providers reject the pair.
+        body["response_format"] = response_format
     if streaming:
         body["stream"] = True
         # Ask for usage on the terminal chunk. Providers that ignore this simply

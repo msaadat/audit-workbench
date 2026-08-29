@@ -304,6 +304,10 @@ APM_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_apm_worker,
+    # The one worker whose response is not JSON. Asking the provider to
+    # constrain it produced a complete memorandum under a key of the model's
+    # own choosing, and the template check failed on an empty document.
+    json_response=False,
     semantic_validator=validate_apm_proposal,
 )
 
@@ -1627,7 +1631,13 @@ def _with_evidence_contracts(
         json.dumps(
             {
                 "ATTRIBUTES NEEDING AN EVIDENCE CONTRACT": pending,
-                "DOCUMENT TYPES AND THE FIELDS THEY STATE": (
+                # Unwrapped: ``WorkerRequest`` hands back a recursively
+                # immutable input, so the catalog's entries arrive as
+                # ``MappingProxyType`` and ``json.dumps`` refuses them. It went
+                # unnoticed because the catalog was being sent with a different
+                # unit, and ``or []`` made an absent one a plain empty list —
+                # so the only shape ever serialized here was the empty one.
+                "DOCUMENT TYPES AND THE FIELDS THEY STATE": _plain_json(
                     request.unit_input.get("schema_catalog") or []
                 ),
                 "INSTRUCTIONS": (
