@@ -46,6 +46,12 @@ WORKFLOW_ID = "audit_workflow_v3"
 # own remains independent of data analysis, and planning consumes whatever
 # analysis material exists rather than forcing it into being.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    # The head of the graph, and the one stage the agent never performs: an
+    # auditor imports, and this capability only reports whether they have. It
+    # earns an edge rather than living as a condition inside planning because
+    # an engagement with nothing in it should say planning is waiting, not
+    # offer to write a memorandum about nothing.
+    "sources.imported": (),
     "documents.text_ready": documents_workflow.dependencies("documents.text_ready"),
     "documents.analysis_chunks_ready": documents_workflow.dependencies(
         "documents.analysis_chunks_ready"
@@ -68,7 +74,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     ),
     "analysis.executed": analysis_workflow.dependencies("analysis.executed"),
     "analysis.summarized": analysis_workflow.dependencies("analysis.summarized"),
-    "planning.context_ready": ("documents.analysis_generated",),
+    "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
     "tests.specified": ("planning.rcm_ready",),

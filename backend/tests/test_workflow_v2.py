@@ -393,9 +393,13 @@ def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
     assert resolve_route(ws, run) == "workflow"
     persisted = store.load_run(ws, run["id"])
     assert persisted["workflow"]["requested_outcomes"] == ["planning.apm_ready"]
+    # A workspace with nothing imported stages `sources.imported` rather than
+    # reusing it: it is not satisfied, so the plan says so. It expands no units
+    # and planning is only partially dependent on it, so the run still drafts
+    # the memorandum — the stage reports the gap instead of hiding it.
     assert [
         stage["capability"] for stage in persisted["workflow"]["stages"]
-    ] == ["planning.context_ready", "planning.apm_ready"]
+    ] == ["sources.imported", "planning.context_ready", "planning.apm_ready"]
     assert persisted["interactions"] == []
     assert persisted["usage"]["llm_turns"] == 0
 
@@ -404,6 +408,7 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
     expected_dependencies = {
         # Phase 9: planning consumes generated document analyses through the
         # scoped document-analysis edge rather than raw document text.
+        "sources.imported": (),
         "documents.text_ready": (),
         "documents.analysis_chunks_ready": ("documents.text_ready",),
         "documents.analysis_generated": ("documents.analysis_chunks_ready",),
@@ -411,10 +416,10 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "data.join_utility_ready": ("data.relationships_inferred",),
         "data.joins_ready": ("data.join_utility_ready",),
         "analysis.register_ready": ("data.joins_ready",),
-    "analysis.definitions_ready": ("analysis.register_ready",),
+        "analysis.definitions_ready": ("analysis.register_ready",),
         "analysis.executed": ("analysis.definitions_ready",),
         "analysis.summarized": ("analysis.executed",),
-        "planning.context_ready": ("documents.analysis_generated",),
+        "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": ("planning.apm_ready",),
         "tests.specified": ("planning.rcm_ready",),
@@ -453,6 +458,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "analysis.definitions_ready",
         "analysis.executed",
         "analysis.summarized",
+        "sources.imported",
         "documents.text_ready",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
@@ -497,6 +503,7 @@ def test_partial_goal_prunes_current_prerequisites():
     )
 
     assert resolved == [
+        "sources.imported",
         # The workspace carries no document, so every document capability is
         # satisfied and reused without expanding a single unit.
         "documents.text_ready",

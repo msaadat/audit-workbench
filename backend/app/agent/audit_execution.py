@@ -107,6 +107,9 @@ from .workers import planning as planning_workers
 # not an audit deliverable. `engagement_record` reads this too — a stage that
 # never narrates must not be drawn as work still owed.
 UNNARRATED_CAPABILITIES = frozenset({
+    # Nobody ran it: the auditor imported, and a stage that reports what they
+    # did has nothing of its own to narrate.
+    "sources.imported",
     "documents.text_ready",
     "documents.analysis_chunks_ready",
     "documents.analysis_generated",
@@ -1616,6 +1619,25 @@ class AuditWorkflowExecution(ActionRunner):
             )
         return DeterministicUnitResult("succeeded", (ref,))
 
+    def _bind_unreachable(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """The executor for a capability that never expands a unit.
+
+        Registered so the execution registry covers every declared capability,
+        and never called: `_run_stage` settles a stage with no units from its
+        readiness alone. If this ever raises, the capability grew units it was
+        not supposed to have.
+        """
+        raise WorkspaceError(
+            f"Capability '{capability.id}' expands no units and cannot be executed."
+        )
+
     def _bind_verify(
         self,
         subject: Workspace,
@@ -1751,7 +1773,14 @@ _PARTIAL_DEPENDENCIES = {
     # the analyses of the others.
     "documents.analysis_chunks_ready": {"documents.text_ready"},
     "documents.analysis_generated": {"documents.analysis_chunks_ready"},
-    "planning.context_ready": {"documents.analysis_generated"},
+    # Sources are partial for a related but distinct reason. An auditor can
+    # create an engagement, record a brief, and ask for a planning memorandum
+    # before importing anything — `test_planning_run_without_tables_and_user_safe_rerun`
+    # covers exactly that, and the RCM it produces correctly drafts no tests
+    # because there is nothing to test against. The edge is there to *order*
+    # sources before planning and to give the record a stage to draw, not to
+    # forbid planning from a brief alone.
+    "planning.context_ready": {"sources.imported", "documents.analysis_generated"},
     # Promotion is additive: it carries an exploratory procedure into a test
     # the engagement would not otherwise have. A fit the model could not make
     # is one test the audit does not gain, and must never withhold the tests it
@@ -1832,6 +1861,16 @@ def build_audit_workflow_runner(
     # Capabilities whose every unit is deterministic, bound through the
     # scheduler's deterministic execution path.
     _DETERMINISTIC_BINDERS = {
+        # `sources.imported` expands no units, so the runner returns before it
+        # ever resolves an execution — see `_run_stage`, which short-circuits on
+        # an empty unit list. The binding exists because every declared
+        # capability must have one, and it raises rather than pretending to
+        # work: reaching it would mean the agent had been asked to import,
+        # which is the auditor's act and not a thing this system can do.
+        "sources.imported": (
+            adapter._bind_unreachable,
+            {"deterministic": "sources.imported"},
+        ),
         "results.rolled_up": (
             adapter._bind_rollup,
             {"deterministic": "fieldwork.rollup"},

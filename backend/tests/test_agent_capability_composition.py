@@ -97,6 +97,7 @@ _DECLARED = {
         "analysis.definitions",
         ("tables", "joins"),
     ),
+    "sources.imported": ("sources", "sources", None, ("sources",)),
     "analysis.executed": (
         "analysis_execution",
         "analysis_execution",

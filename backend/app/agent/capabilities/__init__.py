@@ -31,6 +31,7 @@ from . import (
     fieldwork,
     planning,
     reporting,
+    sources,
     tests as tests_group,
 )
 from ._shared import (
@@ -96,6 +97,7 @@ doc_test_outcomes_for_template = doc_tests_workflow.outcomes_for_template
 # preparation.
 AUDIT_DOCUMENT_GROUP = CapabilityGroupView(documents, documents.AUDIT_CAPABILITY_IDS)
 CAPABILITY_GROUPS = (
+    sources,
     AUDIT_DOCUMENT_GROUP,
     analysis,
     planning,

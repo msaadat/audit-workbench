@@ -2110,6 +2110,25 @@ export interface EngagementStage {
   blocked_reason: string
   /** null on a stage the record cannot ask for, and on one already held. */
   start: { prompt: string; outcomes: string[] } | null
+  /**
+   * How this stage is begun. `run` sends the assistant its prompt; `import`
+   * opens the shell's import dialog, because bringing in the audit file is the
+   * auditor's own act and no assistant command performs it. Empty on a stage
+   * that is never offered.
+   */
+  action: 'run' | 'import' | '' | string
+  /**
+   * Doors beside the artifact card, for a stage that opens more than one thing
+   * — Sources holds documents and tables — or offers a tool alongside what it
+   * filed. A `tool` link is not something the engagement holds, and is drawn
+   * differently so the record never implies it is.
+   */
+  links: Array<{
+    label: string
+    destination: string
+    count: number | null
+    kind: 'artifact' | 'tool' | string
+  }>
   /** Null for a capability the record has no artifact mapping for. */
   filed: {
     label: string

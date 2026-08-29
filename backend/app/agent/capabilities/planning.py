@@ -37,8 +37,9 @@ def _context_ready(workspace: Workspace, _scope: dict) -> Readiness:
         if field != "interview_answers"
     ) or context.get("interview_answers"):
         return Readiness("satisfied")
-    if not workspace.tables and not workspace.documents:
-        return Readiness("blocked", ("no imported data or documents are available",))
+    # Whether anything has been imported is `sources.imported`'s question now,
+    # and this capability depends on it, so an empty workspace reaches here
+    # already blocked by the cascade rather than by a second copy of the test.
     return Readiness("missing", ("planning context has not been established",))
 
 

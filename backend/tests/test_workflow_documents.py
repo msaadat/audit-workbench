@@ -189,6 +189,7 @@ def test_audit_graph_reuses_the_same_document_declarations():
     # Auditor review is deliberately absent from the audit graph.
     assert "documents.analysis_reviewed" not in audit_declared
     assert audit_declared["planning.context_ready"].depends_on == (
+        "sources.imported",
         "documents.analysis_generated",
     )
 

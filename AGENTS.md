@@ -232,7 +232,10 @@ frontend/src/
 |  |                             chain is reached from the record's bar, and
 |  |                             this provides `pageBackKey` so every page
 |  |                             below draws a crumb back to the record
-|  |- WorkbenchView.vue        - documents/tables/query/analysis, still railed
+|  |- WorkbenchView.vue        - documents/tables/query/analysis under
+|  |                             /bench/<section>; rail gone, same crumb as the
+|  |                             audit file. Tables and Query stay mounted
+|  |                             together: both hold in-memory state
 |  `- DebugView.vue            - local telemetry console
 |- composables/
 |  |- useAgentRun.ts           - shared run store, SSE connection, live refresh

@@ -109,6 +109,8 @@ function filed(overrides: Partial<EngagementStage> = {}): EngagementStage {
     headline: 'Draft findings from the exceptions',
     blocked_reason: '',
     start: null,
+    action: '',
+    links: [],
     filed: {
       label: 'Findings register',
       destination: 'findings',
@@ -138,6 +140,8 @@ function owed(overrides: Partial<EngagementStage> = {}): EngagementStage {
     headline: 'Write the report from the findings',
     blocked_reason: '',
     start: { prompt: 'Generate the report.', outcomes: ['report.working_draft'] },
+    action: 'run',
+    links: [],
     filed: { label: 'Report', destination: 'report', unit: '', unit_plural: '', count: null },
     readiness: { state: 'missing', reasons: [], details: {} },
     summary: '',
@@ -830,6 +834,73 @@ describe('EngagementRecordTab', () => {
     // It is a link, not one of the bar's buttons: it navigates rather than
     // acting on the record, so it must survive a middle-click.
     expect(chain.element.tagName).toBe('A')
+    wrapper.unmount()
+  })
+
+  /**
+   * Sources is the head of the chain and the only row that opens two things:
+   * there is no single Sources page, so the doors go to the two catalogues the
+   * engagement actually keeps.
+   */
+  it('draws both doors on a row that opens more than one thing', async () => {
+    const wrapper = await render([filed({
+      id: 'stage:sources.imported',
+      capability: 'sources.imported',
+      filed: { label: 'Sources', destination: '', unit: '', unit_plural: '', count: null },
+      links: [
+        { label: 'Documents', destination: 'documents', count: 8, kind: 'artifact' },
+        { label: 'Tables', destination: 'data', count: 6, kind: 'artifact' },
+      ],
+    })])
+
+    const doors = wrapper.findAll('.door')
+    expect(doors.map(door => door.text())).toEqual(['Documents8', 'Tables6'])
+    expect(doors.map(door => door.attributes('href'))).toEqual(['/documents', '/data'])
+    // The card itself opens nothing — there is no combined Sources page.
+    expect(wrapper.find('.made .card').attributes('href')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  /**
+   * A query files nothing, so the record must not draw it in the teal it uses
+   * for work the engagement holds — that would be a claim it cannot support.
+   */
+  it('marks a tool door as a tool rather than as something filed', async () => {
+    const wrapper = await render([filed({
+      id: 'stage:analysis.executed',
+      capability: 'analysis.executed',
+      filed: { label: 'Analysis library', destination: 'analysis', unit: 'analysis', unit_plural: 'analyses', count: 24 },
+      links: [{ label: 'Query', destination: 'query', count: null, kind: 'tool' }],
+    })])
+
+    const door = wrapper.find('.door')
+    expect(door.attributes('data-kind')).toBe('tool')
+    expect(door.text()).toBe('Query')
+    // No count: a tool has no population to state.
+    expect(door.find('b').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  /**
+   * The assistant cannot import. A row whose action is `import` has to hand the
+   * shell its own dialog rather than send a command nothing would answer — the
+   * record used to have no way to say that, and a new engagement's first
+   * suggestion was to plan an audit of nothing.
+   */
+  it('asks the shell to import instead of sending the assistant a command', async () => {
+    const wrapper = await render([owed({
+      id: 'stage:sources.imported',
+      capability: 'sources.imported',
+      headline: 'Bring in the audit file',
+      start: null,
+      action: 'import',
+      filed: { label: 'Sources', destination: '', unit: '', unit_plural: '', count: null },
+    })])
+
+    await wrapper.find('.took button').trigger('click')
+
+    expect(wrapper.emitted('import-requested')).toHaveLength(1)
+    expect(send).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

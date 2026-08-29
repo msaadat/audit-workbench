@@ -65,6 +65,21 @@ from .workspaces import Workspace
 # run reads "0 scheduled tests" and "no new drafts", where a figure read from
 # the workspace stays 22 rows, 54 tests, 30 findings.
 _SPINE: dict[str, dict[str, Any]] = {
+    # The head of the chain, and the only row the agent does not produce. Its
+    # card opens nothing because there is no one Sources page: the two doors
+    # below it go to the two catalogues the engagement actually keeps. When it
+    # is empty it asks for an import rather than offering to run something,
+    # which is what `action` is for — the assistant cannot import.
+    "sources.imported": {
+        "label": "Sources", "destination": "",
+        "unit": "", "count": None,
+        "headline": "Bring in the audit file",
+        "action": "import",
+        "links": (
+            {"label": "Documents", "destination": "documents", "count": "documents"},
+            {"label": "Tables", "destination": "data", "count": "tables"},
+        ),
+    },
     "documents.analysis_generated": {
         "label": "Document analyses", "destination": "documents",
         "unit": "document", "count": "documents",
@@ -72,6 +87,11 @@ _SPINE: dict[str, dict[str, Any]] = {
     "analysis.executed": {
         "label": "Analysis library", "destination": "analysis",
         "unit": "analysis", "unit_plural": "analyses", "count": "analyses",
+        # The bench beside the library. A query is not an artifact the
+        # engagement holds — nothing is filed by running one — so it is marked
+        # a tool and drawn as one, or the record would start claiming the
+        # engagement holds a query.
+        "links": ({"label": "Query", "destination": "query", "kind": "tool"},),
     },
     "planning.apm_ready": {
         "label": "Audit planning memorandum", "destination": "apm",
@@ -147,6 +167,7 @@ def _counts(workspace: Workspace) -> dict[str, int]:
     data_tests = len(workspace.data_tests)
     return {
         "documents": len(workspace.documents),
+        "tables": len(workspace.table_names()),
         "analyses": len(workspace.analyses),
         "rcm": len(workspace.rcm),
         "data_tests": data_tests,
@@ -375,6 +396,10 @@ def _conclusions_set(workspace: Workspace) -> bool:
 # has residual work. The ledger asks what the engagement holds, and the honest
 # answer to that is the artifact, not the schedule.
 _HOLDS: dict[str, Any] = {
+    # Either kind. A data-only engagement and a document-only one are both
+    # real; requiring both would report an engagement as empty while it holds
+    # everything it is going to.
+    "sources.imported": lambda ws: bool(ws.documents or ws.table_names()),
     "planning.apm_ready":
         lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
     "fieldwork.executed": _fieldwork_ran,
@@ -385,6 +410,7 @@ _HOLDS: dict[str, Any] = {
 # What a stage's work product is called in a sentence about waiting for it.
 # Only the wording lives here; which stage waits for which comes from the graph.
 _NOUNS = {
+    "sources.imported": "the sources",
     "planning.apm_ready": "the memorandum",
     "planning.rcm_ready": "the matrix",
     "tests.specified": "the tests",
@@ -422,13 +448,27 @@ def _positions() -> dict[str, float]:
     after the stage declared before it in `_SPINE`, which reads as the work it
     belongs beside. Sorting those last instead put a register of sixteen
     executed tests below the stages that have not run.
+
+    A stage that depends on nothing is the exception. The plan's order for it is
+    arbitrary — any topological sort may put a root anywhere before its
+    dependents — and the closure happens to reach `sources.imported` after the
+    whole analysis branch, which would file the evidence base below the analyses
+    read out of it. A root therefore takes its declared place instead. Stages
+    with real dependencies keep the plan's answer, which is why document
+    analyses still sit where the plan runs them rather than where they are
+    declared.
     """
     plan = _plan_order()
     positions: dict[str, float] = {}
     previous = -1.0
     for capability in _SPINE:
         placed = plan.get(capability)
-        previous = float(placed) if placed is not None else previous + 0.5
+        if placed is not None and not _dependencies(capability):
+            previous = previous + 0.5
+        elif placed is not None:
+            previous = float(placed)
+        else:
+            previous = previous + 0.5
         positions[capability] = previous
     return positions
 
@@ -648,8 +688,23 @@ def _stages(
             "blocked_reason": blocked,
             "start": (
                 {"prompt": spec["prompt"], "outcomes": [capability]}
-                if headline and owed else None
+                if headline and owed and spec.get("prompt") else None
             ),
+            # How this stage is begun. Everything the agent produces is "run";
+            # "import" is the auditor's own act, and the shell owns the dialog
+            # that performs it.
+            "action": str(spec.get("action") or ("run" if headline else "")),
+            # Doors beside the artifact card, for a stage that opens more than
+            # one thing or offers a tool alongside what it filed.
+            "links": [
+                {
+                    "label": str(link.get("label") or ""),
+                    "destination": str(link.get("destination") or ""),
+                    "count": counts.get(link["count"]) if link.get("count") else None,
+                    "kind": str(link.get("kind") or "artifact"),
+                }
+                for link in spec.get("links") or ()
+            ],
             "filed": {
                 "label": spec.get("label") or capability,
                 "destination": spec.get("destination") or "",

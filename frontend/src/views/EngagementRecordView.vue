@@ -17,13 +17,13 @@ import EngagementRecordTab from '../components/EngagementRecordTab.vue'
  * No rail: this surface has one thing on it.
  */
 
-const { workspace } = inject(workspaceContextKey)!
+const { workspace, requestImport } = inject(workspaceContextKey)!
 </script>
 
 <template>
   <div class="ui-surface">
     <div class="ui-surface__panel">
-      <EngagementRecordTab :workspace="workspace" />
+      <EngagementRecordTab :workspace="workspace" @import-requested="requestImport" />
     </div>
   </div>
 </template>

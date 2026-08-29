@@ -23,6 +23,7 @@ from app.agent.workflows import audit
 
 
 EXPECTED_DEPENDENCIES = {
+    "sources.imported": (),
     "documents.text_ready": (),
     "documents.analysis_chunks_ready": ("documents.text_ready",),
     "documents.analysis_generated": ("documents.analysis_chunks_ready",),
@@ -33,7 +34,7 @@ EXPECTED_DEPENDENCIES = {
     "analysis.definitions_ready": ("analysis.register_ready",),
     "analysis.executed": ("analysis.definitions_ready",),
     "analysis.summarized": ("analysis.executed",),
-    "planning.context_ready": ("documents.analysis_generated",),
+    "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
     "tests.specified": ("planning.rcm_ready",),
@@ -77,6 +78,7 @@ def test_full_audit_closure_is_topological():
         "analysis.definitions_ready",
         "analysis.executed",
         "analysis.summarized",
+        "sources.imported",
         "documents.text_ready",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",

@@ -11,6 +11,7 @@
  */
 export const CAPABILITY_LABELS: Record<string, string> = {
   // audit_workflow_v3
+  'sources.imported': 'Sources',
   'documents.text_ready': 'Document content',
   'documents.analysis_chunks_ready': 'Document chunk analysis',
   'documents.analysis_generated': 'Document analysis',

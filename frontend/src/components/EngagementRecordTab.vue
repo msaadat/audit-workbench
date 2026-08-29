@@ -43,6 +43,7 @@ import UiEmptyState from './ui/UiEmptyState.vue'
  */
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const emit = defineEmits<{ 'import-requested': [] }>()
 const toast = useToast()
 const nav = useWorkspaceNav()
 const agent = useAgentRun(props.workspace.id)
@@ -60,6 +61,7 @@ const KNOWN_DESTINATIONS: readonly string[] = [
 
 /** An icon per work product, chosen from what the artifact *is*. */
 const FILED_ICONS: Record<string, string> = {
+  Sources: 'pi pi-folder-open',
   'Audit planning memorandum': 'pi pi-map',
   'Risk and control matrix': 'pi pi-table',
   'Control conclusions': 'pi pi-check-square',
@@ -499,7 +501,15 @@ function openPoint(point: EngagementOpenPoint) {
  * sidecar for anyone who wants the detail.
  */
 async function start(stage: EngagementStage) {
-  if (starting.value || !stage.start) return
+  if (starting.value) return
+  // Sources is the one stage the assistant cannot begin. Bringing in the audit
+  // file is the auditor's act, so the row hands the shell's import dialog back
+  // rather than sending a command nothing would answer.
+  if (stage.action === 'import') {
+    emit('import-requested')
+    return
+  }
+  if (!stage.start) return
   starting.value = stage.capability
   try {
     await chats.send(stage.start.prompt, 'act', 'auto', {
@@ -681,6 +691,24 @@ const pendingNote = computed(() => {
                 </span>
               </component>
               <span v-else class="none">—</span>
+
+              <!-- Doors beside the card, for a stage that opens more than one
+                   thing. A tool is drawn differently from an artifact on
+                   purpose: nothing is filed by running a query, and a teal pill
+                   here would have the record claim the engagement holds one. -->
+              <span v-if="stage.links.length" class="doors">
+                <component
+                  v-for="link in stage.links"
+                  :key="link.label"
+                  :is="destinationFor(link.destination) ? RouterLink : 'span'"
+                  :to="destinationFor(link.destination) ? nav.to(destinationFor(link.destination)!) : undefined"
+                  class="door"
+                  :data-kind="link.kind"
+                >
+                  <i v-if="link.kind === 'tool'" class="pi pi-wrench" aria-hidden="true" />
+                  {{ link.label }}<b v-if="link.count !== null">{{ link.count }}</b>
+                </component>
+              </span>
             </span>
 
             <span class="say">
@@ -1000,6 +1028,29 @@ const pendingNote = computed(() => {
   font-weight: 700; font-variant-numeric: tabular-nums;
 }
 .none { display: block; padding-top: .3rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+
+/* --- doors beside the card ----------------------------------------------- */
+/* An artifact door is a quieter relative of the card above it: same family,
+   less weight, because it opens a part of what the row filed rather than the
+   row itself. A tool door is deliberately outside that family — neutral, with
+   a wrench — because running one files nothing, and drawing it in the teal the
+   record uses for held work would be a claim the engagement cannot support. */
+.doors { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .3rem; }
+.door {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .16rem .5rem;
+  border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-control);
+  color: var(--aw-teal); background: transparent;
+  font-size: var(--aw-text-sm); font-weight: 600; text-decoration: none; white-space: nowrap;
+}
+.door b { font-weight: 700; font-variant-numeric: tabular-nums; }
+a.door:hover { background: var(--aw-teal-soft); }
+a.door:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+.door[data-kind='tool'] {
+  border-color: var(--aw-border-strong); border-style: dashed; color: var(--aw-muted);
+}
+a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-ink-soft); }
+.door .pi { font-size: var(--aw-text-xs); }
 
 .say { display: grid; gap: .2rem; min-width: 0; justify-items: start; }
 .saytop { display: flex; align-items: baseline; flex-wrap: wrap; gap: .3rem .5rem; min-width: 0; }

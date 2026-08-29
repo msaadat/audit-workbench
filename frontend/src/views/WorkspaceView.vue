@@ -176,9 +176,6 @@ onUnmounted(() => {
         <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
           <i class="pi pi-sparkles" /><span>Assistant</span>
         </router-link>
-        <router-link :to="nav.to('documents')" :class="{ active: surface === 'bench' }">
-          <i class="pi pi-wrench" /><span>Workbench</span>
-        </router-link>
       </nav>
 
       <span class="header-spacer" />

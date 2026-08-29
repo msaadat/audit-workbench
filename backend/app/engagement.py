@@ -55,6 +55,7 @@ BRIEF_FIELDS = ("entity", "period", "materiality", "background_notes")
 # already partitions the graph in run order, so this is a rename rather than a
 # second ordering that could drift out of step with the first.
 _PHASE_OF_DOMAIN = {
+    "sources": "sources",
     "data": "sources",
     "analysis": "sources",
     "documents": "documents",

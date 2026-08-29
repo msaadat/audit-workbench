@@ -22,16 +22,20 @@ class _Workspace:
     """Only the surface the record's counters and presence tests touch."""
 
     def __init__(self, *, rcm=(), findings=(), documents=(), analyses=(),
-                 data_tests=(), tiles=(), apm="", planning=None):
+                 data_tests=(), tiles=(), tables=(), apm="", planning=None):
         self.rcm = list(rcm)
         self.findings = list(findings)
         self.documents = list(documents)
         self.analyses = list(analyses)
         self.data_tests = list(data_tests)
         self.tiles = list(tiles)
+        self._tables = list(tables)
         self.planning = dict(planning or {})
         if apm:
             self.planning["apm_markdown"] = apm
+
+    def table_names(self):
+        return list(self._tables)
 
 
 def _milestone(capability, at, *, status="completed", headline="Done", summary="Filed."):
@@ -814,10 +818,25 @@ def test_review_outranks_unstarted_work_as_the_next_step(stub_store):
 
 def test_with_nothing_open_the_next_step_is_the_first_runnable_stage(stub_store):
     stub_store([])
-    result = engagement_record.record(_Workspace())
+    result = engagement_record.record(_Workspace(tables=["ledger"]))
 
     assert result["next"]["kind"] == "stage"
     assert result["next"]["capability"] == "planning.apm_ready"
+
+
+def test_an_empty_engagement_is_asked_to_import_before_anything_else(stub_store):
+    """The first thing a new workspace was told to do was plan an audit of
+    nothing. Sources is the head of the spine, so it is the first runnable
+    stage, and it asks for an import rather than offering to run something —
+    the assistant cannot import."""
+    stub_store([])
+    result = engagement_record.record(_Workspace())
+
+    assert result["next"]["capability"] == "sources.imported"
+    assert result["next"]["action"] == "import"
+    assert result["next"]["headline"] == "Bring in the audit file"
+    # It carries no prompt: there is no assistant command that imports.
+    assert result["next"]["start"] is None
 
 
 def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
@@ -828,7 +847,7 @@ def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
         data_tests=[
             {"id": "T1", "rcm_id": "R1", "status": "completed_no_exception"},
         ],
-        analyses=[{}], tiles=[{}],
+        analyses=[{}], tiles=[{}], tables=["ledger"],
         findings=[{"management_response": "Agreed.", "cause_pending": False}],
     )
     engagement_record.report.hydrate = lambda ws: {"markdown": "# Report"}
