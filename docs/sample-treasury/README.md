@@ -46,10 +46,11 @@ handling as well as audit logic.
 - `documents/03_Minutes_Internal_Audit_Planning.docx` - planning meeting minutes.
 - `documents/deal-packs/` - 18 sampled deals, one folder each, holding 81
   documents in all. Every document is its own single-page PDF, because intake
-  treats one file as one document: the dealing ticket, the broker note where
-  the deal was brokered, the counterparty confirmation, the settlement payment
-  instruction and the nostro statement extract. Filenames carry the document's
-  own reference and its type, so intake can classify from the filename alone.
+  treats one file as one document: the dealing ticket, the broker contract
+  note where the deal was brokered, the counterparty confirmation, the
+  settlement payment instruction and the nostro account statement. Filenames
+  carry the document's own reference and the name its document type is known
+  by, because intake classifies from the filename alone.
 - `FACILITATOR_GUIDE.md` - the answer key and a suggested demo path.
 
 ## What the sample is built to demonstrate

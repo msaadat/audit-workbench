@@ -11,7 +11,7 @@ Meridian Bank Limited runs a treasury dealing room covering interbank foreign ex
 - Period: 1 January to 30 June 2025.
 - Population: 1,000 deals, PKR 158,041,244,380 in aggregate notional.
 - Objective: assess operating effectiveness of dealer and counterparty limit controls, rate reasonableness, segregation of duties across the front, middle and back office, confirmation timeliness and completeness, and settlement routing and timing.
-- Documents: the treasury policy, the limit matrix, the planning minutes, and 18 deal packs. A pack is a folder under `documents/deal-packs/`, holding the dealing ticket, the broker note where the deal was brokered, the counterparty confirmation, the settlement payment instruction and the nostro statement extract as separate files - 81 documents in all.
+- Documents: the treasury policy, the limit matrix, the planning minutes, and 18 deal packs. A pack is a folder under `documents/deal-packs/`, holding the dealing ticket, the broker contract note where the deal was brokered, the counterparty confirmation, the settlement payment instruction and the nostro account statement as separate files - 81 documents in all.
 
 ## Recommended RCM controls
 
@@ -144,7 +144,7 @@ Three classes, and the distinction is the point of the sample.
 | D1 | Deal ticket carries no supervisory authorisation | Moderate | `01_TD-2025-0094` | dealing ticket |
 | D2 | Rate on the deal ticket was altered and the alteration is not initialled | High | `07_TD-2025-0165` | dealing ticket |
 | D3 | The counterparty confirmation is an internally produced document | High | `18_TD-2025-0518` | counterparty confirmation |
-| D4 | Broker note absent from the pack for a brokered deal | Low | `15_TD-2025-0420` | the broker note is absent |
+| D4 | Broker note absent from the pack for a brokered deal | Low | `15_TD-2025-0420` | the broker contract note is absent |
 | D5 | Payment instruction released under a single signature above the dual-signature threshold | High | `09_TD-2025-0169` | payment instruction |
 | D6 | Supervisory authorisation on the deal ticket post-dates execution | Moderate | `11_TD-2025-0263` | dealing ticket |
 

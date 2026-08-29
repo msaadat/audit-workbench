@@ -841,7 +841,7 @@ def emit(path: Path, story: list, title: str) -> None:
 def build_pack(ordinal: int, code: str, deal_id: str) -> list[Path]:
     """One folder per sampled deal, one PDF per document inside it.
 
-    Intake treats a file as a document, so the ticket, the broker note, the
+    Intake treats a file as a document, so the ticket, the contract note, the
     confirmation, the instruction and the statement extract cannot share a PDF.
     Filenames carry the document's own reference and its type, because intake
     classification reads the filename and not the contents.
@@ -867,9 +867,9 @@ def build_pack(ordinal: int, code: str, deal_id: str) -> list[Path]:
     ]
     if deal["BROKER_ID"] and "no_broker_note" not in flags:
         documents.append(
-            (f"{broker_note_ref(deal)}_Broker_Note.pdf",
+            (f"{broker_note_ref(deal)}_Broker_Contract_Note.pdf",
              page_broker_note(deal),
-             f"Broker note {broker_note_ref(deal)}"))
+             f"Broker contract note {broker_note_ref(deal)}"))
     documents += [
         (f"{conf['CONFIRMATION_ID']}_Counterparty_Confirmation.pdf",
          page_confirmation(deal, conf, flags),
@@ -877,9 +877,13 @@ def build_pack(ordinal: int, code: str, deal_id: str) -> list[Path]:
         (f"{stl['PAYMENT_REFERENCE']}_Payment_Instruction.pdf",
          page_payment_instruction(deal, stl, flags),
          f"Payment instruction {stl['PAYMENT_REFERENCE']}"),
-        (f"{stl['SETTLEMENT_ID']}_Nostro_Statement_Extract.pdf",
+        # "Nostro account statement" and "broker contract note" are the names
+        # the document-type catalogue knows, and intake classifies on the
+        # filename alone. Calling these files anything else strands them in
+        # the "other" category.
+        (f"{stl['SETTLEMENT_ID']}_Nostro_Account_Statement.pdf",
          page_nostro(deal, stl),
-         f"Nostro statement extract {stl['SETTLEMENT_ID']}"),
+         f"Nostro account statement {stl['SETTLEMENT_ID']}"),
     ]
 
     written = []

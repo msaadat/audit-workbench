@@ -77,9 +77,10 @@ w("- Objective: assess operating effectiveness of dealer and counterparty "
   "and settlement routing and timing.")
 w(f"- Documents: the treasury policy, the limit matrix, the planning minutes, "
   f"and {len(PACKS)} deal packs. A pack is a folder under "
-  f"`documents/deal-packs/`, holding the dealing ticket, the broker note where "
+  f"`documents/deal-packs/`, holding the dealing ticket, the broker contract "
+  f"note where "
   f"the deal was brokered, the counterparty confirmation, the settlement "
-  f"payment instruction and the nostro statement extract as separate files - "
+  f"payment instruction and the nostro account statement as separate files - "
   f"81 documents in all.")
 w("")
 w("## Recommended RCM controls")
@@ -162,7 +163,8 @@ w("| Ref | Exception | Severity | Deal pack | Document to open |")
 w("| --- | --- | --- | --- | --- |")
 D_DOCUMENT = {
     "D1": "dealing ticket", "D2": "dealing ticket",
-    "D3": "counterparty confirmation", "D4": "the broker note is absent",
+    "D3": "counterparty confirmation",
+    "D4": "the broker contract note is absent",
     "D5": "payment instruction", "D6": "dealing ticket",
 }
 for code in ["D1", "D2", "D3", "D4", "D5", "D6"]:
