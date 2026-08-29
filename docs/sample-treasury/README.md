@@ -15,8 +15,9 @@ handling as well as audit logic.
 1. Create a workspace named **Treasury Dealing Audit - H1 2025**.
 2. Import each CSV from `data/` as a separate table. Use the file stem as the
    table name.
-3. Add the three DOCX files from `documents/` and a selection of the deal packs
-   from `documents/deal-packs/` to the document inventory.
+3. Add the three DOCX files from `documents/` to the document inventory, then
+   stage one or more deal-pack folders from `documents/deal-packs/`. Each
+   folder is one sampled deal and each PDF inside it is one document.
 4. In auto-mode, use this command:
 
    `Perform an internal audit of treasury dealing, confirmation and settlement
@@ -43,9 +44,12 @@ handling as well as audit logic.
 - `documents/01_Treasury_and_Investment_Policy.docx` - the compliance baseline, sections 4 to 8.
 - `documents/02_Counterparty_and_Dealer_Limit_Matrix.docx` - approved limits.
 - `documents/03_Minutes_Internal_Audit_Planning.docx` - planning meeting minutes.
-- `documents/deal-packs/` - 18 sampled deals, each a single PDF holding the deal
-  ticket, broker note where applicable, counterparty confirmation, settlement
-  payment instruction and nostro statement extract.
+- `documents/deal-packs/` - 18 sampled deals, one folder each, holding 81
+  documents in all. Every document is its own single-page PDF, because intake
+  treats one file as one document: the dealing ticket, the broker note where
+  the deal was brokered, the counterparty confirmation, the settlement payment
+  instruction and the nostro statement extract. Filenames carry the document's
+  own reference and its type, so intake can classify from the filename alone.
 - `FACILITATOR_GUIDE.md` - the answer key and a suggested demo path.
 
 ## What the sample is built to demonstrate

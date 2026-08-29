@@ -11,7 +11,7 @@ Meridian Bank Limited runs a treasury dealing room covering interbank foreign ex
 - Period: 1 January to 30 June 2025.
 - Population: 1,000 deals, PKR 158,041,244,380 in aggregate notional.
 - Objective: assess operating effectiveness of dealer and counterparty limit controls, rate reasonableness, segregation of duties across the front, middle and back office, confirmation timeliness and completeness, and settlement routing and timing.
-- Documents: the treasury policy, the limit matrix, the planning minutes, and 18 deal packs.
+- Documents: the treasury policy, the limit matrix, the planning minutes, and 18 deal packs. A pack is a folder under `documents/deal-packs/`, holding the dealing ticket, the broker note where the deal was brokered, the counterparty confirmation, the settlement payment instruction and the nostro statement extract as separate files - 81 documents in all.
 
 ## Recommended RCM controls
 
@@ -139,14 +139,14 @@ Three classes, and the distinction is the point of the sample.
 
 **Class 2 - visible only in the documents.** Every one of these deals is clean in the tables. No data test will ever raise them; only reading the pack does.
 
-| Ref | Exception | Severity | Deal pack |
-| --- | --- | --- | --- |
-| D1 | Deal ticket carries no supervisory authorisation | Moderate | `TD-2025-0094` |
-| D2 | Rate on the deal ticket was altered and the alteration is not initialled | High | `TD-2025-0165` |
-| D3 | The counterparty confirmation is an internally produced document | High | `TD-2025-0518` |
-| D4 | Broker note absent from the pack for a brokered deal | Low | `TD-2025-0420` |
-| D5 | Payment instruction released under a single signature above the dual-signature threshold | High | `TD-2025-0169` |
-| D6 | Supervisory authorisation on the deal ticket post-dates execution | Moderate | `TD-2025-0263` |
+| Ref | Exception | Severity | Deal pack | Document to open |
+| --- | --- | --- | --- | --- |
+| D1 | Deal ticket carries no supervisory authorisation | Moderate | `01_TD-2025-0094` | dealing ticket |
+| D2 | Rate on the deal ticket was altered and the alteration is not initialled | High | `07_TD-2025-0165` | dealing ticket |
+| D3 | The counterparty confirmation is an internally produced document | High | `18_TD-2025-0518` | counterparty confirmation |
+| D4 | Broker note absent from the pack for a brokered deal | Low | `15_TD-2025-0420` | the broker note is absent |
+| D5 | Payment instruction released under a single signature above the dual-signature threshold | High | `09_TD-2025-0169` | payment instruction |
+| D6 | Supervisory authorisation on the deal ticket post-dates execution | Moderate | `11_TD-2025-0263` | dealing ticket |
 
 - **D1** - The dealer signed; the authorisation block is blank. The system record shows nothing wrong.
 - **D2** - The ticket shows a struck-through rate over-written by hand. The booked rate matches the over-written figure, so no data test sees it.
@@ -157,17 +157,17 @@ Three classes, and the distinction is the point of the sample.
 
 **Class 3 - the paper contradicts the system.** Each of these is clean in the tables and internally consistent on the face of each document. The exception exists only in the disagreement between the two, which is the case for vouching at all.
 
-| Ref | Exception | Severity | Deal pack |
-| --- | --- | --- | --- |
-| C1 | Deal booked against a different counterparty from the one it was struck with | High | `TD-2025-0341` |
-| C2 | Rate on the counterparty confirmation differs from the rate booked | High | `TD-2025-0166` |
-| C3 | Notional on the counterparty confirmation differs from the notional booked | High | `TD-2025-0337` |
-| C4 | A complete document pack exists for a deal the system never recorded | High | `TD-2025-0447` |
+| Ref | Exception | Severity | Deal pack | Documents to read together |
+| --- | --- | --- | --- | --- |
+| C1 | Deal booked against a different counterparty from the one it was struck with | High | `14_TD-2025-0341` | confirmation against the deal record and the exposure profile |
+| C2 | Rate on the counterparty confirmation differs from the rate booked | High | `08_TD-2025-0166` | confirmation against the deal record and the market rate file |
+| C3 | Notional on the counterparty confirmation differs from the notional booked | High | `13_TD-2025-0337` | confirmation against the deal record and the settlement |
+| C4 | A complete document pack exists for a deal the system never recorded | High | `16_TD-2025-0447` | the whole folder against the deal, confirmation and settlement files |
 
 - **C1** - Booked to CP-004 Horizon Bank. The counterparty confirmation in the pack is on Cedar Commercial Bank (CP-009) paper and carries Cedar's reference. Recorded CP-009 exposure peaks at PKR 922,000,000 against a limit of PKR 1,000,000,000; adding this PKR 120,000,000 deal takes it to PKR 1,042,000,000, or 104% of the limit. Invisible to every data test and to either document read alone.
 - **C2** - Booked at 279.5132, which is 1bp from the published mid of 279.4966 and so inside the 25bp policy band. The counterparty confirms 282.1686, which is 96bp from the same mid. The rate reasonableness test passes because it reads the recorded rate, not the confirmed one.
 - **C3** - Booked at PKR 205,000,000; the counterparty confirms PKR 230,000,000. The PKR 25m difference is neither settled nor recorded.
-- **C4** - Deal ticket, broker note, counterparty confirmation and payment instruction all exist for TD-2025-0447. The deal file skips that reference and no settlement row carries it.
+- **C4** - Deal ticket, broker note, counterparty confirmation, payment instruction and a nostro extract showing the funds leaving all exist for TD-2025-0447. The deal file skips that reference, no confirmation and no settlement row carries it, and the confirmation, instruction and settlement references on the paper are manual-series (CNF-2025-M041, PMT-2025-M0114, STL-2025-M014) that appear nowhere in the populations.
 
 ## The headline finding
 
@@ -181,9 +181,9 @@ Nothing in the populations shows it. Nothing in any single document shows it. It
 
 1. Import the ten CSVs and let the exploratory analysis run. The limit, rate and segregation exceptions should surface without prompting.
 2. Note what the analysis cannot settle: TS-009 has no row in the dealer limit file, so 61 T-bill deals are untestable for authority. That is an inconclusive result and should be reported as one, not as a pass.
-3. Open two or three class-1 packs (`TD-2025-0096`, `TD-2025-0171`, `TD-2025-0475`) to show the paper corroborating what the data already found.
-4. Open the class-2 packs (`TD-2025-0094`, `TD-2025-0518`, `TD-2025-0169`) against clean table rows, to show what the analytics structurally cannot reach.
-5. Walk `TD-2025-0341` end to end, then `TD-2025-0447` - a complete pack, funds out of the nostro, and no deal record anywhere in the file.
+3. Open two or three class-1 packs (`02_TD-2025-0096`, `10_TD-2025-0171`, `17_TD-2025-0475`) to show the paper corroborating what the data already found.
+4. Open the class-2 packs (`01_TD-2025-0094`, `18_TD-2025-0518`, `09_TD-2025-0169`) against clean table rows, to show what the analytics structurally cannot reach.
+5. Walk `14_TD-2025-0341` end to end, then `16_TD-2025-0447` - a complete pack, funds out of the nostro, and no deal record anywhere in the file.
 6. Promote the counterparty substitution, the settled-unconfirmed deals and the off-market dealing into findings; generate the working paper and the report draft.
 
 ## Counting
@@ -192,4 +192,4 @@ Nothing in the populations shows it. Nothing in any single document shows it. It
 - 31 are visible in the tables, touching 72 deal references out of 1,000.
 - 6 are visible only in the documents.
 - 4 are contradictions between the two.
-- 18 deal packs, of which 4 are clean: `TD-2025-0098`, `TD-2025-0102`, `TD-2025-0115`, `TD-2025-0112`.
+- 18 deal packs holding 81 documents, of which 4 packs are clean: `03_TD-2025-0098`, `04_TD-2025-0102`, `06_TD-2025-0115`, `05_TD-2025-0112`.

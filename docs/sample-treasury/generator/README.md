@@ -16,7 +16,10 @@ python gen_data.py && python verify.py && python gen_docs.py && python gen_guide
   exceptions and nothing else. Run it after any change.
 - `gen_docs.py` builds the three criteria documents and the 18 deal packs from
   `ground_truth.json`, so the paper and the populations agree except where an
-  exception makes them disagree.
+  exception makes them disagree. Each pack is a folder and each document inside
+  it is its own single-page PDF, named for its own reference and its type,
+  because intake treats one file as one document and classifies on the
+  filename.
 - `gen_guide.py` writes `../FACILITATOR_GUIDE.md` from `ground_truth.json`, so
   the answer key cannot drift from the files.
 

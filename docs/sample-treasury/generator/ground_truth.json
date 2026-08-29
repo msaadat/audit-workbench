@@ -207,7 +207,7 @@
    "deal_ids": [
     "TD-2025-0447"
    ],
-   "detail": "Deal ticket, broker note, counterparty confirmation and payment instruction all exist for TD-2025-0447. The deal file skips that reference and no settlement row carries it."
+   "detail": "Deal ticket, broker note, counterparty confirmation, payment instruction and a nostro extract showing the funds leaving all exist for TD-2025-0447. The deal file skips that reference, no confirmation and no settlement row carries it, and the confirmation, instruction and settlement references on the paper are manual-series (CNF-2025-M041, PMT-2025-M0114, STL-2025-M014) that appear nowhere in the populations."
   },
   "D1": {
    "code": "D1",

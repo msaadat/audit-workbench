@@ -490,7 +490,7 @@ SYNTHETIC = {
     "AMENDMENT_APPROVED_BY_ID": "",
 }
 SYNTHETIC_CONF = {
-    "CONFIRMATION_ID": "CNF-2025-0446",
+    "CONFIRMATION_ID": "CNF-2025-M041",
     "DEAL_ID": "TD-2025-0447",
     "CONFIRMATION_MODE": "SWIFT MT320",
     "SENT_DATE": "2025-03-19",
@@ -500,7 +500,7 @@ SYNTHETIC_CONF = {
     "DISCREPANCY_NOTE": "",
 }
 SYNTHETIC_STL = {
-    "SETTLEMENT_ID": "STL-2025-0431",
+    "SETTLEMENT_ID": "STL-2025-M014",
     "DEAL_ID": "TD-2025-0447",
     "SETTLEMENT_DATE": "2025-03-20",
     "SETTLEMENT_CURRENCY": "PKR",
@@ -516,7 +516,7 @@ SYNTHETIC_STL = {
     "RELEASED_BY_ID": "TS-017",
     "APPROVED_BY_ID": "TS-014",
     "SECOND_APPROVER_ID": "",
-    "PAYMENT_REFERENCE": "PMT-2025-00431",
+    "PAYMENT_REFERENCE": "PMT-2025-M0114",
 }
 
 
@@ -586,6 +586,11 @@ def page_deal_ticket(deal: dict, flags: set[str]) -> list:
     return story
 
 
+def broker_note_ref(deal: dict) -> str:
+    return (f'{deal["BROKER_ID"]}-{deal["DEAL_DATE"][:4]}-'
+            f'{deal["DEAL_ID"].split("-")[-1]}')
+
+
 def page_broker_note(deal: dict) -> list:
     broker = BROKERS[deal["BROKER_ID"]]
     cp = CPS[deal["COUNTERPARTY_ID"]]
@@ -596,9 +601,7 @@ def page_broker_note(deal: dict) -> list:
         "Member, Financial Markets Association of Pakistan"])
     story.append(Paragraph("BROKER'S CONTRACT NOTE", S_TITLE))
     story.append(kv([
-        ("Note number",
-         f'{deal["BROKER_ID"]}/{deal["DEAL_DATE"][:4]}/'
-         f'{deal["DEAL_ID"].split("-")[-1]}'),
+        ("Note number", broker_note_ref(deal)),
         ("Date", long_date(deal["DEAL_DATE"])),
         ("To", f"{ENTITY}, Treasury"),
         ("We confirm having arranged the following transaction between you and",
@@ -824,7 +827,25 @@ def footer(canvas, doc):
     canvas.restoreState()
 
 
-def build_pack(code: str, deal_id: str) -> Path:
+def emit(path: Path, story: list, title: str) -> None:
+    doc = SimpleDocTemplate(
+        str(path), pagesize=A4,
+        leftMargin=21 * mm, rightMargin=21 * mm,
+        topMargin=18 * mm, bottomMargin=20 * mm,
+        title=title,
+        author=f"{ENTITY} (fictional)",
+        subject="Internal audit sample - treasury dealing")
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+
+
+def build_pack(ordinal: int, code: str, deal_id: str) -> list[Path]:
+    """One folder per sampled deal, one PDF per document inside it.
+
+    Intake treats a file as a document, so the ticket, the broker note, the
+    confirmation, the instruction and the statement extract cannot share a PDF.
+    Filenames carry the document's own reference and its type, because intake
+    classification reads the filename and not the contents.
+    """
     flags = FLAGS.get(code, set())
     if "synthetic" in flags:
         deal, conf, stl = SYNTHETIC, SYNTHETIC_CONF, SYNTHETIC_STL
@@ -836,27 +857,37 @@ def build_pack(code: str, deal_id: str) -> Path:
         raise SystemExit(f"{code} {deal_id}: pack needs both a confirmation "
                          f"and a settlement")
 
-    story = page_deal_ticket(deal, flags)
-    if deal["BROKER_ID"] and "no_broker_note" not in flags:
-        story.append(PageBreak())
-        story += page_broker_note(deal)
-    story.append(PageBreak())
-    story += page_confirmation(deal, conf, flags)
-    story.append(PageBreak())
-    story += page_payment_instruction(deal, stl, flags)
-    story.append(PageBreak())
-    story += page_nostro(deal, stl)
+    folder = PACKS_DIR / f"{ordinal:02d}_{deal['DEAL_ID']}"
+    folder.mkdir(parents=True, exist_ok=True)
 
-    path = PACKS_DIR / f"{deal['DEAL_ID']}_deal_pack.pdf"
-    doc = SimpleDocTemplate(
-        str(path), pagesize=A4,
-        leftMargin=21 * mm, rightMargin=21 * mm,
-        topMargin=18 * mm, bottomMargin=20 * mm,
-        title=f"Deal pack {deal['DEAL_ID']}",
-        author=f"{ENTITY} (fictional)",
-        subject="Internal audit sample - treasury dealing")
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
-    return path
+    documents = [
+        (f"{deal['DEAL_ID']}_Dealing_Ticket.pdf",
+         page_deal_ticket(deal, flags),
+         f"Dealing ticket {deal['DEAL_ID']}"),
+    ]
+    if deal["BROKER_ID"] and "no_broker_note" not in flags:
+        documents.append(
+            (f"{broker_note_ref(deal)}_Broker_Note.pdf",
+             page_broker_note(deal),
+             f"Broker note {broker_note_ref(deal)}"))
+    documents += [
+        (f"{conf['CONFIRMATION_ID']}_Counterparty_Confirmation.pdf",
+         page_confirmation(deal, conf, flags),
+         f"Counterparty confirmation {conf['CONFIRMATION_ID']}"),
+        (f"{stl['PAYMENT_REFERENCE']}_Payment_Instruction.pdf",
+         page_payment_instruction(deal, stl, flags),
+         f"Payment instruction {stl['PAYMENT_REFERENCE']}"),
+        (f"{stl['SETTLEMENT_ID']}_Nostro_Statement_Extract.pdf",
+         page_nostro(deal, stl),
+         f"Nostro statement extract {stl['SETTLEMENT_ID']}"),
+    ]
+
+    written = []
+    for name, story, title in documents:
+        path = folder / name
+        emit(path, story, title)
+        written.append(path)
+    return written
 
 
 if __name__ == "__main__":
@@ -866,7 +897,11 @@ if __name__ == "__main__":
     build_limits()
     build_minutes()
     print("criteria documents written")
-    for code, deal_id in PACKS.items():
-        path = build_pack(code, deal_id)
-        print(f"  {code:5} {path.name}")
-    print(f"{len(PACKS)} deal packs written")
+    total = 0
+    for ordinal, (code, deal_id) in enumerate(
+            sorted(PACKS.items(), key=lambda kv: kv[1]), 1):
+        written = build_pack(ordinal, code, deal_id)
+        total += len(written)
+        print(f"  {code:5} {written[0].parent.name}: "
+              f"{len(written)} documents")
+    print(f"{len(PACKS)} deal folders, {total} documents written")

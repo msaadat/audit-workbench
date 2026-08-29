@@ -32,6 +32,14 @@ GROUPS = [
 ]
 
 
+PACK_FOLDER = {deal_id: f"{i:02d}_{deal_id}" for i, deal_id
+               in enumerate(sorted(PACKS.values()), 1)}
+
+
+def folder(deal_id: str) -> str:
+    return PACK_FOLDER.get(deal_id, deal_id)
+
+
 def refs(code: str) -> str:
     ids = TRUTH[code]["deal_ids"]
     if not ids:
@@ -68,7 +76,11 @@ w("- Objective: assess operating effectiveness of dealer and counterparty "
   "front, middle and back office, confirmation timeliness and completeness, "
   "and settlement routing and timing.")
 w(f"- Documents: the treasury policy, the limit matrix, the planning minutes, "
-  f"and {len(PACKS)} deal packs.")
+  f"and {len(PACKS)} deal packs. A pack is a folder under "
+  f"`documents/deal-packs/`, holding the dealing ticket, the broker note where "
+  f"the deal was brokered, the counterparty confirmation, the settlement "
+  f"payment instruction and the nostro statement extract as separate files - "
+  f"81 documents in all.")
 w("")
 w("## Recommended RCM controls")
 w("")
@@ -146,12 +158,17 @@ w("**Class 2 - visible only in the documents.** Every one of these deals is "
   "clean in the tables. No data test will ever raise them; only reading the "
   "pack does.")
 w("")
-w("| Ref | Exception | Severity | Deal pack |")
-w("| --- | --- | --- | --- |")
+w("| Ref | Exception | Severity | Deal pack | Document to open |")
+w("| --- | --- | --- | --- | --- |")
+D_DOCUMENT = {
+    "D1": "dealing ticket", "D2": "dealing ticket",
+    "D3": "counterparty confirmation", "D4": "the broker note is absent",
+    "D5": "payment instruction", "D6": "dealing ticket",
+}
 for code in ["D1", "D2", "D3", "D4", "D5", "D6"]:
     entry = TRUTH[code]
     w(f"| {code} | {entry['title']} | {entry['severity']} | "
-      f"`{entry['deal_ids'][0]}` |")
+      f"`{folder(entry['deal_ids'][0])}` | {D_DOCUMENT[code]} |")
 w("")
 for code in ["D1", "D2", "D3", "D4", "D5", "D6"]:
     w(f"- **{code}** - {TRUTH[code]['detail']}")
@@ -162,12 +179,18 @@ w("**Class 3 - the paper contradicts the system.** Each of these is clean in "
   "exception exists only in the disagreement between the two, which is the "
   "case for vouching at all.")
 w("")
-w("| Ref | Exception | Severity | Deal pack |")
-w("| --- | --- | --- | --- |")
+w("| Ref | Exception | Severity | Deal pack | Documents to read together |")
+w("| --- | --- | --- | --- | --- |")
+C_DOCUMENT = {
+    "C1": "confirmation against the deal record and the exposure profile",
+    "C2": "confirmation against the deal record and the market rate file",
+    "C3": "confirmation against the deal record and the settlement",
+    "C4": "the whole folder against the deal, confirmation and settlement files",
+}
 for code in ["C1", "C2", "C3", "C4"]:
     entry = TRUTH[code]
     w(f"| {code} | {entry['title']} | {entry['severity']} | "
-      f"`{entry['deal_ids'][0]}` |")
+      f"`{folder(entry['deal_ids'][0])}` | {C_DOCUMENT[code]} |")
 w("")
 for code in ["C1", "C2", "C3", "C4"]:
     w(f"- **{code}** - {TRUTH[code]['detail']}")
@@ -205,15 +228,15 @@ w("1. Import the ten CSVs and let the exploratory analysis run. The limit, "
 w("2. Note what the analysis cannot settle: TS-009 has no row in the dealer "
   "limit file, so 61 T-bill deals are untestable for authority. That is an "
   "inconclusive result and should be reported as one, not as a pass.")
-w("3. Open two or three class-1 packs (`" + PACKS["X07"] + "`, `"
-  + PACKS["X01"] + "`, `" + PACKS["X04a"] + "`) to show the paper "
-  "corroborating what the data already found.")
-w("4. Open the class-2 packs (`" + PACKS["D1"] + "`, `" + PACKS["D3"]
-  + "`, `" + PACKS["D5"] + "`) against clean table rows, to show what the "
-  "analytics structurally cannot reach.")
-w("5. Walk `" + PACKS["C1"] + "` end to end, then `" + PACKS["C4"]
-  + "` - a complete pack, funds out of the nostro, and no deal record "
-    "anywhere in the file.")
+w("3. Open two or three class-1 packs (`" + folder(PACKS["X07"]) + "`, `"
+  + folder(PACKS["X01"]) + "`, `" + folder(PACKS["X04a"]) + "`) to show the "
+  "paper corroborating what the data already found.")
+w("4. Open the class-2 packs (`" + folder(PACKS["D1"]) + "`, `"
+  + folder(PACKS["D3"]) + "`, `" + folder(PACKS["D5"]) + "`) against clean "
+  "table rows, to show what the analytics structurally cannot reach.")
+w("5. Walk `" + folder(PACKS["C1"]) + "` end to end, then `"
+  + folder(PACKS["C4"]) + "` - a complete pack, funds out of the nostro, and "
+    "no deal record anywhere in the file.")
 w("6. Promote the counterparty substitution, the settled-unconfirmed deals and "
   "the off-market dealing into findings; generate the working paper and the "
   "report draft.")
@@ -227,8 +250,10 @@ w(f"- {len(data_codes)} are visible in the tables, touching {len(flagged)} "
   f"deal references out of {GT['deal_count']:,}.")
 w("- 6 are visible only in the documents.")
 w("- 4 are contradictions between the two.")
-w(f"- {len(PACKS)} deal packs, of which 4 are clean: "
-  + ", ".join(f"`{PACKS[k]}`" for k in ("OK1", "OK2", "OK3", "OK4")) + ".")
+w(f"- {len(PACKS)} deal packs holding 81 documents, of which 4 packs are "
+  f"clean: "
+  + ", ".join(f"`{folder(PACKS[k])}`" for k in ("OK1", "OK2", "OK3", "OK4"))
+  + ".")
 
 (ROOT / "FACILITATOR_GUIDE.md").write_text("\n".join(lines) + "\n")
 print(f"wrote FACILITATOR_GUIDE.md ({len(lines)} lines)")

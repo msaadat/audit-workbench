@@ -813,9 +813,12 @@ note("C3", "Notional on the counterparty confirmation differs from the notional 
 
 note("C4", "A complete document pack exists for a deal the system never "
      "recorded", "contradiction", "High", ["TD-2025-0447"],
-     "Deal ticket, broker note, counterparty confirmation and payment "
-     "instruction all exist for TD-2025-0447. The deal file skips that "
-     "reference and no settlement row carries it.")
+     "Deal ticket, broker note, counterparty confirmation, payment instruction "
+     "and a nostro extract showing the funds leaving all exist for "
+     "TD-2025-0447. The deal file skips that reference, no confirmation and no "
+     "settlement row carries it, and the confirmation, instruction and "
+     "settlement references on the paper are manual-series (CNF-2025-M041, "
+     "PMT-2025-M0114, STL-2025-M014) that appear nowhere in the populations.")
 
 d1 = pick(1, **CLEAN)[0]
 note("D1", "Deal ticket carries no supervisory authorisation", "document",
