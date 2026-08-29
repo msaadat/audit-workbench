@@ -52,7 +52,69 @@ def test_deterministic_document_categories_use_safe_filename_metadata():
     # transaction evidence. Transaction classification now relies on a
     # document signal in the filename instead.
     assert classify("Planning/Financial_Approval_Matrix.docx") == "policy"
+    # A dealer or counterparty limit matrix is delegation-of-authority material
+    # by another name, and every limit test in a treasury engagement cites it.
+    assert classify("Planning/Counterparty_and_Dealer_Limit_Matrix.docx") == "policy"
     assert classify("Planning/March_Approval_Memo.pdf") == "other"
+
+
+def test_transaction_evidence_vocabulary_spans_engagement_areas():
+    """The voucher rung is not procure-to-pay only.
+
+    Its vocabulary comes from the document-type catalogue, so a treasury
+    dealing ticket and a payroll register have to be recognised as readily as a
+    purchase order. Before this the list was hand-kept and P2P-shaped, and a
+    whole treasury sample classified as ``other``.
+    """
+
+    def classify(path):
+        return intake.deterministic_classification({
+            "relative_path": path,
+            "local_metadata": {"route": "document", "parse_ok": True},
+        })["document_category"]
+
+    for filename in (
+        # treasury and banking
+        "TD-2025-0094_Dealing_Ticket.pdf",
+        "CNF-2025-0094_Counterparty_Confirmation.pdf",
+        "PMT-2025-00074_Payment_Instruction.pdf",
+        "STL-2025-0074_Nostro_Account_Statement.pdf",
+        "BR-003-2025-0094_Broker_Contract_Note.pdf",
+        "LC-2025-114_Letter_of_Credit.pdf",
+        "Cheque_100234.pdf",
+        # payroll, logistics, fixed assets, general ledger, tax, order to cash
+        "Payslip_EMP-2201_June.pdf",
+        "Payroll_Register_2025_06.pdf",
+        "AWB-77120_Air_Waybill.pdf",
+        "Asset_Disposal_Form_FA-118.pdf",
+        "JV-2025-0431_Journal_Entry.pdf",
+        "Tax_Payment_Receipt_Q1.pdf",
+        "SO-2025-0012_Sales_Order.pdf",
+    ):
+        assert classify(f"Samples/Deal-0094/{filename}") == "voucher", filename
+
+
+def test_transaction_evidence_does_not_claim_planning_material():
+    def classify(path):
+        return intake.deterministic_classification({
+            "relative_path": path,
+            "local_metadata": {"route": "document", "parse_ok": True},
+        })["document_category"]
+
+    # Contract material stays contract material even though the transaction
+    # rung is now tested before it, because named contracts are held out of the
+    # vocabulary rather than reached by rung order.
+    assert classify("Planning/Employment_Contract_Ali.docx") == "contract"
+    assert classify("Planning/Loan_Agreement_2024.docx") == "contract"
+    assert classify("Planning/Service_Agreement_Vendor.docx") == "contract"
+    # Period-end analytical artefacts summarise transactions, they do not
+    # evidence one.
+    assert classify("Planning/Trial_Balance_June.pdf") == "other"
+    assert classify("Planning/Financial_Statements_2024.pdf") == "other"
+    # Ordinary words that are also document-type aliases must not match on
+    # their own.
+    assert classify("Planning/Vendor_Proposal_Summary.pdf") == "other"
+    assert classify("Planning/Billing_Overview.pdf") == "other"
 
 
 def test_model_cannot_replace_high_confidence_transaction_category():

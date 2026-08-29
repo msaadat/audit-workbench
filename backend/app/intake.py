@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
 
-from . import loader
+from . import document_types, loader
 from .workspaces import Workspace, WorkspaceError, slugify, write_json_atomic
 from .text import counted, verb
 
@@ -52,17 +52,88 @@ PLANNING_DOCUMENT_TERMS = re.compile(
     re.IGNORECASE,
 )
 # A ``voucher`` category denotes transaction-level source material, rather
-# than only a document literally titled "voucher". Keep this filename-only so
-# intake remains within its privacy boundary: it has no document contents at
-# this point. The common abbreviations deliberately require a numeric record
-# suffix (for example INV-1042 or PO2025-17), avoiding ordinary words such as
-# "point" or "request".
-TRANSACTION_EVIDENCE_FILENAME = re.compile(
-    r"(?:\b(?:payment\s+(?:voucher|request)|voucher|invoice|purchase\s+"
-    r"(?:order|requisition)|goods?\s+(?:receipt|received)|receipt|delivery\s+"
-    r"note|packing\s+slip|quotation|quote)\b|\b(?:inv|po|req|grn)[\s-]*\d)",
-    re.IGNORECASE,
+# than only a document literally titled "voucher". The vocabulary is taken from
+# the document-type catalogue instead of a hand-kept list, so a treasury
+# dealing ticket, a payroll register and a bill of lading are recognised on the
+# same footing as a purchase order, and adding a type to that catalogue extends
+# intake with it. Keep this filename-only so intake remains within its privacy
+# boundary: it has no document contents at this point.
+#
+# Three things are held out of the derivation:
+#   - the governance area, whose types are planning and contract material that
+#     the surrounding ladder already classifies;
+#   - period-end analytical artefacts, which summarise transactions rather than
+#     evidence one;
+#   - terms that are ordinary English before they are document types, and short
+#     abbreviations, which are admitted only with a record number after them
+#     (for example INV-1042 or PO2025-17) so "point" or "or" cannot match.
+_NON_VOUCHER_TYPE_IDS = frozenset(
+    {
+        "trial_balance",
+        "general_ledger_extract",
+        "financial_statements",
+        "accrual_schedule",
+        "depreciation_schedule",
+        "asset_register_extract",
+        # Contract material, whichever area the catalogue files it under.
+        "loan_agreement",
+        "employment_contract",
+    }
 )
+_UNSAFE_VOUCHER_TERMS = frozenset(
+    {
+        "bid", "bill", "check", "cover note", "estimate", "letter", "licence",
+        "license", "memo", "mr", "note", "or", "policy schedule",
+        "proposal", "purchase contract", "email",
+    }
+)
+# Preserved so the vocabulary can only grow: these were recognised before the
+# catalogue derivation existed, and "confirmation" joins them because bank,
+# trade, order and intercompany confirmations are all transaction evidence.
+_BASE_VOUCHER_TERMS = frozenset(
+    {
+        "confirmation", "delivery note", "goods receipt", "goods received",
+        "invoice", "packing slip", "payment request", "payment voucher",
+        "purchase order", "purchase requisition", "quotation", "quote",
+        "receipt", "voucher",
+    }
+)
+_BASE_VOUCHER_ABBREVIATIONS = frozenset({"inv", "po", "req", "grn"})
+
+
+def _voucher_vocabulary() -> tuple[list[str], list[str]]:
+    """Split the catalogue's names into standalone terms and abbreviations."""
+
+    terms = set(_BASE_VOUCHER_TERMS)
+    abbreviations = set(_BASE_VOUCHER_ABBREVIATIONS)
+    for definition in document_types.DEFINITIONS:
+        if not definition.active or definition.area == "governance":
+            continue
+        if definition.id in _NON_VOUCHER_TYPE_IDS:
+            continue
+        for name in (definition.label, *definition.aliases):
+            value = re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
+            if not value or value in _UNSAFE_VOUCHER_TERMS:
+                continue
+            if len(value.replace(" ", "")) <= 3:
+                abbreviations.add(value)
+            else:
+                terms.add(value)
+    return (sorted(terms, key=lambda value: (-len(value), value)),
+            sorted(abbreviations))
+
+
+def _voucher_filename_pattern() -> re.Pattern[str]:
+    terms, abbreviations = _voucher_vocabulary()
+    words = "|".join(r"\s+".join(re.escape(word) for word in term.split())
+                     for term in terms)
+    short = "|".join(r"\s+".join(re.escape(word) for word in term.split())
+                     for term in abbreviations)
+    return re.compile(rf"\b(?:{words})\b|\b(?:{short})[\s_-]*\d",
+                      re.IGNORECASE)
+
+
+TRANSACTION_EVIDENCE_FILENAME = _voucher_filename_pattern()
 MAX_SUGGESTED_PLANNING_DOCUMENTS = 8
 DIRECT_UPLOADS_LABEL = "Direct uploads"
 EXCLUDED_NAMES = frozenset({".ds_store", "thumbs.db"})
@@ -455,16 +526,22 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
     if route == "document":
         if any(token in label for token in ("minute", "meeting note")):
             document_category = "minutes"
-        elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual", "approval matrix", "authority matrix", "delegation of authority")):
+        elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual", "approval matrix", "authority matrix", "limit matrix", "limits matrix", "delegation of authority")):
             document_category = "policy"
         elif any(token in label for token in ("regulation", "regulatory", "statute")):
             document_category = "regulation"
+        # Ahead of the contract and correspondence rungs on purpose. Those
+        # match single ordinary words, so "contract" would claim a broker's
+        # contract note and "letter" would claim a letter of credit, both of
+        # which are transaction evidence. Named contract material is held out
+        # of the transaction vocabulary instead, so an employment contract or a
+        # loan agreement still falls through to ``contract``.
+        elif TRANSACTION_EVIDENCE_FILENAME.search(filename):
+            document_category = "voucher"
         elif any(token in label for token in ("contract", "agreement")):
             document_category = "contract"
         elif any(token in label for token in ("email", "correspondence", "letter")):
             document_category = "correspondence"
-        elif TRANSACTION_EVIDENCE_FILENAME.search(filename):
-            document_category = "voucher"
         elif any(token in label for token in ("prior audit", "audit report")):
             document_category = "prior_report"
         elif any(token in label for token in ("org chart", "organisation chart", "organization chart", "briefing", "background")):

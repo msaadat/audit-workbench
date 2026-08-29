@@ -67,6 +67,15 @@ Keys:
     "subtype": short free-form label, "proposed_name": safe short name,
     "confidence": "high" | "medium" | "low", "rationale": one sentence,
     "proposed_action": "import" | "ignore"}}
+Categories. "voucher" is transaction-level source evidence for any business
+cycle, not only a document titled "voucher": a purchase order, a goods receipt,
+a payslip, a timesheet, a dealing ticket, a counterparty confirmation, a
+payment instruction, a bill of lading, a journal voucher, a tax payment receipt
+all belong to it. "evidence" is other support obtained for a test. "policy",
+"regulation", "contract", "minutes", "prior_report", "correspondence" and
+"background" are planning material describing how the entity should operate,
+not a record of one transaction. Reach for "other" only when the filename
+supports none of the rest.
 Technical parser metadata is authoritative. Do not propose importing a file
 whose local parser failed. Filenames can be suggestive but are not evidence of
 document content."""
