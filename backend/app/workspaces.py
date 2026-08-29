@@ -2395,9 +2395,22 @@ def list_workspaces(actor=None) -> list[dict]:
                 "created": ws.created,
                 "revision": ws.revision,
                 "table_count": len(ws.tables) + len(ws.joins),
+                # Where the engagement stands, for the index card's phase
+                # strip. Same rule as the folder above: a workspace whose
+                # status cannot be derived still lists, without one.
+                "progress": _listed_progress(ws),
             }
         )
     return items
+
+
+def _listed_progress(workspace: "Workspace") -> dict | None:
+    from . import engagement_progress
+
+    try:
+        return engagement_progress.progress(workspace)
+    except Exception:
+        return None
 
 
 def load_workspace(workspace_id: str, actor=None) -> Workspace:

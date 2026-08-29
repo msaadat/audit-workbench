@@ -5,13 +5,13 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
-import Tag from 'primevue/tag'
 import Skeleton from 'primevue/skeleton'
 import type { MenuItem } from 'primevue/menuitem'
 
 import { api } from '../api'
 import type { WorkspaceListItem } from '../types'
 import NewEngagementDialog from '../components/NewEngagementDialog.vue'
+import WorkspaceProgress from '../components/WorkspaceProgress.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 
 const router = useRouter()
@@ -108,7 +108,11 @@ onMounted(load)
         </template>
         <template #footer>
           <div class="card-actions">
-            <Tag :value="ws.table_count ? 'Data ready' : 'Setup needed'" :severity="ws.table_count ? 'success' : 'warn'" />
+            <!-- Four states where a "Data ready" tag used to be. The tag
+                 answered the one question the listing already had data for;
+                 the strip answers the one a reader with several engagements
+                 actually asks, which is which of them wants attention. -->
+            <WorkspaceProgress :tables="ws.table_count" :progress="ws.progress" />
             <span @click.stop><UiOverflowMenu :items="workspaceActions(ws)" :tooltip="`Actions for ${ws.name}`" /></span>
           </div>
         </template>
@@ -181,8 +185,11 @@ h1 {
 
 .card-actions {
   display: flex;
+  align-items: flex-end;
   justify-content: space-between;
+  gap: 0.6rem;
 }
+.card-actions > :first-child { flex: 1; min-width: 0; }
 
 .empty {
   padding: 2rem 0;

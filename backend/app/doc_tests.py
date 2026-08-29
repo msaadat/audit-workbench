@@ -728,6 +728,38 @@ def list_tests(workspace: Workspace) -> list[dict]:
     return result
 
 
+def stored_tests(workspace: Workspace) -> list[dict]:
+    """Every document test as it is stored, without materializing its items.
+
+    ``list_tests`` rebuilds each cycle test's population before it answers —
+    loading every document analysis, re-binding record closures, re-validating
+    every assertion — because a reader that asks an *item-level* question must
+    not be handed a projection that has gone out of date underneath it.
+
+    A reader that only asks what the test itself records — its status, its
+    conclusion, which RCM row it serves — pays that price for nothing: those
+    fields are on the file. Hydration still runs, so defaults, evidence
+    staleness and the read-safe status downgrade all apply exactly as they do
+    on the full path.
+
+    The ``items`` that come back are the persisted ones and may no longer
+    describe the evidence. Nothing derived from them may be trusted: use
+    ``list_tests`` for anything that reads an item.
+    """
+    tests = []
+    for path in sorted(tests_dir(workspace).glob("*.json")):
+        try:
+            tests.append(
+                _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
+            )
+        except (json.JSONDecodeError, WorkspaceError):
+            # A single unreadable test must not take down a status projection
+            # that spans the whole engagement, for the same reason the
+            # workspace listing tolerates a folder that has gone missing.
+            continue
+    return tests
+
+
 def _validate_links(workspace: Workspace, rcm_refs: list[str], procedure_refs: list[str]) -> None:
     known_rcm = {item["id"] for item in workspace.rcm}
     known_procedures = {item["id"] for item in workspace.work_program}

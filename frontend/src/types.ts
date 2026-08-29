@@ -1,3 +1,11 @@
+/** Where each phase stands, for the index card's strip. States are the
+ *  backend's own, taken verbatim — the index never recomputes a phase. */
+export interface WorkspaceProgress {
+  planning: DashboardPhase['state']
+  fieldwork: DashboardPhase['state']
+  report: DashboardPhase['state']
+}
+
 export interface WorkspaceListItem {
   id: string
   revision: number
@@ -5,6 +13,8 @@ export interface WorkspaceListItem {
   description: string
   created: string
   table_count: number
+  /** Absent where the engagement's status could not be derived. */
+  progress?: WorkspaceProgress | null
 }
 
 export interface JoinSpec {

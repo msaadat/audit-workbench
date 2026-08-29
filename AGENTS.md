@@ -78,6 +78,10 @@ backend/app/
 |- analytics.py                - canned analytics registry and result metadata
 |- validation.py               - durable table validation rules and run support
 |- dashboard.py                - dashboard tiles and saved analysis payloads
+|- engagement_progress.py      - the index card's phase states: a screen over
+|                                stored fields settles amber, anything it
+|                                cannot settle escalates to `dashboard`, and
+|                                the answer is memoized per workspace revision
 |- analysis_results.py         - the saved-analysis execution contract: run it,
 |                                bound it, record it, classify it
 |- analysis_memo.py            - the EDA memo's embed grammar: parsing and
@@ -212,7 +216,11 @@ frontend/src/
 |- api.ts                      - fetch wrapper, uploads, downloads, error model
 |- types.ts                    - frontend mirror of backend payloads
 |- views/
-|  |- HomeView.vue             - workspace list/create/delete
+|  |- HomeView.vue             - workspace list/create/delete, each card
+|  |                             carrying `WorkspaceProgress.vue`: four
+|  |                             states (data, planning, fieldwork,
+|  |                             report) in the console rail's colours,
+|  |                             taken from the backend, never recomputed
 |  |- WorkspaceView.vue        - main engagement shell and tab navigation
 |  `- DebugView.vue            - local telemetry console
 |- composables/

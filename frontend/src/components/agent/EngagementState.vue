@@ -166,7 +166,10 @@ function summary(row: PhaseRow) {
 .arc { display: flex; gap: 2px; margin: 0 0.15rem 0.6rem; }
 .arc span { flex: 1; height: 4px; border-radius: var(--aw-radius-pill); background: var(--aw-border-strong); }
 .arc span[data-state='complete'] { background: var(--aw-ok); }
-.arc span[data-state='in_progress'] { background: var(--aw-teal-600); }
+/* Blue, not teal: beside the green of a finished phase, teal read as a
+   second shade of done. The phase icon already used `--aw-info` for this
+   state, so the arc now agrees with the icon above it. */
+.arc span[data-state='in_progress'] { background: var(--aw-info); }
 .arc span[data-state='attention'] { background: var(--aw-warn); }
 
 .phase {
