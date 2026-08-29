@@ -1,8 +1,8 @@
 """Reporting capability group of the audit workflow.
 
 Owns the post-roll-up outcomes of the authoritative audit graph:
-``findings.drafted``, ``working_papers.generated``, ``dashboard.curated``,
-``report.working_draft``, and ``audit.verified``.
+``findings.drafted``, ``working_papers.generated``, ``report.working_draft``,
+and ``audit.verified``.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry keys for its
@@ -32,7 +32,6 @@ from ._shared import single_unit as _single
 CAPABILITY_IDS: tuple[str, ...] = (
     "findings.drafted",
     "working_papers.generated",
-    "dashboard.curated",
     "report.working_draft",
     "audit.verified",
 )
@@ -162,33 +161,6 @@ def _working_papers_generated() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
-# dashboard.curated (P7J)
-# --------------------------------------------------------------------------- #
-def _dashboard_ready(workspace: Workspace, _scope: dict) -> Readiness:
-    curation = workspace.planning.get("dashboard_curation") or {}
-    if not curation.get("completed_at"):
-        return Readiness("missing", ("the RCM dashboard has not been curated",))
-    # A completed curation exists; whether it predates current roll-ups is
-    # currency and is not assessed by the framework.
-    return Readiness(
-        "satisfied", details={"tile_count": int(curation.get("created_count") or 0)}
-    )
-
-
-def _dashboard_curated() -> Capability:
-    return Capability(
-        "dashboard.curated",
-        "dashboard",
-        "Dashboard curation",
-        "dashboard",
-        audit_workflow.dependencies("dashboard.curated"),
-        _dashboard_ready,
-        _single("dashboard", "Curate RCM dashboard"),
-        invalidate_on=("rollup",),
-    )
-
-
-# --------------------------------------------------------------------------- #
 # report.working_draft (P7K)
 # --------------------------------------------------------------------------- #
 def _report_ready(workspace: Workspace, _scope: dict) -> Readiness:
@@ -262,7 +234,6 @@ def _audit_verified() -> Capability:
 _BUILDERS = {
     "findings.drafted": _findings_drafted,
     "working_papers.generated": _working_papers_generated,
-    "dashboard.curated": _dashboard_curated,
     "report.working_draft": _report_working_draft,
     "audit.verified": _audit_verified,
 }

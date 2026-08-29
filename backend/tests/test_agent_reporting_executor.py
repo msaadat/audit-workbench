@@ -23,7 +23,6 @@ from app.workspaces import WorkspaceConflict
 
 _OUTPUT_CAPABILITIES = {
     "working_papers.generated",
-    "dashboard.curated",
     "report.working_draft",
 }
 
@@ -46,14 +45,15 @@ def test_verify_audit_reports_incomplete_when_outputs_missing():
 
     outcome = verify_audit(ws)
 
-    # A fresh workspace has no dashboard curation or report draft, so at least
-    # those output capabilities are unsatisfied and the audit is not complete.
+    # A fresh workspace has no report draft, so the audit is not complete.
+    # Working papers are vacuously satisfied on an empty matrix — no rows means
+    # no papers missing — so the report is the one output that must be owed.
     assert outcome["audit_complete"] is False
     assert set(outcome["output_readiness"]) == _OUTPUT_CAPABILITIES
     issues = set(output_issues(outcome))
     assert issues, "an empty workspace must have unsatisfied output capabilities"
     assert issues <= _OUTPUT_CAPABILITIES
-    assert {"dashboard.curated", "report.working_draft"} <= issues
+    assert {"report.working_draft"} <= issues
     assert outcome["open_gate_count"] >= len(issues)
 
 

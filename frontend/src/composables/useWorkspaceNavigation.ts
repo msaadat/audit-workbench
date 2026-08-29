@@ -46,11 +46,11 @@ interface DestinationSpec {
 
 const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   console: { surface: 'console', section: '', keys: [] },
-  // What the engagement filed, keyed by work product rather than by the chat
-  // that asked for it. A projection of runs and their milestones.
+  // What the engagement holds, keyed by work product rather than by the chat
+  // that asked for it. Drawn from the audit graph, with run history layered on.
   record: { surface: 'home', section: '', keys: [] },
-  // The curated dashboard is an audit outcome (`dashboard.curated`), so it sits
-  // in the audit file rather than acting as the workspace landing page.
+  // The dashboard reads the engagement's own results, so it sits in the audit
+  // file rather than acting as the workspace landing page.
   dashboard: { surface: 'file', section: 'dashboard', keys: [] },
   apm: { surface: 'file', section: 'apm', keys: [] },
   // `paper` names the row whose working paper is open, so a rendered paper is

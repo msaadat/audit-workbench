@@ -30,19 +30,41 @@ from datetime import datetime
 from typing import Any
 
 from . import doc_tests, engagement, rcm_execution, report
+from .agent import capabilities as audit_capabilities
 from .agent import store
-from .agent.audit_execution import UNNARRATED_CAPABILITIES
 from .agent.workflows import audit as audit_workflow
 from .workspaces import Workspace
 
 # --------------------------------------------------------------------------- #
-# What each capability files
+# What the record draws, and what the graph already knows
 # --------------------------------------------------------------------------- #
+# The spine is the audit graph. `agent.workflows.audit` owns which stage waits
+# for which, and every capability module owns a `readiness` function that tests
+# its own output and says in a sentence what is left. Order, blocking, and that
+# sentence are read from there rather than restated here: the restatement
+# drifted once already, and `_blocked_by` records what that cost.
+#
+# What stays declared is what the graph has no opinion about. The graph's own
+# titles name the capability — "Eligible finding drafts", "Executable test
+# specifications" — which is what *runs*; an auditor opens a findings register
+# and a test programme. Membership is declared for the same reason: document
+# tests are their own workflow rather than a step of the audit plan, so no
+# single closure contains everything the record should draw.
+#
 # `count` names a key in the tally built by `_counts`; None means the work
 # product has no meaningful size to state. `destination` is the frontend
 # navigation destination that opens it, kept in the vocabulary
-# `useWorkspaceNavigation` already speaks.
-_FILED: dict[str, dict[str, Any]] = {
+# `useWorkspaceNavigation` already speaks. `headline` and `prompt` are the
+# imperative a stage carries while its work product does not exist yet.
+#
+# `live_body` marks a stage whose milestone projection describes the workspace
+# rather than the run that wrote it, so the record can recompute it — see
+# `_live_bodies`. Not every projection does: some count the units a run
+# scheduled or the rows it changed, and re-run with no run to describe those
+# report zero. That is the test, and it is a cheap one — a delta over an empty
+# run reads "0 scheduled tests" and "no new drafts", where a figure read from
+# the workspace stays 22 rows, 54 tests, 30 findings.
+_SPINE: dict[str, dict[str, Any]] = {
     "documents.analysis_generated": {
         "label": "Document analyses", "destination": "documents",
         "unit": "document", "count": "documents",
@@ -54,14 +76,20 @@ _FILED: dict[str, dict[str, Any]] = {
     "planning.apm_ready": {
         "label": "Audit planning memorandum", "destination": "apm",
         "unit": "", "count": None,
+        "headline": "Draft the audit planning memorandum",
+        "prompt": "Draft the APM.", "live_body": True,
     },
     "planning.rcm_ready": {
         "label": "Risk and control matrix", "destination": "rcm",
         "unit": "row", "count": "rcm",
+        "headline": "Build the risk and control matrix",
+        "prompt": "Generate the RCM.", "live_body": True,
     },
     "tests.specified": {
         "label": "Test programme", "destination": "data-tests",
         "unit": "test", "count": "tests",
+        "headline": "Specify the tests each control needs",
+        "prompt": "Draft the tests the RCM rows still need.", "live_body": True,
     },
     "doc_tests.executed": {
         "label": "Document test results", "destination": "doc-tests",
@@ -74,23 +102,31 @@ _FILED: dict[str, dict[str, Any]] = {
     "fieldwork.executed": {
         "label": "Fieldwork results", "destination": "doc-tests",
         "unit": "", "count": None,
+        "headline": "Run the tests against the data and documents",
+        "prompt": "Run the tests.",
     },
     "results.rolled_up": {
         "label": "Control conclusions", "destination": "rcm",
         "unit": "row", "count": "rcm",
+        "headline": "Roll the results up into control conclusions",
+        "prompt": "Roll the test results up into control conclusions.",
+        "live_body": True,
     },
     "findings.drafted": {
         "label": "Findings register", "destination": "findings",
         "unit": "finding", "count": "findings",
+        "headline": "Draft findings from the exceptions",
+        "prompt": "Draft findings.",
     },
     "report.working_draft": {
         "label": "Report", "destination": "report",
         "unit": "", "count": None,
+        "headline": "Write the report from the findings",
+        "prompt": "Generate the report.", "live_body": True,
     },
-    "dashboard.curated": {
-        "label": "Dashboard curation", "destination": "dashboard",
-        "unit": "pinned item", "count": "tiles",
-    },
+    # Read-only: verification commits nothing, so there is no artifact whose
+    # absence a reader could act on. It stays on the record as a row history can
+    # attach to, and is never drawn as work the engagement owes.
     "audit.verified": {
         "label": "Verification", "destination": "dashboard",
         "unit": "", "count": None,
@@ -166,8 +202,13 @@ def _milestone_rows(run: dict) -> list[dict]:
     return rows
 
 
-def _entry(capability: str, rows: list[dict], counts: dict[str, int]) -> dict:
-    """Collapse every attempt at one capability into a single filed entry.
+def _history(capability: str, rows: list[dict]) -> dict:
+    """What the runs behind one stage recorded, collapsed into one block.
+
+    Layered onto a row that already stands without it. Cost, attempts, the
+    milestone's own narrative and provenance are the things a run uniquely
+    owns — none of them is derivable from the workspace — so they are carried
+    here and are simply absent on a stage no run ever filed.
 
     The narrative comes from the latest attempt because that is the state the
     engagement is actually in. The cost is the sum of every attempt, because
@@ -176,10 +217,8 @@ def _entry(capability: str, rows: list[dict], counts: dict[str, int]) -> dict:
     rows = sorted(rows, key=lambda row: str(row["at"] or ""))
     latest = rows[-1]
     milestone = latest["milestone"]
-    filed = _FILED.get(capability)
 
     measured = [row["elapsed_ms"] for row in rows if row["elapsed_ms"] is not None]
-    count_key = (filed or {}).get("count")
     return {
         "id": f"{capability}:{milestone.get('id') or latest['run_id']}",
         "capability": capability,
@@ -213,41 +252,24 @@ def _entry(capability: str, rows: list[dict], counts: dict[str, int]) -> dict:
         # short of `attempts`, the elapsed figure covers only part of the work
         # and a reader who is being sold time saved needs to know which part.
         "measured_attempts": len(measured),
-        "filed": None if filed is None else {
-            "label": filed["label"],
-            "destination": filed["destination"],
-            "unit": filed["unit"],
-            # Irregular plurals are declared beside the unit rather than left
-            # to the caller, which produced "28 analysiss".
-            "unit_plural": filed.get("unit_plural") or (
-                f"{filed['unit']}s" if filed["unit"] else ""
-            ),
-            "count": counts.get(count_key) if count_key else None,
-        },
     }
 
 
 # --------------------------------------------------------------------------- #
-# What has not run yet
+# What the engagement holds
 # --------------------------------------------------------------------------- #
-# A stage earns a place on the tail only when its work product is genuinely
-# absent from the workspace. "No milestone" is emphatically not "not done":
-# `report.working_draft` files no milestone on this repo's demo engagement while
-# the workspace holds 78,000 characters of report, and nine stages
-# (`UNNARRATED_CAPABILITIES`) never narrate at all by design. Diffing the plan
-# against the milestones would advertise both as work still owed.
-#
-# `present` therefore tests the artifact, which is the same rule the filed rows
-# already use for their counts, so both halves of the ledger agree about what
-# exists. A stage with no cheap presence test is simply left off — `audit.verified`
-# is read-only and commits nothing, so its absence is not observable and it is
-# never drawn.
+# Whether a row is owed is decided by the artifact, never by the run history.
+# "No milestone" is emphatically not "not done": `report.working_draft` files no
+# milestone on this repo's demo engagement while the workspace holds 78,000
+# characters of report, and nine stages never narrate at all by design. Diffing
+# the plan against the milestones would advertise both as work still owed — and
+# on an engagement whose run folder has been lost, would advertise all of it.
 
 
 def _report_markdown(workspace: Workspace) -> str:
     """Deliberately does not swallow: a presence test that cannot answer must
-    raise, so `_pending` skips the stage rather than reporting it as absent and
-    inviting the reader to redo work that may already exist."""
+    raise, so `_holds` reads the stage as absent only when it really is, rather
+    than inviting the reader to redo work that may already exist."""
     return str((report.hydrate(workspace) or {}).get("markdown") or "")
 
 
@@ -281,9 +303,21 @@ _MEMO: ContextVar[dict[str, Any] | None] = ContextVar("record_memo", default=Non
 
 @contextmanager
 def _one_read():
+    """One pass over the workspace, reading each expensive thing once.
+
+    The record's own memo answers repeated questions about the same tally.
+    Underneath it, ``doc_tests.request_cache_scope`` is what makes reading
+    capability readiness affordable at all: `_findings_ready` asks
+    `support_issues` about every finding, and each of those resolves the known
+    test ids by listing every document test, which materializes every cycle
+    item from its evidence records. Thirty findings paid for that thirty times.
+    Inside the scope the whole readiness projection costs 123ms rather than
+    2131ms, measured on a 30-finding engagement.
+    """
     token = _MEMO.set({})
     try:
-        yield
+        with doc_tests.request_cache_scope():
+            yield
     finally:
         _MEMO.reset(token)
 
@@ -328,48 +362,23 @@ def _conclusions_set(workspace: Workspace) -> bool:
     return not (completion.get("rcm_without_conclusion") or [])
 
 
-_PHANTOM: dict[str, dict[str, Any]] = {
-    "planning.apm_ready": {
-        "present": lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
-        "headline": "Draft the audit planning memorandum",
-        "prompt": "Draft the APM.",
-    },
-    "planning.rcm_ready": {
-        "present": lambda ws: bool(ws.rcm),
-        "headline": "Build the risk and control matrix",
-        "prompt": "Generate the RCM.",
-        "needs": ("planning.apm_ready", "the memorandum"),
-    },
-    "tests.specified": {
-        "present": lambda ws: bool(ws.data_tests) or bool(_document_tests(ws)),
-        "headline": "Specify the tests each control needs",
-        "prompt": "Draft the tests the RCM rows still need.",
-    },
-    "fieldwork.executed": {
-        "present": _fieldwork_ran,
-        "headline": "Run the tests against the data and documents",
-        "prompt": "Run the tests.",
-    },
-    "results.rolled_up": {
-        "present": _conclusions_set,
-        "headline": "Roll the results up into control conclusions",
-        "prompt": "Roll the test results up into control conclusions.",
-    },
-    "findings.drafted": {
-        "present": lambda ws: bool(ws.findings),
-        "headline": "Draft findings from the exceptions",
-        "prompt": "Draft findings.",
-    },
-    "dashboard.curated": {
-        "present": lambda ws: bool(ws.tiles),
-        "headline": "Pick the analyses worth showing on the dashboard",
-        "prompt": "Curate the dashboard.",
-    },
-    "report.working_draft": {
-        "present": lambda ws: bool(_report_markdown(ws).strip()),
-        "headline": "Write the report from the findings",
-        "prompt": "Generate the report.",
-    },
+# Whether the engagement *holds* a work product, for the few stages whose
+# artifact has no count to read. Everything else answers this with `_counts`.
+#
+# Deliberately not `Readiness.satisfied`, which answers a different question.
+# Readiness is what the scheduler needs — whether a stage still has work to do —
+# and on a register holding thirty findings with two observations still
+# undrafted it reads "missing". It also cascades: `workflow_state` overwrites a
+# capability's state with "blocked" when a dependency is unsatisfied, so a
+# report of sixty thousand characters reads "blocked" because an earlier stage
+# has residual work. The ledger asks what the engagement holds, and the honest
+# answer to that is the artifact, not the schedule.
+_HOLDS: dict[str, Any] = {
+    "planning.apm_ready":
+        lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
+    "fieldwork.executed": _fieldwork_ran,
+    "results.rolled_up": _conclusions_set,
+    "report.working_draft": lambda ws: bool(_report_markdown(ws).strip()),
 }
 
 # What a stage's work product is called in a sentence about waiting for it.
@@ -381,7 +390,6 @@ _NOUNS = {
     "fieldwork.executed": "the test results",
     "results.rolled_up": "the conclusions",
     "findings.drafted": "the findings",
-    "dashboard.curated": "the dashboard",
     "report.working_draft": "the report",
 }
 
@@ -405,33 +413,121 @@ def _plan_order() -> dict[str, int]:
     return {str(item.get("capability") or ""): index for index, item in enumerate(outcomes)}
 
 
-def _catalog() -> dict[str, dict]:
-    """What every capability the record can name files, and where it sits.
+def _positions() -> dict[str, float]:
+    """Where each stage sits on the ledger.
 
-    Published because neither half of the ledger covers a stage while it is
-    *running*: it has filed no milestone yet, and its work product may already
-    exist enough for the forward half to stop owing it — fieldwork stops being
-    owed the moment its first test commits, two thirds of the way through its
-    own run. A caller watching the live run draws that row itself, and this is
-    the vocabulary to draw it in, so the label on a live row is the same label
-    it will carry once it files.
+    The plan's order wherever the plan has one. A capability it does not
+    contain — document tests are their own workflow — takes the place just
+    after the stage declared before it in `_SPINE`, which reads as the work it
+    belongs beside. Sorting those last instead put a register of sixteen
+    executed tests below the stages that have not run.
     """
-    order = _plan_order()
-    return {
-        capability: {
-            "label": spec.get("label") or capability,
-            "destination": spec.get("destination") or "",
-            # The same sentence the row carried while it was still owed, so a
-            # stage does not rename itself at the moment it starts running.
-            "headline": (_PHANTOM.get(capability) or {}).get("headline") or "",
-            # None where this plan does not contain the capability at all — a
-            # document-test run is its own workflow, not a step of the audit
-            # plan. A caller placing a live row decides what that means rather
-            # than being handed a number that sorts it after the report.
-            "order": order.get(capability),
-        }
-        for capability, spec in _FILED.items()
-    }
+    plan = _plan_order()
+    positions: dict[str, float] = {}
+    previous = -1.0
+    for capability in _SPINE:
+        placed = plan.get(capability)
+        previous = float(placed) if placed is not None else previous + 0.5
+        positions[capability] = previous
+    return positions
+
+
+def _registered() -> frozenset[str]:
+    """Every capability the workflows still declare, across all four graphs.
+
+    Membership here is what separates a stage the *record* has not learned yet
+    from one the product no longer has. Both are absent from `_SPINE`, and they
+    want opposite treatment: a new stage must not vanish because the record is
+    behind, and a retired one must not linger because a milestone remembers it.
+    """
+    try:
+        return frozenset(
+            capability.id
+            for registry in audit_capabilities.REGISTRY_BY_WORKFLOW.values()
+            for capability in registry.all()
+        )
+    except Exception:
+        # Unable to tell the two apart, so keep everything: a stale row is a
+        # smaller failure than losing a stage the record cannot name yet.
+        return frozenset()
+
+
+def _live_bodies(workspace: Workspace) -> dict[str, dict]:
+    """Each stage's body, recomputed against the workspace as it stands.
+
+    A milestone's body is a photograph. `planning.rcm_ready` filed "25 rows
+    covering 4 processes" over a distribution of 0 critical, 22 high and 3
+    medium; the matrix now holds 22 rows rated 5 high, 12 medium and 5 low.
+    The count in the row's own artifact block was already read from the
+    workspace, so the row stated 22 and then described 25 — the number and the
+    sentence beside it disagreed on screen.
+
+    This is the same projection the milestone was built from, re-run now, so
+    nothing about how a matrix or a test register is read is restated here.
+
+    Only what the projection derives from workspace state is taken: the
+    sentence, the severity tally, and the rows it reads out. Metrics are left
+    alone, because "Created 25, Updated 0, Preserved 0" describes one run's
+    delta, and with no run to describe it would report zeros as though nothing
+    had ever been made.
+    """
+
+    def read() -> dict[str, dict]:
+        try:
+            from .agent.audit_execution import AuditWorkflowExecution
+
+            registry = audit_capabilities.REGISTRY_BY_WORKFLOW[audit_workflow.WORKFLOW_ID]
+            execution = AuditWorkflowExecution(workspace, {}, None)
+        except Exception:
+            return {}
+        bodies: dict[str, dict] = {}
+        for capability_id in _SPINE:
+            try:
+                capability = registry.get(capability_id)
+                body = execution.milestone_projection(workspace, {}, capability, {})
+            except Exception:
+                # A projection that cannot answer leaves the stage on its
+                # milestone rather than blanking a row that has something true
+                # to say, even if it is old.
+                continue
+            if isinstance(body, dict):
+                bodies[capability_id] = body
+        return bodies
+
+    return _once("live_bodies", read)
+
+
+def _readiness(workspace: Workspace) -> dict[str, dict]:
+    """What every capability says about its own output.
+
+    Four registries, because the record draws stages from more than one
+    workflow: document tests are their own workflow rather than a step of the
+    audit plan, so no single closure contains everything drawn here. Merged the
+    way `assistant_chats` already merges them.
+
+    Affordable only inside `_one_read`, which holds the document-test cache
+    these readiness functions repeatedly fall through.
+
+    A registry that cannot answer is skipped rather than allowed to empty the
+    row: state read from the workspace is the half of the record that has to
+    survive when something else is missing.
+    """
+
+    def read() -> dict[str, dict]:
+        state: dict[str, dict] = {}
+        for project in (
+            audit_capabilities.workflow_state,
+            audit_capabilities.analysis_workflow_state,
+            audit_capabilities.documents_workflow_state,
+            audit_capabilities.doc_tests_workflow_state,
+        ):
+            try:
+                state.update(project(workspace))
+            except Exception:
+                continue
+        return state
+
+    return _once("readiness", read)
 
 
 def _dependencies(capability: str) -> tuple[str, ...]:
@@ -442,7 +538,7 @@ def _dependencies(capability: str) -> tuple[str, ...]:
         return ()
 
 
-def _blocked_by(workspace: Workspace, capability: str) -> str:
+def _blocked_by(workspace: Workspace, capability: str, counts: dict[str, int]) -> str:
     """Why a stage cannot start, or '' when nothing holds it.
 
     Read from the authoritative graph rather than restated here, the way the
@@ -458,14 +554,11 @@ def _blocked_by(workspace: Workspace, capability: str) -> str:
     """
     waiting: list[str] = []
     for dependency in _dependencies(capability):
-        spec = _PHANTOM.get(dependency)
-        if spec is None:
+        if dependency not in _NOUNS:
             continue
-        try:
-            if spec["present"](workspace):
-                continue
-        except Exception:
-            # A presence test that cannot answer must not invent a blocker.
+        # A presence test that cannot answer must not invent a blocker either,
+        # so only a dependency known to be absent is named.
+        if _holds(workspace, dependency, counts) is not False:
             continue
         noun = _NOUNS.get(dependency, "an earlier stage")
         if noun not in waiting:
@@ -477,36 +570,150 @@ def _blocked_by(workspace: Workspace, capability: str) -> str:
     return f"Waits for {', '.join(waiting[:-1])} and {waiting[-1]}."
 
 
-def _pending(workspace: Workspace) -> list[dict]:
-    """Stages whose work product does not exist, in plan order."""
-    order = _plan_order()
-    rows = []
-    for capability, spec in _PHANTOM.items():
-        if capability in UNNARRATED_CAPABILITIES:
-            continue
+def _holds(workspace: Workspace, capability: str, counts: dict[str, int]) -> bool | None:
+    """Whether the engagement holds this stage's work product.
+
+    A count answers it wherever the work product is a register with a size.
+    `_HOLDS` answers the rest and takes precedence: the conclusions row is
+    sized by the matrix it concludes on, so twenty-two rows would otherwise
+    read as twenty-two conclusions the moment the matrix existed.
+
+    ``None`` is a third answer, and a load-bearing one: a presence test that
+    raised does not know, and "does not know" must never collapse into "absent".
+    A row that cannot tell is drawn without a count and without an invitation to
+    run it, because inviting an auditor to redo work that may already exist is
+    the worse of the two failures.
+    """
+    test = _HOLDS.get(capability)
+    if test is not None:
         try:
-            if spec["present"](workspace):
-                continue
+            return bool(test(workspace))
         except Exception:
-            # A presence test that cannot answer must not invent absent work.
-            continue
-        filed = _FILED.get(capability) or {}
-        blocked = _blocked_by(workspace, capability)
+            return None
+    key = (_SPINE.get(capability) or {}).get("count")
+    return bool(counts.get(key)) if key else False
+
+
+def _stages(
+    workspace: Workspace,
+    counts: dict[str, int],
+    history: dict[str, dict],
+    points: dict[str, list[dict]],
+) -> list[dict]:
+    """One row per work product, in plan order — the whole ledger.
+
+    Every stage the record can draw appears every time, whether or not a run
+    ever filed it. That is the difference between this and the two half-ledgers
+    it replaces. A row used to exist because a milestone said so, which is why
+    losing a run folder emptied a record whose workspace held eleven work
+    products, why a stage that produced its artifact without narrating appeared
+    in neither half, and why a stage that was *running* appeared in neither and
+    had to be drawn by the caller from a published vocabulary.
+    """
+    order = _positions()
+    readiness = _readiness(workspace)
+    bodies = _live_bodies(workspace)
+    rows = []
+    for capability, spec in _SPINE.items():
+        holds = _holds(workspace, capability, counts)
+        # Only a stage known to be absent is owed. `None` — a presence test that
+        # could not answer — is neither held nor owed.
+        owed = holds is False
+        blocked = _blocked_by(workspace, capability, counts) if owed else ""
+        headline = str(spec.get("headline") or "")
+        count_key = spec.get("count")
+        state = readiness.get(capability) or {}
+        unit = str(spec.get("unit") or "")
+        # Live where the projection can answer, the milestone's own account
+        # otherwise — a stage narrated by another workflow has no audit
+        # projection, and its filed body is still true about what it filed.
+        # A stage that holds nothing describes nothing: the live body of an
+        # empty matrix is a sentence about zero rows, and the row already says
+        # it has not run.
+        past = (history.get(capability) or {}) if holds is True else {}
+        body = (bodies.get(capability) or {}) if spec.get("live_body") and holds is True else {}
         rows.append({
-            "id": f"pending:{capability}",
+            "id": f"stage:{capability}",
             "capability": capability,
-            "headline": spec["headline"],
+            # Its place on the ledger, which is the plan's order where the plan
+            # has one — see `_positions`.
+            "order": order.get(capability),
+            "held": holds is True,
+            # Owed only where the record knows how to ask for it. Verification
+            # commits nothing, so its absence is not something a reader could
+            # act on, and it is never drawn as work outstanding.
+            "runnable": bool(headline) and owed and not blocked,
+            "headline": headline,
             "blocked_reason": blocked,
-            "runnable": not blocked,
-            "start": {"prompt": spec["prompt"], "outcomes": [capability]},
+            "start": (
+                {"prompt": spec["prompt"], "outcomes": [capability]}
+                if headline and owed else None
+            ),
             "filed": {
-                "label": filed.get("label") or capability,
-                "destination": filed.get("destination") or "",
-                "unit": "", "unit_plural": "", "count": None,
+                "label": spec.get("label") or capability,
+                "destination": spec.get("destination") or "",
+                "unit": unit,
+                # Irregular plurals are declared beside the unit rather than
+                # left to the caller, which produced "28 analysiss".
+                "unit_plural": spec.get("unit_plural") or (f"{unit}s" if unit else ""),
+                "count": counts.get(count_key) if count_key else None,
             },
-            "order": order.get(capability, len(order)),
+            # The graph's own answer, carried rather than collapsed into
+            # `held`: it says what is *left* where `held` says what exists, and
+            # on a register that is thirty drafted and two short those are two
+            # different sentences, both true.
+            "readiness": {
+                "state": str(state.get("state") or ""),
+                "reasons": list(state.get("reasons") or []),
+                "details": {
+                    key: value for key, value in state.items()
+                    if key not in ("state", "reasons", "blocking_on")
+                },
+            },
+            # What this stage amounts to now. The severity tally in particular
+            # is read at a glance and was the most misleading thing on the row:
+            # a matrix rated "22 high" when it holds five.
+            "summary": str(body.get("summary") or past.get("summary") or ""),
+            "stats": list(body.get("stats") or past.get("stats") or []),
+            "highlights": list(body.get("highlights") or past.get("highlights") or []),
+            "live_body": bool(body),
+            "open_points": points.get(capability, []),
+            "history": history.get(capability),
         })
-    return sorted(rows, key=lambda row: row["order"])
+    rows.sort(key=lambda row: row["order"])
+
+    # A stage the record has never heard of still filed something, and a reader
+    # is better served by its own briefing than by its disappearance. It carries
+    # no artifact block because nothing here knows what it produced or where to
+    # open it, and it sits after the plan rather than inside it.
+    #
+    # A stage the *workflows* no longer declare is the other case and gets the
+    # opposite answer. Dashboard curation was retired from the audit graph; a
+    # milestone on an engagement that ran it while it existed must not keep
+    # drawing a row for a step the product does not have any more.
+    registered = _registered()
+    for capability, filed in history.items():
+        if capability in _SPINE or capability not in registered:
+            continue
+        rows.append({
+            "id": f"stage:{capability}",
+            "capability": capability,
+            "order": None,
+            "held": True,
+            "runnable": False,
+            "headline": "",
+            "blocked_reason": "",
+            "start": None,
+            "filed": None,
+            "readiness": {"state": "", "reasons": [], "details": {}},
+            "summary": str(filed.get("summary") or ""),
+            "stats": list(filed.get("stats") or []),
+            "highlights": list(filed.get("highlights") or []),
+            "live_body": False,
+            "open_points": points.get(capability, []),
+            "history": filed,
+        })
+    return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -617,24 +824,23 @@ def record(workspace: Workspace) -> dict:
                 by_capability.setdefault(capability, []).append(row)
                 contributing.add(row["run_id"])
 
-        entries = sorted(
-            (_entry(capability, rows, counts) for capability, rows in by_capability.items()),
-            key=lambda entry: str(entry["at"] or ""),
-        )
+        history = {
+            capability: _history(capability, rows)
+            for capability, rows in by_capability.items()
+        }
         points = _open_points(workspace)
         by_capability_point: dict[str, list[dict]] = {}
         for point in points:
             by_capability_point.setdefault(point["capability"], []).append(point)
-        for entry in entries:
-            entry["open_points"] = by_capability_point.get(entry["capability"], [])
-        # A debt whose stage is not on the record still has to be said; it hangs at
-        # the end rather than disappearing with the row it expected to find.
-        attached = {point["key"] for entry in entries for point in entry["open_points"]}
-        orphaned = [point for point in points if point["key"] not in attached]
 
-        pending = _pending(workspace)
+        stages = _stages(workspace, counts, history, by_capability_point)
+        # Every debt now has a row to sit on: the stage that owes it is drawn
+        # whether or not it ever filed. `orphaned_points` existed because a debt
+        # could outlive the only row that would have carried it.
+        held = [stage for stage in stages if stage["held"]]
+
         # Review outranks unstarted work — see `_OPEN_RANK`.
-        first_runnable = next((row for row in pending if row["runnable"]), None)
+        first_runnable = next((row for row in stages if row["runnable"]), None)
         upcoming = points[0] if points else None
         next_step = (
             {"kind": "open_point", **upcoming} if upcoming
@@ -642,24 +848,26 @@ def record(workspace: Workspace) -> dict:
             else None
         )
 
-        measured = [entry["elapsed_ms"] for entry in entries if entry["elapsed_ms"] is not None]
+        settled = [stage["history"] for stage in stages if stage["history"]]
+        measured = [item["elapsed_ms"] for item in settled if item["elapsed_ms"] is not None]
+        timeline = sorted(str(item["at"] or "") for item in settled)
         return {
-            "entries": entries,
-            "pending": pending,
+            "stages": stages,
             "open_points": points,
-            "orphaned_points": orphaned,
             "next": next_step,
-            "catalog": _catalog(),
             "counts": counts,
             "totals": {
-                "work_products": len(entries),
+                # What the engagement holds, which is no longer the same as what
+                # a run was seen to file: a stage whose runs are gone still holds
+                # its work product, and says so.
+                "work_products": len(held),
                 "runs": len(runs),
                 # A run that committed nothing filed nothing; saying so is more
                 # honest than a record that silently drops a third of the history.
                 "runs_that_filed": len(contributing),
-                "attempts": sum(len(entry["attempts"]) for entry in entries),
+                "attempts": sum(len(item["attempts"]) for item in settled),
                 "elapsed_ms": sum(measured) if measured else None,
-                "first_at": entries[0]["first_at"] if entries else None,
-                "last_at": entries[-1]["at"] if entries else None,
+                "first_at": min((str(item["first_at"] or "") for item in settled), default=None) or None,
+                "last_at": timeline[-1] if timeline else None,
             },
         }

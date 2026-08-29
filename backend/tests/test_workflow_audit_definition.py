@@ -42,7 +42,6 @@ EXPECTED_DEPENDENCIES = {
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
     "working_papers.generated": ("results.rolled_up",),
-    "dashboard.curated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
         "results.rolled_up",
@@ -90,7 +89,6 @@ def test_full_audit_closure_is_topological():
         "results.rolled_up",
         "findings.drafted",
         "working_papers.generated",
-        "dashboard.curated",
         "report.working_draft",
         "audit.verified",
     ]
@@ -105,12 +103,10 @@ def test_full_audit_closure_is_topological():
 
 
 def test_rollup_fans_out_into_parallel_branches():
-    # Working papers, dashboard curation, and finding drafts all depend only on
-    # results.rolled_up — they are intentionally independent siblings, not a
-    # linear chain.
+    # Working papers and finding drafts both depend only on results.rolled_up —
+    # they are intentionally independent siblings, not a linear chain.
     assert audit.dependencies("findings.drafted") == ("results.rolled_up",)
     assert audit.dependencies("working_papers.generated") == ("results.rolled_up",)
-    assert audit.dependencies("dashboard.curated") == ("results.rolled_up",)
 
 
 def test_template_outcomes_reference_declared_capabilities():

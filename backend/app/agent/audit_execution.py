@@ -72,7 +72,6 @@ from .executors.tests import TestGenerateExecutorTarget
 from .executors.reporting import (
     VERIFICATION_REF,
     FindingExecutorTarget,
-    curate_dashboard,
     generate_report_draft,
     generate_working_paper,
     output_issues,
@@ -841,18 +840,6 @@ class AuditWorkflowExecution(ActionRunner):
                 ],
                 "artifact_refs": refs,
             }
-        if capability_id == "dashboard.curated":
-            return {
-                "status": state,
-                "headline": "Dashboard curated",
-                "summary": (
-                    "Updated the engagement dashboard with "
-                    + counted(len(refs), "result-backed tile reference")
-                    + "."
-                ),
-                "metrics": [{"label": "Tile references", "value": len(refs)}],
-                "artifact_refs": refs,
-            }
         if capability_id == "report.working_draft":
             reconciliation = any(
                 unit.get("status") == "awaiting_confirmation" for unit in units
@@ -1595,33 +1582,6 @@ class AuditWorkflowExecution(ActionRunner):
             return DeterministicUnitResult("conflict", error=str(error))
         return DeterministicUnitResult("succeeded", (ref,))
 
-    def _bind_dashboard(
-        self,
-        subject: Workspace,
-        run: dict,
-        capability: workflow.Capability,
-        stage: dict,
-        unit: dict,
-    ) -> DeterministicUnitResult:
-        """Deterministic execution for ``dashboard.curated``.
-
-        Curation scores the current RCM-linked results and pins the strongest
-        tiles under a commit guarded on the RCM's material hash, so a changed RCM
-        basis surfaces as a conflict rather than pinning against a stale matrix.
-        On success the binder emits the ``workspace_changed`` dashboard signal the
-        generic deterministic path does not. No model call or approval is involved.
-        """
-        self.ws = subject
-        try:
-            refs = curate_dashboard(self.ws, run_id=self.run["id"])
-        except WorkspaceConflict as error:
-            return DeterministicUnitResult("conflict", error=str(error))
-        self.emit(
-            "workspace_changed",
-            {"kind": "dashboard", "id": "curation", "action": "updated"},
-        )
-        return DeterministicUnitResult("succeeded", tuple(refs))
-
     def _bind_report(
         self,
         subject: Workspace,
@@ -1802,7 +1762,6 @@ _PARTIAL_DEPENDENCIES = {
     "report.working_draft": {"findings.drafted"},
     "audit.verified": {
         "working_papers.generated",
-        "dashboard.curated",
         "report.working_draft",
     },
 }
@@ -1880,10 +1839,6 @@ def build_audit_workflow_runner(
         "working_papers.generated": (
             adapter._bind_working_papers,
             {"deterministic": "reporting.working_paper"},
-        ),
-        "dashboard.curated": (
-            adapter._bind_dashboard,
-            {"deterministic": "reporting.dashboard"},
         ),
         "report.working_draft": (
             adapter._bind_report,

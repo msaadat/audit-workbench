@@ -30,7 +30,6 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'results.rolled_up': 'Results and observations',
   'findings.drafted': 'Eligible finding drafts',
   'working_papers.generated': 'RCM working papers',
-  'dashboard.curated': 'Dashboard curation',
   'report.working_draft': 'Report working draft',
   'audit.verified': 'Audit verification',
   // documents_workflow_v1

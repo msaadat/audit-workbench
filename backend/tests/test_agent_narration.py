@@ -720,7 +720,6 @@ def test_guided_workflows_hide_completed_areas():
         "analysis.executed": {"state": "missing"},
         "findings.drafted": {"state": "missing"},
         "working_papers.generated": {"state": "missing"},
-        "dashboard.curated": {"state": "missing"},
         "report.working_draft": {"state": "missing"},
         "audit.verified": {"state": "missing"},
     }

@@ -2,12 +2,16 @@
 
 These executors perform no model calls. ``verify_audit`` is a pure, read-only
 computation of the audit-verification outcome; ``generate_working_paper`` renders
-and commits one RCM working paper; ``curate_dashboard`` pins RCM-linked result
-tiles. All bind through the scheduler's deterministic execution path —
-``audit.verified`` (read-only), ``working_papers.generated`` (per-RCM commit),
-``dashboard.curated`` (RCM-parent-guarded curation), and
-``report.working_draft`` (deterministic assembly with auditor-edit
-reconciliation).
+and commits one RCM working paper. These bind through the scheduler's
+deterministic execution path — ``audit.verified`` (read-only),
+``working_papers.generated`` (per-RCM commit), and ``report.working_draft``
+(deterministic assembly with auditor-edit reconciliation).
+
+``curate_dashboard`` pins RCM-linked result tiles under a parent guard. It is
+no longer bound to a capability: dashboard curation was removed from the audit
+graph because arranging tiles establishes nothing an audit conclusion rests on.
+The function and the tiles it writes remain, so curation can be driven from the
+dashboard itself rather than scheduled as a stage of every engagement.
 
 ``execute_finding`` is the one registered pipeline executor here: it commits a
 finding draft under its observation parent guard after deriving every reference
@@ -109,7 +113,6 @@ def generate_report_draft(
 # The output capabilities whose structural readiness gates audit completion.
 _OUTPUT_CAPABILITIES = (
     "working_papers.generated",
-    "dashboard.curated",
     "report.working_draft",
 )
 

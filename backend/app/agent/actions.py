@@ -19,7 +19,6 @@ Removed action                   Owning workflow outcome
 ``rollup_rcm_results``           ``results.rolled_up``
 ``generate_all_rcm_working_papers``  ``working_papers.generated``
 ``generate_report``              ``report.working_draft``
-``curate_dashboard``             ``dashboard.curated``
 ``verify_audit_completion``      ``audit.verified``
 ===============================  ==================================
 

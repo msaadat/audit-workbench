@@ -92,20 +92,19 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
     "working_papers.generated": ("results.rolled_up",),
-    "dashboard.curated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
         "results.rolled_up",
         "findings.drafted",
     ),
-    # ``dashboard.curated`` is deliberately *not* an edge here. Curating the RCM
-    # dashboard arranges tiles over results the roll-up already produced; it
-    # changes how the engagement is read, not whether it is complete. Making it
-    # a prerequisite meant a finished audit — every paper written, every result
-    # rolled up, the report drafted — reported itself unverifiable until someone
-    # had arranged its dashboard, and no request that reached verification could
-    # be satisfied without scheduling that arrangement. A full audit still
-    # curates it: it stays a requested outcome of the full-audit template.
+    # Dashboard curation was a stage here once, and is not one now. Arranging
+    # tiles over results the roll-up already produced changes how an engagement
+    # is *read*, not what it establishes: no audit conclusion rests on it, and
+    # nothing downstream ever took it as an input. It was already excluded from
+    # verification's prerequisites for that reason, which left it a leaf the
+    # full-audit template scheduled and nothing consumed — a step the auditor
+    # was walked through for no evidential gain. The dashboard and its tiles are
+    # untouched; only the obligation to arrange them mid-audit is gone.
     "audit.verified": (
         "working_papers.generated",
         "report.working_draft",
@@ -118,7 +117,6 @@ FULL_AUDIT_OUTCOMES = [
     "analysis.summarized",
     "findings.drafted",
     "working_papers.generated",
-    "dashboard.curated",
     "report.working_draft",
     "audit.verified",
 ]

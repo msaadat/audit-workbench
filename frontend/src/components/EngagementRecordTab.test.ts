@@ -4,7 +4,7 @@ import { reactive, ref } from 'vue'
 
 import EngagementRecordTab from './EngagementRecordTab.vue'
 import type {
-  EngagementOpenPoint, EngagementPendingStage, EngagementRecordEntry, EngagementRecordPayload,
+  EngagementOpenPoint, EngagementRecordPayload, EngagementStage, EngagementStageHistory,
 } from '../types'
 
 /**
@@ -71,7 +71,9 @@ vi.mock('../composables/useAssistantChat', () => ({
   useAssistantChat: () => ({ send: (...args: unknown[]) => send(...args) }),
 }))
 
-function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecordEntry {
+function history(
+  overrides: Partial<EngagementStageHistory> = {},
+): EngagementStageHistory {
   return {
     id: 'findings.drafted:m1',
     capability: 'findings.drafted',
@@ -91,8 +93,22 @@ function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecord
     ],
     elapsed_ms: 120_000,
     measured_attempts: 2,
-    open_points: [],
     stats: [],
+    ...overrides,
+  }
+}
+
+/** A stage the engagement holds, with the runs that filed it behind it. */
+function filed(overrides: Partial<EngagementStage> = {}): EngagementStage {
+  return {
+    id: 'stage:findings.drafted',
+    capability: 'findings.drafted',
+    order: 17,
+    held: true,
+    runnable: false,
+    headline: 'Draft findings from the exceptions',
+    blocked_reason: '',
+    start: null,
     filed: {
       label: 'Findings register',
       destination: 'findings',
@@ -100,22 +116,55 @@ function entry(overrides: Partial<EngagementRecordEntry> = {}): EngagementRecord
       unit_plural: 'findings',
       count: 35,
     },
+    readiness: { state: 'satisfied', reasons: [], details: {} },
+    summary: 'Prepared 1 evidence-linked finding draft (1 critical).',
+    stats: [],
+    highlights: [],
+    live_body: true,
+    open_points: [],
+    history: history(),
     ...overrides,
   }
 }
 
-function stage(overrides: Partial<EngagementPendingStage> = {}): EngagementPendingStage {
+/** A stage whose work product does not exist yet. */
+function owed(overrides: Partial<EngagementStage> = {}): EngagementStage {
   return {
-    id: 'pending:dashboard.curated',
-    capability: 'dashboard.curated',
-    headline: 'Pick the analyses worth showing on the dashboard',
-    blocked_reason: '',
-    runnable: true,
-    start: { prompt: 'Curate the dashboard.', outcomes: ['dashboard.curated'] },
-    filed: { label: 'Dashboard curation', destination: 'dashboard', unit: '', unit_plural: '', count: null },
+    id: 'stage:report.working_draft',
+    capability: 'report.working_draft',
     order: 19,
+    held: false,
+    runnable: true,
+    headline: 'Write the report from the findings',
+    blocked_reason: '',
+    start: { prompt: 'Generate the report.', outcomes: ['report.working_draft'] },
+    filed: { label: 'Report', destination: 'report', unit: '', unit_plural: '', count: null },
+    readiness: { state: 'missing', reasons: [], details: {} },
+    summary: '',
+    stats: [],
+    highlights: [],
+    live_body: false,
+    open_points: [],
+    history: null,
     ...overrides,
   }
+}
+
+/** A `Storage` for an environment whose window does not provide one. */
+function installLocalStorage() {
+  if (window.localStorage) return
+  const store = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, String(value)),
+      removeItem: (key: string) => void store.delete(key),
+      clear: () => store.clear(),
+      key: (index: number) => [...store.keys()][index] ?? null,
+      get length() { return store.size },
+    },
+  })
 }
 
 function point(overrides: Partial<EngagementOpenPoint> = {}): EngagementOpenPoint {
@@ -130,34 +179,20 @@ function point(overrides: Partial<EngagementOpenPoint> = {}): EngagementOpenPoin
 }
 
 function payload(
-  entries: EngagementRecordEntry[],
+  stages: EngagementStage[],
   extra: Partial<EngagementRecordPayload> = {},
 ): EngagementRecordPayload {
+  const settled = stages.filter(item => item.history)
   return {
-    entries,
-    pending: [],
+    stages,
     open_points: [],
-    orphaned_points: [],
     next: null,
-    catalog: {
-      'fieldwork.executed': {
-        label: 'Fieldwork results', destination: 'doc-tests',
-        headline: 'Run the tests against the data and documents', order: 15,
-      },
-      'dashboard.curated': {
-        label: 'Dashboard curation', destination: 'dashboard', headline: '', order: 19,
-      },
-      // Its own workflow, so the audit plan does not place it.
-      'doc_tests.executed': {
-        label: 'Document test results', destination: 'doc-tests', headline: '', order: null,
-      },
-    },
     counts: {},
     totals: {
-      work_products: entries.length,
+      work_products: stages.filter(item => item.held).length,
       runs: 32,
       runs_that_filed: 19,
-      attempts: entries.reduce((sum, item) => sum + item.attempts.length, 0),
+      attempts: settled.reduce((sum, item) => sum + (item.history?.attempts.length ?? 0), 0),
       elapsed_ms: 3_345_210,
       first_at: '2026-08-13T19:22:24+00:00',
       last_at: '2026-08-15T12:10:00+00:00',
@@ -167,10 +202,10 @@ function payload(
 }
 
 async function render(
-  entries: EngagementRecordEntry[],
+  stages: EngagementStage[],
   extra: Partial<EngagementRecordPayload> = {},
 ) {
-  get.mockResolvedValue(payload(entries, extra))
+  get.mockResolvedValue(payload(stages, extra))
   const wrapper = mount(EngagementRecordTab, {
     props: { workspace: { id: 'procurement' } as never },
     global: {
@@ -204,11 +239,18 @@ describe('EngagementRecordTab', () => {
     agentState.run = null
     // Density is a stored preference, so one test choosing Full would otherwise
     // decide what every test after it renders.
+    //
+    // This environment's jsdom global carries no `localStorage`, so the store
+    // is supplied here. Without it the component still renders — every access
+    // it makes is guarded, because a private-mode browser throws on exactly
+    // this — but the two tests about remembering a density would be asserting
+    // against a preference that was never stored.
+    installLocalStorage()
     window.localStorage.clear()
   })
 
   it('states an irregular unit from the declared plural, not by appending s', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       filed: { label: 'Analysis library', destination: 'analysis', unit: 'analysis', unit_plural: 'analyses', count: 28 },
     })])
 
@@ -221,27 +263,25 @@ describe('EngagementRecordTab', () => {
   it('renders sub-minute work in seconds rather than rounding it to 0m', async () => {
     // Fieldwork and the roll-up settle the instant their run starts, because
     // the tests they gather already ran. "0m" reads as a broken clock.
-    const wrapper = await render([entry({ elapsed_ms: 382, measured_attempts: 1 })])
+    const wrapper = await render([filed({ history: history({ elapsed_ms: 382, measured_attempts: 1 }) })])
 
     expect(wrapper.text()).toContain('<1s')
     expect(wrapper.text()).not.toContain('0m')
   })
 
   it('leaves the duration unstated when nothing about the work was timed', async () => {
-    const wrapper = await render([entry({ elapsed_ms: null, measured_attempts: 0 })])
+    const wrapper = await render([filed({ history: history({ elapsed_ms: null, measured_attempts: 0 }) })])
 
     expect(wrapper.find('.took').text()).toBe('—')
   })
 
   it('says how many attempts a collapsed row stands for, and how many were timed', async () => {
-    const wrapper = await render([entry({
-      attempts: [
+    const wrapper = await render([filed({ history: history({ attempts: [
         { run_id: 'r1', run_status: 'cancelled', at: '2026-08-14T19:36:20+00:00', elapsed_ms: null },
         { run_id: 'r2', run_status: 'failed', at: '2026-08-14T20:02:09+00:00', elapsed_ms: null },
         { run_id: 'r3', run_status: 'completed', at: '2026-08-14T20:05:00+00:00', elapsed_ms: 382 },
       ],
-      measured_attempts: 1,
-    })])
+      measured_attempts: 1 }) })])
 
     // Shut, the count is a chip; opened, it says what the count is made of.
     expect(wrapper.find('.sig').text()).toBe('3attempts')
@@ -250,16 +290,14 @@ describe('EngagementRecordTab', () => {
   })
 
   it('stays silent about attempts when a work product took only one', async () => {
-    const wrapper = await render([entry({
-      attempts: [{ run_id: 'r1', run_status: 'completed', at: '2026-08-14T11:05:00+00:00', elapsed_ms: 60_000 }],
-      measured_attempts: 1,
-    })])
+    const wrapper = await render([filed({ history: history({ attempts: [{ run_id: 'r1', run_status: 'completed', at: '2026-08-14T11:05:00+00:00', elapsed_ms: 60_000 }],
+      measured_attempts: 1 }) })])
 
     expect(wrapper.text()).not.toContain('attempt')
   })
 
   it('reveals the individual runs behind a collapsed row on request', async () => {
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     await openRow(wrapper)
     expect(wrapper.find('.attempts').exists()).toBe(false)
@@ -268,13 +306,13 @@ describe('EngagementRecordTab', () => {
   })
 
   it('links the filed artifact to the surface that opens it', async () => {
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     expect(wrapper.find('.card').attributes('href')).toBe('/findings')
   })
 
   it('does not link a destination this build does not know', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       filed: { label: 'Something new', destination: 'not-a-surface', unit: '', unit_plural: '', count: null },
     })])
 
@@ -284,14 +322,18 @@ describe('EngagementRecordTab', () => {
   })
 
   it('shows a capability with no artifact mapping without inventing one', async () => {
-    const wrapper = await render([entry({ filed: null, headline: 'A stage the record has never seen' })])
+    const wrapper = await render([filed({
+      filed: null,
+      headline: '',
+      history: history({ headline: 'A stage the record has never seen' }),
+    })])
 
     expect(wrapper.find('.none').exists()).toBe(true)
     expect(wrapper.text()).toContain('A stage the record has never seen')
   })
 
   it('omits the size of a work product that has no meaningful count', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       filed: { label: 'Audit planning memorandum', destination: 'apm', unit: '', unit_plural: '', count: null },
     })])
 
@@ -300,25 +342,43 @@ describe('EngagementRecordTab', () => {
   })
 
   it('reports the runs that filed nothing rather than dropping them silently', async () => {
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     // 32 runs, 19 of which filed something.
     expect(wrapper.text()).toContain('13 runs filed nothing')
   })
 
-  it('breaks the ledger by day only where the day changes', async () => {
-    const wrapper = await render([
-      entry({ id: 'a', at: '2026-08-14T09:00:00+00:00' }),
-      entry({ id: 'b', at: '2026-08-14T15:00:00+00:00' }),
-      entry({ id: 'c', at: '2026-08-15T09:00:00+00:00' }),
-    ])
+  it('draws a stage the engagement holds that no run ever filed', async () => {
+    // The run folder is gone, or the stage never narrated. The register is
+    // still there, and the row still has to say so. This is the reading that
+    // rendered an empty record over eleven real work products.
+    const wrapper = await render([filed({ history: null })])
 
-    expect(wrapper.findAll('.daybreak')).toHaveLength(2)
+    expect(wrapper.find('.empty').exists()).toBe(false)
+    expect(wrapper.find('.row').text()).toContain('Findings register')
+    expect(wrapper.find('.mt em').text()).toBe('35')
+    expect(wrapper.find('.took').text()).toBe('')
+  })
+
+  it('states what a held stage still owes without contradicting its count', async () => {
+    // Readiness answers the scheduler's question, and on a register that is
+    // thirty-five drafted and two short it reads "missing". Both are true.
+    const wrapper = await render([filed({
+      readiness: {
+        state: 'missing',
+        reasons: ['2 eligible observations need finding drafts'],
+        details: { eligible: 37 },
+      },
+    })])
+    await openRow(wrapper)
+
+    expect(wrapper.find('.mt em').text()).toBe('35')
+    expect(wrapper.find('.left').text()).toContain('2 eligible observations need finding drafts')
   })
 
   // ---------------------------------------------------------------- forward
   it('names the single most blocking thing above the ledger', async () => {
-    const wrapper = await render([entry()], { next: { kind: 'open_point', ...point() } })
+    const wrapper = await render([filed()], { next: { kind: 'open_point', ...point() } })
 
     const brief = wrapper.find('.brief')
     expect(brief.attributes('data-kind')).toBe('open_point')
@@ -326,7 +386,7 @@ describe('EngagementRecordTab', () => {
   })
 
   it('hangs an open point off the row that created it', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       capability: 'results.rolled_up',
       open_points: [point()],
     })])
@@ -335,37 +395,37 @@ describe('EngagementRecordTab', () => {
   })
 
   it('takes the reader to where an open point is answered', async () => {
-    const wrapper = await render([entry({ open_points: [point()] })])
+    const wrapper = await render([filed({ open_points: [point()] })])
     await wrapper.find('.row .open').trigger('click')
 
     expect(push).toHaveBeenCalledWith('rcm')
   })
 
   it('draws a stage that has not run below a now line', async () => {
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
 
     expect(wrapper.find('.nowline').exists()).toBe(true)
-    expect(wrapper.find('.row.ghost').text()).toContain('Dashboard curation')
+    expect(wrapper.find('.row.ghost').text()).toContain('Report')
     expect(wrapper.find('.row.ghost .mt em').text()).toBe('not yet')
   })
 
   it('marks only the first runnable stage as the call to action', async () => {
     // A tail of buttons is a menu, not a next step.
-    const wrapper = await render([entry()], {
-      pending: [
-        stage({ id: 'a', capability: 'planning.apm_ready' }),
-        stage({ id: 'b', capability: 'planning.rcm_ready' }),
-      ],
-    })
+    const wrapper = await render([
+      filed(),
+      owed({ id: 'a', capability: 'planning.apm_ready' }),
+      owed({ id: 'b', capability: 'planning.rcm_ready' }),
+    ])
 
     expect(wrapper.findAll('.row.ghost')).toHaveLength(2)
     expect(wrapper.findAll('.row.ghost.lead')).toHaveLength(1)
   })
 
   it('gives a blocked stage its reason instead of a button', async () => {
-    const wrapper = await render([entry()], {
-      pending: [stage({ runnable: false, blocked_reason: 'Waits for the memorandum.' })],
-    })
+    const wrapper = await render([
+      filed(),
+      owed({ runnable: false, blocked_reason: 'Waits for the memorandum.' }),
+    ])
 
     const ghost = wrapper.find('.row.ghost')
     expect(ghost.text()).toContain('Waits for the memorandum.')
@@ -374,19 +434,19 @@ describe('EngagementRecordTab', () => {
   })
 
   it('asks the assistant for the stage outcome when one is started', async () => {
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
     await wrapper.find('.row.ghost button').trigger('click')
 
-    expect(send).toHaveBeenCalledWith('Curate the dashboard.', 'act', 'auto', {
+    expect(send).toHaveBeenCalledWith('Generate the report.', 'act', 'auto', {
       source: 'shortcut',
-      requestedOutcomes: ['dashboard.curated'],
+      requestedOutcomes: ['report.working_draft'],
     })
   })
 
   it('keeps the ledger on screen when a stage is started, and opens the sidecar', async () => {
     // It used to hand the reader to the console, because the record could not
     // show progress. It can, so the row they just started stays in view.
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
     await wrapper.find('.row.ghost button').trigger('click')
 
     expect(openDrawer).toHaveBeenCalled()
@@ -396,7 +456,7 @@ describe('EngagementRecordTab', () => {
   it('does not offer to start a stage again in the gap before the run lists it', async () => {
     // A run exists before its route resolves, so for a second or two the stage
     // just asked for is in no workflow yet. Clicking Run twice starts it twice.
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
     await wrapper.find('.row.ghost button').trigger('click')
     agentActive.value = true
     agentState.run = {
@@ -412,9 +472,9 @@ describe('EngagementRecordTab', () => {
   })
 
   it('hands a just-started stage back to the run once its workflow names it', async () => {
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
     await wrapper.find('.row.ghost button').trigger('click')
-    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
+    liveRun([{ capability: 'report.working_draft', status: 'running' }])
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('.row.ghost').attributes('data-live')).toBe('running')
@@ -424,21 +484,25 @@ describe('EngagementRecordTab', () => {
   it('wakes the agent store itself, which the collapsed sidecar never does', async () => {
     // `ConsoleThread` owns that call, and it is not mounted while the drawer is
     // collapsed — so without this a reload mid-run shows a ledger blind to it.
-    await render([entry()])
+    await render([filed()])
 
     expect(agentInit).toHaveBeenCalled()
   })
 
   it('still reports a debt whose stage never filed', async () => {
-    const wrapper = await render([entry()], {
-      orphaned_points: [point({ key: 'draft_rcm', message: '27 of 27 rows are still marked draft.' })],
-    })
+    // It used to be orphaned into a row of its own, because the stage that owed
+    // it had no row. Every stage is drawn now, so the debt sits where it came
+    // from even when nothing filed that stage.
+    const wrapper = await render([filed({
+      history: null,
+      open_points: [point({ key: 'draft_rcm', message: '27 of 27 rows are still marked draft.' })],
+    })])
 
-    expect(wrapper.find('.row.orphan').text()).toContain('27 of 27 rows')
+    expect(wrapper.find('.row .open').text()).toContain('27 of 27 rows')
   })
 
   it('says nothing above the ledger when there is nothing to do', async () => {
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     expect(wrapper.find('.brief').exists()).toBe(false)
     expect(wrapper.find('.nowline').exists()).toBe(false)
@@ -447,7 +511,7 @@ describe('EngagementRecordTab', () => {
   /* --- how much of a row is drawn ----------------------------------------- */
 
   it('states the headline of a shut row and folds the rest of it away', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       summary: 'Prepared 1 evidence-linked finding draft (1 critical).',
       highlights: [{ severity: 'warning', label: 'Invoices over PO', detail: '3 of 52 rows', artifact_ref: '' }],
     })])
@@ -464,7 +528,7 @@ describe('EngagementRecordTab', () => {
   })
 
   it('counts what the fold hides, keeping the colour of what it stands for', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       stats: [
         { label: 'critical', value: 0, severity: 'error' },
         { label: 'high', value: 8, severity: 'warning' },
@@ -477,7 +541,7 @@ describe('EngagementRecordTab', () => {
     })])
 
     const chips = wrapper.findAll('.sig')
-    // The largest non-zero bucket leads; zero critical says nothing here.
+    // The most severe non-zero tier leads; zero critical says nothing here.
     expect(chips[0].text()).toBe('8high')
     expect(chips[0].attributes('data-severity')).toBe('warning')
     // Two highlights, one of them severe: the pair is reported at its worst.
@@ -485,12 +549,30 @@ describe('EngagementRecordTab', () => {
     expect(chips[1].attributes('data-severity')).toBe('error')
   })
 
+  it('leads the chip with the most severe tier, not the fullest one', async () => {
+    // The shut row and the open one described the same matrix differently: a
+    // chip reading "12 medium" over a strip led by 5 high, with the bigger
+    // number attached to the milder finding.
+    const wrapper = await render([filed({
+      stats: [
+        { label: 'critical', value: 0, severity: 'error' },
+        { label: 'high', value: 5, severity: 'warning' },
+        { label: 'medium', value: 12, severity: 'info' },
+        { label: 'low', value: 5, severity: 'info' },
+      ],
+    })])
+
+    expect(wrapper.find('.sig').text()).toBe('5high')
+  })
+
   it('leaves a row with nothing hidden unchipped, so a chip means something', async () => {
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       stats: [],
       highlights: [],
-      attempts: [{ run_id: 'r1', run_status: 'completed', at: '2026-08-14T11:05:00+00:00', elapsed_ms: 60_000 }],
-      measured_attempts: 1,
+      history: history({
+        attempts: [{ run_id: 'r1', run_status: 'completed', at: '2026-08-14T11:05:00+00:00', elapsed_ms: 60_000 }],
+        measured_attempts: 1,
+      }),
     })])
 
     expect(wrapper.find('.sig').exists()).toBe(false)
@@ -499,14 +581,14 @@ describe('EngagementRecordTab', () => {
   it('keeps an open point on the row even while the row is shut', async () => {
     // The debt is the one thing on a row that asks something of the reader.
     // Folding it away would be folding away the point of the page.
-    const wrapper = await render([entry({ open_points: [point()] })])
+    const wrapper = await render([filed({ open_points: [point()] })])
 
     expect(wrapper.find('.row').classes()).toContain('shut')
     expect(wrapper.find('.open').text()).toContain('41 of 60 conclusions')
   })
 
   it('opens a row clicked anywhere, and leaves the pill to its own link', async () => {
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     await wrapper.find('.row .say').trigger('click')
     expect(wrapper.find('.dsc').exists()).toBe(true)
@@ -521,7 +603,7 @@ describe('EngagementRecordTab', () => {
   })
 
   it('opens every row under Full, and remembers that for the next visit', async () => {
-    const wrapper = await render([entry(), entry({ id: 'report:m2', capability: 'report.working_draft' })])
+    const wrapper = await render([filed(), filed({ id: 'report:m2', capability: 'report.working_draft' })])
 
     await wrapper.findAll('.dens button')[1].trigger('click')
     expect(wrapper.findAll('.row.shut')).toHaveLength(0)
@@ -530,7 +612,7 @@ describe('EngagementRecordTab', () => {
     expect(wrapper.find('.chev').exists()).toBe(false)
     expect(window.localStorage.getItem('aw.record.density')).toBe('full')
 
-    const second = await render([entry()])
+    const second = await render([filed()])
     expect(second.find('.row.shut').exists()).toBe(false)
   })
 
@@ -539,7 +621,7 @@ describe('EngagementRecordTab', () => {
   it('states a distribution as a tally rather than as another paragraph', async () => {
     // A matrix is read as "1 critical, 8 high" before any single row is, and a
     // sentence cannot say that at a glance.
-    const wrapper = await render([entry({
+    const wrapper = await render([filed({
       stats: [
         { label: 'critical', value: 1, severity: 'error' },
         { label: 'high', value: 8, severity: 'warning' },
@@ -554,16 +636,14 @@ describe('EngagementRecordTab', () => {
   })
 
   it('leaves a severe tier at zero uncoloured, since nothing is wrong there', async () => {
-    const wrapper = await render([entry({
-      stats: [{ label: 'critical', value: 0, severity: 'error' }],
-    })])
+    const wrapper = await render([filed({ stats: [{ label: 'critical', value: 0, severity: 'error' }] })])
 
     await openRow(wrapper)
     expect(wrapper.find('.tally li').attributes('data-zero')).toBe('1')
   })
 
   it('draws no tally for a stage whose result is not a distribution', async () => {
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     expect(wrapper.find('.tally').exists()).toBe(false)
   })
@@ -571,24 +651,23 @@ describe('EngagementRecordTab', () => {
   /* --- the run in flight -------------------------------------------------- */
 
   it('reports the run in progress instead of proposing work already under way', async () => {
-    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
-    const wrapper = await render([entry()], {
-      pending: [stage()],
-      next: { kind: 'stage', ...stage() },
+    liveRun([{ capability: 'report.working_draft', status: 'running' }])
+    const wrapper = await render([filed(), owed()], {
+      next: { kind: 'stage', ...owed() },
     })
 
     const brief = wrapper.find('.brief')
     expect(brief.classes()).toContain('live')
     // The band takes the next step's place rather than sitting beside it.
     expect(wrapper.findAll('.brief')).toHaveLength(1)
-    expect(brief.text()).toContain('Pick the analyses worth showing on the dashboard')
+    expect(brief.text()).toContain('Write the report from the findings')
     expect(brief.text()).toContain('Running')
     wrapper.unmount()
   })
 
   it('marks the pending row the run is writing, and takes its Run button away', async () => {
-    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
+    liveRun([{ capability: 'report.working_draft', status: 'running' }])
+    const wrapper = await render([filed(), owed()])
 
     const ghost = wrapper.find('.row.ghost')
     expect(ghost.attributes('data-live')).toBe('running')
@@ -601,9 +680,9 @@ describe('EngagementRecordTab', () => {
   it('separates a stage the run has merely scheduled from the one it is writing', async () => {
     liveRun([
       { capability: 'report.working_draft', status: 'running' },
-      { capability: 'dashboard.curated', status: 'queued' },
+      { capability: 'report.working_draft', status: 'queued' },
     ])
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
 
     const ghost = wrapper.find('.row.ghost')
     expect(ghost.attributes('data-live')).toBe('queued')
@@ -613,8 +692,10 @@ describe('EngagementRecordTab', () => {
   })
 
   it('leaves a pending row the run never scheduled exactly as it was', async () => {
-    liveRun([{ capability: 'report.working_draft', status: 'running' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
+    // The run is working on a stage this ledger has no row for, so the owed row
+    // it did not schedule must not pick up any of the run's markings.
+    liveRun([{ capability: 'fieldwork.executed', status: 'running' }])
+    const wrapper = await render([filed(), owed()])
 
     const ghost = wrapper.find('.row.ghost')
     expect(ghost.attributes('data-live')).toBeUndefined()
@@ -624,7 +705,7 @@ describe('EngagementRecordTab', () => {
 
   it('drops the call-to-action highlight while a run is deciding the answer', async () => {
     liveRun([{ capability: 'report.working_draft', status: 'running' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
 
     expect(wrapper.find('.row.ghost').classes()).not.toContain('lead')
     wrapper.unmount()
@@ -632,15 +713,15 @@ describe('EngagementRecordTab', () => {
 
   it('says a filed work product is being produced again rather than looking settled', async () => {
     liveRun([{ capability: 'findings.drafted', status: 'running' }])
-    const wrapper = await render([entry()])
+    const wrapper = await render([filed()])
 
     expect(wrapper.find('.again').text()).toContain('Running again')
     wrapper.unmount()
   })
 
   it('ignores a stage the run has already finished, whose commit filed the row', async () => {
-    liveRun([{ capability: 'dashboard.curated', status: 'succeeded' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
+    liveRun([{ capability: 'report.working_draft', status: 'succeeded' }])
+    const wrapper = await render([filed(), owed()])
 
     expect(wrapper.find('.brief.live').exists()).toBe(true)
     expect(wrapper.find('.row.ghost').attributes('data-live')).toBeUndefined()
@@ -648,8 +729,8 @@ describe('EngagementRecordTab', () => {
   })
 
   it('still names the run when it is waiting on a person, and asks for a reply', async () => {
-    liveRun([{ capability: 'dashboard.curated', status: 'running' }], { status: 'awaiting_approval' })
-    const wrapper = await render([entry()], { pending: [stage()] })
+    liveRun([{ capability: 'report.working_draft', status: 'running' }], { status: 'awaiting_approval' })
+    const wrapper = await render([filed(), owed()])
 
     const brief = wrapper.find('.brief')
     expect(brief.attributes('data-wait')).toBe('1')
@@ -657,13 +738,22 @@ describe('EngagementRecordTab', () => {
     wrapper.unmount()
   })
 
-  it('draws the stage the run is executing even when the ledger owes no row for it', async () => {
-    // A stage is covered by neither half while it runs: it has filed no
-    // milestone, and fieldwork stops being owed the moment its first test
-    // commits — a third of the way into its own run. The band named it; the
-    // spine went quiet.
+  it('has a row for the stage the run is executing without synthesizing one', async () => {
+    // A running stage used to be covered by neither half of the ledger — no
+    // milestone yet, and its work product could already exist enough to stop
+    // being owed — so the client built the row itself out of a vocabulary the
+    // server published for the purpose. The spine draws every stage, so the
+    // row is already there and the overlay only has to mark it.
     liveRun([{ capability: 'fieldwork.executed', status: 'running', title: 'Fieldwork execution' }])
-    const wrapper = await render([entry()], { pending: [] })
+    const wrapper = await render([
+      filed(),
+      owed({
+        id: 'stage:fieldwork.executed',
+        capability: 'fieldwork.executed',
+        headline: 'Run the tests against the data and documents',
+        filed: { label: 'Fieldwork results', destination: 'doc-tests', unit: '', unit_plural: '', count: null },
+      }),
+    ])
 
     const ghost = wrapper.find('.row.ghost')
     expect(ghost.attributes('data-live')).toBe('running')
@@ -675,52 +765,40 @@ describe('EngagementRecordTab', () => {
     wrapper.unmount()
   })
 
-  it('leaves a machine step the record files nothing for to the band alone', async () => {
+  it('leaves a machine step the record has no row for to the band alone', async () => {
     // A ledger row for a capability with no work product is a row about
-    // nothing; `data.joins_ready` is not in the catalog and gets none.
+    // nothing. `data.joins_ready` is not on the spine, so it gets none.
     liveRun([{ capability: 'data.joins_ready', status: 'running', title: 'Joins ready' }])
-    const wrapper = await render([entry()], { pending: [] })
+    const wrapper = await render([filed()])
 
-    expect(wrapper.find('.row.ghost').exists()).toBe(false)
+    expect(wrapper.findAll('.row')).toHaveLength(1)
+    expect(wrapper.find('.row').attributes('data-live')).toBeUndefined()
     expect(wrapper.find('.brief.live').exists()).toBe(true)
     wrapper.unmount()
   })
 
-  it('keeps a live row in plan order rather than appending it to the tail', async () => {
-    liveRun([{ capability: 'fieldwork.executed', status: 'running' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
+  it('marks a running stage in its own place rather than moving it', async () => {
+    // The ledger's order is the plan's, and a stage starting does not change
+    // where it belongs in the plan.
+    liveRun([{ capability: 'report.working_draft', status: 'running' }])
+    const wrapper = await render([filed(), owed()])
 
-    // Fieldwork is stage 15, dashboard curation 19.
-    const order = wrapper.findAll('.row.ghost').map(row => row.find('.mt b').text())
-    expect(order).toEqual(['Fieldwork results', 'Dashboard curation'])
+    const rows = wrapper.findAll('.row')
+    expect(rows.map(row => row.find('.mt b').text()))
+      .toEqual(['Findings register', 'Report'])
+    expect(rows[1].attributes('data-live')).toBe('running')
     wrapper.unmount()
   })
 
-  it('does not duplicate a stage the ledger already has a row for', async () => {
-    liveRun([{ capability: 'dashboard.curated', status: 'running' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
+  it('states a held stage being produced again without making it look unwritten', async () => {
+    liveRun([{ capability: 'findings.drafted', status: 'running' }])
+    const wrapper = await render([filed(), owed()])
 
-    expect(wrapper.findAll('.row.ghost')).toHaveLength(1)
-    wrapper.unmount()
-  })
-
-  it('leads the tail with a running stage the plan does not place', async () => {
-    // A document-test run is its own workflow, so it has no audit-plan order.
-    // Sorted by a "put unknown last" number it landed after the report, which
-    // reads as the final step rather than the one happening now.
-    liveRun([{ capability: 'doc_tests.executed', status: 'running', title: 'Document test execution' }])
-    const wrapper = await render([entry()], { pending: [stage()] })
-
-    const order = wrapper.findAll('.row.ghost').map(row => row.find('.mt b').text())
-    expect(order).toEqual(['Document test results', 'Dashboard curation'])
-    wrapper.unmount()
-  })
-
-  it('falls back to the workflow stage title where the record owes no sentence', async () => {
-    liveRun([{ capability: 'doc_tests.executed', status: 'running', title: 'Document test execution' }])
-    const wrapper = await render([entry()], { pending: [] })
-
-    expect(wrapper.find('.row.ghost .ttl').text()).toBe('Document test execution')
+    const row = wrapper.findAll('.row')[0]
+    expect(row.classes()).not.toContain('ghost')
+    expect(row.text()).toContain('Running again')
+    // The count it holds is not replaced by the fact that it is running.
+    expect(row.find('.mt em').text()).toBe('being written')
     wrapper.unmount()
   })
 
@@ -730,7 +808,7 @@ describe('EngagementRecordTab', () => {
       id: 'live', status: 'interpreting', created: '2026-08-15T12:20:00+00:00',
       started: null, activity: null, workflow: null,
     }
-    const wrapper = await render([entry()], { pending: [stage()] })
+    const wrapper = await render([filed(), owed()])
 
     expect(wrapper.find('.brief.live').text()).toContain('Working out what to run')
     expect(wrapper.find('.row.ghost').attributes('data-live')).toBeUndefined()

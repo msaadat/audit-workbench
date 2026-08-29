@@ -2127,7 +2127,13 @@ export interface AgentMilestone {
  * of those runs were cancelled or failed and their wall clock counts time
  * spent waiting for a person, so they are deliberately not timed.
  */
-export interface EngagementRecordEntry {
+/**
+ * What the runs behind one stage recorded. Absent on a stage no run ever filed,
+ * which is a normal state and not an error: cost, attempts and the milestone's
+ * own narrative are the things only a run knows, and the row stands without
+ * them.
+ */
+export interface EngagementStageHistory {
   id: string
   capability: string
   at: string | null
@@ -2150,8 +2156,29 @@ export interface EngagementRecordEntry {
   }>
   elapsed_ms: number | null
   measured_attempts: number
-  /** What this stage left open behind it. */
-  open_points: EngagementOpenPoint[]
+}
+
+/**
+ * One work product, drawn whether or not a run ever filed it.
+ *
+ * The row exists because the audit graph says the stage exists, so the ledger
+ * survives a lost run folder, a stage that produces its artifact without
+ * narrating, and a stage that is still running.
+ */
+export interface EngagementStage {
+  id: string
+  capability: string
+  /** null where the engagement plan does not contain this capability at all. */
+  order: number | null
+  /** Whether the engagement holds the work product. */
+  held: boolean
+  runnable: boolean
+  /** The imperative a stage carries while its work product is absent. */
+  headline: string
+  /** Empty when nothing holds the stage. */
+  blocked_reason: string
+  /** null on a stage the record cannot ask for, and on one already held. */
+  start: { prompt: string; outcomes: string[] } | null
   /** Null for a capability the record has no artifact mapping for. */
   filed: {
     label: string
@@ -2166,6 +2193,32 @@ export interface EngagementRecordEntry {
     unit_plural: string
     count: number | null
   } | null
+  /**
+   * The graph's own answer about this stage, carried beside `held` rather than
+   * collapsed into it. Readiness says what is *left*; `held` says what exists,
+   * and on a register that is thirty drafted and two short both are true.
+   */
+  readiness: {
+    state: string
+    reasons: string[]
+    details: Record<string, unknown>
+  }
+  /**
+   * What the stage amounts to now: the sentence, the severity distribution,
+   * and the rows worth reading out. Recomputed from the workspace where the
+   * projection describes state rather than a run's delta — a matrix that filed
+   * "22 high" over 25 rows and now holds 22 rows rated 5 high says so — and
+   * falling back to what the run reported otherwise.
+   */
+  summary: string
+  /** Empty on every stage whose result is not a distribution. */
+  stats: NonNullable<AgentMilestone['stats']>
+  highlights: AgentMilestone['highlights']
+  /** Whether the body above was recomputed, or is the milestone's own. */
+  live_body: boolean
+  /** What this stage left open behind it. */
+  open_points: EngagementOpenPoint[]
+  history: EngagementStageHistory | null
 }
 
 /**
@@ -2180,50 +2233,18 @@ export interface EngagementOpenPoint {
   destination: string
 }
 
-/**
- * A stage whose work product does not exist yet — an entry the ledger has not
- * written. Only drawn when the artifact is genuinely absent; "no milestone" is
- * not "not done".
- */
-export interface EngagementPendingStage {
-  id: string
-  capability: string
-  headline: string
-  /** Empty when nothing holds the stage. */
-  blocked_reason: string
-  runnable: boolean
-  start: { prompt: string; outcomes: string[] }
-  filed: { label: string; destination: string; unit: string; unit_plural: string; count: null }
-  order: number
-}
-
 export type EngagementNextStep =
   | ({ kind: 'open_point' } & EngagementOpenPoint)
-  | ({ kind: 'stage' } & EngagementPendingStage)
+  | ({ kind: 'stage' } & EngagementStage)
 
 export interface EngagementRecordPayload {
-  entries: EngagementRecordEntry[]
-  pending: EngagementPendingStage[]
+  /** Every work product, in plan order. One list, not a filed half and an owed half. */
+  stages: EngagementStage[]
   open_points: EngagementOpenPoint[]
-  /** Debts whose originating stage never filed, so they have no row to sit on. */
-  orphaned_points: EngagementOpenPoint[]
   next: EngagementNextStep | null
-  /**
-   * What every capability the record can name files, keyed by capability id.
-   * Neither half of the ledger covers a stage while it runs — no milestone
-   * yet, and its work product may already exist enough to stop being owed — so
-   * the live overlay draws that row itself, in this vocabulary.
-   */
-  catalog: Record<string, {
-    label: string
-    destination: string
-    /** The sentence the row carries while owed; '' where the record never owes it. */
-    headline: string
-    /** null where the engagement plan does not contain this capability at all. */
-    order: number | null
-  }>
   counts: Record<string, number>
   totals: {
+    /** What the engagement holds, which is not what a run was seen to file. */
     work_products: number
     runs: number
     runs_that_filed: number

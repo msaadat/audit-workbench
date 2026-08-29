@@ -131,7 +131,6 @@ _DECLARED = {
         ("observation",),
     ),
     "working_papers.generated": ("working_papers", "working_paper", None, ("rollup",)),
-    "dashboard.curated": ("dashboard", "dashboard", None, ("rollup",)),
     "report.working_draft": (
         "report",
         "report",

@@ -423,7 +423,6 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "results.rolled_up": ("fieldwork.executed",),
         "findings.drafted": ("results.rolled_up",),
         "working_papers.generated": ("results.rolled_up",),
-        "dashboard.curated": ("results.rolled_up",),
         "report.working_draft": (
             "planning.apm_ready",
             "results.rolled_up",
@@ -466,7 +465,6 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "results.rolled_up",
         "findings.drafted",
         "working_papers.generated",
-        "dashboard.curated",
         "report.working_draft",
         "audit.verified",
     ]
@@ -482,12 +480,10 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         for capability_id in (
             "findings.drafted",
             "working_papers.generated",
-            "dashboard.curated",
-        )
+            )
     } == {
         "findings.drafted": ("results.rolled_up",),
         "working_papers.generated": ("results.rolled_up",),
-        "dashboard.curated": ("results.rolled_up",),
     }
 
 
@@ -1319,75 +1315,6 @@ def test_working_papers_generate_through_deterministic_scheduler_path():
     assert run["usage"]["llm_turns"] == 0
 
 
-def test_dashboard_curated_through_deterministic_scheduler_path(workspace_with_data):
-    ws = workspace_with_data
-    ws.update_planning(
-        {
-            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
-            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nAccounts payable.",
-        }
-    )
-    row = ws.add_rcm(
-        {
-            "process": "Procurement",
-            "risk": "Vendor approval risk",
-            "control": "Vendor master control",
-            "risk_rating": "high",
-        }
-    )
-    data_test = data_tests.create(
-        ws,
-        {
-            "title": "Vendor integrity result",
-            "objective": "Identify management-relevant vendor integrity signals.",
-            "engine": "analytics",
-            "table_refs": ["transactions"],
-            "rcm_id": row["id"],
-                        "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
-        },
-    )
-    data_tests.run(ws, data_test["id"])
-
-    run = store.new_command_run(
-        ws,
-        "auto",
-        {
-            "source": "follow_up",
-            "text": "Curate the dashboard",
-            "requested_outcomes": ["dashboard.curated"],
-            "generation_mode": "force",
-        },
-    )
-    assert resolve_route(ws, run) == "workflow"
-    run = store.load_run(ws, run["id"])
-    stage = next(
-        item
-        for item in run["workflow"]["stages"]
-        if item["capability"] == "dashboard.curated"
-    )
-    command = build_audit_workflow_runner(
-        ws, run, runner.RunHandle(ws.id, run["id"])
-    )
-
-    # execute() refreshes the subject from disk before each stage; mirror that
-    # here so the stage runs against a disk-consistent workspace.
-    command._refresh()
-    command._run_stage(stage)
-
-    tile_id = f"rcm-{data_test['id'].casefold()}"
-    # The deterministic path pinned the tile and folded a succeeded unit whose
-    # ref is the stable ``tile:<id>``.
-    unit = stage["units"][0]
-    assert unit["status"] == "succeeded"
-    assert unit["result_refs"] == [f"tile:{tile_id}"]
-    assert stage["status"] == "succeeded"
-    reloaded = workspaces.load_workspace(ws.id)
-    assert reloaded.planning["dashboard_curation"]["created_count"] == 1
-    assert [tile["id"] for tile in reloaded.tiles] == [tile_id]
-    # Deterministic execution makes no provider call.
-    assert run["usage"]["llm_turns"] == 0
-
-
 def _apm_only_runner(workspace, *, context_resolver=None):
     run = store.new_command_run(
         workspace,
@@ -2119,10 +2046,9 @@ def test_output_readiness_is_existence_structural_and_not_currency():
     ws = _planning_workspace("Output invalidation")
     row_id = ws.rcm[0]["id"]
     working_papers.generate_rcm(ws, row_id)
-    dashboard.curate_rcm_tiles(ws, run_id="run-output")
     report.generate(ws, use_model=False, run_id="run-output")
 
-    for outcome in ("working_papers.generated", "dashboard.curated", "report.working_draft"):
+    for outcome in ("working_papers.generated", "report.working_draft"):
         assert audit_capabilities.REGISTRY.get(outcome).readiness(ws, {}).state == "satisfied"
 
     ws.update_rcm(row_id, {"control": "Auditor changed the control after output generation"})
@@ -2130,7 +2056,7 @@ def test_output_readiness_is_existence_structural_and_not_currency():
 
     # The outputs still exist and are structurally usable, so they stay
     # satisfied — no "stale" state is produced by the audit declarations.
-    for outcome in ("working_papers.generated", "dashboard.curated", "report.working_draft"):
+    for outcome in ("working_papers.generated", "report.working_draft"):
         assert audit_capabilities.REGISTRY.get(outcome).readiness(ws, {}).state == "satisfied"
 
 

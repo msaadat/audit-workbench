@@ -10,31 +10,36 @@ import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav, type WorkspaceDestination } from '../composables/useWorkspaceNavigation'
 import type {
-  EngagementOpenPoint, EngagementPendingStage, EngagementRecordEntry,
-  EngagementRecordPayload, WorkspaceSummary,
+  EngagementOpenPoint, EngagementRecordPayload, EngagementStage, WorkspaceSummary,
 } from '../types'
 import UiEmptyState from './ui/UiEmptyState.vue'
 
 /**
- * The engagement record: what this engagement filed, and what it still owes.
+ * The engagement record: what this engagement holds, and what it still owes.
  *
- * The backward half is one row per work product — when it settled, what was
- * filed, what the stage established, what every attempt at it cost. The forward
- * half is the same ledger continuing past the present: stages whose work
- * product does not exist yet, drawn as entries not yet written, and the debts
- * that finished stages left hanging off the row that created them.
+ * One list, one row per work product, in the order the audit plan runs them.
+ * The row exists because the graph says the stage exists — not because a run
+ * filed a milestone for it — and it states what the engagement holds now. Run
+ * history is layered on where there is any: what it cost, how many attempts,
+ * and the milestone's own account of what it did.
+ *
+ * That is what makes the ledger survive things it used to disappear for. A
+ * workspace whose run folder was lost rendered "Nothing filed yet" over eleven
+ * real work products. A stage that produces its artifact without narrating —
+ * the report does exactly this — appeared in neither the filed half nor the
+ * owed half. A stage that was *running* appeared in neither either, and had to
+ * be synthesized from a published vocabulary the server shipped for the
+ * purpose.
  *
  * A landing page that only looks backwards asks nothing of the reader. The rule
  * for what it asks first is in `_OPEN_RANK` on the server: reading what the
  * assistant decided outranks running the next stage, because auto mode runs
  * stages by itself and only a person can review.
  *
- * The projection is of *committed* work, so on its own it is blind to the run
- * happening right now — it would go on advertising "draft the memorandum" while
- * the memorandum is being drafted. A workflow's stages are keyed by the same
- * capability ids the record's rows are, so the run in flight is laid over the
- * ledger directly: the row that is being written says so, and the band at the
- * top reports the run instead of proposing work already under way.
+ * A workflow's stages are keyed by the same capability ids the rows are, so the
+ * run in flight lays over the ledger directly: the row being written says so,
+ * and the band at the top reports the run instead of proposing work already
+ * under way.
  */
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -110,10 +115,7 @@ watch(agent.isActive, (active) => {
 }, { immediate: true })
 onUnmounted(() => window.clearInterval(ticker))
 
-const entries = computed(() => data.value?.entries ?? [])
-const pending = computed(() => data.value?.pending ?? [])
-const orphaned = computed(() => data.value?.orphaned_points ?? [])
-const catalog = computed(() => data.value?.catalog ?? {})
+const stages = computed(() => data.value?.stages ?? [])
 const totals = computed(() => data.value?.totals ?? null)
 const next = computed(() => data.value?.next ?? null)
 
@@ -153,20 +155,6 @@ function clock(value: string | null): string {
     : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
-function day(value: string | null): string {
-  if (!value) return ''
-  const date = new Date(value)
-  return Number.isNaN(date.valueOf())
-    ? ''
-    : date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-}
-
-/** The date heading a row sits under, or '' when it repeats the row above. */
-function dayBreak(index: number): string {
-  const current = day(entries.value[index]?.at ?? null)
-  const previous = index > 0 ? day(entries.value[index - 1]?.at ?? null) : ''
-  return current && current !== previous ? current : ''
-}
 
 /* --- the run in flight ---------------------------------------------------- */
 
@@ -260,19 +248,21 @@ const activityLine = computed(() => {
 const live = computed(() => {
   const run = agent.isActive.value ? agent.state.run : null
   if (!run) return null
-  const stages = run.workflow?.stages ?? []
-  const running = stages.find(stage => stage.status === 'running')
-  const settled = stages.filter(stage => SETTLED_STAGES.has(stage.status)).length
-  const owed = running
-    ? pending.value.find(stage => stage.capability === running.capability)
+  const runStages = run.workflow?.stages ?? []
+  const running = runStages.find(stage => stage.status === 'running')
+  const settled = runStages.filter(stage => SETTLED_STAGES.has(stage.status)).length
+  const row = running
+    ? stages.value.find(stage => stage.capability === running.capability)
     : undefined
   return {
     status: run.status,
     waiting: run.status === 'awaiting_approval' || run.status === 'awaiting_input',
-    headline: owed?.headline || running?.title || run.activity?.label
+    headline: row?.headline || row?.filed?.label || running?.title || run.activity?.label
       || RUN_STATUS_LABEL[run.status] || 'Working',
     state: RUN_STATUS_LABEL[run.status] || 'Running',
-    step: stages.length > 1 ? `step ${Math.min(settled + 1, stages.length)} of ${stages.length}` : '',
+    step: runStages.length > 1
+      ? `step ${Math.min(settled + 1, runStages.length)} of ${runStages.length}`
+      : '',
     since: run.started || run.created,
   }
 })
@@ -293,8 +283,8 @@ function destinationFor(target: string): WorkspaceDestination | null {
   return KNOWN_DESTINATIONS.includes(target) ? (target as WorkspaceDestination) : null
 }
 
-function destinationOf(entry: EngagementRecordEntry): WorkspaceDestination | null {
-  return destinationFor(entry.filed?.destination ?? '')
+function destinationOf(stage: EngagementStage): WorkspaceDestination | null {
+  return destinationFor(stage.filed?.destination ?? '')
 }
 
 function icon(label: string): string {
@@ -302,38 +292,80 @@ function icon(label: string): string {
 }
 
 /** `27 rows`, or '' where the work product has no meaningful size. */
-function size(entry: EngagementRecordEntry): string {
-  const filed = entry.filed
+function size(stage: EngagementStage): string {
+  const filed = stage.filed
   if (!filed || filed.count == null) return ''
   if (!filed.unit) return String(filed.count)
   return plural(filed.count, filed.unit, filed.unit_plural || undefined)
 }
 
 /**
- * The bare number inside the pill. The unit belongs to the work product, not to
+ * What the pill says: the bare number where the work product has a size, and
+ * what state it is in otherwise. The unit belongs to the work product, not to
  * the count — `Analysis library · 24` is a unit, `Analysis library · 24
  * analyses` is a sentence — so the spelled form moves to the pill's title.
  */
-function tally(entry: EngagementRecordEntry): string {
-  return entry.filed?.count == null ? '' : String(entry.filed.count)
+function tally(stage: EngagementStage): string {
+  const live = liveState(stage.capability)
+  if (live === 'running') return 'being written'
+  if (live === 'queued') return 'queued'
+  // An empty register is what "not yet" means, and says it in the words the
+  // rest of the row is written in. A bare 0 reads as a measurement.
+  if (!stage.held) return 'not yet'
+  return stage.filed?.count == null ? '' : String(stage.filed.count)
+}
+
+/**
+ * The line under the title: what the stage says about itself right now.
+ *
+ * A held stage with run history states what the run recorded. A held stage
+ * without it — the run folder is gone, or the stage never narrated — still has
+ * the graph's own sentence about what is left, which is the whole reason the
+ * row can stand on its own.
+ */
+function saying(stage: EngagementStage): string {
+  return stage.summary || stage.readiness.reasons[0] || ''
+}
+
+/**
+ * The title of a row: what the run said it did, or what the stage is for.
+ *
+ * Empty where a stage has neither — a held stage that never narrated says
+ * everything it has to say in the card beside this, and repeating the label
+ * across two columns states nothing twice.
+ */
+function title(stage: EngagementStage): string {
+  return stage.history?.headline || stage.headline || ''
+}
+
+/**
+ * What a stage still owes, on a row that already holds its work product. The
+ * graph's answer, and deliberately not allowed to contradict the count beside
+ * it: thirty findings are filed *and* two observations are undrafted.
+ */
+function remaining(stage: EngagementStage): string {
+  if (!stage.held || !stage.history) return ''
+  return stage.readiness.reasons[0] ?? ''
 }
 
 /**
  * What a collapsed row is standing in for. Silent at a single attempt, because
  * "1 attempt" on every row is noise that hides the rows where it matters.
  */
-function attemptNote(entry: EngagementRecordEntry): string {
-  const tries = entry.attempts.length
+function attemptNote(stage: EngagementStage): string {
+  const history = stage.history
+  if (!history) return ''
+  const tries = history.attempts.length
   if (tries <= 1) return ''
-  const untimed = tries - entry.measured_attempts
+  const untimed = tries - history.measured_attempts
   if (!untimed) return `${tries} attempts`
   return `${tries} attempts · ${untimed} not timed`
 }
 
-function toggle(entry: EngagementRecordEntry) {
+function toggle(stage: EngagementStage) {
   const next = new Set(expanded.value)
-  if (next.has(entry.id)) next.delete(entry.id)
-  else next.add(entry.id)
+  if (next.has(stage.id)) next.delete(stage.id)
+  else next.add(stage.id)
   expanded.value = next
 }
 
@@ -374,15 +406,31 @@ function setDensity(value: Density) {
   }
 }
 
-function isOpen(entry: EngagementRecordEntry): boolean {
-  return density.value === 'full' || openRows.value.has(entry.id)
+/**
+ * Whether this row has anything behind the fold. A stage that has not run has
+ * its whole content on the surface — a sentence and a button — so a chevron on
+ * it opens nothing, and a row that cannot open should not offer to.
+ */
+function foldable(stage: EngagementStage): boolean {
+  // Deliberately not `saying`, which falls back to a readiness reason. That
+  // sentence is already on the face of an owed row, so folding it away would
+  // put a chevron on every stage that has not run, opening onto what the row
+  // already said.
+  return Boolean(
+    stage.summary || stage.stats.length || stage.highlights.length
+    || attemptNote(stage) || remaining(stage),
+  )
 }
 
-function toggleRow(entry: EngagementRecordEntry) {
-  if (density.value === 'full') return
+function isOpen(stage: EngagementStage): boolean {
+  return density.value === 'full' || openRows.value.has(stage.id)
+}
+
+function toggleRow(stage: EngagementStage) {
+  if (density.value === 'full' || !foldable(stage)) return
   const next = new Set(openRows.value)
-  if (next.has(entry.id)) next.delete(entry.id)
-  else next.add(entry.id)
+  if (next.has(stage.id)) next.delete(stage.id)
+  else next.add(stage.id)
   openRows.value = next
 }
 
@@ -391,10 +439,10 @@ function toggleRow(entry: EngagementRecordEntry) {
  * chevron is a row you miss. Anything that already does something on click —
  * the pill, an open point — keeps its own job.
  */
-function rowClick(entry: EngagementRecordEntry, event: MouseEvent) {
+function rowClick(stage: EngagementStage, event: MouseEvent) {
   const target = event.target as HTMLElement | null
   if (target?.closest('a, button')) return
-  toggleRow(entry)
+  toggleRow(stage)
 }
 
 interface RowChip { label: string; value: string; severity: string }
@@ -404,31 +452,35 @@ interface RowChip { label: string; value: string; severity: string }
  * the block it replaces had, so the rows worth opening are the amber ones; a
  * row with nothing to say carries no chip, which is what makes that legible.
  */
-function chips(entry: EngagementRecordEntry): RowChip[] {
+function chips(stage: EngagementStage): RowChip[] {
   const out: RowChip[] = []
 
-  // A distribution is led by its largest non-zero bucket. Zero critical is
-  // worth saying in the open row and worth nothing in a one-line summary, and a
-  // bucket whose value is not a number cannot be ranked against one that is.
-  const counted = entry.stats
+  // A distribution is led by its most severe non-zero tier, which is the order
+  // the tiers already arrive in. Leading by volume instead made the shut row
+  // and the open one disagree in front of the reader: a matrix of 5 high and 12
+  // medium showed "12 medium" collapsed and a strip led by 5 high expanded, and
+  // the larger number was the less serious one. Zero critical is worth saying in
+  // the open row and worth nothing in a one-line summary, and a bucket whose
+  // value is not a number cannot be counted at all.
+  const counted = stage.stats
     .map(item => ({ ...item, count: typeof item.value === 'number' ? item.value : Number(item.value) }))
-    .filter(item => Number.isFinite(item.count) && item.count > 0)
-    .sort((a, b) => b.count - a.count)[0]
+    .filter(item => Number.isFinite(item.count) && item.count > 0)[0]
   if (counted) {
     out.push({ label: counted.label, value: String(counted.count), severity: counted.severity })
   }
 
-  if (entry.highlights.length) {
-    const severity = entry.highlights.some(item => item.severity === 'error') ? 'error' : 'warning'
+  if (stage.highlights.length) {
+    const severity = stage.highlights.some(item => item.severity === 'error') ? 'error' : 'warning'
     out.push({
-      label: entry.highlights.length === 1 ? 'flag' : 'flags',
-      value: String(entry.highlights.length),
+      label: stage.highlights.length === 1 ? 'flag' : 'flags',
+      value: String(stage.highlights.length),
       severity,
     })
   }
 
-  if (entry.attempts.length > 1) {
-    out.push({ label: 'attempts', value: String(entry.attempts.length), severity: '' })
+  const attempts = stage.history?.attempts.length ?? 0
+  if (attempts > 1) {
+    out.push({ label: 'attempts', value: String(attempts), severity: '' })
   }
 
   return out
@@ -446,8 +498,8 @@ function openPoint(point: EngagementOpenPoint) {
  * ledger stays on screen and lights up, with the thread beside it in the
  * sidecar for anyone who wants the detail.
  */
-async function start(stage: EngagementPendingStage) {
-  if (starting.value) return
+async function start(stage: EngagementStage) {
+  if (starting.value || !stage.start) return
   starting.value = stage.capability
   try {
     await chats.send(stage.start.prompt, 'act', 'auto', {
@@ -469,60 +521,25 @@ async function start(stage: EngagementPendingStage) {
 }
 
 /**
- * Stages the run in flight is executing that the ledger has no row for.
- *
- * A stage is covered by neither half while it runs: it has filed no milestone,
- * and its work product can already exist enough to stop being owed — fieldwork
- * stops being owed the moment its first test commits, a third of the way into
- * its own run, and then vanishes from the record until it files. The band still
- * named it; the spine went quiet. These put it back, carrying the label and the
- * sentence the row will still carry once it files.
- */
-const liveOnly = computed<EngagementPendingStage[]>(() => {
-  const known = new Set([
-    ...entries.value.map(entry => entry.capability),
-    ...pending.value.map(stage => stage.capability),
-  ])
-  const rows: EngagementPendingStage[] = []
-  for (const [capability, stage] of liveStages.value) {
-    if (known.has(capability)) continue
-    const filed = catalog.value[capability]
-    // A capability the record files nothing for is a machine step. The band
-    // names it; a ledger row for it would be a row with no work product.
-    if (!filed) continue
-    rows.push({
-      id: `live:${capability}`,
-      capability,
-      headline: filed.headline || stage.title || filed.label,
-      blocked_reason: '',
-      runnable: false,
-      start: { prompt: '', outcomes: [capability] },
-      filed: { label: filed.label, destination: filed.destination, unit: '', unit_plural: '', count: null },
-      // A capability the plan does not contain leads the tail rather than
-      // trailing it: everything below is owed, and this is happening now.
-      order: filed.order ?? -1,
-    })
-  }
-  return rows
-})
-
-/** The forward half as drawn: what is owed, plus what is happening. */
-const tail = computed(() => [...pending.value, ...liveOnly.value].sort((a, b) => a.order - b.order))
-
-/**
  * The first runnable stage is the only one drawn as a call to action — and
  * nothing is while a run is in flight, which is about to change the answer.
  */
 const leadStage = computed(
-  () => (agent.isActive.value ? '' : pending.value.find(stage => stage.runnable)?.capability ?? ''),
+  () => (agent.isActive.value ? '' : stages.value.find(stage => stage.runnable)?.capability ?? ''),
 )
 
+/**
+ * Three different numbers, each called what it is. This line read "13 runs
+ * across 12 sessions" on an engagement with 14 runs, 13 attempts and 9 chats —
+ * every noun shifted one place along, which hid a whole run.
+ */
 const totalLine = computed(() => {
   const value = totals.value
   if (!value) return ''
   const parts = [plural(value.work_products, 'work product')]
+  if (value.runs) parts.push(plural(value.runs, 'run'))
   if (value.attempts > value.work_products) {
-    parts.push(`${plural(value.attempts, 'run')} across ${plural(value.runs_that_filed, 'session')}`)
+    parts.push(`${plural(value.attempts, 'attempt')} at ${plural(value.runs_that_filed, 'stage')}`)
   }
   return parts.join(' · ')
 })
@@ -534,10 +551,20 @@ const quietRuns = computed(() => {
   return value ? Math.max(0, value.runs - value.runs_that_filed) : 0
 })
 
+/** The stages still owed, which is what the ledger's forward half amounts to. */
+const owedStages = computed(() => stages.value.filter(stage => !stage.held))
+
+/**
+ * Where the ledger crosses from what is held into what is owed. -1 on an
+ * engagement that holds everything, which draws no divider at all rather than
+ * one with nothing under it.
+ */
+const nowIndex = computed(() => stages.value.findIndex(stage => !stage.held))
+
 const pendingNote = computed(() => {
-  const count = tail.value.length
+  const count = owedStages.value.length
   if (!count) return ''
-  const underway = tail.value.filter(stage => liveState(stage.capability)).length
+  const underway = owedStages.value.filter(stage => liveState(stage.capability)).length
   if (underway === count) return `${plural(count, 'stage')} under way`
   if (underway) return `${underway} of ${count} under way`
   return `${plural(count, 'stage')} ${count === 1 ? 'has' : 'have'} not run`
@@ -569,11 +596,15 @@ const pendingNote = computed(() => {
 
     <div v-if="loading && !data" class="loading"><i class="pi pi-spin pi-spinner" /> Reading the record…</div>
 
+    <!-- Only a record with no stages at all is empty, which means the graph
+         itself could not be read. A workspace at the very start still draws
+         every stage it is going to do, and one whose run history is gone still
+         draws everything it holds. -->
     <UiEmptyState
-      v-else-if="!entries.length && !tail.length"
+      v-else-if="!stages.length"
       icon="pi pi-book"
-      title="Nothing filed yet"
-      detail="Once the assistant completes a stage, what it produced is recorded here."
+      title="No stages to show"
+      detail="The engagement plan could not be read, so there is nothing to lay out yet."
     />
 
     <template v-else>
@@ -606,30 +637,39 @@ const pendingNote = computed(() => {
           <span>Time</span><span></span><span>Filed</span><span>What it did</span><span class="r">Took</span><span></span>
         </li>
 
-        <template v-for="(entry, index) in entries" :key="entry.id">
-          <li v-if="dayBreak(index)" class="daybreak"><span>{{ dayBreak(index) }}</span></li>
+        <template v-for="(stage, index) in stages" :key="stage.id">
+          <!-- The ledger crosses from what the engagement holds into what it
+               still owes exactly once, and says so where it happens. -->
+          <li v-if="index === nowIndex" class="nowline">
+            <span class="lab">Now</span>
+            <span class="hr" />
+            <span class="lab">{{ pendingNote }}</span>
+          </li>
           <li
             class="row"
-            :class="{ shut: !isOpen(entry) }"
-            :data-status="entry.status"
-            @click="rowClick(entry, $event)"
+            :class="{ shut: !isOpen(stage), ghost: !stage.held, lead: stage.capability === leadStage }"
+            :data-status="stage.history?.status || null"
+            :data-live="liveState(stage.capability) || null"
+            @click="rowClick(stage, $event)"
           >
-            <span class="tm">{{ clock(entry.at) }}</span>
+            <span class="tm">{{ liveState(stage.capability) === 'running'
+              ? 'now'
+              : (stage.history ? clock(stage.history.at) : '—') }}</span>
             <span class="gut"><i /></span>
 
             <span class="made">
               <component
-                :is="destinationOf(entry) ? RouterLink : 'span'"
-                v-if="entry.filed"
-                :to="destinationOf(entry) ? nav.to(destinationOf(entry)!) : undefined"
+                :is="destinationOf(stage) ? RouterLink : 'span'"
+                v-if="stage.filed"
+                :to="destinationOf(stage) ? nav.to(destinationOf(stage)!) : undefined"
                 class="card"
-                :class="{ linked: !!destinationOf(entry) }"
-                :title="size(entry) || null"
+                :class="{ linked: !!destinationOf(stage) }"
+                :title="size(stage) || null"
               >
-                <i :class="icon(entry.filed.label)" aria-hidden="true" />
+                <i :class="icon(stage.filed.label)" aria-hidden="true" />
                 <span class="mt">
-                  <b>{{ entry.filed.label }}</b>
-                  <em v-if="tally(entry)">{{ tally(entry) }}</em>
+                  <b>{{ stage.filed.label }}</b>
+                  <em v-if="tally(stage)">{{ tally(stage) }}</em>
                 </span>
               </component>
               <span v-else class="none">—</span>
@@ -637,35 +677,52 @@ const pendingNote = computed(() => {
 
             <span class="say">
               <span class="saytop">
-                <b class="ttl">{{ entry.headline }}</b>
+                <b class="ttl">{{ title(stage) }}</b>
                 <!-- The folded body, counted. Colour survives the fold. -->
-                <template v-if="!isOpen(entry)">
+                <template v-if="!isOpen(stage)">
                   <span
-                    v-for="chip in chips(entry)"
+                    v-for="chip in chips(stage)"
                     :key="chip.label"
                     class="sig"
                     :data-severity="chip.severity || null"
                   ><b>{{ chip.value }}</b>{{ chip.label }}</span>
                 </template>
               </span>
-              <span v-if="isOpen(entry)" class="dsc">{{ entry.summary }}</span>
+              <span v-if="isOpen(stage) && saying(stage)" class="dsc">{{ saying(stage) }}</span>
+              <!-- A stage that is owed says what is holding it, open or shut:
+                   it is the whole content of the row. -->
+              <span v-else-if="!stage.held && stage.blocked_reason" class="dsc">
+                {{ stage.blocked_reason }}
+              </span>
 
-              <!-- Filed once already, and being produced again right now. -->
-              <span v-if="liveState(entry.capability)" class="again" :data-live="liveState(entry.capability)">
-                <i :class="liveState(entry.capability) === 'running' ? 'pi pi-spin pi-spinner' : 'pi pi-clock'" aria-hidden="true" />
-                <template v-if="liveState(entry.capability) === 'running'">
-                  Running again{{ liveSince(entry.capability) ? ` · ${liveSince(entry.capability)}` : '' }}<template
-                    v-if="soleRunning === entry.capability && activityLine"> · {{ activityLine }}</template>
+              <!-- What a stage that has already filed still owes. The count
+                   beside it is not contradicted: thirty findings are filed and
+                   two observations are undrafted, and both are true. -->
+              <span v-if="isOpen(stage) && remaining(stage)" class="left">
+                <i class="pi pi-hourglass" aria-hidden="true" />{{ remaining(stage) }}
+              </span>
+
+              <!-- Being produced right now, whether or not it was filed before. -->
+              <span v-if="liveState(stage.capability)" class="again" :data-live="liveState(stage.capability)">
+                <i :class="liveState(stage.capability) === 'running' ? 'pi pi-spin pi-spinner' : 'pi pi-clock'" aria-hidden="true" />
+                <template v-if="liveState(stage.capability) === 'running'">
+                  <!-- A stage that already filed is being produced *again*,
+                       which is a different thing from one being produced. -->
+                  {{ stage.held ? 'Running again' : 'The assistant is working on it now.'
+                  }}{{ liveSince(stage.capability) ? ` · ${liveSince(stage.capability)}` : '' }}<template
+                    v-if="soleRunning === stage.capability && activityLine"> · {{ activityLine }}</template>
                 </template>
-                <template v-else>Queued to run again</template>
+                <template v-else>
+                  {{ stage.held ? 'Queued to run again' : 'Scheduled by the run in progress.' }}
+                </template>
               </span>
 
               <!-- A stage whose result is a distribution states it as one. A
                    matrix is read as "one critical, eight high" before any
                    single row is, and a paragraph cannot say that at a glance. -->
-              <ul v-if="isOpen(entry) && entry.stats.length" class="tally">
+              <ul v-if="isOpen(stage) && stage.stats.length" class="tally">
                 <li
-                  v-for="stat in entry.stats"
+                  v-for="stat in stage.stats"
                   :key="stat.label"
                   :data-severity="stat.severity"
                   :data-zero="stat.value ? null : '1'"
@@ -674,15 +731,16 @@ const pendingNote = computed(() => {
                 </li>
               </ul>
 
-              <ul v-if="isOpen(entry) && entry.highlights.length" class="hl">
-                <li v-for="item in entry.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
+              <ul v-if="isOpen(stage) && stage.highlights.length" class="hl">
+                <li v-for="item in stage.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
                   <b>{{ item.label }}</b><span>{{ item.detail }}</span>
                 </li>
               </ul>
 
-              <!-- What this stage left open behind it. -->
+              <!-- What this stage left open behind it. Every debt has a row to
+                   sit on now, because the stage that owes it is always drawn. -->
               <button
-                v-for="point in entry.open_points"
+                v-for="point in stage.open_points"
                 :key="point.key"
                 type="button"
                 class="open"
@@ -694,17 +752,17 @@ const pendingNote = computed(() => {
               </button>
 
               <button
-                v-if="isOpen(entry) && attemptNote(entry)"
+                v-if="isOpen(stage) && attemptNote(stage)"
                 type="button"
                 class="tries"
-                :aria-expanded="expanded.has(entry.id)"
-                @click="toggle(entry)"
+                :aria-expanded="expanded.has(stage.id)"
+                @click="toggle(stage)"
               >
-                <i :class="expanded.has(entry.id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" aria-hidden="true" />
-                {{ attemptNote(entry) }}
+                <i :class="expanded.has(stage.id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" aria-hidden="true" />
+                {{ attemptNote(stage) }}
               </button>
-              <ol v-if="isOpen(entry) && expanded.has(entry.id)" class="attempts">
-                <li v-for="attempt in entry.attempts" :key="attempt.run_id">
+              <ol v-if="isOpen(stage) && expanded.has(stage.id) && stage.history" class="attempts">
+                <li v-for="attempt in stage.history.attempts" :key="attempt.run_id">
                   <span class="at">{{ when(attempt.at) }}</span>
                   <span class="st" :data-status="attempt.run_status">{{ attempt.run_status.replaceAll('_', ' ') }}</span>
                   <span class="el">{{ duration(attempt.elapsed_ms) }}</span>
@@ -712,80 +770,6 @@ const pendingNote = computed(() => {
               </ol>
             </span>
 
-            <span class="took">{{ duration(entry.elapsed_ms) }}</span>
-
-            <!-- The row is the hit target; this is what says so. Hidden under
-                 Full, where every row is open and nothing can be shut. -->
-            <button
-              v-if="density === 'concise'"
-              type="button"
-              class="chev"
-              :aria-expanded="isOpen(entry)"
-              :aria-label="`${isOpen(entry) ? 'Collapse' : 'Expand'} ${entry.headline}`"
-              @click="toggleRow(entry)"
-            >
-              <i class="pi pi-chevron-right" aria-hidden="true" />
-            </button>
-            <span v-else></span>
-          </li>
-        </template>
-
-        <!-- Debts whose stage never filed have no row to sit on, and still
-             have to be said. -->
-        <li v-for="point in orphaned" :key="point.key" class="row orphan">
-          <span class="tm"></span>
-          <span class="gut"><i /></span>
-          <span class="made"><span class="none">—</span></span>
-          <span class="say">
-            <button type="button" class="open" @click="openPoint(point)">
-              <i class="pi pi-exclamation-triangle" aria-hidden="true" />
-              <span class="ot">{{ point.message }}</span>
-              <span class="oa">{{ point.action }}<i class="pi pi-arrow-right" aria-hidden="true" /></span>
-            </button>
-          </span>
-          <span class="took"></span>
-          <span></span>
-        </li>
-
-        <!-- The ledger continues past the present into entries not yet written. -->
-        <template v-if="tail.length">
-          <li class="nowline">
-            <span class="lab">Now</span>
-            <span class="hr" />
-            <span class="lab">{{ pendingNote }}</span>
-          </li>
-          <li
-            v-for="stage in tail"
-            :key="stage.id"
-            class="row ghost"
-            :class="{ lead: stage.capability === leadStage }"
-            :data-live="liveState(stage.capability) || null"
-          >
-            <span class="tm">{{ liveState(stage.capability) === 'running' ? 'now' : '—' }}</span>
-            <span class="gut"><i /></span>
-            <span class="made">
-              <span class="card">
-                <i :class="icon(stage.filed.label)" aria-hidden="true" />
-                <span class="mt">
-                  <b>{{ stage.filed.label }}</b>
-                  <em>{{ liveState(stage.capability) === 'running'
-                    ? 'being written'
-                    : liveState(stage.capability) === 'queued' ? 'queued' : 'not yet' }}</em>
-                </span>
-              </span>
-            </span>
-            <span class="say">
-              <b class="ttl">{{ stage.headline }}</b>
-              <span v-if="liveState(stage.capability) === 'running'" class="dsc">
-                {{ soleRunning === stage.capability && activityLine
-                  ? activityLine
-                  : 'The assistant is working on it now.' }}
-              </span>
-              <span v-else-if="liveState(stage.capability) === 'queued'" class="dsc">
-                Scheduled by the run in progress.
-              </span>
-              <span v-else-if="stage.blocked_reason" class="dsc">{{ stage.blocked_reason }}</span>
-            </span>
             <span class="took">
               <!-- A stage the run in flight already owns must not offer to be
                    started a second time. -->
@@ -802,11 +786,28 @@ const pendingNote = computed(() => {
                 :loading="starting === stage.capability"
                 @click="start(stage)"
               />
-              <span v-else class="waits">waits</span>
+              <span v-else-if="!stage.held && stage.blocked_reason" class="waits">waits</span>
+              <template v-else-if="stage.history">{{ duration(stage.history.elapsed_ms) }}</template>
             </span>
-            <span></span>
+
+            <!-- The row is the hit target; this is what says so. Hidden under
+                 Full, where every row is open and nothing can be shut. -->
+            <button
+              v-if="density === 'concise' && foldable(stage)"
+              type="button"
+              class="chev"
+              :aria-expanded="isOpen(stage)"
+              :aria-label="`${isOpen(stage) ? 'Collapse' : 'Expand'} ${title(stage) || stage.filed?.label || stage.capability}`"
+              @click="toggleRow(stage)"
+            >
+              <i class="pi pi-chevron-right" aria-hidden="true" />
+            </button>
+            <span v-else></span>
           </li>
         </template>
+
+        <!-- Debts whose stage never filed have no row to sit on, and still
+             have to be said. -->
       </ol>
 
       <!-- The single most blocking thing, restated as a sentence. It sits under
@@ -844,7 +845,7 @@ const pendingNote = computed(() => {
            footnote to. It answered no question anyone arrives with, and it was
            the first thing on the page. -->
       <footer class="summary">
-        <span><b>{{ totals?.work_products ?? 0 }}</b> work products filed</span>
+        <span><b>{{ totals?.work_products ?? 0 }}</b> work products held</span>
         <span><b>{{ duration(totals?.elapsed_ms ?? null) }}</b> of assistant time</span>
         <span class="grow"></span>
         <span>
@@ -931,11 +932,14 @@ const pendingNote = computed(() => {
 .head .r { text-align: right; }
 .row + .row { border-top: 1px solid var(--aw-border); }
 
-.daybreak {
-  padding: .4rem 1rem; border-top: 1px solid var(--aw-border); background: var(--aw-raised);
-  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
-  letter-spacing: .07em; text-transform: uppercase;
+/* What a filed stage still owes. Amber like the debts it sits among, but a
+   line rather than a button: there is nothing here to click, only something
+   the next run will pick up. */
+.left {
+  display: flex; gap: .4rem; align-items: baseline;
+  color: var(--aw-warn-ink, var(--aw-muted)); font-size: var(--aw-text-sm);
 }
+.left i { font-size: .7rem; }
 
 .tm { padding-top: .2rem; color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; }
 .took { padding-top: .2rem; text-align: right; color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -1082,7 +1086,6 @@ const pendingNote = computed(() => {
 .row.ghost.lead .card { border-style: solid; border-color: var(--aw-teal); background: var(--aw-panel); color: var(--aw-teal-strong); }
 .row.ghost.lead .ttl { color: var(--aw-ink-strong); }
 
-.row.orphan .gut i { background: var(--aw-warn); }
 
 /* --- the run in flight ---------------------------------------------------- */
 /* Blue, deliberately: teal is what the engagement has filed and amber is what
