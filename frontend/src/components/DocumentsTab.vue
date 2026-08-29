@@ -21,6 +21,7 @@ import MarkdownView from './MarkdownView.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import DocumentTypeReview from './documents/DocumentTypeReview.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
@@ -90,12 +91,10 @@ const visualPageLimit = 20
 const visionAvailable = computed(() => agent.state.status?.vision_configured === true)
 const structuredFieldsJson = computed(() => {
   const effective = analysis.value?.effective
-  if (!effective?.registry) return ''
+  if (!effective?.records?.length) return ''
   return JSON.stringify({
-    registry: effective.registry,
-    records: effective.records || [],
-    unresolved_fragments: effective.unresolved_fragments || [],
-    conflicts: effective.conflicts || [],
+    schema: effective.schema_ref ?? null,
+    records: effective.records,
   }, null, 2)
 })
 const hasStructuredSummary = computed(() =>
@@ -413,6 +412,18 @@ async function reindexAll() {
   finally { busy.value = false }
 }
 
+const typeReviewOpen = ref(false)
+
+/** Documents the classifier could not name. Naming one is what lets it fill a
+ *  role in a cycle test, so the count is surfaced rather than left to a menu. */
+const unidentifiedCount = computed(
+  () => documents.value.filter(doc => doc.classification?.document_type === 'other').length,
+)
+
+async function onRetyped(): Promise<void> {
+  await loadDocuments()
+}
+
 async function batchAnalyze() {
   const eligible = eligibleDocuments.value
   if (!eligible.length) {
@@ -586,6 +597,14 @@ onUnmounted(() => {
     <UiPageHeader title="Documents">
       <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
       <Button label="Analyse all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
+      <Button
+        v-if="unidentifiedCount"
+        :label="`Identify ${unidentifiedCount}`"
+        icon="pi pi-question-circle"
+        severity="warn"
+        outlined
+        @click="typeReviewOpen = true"
+      />
       <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
 
@@ -853,6 +872,12 @@ onUnmounted(() => {
         <Button label="Save vision profile" icon="pi pi-save" :loading="visionSettingsBusy" :disabled="!visionProvider || !visionModel.trim()" @click="saveVisionSettings" />
       </template>
     </Dialog>
+    <DocumentTypeReview
+      v-model="typeReviewOpen"
+      :workspace-id="props.workspace.id"
+      @retyped="onRetyped"
+      @error="(summary, error) => toast.add({ severity: 'error', summary, detail: String(error), life: 5000 })"
+    />
   </section>
 </template>
 

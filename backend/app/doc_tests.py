@@ -526,7 +526,7 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     test.setdefault("updated", test["created"])
     if kind == "cycle_vouch":
         try:
-            cycle_vouching.validate_cycle_test(test)
+            cycle_vouching.validate_cycle_test(test, workspace=workspace)
         except cycle_vouching.CycleSchemaError as error:
             raise WorkspaceError(str(error)) from error
     for index, raw_item in enumerate(test["items"]):
@@ -535,9 +535,7 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
         item.setdefault("instruction", "")
         if kind == "cycle_vouch":
             try:
-                item = cycle_vouching.normalize_cycle_item(
-                    item, registry_ref=test["registry"]
-                )
+                item = cycle_vouching.normalize_item(test, item)
             except cycle_vouching.CycleSchemaError as error:
                 raise WorkspaceError(str(error)) from error
             test["items"][index] = item
@@ -903,9 +901,7 @@ def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
             )
         if kind == "cycle_vouch":
             try:
-                item = cycle_vouching.normalize_cycle_item(
-                    {**dict(raw), **item}, registry_ref=test["registry"]
-                )
+                item = cycle_vouching.normalize_item(test, {**dict(raw), **item})
             except cycle_vouching.CycleSchemaError as error:
                 raise WorkspaceError(str(error)) from error
             role_document_ids = [
@@ -950,7 +946,13 @@ def _apply_kind_spec(test: dict, payload: dict) -> None:
         test["spec"].setdefault("require_all_documents", True)
     elif test["kind"] == "cycle_vouch":
         test["schema_version"] = payload.get("schema_version")
-        test["registry"] = dict(payload.get("registry") or {})
+        # A ruleset-backed test names its rules in the definition and has no
+        # registry reference at all; writing an empty one would make it look
+        # like a pack test whose pack went missing.
+        if payload.get("registry"):
+            test["registry"] = dict(payload["registry"])
+        else:
+            test.pop("registry", None)
         test["requirement_refs"] = list(payload.get("requirement_refs") or [])
         test["procedure_key"] = str(payload.get("procedure_key") or "")
         test["definition"] = dict(payload.get("definition") or {})
@@ -2261,9 +2263,7 @@ def execution_issues(test: dict) -> list[str]:
         try:
             cycle_vouching.validate_cycle_test(test)
             for item in items:
-                cycle_vouching.normalize_cycle_item(
-                    item, registry_ref=test["registry"]
-                )
+                cycle_vouching.normalize_item(test, item)
         except cycle_vouching.CycleSchemaError as error:
             return [str(error)]
         return []

@@ -27,7 +27,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_vouching, doc_tests, sandbox
+from ... import cycle_linking, cycle_vouching, doc_tests, sandbox
 from ...text import relevance_tokens
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
@@ -82,75 +82,35 @@ def _source_items(request: WorkerRequest, source_id: str) -> list[object]:
 
 
 def _model_transaction_manifest(value: object) -> object:
-    """Project only decision-relevant manifest facts into the model prompt.
+    """Project only decision-relevant facts about the approved rules.
 
-    The full manifest remains in the bounded worker context and is used by the
-    deterministic semantic gate.  Record IDs, document IDs, registry copies,
-    hashes, and diagnostic ranking internals do not help the model choose a
-    candidate or author valid field assertions.
+    The turn chooses which requirements one procedure answers and which rows it
+    runs over. Rule ids, hashes and per-role counts do not help it do either,
+    and the rules themselves are read from the ruleset rather than restated.
     """
+
     if not isinstance(value, Mapping):
         return value
-    groups = []
-    candidate_fields = (
-        "candidate_id",
-        "rank",
-        "table",
-        "source_kind",
-        "join_justification",
-        "row_key",
-        "cycle_keys",
-        "column_types",
-        "population_rows",
-        "linked_rows",
-        "local_coverage",
-        "collision_count",
-        "complete_cycle_count",
-        "reachable_record_kinds",
-        "reachable_roles",
-        "required_role_coverage",
-        "required_role_count",
-        "missing_role_counts",
-        "relationship_facts",
-    )
-    for raw_group in value.get("groups") or []:
-        if not isinstance(raw_group, Mapping):
-            continue
-        candidates = [
-            {
-                key: _plain_json(candidate[key])
-                for key in candidate_fields
-                if key in candidate
-            }
-            for candidate in raw_group.get("candidates") or []
-            if isinstance(candidate, Mapping)
-        ]
-        records = [
-            {
-                "record_kind": str(record.get("record_kind") or ""),
-                "available_fields": _plain_json(record.get("available_fields") or []),
-            }
-            for record in raw_group.get("records") or []
-            if isinstance(record, Mapping)
-        ]
-        groups.append(
-            {
-                key: _plain_json(raw_group[key])
-                for key in (
-                    "registry",
-                    "requirement_refs",
-                    "requirements",
-                    "recipe_options",
-                    "required_record_kinds",
-                    "roles",
-                )
-                if key in raw_group
-            }
-            | {"candidates": candidates, "records": records}
-        )
+    if not value.get("ruleset_id"):
+        return {"available": False, "reason": str(value.get("reason") or "")}
     return {
-        "groups": groups,
-        "manifest_sha256": str(value.get("manifest_sha256") or ""),
+        "available": True,
+        "cycle_label": value.get("cycle_label"),
+        "roles": [
+            {
+                "name": role.get("name"),
+                "document_type": role.get("document_type"),
+                "required": role.get("required", True),
+            }
+            for role in value.get("roles") or []
+            if isinstance(role, Mapping)
+        ],
+        "population": {
+            "table": (value.get("anchor") or {}).get("table"),
+            "column": (value.get("anchor") or {}).get("column"),
+        },
+        "assertions": value.get("assertions") or [],
+        "reach": value.get("reach") or {},
     }
 
 
@@ -304,10 +264,13 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         else []
     )
     evidence_kinds = {str(item.get("evidence_kind") or "") for item in attributes}
-    candidate_ids = _manifest_candidate_ids(transaction_evidence)
+    cycle_available = bool(
+        isinstance(transaction_evidence, Mapping)
+        and transaction_evidence.get("ruleset_id")
+    )
     needs_documents = not attributes or bool(
         evidence_kinds & {"document_content", "manual_inspection", "inquiry", "mixed"}
-    ) or not candidate_ids
+    ) or not cycle_available
     documents = (
         _relevant_documents(raw_documents, rcm_row)
         if needs_documents
@@ -318,12 +281,13 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         allowed_variants.append("data")
     if documents:
         allowed_variants.append("document_question")
-    if candidate_ids:
+    if cycle_available:
         allowed_variants.append("cycle_vouch")
     if "cycle_vouch" in allowed_variants:
         variant_instruction = (
-            "Cycle Vouch may be used only with an exact candidate_id from "
-            "transaction_evidence."
+            "Cycle Vouch runs on the approved cycle rules in "
+            "transaction_evidence. Choose the requirements it answers and the "
+            "rows it runs over; the rules themselves are already settled."
         )
     else:
         variant_instruction = (
@@ -429,10 +393,7 @@ GENERATE_RESPONSE_CONTRACT = {
                 "objective",
                 "requirement_refs",
                 "procedure_key",
-                "candidate_id",
-                "selection_reason",
                 "selection",
-                "recipe_bindings",
             ],
             "source": "document",
             "kind": "cycle_vouch",
@@ -477,46 +438,28 @@ Return JSON with a non-empty `tests` array. A test is one of:
    question-mode steps using only supplied document ids. A missing-evidence step
    has an empty document_ids array and a specific missing_evidence string.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
-   requirement_refs, procedure_key, candidate_id, selection_reason, selection,
-   and recipe_bindings. It has no assertions, registry, definition, roles, or
-   steps. Every comparison the procedure performs is expanded locally from the
-   recipes the referenced control attributes cite, under the bindings you
-   choose, and the registry-backed fields are hydrated from the chosen candidate.
+   requirement_refs, procedure_key, and selection. It has no assertions,
+   definition, roles, or steps: the roles, the join keys and the assertions were
+   approved in the cycle rules review, and local code reads them from there.
 
-For Cycle Vouch you decide three things: which population to vouch, which
-requirements belong in one procedure, and which record kinds fill each cited
-recipe's placeholders. Nothing else.
+For Cycle Vouch you decide two things: which requirements belong in one
+procedure, and which rows it runs over. Nothing else.
 
-The RCM row names the audit shape; you name the records that answer it here,
-because only this turn is shown what the engagement's evidence actually
-contains. `transaction_evidence.recipe_options` lists, per cited recipe, the
-`eligible_bindings` the extracted records can support — each one already checked
-to carry every field selector that recipe reads. Copy one of them exactly into
-recipe_bindings as {{"recipe_id": "...", "bindings": {{role: record_kind}}}},
-binding every recipe cited by every requirement_ref you reference.
-
-If a cited recipe has an empty `eligible_bindings`, no record kind in this
-workspace can answer that shape. Do not substitute a different comparison and do
-not reference that requirement: return your other tests, and leave it uncovered
-so the evidence gap is reported rather than papered over.
-
-The supplied `transaction_evidence` manifest is authoritative. Choose an exact
-candidate_id copied from one supplied registry group and explain the choice in
-selection_reason. Candidates carry `rank`; among candidates over the same `table`
-only the best-ranked one is accepted, because they are the same rows keyed
-differently and a table keyed on another record's identifier is a grain error.
-Choosing a different `table` is a real decision — make it on which grain the
-requirement is about — and say so in selection_reason. Do not repeat the
-candidate's table, row_key, cycle_keys, registry, or roles; local code copies
-them exactly.
+`transaction_evidence` carries the approved rules — the cycle label, the roles,
+the anchor table and column the population is seeded from, and what the rules
+reach across it. Do not repeat any of it: local code reads it from the ruleset
+the test names.
 
 requirement_refs use `<RCM id>:<control attribute key>` and must name control
 attributes of this row whose evidence_kind is `transaction_cycle`. Every such
 attribute must be referenced by some returned cycle test. Group requirements
-that share one population and lifecycle scope into one test: a three-way match
-over an invoice-grain population is one test, not four. Do not invent
-identifiers, fields, mappings, or roles, and do not emit assertions,
-dotted paths, checks, document_types, or a vouch mode step.
+that share one population into one test: a three-way match over an
+invoice-grain population is one test, not four.
+
+If the approved rules hold no assertion answering a requirement, the test is
+refused locally and the gap is reported. Do not substitute a nearby comparison
+and do not reference that requirement: return your other tests and leave it
+uncovered, so the gap is reported rather than papered over.
 
 Evidence-linked selection is targeted evidence only. Sampling uses random,
 interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
@@ -526,11 +469,7 @@ The exact Cycle Vouch response shape is:
 {{"source":"document","kind":"cycle_vouch","title":"Three-way match of paid invoices",
 "objective":"...","requirement_refs":["RCM-ID:attribute_key"],
 "procedure_key":"invoice-three-way-match",
-"candidate_id":"CYCLE-CAND-EXACTLY-AS-SUPPLIED","selection_reason":"...",
-"selection":{{"mode":"evidence_linked"}},
-"recipe_bindings":[{{"recipe_id":"common.quantity_agreement",
-"bindings":{{"source":"procure_to_pay.purchase_order",
-"target":"procure_to_pay.goods_receipt"}}}}]}}
+"selection":{{"mode":"evidence_linked"}}}}
 
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
@@ -657,46 +596,18 @@ def _generate_supplied_document_ids(request: WorkerRequest) -> set[str]:
     return ids
 
 
-def _generate_transaction_manifest(request: WorkerRequest) -> dict:
+def _generate_cycle_candidate(request: WorkerRequest) -> dict:
+    """What a cycle test can be built on, or an empty mapping where nothing is.
+
+    One candidate rather than a list: the anchor is part of what the auditor
+    approved, so the only decision left to this turn is the selection.
+    """
+
     value = _resolved_item(request, GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID)
     if not isinstance(value, Mapping):
-        raise WorkerContractError(
-            "Transaction-evidence context must supply one manifest object."
-        )
-    return _plain_json(value)
-
-
-def _manifest_candidate_matches(
-    manifest: Mapping[str, object], candidate_id: object
-) -> list[tuple[dict, dict]]:
-    """Return exact group/candidate matches from the supplied local manifest."""
-    matches: list[tuple[dict, dict]] = []
-    for raw_group in manifest.get("groups") or []:
-        if not isinstance(raw_group, Mapping):
-            continue
-        group = _plain_json(raw_group)
-        assert isinstance(group, dict)
-        for raw_candidate in group.get("candidates") or []:
-            if not isinstance(raw_candidate, Mapping):
-                continue
-            candidate = _plain_json(raw_candidate)
-            assert isinstance(candidate, dict)
-            if candidate.get("candidate_id") == candidate_id:
-                matches.append((group, candidate))
-    return matches
-
-
-def _manifest_candidate_ids(manifest: Mapping[str, object]) -> list[str]:
-    """List exact eligible IDs in stable order for actionable repair guidance."""
-    return sorted(
-        {
-            str(candidate.get("candidate_id") or "")
-            for group in manifest.get("groups") or []
-            if isinstance(group, Mapping)
-            for candidate in group.get("candidates") or []
-            if isinstance(candidate, Mapping) and candidate.get("candidate_id")
-        }
-    )
+        return {}
+    resolved = _plain_json(value)
+    return resolved if isinstance(resolved, dict) else {}
 
 
 def _generate_rcm_row(request: WorkerRequest) -> dict:
@@ -714,47 +625,27 @@ def _validate_generate_cycle_test(
     rcm_id: str,
     errors: list[str],
 ) -> dict | None:
-    manifest = _generate_transaction_manifest(request)
-    eligible_ids = _manifest_candidate_ids(manifest)
-    eligible_text = ", ".join(eligible_ids) if eligible_ids else "none"
-    if not eligible_ids:
+    """Validate one proposed cycle test against this engagement's rules.
+
+    The turn chooses almost nothing here. The roles, the join keys, the
+    assertions and the anchor were approved in the cycle rules review, so what
+    is left is which requirements the test answers and which rows it runs over
+    — and both of those are checked, not taken on trust.
+    """
+
+    candidate = _generate_cycle_candidate(request)
+    if not candidate or not candidate.get("ruleset_id"):
         errors.append(
-            f"{path} cycle_vouch is unavailable because transaction_evidence "
-            "supplies no prevalidated candidates; return an ordinary document "
-            "question test with source 'document', no kind, and steps containing "
-            "label, instruction, mode 'question', document_ids, and question. "
-            "Never return an empty tests array"
-        )
-        return None
-    candidate_id = value.get("candidate_id")
-    if not isinstance(candidate_id, str) or not candidate_id.strip():
-        errors.append(
-            f"{path}.candidate_id must copy exactly one supplied candidate ID; "
-            f"eligible IDs: {eligible_text}"
-        )
-        return None
-    matches = _manifest_candidate_matches(manifest, candidate_id)
-    if len(matches) != 1:
-        errors.append(
-            f"{path}.candidate_id '{candidate_id}' is not an exact prevalidated "
-            f"candidate; eligible IDs: {eligible_text}"
-        )
-        return None
-    group, selected = matches[0]
-    selection_reason = value.get("selection_reason")
-    if not isinstance(selection_reason, str) or not selection_reason.strip():
-        errors.append(f"{path}.selection_reason must be a non-empty string")
-        return None
-    selection = value.get("selection")
-    if not isinstance(selection, Mapping):
-        errors.append(
-            f"{path}.selection must be an object such as "
-            "{'mode':'evidence_linked'}"
+            f"{path} cycle_vouch is unavailable because this engagement has no "
+            "approved cycle ruleset; return an ordinary document question test "
+            "with source 'document', no kind, and steps containing label, "
+            "instruction, mode 'question', document_ids, and question. Never "
+            "return an empty tests array"
         )
         return None
     for field, text in (
         ("objective", str(value.get("objective") or "")),
-        ("selection_reason", selection_reason),
+        ("selection_reason", str(value.get("selection_reason") or "")),
     ):
         if _PARTIAL_CYCLE_COVERAGE.search(text):
             errors.append(
@@ -764,118 +655,42 @@ def _validate_generate_cycle_test(
                 "evidence supplied."
             )
             return None
-    requirement_refs = _plain_json(value.get("requirement_refs"))
-    rcm_row = _generate_rcm_row(request)
-    recipe_bindings = _plain_json(value.get("recipe_bindings"))
-    if not isinstance(recipe_bindings, list) or not recipe_bindings:
+    selection = value.get("selection")
+    if not isinstance(selection, Mapping):
         errors.append(
-            f"{path}.recipe_bindings must bind every recipe the referenced "
-            "control attributes cite, as "
-            "[{'recipe_id':..., 'bindings':{role: record_kind}}] chosen from "
-            "the manifest's eligible_bindings"
+            f"{path}.selection must be an object such as "
+            "{'mode':'evidence_linked'}"
         )
         return None
-    try:
-        comparisons = cycle_vouching.required_comparisons_for(
-            rcm_row=rcm_row,
-            requirement_refs=(
-                requirement_refs if isinstance(requirement_refs, list) else []
-            ),
-            recipe_bindings=recipe_bindings,
+    requirement_refs = _plain_json(value.get("requirement_refs"))
+    if not isinstance(requirement_refs, list) or not requirement_refs:
+        errors.append(
+            f"{path}.requirement_refs must name the '<RCM id>:<attribute key>' "
+            "requirements this procedure answers"
         )
-        assertions = cycle_vouching.compile_required_assertions(
-            comparisons=comparisons, group=group
-        )
-    except cycle_vouching.CycleSchemaError as error:
-        errors.append(f"{path} {error}")
         return None
-    if not assertions:
+    rcm_row = _generate_rcm_row(request)
+    comparisons = cycle_linking.required_comparisons_for(rcm_row, requirement_refs)
+    if not comparisons:
         errors.append(
             f"{path}.requirement_refs cite no transaction_cycle control "
-            "attribute of this row that carries a comparison recipe; reference "
-            "the exact '<RCM id>:<attribute key>' the procedure answers"
+            "attribute of this row that states a comparison; reference the "
+            "exact '<RCM id>:<attribute key>' the procedure answers"
         )
         return None
-    bound_kinds = {
-        str(kind)
-        for entry in recipe_bindings
-        if isinstance(entry, Mapping)
-        for kind in (entry.get("bindings") or {}).values()
-    }
-    # Only the record kinds the chosen shapes actually read become roles. The
-    # manifest offers every extracted kind so the binding has something to
-    # choose from; a role no assertion reads is coverage, not evidence.
-    roles = [
-        _plain_json(role)
-        for role in group.get("roles") or []
-        if isinstance(role, Mapping)
-        and str(role.get("record_kind") or "") in bound_kinds
-    ]
-    candidate = {
-        "source": "document",
-        "kind": "cycle_vouch",
-        "schema_version": cycle_vouching.SCHEMA_VERSION,
-        "rcm_id": rcm_id,
-        "registry": group.get("registry"),
-        "requirement_refs": requirement_refs,
-        "procedure_key": value.get("procedure_key"),
-        "definition": {
-            "population": {
-                "candidate_id": candidate_id,
-                "selection_reason": selection_reason.strip(),
-                "table": selected.get("table"),
-                "row_key": _plain_json(selected.get("row_key")),
-                "cycle_keys": _plain_json(selected.get("cycle_keys")),
-                "selection": _plain_json(selection),
-            },
-            "roles": roles,
-            "assertions": assertions,
-            "recipe_bindings": recipe_bindings,
-        },
-        "steps": [],
-    }
-    try:
-        validated = cycle_vouching.validate_cycle_test_semantics(
-            candidate, rcm_row=rcm_row, manifest=manifest
-        )
-        group = cycle_vouching.manifest_group_for_test(validated, manifest)
-        population = validated["definition"]["population"]
-        hydrated_candidate = next(
-            item
-            for item in group["candidates"]
-            if item["candidate_id"] == population["candidate_id"]
-        )
-        confirmation = (
-            cycle_vouching.selection_confirmation(hydrated_candidate)
-            if population["selection"].get("mode") == "evidence_linked"
-            else None
-        )
-        if confirmation is not None:
-            # The eligible reach exceeds the item cap, so the proposal carries
-            # the deterministic sample the auditor confirms or adjusts at
-            # approval. The confirmation travels with the test so the durable
-            # record stays distinguishable from a freely chosen sample.
-            population["selection"] = dict(confirmation["suggested_selection"])
-            validated = cycle_vouching.validate_cycle_test_semantics(
-                validated, rcm_row=rcm_row, manifest=manifest
-            )
-            validated["selection_confirmation"] = confirmation
-    except (cycle_vouching.CycleSchemaError, StopIteration) as error:
-        errors.append(f"{path} {error}")
-        return None
-    if not validated["definition"]["assertions"]:
-        errors.append(f"{path}.definition.assertions must not be empty")
     return {
         "source": "document",
         "kind": "cycle_vouch",
         "title": str(value.get("title") or "").strip(),
         "objective": str(value.get("objective") or "").strip(),
-        "registry": validated["registry"],
-        "requirement_refs": validated["requirement_refs"],
-        "procedure_key": validated["procedure_key"],
-        "definition": validated["definition"],
-        "context_manifest_sha256": str(manifest.get("manifest_sha256") or ""),
-        "selection_confirmation": validated.get("selection_confirmation"),
+        "rcm_id": rcm_id,
+        "requirement_refs": requirement_refs,
+        "procedure_key": str(value.get("procedure_key") or "").strip(),
+        "definition": {
+            "ruleset_id": str(candidate.get("ruleset_id") or ""),
+            "population": {"selection": _plain_json(selection)},
+        },
+        "steps": [],
     }
 
 
@@ -1333,8 +1148,8 @@ def validate_generate_proposal(
             if forbidden:
                 errors.append(
                     f"{path} cycle_vouch must not carry model-authored "
-                    f"'{forbidden[0]}'; local code hydrates registry, population, "
-                    "and roles from candidate_id"
+                    f"'{forbidden[0]}'; the roles, join keys and assertions come "
+                    "from the approved cycle rules"
                 )
             # What the response tried to cover, recorded before validation can
             # reject it. A cycle test refused for its own reason must not also
@@ -1349,12 +1164,13 @@ def validate_generate_proposal(
                 path, value, request=request, rcm_id=rcm_id, errors=errors
             )
             if cycle_test is not None:
-                population = cycle_test["definition"]["population"]
+                # One procedure over one population is one test. The population
+                # comes from the approved anchor, so two cycle tests of this row
+                # differ only by procedure key — and two with the same key would
+                # be the same test written twice.
                 identity = (
                     cycle_test["procedure_key"],
-                    population["table"],
-                    population["row_key"]["column"],
-                    population["row_key"]["identifier_kind"],
+                    cycle_test["definition"]["ruleset_id"],
                 )
                 if identity in cycle_identities:
                     errors.append(
@@ -1512,25 +1328,18 @@ def _missing_cycle_coverage(
     """
 
     try:
-        manifest = _generate_transaction_manifest(request)
         row = _generate_rcm_row(request)
     except WorkerContractError:
         return []
-    if not _manifest_candidate_ids(manifest):
+    candidate = _generate_cycle_candidate(request)
+    if not candidate or not candidate.get("ruleset_id"):
         return []
-    # An attribute whose cited shapes the evidence cannot answer is not a
-    # response defect and no rewrite will fix it: the recipes come from the
-    # row, the bindings from the manifest, and the turn has no third option.
-    # Demanding a cycle test for it spends the whole retry budget producing the
-    # same response. It is a real coverage gap — the stage reports it as one —
-    # but it belongs to planning or to extraction, not to this turn.
-    unanswerable = cycle_vouching.unanswerable_cycle_attributes(manifest, row)
     covered = {
         str(reference).split(":", 1)[-1]
         for test in tests
         if test.get("kind") == "cycle_vouch"
         for reference in test.get("requirement_refs") or []
-    } | (attempted or set()) | unanswerable
+    } | (attempted or set())
     missing = [
         str(attribute.get("key") or "")
         for attribute in row.get("control_attributes") or []
@@ -1568,14 +1377,14 @@ def run_generate_worker(
     if "cycle_vouch" not in allowed_variants:
         variant_gate += (
             "The Cycle Vouch section above does not apply to this unit. Do not "
-            "emit kind, candidate_id, selection, assertions, registry, or "
-            "definition. Return an ordinary data or document-question test as "
-            "allowed, and never return an empty tests array."
+            "emit kind, selection, assertions, or definition. Return an "
+            "ordinary data or document-question test as allowed, and never "
+            "return an empty tests array."
         )
     elif allowed_variants == ["cycle_vouch"]:
         variant_gate += (
-            "This is a Cycle Vouch-only unit. Use the exact narrowed Cycle Vouch "
-            "response shape and an exact supplied candidate_id."
+            "This is a Cycle Vouch-only unit. Use the exact narrowed Cycle "
+            "Vouch response shape."
         )
     system = GENERATE_SYSTEM + variant_gate
     conversation = None
@@ -1625,6 +1434,249 @@ GENERATE_WORKER = WorkerDefinition(
 
 WORKERS.register(GENERATE_WORKER)
 
+
+# --------------------------------------------------------------------------- #
+# cycle linkage proposal
+# --------------------------------------------------------------------------- #
+LINKAGE_WORKER_ID = "tests.cycle_linkage"
+CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
+
+LINKAGE_SYSTEM = f"""[agent:cycle_linkage]
+Describe how this engagement's documents relate, as rules an auditor can review.
+
+You are given the document types the engagement holds and the fields each one
+carries. Propose the cycle they form.
+
+roles name the positions in the cycle. A role is *not* a document type: it is a
+place in the flow that a type fills, which is what lets one cycle hold two of the
+same type — an original and a revised invoice, two counterparty confirmations.
+Give each role a short lower_snake_case name.
+
+anchor names where a cycle starts from a population row: the role and identifier
+field a row in the accounting records would match.
+
+join_keys say which document reaches which. Each names a field on one role that
+should equal a field on another. **Only ever an identifier field** — a reference
+that could tie two documents together. Never join on an amount or a date: two
+records sharing a value there is a coincidence, not a link, and joining on one
+would fuse unrelated transactions.
+
+assertions say what must then agree once the documents are linked. These are the
+audit tests: an amount that must match, a date that must not follow another, an
+approval that must be present.
+
+Propose only what the fields support. A rule naming a field a type does not carry
+cannot run, and a plausible rule that never runs is worse than an absent one —
+it reads as a passing test.
+
+Give every rule a short lower_snake_case id and a one-sentence rationale saying
+why it holds. The rationale is what an auditor reads when deciding whether to
+approve it, so state the reason, not the mechanics.
+
+{JSON_RULES}
+Keys:
+  cycle_label   short name for the cycle
+  roles         array of {{"name", "document_type", "cardinality": "one" | "many",
+                "required": true | false}}
+  anchor        {{"table", "column", "role", "field"}}
+  join_keys     array of {{"id", "left": {{"role", "field"}},
+                "right": {{"role", "field"}}, "rationale"}}
+  assertions    array of {{"id", "label", "left": {{"role", "field"}},
+                "right": {{"role", "field"}} or null, "operator", "tolerance",
+                "rationale"}}
+
+operator is one of: equal_exact, equal_normalized, numeric_within,
+date_on_or_before, date_within, present. Only `present` takes no right operand;
+every other operator needs one."""
+
+
+def _linkage_operand(raw: object, label: str) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise WorkerResponseValidationError(f"{label} must be an object.")
+    role = str(raw.get("role") or "").strip()
+    field = str(raw.get("field") or "").strip()
+    if not role or not field:
+        raise WorkerResponseValidationError(f"{label} needs a role and a field.")
+    return {"role": role, "field": field}
+
+
+def _linkage_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The linkage response must be an object.")
+    roles = []
+    for index, raw in enumerate(payload.get("roles") or []):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(f"roles[{index}] must be an object.")
+        roles.append({
+            "name": str(raw.get("name") or "").strip(),
+            "document_type": str(raw.get("document_type") or "").strip(),
+            "cardinality": str(raw.get("cardinality") or "one"),
+            "required": bool(raw.get("required", True)),
+        })
+    if not roles:
+        raise WorkerResponseValidationError("The response must name at least one role.")
+
+    join_keys = []
+    for index, raw in enumerate(payload.get("join_keys") or []):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(f"join_keys[{index}] must be an object.")
+        join_keys.append({
+            "id": str(raw.get("id") or "").strip(),
+            "left": _linkage_operand(raw.get("left"), f"join_keys[{index}].left"),
+            "right": _linkage_operand(raw.get("right"), f"join_keys[{index}].right"),
+            "match": "normalized_equal",
+            "rationale": str(raw.get("rationale") or "").strip(),
+        })
+
+    assertions = []
+    for index, raw in enumerate(payload.get("assertions") or []):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(f"assertions[{index}] must be an object.")
+        right = raw.get("right")
+        assertions.append({
+            "id": str(raw.get("id") or "").strip(),
+            "label": str(raw.get("label") or "").strip(),
+            "left": _linkage_operand(raw.get("left"), f"assertions[{index}].left"),
+            "right": (
+                _linkage_operand(right, f"assertions[{index}].right")
+                if right is not None
+                else None
+            ),
+            "operator": str(raw.get("operator") or "").strip(),
+            "tolerance": raw.get("tolerance"),
+            "rationale": str(raw.get("rationale") or "").strip(),
+        })
+    if not assertions:
+        raise WorkerResponseValidationError(
+            "The response must propose at least one assertion; a cycle that tests "
+            "nothing is not a cycle."
+        )
+
+    anchor = payload.get("anchor")
+    if not isinstance(anchor, Mapping):
+        raise WorkerResponseValidationError("The response must name an anchor.")
+    return {
+        "cycle_label": str(payload.get("cycle_label") or "").strip(),
+        "roles": roles,
+        "anchor": {
+            "table": str(anchor.get("table") or "").strip(),
+            "column": str(anchor.get("column") or "").strip(),
+            "role": str(anchor.get("role") or "").strip(),
+            "field": str(anchor.get("field") or "").strip(),
+        },
+        "join_keys": join_keys,
+        "assertions": assertions,
+    }
+
+
+def validate_linkage_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    """Check the proposal against the schemas it was shown.
+
+    The identifier rule is enforced here rather than left to the store because
+    it is the one mistake worth spending a repair turn on: a join key on an
+    amount reads perfectly and fuses every transaction sharing that amount.
+    """
+
+    schemas = {
+        str(item.get("document_type")): {
+            str(field.get("name")): field for field in item.get("fields") or []
+        }
+        for item in request.unit_input.get("schemas") or []
+    }
+    roles = {
+        str(role.get("name")): str(role.get("document_type"))
+        for role in proposal.get("roles") or []
+    }
+    for name, document_type in roles.items():
+        if document_type not in schemas:
+            raise WorkerResponseValidationError(
+                f"Role '{name}' names '{document_type}', which this engagement "
+                "has no schema for."
+            )
+
+    def field_of(operand: Mapping[str, Any], label: str) -> Mapping[str, Any]:
+        role = str(operand.get("role"))
+        if role not in roles:
+            raise WorkerResponseValidationError(f"{label} names unknown role '{role}'.")
+        field = schemas[roles[role]].get(str(operand.get("field")))
+        if field is None:
+            raise WorkerResponseValidationError(
+                f"{label} names field '{operand.get('field')}', which "
+                f"'{roles[role]}' does not carry."
+            )
+        return field
+
+    for item in proposal.get("join_keys") or []:
+        for side in ("left", "right"):
+            field = field_of(item[side], f"Join key '{item['id']}' {side}")
+            if str(field.get("role")) != "identifier":
+                raise WorkerResponseValidationError(
+                    f"Join key '{item['id']}' joins on '{field.get('name')}', which "
+                    f"is a {field.get('role')} field. Only identifier fields can "
+                    "join — two records sharing an amount is a coincidence, not a link."
+                )
+    for item in proposal.get("assertions") or []:
+        field_of(item["left"], f"Assertion '{item['id']}' left")
+        if item.get("right") is not None:
+            field_of(item["right"], f"Assertion '{item['id']}' right")
+    field_of(proposal["anchor"], "The anchor")
+    return proposal
+
+
+def run_linkage_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Send the engagement's schemas and ask how its documents relate."""
+
+    payload = {
+        "schemas": list(request.unit_input.get("schemas") or []),
+        "tables": list(request.unit_input.get("tables") or []),
+    }
+    user = json.dumps(payload, indent=1, default=str)
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "cycle_linkage",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(LINKAGE_SYSTEM, user, activity, attempt=attempt.number)
+
+
+LINKAGE_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="tests.cycle_linkage.response",
+    schema_hash=_sha256_text("tests-cycle-linkage-response:roles-joins-assertions"),
+    validator=_linkage_response_schema,
+)
+LINKAGE_WORKER = WorkerDefinition(
+    worker_id=LINKAGE_WORKER_ID,
+    prompt_hash=_sha256_text(LINKAGE_SYSTEM),
+    response_schema=LINKAGE_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the cycle linkage proposal against the supplied schemas."
+        ),
+    ),
+    implementation=run_linkage_worker,
+    semantic_validator=validate_linkage_proposal,
+)
+
+WORKERS.register(LINKAGE_WORKER)
 
 __all__ = [
     "DEFAULT_COMPARISON_METHOD",

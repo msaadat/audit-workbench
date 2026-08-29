@@ -426,7 +426,10 @@ onMounted(() => { void focusAssertion() })
         tabindex="-1"
       >
         <div class="check-head">
-          <strong>{{ test.definition?.assertions?.find(assertion => assertion.key === key)?.label ?? key }}</strong>
+          <!-- The assertion's own label lives on the approved ruleset. The
+               key is what the result was recorded under, and is what the
+               auditor can match back to the rules review. -->
+          <strong>{{ key }}</strong>
           <UiTestStatus :status="result.stale ? 'stale' : result.verdict" showLabel />
         </div>
         <p v-if="result.display" class="check-note">{{ result.display }}</p>
@@ -522,7 +525,7 @@ onMounted(() => { void focusAssertion() })
       <p v-if="cycleCoverage" class="coverage">
         Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
         <strong>{{ cycleCoverage.population_rows }}</strong> {{ pluralWord(cycleCoverage.population_rows, 'population row') }} from
-        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.row_key.column }}</code>.
+        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.column }}</code>.
         <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
         <span v-if="cycleCoverage.rows_with_evidence !== null">
           {{ plural(cycleCoverage.rows_with_evidence, 'row') }} {{ verb(cycleCoverage.rows_with_evidence, 'has', 'have') }} linked evidence and {{ plural(cycleCoverage.complete_cycles, 'complete cycle') }} {{ verb(cycleCoverage.complete_cycles, 'was', 'were') }} identified.

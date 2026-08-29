@@ -7,6 +7,10 @@ readiness, unit expansion, context, workers, and executors to the capability IDs
 declared here; they do not redefine the edges.
 
 ``documents.text_ready`` extracts document text deterministically,
+``documents.types_classified`` names what each document *is* from the closed
+global catalog, ``documents.schemas_sampled`` reads a small sample of each type
+and records the fields each sample carries, ``documents.schemas_induced`` unions
+those readings into one frozen schema per type,
 ``documents.analysis_chunks_ready`` maps each bounded source chunk through one
 model worker and persists a run-local proposal per chunk,
 ``documents.analysis_generated`` reduces those proposals into one durable
@@ -37,7 +41,13 @@ WORKFLOW_ID = "documents_workflow_v1"
 # consumes exactly what the previous one made durable.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.text_ready": (),
-    "documents.analysis_chunks_ready": ("documents.text_ready",),
+    "documents.types_classified": ("documents.text_ready",),
+    "documents.schemas_sampled": ("documents.types_classified",),
+    "documents.schemas_induced": ("documents.schemas_sampled",),
+    "documents.analysis_chunks_ready": (
+        "documents.text_ready",
+        "documents.schemas_induced",
+    ),
     "documents.analysis_generated": ("documents.analysis_chunks_ready",),
     "documents.analysis_reviewed": ("documents.analysis_generated",),
 }
@@ -47,13 +57,20 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
 # generated analysis.
 AUDIT_CAPABILITY_IDS: tuple[str, ...] = (
     "documents.text_ready",
+    "documents.types_classified",
+    "documents.schemas_sampled",
+    "documents.schemas_induced",
     "documents.analysis_chunks_ready",
     "documents.analysis_generated",
 )
 
 # "Analyze these documents" requests the generated outcome. Auditor review is
 # never requested on the agent's behalf.
-FULL_DOCUMENT_OUTCOMES = ["documents.analysis_generated"]
+FULL_DOCUMENT_OUTCOMES = [
+    "documents.types_classified",
+    "documents.schemas_induced",
+    "documents.analysis_generated",
+]
 
 # Goal-template routing to requested outcome sets.
 TEMPLATE_OUTCOMES: dict[str, list[str]] = {

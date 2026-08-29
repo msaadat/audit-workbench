@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-from .. import cycle_vouching, doc_tests, document_analysis, rcm_execution
+from .. import cycle_linking, cycle_vouching, doc_tests, document_analysis, rcm_execution
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import (
@@ -1107,6 +1107,12 @@ class AuditWorkflowExecution(ActionRunner):
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
+                    # The vocabulary a transaction-cycle attribute may address.
+                    # On the unit input rather than in the prompt because it is
+                    # per-workspace, and covered by the unit's own input hash so
+                    # a re-derived schema re-runs the matrix rather than leaving
+                    # a requirement pointing at a field that moved.
+                    "schema_catalog": cycle_linking.schema_catalog(self.ws),
                 },
                 activity={
                     "artifact_refs": ["planning:apm"],

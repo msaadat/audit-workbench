@@ -32,7 +32,6 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ... import cycle_vouching, document_analysis
-from ...cycle_registry import DEFAULT_REGISTRY, RegistryReference
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -49,15 +48,8 @@ from .model import (
 
 CHUNK_WORKER_ID = "documents.analysis_chunk"
 VISUAL_WORKER_ID = "documents.analysis_visual_page"
-VOUCHER_WORKER_ID = "documents.analysis_voucher"
 REDUCTION_WORKER_ID = "documents.analysis_reduction"
 
-# Voucher workers use a function call because their registry-backed extraction
-# contract benefits from provider-enforced enums and closed objects. Standard
-# documents return freeform Markdown inside a normal JSON response: tool-call
-# string fields on some providers are capped at 1,024 characters and flatten
-# Markdown newlines.
-VOUCHER_SUBMISSION_TOOL = "submit_document_voucher_analysis"
 
 DOCUMENT_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_IDENTITY_SOURCE_ID = "document_identity"
@@ -98,16 +90,6 @@ provider preserving newlines inside one long string:
 - Each paragraph, bullet, observation, rationale, and follow-up is limited to
   {NARRATIVE_FRAGMENT_MAX_CHARACTERS} characters. Use another section, paragraph,
   bullet, or note instead of truncating a thought.
-"""
-
-VOUCHER_AUDIT_NOTE_RULES = f"""
-audit_notes is an array of concrete observations. Each item has a short
-plain-text title plus observation, why_it_matters, and follow_up. Return an
-empty array only when there is genuinely no specific observation; local code
-then renders the standard no-observations statement. Every observation,
-rationale, and follow-up must cite the supplied source with a marker such as
-[C1]. Each generated string is limited to
-{NARRATIVE_FRAGMENT_MAX_CHARACTERS} characters.
 """
 
 
@@ -267,123 +249,8 @@ def _json_object(response: str) -> dict[str, Any]:
     return payload
 
 
-def _evidence_envelope_schema() -> dict[str, Any]:
-    """The one shape every extracted value travels in.
-
-    ``additionalProperties: False`` is the working part. Left open, a response
-    could carry ``citation`` beside ``value`` instead of inside it and still be
-    a syntactically valid tool call — which is exactly what the procurement run
-    produced fifteen times in one fragment, three attempts running. Declared
-    closed, the key has nowhere else to go.
-    """
-
-    return {
-        "type": "object",
-        "properties": {
-            "raw_value": {"type": "string", "minLength": 1},
-            "normalization_status": {"enum": ["normalized", "invalid"]},
-            "citation": {"type": "string", "minLength": 1},
-        },
-        "required": ["raw_value", "normalization_status", "citation"],
-        "additionalProperties": False,
-    }
-
-
-def _voucher_fragment_schema(pack_ids: Iterable[str]) -> dict[str, Any]:
-    """Declare record, identifier, and selector vocabularies as provider enums.
-
-    The registry already knows every legal ID; until now it only said so in
-    prose, and the strict validation ran after generation. A response that
-    abbreviated ``procure_to_pay.goods_receipt`` to ``goods_receipt`` was
-    therefore rejected three times rather than being unrepresentable once.
-
-    Enumerating ``group``, ``kind``, and ``attribute`` separately cannot express
-    which combinations a record kind actually offers — that stays with
-    ``_canonicalize_voucher_fragment``, which reads the record kind's own
-    available fields. What it does remove is the invented or abbreviated token,
-    which is the failure that survived repair.
-    """
-
-    packs = [DEFAULT_REGISTRY.pack(pack_id) for pack_id in pack_ids]
-    record_kinds = sorted(
-        {record_id for pack in packs for record_id in pack.record_kind_ids}
-    )
-    identifier_kinds = sorted(
-        {identifier_id for pack in packs for identifier_id in pack.identifier_kind_ids}
-    )
-    definitions = [
-        DEFAULT_REGISTRY.field_kinds[field_id]
-        for pack in packs
-        for field_id in pack.field_kind_ids
-    ]
-    envelope = _evidence_envelope_schema()
-    return {
-        "type": "object",
-        "properties": {
-            "record_kind": {"type": "string", "enum": record_kinds},
-            "classification_evidence": {
-                "type": "array",
-                "minItems": 1,
-                "items": {"type": "string", "minLength": 1},
-            },
-            "candidate_record_kinds": {
-                "type": "array",
-                "items": {"type": "string", "enum": record_kinds},
-            },
-            "review_reason": {"type": "string"},
-            "identifiers": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "kind": {"type": "string", "enum": identifier_kinds},
-                        "value": envelope,
-                    },
-                    "required": ["kind", "value"],
-                    "additionalProperties": False,
-                },
-            },
-            "fields": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "group": {
-                            "type": "string",
-                            "enum": sorted({item.group for item in definitions}),
-                        },
-                        "kind": {
-                            "type": "string",
-                            "enum": sorted({item.kind for item in definitions}),
-                        },
-                        "attribute": {
-                            "type": "string",
-                            "enum": sorted(
-                                {
-                                    attribute.id
-                                    for item in definitions
-                                    for attribute in item.attributes
-                                }
-                            ),
-                        },
-                        "entry": {"type": "integer", "minimum": 0},
-                        "value": envelope,
-                    },
-                    "required": ["group", "kind", "attribute", "value"],
-                    # Local code attaches registry, chunk_id, and page_span, and
-                    # the prompt says not to derive them. Closing the object is
-                    # what makes that instruction enforceable rather than hopeful.
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["record_kind", "classification_evidence", "identifiers", "fields"],
-        "additionalProperties": False,
-    }
-
-
 def _narrative_submission_properties() -> dict[str, Any]:
-    """Return the provider-safe narrative shape used by the voucher worker.
+    """Return the provider-safe narrative shape the text workers share.
 
     No individual generated string may reach the provider's observed 1,024
     character boundary.  Arrays remove that boundary from the complete
@@ -577,8 +444,7 @@ def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
     """Assemble provider-safe fragments into stable application Markdown.
 
     Freeform markdown fields remain readable for the standard document worker
-    and existing proposal sidecars. The voucher tool schema does not expose
-    them, so live voucher responses take the structured path.
+    and for proposal sidecars written before the structured shape existed.
     """
 
     structured = "summary_sections" in payload or "audit_notes" in payload
@@ -693,147 +559,12 @@ def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
     return summary, audit_notes, "structured_blocks_v1"
 
 
-def render_voucher_audit_notes(notes: Iterable[Mapping[str, Any]]) -> str:
-    """Render validated voucher observations without another model turn."""
-
-    note_parts = ["## Audit notes"]
-    for index, raw in enumerate(notes):
-        note_parts.append(
-            f"### {index + 1}. {str(raw.get('title') or '').strip()}\n\n"
-            f"{str(raw.get('observation') or '').strip()}\n\n"
-            f"**Why it matters:** {str(raw.get('why_it_matters') or '').strip()}\n\n"
-            f"**Follow-up:** {str(raw.get('follow_up') or '').strip()}"
-        )
-    if len(note_parts) == 1:
-        note_parts.append(
-            "No specific drafting or control-design observations were identified "
-            "from the supplied text. Operating effectiveness was not assessed."
-        )
-    return "\n\n".join(note_parts)
-
-
-def merge_voucher_audit_notes(analyses: Iterable[Mapping[str, Any]]) -> str:
-    """Consolidate voucher notes locally, preserving legacy proposal sidecars."""
-
-    items = list(analyses)
-    if all(isinstance(item.get("audit_notes"), list) for item in items):
-        unique: dict[str, dict] = {}
-        for analysis in items:
-            for note in analysis.get("audit_notes") or []:
-                if not isinstance(note, Mapping):
-                    continue
-                normalized = {key: str(note.get(key) or "").strip() for key in (
-                    "title",
-                    "observation",
-                    "why_it_matters",
-                    "follow_up",
-                )}
-                identity = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
-                unique.setdefault(identity, normalized)
-        return render_voucher_audit_notes(unique[key] for key in sorted(unique))
-
-    # A restart may reuse pre-redesign sidecars containing only Markdown. Keep
-    # their notes without asking the provider to recreate them.
-    blocks: list[str] = []
-    for analysis in items:
-        block = str(analysis.get("audit_notes_markdown") or "").strip()
-        if block.startswith("## Audit notes"):
-            block = block[len("## Audit notes") :].strip()
-        if block and block not in blocks:
-            blocks.append(block)
-    return "## Audit notes\n\n" + (
-        "\n\n---\n\n".join(blocks)
-        if blocks
-        else "No specific drafting or control-design observations were identified "
-        "from the supplied text. Operating effectiveness was not assessed."
-    )
-
-
-def _voucher_audit_notes(
-    payload: Mapping[str, Any],
-) -> tuple[str, list[dict] | None, str]:
-    """Validate the voucher-only narrative contract and assemble its Markdown.
-
-    Older compatible callers and provider responses may still carry
-    ``audit_notes_markdown``. The live tool schema exposes only the structured
-    ``audit_notes`` collection.
-    """
-
-    if "audit_notes" not in payload:
-        return str(payload.get("audit_notes_markdown") or ""), None, "legacy_markdown"
-    notes = payload.get("audit_notes")
-    if not isinstance(notes, list):
-        raise WorkerResponseValidationError("`audit_notes` must be an array")
-    if len(notes) > NARRATIVE_MAX_AUDIT_NOTES:
-        raise WorkerResponseValidationError(
-            f"`audit_notes` has more than {NARRATIVE_MAX_AUDIT_NOTES} items"
-        )
-    supplied_ids = _supplied_citation_ids(payload)
-    canonical = _citation_case_map(supplied_ids)
-    guidance = _marker_guidance(supplied_ids)
-    validated: list[dict] = []
-    cited_text: list[str] = []
-    # Every citation problem in the response is collected and raised together.
-    # Reported one at a time, a note missing markers in all three of its fields
-    # costs three round-trips to discover — more than the repair allowance —
-    # so the allowance is spent learning the shape of the error rather than
-    # fixing it. The policy already funds up to `max_validation_errors` per
-    # turn; this fills that budget instead of leaving it unused.
-    errors: list[str] = []
-    for index, raw in enumerate(notes):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(
-                f"`audit_notes[{index}]` must be an object"
-            )
-        item = {
-            "title": _narrative_fragment(
-                raw.get("title"), f"audit_notes[{index}].title", heading=True
-            ),
-            "observation": _narrative_fragment(
-                raw.get("observation"), f"audit_notes[{index}].observation"
-            ),
-            "why_it_matters": _narrative_fragment(
-                raw.get("why_it_matters"),
-                f"audit_notes[{index}].why_it_matters",
-            ),
-            "follow_up": _narrative_fragment(
-                raw.get("follow_up"), f"audit_notes[{index}].follow_up"
-            ),
-        }
-        for key in ("observation", "why_it_matters", "follow_up"):
-            item[key] = _normalize_citation_markers(item[key], canonical)
-            if not _citation_marker_ids(item[key]):
-                errors.append(
-                    f"`audit_notes[{index}].{key}` must cite a supplied "
-                    f"citation marker — {guidance}"
-                )
-            cited_text.append(item[key])
-        validated.append(item)
-    unknown = sorted(_citation_marker_ids("\n".join(cited_text)) - set(supplied_ids))
-    if unknown:
-        errors.append(
-            "audit-note citation marker(s) have no supplied citation: "
-            + ", ".join(f"[{value}]" for value in unknown)
-            + f" — {guidance}"
-        )
-    if errors:
-        raise WorkerResponseValidationError(errors)
-    return (
-        render_voucher_audit_notes(validated),
-        validated,
-        "structured_voucher_notes_v1",
-    )
-
-
 def _validate_surviving_narrative_citations(
     proposal: Mapping[str, Any], validated: Mapping[str, Any]
 ) -> None:
     """Reject markers whose source excerpts were removed by exact validation."""
 
-    if proposal.get("_narrative_contract") not in {
-        "structured_blocks_v1",
-        "structured_voucher_notes_v1",
-    }:
+    if proposal.get("_narrative_contract") != "structured_blocks_v1":
         return
     text = "\n".join(
         (
@@ -856,19 +587,11 @@ def _citation_submission_tool(
     name: str,
     *,
     description: str,
-    voucher: bool = False,
-    pack_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Return the provider-enforced shape shared by text document workers."""
 
-    narrative = _narrative_submission_properties()
-    if voucher:
-        # A voucher summary is a deterministic projection of the validated
-        # reduction. Asking the provider for the same facts a second time adds
-        # tokens and repair modes without adding evidence.
-        narrative.pop("summary_sections", None)
     properties: dict[str, Any] = {
-        **narrative,
+        **_narrative_submission_properties(),
         "citations": {
             "type": "array",
             "minItems": 1,
@@ -896,40 +619,7 @@ def _citation_submission_tool(
             },
         },
     }
-    required = ["audit_notes", "citations"] if voucher else [
-        "summary_sections",
-        "audit_notes",
-        "citations",
-    ]
-    if voucher:
-        # Registry and fragments retain their deeper, registry-aware validation
-        # below — which combination of group, kind, and attribute a record kind
-        # offers is not something JSON Schema can state. Everything that *is*
-        # expressible is stated here, because a vocabulary the provider enforces
-        # costs nothing at generation time and a vocabulary only the validator
-        # knows costs a whole repair budget per document.
-        selectable = sorted(pack_ids) or sorted(DEFAULT_REGISTRY.packs)
-        properties.update(
-            {
-                # Only the pack selection is asked for. Version and definition
-                # hash are ours to supply, and a schema that demanded them back
-                # made a transcription slip in a 64-character hash cost a repair
-                # turn without adding any evidence.
-                "registry": {
-                    "type": "object",
-                    "properties": {
-                        "pack_id": {"type": "string", "enum": selectable},
-                    },
-                    "required": ["pack_id"],
-                    "additionalProperties": False,
-                },
-                "record_fragments": {
-                    "type": "array",
-                    "items": _voucher_fragment_schema(selectable),
-                },
-            }
-        )
-        required.extend(("registry", "record_fragments"))
+    required = ["summary_sections", "audit_notes", "citations"]
     return {
         "type": "function",
         "function": {
@@ -989,7 +679,7 @@ def _repair_conversation(
     A repair used to be a fresh single-turn request with the rejected arguments
     pasted into the user message as quoted text. Every provider call runs at
     temperature 0 on a first attempt, so that request re-derived the tokens it
-    was meant to correct: two voucher repairs in the procurement run returned
+    was meant to correct: two repairs in the procurement run returned
     arguments byte-identical to the response being repaired, and the document
     failed having spent three calls on one answer.
 
@@ -1161,1012 +851,6 @@ def run_chunk_worker(
         activity,
         attempt=attempt.number,
     )
-
-
-# --------------------------------------------------------------------------- #
-# documents.analysis_voucher
-#
-# The transaction-evidence profile. It reads the same bounded chunk the standard
-# map worker reads and returns cited audit notes plus registry-backed
-# `record_fragments`; the summary is derived after deterministic reduction. Every
-# extracted fact carries a citation id, and durable record identities are
-# deliberately deferred to that reduction.
-# --------------------------------------------------------------------------- #
-def _field_selectors(field_ids: Iterable[str]) -> list[str]:
-    """Render registered field kinds as the exact selectors a response must use.
-
-    ``group.kind.attribute|attribute`` is the form the response actually needs.
-    The raw pack JSON expressed the same information as two lists the model had
-    to join by hand — namespaced ids under each record kind, group/short-kind
-    under each field kind — and every first-attempt failure observed in the
-    procurement run was a field the record genuinely states, named through a
-    selector the record kind does not offer. This rendering is shared by the
-    prompt and by the repair message so both name the vocabulary identically.
-    """
-
-    return sorted(
-        f"{definition.group}.{definition.kind}."
-        + "|".join(attribute.id for attribute in definition.attributes)
-        for definition in (
-            DEFAULT_REGISTRY.field_kinds[field_id] for field_id in field_ids
-        )
-    )
-
-
-def _interpretive_selectors(field_ids: Iterable[str]) -> list[str]:
-    """Interpretive attributes, listed apart from the selectors themselves.
-
-    Marking them inline — ``role~`` — put a syntax character inside the very
-    string a response has to copy, and responses copied it: ``role~`` arrived as
-    the attribute in two of five documents on one run, surviving a repair. A
-    selector list has to be copyable verbatim, so the distinction goes on its own
-    line.
-    """
-
-    return sorted(
-        f"{definition.group}.{definition.kind}.{attribute.id}"
-        for definition in (
-            DEFAULT_REGISTRY.field_kinds[field_id] for field_id in field_ids
-        )
-        for attribute in definition.attributes
-        if not attribute.verbatim
-    )
-
-
-def _pack_descriptor(pack_id: str) -> str:
-    registry = DEFAULT_REGISTRY
-    pack = registry.pack(pack_id)
-    reference = json.dumps(
-        registry.reference(pack_id).to_dict(), sort_keys=True, separators=(",", ":")
-    )
-    bindable = [
-        registry.record_kinds[record_id]
-        for record_id in pack.record_kind_ids
-        if registry.record_kinds[record_id].bindable
-    ]
-    shared = (
-        set.intersection(*(set(record.available_field_kinds) for record in bindable))
-        if bindable
-        else set()
-    )
-    # Printed as `definition=`, not `registry=`: the response field is named
-    # `registry` and carries the pack id alone, so labelling this line with that
-    # name invited the model to copy the whole object back. The hash stays in the
-    # prompt text because that is what makes the staleness interlock exact — a
-    # pack definition change moves this text, the prompt hash, and with it the
-    # execution identity that governs proposal reuse.
-    lines = [f"PACK {pack.id} (v{pack.version}) definition={reference}"]
-    for policy, label in (("transaction", "linking"), ("non_linking", "entity")):
-        kinds = [
-            identifier_id
-            for identifier_id in pack.identifier_kind_ids
-            if registry.identifier_kinds[identifier_id].edge_policy == policy
-        ]
-        if kinds:
-            lines.append(f"  {label} identifier kinds: {', '.join(kinds)}")
-    if shared:
-        lines.append(
-            "  fields available on every record kind below: "
-            + ", ".join(_field_selectors(shared))
-        )
-    interpretive = _interpretive_selectors(pack.field_kind_ids)
-    if interpretive:
-        lines.append(
-            "  interpretive attributes, which may use your own wording rather "
-            "than a quote: " + ", ".join(interpretive)
-        )
-    if "common.party.counterparty" in pack.field_kind_ids:
-        # Every other selector is self-describing from its name. This one names
-        # a choice: which of the parties the record prints is the external
-        # party it transacts with, as opposed to the people who handled it.
-        # Downstream comparisons treat it as single-valued, so a second entry
-        # makes the record ambiguous rather than better described.
-        lines.append(
-            "  parties.counterparty is the single external party this record "
-            "transacts with — the supplier a purchase order is placed on, the "
-            "vendor a requisition proposes, the payee of a voucher. Supply at "
-            "most one entry, and record everyone else the document names "
-            "(requesters, approvers, contacts, departments) under parties.name "
-            "with their role. Omit it where the record names no external party."
-        )
-    for record_id in pack.record_kind_ids:
-        record = registry.record_kinds[record_id]
-        if not record.bindable:
-            lines.append(
-                f"  {record.id} — not bindable; use only when the record cannot be "
-                "classified, and then supply candidate_record_kinds and "
-                "review_reason; no fields"
-            )
-            continue
-        extra = _field_selectors(set(record.available_field_kinds) - shared)
-        lines.append(
-            f"  {record.id} — primary identifier kinds: "
-            + ", ".join(record.primary_identifier_kinds)
-            + ("; also " + ", ".join(extra) if extra else "")
-        )
-    return "\n".join(lines)
-
-
-_VOUCHER_REGISTRY_DESCRIPTORS = "\n".join(
-    _pack_descriptor(str(pack["id"])) for pack in DEFAULT_REGISTRY.metadata()["packs"]
-)
-VOUCHER_SYSTEM = f"""[agent:document_analysis_voucher]
-Analyze the supplied chunk as transaction evidence — a voucher, invoice,
-purchase order, goods-received note, receipt, approval record, or similar.
-Report only what this chunk states. Do not infer a value from a filename, from
-metadata, or from what a document of this type usually contains.
-
-Submit audit_notes, citations, registry, and record_fragments through the
-required function tool exactly once. Do not write a summary: local code derives
-it from the validated structured evidence after all chunks settle.
-
-audit_notes records observations visible on the face of the document — a
-missing signature or date, an unreferenced attachment, an internal
-inconsistency, an alteration, an incomplete field. State the observation and why
-it matters. Do not conclude that a control operated or failed; that determination
-is made elsewhere by comparing this record against the accounting population.
-If there is no such observation, return an empty audit_notes array.
-
-Every audit note must carry at least one citation marker in each of its
-observation, why_it_matters, and follow_up fields — all three, including a
-follow-up that reads as an action rather than a claim. A marker is a citation's
-own `id` in square brackets, written exactly as you declared it in citations:
-the citation with id `c1` is cited as [c1], never [C1] or [1]. The registered
-evidence schema is authoritative for the neutral facts the voucher summary will
-display; do not duplicate those facts as audit notes.
-
-citations is an array of objects with id, page, and a short exact `excerpt` copied
-verbatim from this chunk. Every excerpt must appear character for character in
-the chunk text — do not join separate lines into one excerpt, tidy spacing, or
-paraphrase. An excerpt that is not found is a rejected response, not a dropped
-citation.
-
-An excerpt points at the part of the record a fact came from, so quote the line
-that carries it and no more: at most {CITATION_EXCERPT_LINES} lines and
-{CITATION_EXCERPT_CHARACTERS} characters. Quoting the whole chunk once and
-citing it everywhere anchors nothing and is rejected. Emit as many citations as
-you have distinct facts.
-
-Select exactly one registered pack from the descriptors below and name it as
-`registry.pack_id` at the response root. That id is all that is asked for — the
-pack version and definition hash are attached locally, so do not copy them
-back. You may use only record, identifier, field, group, kind, and attribute IDs
-declared by that selected pack. Never invent or abbreviate an ID.
-
-record_fragments is an array. Each fragment describes one candidate record in
-this chunk and contains:
-- record_kind, classification_evidence (one or more citation IDs), optional
-  candidate_record_kinds and review_reason for common.other;
-- identifiers: {{kind, value: {{raw_value, normalization_status, citation}}}}; and
-- fields: {{group, kind, attribute, entry,
-  value: {{raw_value, normalization_status, citation}}}}.
-
-Return an empty record_fragments array when this chunk carries no transaction
-record at all. Never invent a record to fill the array.
-
-Usually one physical source record produces one fragment. Identifiers that the
-record references belong on that physical record's fragment; a reference label
-or number alone does not justify a separate fragment for the referenced record.
-Emit multiple fragments only when the chunk actually contains multiple
-standalone records or distinct values for the physical record's same primary
-identifier kind. Classify the physical record from its overall purpose and
-operative fields or status, not from reference labels alone.
-
-An identifier value is the code or reference number the record prints, such as
-`V1022` or `PO2024004`. A display name is never an identifier value.
-
-Report **every** code the record prints under an identifier kind, including the
-codes of records this one only refers to — a purchase order number on an
-invoice, a goods receipt number on a voucher. Identifiers are what link records
-to each other, so a reference left in a description, a note, or an attachment
-reference is lost. `attachments.attachment.reference` is for an item the record
-encloses, never for a cycle reference.
-
-A name and its code are two facts, not a choice. `Requested by Ethan Smith
-(1041)` is a `parties.name` field with `role` `Requested by` *and* a
-`common.employee_id` identifier; `Proposed vendor OfficeSupply Co. (V1022)` is a
-`parties.name` field *and* a `common.vendor_id` identifier.
-
-Every value is one envelope: `raw_value` copied with the source spelling,
-`citation`, and `normalization_status`. Local code computes the normalized value
-itself, so send neither `value` nor `normalization_error`, and do not correct
-transaction typos.
-
-`raw_value` and its cited excerpt must be the same text: quote the line the value
-sits on, not the heading above it or the line beside it. Where the record wraps
-one value across two lines, either quote both lines or quote the line you took
-the value from. The descriptors below list the interpretive attributes this rule
-does not apply to — a party's `role`, an approval's `role` and `decision`, an
-attachment's `kind` and `present` are your reading of what the record shows, so
-they may use a word the record does not print; cite the excerpt behind the
-reading.
-
-`normalization_status` is exactly `normalized` or `invalid` — no other word.
-Use `normalized` for a value the record states well enough for that field's type
-to read: a real date in a date attribute, a figure in a number attribute. Use
-`invalid` only when the record itself prints something malformed, which keeps the
-defect visible as evidence. Do not report `invalid` for a value that is fine but
-belongs in a different field.
-
-For a field, copy `group`, the short `kind`, and one `attribute` from the
-selectors listed under the record kind you chose — the descriptors below give
-them in `group.kind.attribute|attribute` form. Do not put a namespaced field id
-in `kind`, and do not select `raw_value` as the attribute: it lives inside the
-envelope. One fact carries one attribute, so a record's total in a stated
-currency is two facts on the same field kind: `amounts.total.value` and
-`amounts.total.currency`.
-
-`entry` numbers the occurrence, from 0, when a record carries a field kind more
-than once — three approvals, or a vendor and a buyer. Every attribute of one
-occurrence must share its `entry`, which is what keeps an approver with the date
-and role printed beside it. Omit `entry` when a field kind occurs once. Two
-different values of one attribute are always two occurrences: three party names
-are entries 0, 1, and 2, never three facts on entry 0.
-
-Local code attaches the exact selected registry reference, supplied chunk_id,
-and inclusive two-integer page_span to every fragment. Do not derive those
-context-envelope fields. Every classification, identifier, and field must cite
-this chunk. If two distinct values occur for the selected record kind's same
-primary identifier kind, emit separate fragments; never blend them. A
-continuation without a primary identifier may still emit a fragment so local
-reduction can attach it only when the exact evidence is unambiguous.
-
-If the source still contains a neutral fact for which the selected record kind
-has no declared field, omit it. Never relabel an unsupported fact as a different
-registered field merely to satisfy the schema: a description is not a status,
-and a date is not an amount. Audit notes are for review observations, not a
-second unstructured evidence channel.
-
-REGISTERED PACK DESCRIPTORS
-Fields read `group.kind.attribute|attribute`. Copy a `group`, `kind`, and one
-`attribute` exactly as written below.
-{_VOUCHER_REGISTRY_DESCRIPTORS}
-
-{VOUCHER_AUDIT_NOTE_RULES}
-{JSON_RULES}"""
-
-
-def _voucher_response_schema(response: str) -> Mapping[str, Any]:
-    payload = _json_object(response)
-    if payload.get("_submission_error"):
-        raise WorkerResponseValidationError(str(payload["_submission_error"]))
-    citations = payload.get("citations")
-    if citations is None:
-        citations = []
-    if not isinstance(citations, list) or any(
-        not isinstance(item, dict) for item in citations
-    ):
-        raise WorkerResponseValidationError("`citations` must be an array of objects")
-    fragments = payload.get("record_fragments")
-    if fragments is None:
-        fragments = []
-    # An empty array is a valid answer: a document routed to this profile that
-    # carries no transaction record should say so. Demanding at least one
-    # fragment demanded a fabricated one.
-    if not isinstance(fragments, list) or any(
-        not isinstance(item, dict) for item in fragments
-    ):
-        raise WorkerResponseValidationError(
-            "`record_fragments` must be an array of objects"
-        )
-    audit_notes, structured_notes, narrative_contract = _voucher_audit_notes(payload)
-    return {
-        # Filled deterministically from the reduced evidence at the document
-        # boundary. Retaining the key keeps old sidecar/read models compatible.
-        "summary_markdown": "",
-        "audit_notes_markdown": audit_notes,
-        "audit_notes": structured_notes,
-        "citations": citations,
-        "registry": payload.get("registry"),
-        "record_fragments": fragments,
-        "_narrative_contract": narrative_contract,
-    }
-
-
-def _resolved_record_kind(pack_id: str, supplied: str) -> str:
-    """Resolve an abbreviated record kind against the pack that must declare it.
-
-    Record kinds are namespaced (``procure_to_pay.goods_receipt``) while field
-    selectors use the short kind, and a response that used the short form for
-    both was rejected three times over a prefix it was never free to choose:
-    the pack is already fixed by the selected registry reference. Resolution is
-    by unique suffix within that one pack, so an ambiguous or unknown name still
-    falls through to the strict registry lookup and is reported as before.
-    """
-
-    record_ids = DEFAULT_REGISTRY.pack(pack_id).record_kind_ids
-    if supplied in record_ids:
-        return supplied
-    matches = [
-        record_id
-        for record_id in record_ids
-        if record_id.rsplit(".", 1)[-1] == supplied
-    ]
-    return matches[0] if len(matches) == 1 else supplied
-
-
-def _repaired_evidence_envelope(fact: dict[str, Any]) -> dict[str, Any]:
-    """Move a citation the response hung beside its value back inside it.
-
-    ``{group, kind, attribute, citation, value: {raw_value, ...}}`` is a near
-    miss for the declared envelope, and one the strict validator can only report
-    as every field in the fragment citing ``''`` — fifteen such errors in one
-    procurement fragment, repeated identically through both repair turns. The
-    citation is present and unambiguous; which key it arrived under says nothing
-    about the record. Nothing here weakens grounding: the id still has to
-    resolve to a surviving citation, and its excerpt still has to contain the
-    value. A stray top-level citation is dropped either way, because no reader
-    of a durable fragment looks for one there.
-    """
-
-    envelope = fact.get("value")
-    hoisted = str(fact.pop("citation", "") or "").strip()
-    if (
-        isinstance(envelope, dict)
-        and hoisted
-        and not str(envelope.get("citation") or "").strip()
-    ):
-        envelope["citation"] = hoisted
-    return fact
-
-
-def _canonicalize_voucher_fragment(
-    raw: object,
-    *,
-    index: int,
-    reference: RegistryReference,
-    chunk: Mapping[str, Any],
-    errors: list[str],
-) -> dict[str, Any]:
-    """Own deterministic envelope and registered field-selector mechanics locally.
-
-    Selector problems are appended to ``errors`` rather than raised, so one
-    repair turn is told about every field it has to change. Reporting only the
-    first offending field left a response with two bad selectors unrepairable
-    within the single permitted repair attempt.
-    """
-
-    fragment = dict(_plain_json(raw))
-    pack_id = str(reference.pack_id)
-    record_kind = _resolved_record_kind(pack_id, str(fragment.get("record_kind") or ""))
-    fragment["record_kind"] = record_kind
-    record = DEFAULT_REGISTRY.record_kind(pack_id, record_kind)
-    pack = DEFAULT_REGISTRY.pack(pack_id)
-    # A non-object identifier is passed through untouched so the strict fragment
-    # validator still reports it; repairing a shape is not licence to drop one.
-    fragment["identifiers"] = [
-        _repaired_evidence_envelope(dict(identifier))
-        if isinstance(identifier, Mapping)
-        else identifier
-        for identifier in fragment.get("identifiers") or []
-    ]
-    allowed_fields = set(record.available_field_kinds)
-    allowed_description = (
-        ", ".join(_field_selectors(record.available_field_kinds)) or "none"
-    )
-    fields = []
-    for field_index, raw_fact in enumerate(fragment.get("fields") or []):
-        fact = _repaired_evidence_envelope(dict(_plain_json(raw_fact)))
-        label = f"record_fragments[{index}].fields[{field_index}]"
-        supplied_group = str(fact.get("group") or "")
-        supplied_kind = str(fact.get("kind") or "")
-        definition = DEFAULT_REGISTRY.field_kinds.get(supplied_kind)
-        if definition is not None and definition.id in pack.field_kind_ids:
-            fact["group"] = definition.group
-            fact["kind"] = definition.kind
-        else:
-            # Resolve a canonical group/short-kind selector. Unknown or cross-pack
-            # selectors deliberately continue to the strict fragment validator.
-            try:
-                definition = DEFAULT_REGISTRY.field_kind(
-                    pack_id,
-                    supplied_group,
-                    supplied_kind,
-                )
-            except ValueError:
-                definition = None
-        if definition is None:
-            errors.append(
-                f"{label} uses unregistered selector "
-                f"'{supplied_group}.{supplied_kind}' for pack '{pack_id}'; "
-                f"record kind '{record_kind}' allows: {allowed_description}"
-            )
-            continue
-        if definition.id not in allowed_fields:
-            errors.append(
-                f"{label} selects '{definition.group}.{definition.kind}', which is "
-                f"not available on record kind '{record_kind}'; allowed fields: "
-                f"{allowed_description}"
-            )
-            continue
-        attributes = {attribute.id for attribute in definition.attributes}
-        if fact.get("attribute") == "raw_value" and "value" in attributes:
-            fact["attribute"] = "value"
-        if str(fact.get("attribute") or "") not in attributes:
-            errors.append(
-                f"{label} selects attribute '{fact.get('attribute')}', which "
-                f"{definition.group}.{definition.kind} does not declare; it "
-                f"declares: {'|'.join(sorted(attributes))}"
-            )
-            continue
-        fields.append(fact)
-    pages = [int(page) for page in chunk.get("pages") or []]
-    fragment["registry"] = reference.to_dict()
-    fragment["chunk_id"] = str(chunk.get("id") or "")
-    fragment["page_span"] = [min(pages), max(pages)]
-    fragment["fields"] = fields
-    return fragment
-
-
-def _collapsed(value: object) -> str:
-    return " ".join(str(value or "").split()).casefold()
-
-
-# A printed reference code. Dates are removed from the text first rather than
-# filtered per token, because a token scan splits ``29-Apr-2024`` into a fragment
-# that no longer reads as a date. A bare four-digit year is excluded for the same
-# reason: prose legitimately contains one, and it identifies nothing.
-_DATE_LIKE_RE = re.compile(
-    r"\d{1,2}\s*[-/ ]\s*[A-Za-z]{3,9}\s*[-/ ]\s*\d{2,4}"
-    r"|\d{4}-\d{1,2}-\d{1,2}"
-    r"|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}"
-    r"|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}"
-)
-_REFERENCE_TOKEN_RE = re.compile(r"[\w][\w\-/]{3,}")
-_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
-_PARENTHESISED_RE = re.compile(r"\(([^)]{2,})\)")
-# Prose fields have no business holding a transaction reference, and a party's
-# name is routinely printed beside its code.
-_REFERENCE_BEARING_FIELDS = {
-    ("descriptions", "description"),
-    ("notes", "note"),
-    ("attachments", "attachment"),
-}
-
-
-def _reference_tokens(text: str) -> list[str]:
-    """Code-like tokens in ``text``, excluding anything that reads as a date."""
-
-    without_dates = _DATE_LIKE_RE.sub(" ", str(text or ""))
-    tokens = []
-    for token in _REFERENCE_TOKEN_RE.findall(without_dates):
-        if sum(character.isdigit() for character in token) < 2:
-            continue
-        if _YEAR_RE.fullmatch(token):
-            continue
-        tokens.append(token)
-    return tokens
-
-
-def _citation_shape_errors(citations: list[Mapping[str, Any]]) -> list[str]:
-    problems = []
-    for citation in citations:
-        excerpt = str(citation.get("excerpt") or "")
-        lines = len(excerpt.splitlines())
-        if len(excerpt) > CITATION_EXCERPT_CHARACTERS or lines > CITATION_EXCERPT_LINES:
-            problems.append(
-                f"citation '{citation.get('id')}' quotes {len(excerpt)} characters "
-                f"over {lines} line(s); an excerpt must be at most "
-                f"{CITATION_EXCERPT_CHARACTERS} characters and "
-                f"{CITATION_EXCERPT_LINES} line(s), so that it points at the part "
-                "of the record the fact came from"
-            )
-    return problems
-
-
-def _attribute_is_verbatim(
-    pack_id: str, group: str, kind: str, attribute: str
-) -> bool:
-    try:
-        definition = DEFAULT_REGISTRY.field_kind(pack_id, group, kind)
-    except ValueError:
-        return True
-    return next(
-        (item.verbatim for item in definition.attributes if item.id == attribute),
-        True,
-    )
-
-
-def _apply_citation_aliases(
-    fragment: dict[str, Any], aliases: Mapping[str, str]
-) -> None:
-    """Point evidence at the surviving id when its citation was a duplicate."""
-
-    if not aliases:
-        return
-    fragment["classification_evidence"] = [
-        aliases.get(str(evidence or ""), evidence)
-        for evidence in fragment.get("classification_evidence") or []
-    ]
-    for collection in ("identifiers", "fields"):
-        for item in fragment.get(collection) or []:
-            envelope = item.get("value")
-            if isinstance(envelope, dict):
-                citation = str(envelope.get("citation") or "")
-                if citation in aliases:
-                    envelope["citation"] = aliases[citation]
-
-
-def _ungrounded_evidence(
-    fragment: Mapping[str, Any],
-    index: int,
-    excerpts: Mapping[str, str],
-    *,
-    pack_id: str,
-    chunk_text: str,
-) -> list[str]:
-    """Require each value to sit inside the excerpt it names, not merely cite one.
-
-    Checking only that the citation id exists let a field anchor itself to any
-    surviving excerpt, so a value read from one line could be attributed to
-    another. Whitespace is collapsed because the excerpt is already proven
-    verbatim against the chunk and OCR line wrapping is not a grounding defect.
-
-    Interpretive attributes are exempt: a party's ``role`` or an approval's
-    ``decision`` is what the worker concludes the record shows, and a goods
-    receipt naming ``GLOBAL BANK`` as the buyer never prints the word "buyer".
-    """
-
-    problems: list[str] = []
-    for evidence in fragment.get("classification_evidence") or []:
-        if str(evidence or "") not in excerpts:
-            problems.append(
-                f"record_fragments[{index}].classification_evidence names citation "
-                f"'{evidence}', which this response does not supply"
-            )
-    for collection, selector in (("identifiers", "kind"), ("fields", "attribute")):
-        for item_index, item in enumerate(fragment.get(collection) or []):
-            envelope = item.get("value") or {}
-            citation = str(envelope.get("citation") or "")
-            label = f"record_fragments[{index}].{collection}[{item_index}]"
-            if citation not in excerpts:
-                problems.append(
-                    f"{label} cites '{citation}', which this response does not supply"
-                )
-                continue
-            if collection == "fields" and not _attribute_is_verbatim(
-                pack_id,
-                str(item.get("group") or ""),
-                str(item.get("kind") or ""),
-                str(item.get("attribute") or ""),
-            ):
-                continue
-            problem = _value_grounding_error(
-                envelope.get("raw_value"),
-                excerpts[citation],
-                chunk_text,
-                label=label,
-                selector=str(item.get(selector) or ""),
-                citation=citation,
-            )
-            if problem:
-                problems.append(problem)
-    return problems
-
-
-def _spans(needle: str, haystack: str) -> list[tuple[int, int]]:
-    return [
-        (match.start(), match.end())
-        for match in re.finditer(re.escape(needle), haystack)
-    ]
-
-
-def _value_grounding_error(
-    raw_value: object,
-    excerpt: str,
-    chunk_text: str,
-    *,
-    label: str,
-    selector: str,
-    citation: str,
-) -> str | None:
-    """Require the citation to point at where the value sits in the chunk.
-
-    Containment in either direction is not enough. A value the source wrapped
-    mid-phrase overlaps the line quoted beside it without either enclosing the
-    other — ``Business requirement Procurement of ... to support`` against
-    ``Procurement of ... approved operational requirements.`` — and rejecting
-    that threw away a correct extraction over the choice of granularity. Locating
-    both in the chunk and requiring their spans to overlap says exactly what is
-    meant, and still rejects a heading quoted from the line above the value.
-    """
-
-    raw = _collapsed(raw_value)
-    if not raw:
-        return None
-    text = _collapsed(chunk_text)
-    raw_spans = _spans(raw, text)
-    if not raw_spans:
-        return (
-            f"{label} reports raw_value {json.dumps(str(raw_value))} for {selector}, "
-            "which does not appear in the supplied chunk; copy the value exactly as "
-            "the record prints it"
-        )
-    excerpt_spans = _spans(_collapsed(excerpt), text)
-    if any(
-        left[0] < right[1] and right[0] < left[1]
-        for left in raw_spans
-        for right in excerpt_spans
-    ):
-        return None
-    return (
-        f"{label} reports raw_value {json.dumps(str(raw_value))} for {selector} but "
-        f"its citation '{citation}' excerpt is {json.dumps(excerpt)}, which is a "
-        "different part of the record; cite the line the value sits on"
-    )
-
-
-def _misplaced_reference_errors(
-    fragment: Mapping[str, Any],
-    index: int,
-    excerpts: Mapping[str, str],
-    *,
-    pack_id: str,
-) -> list[str]:
-    """Keep printed reference codes in ``identifiers``, where linking reads them.
-
-    Two losses observed on the same run, both invisible downstream: an invoice's
-    purchase-order and goods-receipt references filed as attachment references,
-    and a requisition's party codes reported only as part of the excerpt behind a
-    party name. Neither is indexed, so the cycle graph split into disconnected
-    components while every affected document still looked complete.
-    """
-
-    reported = {
-        _collapsed((item.get("value") or {}).get("raw_value"))
-        for item in fragment.get("identifiers") or []
-    }
-    kinds = ", ".join(DEFAULT_REGISTRY.pack(pack_id).identifier_kind_ids)
-    problems: list[str] = []
-    seen: set[str] = set()
-    for item_index, fact in enumerate(fragment.get("fields") or []):
-        selector = (str(fact.get("group") or ""), str(fact.get("kind") or ""))
-        envelope = fact.get("value") or {}
-        if selector in _REFERENCE_BEARING_FIELDS:
-            found = _reference_tokens(envelope.get("raw_value"))
-            where = "its value"
-        elif selector == ("parties", "name"):
-            # ``Ethan Smith (1041)`` — the code beside the name is the linkable
-            # half, and reporting only the name discards it.
-            found = [
-                token
-                for group in _PARENTHESISED_RE.findall(
-                    excerpts.get(str(envelope.get("citation") or "")) or ""
-                )
-                for token in _reference_tokens(group)
-            ]
-            where = "the excerpt it cites"
-        else:
-            continue
-        for token in found:
-            if _collapsed(token) in reported or token in seen:
-                continue
-            seen.add(token)
-            problems.append(
-                f"record_fragments[{index}].fields[{item_index}] leaves the reference "
-                f"{json.dumps(token)} in {where} without reporting it under any "
-                f"identifier kind; a code the record prints belongs in identifiers, "
-                f"which is what links records to each other. Available kinds: {kinds}"
-            )
-    return problems
-
-
-def _normalization_mismatches(
-    supplied_fragment: Mapping[str, Any],
-    normalized_fragment: Mapping[str, Any],
-    index: int,
-) -> list[str]:
-    """Reject a value claimed well-formed that this field's type cannot read.
-
-    A value the record genuinely prints malformed stays as ``invalid`` evidence —
-    that is the point of the envelope. What is rejected is the combination of a
-    ``normalized`` claim with a local failure, because that is how a description
-    ends up in a status and a date in an amount.
-    """
-
-    problems: list[str] = []
-    for collection in ("identifiers", "fields"):
-        pairs = zip(
-            supplied_fragment.get(collection) or [],
-            normalized_fragment.get(collection) or [],
-        )
-        for item_index, (supplied, normalized) in enumerate(pairs):
-            claimed = _collapsed((supplied.get("value") or {}).get("normalization_status"))
-            envelope = normalized.get("value") or {}
-            label = f"record_fragments[{index}].{collection}[{item_index}]"
-            if claimed not in cycle_vouching.NORMALIZATION_STATUSES:
-                problems.append(
-                    f"{label}.value.normalization_status is "
-                    f"{json.dumps(str((supplied.get('value') or {}).get('normalization_status') or ''))}; "
-                    "it must be exactly 'normalized' or 'invalid'"
-                )
-                continue
-            if claimed == "normalized" and envelope.get("normalization_status") == "invalid":
-                selector = (
-                    f"{normalized.get('group')}.{normalized.get('kind')}."
-                    f"{normalized.get('attribute')}"
-                    if collection == "fields"
-                    else str(normalized.get("kind") or "")
-                )
-                problems.append(
-                    f"{label} claims a normalized {selector} value, but "
-                    f"{json.dumps(str(envelope.get('raw_value') or ''))} cannot be "
-                    f"normalized for it ({envelope.get('normalization_error')}); use "
-                    "the correct registered field, or report the source value as "
-                    "invalid when the record itself is malformed"
-                )
-    return problems
-
-
-def validate_voucher_proposal(
-    proposal: Mapping[str, Any],
-    request: WorkerRequest,
-) -> Mapping[str, Any]:
-    """Ground voucher audit notes and every structured field in the source.
-
-    Voucher summaries are absent here and rendered only after deterministic
-    record reduction. Notes and facts still share the exact-excerpt citation
-    gate, so an ungrounded value is rejected rather than committed.
-    """
-    chunk = _supplied_chunk(request)
-    document = _resolved_item(request, DOCUMENT_IDENTITY_SOURCE_ID)
-    source_sha1 = str(document.get("source_sha1") or "")
-    if not source_sha1:
-        raise WorkerContractError("The supplied document identity has no source hash.")
-    notes = str(proposal.get("audit_notes_markdown") or "").strip()
-    if not notes:
-        raise WorkerResponseValidationError(
-            "Required analysis field was blank: audit_notes_markdown"
-        )
-    citations = document_analysis.validate_citations(
-        proposal.get("citations") or [], [dict(chunk)], source_sha1
-    )
-    if not citations:
-        raise WorkerResponseValidationError(
-            "citations contained no exact excerpt from the supplied source chunk"
-        )
-    validated = {
-        "summary_markdown": "",
-        "audit_notes_markdown": notes,
-        "citations": citations,
-    }
-    _validate_surviving_narrative_citations(proposal, validated)
-    excerpts = {
-        str(value.get("id") or ""): str(value.get("excerpt") or "")
-        for value in validated["citations"]
-    }
-    surviving_by_content = {
-        (int(value.get("page") or 0), str(value.get("excerpt") or "")): str(
-            value.get("id") or ""
-        )
-        for value in validated["citations"]
-    }
-    errors: list[str] = []
-    # Exact citation validation drops an excerpt that is not in the chunk. Here
-    # that would silently remove the anchor a structured fact depends on, so the
-    # whole fragment is rejected with the bad excerpt named.
-    #
-    # It also drops a citation that merely repeats an earlier one's excerpt. That
-    # is a duplicate, not a bad quote, so the second id is remapped onto the
-    # surviving one instead of being reported as text the page does not contain —
-    # guidance no response could act on, because the excerpt was already correct.
-    aliases: dict[str, str] = {}
-    for supplied in proposal.get("citations") or []:
-        if not isinstance(supplied, Mapping):
-            continue
-        supplied_id = str(supplied.get("id") or "")
-        if supplied_id in excerpts:
-            continue
-        try:
-            page = int(supplied.get("page"))
-        except (TypeError, ValueError):
-            page = 0
-        duplicate = surviving_by_content.get(
-            (page, str(supplied.get("excerpt") or "").strip())
-        )
-        if duplicate:
-            aliases[supplied_id] = duplicate
-            continue
-        errors.append(
-            f"citation '{supplied_id}' excerpt "
-            f"{json.dumps(str(supplied.get('excerpt') or ''))} does not appear "
-            "verbatim on the supplied page; copy it character for character "
-            "from the chunk text"
-        )
-    errors.extend(_citation_shape_errors(validated["citations"]))
-    try:
-        # The response names the pack; its version and definition hash are bound
-        # from this registry rather than transcribed back to us.
-        reference = DEFAULT_REGISTRY.bind_reference(
-            _plain_json(proposal.get("registry"))
-        )
-    except ValueError as error:
-        raise WorkerResponseValidationError(str(error)) from error
-    candidate_packs = [
-        str(value) for value in document.get("cycle_pack_ids") or [] if str(value)
-    ]
-    if candidate_packs and reference.pack_id not in candidate_packs:
-        errors.append(
-            f"pack '{reference.pack_id}' is not one this engagement uses; select one "
-            f"of: {', '.join(sorted(candidate_packs))}"
-        )
-    fragments = []
-    for index, raw in enumerate(proposal.get("record_fragments") or []):
-        try:
-            fragment = _canonicalize_voucher_fragment(
-                raw,
-                index=index,
-                reference=reference,
-                chunk=chunk,
-                errors=errors,
-            )
-        except ValueError as error:
-            errors.append(f"record_fragments[{index}]: {error}")
-            continue
-        _apply_citation_aliases(fragment, aliases)
-        errors.extend(
-            _ungrounded_evidence(
-                fragment,
-                index,
-                excerpts,
-                pack_id=reference.pack_id,
-                chunk_text=str(chunk.get("text") or ""),
-            )
-        )
-        errors.extend(
-            _misplaced_reference_errors(
-                fragment, index, excerpts, pack_id=reference.pack_id
-            )
-        )
-        try:
-            normalized_fragment = cycle_vouching.normalize_record_fragment(fragment)
-        except (cycle_vouching.CycleSchemaError, ValueError) as error:
-            errors.append(f"record_fragments[{index}]: {error}")
-            continue
-        errors.extend(
-            _normalization_mismatches(fragment, normalized_fragment, index)
-        )
-        fragments.append(normalized_fragment)
-    if errors:
-        raise WorkerResponseValidationError("; ".join(errors))
-    # Citation ids supplied independently by parallel chunks routinely repeat
-    # (every chunk starts at C1). Namespace them only after exact grounding so
-    # the durable document-level citation catalog and reduced record evidence
-    # remain unambiguous without making the provider coordinate across chunks.
-    chunk_id = str(chunk.get("id") or "")
-    citation_aliases = {
-        str(item.get("id") or ""): f"{chunk_id}-{str(item.get('id') or '')}"
-        for item in validated["citations"]
-        if str(item.get("id") or "")
-    }
-    for fragment in fragments:
-        _apply_citation_aliases(fragment, citation_aliases)
-    citations = [
-        {**dict(item), "id": citation_aliases.get(str(item.get("id") or ""), str(item.get("id") or ""))}
-        for item in validated["citations"]
-    ]
-    structured_notes = (
-        [
-            {
-                **dict(note),
-                **{
-                    key: _replace_citation_markers(str(note.get(key) or ""), citation_aliases)
-                    for key in ("observation", "why_it_matters", "follow_up")
-                },
-            }
-            for note in proposal.get("audit_notes") or []
-            if isinstance(note, Mapping)
-        ]
-        # The distinction being drawn is absent versus present-and-empty, so a
-        # frozen proposal's tuple has to read as present. Matching only ``list``
-        # made every structured note the model wrote arrive as no notes at all.
-        if isinstance(proposal.get("audit_notes"), (list, tuple))
-        else None
-    )
-    return {
-        "chunk_id": chunk_id,
-        "document_id": str(document.get("document_id") or ""),
-        "pages": [int(page) for page in chunk.get("pages") or []],
-        "modality": "text",
-        "analysis_profile": "voucher",
-        "derived_text_markdown": "",
-        "summary_markdown": "",
-        "audit_notes_markdown": _replace_citation_markers(
-            validated["audit_notes_markdown"], citation_aliases
-        ),
-        "audit_notes": structured_notes,
-        "citations": citations,
-        "registry": reference.to_dict(),
-        "record_fragments": fragments,
-    }
-
-
-def run_voucher_worker(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-) -> str:
-    """Transform only the supplied chunk and metadata into one model request."""
-
-    chunk = _supplied_chunk(request)
-    document = _resolved_item(request, DOCUMENT_IDENTITY_SOURCE_ID)
-    # No filename, title, or note: every value in the structured result must come
-    # from the record's own text, and a voucher pack's filename routinely carries
-    # the transaction identifiers the worker is asked to extract.
-    candidate_packs = [
-        str(value) for value in document.get("cycle_pack_ids") or [] if str(value)
-    ]
-    # Which pack a record belongs to is a property of the engagement, not a
-    # judgement about one chunk. When the workspace has already committed to one,
-    # say so rather than offering the model a choice it cannot inform.
-    constraint = (
-        "SELECT PACK: " + ", ".join(sorted(candidate_packs)) + "\n"
-        if candidate_packs
-        else ""
-    )
-    user = (
-        f"SOURCE SHA: {document.get('source_sha1')}\nCHUNK ID: {chunk['id']}\n"
-        f"PAGE: {chunk['page']}\n"
-        f"CHARACTER RANGE: {chunk['start_character']}..{chunk['end_character']}\n"
-        "DOCUMENT OPENING CHUNK: "
-        f"{'yes' if int(chunk['start_character']) == 0 else 'no'}\n"
-        f"{constraint}\n"
-        f"RAW SOURCE CHUNK:\n{chunk['text']}"
-    )
-    instruction = (
-        "That submission was rejected. Call the required function again with a "
-        "complete corrected submission that fixes every point above. Keep every "
-        "identifier, field, and citation from your previous submission that no "
-        "point names — a repair that also drops correct evidence is a worse "
-        "answer, not a safer one. Where a fact has no allowed field on the "
-        "record kind you selected, omit it rather than substituting an unrelated "
-        "field. `record_kind` is the full namespaced "
-        "ID from the descriptors, and every value's `citation` belongs inside "
-        "its `value` envelope, never beside it."
-    )
-    conversation = _repair_conversation(
-        user,
-        tool=VOUCHER_SUBMISSION_TOOL,
-        attempt=attempt,
-        instruction=instruction,
-    )
-    if attempt.is_repair and conversation is None:
-        user += "\n\n" + _repair_note(attempt, instruction)
-    activity = dict(request.activity)
-    activity.setdefault(
-        "context_metrics",
-        {
-            "worker_kind": "document_voucher_analysis",
-            "total_characters": request.context.supplied_size.characters,
-            "estimated_tokens": request.context.supplied_size.estimated_tokens,
-            "selected_items": request.context.supplied_size.items,
-        },
-    )
-    message = gateway.complete(
-        VOUCHER_SYSTEM,
-        user,
-        activity,
-        attempt=attempt.number,
-        tools=[
-            _citation_submission_tool(
-                VOUCHER_SUBMISSION_TOOL,
-                description=(
-                    "Submit the grounded voucher analysis. Citations must use the "
-                    "exact `excerpt` field; registry and record fragments are "
-                    "validated against the selected pack after submission."
-                ),
-                voucher=True,
-                pack_ids=candidate_packs,
-            )
-        ],
-        tool_choice={
-            "type": "function",
-            "function": {"name": VOUCHER_SUBMISSION_TOOL},
-        },
-        conversation=conversation,
-        return_message=True,
-    )
-    return _submission_response(message, VOUCHER_SUBMISSION_TOOL)
 
 
 # --------------------------------------------------------------------------- #
@@ -2516,34 +1200,6 @@ VISUAL_WORKER = WorkerDefinition(
     semantic_validator=validate_visual_proposal,
 )
 
-VOUCHER_RESPONSE_SCHEMA = WorkerResponseSchema(
-    schema_id="documents.analysis_voucher.response",
-    schema_hash=_sha256_text(
-        "document-voucher-response:v4:structured-notes-registry-record-fragments"
-    ),
-    validator=_voucher_response_schema,
-)
-VOUCHER_WORKER = WorkerDefinition(
-    worker_id=VOUCHER_WORKER_ID,
-    prompt_hash=_sha256_text(VOUCHER_SYSTEM),
-    response_schema=VOUCHER_RESPONSE_SCHEMA,
-    repair_policy=WorkerRepairPolicy(
-        # Two, not one. This profile checks several independent things — selector,
-        # attribute, citation shape, citation exactness, value grounding, typed
-        # normalization, reference placement — and a response that gets one wrong
-        # commonly gets a second wrong somewhere else, or introduces one while
-        # fixing another. A single repair turned recoverable responses into failed
-        # documents; the cost of the extra turn is one call on a document that
-        # would otherwise have produced nothing.
-        max_repair_attempts=2,
-        guidance_hash=_sha256_text(
-            "Repair the voucher analysis against the supplied chunk text, its "
-            "exact excerpts, and the selected registered cycle pack."
-        ),
-    ),
-    implementation=run_voucher_worker,
-    semantic_validator=validate_voucher_proposal,
-)
 
 REDUCTION_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.analysis_reduction.response",
@@ -2566,9 +1222,736 @@ REDUCTION_WORKER = WorkerDefinition(
 
 WORKERS.register(CHUNK_WORKER)
 WORKERS.register(VISUAL_WORKER)
-WORKERS.register(VOUCHER_WORKER)
 WORKERS.register(REDUCTION_WORKER)
 
+
+# --------------------------------------------------------------------------- #
+# document type classification
+# --------------------------------------------------------------------------- #
+CLASSIFY_WORKER_ID = "documents.classification"
+DOCUMENT_CLASSIFICATION_SOURCE_ID = "document_classification"
+
+
+def _classification_system(catalog: str) -> str:
+    return f"""[agent:document_classification]
+Name what the supplied document *is*, choosing one id from the catalog below.
+
+Classify by form, not by subject. A purchase order attached to an email is a
+purchase_order; the email is correspondence. A document about a payroll dispute
+is not a payslip.
+
+Where direction is ambiguous, resolve it from the entity being audited: a demand
+for payment addressed *to* the entity is a vendor_invoice; one issued *by* the
+entity is a sales_invoice. If the text alone cannot settle it, answer other and
+say why rather than guessing.
+
+A document carrying several records — a scanned bundle, a voucher pack — takes
+the id of its principal record.
+
+You are shown the opening page only. That is where a document states what it is;
+do not infer a type from what a document of some type usually goes on to contain.
+
+{JSON_RULES}
+Keys:
+  document_type   one id from the catalog, exactly as written
+  document_type_other  short name for the document, required only when the id is
+                  other, omitted otherwise
+  confidence      "high" | "medium" | "low"
+  rationale       one sentence naming what in the text decided it
+
+Catalog:
+{catalog}"""
+
+
+def _classification_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The classification response must be an object.")
+    document_type = str(payload.get("document_type") or "").strip()
+    if not document_type:
+        raise WorkerResponseValidationError("The response must name a document_type.")
+    confidence = str(payload.get("confidence") or "").strip()
+    if confidence not in {"high", "medium", "low"}:
+        raise WorkerResponseValidationError(
+            "confidence must be one of high, medium, low."
+        )
+    other = str(payload.get("document_type_other") or "").strip()
+    return {
+        "document_type": document_type,
+        "document_type_other": other,
+        "confidence": confidence,
+        "rationale": str(payload.get("rationale") or "").strip(),
+    }
+
+
+def validate_classification_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    """Check the label against the catalog this unit was actually offered.
+
+    The selectable ids travel on the unit input rather than being read from the
+    global catalog here, because a workspace's coined types are part of what the
+    prompt offered. Validating against a different list than the model was shown
+    would reject a correct answer.
+    """
+
+    selectable = {
+        str(value) for value in (request.unit_input.get("selectable_types") or [])
+    }
+    document_type = str(proposal.get("document_type") or "")
+    if selectable and document_type not in selectable:
+        raise WorkerResponseValidationError(
+            f"'{document_type}' is not one of the offered document types."
+        )
+    if document_type == "other" and not str(proposal.get("document_type_other") or ""):
+        raise WorkerResponseValidationError(
+            "An 'other' classification must name what the document is."
+        )
+    if document_type != "other" and proposal.get("document_type_other"):
+        # A named id plus free text is two answers. Dropping the text keeps the
+        # stored assignment single-valued rather than leaving a second opinion
+        # attached to it.
+        proposal = {**proposal, "document_type_other": ""}
+    return proposal
+
+
+def run_classification_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Send one document's opening page and the offered catalog."""
+
+    payload = {
+        "document_id": str(request.unit_input.get("document_id") or ""),
+        "title": str(request.unit_input.get("title") or ""),
+        "text": str(request.unit_input.get("text") or ""),
+    }
+    user = json.dumps(payload, indent=1, default=str)
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_classification",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    catalog = str(request.unit_input.get("catalog") or "")
+    return gateway.complete(
+        _classification_system(catalog), user, activity, attempt=attempt.number
+    )
+
+
+CLASSIFY_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.classification.response",
+    schema_hash=_sha256_text(
+        "documents-classification-response:document_type-confidence-rationale"
+    ),
+    validator=_classification_response_schema,
+)
+CLASSIFY_WORKER = WorkerDefinition(
+    worker_id=CLASSIFY_WORKER_ID,
+    # The catalog is per-workspace, so it cannot be part of a module-level prompt
+    # hash. What is hashed is the instruction text around it; the offered ids
+    # travel on the unit input and are covered by the unit's own input hash,
+    # which is what re-expands a unit when a coined type changes the catalog.
+    prompt_hash=_sha256_text(_classification_system("<catalog>")),
+    response_schema=CLASSIFY_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the document classification against the offered catalog ids."
+        ),
+    ),
+    implementation=run_classification_worker,
+    semantic_validator=validate_classification_proposal,
+)
+
+WORKERS.register(CLASSIFY_WORKER)
+
+
+# --------------------------------------------------------------------------- #
+# document schema induction
+# --------------------------------------------------------------------------- #
+INDUCE_WORKER_ID = "documents.schema_sample"
+RECONCILE_WORKER_ID = "documents.schema_reconcile"
+DOCUMENT_SCHEMA_SOURCE_ID = "document_schema_sample"
+
+_FIELD_ROLES = ("identifier", "party", "attribute", "control")
+_VALUE_TYPES = ("identifier", "date", "number", "text", "boolean")
+
+INDUCE_SYSTEM = f"""[agent:document_schema_sample]
+List the fields this document carries, as a schema for documents of its type.
+
+You are describing the *form*, not this copy. Name a field for every fact the
+document states that another document of the same type would also state. Do not
+invent a field the document does not carry, and do not omit one because it looks
+unimportant.
+
+Field names are lower_snake_case and describe the fact, not this instance:
+invoice_number, not inv_1042. Prefer a name another reader would reach for —
+total_amount over amt — because a rule written against this schema has to name
+the same field on a second document type to compare them.
+
+role says what the field is *for*, and is the only part with consequences:
+  identifier — a reference that could tie this document to another one. A
+               document number, an order number, a contract number. Its
+               value_type must be identifier.
+  party      — a named person, company, or department.
+  control    — evidence that someone performed a step: an approval, a signature,
+               a checked box, an attachment reference.
+  attribute  — anything else the document states.
+
+verbatim is false only when the value does not appear in the document as text —
+the *role* a named party plays, the *decision* a signature block represents.
+Anything printed on the page is verbatim.
+
+confidence is high when the field is plainly part of this document's form,
+medium when it may be incidental to this copy, low when you are unsure it
+belongs to the type at all.
+
+{JSON_RULES}
+Keys:
+  fields array of {{"name": lower_snake_case,
+    "role": {" | ".join(_FIELD_ROLES)},
+    "value_type": {" | ".join(_VALUE_TYPES)},
+    "cardinality": "one" | "many",
+    "verbatim": true | false,
+    "confidence": "high" | "medium" | "low",
+    "label": short human-readable name}}"""
+
+RECONCILE_SYSTEM = f"""[agent:document_schema_reconcile]
+Two readings of the same document type named one field as two different things.
+Choose which is right, for each field named below.
+
+Choose only among the values offered. Do not rename the field, do not add a
+field, and do not remove one: everything else about the schema is already
+settled and only these disagreements are yours to resolve.
+
+Prefer the reading that would hold across documents of this type rather than the
+one that fits a single copy. A field is an identifier only if it could tie this
+document to another one.
+
+{JSON_RULES}
+Keys:
+  resolutions array of {{"name": the field name as given,
+    "attribute": "value_type" | "role",
+    "value": one of the offered values,
+    "reason": one sentence}}"""
+
+
+def _schema_field(raw: object, label: str) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise WorkerResponseValidationError(f"{label} must be an object.")
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        raise WorkerResponseValidationError(f"{label} needs a name.")
+    role = str(raw.get("role") or "").strip()
+    if role not in _FIELD_ROLES:
+        raise WorkerResponseValidationError(f"{label} has an unsupported role '{role}'.")
+    value_type = str(raw.get("value_type") or "").strip()
+    if value_type not in _VALUE_TYPES:
+        raise WorkerResponseValidationError(
+            f"{label} has an unsupported value_type '{value_type}'."
+        )
+    cardinality = str(raw.get("cardinality") or "one").strip()
+    if cardinality not in {"one", "many"}:
+        raise WorkerResponseValidationError(
+            f"{label} has an unsupported cardinality '{cardinality}'."
+        )
+    confidence = str(raw.get("confidence") or "medium").strip()
+    if confidence not in {"high", "medium", "low"}:
+        raise WorkerResponseValidationError(
+            f"{label} has an unsupported confidence '{confidence}'."
+        )
+    verbatim = raw.get("verbatim", True)
+    if not isinstance(verbatim, bool):
+        raise WorkerResponseValidationError(f"{label} needs a boolean verbatim.")
+    return {
+        "name": name,
+        "role": role,
+        "value_type": value_type,
+        "cardinality": cardinality,
+        "verbatim": verbatim,
+        "confidence": confidence,
+        "label": str(raw.get("label") or "").strip(),
+    }
+
+
+def _induce_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The schema response must be an object.")
+    raw_fields = payload.get("fields")
+    if not isinstance(raw_fields, list) or not raw_fields:
+        raise WorkerResponseValidationError("The response must list at least one field.")
+    fields = [
+        _schema_field(item, f"fields[{index}]") for index, item in enumerate(raw_fields)
+    ]
+    names = [field["name"] for field in fields]
+    if len(names) != len(set(names)):
+        raise WorkerResponseValidationError("A schema cannot repeat a field name.")
+    return {"fields": fields}
+
+
+def validate_schema_sample_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    """Hold the identifier invariant the schema store also enforces.
+
+    An identifier field typed as a number would compare "0042" against "42"
+    under numeric rules and silently split or merge a cycle. Repairing it here
+    costs one turn; discovering it at freeze time costs the whole induction.
+    """
+
+    offending = [
+        field["name"]
+        for field in proposal.get("fields") or []
+        if field.get("role") == "identifier" and field.get("value_type") != "identifier"
+    ]
+    if offending:
+        raise WorkerResponseValidationError(
+            f"Identifier field '{offending[0]}' must have value_type 'identifier'."
+        )
+    return proposal
+
+
+def run_schema_sample_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Read one sample document and describe the fields its type carries."""
+
+    payload = {
+        "document_type": str(request.unit_input.get("document_type") or ""),
+        "document_id": str(request.unit_input.get("document_id") or ""),
+        "title": str(request.unit_input.get("title") or ""),
+        "text": str(request.unit_input.get("text") or ""),
+    }
+    user = json.dumps(payload, indent=1, default=str)
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_schema_sample",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(INDUCE_SYSTEM, user, activity, attempt=attempt.number)
+
+
+def _reconcile_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The reconciliation response must be an object.")
+    raw = payload.get("resolutions")
+    if not isinstance(raw, list) or not raw:
+        raise WorkerResponseValidationError("The response must resolve every conflict.")
+    resolutions = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise WorkerResponseValidationError(f"resolutions[{index}] must be an object.")
+        attribute = str(item.get("attribute") or "")
+        if attribute not in {"value_type", "role"}:
+            raise WorkerResponseValidationError(
+                f"resolutions[{index}] names an unsupported attribute '{attribute}'."
+            )
+        resolutions.append({
+            "name": str(item.get("name") or "").strip(),
+            "attribute": attribute,
+            "value": str(item.get("value") or "").strip(),
+            "reason": str(item.get("reason") or "").strip(),
+        })
+    return {"resolutions": resolutions}
+
+
+def validate_schema_reconcile_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    """Every conflict settled, and only ever with a value that was on offer.
+
+    A resolution naming some third value would be a rewrite of the schema rather
+    than a choice between two readings of it, and neither sample would support
+    it.
+    """
+
+    offered = {
+        (str(item.get("name")), str(item.get("attribute"))): {
+            str(value) for value in item.get("values") or []
+        }
+        for item in request.unit_input.get("conflicts") or []
+    }
+    resolved = {
+        (str(item.get("name")), str(item.get("attribute")))
+        for item in proposal.get("resolutions") or []
+    }
+    missing = sorted(offered.keys() - resolved)
+    if missing:
+        raise WorkerResponseValidationError(
+            f"Conflict on '{missing[0][0]}' ({missing[0][1]}) was left unresolved."
+        )
+    for item in proposal.get("resolutions") or []:
+        key = (str(item.get("name")), str(item.get("attribute")))
+        if key not in offered:
+            raise WorkerResponseValidationError(
+                f"'{key[0]}' ({key[1]}) is not one of the conflicts to resolve."
+            )
+        if str(item.get("value")) not in offered[key]:
+            raise WorkerResponseValidationError(
+                f"'{item.get('value')}' is not one of the readings offered for "
+                f"'{key[0]}' ({key[1]})."
+            )
+    return proposal
+
+
+def run_schema_reconcile_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Ask only which reading of each disputed field is right."""
+
+    payload = {
+        "document_type": str(request.unit_input.get("document_type") or ""),
+        "conflicts": list(request.unit_input.get("conflicts") or []),
+    }
+    user = json.dumps(payload, indent=1, default=str)
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_schema_reconcile",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(RECONCILE_SYSTEM, user, activity, attempt=attempt.number)
+
+
+INDUCE_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.schema_sample.response",
+    schema_hash=_sha256_text("documents-schema-sample-response:fields"),
+    validator=_induce_response_schema,
+)
+INDUCE_WORKER = WorkerDefinition(
+    worker_id=INDUCE_WORKER_ID,
+    prompt_hash=_sha256_text(INDUCE_SYSTEM),
+    response_schema=INDUCE_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the induced document schema against the declared field contract."
+        ),
+    ),
+    implementation=run_schema_sample_worker,
+    semantic_validator=validate_schema_sample_proposal,
+)
+
+RECONCILE_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.schema_reconcile.response",
+    schema_hash=_sha256_text("documents-schema-reconcile-response:resolutions"),
+    validator=_reconcile_response_schema,
+)
+RECONCILE_WORKER = WorkerDefinition(
+    worker_id=RECONCILE_WORKER_ID,
+    prompt_hash=_sha256_text(RECONCILE_SYSTEM),
+    response_schema=RECONCILE_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the schema reconciliation against the offered readings."
+        ),
+    ),
+    implementation=run_schema_reconcile_worker,
+    semantic_validator=validate_schema_reconcile_proposal,
+)
+
+WORKERS.register(INDUCE_WORKER)
+WORKERS.register(RECONCILE_WORKER)
+
+
+# --------------------------------------------------------------------------- #
+# schema-guided extraction
+# --------------------------------------------------------------------------- #
+STRUCTURED_WORKER_ID = "documents.analysis_structured"
+DOCUMENT_STRUCTURED_SOURCE_ID = "document_structured_chunk"
+
+
+def schema_descriptor(document_type: str, fields: Iterable[Mapping[str, Any]]) -> str:
+    """Render one type's frozen schema as prompt text.
+
+    The schema goes into the prompt verbatim, which is what keeps the staleness
+    interlock exact: a re-derived schema moves this text, the prompt hash, and
+    with it the execution identity, so no proposal built against the old fields
+    can be reused under the new ones. It is the same property the pack
+    descriptor had, with the vocabulary now coming from the engagement rather
+    than from code.
+    """
+
+    lines = [f"DOCUMENT TYPE {document_type}", "Fields this type carries:"]
+    for field in fields:
+        parts = [
+            f"  {field.get('name')} — {field.get('value_type')}",
+            f"role {field.get('role')}",
+        ]
+        if str(field.get("cardinality") or "one") == "many":
+            parts.append("may appear more than once")
+        if not bool(field.get("verbatim", True)):
+            parts.append("interpretive; needs no excerpt")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
+
+
+def _structured_system(descriptor: str) -> str:
+    return f"""[agent:document_analysis_structured]
+Extract what this chunk states, using the fields this document type carries.
+
+Report only what the chunk says. Do not infer a value from a filename, from
+metadata, or from what a document of this type usually contains. A field the
+chunk does not state is simply absent — never guess one to fill the schema.
+
+{descriptor}
+
+records is an array. Each entry is one record the chunk carries, with:
+  fields — the schema fields this record states, as
+    {{"name": a field name above, "entry": 1-based ordinal when the field may
+      appear more than once, "value": the value exactly as printed,
+      "citation": the id of a citation showing it}}
+  additional_fields — facts the record states that no field above can hold, as
+    {{"name": lower_snake_case, "value_type": one of identifier, date, number,
+      text, boolean, "value", "citation"}}
+
+Use additional_fields rather than forcing a fact into a field that does not mean
+it. A value put under the wrong name is worse than one recorded outside the
+schema: the schema can be widened later, a mislabelled value cannot be found.
+
+Return an empty records array when this chunk carries no record at all. Never
+invent a record to fill it.
+
+citations is an array of objects with id, page, and a short exact `excerpt`
+copied verbatim from this chunk. Every excerpt must appear character for
+character — do not join separate lines, tidy spacing, or paraphrase. Quote the
+line carrying the fact and no more: at most {CITATION_EXCERPT_LINES} lines and
+{CITATION_EXCERPT_CHARACTERS} characters. Quoting the whole chunk once and
+citing it everywhere anchors nothing and is rejected.
+
+Every value you report must carry a citation, except a field marked
+interpretive above — those are your reading of the record and routinely use a
+word it never prints.
+
+audit_notes records observations visible on the face of the document — a missing
+signature or date, an unreferenced attachment, an internal inconsistency, an
+alteration, an incomplete field. State the observation and why it matters. Do
+not conclude that a control operated or failed. Return an empty array when there
+is no such observation.
+
+{JSON_RULES}"""
+
+
+def _structured_value(raw: object, label: str, *, extra: bool) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise WorkerResponseValidationError(f"{label} must be an object.")
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        raise WorkerResponseValidationError(f"{label} needs a name.")
+    value = raw.get("value")
+    if value is None or str(value).strip() == "":
+        raise WorkerResponseValidationError(f"{label} needs a value.")
+    entry = raw.get("entry", 1)
+    if isinstance(entry, bool) or not isinstance(entry, int) or entry < 1:
+        raise WorkerResponseValidationError(f"{label} needs a positive integer entry.")
+    record = {
+        "name": name,
+        "entry": entry,
+        # The value as printed. Normalization is applied server-side: asking a
+        # model to also return a derived form adds no evidence and one failure
+        # mode.
+        "value": str(value),
+        "citation": str(raw.get("citation") or "").strip(),
+    }
+    if extra:
+        value_type = str(raw.get("value_type") or "text").strip()
+        if value_type not in _VALUE_TYPES:
+            raise WorkerResponseValidationError(
+                f"{label} has an unsupported value_type '{value_type}'."
+            )
+        record["value_type"] = value_type
+    return record
+
+
+def _structured_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The extraction response must be an object.")
+    raw_records = payload.get("records")
+    if not isinstance(raw_records, list):
+        raise WorkerResponseValidationError("The response must carry a records array.")
+    records = []
+    for index, raw in enumerate(raw_records):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(f"records[{index}] must be an object.")
+        fields = [
+            _structured_value(item, f"records[{index}].fields[{position}]", extra=False)
+            for position, item in enumerate(raw.get("fields") or [])
+        ]
+        additional = [
+            _structured_value(
+                item, f"records[{index}].additional_fields[{position}]", extra=True
+            )
+            for position, item in enumerate(raw.get("additional_fields") or [])
+        ]
+        if not fields and not additional:
+            raise WorkerResponseValidationError(
+                f"records[{index}] states nothing; omit it rather than returning it empty."
+            )
+        records.append({"fields": fields, "additional_fields": additional})
+    return {
+        "analysis_profile": "structured",
+        "records": records,
+        "audit_notes": list(payload.get("audit_notes") or []),
+        "citations": list(payload.get("citations") or []),
+    }
+
+
+def validate_structured_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    """Hold the schema and the citation rule the store also enforces.
+
+    A named field must be one the type actually carries — a value under a field
+    the schema does not state cannot be read back by any rule written against
+    that schema, so it is a silent loss rather than an extra.
+    """
+
+    known = {
+        str(field.get("name")): field
+        for field in request.unit_input.get("schema_fields") or []
+    }
+    citations = {
+        str(item.get("id"))
+        for item in proposal.get("citations") or []
+        if isinstance(item, Mapping)
+    }
+    for index, record in enumerate(proposal.get("records") or []):
+        for field in record.get("fields") or []:
+            name = str(field.get("name"))
+            definition = known.get(name)
+            if definition is None:
+                raise WorkerResponseValidationError(
+                    f"records[{index}] names field '{name}', which this document "
+                    "type does not carry. Report it under additional_fields."
+                )
+            if str(definition.get("cardinality") or "one") == "one" and field["entry"] != 1:
+                raise WorkerResponseValidationError(
+                    f"Field '{name}' appears once on this type, so entry must be 1."
+                )
+            if bool(definition.get("verbatim", True)) and not field.get("citation"):
+                raise WorkerResponseValidationError(
+                    f"Field '{name}' is stated on the record and needs a citation."
+                )
+            if field.get("citation") and field["citation"] not in citations:
+                raise WorkerResponseValidationError(
+                    f"Field '{name}' cites '{field['citation']}', which is not a "
+                    "citation you declared."
+                )
+        for field in record.get("additional_fields") or []:
+            if known.get(str(field.get("name"))) is not None:
+                raise WorkerResponseValidationError(
+                    f"'{field.get('name')}' is a field of this type; report it "
+                    "under fields rather than additional_fields."
+                )
+            if not field.get("citation"):
+                raise WorkerResponseValidationError(
+                    f"Additional field '{field.get('name')}' needs a citation."
+                )
+    return proposal
+
+
+def run_structured_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Extract one chunk against its document type's frozen schema."""
+
+    payload = {
+        "document_id": str(request.unit_input.get("document_id") or ""),
+        "chunk_id": str(request.unit_input.get("chunk_id") or ""),
+        "page": request.unit_input.get("page"),
+    }
+    user = json.dumps(payload, indent=1, default=str)
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_analysis_structured",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    descriptor = str(request.unit_input.get("schema_descriptor") or "")
+    return gateway.complete(
+        _structured_system(descriptor), user, activity, attempt=attempt.number
+    )
+
+
+STRUCTURED_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.analysis_structured.response",
+    schema_hash=_sha256_text(
+        "documents-structured-response:records-fields-additional-citations"
+    ),
+    validator=_structured_response_schema,
+)
+STRUCTURED_WORKER = WorkerDefinition(
+    worker_id=STRUCTURED_WORKER_ID,
+    # The schema is per-workspace, so it cannot be part of a module-level prompt
+    # hash. What is hashed is the instruction text around it; the descriptor
+    # travels on the unit input and is covered by the unit's own input hash,
+    # which is what re-expands a unit when a re-derived schema changes it.
+    prompt_hash=_sha256_text(_structured_system("<schema>")),
+    response_schema=STRUCTURED_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the structured extraction against the document type's schema."
+        ),
+    ),
+    implementation=run_structured_worker,
+    semantic_validator=validate_structured_proposal,
+)
+
+WORKERS.register(STRUCTURED_WORKER)
 
 __all__ = [
     "CHUNK_ANALYSES_SOURCE_ID",
@@ -2587,19 +1970,19 @@ __all__ = [
     "VISUAL_SYSTEM",
     "VISUAL_WORKER",
     "VISUAL_WORKER_ID",
-    "VOUCHER_RESPONSE_SCHEMA",
-    "VOUCHER_SYSTEM",
-    "VOUCHER_WORKER",
-    "VOUCHER_WORKER_ID",
     "document_metadata",
     "run_chunk_worker",
+    "run_classification_worker",
+    "run_schema_reconcile_worker",
+    "run_schema_sample_worker",
+    "run_structured_worker",
     "run_reduction_worker",
     "run_visual_worker",
-    "run_voucher_worker",
-    "merge_voucher_audit_notes",
-    "render_voucher_audit_notes",
     "validate_chunk_proposal",
+    "validate_classification_proposal",
+    "validate_schema_reconcile_proposal",
+    "validate_schema_sample_proposal",
+    "validate_structured_proposal",
     "validate_reduction_proposal",
     "validate_visual_proposal",
-    "validate_voucher_proposal",
 ]

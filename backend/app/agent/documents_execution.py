@@ -20,7 +20,13 @@ from __future__ import annotations
 
 import uuid
 
-from .. import cycle_vouching, document_analysis, document_media
+from .. import (
+    document_analysis,
+    document_classification,
+    document_media,
+    document_schemas,
+    document_types,
+)
 from ..text import counted
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceError
@@ -43,12 +49,16 @@ from .capabilities.documents import (
 from .context import (
     ContextResolver,
     document_chunk_scope,
+    document_classification_scope,
+    document_schema_sample_scope,
+    document_structured_chunk_scope,
     document_reduction_scope,
     document_visual_page_scope,
-    document_voucher_scope,
 )
 from .executors import EXECUTORS
 from .executors.documents import (
+    DocumentClassificationExecutorTarget,
+    DocumentSchemaExecutorTarget,
     DOCUMENT_REVIEW_REQUIRED,
     DOCUMENT_REQUIRES_VISION,
     DOCUMENT_TEXT_UNAVAILABLE,
@@ -78,19 +88,22 @@ from .runtime import (
 )
 from .workers import WORKERS
 from .workers.documents import (
+    CLASSIFY_WORKER_ID,
+    INDUCE_WORKER_ID,
+    RECONCILE_WORKER_ID,
+    STRUCTURED_WORKER_ID,
+    schema_descriptor,
     CHUNK_WORKER_ID,
     REDUCTION_WORKER_ID,
     VISUAL_WORKER_ID,
-    VOUCHER_WORKER_ID,
-    merge_voucher_audit_notes,
 )
 
-# Text-modality map profiles, by unit kind. A voucher chunk reads exactly what a
+# Text-modality map profiles, by unit kind. A chunk reads exactly what a
 # standard chunk reads, so both resolve ``document_chunk_scope`` and differ only
 # in which worker consumes it.
 _TEXT_MAP_WORKERS = {
     "document_chunk_analysis": CHUNK_WORKER_ID,
-    "document_voucher_analysis": VOUCHER_WORKER_ID,
+    "document_structured_analysis": STRUCTURED_WORKER_ID,
 }
 
 
@@ -414,6 +427,34 @@ class DocumentWorkflowExecution(BaseRunner):
             "document_chunks", "workflow:document_chunks", "Document chunk analysis"
         )
         visual = chunk["kind"] == "document_visual_page_analysis"
+        structured = chunk["kind"] == "document_structured_analysis"
+        structured_input: dict = {}
+        if structured:
+            document_type = document_classification.document_type(self.ws, document_id)
+            schema = document_schemas.load_schema(self.ws, document_type)
+            if schema is None:
+                # The schema was re-derived away between expansion and binding.
+                # Settling rather than falling back to another profile keeps the
+                # extraction honest about what it was going to extract against.
+                return DeterministicUnitResult(
+                    "awaiting_confirmation",
+                    (),
+                    f"No schema is current for '{document_type}'.",
+                )
+            structured_input = {
+                "document_type": document_type,
+                "schema_fields": list(schema.get("fields") or []),
+                "schema_descriptor": schema_descriptor(
+                    document_type, schema.get("fields") or []
+                ),
+                # Stamped onto the extraction so a schema that moves afterwards
+                # makes this analysis stale rather than silently reinterpreted.
+                "schema_ref": {
+                    "document_type": schema["document_type"],
+                    "schema_version": schema["schema_version"],
+                    "schema_hash": schema["schema_hash"],
+                },
+            }
         handles: list[dict] = []
         if visual:
             unsupported_reason = str(chunk.get("unsupported_reason") or "")
@@ -473,8 +514,8 @@ class DocumentWorkflowExecution(BaseRunner):
                         self.ws, document_id, handles
                     )
                     if visual
-                    else document_voucher_scope(self.ws, document_id, chunk)
-                    if chunk["kind"] == "document_voucher_analysis"
+                    else document_structured_chunk_scope(self.ws, document_id, chunk)
+                    if structured
                     else document_chunk_scope(self.ws, document_id, chunk)
                 ),
             )
@@ -513,6 +554,8 @@ class DocumentWorkflowExecution(BaseRunner):
                     "chunk_id": chunk_id,
                     "page": int(chunk["page"]),
                     "modality": "image" if visual else "text",
+                    "document_id": document_id,
+                    **structured_input,
                 },
                 activity={
                     "artifact_refs": list(unit.get("parent_refs") or []),
@@ -591,6 +634,369 @@ class DocumentWorkflowExecution(BaseRunner):
         return None
 
     # ------------------------------------- documents.analysis_generated
+    def _bind_classification(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Bind one document's type classification to the shared pipeline.
+
+        The offered catalog and selectable ids come from the unit's expansion
+        rather than being recomputed here, because they are what the prompt will
+        show and what the semantic validator checks against. Recomputing them at
+        bind time would let an auditor coining a type mid-run put the two out of
+        step, and a correct answer would then be rejected.
+        """
+        self.ws = subject
+        document_id = self._parent(unit, "document")
+        extracted = analyzable(self.ws, document_id)
+        if extracted is None:
+            return self._unreadable_document(document_id)
+        unit_input = dict(unit.get("input_payload") or {})
+        text = str(unit_input.get("text") or "") or document_classification.classification_text(
+            self.ws, document_id
+        )
+        if not text:
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (),
+                "This document has no extracted text to identify it from.",
+            )
+        selectable = list(unit_input.get("selectable_types") or [])
+        catalog = str(unit_input.get("catalog") or "")
+        if not selectable or not catalog:
+            local = document_schemas.local_types(self.ws)
+            selectable = list(document_schemas.effective_type_ids(self.ws))
+            catalog = document_types.prompt_catalog(local_types=local)
+        task = self.add_task(
+            "document_types", "workflow:document_types", "Document type"
+        )
+        target = DocumentClassificationExecutorTarget(
+            self.ws,
+            self.run["id"],
+            document_id,
+            catalog_sha1=str(
+                unit_input.get("catalog_sha1")
+                or document_classification.catalog_signature(self.ws)
+            ),
+        )
+        expected = parent_hashes(self.ws, [document_ref(document_id)])
+
+        request = UnitPipelineRequest(
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            worker_id=CLASSIFY_WORKER_ID,
+            executor_id="documents.classification",
+            unit_input={
+                "kind": unit.get("kind"),
+                "input_sha1": unit.get("input_sha1"),
+                "parent_refs": list(unit.get("parent_refs") or []),
+                "document_id": document_id,
+                "title": str(unit_input.get("title") or ""),
+                "text": text,
+                "selectable_types": selectable,
+                "catalog": catalog,
+                "catalog_sha1": str(
+                    unit_input.get("catalog_sha1")
+                    or document_classification.catalog_signature(self.ws)
+                ),
+            },
+            activity={
+                "artifact_refs": list(unit.get("parent_refs") or []),
+                "document_ids": [document_id],
+                "task_id": task["id"],
+                "page_ranges": [1],
+            },
+            expected_revision=self.ws.revision,
+            expected_parents=expected,
+            capability_definition_hash=workflow.capability_definition_hash(capability),
+            # A type is a statement about what a document is, not evidence an
+            # auditor signs off. It is revisable by retyping, which is where the
+            # auditor's judgement enters.
+            approval_kind=None,
+            proposal_reference=unit.get("proposal_sidecar"),
+            receipt_reference=unit.get("receipt_sidecar"),
+        )
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                document_classification_scope(self.ws, document_id, text),
+            )
+
+        return BoundUnitPipeline(
+            request=request,
+            target=target,
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+        )
+
+    def _schema_samples(
+        self, document_type: str, sample_ids: list[str]
+    ) -> list[tuple[str, dict]]:
+        """Read back what each sample unit proposed, in stable document order.
+
+        Paired with the document each reading came from, rather than returned as
+        a bare list. A sample that failed leaves no proposal, so the readings are
+        a *subsequence* of the samples — and a schema is a claim about the
+        documents it was actually read from. Positional recovery would attribute
+        it to a prefix of the samples instead, which is the wrong set the moment
+        anything but the last one fails.
+        """
+
+        readings: list[tuple[str, dict]] = []
+        for document_id in sample_ids:
+            unit_id = semantic_unit_id(
+                "document_schema_sample", document_type, document_id
+            )
+            try:
+                payload = self.sidecars.load_proposal(unit_id)
+            except WorkspaceError:
+                payload = None
+            proposal = (payload or {}).get("proposal")
+            if isinstance(proposal, dict) and proposal.get("fields"):
+                readings.append((document_id, dict(proposal)))
+        return readings
+
+    def _bind_schema_sample(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Bind one sample document to be read for the fields its type carries."""
+
+        self.ws = subject
+        unit_input = dict(unit.get("input_payload") or {})
+        document_id = self._parent(unit, "document")
+        document_type = str(
+            unit_input.get("document_type") or ""
+        ) or document_classification.document_type(self.ws, document_id)
+        text = str(unit_input.get("text") or "") or document_classification.induction_text(
+            self.ws, document_id
+        )
+        if not text:
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (),
+                "This document has no extracted text to read a schema from.",
+            )
+        task = self.add_task(
+            "document_schemas", "workflow:document_schemas", "Document schema"
+        )
+        request = UnitPipelineRequest(
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            worker_id=INDUCE_WORKER_ID,
+            executor_id=None,
+            unit_input={
+                "kind": unit.get("kind"),
+                "input_sha1": unit.get("input_sha1"),
+                "parent_refs": list(unit.get("parent_refs") or []),
+                "document_type": document_type,
+                "document_id": document_id,
+                "title": str(unit_input.get("title") or ""),
+                "text": text,
+            },
+            activity={
+                "artifact_refs": list(unit.get("parent_refs") or []),
+                "document_ids": [document_id],
+                "task_id": task["id"],
+            },
+            expected_revision=self.ws.revision,
+            expected_parents={},
+            capability_definition_hash=workflow.capability_definition_hash(capability),
+            # A sample reading is an input to the frozen schema, never a durable
+            # record of its own: its persisted proposal is the outcome, the way a
+            # chunk analysis works.
+            approval_kind=None,
+            proposal_reference=unit.get("proposal_sidecar"),
+            receipt_reference=unit.get("receipt_sidecar"),
+        )
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                document_schema_sample_scope(self.ws, document_id, text),
+            )
+
+        return BoundUnitPipeline(
+            request=request,
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=None,
+        )
+
+    def _bind_schema(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Union one type's sample readings and freeze the schema they agree on.
+
+        The samples are unioned by local code, and a model is called a second
+        time *only* if two of them named one field as two different things.
+        Agreement is the common case and costs nothing, which is what makes
+        reading the samples independently affordable in the first place.
+        """
+
+        self.ws = subject
+        unit_input = dict(unit.get("input_payload") or {})
+        document_type = str(unit_input.get("document_type") or "")
+        # ``input_payload`` does not reach a binder — the scheduler stores only
+        # kind, title, parent_refs, and input_sha1 — so the freeze unit recovers
+        # both its samples and its type from the parents it was expanded against.
+        # Those are the sample documents themselves, which makes the recovery
+        # exact rather than a re-derivation that could pick a different sample.
+        sample_ids = [
+            str(ref).split(":", 1)[1]
+            for ref in unit.get("parent_refs") or []
+            if str(ref).startswith("document:")
+        ]
+        if not document_type and sample_ids:
+            document_type = document_classification.document_type(self.ws, sample_ids[0])
+        if not sample_ids:
+            sample_ids = document_classification.sample_for_induction(
+                self.ws, document_type
+            )
+        readings = self._schema_samples(document_type, sample_ids)
+        if not readings:
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (),
+                f"No sample of '{document_type}' could be read for its fields.",
+            )
+        contributing = [document_id for document_id, _ in readings]
+        fields, conflicts = document_schemas.union_fields(
+            [proposal.get("fields") or [] for _, proposal in readings]
+        )
+        task = self.add_task(
+            "document_schemas", "workflow:document_schemas", "Document schema"
+        )
+        target = DocumentSchemaExecutorTarget(
+            self.ws,
+            self.run["id"],
+            document_type,
+            sample_document_ids=tuple(contributing),
+            reconciled=bool(conflicts),
+        )
+        # The documents the schema was read from. A schema is a claim about
+        # them, so replacing one under this commit is a real conflict rather
+        # than a race to ignore.
+        expected = parent_hashes(
+            self.ws, [document_ref(document_id) for document_id in contributing]
+        )
+        request = UnitPipelineRequest(
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            worker_id=RECONCILE_WORKER_ID,
+            executor_id="documents.schema",
+            unit_input={
+                "kind": unit.get("kind"),
+                "input_sha1": unit.get("input_sha1"),
+                "parent_refs": list(unit.get("parent_refs") or []),
+                "document_type": document_type,
+                "sample_document_ids": contributing,
+                "conflicts": conflicts,
+            },
+            activity={
+                "artifact_refs": list(unit.get("parent_refs") or []),
+                "document_ids": contributing,
+                "task_id": task["id"],
+            },
+            expected_revision=self.ws.revision,
+            expected_parents=expected,
+            capability_definition_hash=workflow.capability_definition_hash(capability),
+            approval_kind=None,
+            proposal_reference=unit.get("proposal_sidecar"),
+            receipt_reference=unit.get("receipt_sidecar"),
+        )
+
+        if not conflicts:
+            # The samples agree. Freezing needs no model, so none is billed — the
+            # reconciliation turn exists for disagreement, not as a step. The
+            # commit still goes through the shared pipeline, so it keeps the same
+            # proposal-before-mutation, reconciliation, and receipt guarantees a
+            # model-backed unit gets.
+            return self._commit_schema(unit, request, target, {"fields": fields})
+
+        def accept(proposal):
+            """Apply the chosen readings, then re-union to the settled fields.
+
+            Re-unioning rather than patching the merged list keeps one code path
+            deciding what a schema is: the resolution changes what a sample said,
+            and the union then follows from it exactly as it would have if the
+            samples had agreed.
+            """
+
+            chosen = {
+                (str(item.get("name")), str(item.get("attribute"))): str(item.get("value"))
+                for item in (dict(proposal).get("resolutions") or [])
+            }
+            settled = [
+                [
+                    {
+                        **dict(field),
+                        **{
+                            attribute: chosen[(str(field.get("name")), attribute)]
+                            for attribute in document_schemas.CONFLICTING_ATTRIBUTES
+                            if (str(field.get("name")), attribute) in chosen
+                        },
+                    }
+                    for field in proposal_fields
+                ]
+                for proposal_fields in (
+                    reading.get("fields") or [] for _, reading in readings
+                )
+            ]
+            merged, remaining = document_schemas.union_fields(settled)
+            if remaining:
+                raise WorkspaceError(
+                    f"Reconciliation left '{remaining[0]['name']}' unsettled."
+                )
+            return {**dict(proposal), "fields": merged}
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                document_schema_sample_scope(
+                    self.ws,
+                    contributing[0],
+                    document_classification.induction_text(self.ws, contributing[0]),
+                ),
+            )
+
+        return BoundUnitPipeline(
+            request=request,
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=accept,
+        )
+
     def _bind_reduction(
         self,
         subject: Workspace,
@@ -702,19 +1108,18 @@ class DocumentWorkflowExecution(BaseRunner):
                 "vision_used": any(
                     item.get("modality") == "image" for item in analyses
                 ),
-                # Voucher evidence is reduced here deterministically and only
-                # after every chunk proposal settles. Its notes and summary are
-                # also consolidated locally below.
             }
-            cycle_evidence = self._cycle_evidence(document_id, analyses)
-            if cycle_evidence:
-                completed.update(cycle_evidence)
+            if str(proposal.get("analysis_profile") or "") == "structured":
+                records = list(proposal.get("records") or [])
                 completed.update(
-                    summary_markdown=document_analysis.render_voucher_summary(
-                        cycle_evidence
+                    summary_markdown=document_analysis.render_structured_summary(
+                        records,
+                        str((proposal.get("schema_ref") or {}).get("document_type") or ""),
                     ),
                     summary_origin="structured_evidence",
-                    audit_notes_markdown=merge_voucher_audit_notes(analyses),
+                    audit_notes_markdown=document_analysis.render_structured_audit_notes(
+                        analyses
+                    ),
                 )
             return completed
 
@@ -751,30 +1156,44 @@ class DocumentWorkflowExecution(BaseRunner):
             self.task_status(task, "completed")
             return DeterministicUnitResult("succeeded", refs)
 
-        if len(analyses) == 1:
-            # Consolidating one chunk analysis into a document analysis is the
-            # identity, so spending a provider turn on it would buy nothing. The
-            # commit still goes through the same executor with the same
-            # proposal-before-mutation, reconciliation, and receipt guarantees,
-            # and folds through the same post-commit callback.
-            return self._commit_reduction(
-                unit, request, target, accept(analyses[0]), on_committed
-            )
-
-        if all(item.get("analysis_profile") == "voucher" for item in analyses):
-            # Voucher facts are already structured and the registry reducer is
-            # deterministic. Consolidate their notes and render their summary
-            # locally instead of paying for a second model call that would only
-            # paraphrase the same evidence.
+        if analyses and all(
+            item.get("analysis_profile") == "structured" for item in analyses
+        ):
+            # Structured facts are already typed against the document's schema,
+            # so consolidating them is a local concatenation. Paying for a model
+            # turn here would only paraphrase evidence that is already exact.
+            records = [
+                record
+                for item in analyses
+                for record in item.get("records") or []
+            ]
+            # Bound here rather than echoed back by the worker, for the same
+            # reason every other derived value is: a model transcribing a stamp
+            # it cannot verify adds no evidence and one failure mode. The
+            # interlock that proves the extraction used *this* schema is
+            # stronger and already in place — the schema descriptor travels in
+            # the unit input, so a re-derived schema moves the unit's input hash
+            # and the chunks re-expand rather than being reduced under fields
+            # they never saw.
+            document_type = document_classification.document_type(self.ws, document_id)
+            schema = document_schemas.load_schema(self.ws, document_type)
+            if schema is None:
+                return DeterministicUnitResult(
+                    "awaiting_confirmation",
+                    (),
+                    f"No schema is current for '{document_type}'.",
+                )
             proposal = {
-                "analysis_profile": "voucher",
-                "derived_text_markdown": "\n\n".join(
-                    str(item.get("derived_text_markdown") or "").strip()
-                    for item in analyses
-                    if str(item.get("derived_text_markdown") or "").strip()
-                ),
+                "analysis_profile": "structured",
+                "schema_ref": {
+                    "document_type": schema["document_type"],
+                    "schema_version": schema["schema_version"],
+                    "schema_hash": schema["schema_hash"],
+                },
+                "records": records,
                 "summary_markdown": "",
                 "audit_notes_markdown": "",
+                "derived_text_markdown": "",
                 "citations": [
                     dict(citation)
                     for item in analyses
@@ -789,7 +1208,17 @@ class DocumentWorkflowExecution(BaseRunner):
                 target,
                 accept(proposal),
                 on_committed,
-                origin="voucher_structured_reduction",
+                origin="structured_reduction",
+            )
+
+        if len(analyses) == 1:
+            # Consolidating one chunk analysis into a document analysis is the
+            # identity, so spending a provider turn on it would buy nothing. The
+            # commit still goes through the same executor with the same
+            # proposal-before-mutation, reconciliation, and receipt guarantees,
+            # and folds through the same post-commit callback.
+            return self._commit_reduction(
+                unit, request, target, accept(analyses[0]), on_committed
             )
 
         return BoundUnitPipeline(
@@ -802,6 +1231,39 @@ class DocumentWorkflowExecution(BaseRunner):
             approval_provider=accept,
             readiness_provider=None,
             on_committed=on_committed,
+        )
+
+    def _commit_schema(
+        self,
+        unit: dict,
+        request: UnitPipelineRequest,
+        target: DocumentSchemaExecutorTarget,
+        proposal: dict,
+    ) -> DeterministicUnitResult:
+        """Commit an agreed schema through the shared pipeline, with no model."""
+
+        if self.unit_pipeline is None:
+            raise WorkspaceError(
+                "The document composition requires a UnitPipeline to commit."
+            )
+
+        def record(field: str):
+            def persist(reference) -> None:
+                unit[field] = dict(reference)
+                self.save()
+
+            return persist
+
+        self.unit_pipeline.commit_local(
+            request,
+            proposal=proposal,
+            target=target,
+            origin="agreed_schema_union",
+            on_proposal_persisted=record("proposal_sidecar"),
+            on_receipt_persisted=record("receipt_sidecar"),
+        )
+        return DeterministicUnitResult(
+            "succeeded", (f"document_schema:{target.document_type}",)
         )
 
     def _commit_reduction(
@@ -857,15 +1319,17 @@ class DocumentWorkflowExecution(BaseRunner):
             except WorkspaceError:
                 payload = None
             proposal = (payload or {}).get("proposal")
-            voucher_ready = (
+            # A structured chunk that genuinely carried no record is complete,
+            # not missing: an empty ``records`` array is the truthful answer for
+            # a page of prose inside a transaction document, and treating it as
+            # a gap would report coverage the extraction did not actually lack.
+            structured_ready = (
                 isinstance(proposal, dict)
-                and proposal.get("analysis_profile") == "voucher"
-                and bool(proposal.get("audit_notes_markdown"))
-                and bool(proposal.get("registry"))
-                and "record_fragments" in proposal
+                and proposal.get("analysis_profile") == "structured"
+                and "records" in proposal
             )
             if not isinstance(proposal, dict) or not (
-                proposal.get("summary_markdown") or voucher_ready
+                proposal.get("summary_markdown") or structured_ready
             ):
                 missing.append(chunk)
                 continue
@@ -896,36 +1360,6 @@ class DocumentWorkflowExecution(BaseRunner):
             if name in keys
             for profile in [dict(profiles.get(name) or {})]
         ]
-
-    @staticmethod
-    def _cycle_evidence(document_id: str, analyses: list[dict]) -> dict:
-        """Reduce voucher fragments after every map proposal has settled."""
-        voucher = [
-            item for item in analyses if item.get("analysis_profile") == "voucher"
-        ]
-        if not voucher:
-            return {}
-        fragments = [
-            dict(fragment)
-            for item in voucher
-            for fragment in item.get("record_fragments") or []
-        ]
-        # The pack comes from the chunk proposals even when they found no record,
-        # so a voucher-profile document that carries no transaction evidence still
-        # commits a registry-backed, empty reduction rather than failing the unit.
-        reduction = cycle_vouching.reduce_record_fragments(
-            document_id,
-            fragments,
-            registry_ref=voucher[0].get("registry"),
-        )
-        return {
-            "analysis_profile": "voucher",
-            "registry": reduction["registry"],
-            "record_fragments": fragments,
-            "records": reduction["records"],
-            "unresolved_fragments": reduction["unresolved_fragments"],
-            "conflicts": reduction["conflicts"],
-        }
 
     @staticmethod
     def _prepared_media_set_hash(analyses: list[dict]) -> str:
@@ -1227,6 +1661,18 @@ _PARTIAL_DEPENDENCIES = {
 }
 
 _PIPELINE_BINDERS = {
+    "documents.schemas_sampled": (
+        "_bind_schema_sample",
+        {"worker": INDUCE_WORKER_ID, "executor": None},
+    ),
+    "documents.schemas_induced": (
+        "_bind_schema",
+        {"worker": RECONCILE_WORKER_ID, "executor": "documents.schema"},
+    ),
+    "documents.types_classified": (
+        "_bind_classification",
+        {"worker": CLASSIFY_WORKER_ID, "executor": "documents.classification"},
+    ),
     "documents.analysis_chunks_ready": (
         "_bind_chunk",
         {

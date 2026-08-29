@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_vouching
+from ... import cycle_rulesets, cycle_vouching
 from ...text import counted, relevance_tokens
 from .. import prompts
 from ..prompts import JSON_RULES
@@ -403,97 +403,43 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   percentage is not an exception rate; a maximum is not a policy limit.
 - One risk and one control per row. {JSON_RULES}"""
 
-# An RCM row selects a pack and its record kinds; it never names an identifier,
-# field, or normalizer. Supplying only what the row can legitimately reference
-# keeps the prompt small and stops the cycle vocabulary reading as the preferred
-# evidence strategy simply because it is described at greater length.
-_RCM_CANONICAL_PACK_REFERENCES = [
-    {
-        "registry": {
-            "pack_id": pack["id"],
-            "pack_version": pack["version"],
-            "definition_hash": pack["definition_hash"],
-        },
-        "record_kinds": [
-            {
-                "id": record_kind["id"],
-                "available_field_kinds": record_kind["available_field_kinds"],
-            }
-            for record_kind in pack["record_kinds"]
-            if record_kind["bindable"]
-        ],
-        "field_kinds": [
-            {
-                "id": field["id"],
-                "group": field["group"],
-                "kind": field["kind"],
-                "attributes": [
-                    {
-                        "id": attribute["id"],
-                        "semantic_type": attribute["semantic_type"],
-                        "control_evidence": bool(
-                            attribute.get("control_evidence", False)
-                        ),
-                    }
-                    for attribute in field["attributes"]
-                ],
-            }
-            for field in pack["field_kinds"]
-        ],
-    }
-    for pack in cycle_vouching.metadata()["registry"]["packs"]
-]
-_RCM_PACK_IDS = tuple(
-    str(pack["id"]) for pack in cycle_vouching.metadata()["registry"]["packs"]
-)
 
-# --------------------------------------------------------------------------- #
-# The second pass: the evidence contract for transaction-cycle attributes only.
-#
-# This vocabulary used to live in the judgment prompt above, where it was 11kB
-# of pack catalog carried by every RCM turn — including the great majority whose
-# attributes never touch it — while the operator vocabulary it depends on was
-# stated nowhere at all. Splitting it out puts the catalog only in the call that
-# needs it, and lets that call state the DSL properly.
-# --------------------------------------------------------------------------- #
-RCM_EVIDENCE_SYSTEM = f"""[agent:rcm_evidence]
-Name the audit shapes that would answer control attributes already judged to
-need linked source records. The risk, control, and requirement are settled: do
-not revise them, and do not add or remove attributes.
+#: The evidence pass: what must agree, for attributes already judged to need
+#: linked source records.
+#:
+#: The vocabulary is not in this prompt. It is per-workspace and travels on the
+#: unit input, so the prompt hash stays stable while the catalog varies, and a
+#: re-derived schema moves the unit's input hash instead.
+RCM_SCHEMA_EVIDENCE_SYSTEM = f"""[agent:rcm_schema_evidence]
+Say what must agree, for control attributes already judged to need linked source
+records. The risk, control, and requirement are settled: do not revise them, and
+do not add or remove attributes.
 
-You are choosing what would prove the requirement, not how it will be tested
-here. Which record kinds fill a shape's placeholders, and whether this
-engagement's evidence can fill them at all, is decided later against the
-extracted records — you are not shown those, and must not guess at them.
+You are shown this engagement's document types and the fields each one states.
+Those fields are the whole vocabulary. A comparison naming anything else cannot
+be evaluated and will be refused.
 
 Return an object with `contracts`, one entry per supplied attribute, each with
 row_index and attribute_key copied exactly from the request, plus:
-- pack_id: the id of one installed pack below, and nothing else about it. All
-  attributes of one row must use the same pack. The pack is the business cycle
-  the control belongs to.
-- comparison_recipes: a non-empty array of {{"recipe_id": "<id>"}} objects and
-  nothing else. No bindings, no record kinds, no field selectors, no operators.
-  Cite each shape once; a shape used against two different record pairs is bound
-  twice downstream, not cited twice here.
+- required_comparisons: a non-empty array of objects, each with
+  - key: a short snake_case name for this comparison, unique within the attribute
+  - left: {{{{"document_type": "<type>", "field": "<field>"}}}}
+  - right: the same shape, omitted only for `present`
+  - operator: one of {', '.join(sorted(cycle_rulesets.OPERATORS))}
+  - tolerance: omitted, or {{{{"absolute": n}}}} / {{{{"percent": n}}}} for
+    numeric_within, or {{{{"days": n}}}} for date_within
+  - rationale: one sentence on why the requirement needs this to hold
 
-{prompts.comparison_recipe_catalog(_RCM_PACK_IDS)}
+State only what the requirement itself asks. A comparison that is merely nearby
+— the vendor names agreeing when the requirement is about amounts — proves
+something else, and a control covered by it reads as tested when it is not.
 
-Choose only shapes that directly answer the requirement; never cite a related
-prerequisite because it is close. If no recipe answers the requirement, say so
-by returning `unsupported: true` with a one-line reason instead of the contract
-fields, and the attribute's evidence strategy will be reconsidered rather than
-answered by a shape that proves something else. {JSON_RULES}"""
+If the requirement cannot be expressed over the fields shown, say so by
+returning `unsupported: true` with a one-line reason instead of the contract
+fields. The attribute's evidence strategy is then reconsidered, which is the
+honest outcome; inventing a comparison over a field that does not exist is not.
+{JSON_RULES}"""
 
-# Ids only. The version and the definition hash are derived from the id in
-# ``_canonical_registry`` — showing them here asks the model to transcribe a
-# sixty-four character hash, and ``docs/memo-structured-references.md`` settled
-# what models do with hex tokens a sixth that length. Measured on one live
-# matrix before this changed: six of seven hashes came back corrupted, one by a
-# transposition, one by a dropped character that shifted the fifty following
-# it — and each corruption quarantined the row it belonged to.
-RCM_EVIDENCE_SYSTEM += (
-    "\n\nInstalled transaction-evidence packs. Name one by `pack_id`:\n"
-) + json.dumps(sorted(_RCM_PACK_IDS), separators=(",", ":"))
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
 # Keys a proposed row may carry into normalization. Anything else — a rationale,
@@ -917,16 +863,9 @@ def _normalized_rcm_row(
         raise WorkerResponseValidationError(
             [f"RCM row {index}: {message}" for message in error.errors]
         ) from error
-    packs = {
-        str(attribute["registry"]["pack_id"])
-        for attribute in attributes
-        if attribute.get("evidence_kind") == "transaction_cycle"
-    }
-    if len(packs) > 1:
-        raise WorkerResponseValidationError(
-            f"RCM row {index} mixes transaction-cycle packs"
-        )
-    expected_cycle = next(iter(packs), "")
+    # A row's business cycle is a label the matrix chose, not a projection of
+    # anything the engine owns.
+    expected_cycle = str(row.get("business_cycle") or "").strip()
     operation = str(row.get("operation") or "").strip().lower()
     if operation not in {"update", "create"}:
         raise WorkerResponseValidationError(
@@ -1352,7 +1291,9 @@ def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
                 continue
             if attribute.get("evidence_kind") != "transaction_cycle":
                 continue
-            if attribute.get("comparison_recipes"):
+            if attribute.get("comparison_recipes") or attribute.get(
+                "required_comparisons"
+            ):
                 continue
             pending.append(
                 {
@@ -1366,40 +1307,6 @@ def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
                 }
             )
     return pending
-
-
-_CONTRACT_FIELDS = ("comparison_recipes",)
-
-#: The installed reference for every pack, looked up by the one field a model is
-#: asked to write. A reference is wholly derivable from its pack id, so nothing
-#: is lost by deriving it — and a hash the model never types is a hash it can
-#: never mistype.
-_RCM_REGISTRY_BY_PACK_ID = {
-    str(pack["id"]): {
-        "pack_id": str(pack["id"]),
-        "pack_version": pack["version"],
-        "definition_hash": pack["definition_hash"],
-    }
-    for pack in cycle_vouching.metadata()["registry"]["packs"]
-}
-
-
-def _canonical_registry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The installed reference for the pack one contract names.
-
-    Accepts the id on its own or still nested under a ``registry`` object, since
-    a model told to name a pack will sometimes wrap it in the shape it used to
-    be asked for. An id naming no installed pack resolves to nothing: the
-    attribute then reaches the gate as a cycle strategy with no contract, which
-    is the existing honest failure and one :func:`_downgraded_uncontracted` can
-    reroute — where keeping a corrupt reference only fails the row.
-    """
-    supplied = entry.get("registry")
-    if isinstance(supplied, Mapping):
-        supplied = supplied.get("pack_id")
-    pack_id = str(supplied or entry.get("pack_id") or "").strip()
-    reference = _RCM_REGISTRY_BY_PACK_ID.get(pack_id)
-    return dict(reference) if reference is not None else None
 
 
 def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
@@ -1443,34 +1350,18 @@ def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
             if entry is None:
                 updated.append(attribute)
                 continue
+            if entry.get("required_comparisons") is None:
+                # No contract, so the attribute reaches the gate as a cycle
+                # strategy with nothing behind it — the honest failure, and one
+                # the bounded repair turn can act on.
+                updated.append(attribute)
+                continue
+            # The fields are named outright, so there is nothing to derive.
+            # Validation against the current schemas happens at the commit,
+            # which is the turn that holds the engagement.
             contract = {
-                field: _plain_json(entry[field])
-                for field in _CONTRACT_FIELDS
-                if entry.get(field) is not None
+                "required_comparisons": _plain_json(entry["required_comparisons"])
             }
-            # Derived from the named id rather than taken from the response, so
-            # a mistyped hash cannot exist to be rejected.
-            registry = _canonical_registry(entry)
-            if registry is not None:
-                contract["registry"] = registry
-            # A citation names the audit shape and stops there; which record
-            # kinds fill its placeholders is decided during test generation,
-            # against the evidence a workspace actually holds. The evidence
-            # pass volunteers `bindings` anyway, every time, and the contract
-            # rejects the whole attribute for the extra key — so the citation
-            # is projected onto what it is allowed to say.
-            recipes = contract.get("comparison_recipes")
-            if isinstance(recipes, list):
-                contract["comparison_recipes"] = [
-                    {
-                        key: value
-                        for key, value in citation.items()
-                        if key in cycle_vouching.RECIPE_CITATION_KEYS
-                    }
-                    if isinstance(citation, Mapping)
-                    else citation
-                    for citation in recipes
-                ]
             updated.append({**attribute, **contract})
         merged.append({**row, "control_attributes": updated})
     return merged
@@ -1672,13 +1563,13 @@ def _downgraded_uncontracted(
 ) -> list[dict]:
     """Re-route attributes the evidence pass could not contract for.
 
-    An attribute the registry cannot express is a limit of the *documentary*
-    path, not of the requirement. "The invoice amount agrees to the purchase
-    order total" is answerable from the imported populations whether or not a
-    comparison recipe exists for the source records, and leaving the attribute
-    classified ``transaction_cycle`` with no contract does not preserve rigour —
-    it fails the row, discards its risk and its control along with it, and
-    tests nothing at all.
+    An attribute this engagement's documents cannot express is a limit of the
+    *documentary* path, not of the requirement. "The invoice amount agrees to
+    the purchase order total" is answerable from the imported populations
+    whether or not the extracted schemas carry those fields, and leaving the
+    attribute classified ``transaction_cycle`` with no contract does not
+    preserve rigour — it fails the row, discards its risk and its control along
+    with it, and tests nothing at all.
 
     So the attribute keeps its requirement and takes the strongest path still
     open to it: the population where the supplied tables bear on the row, the
@@ -1703,17 +1594,16 @@ def _downgraded_uncontracted(
             if (
                 isinstance(attribute, Mapping)
                 and attribute.get("evidence_kind") == "transaction_cycle"
-                and not attribute.get("registry")
+                and not attribute.get("required_comparisons")
             ):
-                # The recipes go with the strategy that owned them. A shape
-                # cited against a pack is meaningless once the attribute is no
-                # longer answered by that pack, and leaving it behind trades one
-                # rejection for another — "does not accept comparison recipes" —
-                # on a row this path exists to save.
+                # Comparisons go with the strategy that owned them: they name
+                # the fields a cycle links, and mean nothing once the attribute
+                # is answered another way. Leaving one behind trades one
+                # rejection for another on a row this path exists to save.
                 attribute = {
                     key: value
                     for key, value in attribute.items()
-                    if key != "comparison_recipes"
+                    if key != "required_comparisons"
                 }
                 attribute["evidence_kind"] = fallback
             updated.append(attribute)
@@ -1733,10 +1623,13 @@ def _with_evidence_contracts(
     if not pending:
         return rows
     response = gateway.complete(
-        RCM_EVIDENCE_SYSTEM,
+        RCM_SCHEMA_EVIDENCE_SYSTEM,
         json.dumps(
             {
                 "ATTRIBUTES NEEDING AN EVIDENCE CONTRACT": pending,
+                "DOCUMENT TYPES AND THE FIELDS THEY STATE": (
+                    request.unit_input.get("schema_catalog") or []
+                ),
                 "INSTRUCTIONS": (
                     "Return one contracts entry per supplied attribute, with "
                     "row_index and attribute_key copied exactly."
@@ -1814,7 +1707,7 @@ def _repaired_rcm(
             ),
         )
     response = gateway.complete(
-        RCM_SYSTEM + "\n\n" + RCM_EVIDENCE_SYSTEM,
+        RCM_SYSTEM + "\n\n" + RCM_SCHEMA_EVIDENCE_SYSTEM,
         json.dumps(
             {
                 "ROWS TO CORRECT": [
@@ -1864,7 +1757,7 @@ RCM_WORKER = WorkerDefinition(
     # The implementation is now the two-pass sequence plus the local merges, so
     # every part of it that decides what reaches the model is in the identity a
     # persisted proposal is reused against.
-    prompt_hash=_sha256_text(RCM_SYSTEM + RCM_EVIDENCE_SYSTEM),
+    prompt_hash=_sha256_text(RCM_SYSTEM + RCM_SCHEMA_EVIDENCE_SYSTEM),
     response_schema=RCM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=_RCM_MAX_REPAIR_ATTEMPTS,
@@ -2073,7 +1966,7 @@ __all__ = [
     "PLANNING_CONTEXT_SYSTEM",
     "PLANNING_CONTEXT_WORKER",
     "PLANNING_CONTEXT_WORKER_ID",
-    "RCM_EVIDENCE_SYSTEM",
+    "RCM_SCHEMA_EVIDENCE_SYSTEM",
     "RCM_RESPONSE_SCHEMA",
     "RCM_SYSTEM",
     "RCM_WORKER",

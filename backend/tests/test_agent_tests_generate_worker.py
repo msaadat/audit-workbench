@@ -89,10 +89,9 @@ def _bundle(
             "workspace:transaction-evidence",
             ContextRepresentation("table_metadata"),
             transaction_manifest or {
-                "schema_version": 1,
-                "rcm_id": rcm_rows[0] if len(rcm_rows) == 1 else "",
-                "groups": [],
-                "manifest_sha256": "sha256:" + "0" * 64,
+                "kind": "ruleset",
+                "ruleset": None,
+                "reason": "no_approved_ruleset",
             },
         ),
     ]
@@ -321,34 +320,6 @@ def test_generate_worker_produces_a_ready_data_test():
     )
 
 
-def test_generate_worker_sends_a_compact_context_projection():
-    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
-
-    WORKERS.execute(_request(), gateway)
-
-    payload = json.loads(gateway.calls[0]["user"])
-    assert set(payload) == {
-        "target_rcm_row",
-        "planning_context",
-        "table_schemas",
-        "documents",
-        "transaction_evidence",
-        "methodology",
-        "allowed_test_variants",
-        "instructions",
-    }
-    assert payload["transaction_evidence"]["groups"] == []
-    assert payload["transaction_evidence"]["manifest_sha256"].startswith("sha256:")
-    assert payload["target_rcm_row"]["id"] == "RCM-1"
-    assert payload["planning_context"] == {"objective": "Assess procurement approvals"}
-    assert payload["table_schemas"][0]["table"] == "transactions"
-    assert payload["allowed_test_variants"] == ["data", "document_question"]
-    assert "Cycle Vouch is forbidden" in payload["instructions"]
-    assert "table_profiles" not in payload
-    assert "supplied_size" not in gateway.calls[0]["user"]
-    assert "representation" not in gateway.calls[0]["user"]
-
-
 def test_generate_worker_produces_a_ready_document_question_test():
     gateway = _Gateway([json.dumps({"tests": [_document_test()]})])
 
@@ -436,169 +407,6 @@ def test_generate_worker_repairs_unavailable_cycle_to_document_question():
     assert result.proposal["tests"][0]["steps"][0]["mode"] == "question"
 
 
-def test_generate_worker_hydrates_the_canonical_cycle_definition_locally():
-    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
-
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    cycle = _test_payload(contract)
-    population = cycle["definition"]["population"]
-    response = {
-        "source": "document",
-        "kind": "cycle_vouch",
-        "title": cycle["title"],
-        "objective": cycle["objective"],
-        "requirement_refs": cycle["requirement_refs"],
-        "procedure_key": cycle["procedure_key"],
-        "candidate_id": population["candidate_id"],
-        "selection_reason": population["selection_reason"],
-        "selection": {"mode": "evidence_linked"},
-        "recipe_bindings": cycle["definition"]["recipe_bindings"],
-    }
-    bundle = _bundle(
-        rcm_rows=(cycle["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-    )
-    gateway = _Gateway([json.dumps({"tests": [response]})])
-
-    result = WORKERS.execute(_request(bundle), gateway)
-
-    proposed = result.proposal["tests"][0]
-    assert proposed["kind"] == "cycle_vouch"
-    assert list(proposed["requirement_refs"]) == cycle["requirement_refs"]
-    assert proposed["registry"] == cycle["registry"]
-    assert proposed["definition"]["population"]["table"] == population["table"]
-    assert [dict(role) for role in proposed["definition"]["roles"]] == cycle[
-        "definition"
-    ]["roles"]
-    assert "steps" not in proposed
-    model_manifest = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
-    assert "document_id" not in model_manifest["groups"][0]["records"][0]
-    assert "record_id" not in model_manifest["groups"][0]["records"][0]
-    model_payload = json.loads(gateway.calls[0]["user"])
-    assert model_payload["documents"] == []
-    assert model_payload["allowed_test_variants"] == ["cycle_vouch"]
-
-
-def test_generate_worker_rejects_an_admitted_partial_cycle_substitute():
-    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
-
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    cycle = _test_payload(contract)
-    population = cycle["definition"]["population"]
-    response = {
-        "source": "document",
-        "kind": "cycle_vouch",
-        "title": cycle["title"],
-        "objective": "Validate amounts as a prerequisite for the referenced requirement.",
-        "requirement_refs": cycle["requirement_refs"],
-        "procedure_key": cycle["procedure_key"],
-        "candidate_id": population["candidate_id"],
-        "selection_reason": population["selection_reason"],
-        "selection": {"mode": "evidence_linked"},
-        "assertions": cycle["definition"]["assertions"],
-    }
-    bundle = _bundle(
-        rcm_rows=(cycle["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-    )
-    serialized = json.dumps({"tests": [response]})
-
-    with pytest.raises(WorkerRunError, match="does not cover its referenced requirement"):
-        WORKERS.execute(_request(bundle), _Gateway([serialized, serialized, serialized]))
-
-
-def test_generate_worker_refuses_to_leave_a_cycle_attribute_untested():
-    """A transaction-cycle requirement has exactly one executable form.
-
-    The live engagement answered its three-way-match attribute with a Polars
-    join of the ledgers against themselves. That satisfied every structural
-    rule, referenced the row, and examined no voucher, so the row's flagship
-    requirement was silently never vouched.
-    """
-
-    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
-
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    cycle = _test_payload(contract)
-    bundle = _bundle(
-        rcm_rows=(cycle["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-    )
-    only_data = json.dumps({"tests": [_data_test()]})
-    gateway = _Gateway([only_data, only_data, only_data])
-
-    with pytest.raises(WorkerRunError) as caught:
-        WORKERS.execute(_request(bundle), gateway)
-
-    message = str(caught.value)
-    assert "declares transaction_cycle evidence" in message
-    assert "five_record_cycle" in message
-    guidance = gateway.calls[1]["conversation"][-1]["content"]
-    assert "five_record_cycle" in guidance
-
-
-def test_a_rejected_cycle_test_is_not_also_reported_as_an_absent_one():
-    """A repair message must carry a defect, not a defect and its consequence.
-
-    A cycle test refused for its own reason never reaches the coverage check,
-    which then reports the attribute as uncovered too. The turn is told both
-    that its test is invalid and that it must add a test referencing the very
-    attribute that test references — and no rewrite satisfies both, so all
-    three attempts returned byte-identical JSON.
-    """
-
-    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
-
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    cycle = _test_payload(contract)
-    response = {
-        "source": "document",
-        "kind": "cycle_vouch",
-        "title": cycle["title"],
-        "objective": cycle["objective"],
-        "requirement_refs": cycle["requirement_refs"],
-        "procedure_key": cycle["procedure_key"],
-        # A candidate ID the manifest does not carry: rejected for its own
-        # reason, with the requirement_refs it names still on the response.
-        "candidate_id": "CYCLE-CAND-NOTAREALCANDIDATE",
-        "selection_reason": "Selected the highest-ranked candidate.",
-        "selection": {"mode": "evidence_linked"},
-        "recipe_bindings": cycle["definition"]["recipe_bindings"],
-    }
-    bundle = _bundle(
-        rcm_rows=(cycle["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-    )
-    serialized = json.dumps({"tests": [response]})
-
-    with pytest.raises(WorkerRunError) as caught:
-        WORKERS.execute(_request(bundle), _Gateway([serialized] * 3))
-
-    message = str(caught.value)
-    assert "is not an exact prevalidated candidate" in message
-    assert "declares transaction_cycle evidence" not in message
-
-
 def test_generate_worker_produces_a_ready_document_vouch_test():
     """The retired narrative cycle branch fails closed."""
 
@@ -607,17 +415,6 @@ def test_generate_worker_produces_a_ready_document_vouch_test():
 
     with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
-
-
-def test_generate_worker_names_the_transaction_evidence_it_was_supplied():
-    """The one fact that decides whether a cycle test is possible is surfaced."""
-
-    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
-
-    WORKERS.execute(_request(_voucher_bundle()), gateway)
-
-    evidence = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
-    assert evidence["groups"] == []
 
 
 def test_generate_worker_keeps_document_fallback_when_cycle_has_no_candidates():
@@ -775,69 +572,6 @@ def test_generate_worker_bounds_document_projection():
     payload = json.loads(gateway.calls[0]["user"])
     assert len(payload["documents"]) == 6
     assert payload["allowed_test_variants"] == ["document_question"]
-
-
-def test_generate_worker_supplies_only_grounded_vouch_candidates_and_paths():
-    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
-
-    WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
-
-    payload = json.loads(gateway.calls[0]["user"])
-    assert payload["transaction_evidence"]["groups"] == []
-
-
-def test_generate_response_contract_discriminates_the_failure_prone_shapes():
-    variants = tests_workers.GENERATE_RESPONSE_CONTRACT["variants"]
-    assert set(variants) == {"data", "document_question", "cycle_vouch"}
-    assert variants["cycle_vouch"]["kind"] == "cycle_vouch"
-    assert "steps" in variants["cycle_vouch"]["forbidden"]
-    assert "definition" in variants["cycle_vouch"]["forbidden"]
-    # Assertions are compiled from the row's required_comparisons, so a
-    # model-authored set is now as much a contract violation as a definition.
-    assert "assertions" in variants["cycle_vouch"]["forbidden"]
-    assert "assertions" not in variants["cycle_vouch"]["required"]
-    assert "candidate_id" in variants["cycle_vouch"]["required"]
-    assert "Cycle Vouch" in tests_workers.GENERATE_SYSTEM
-    assert "dotted paths" in tests_workers.GENERATE_SYSTEM
-    assert "never use `df`" in tests_workers.GENERATE_SYSTEM
-    assert "Every step runs separately" in tests_workers.GENERATE_SYSTEM
-
-
-def test_generate_worker_rejects_a_misplaced_cycle_candidate_with_exact_guidance():
-    """Regression: a valid ID under candidate_selection used to look invented."""
-    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
-
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    cycle = _test_payload(contract)
-    population = cycle["definition"]["population"]
-    misplaced = {
-        "source": "document",
-        "kind": "cycle_vouch",
-        "title": cycle["title"],
-        "objective": cycle["objective"],
-        "requirement_refs": cycle["requirement_refs"],
-        "procedure_key": cycle["procedure_key"],
-        "definition": {"population": {"table": population["table"]}},
-        "candidate_selection": {"candidate_id": population["candidate_id"]},
-    }
-    bundle = _bundle(
-        rcm_rows=(cycle["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-    )
-    invalid = json.dumps({"tests": [misplaced]})
-
-    with pytest.raises(WorkerRunError) as caught:
-        WORKERS.execute(_request(bundle), _Gateway([invalid, invalid, invalid]))
-
-    message = str(caught.value)
-    assert "tests[0].candidate_id must copy exactly" in message
-    assert population["candidate_id"] in message
-    assert "model-authored 'definition'" in message
 
 
 def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
@@ -1703,115 +1437,175 @@ def test_generate_worker_keeps_a_clean_response_whole_and_not_partial():
     assert len(result.proposal["tests"]) == 2
 
 
-def test_generate_worker_refuses_partial_commit_while_a_cycle_requirement_is_uncovered():
-    """Readiness is satisfied by any executable test.
 
-    Committing the siblings of a failed cycle test would mark the row done and
-    retire the unit that still owes that cycle test, so this one row-level gap
-    keeps the strict all-or-nothing behaviour.
-    """
-    from test_cycle_vouching_phase2 import _manifest, _row_payload
 
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
+# --------------------------------------------------------------- cycle tests
+def _approved_rules(**overrides):
+    """The candidate the adapter supplies for a workspace with approved rules."""
+
+    candidate = {
+        "kind": "ruleset",
+        "ruleset_id": "lnk-1",
+        "ruleset_hash": "sha256:rules",
+        "cycle_label": "Procure to pay",
+        "roles": [
+            {"name": "invoice", "document_type": "vendor_invoice", "required": True},
+            {"name": "order", "document_type": "purchase_order", "required": True},
+        ],
+        "anchor": {
+            "table": "transactions", "column": "invoice",
+            "role": "invoice", "field": "invoice_number",
+        },
+        "assertions": [{
+            "id": "as_total", "label": "Totals agree",
+            "operator": "numeric_within",
+            "rationale": "The amount billed must be the amount ordered.",
+        }],
+        "reach": {
+            "population_rows": 40, "linked_rows": 32,
+            "complete_cycles": 30, "missing_role_counts": {},
+        },
+        "selection_confirmation": None,
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def _cycle_row(**overrides):
+    row = {
+        "id": "RCM-1",
+        "risk": "Payments may be made for goods never ordered",
+        "control": "Every invoice is matched to an approved purchase order",
+        "existing_tests": [],
+        "control_attributes": [{
+            "key": "invoice_match",
+            "assertion": "Accuracy",
+            "requirement": "The invoice agrees to the order it bills against.",
+            "evidence_kind": "transaction_cycle",
+            "required_comparisons": [{
+                "key": "totals_agree",
+                "left": {"document_type": "vendor_invoice", "field": "total_amount"},
+                "right": {"document_type": "purchase_order", "field": "total_amount"},
+                "operator": "numeric_within",
+                "tolerance": {"absolute": 1},
+            }],
+        }],
+    }
+    row.update(overrides)
+    return row
+
+
+def _cycle_bundle(**overrides):
+    return _bundle(
+        rcm_payload=_cycle_row(),
+        transaction_manifest=_approved_rules(),
+        **overrides,
     )
-    bundle = _bundle(
-        rcm_rows=(contract["cycle_test"]["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-        document_categories={"DOC-1": "voucher"},
-    )
-    # A valid document question, and no cycle test at all for a row that
-    # declares transaction_cycle evidence.
-    response = json.dumps({"tests": [_document_test()]})
-    gateway = _Gateway([response, response, response])
-
-    with pytest.raises(WorkerRunError, match="declares transaction_cycle evidence"):
-        WORKERS.execute(_request(bundle), gateway)
 
 
-# --------------------------------------------------------------------------- #
-# Compiled cycle assertions
-# --------------------------------------------------------------------------- #
-def _cycle_response(contract, **overrides):
-    from test_cycle_vouching_phase2 import _test_payload
-
-    cycle = _test_payload(contract)
-    population = cycle["definition"]["population"]
+def _cycle_test(**overrides):
     value = {
         "source": "document",
         "kind": "cycle_vouch",
-        "title": cycle["title"],
-        "objective": cycle["objective"],
-        "requirement_refs": cycle["requirement_refs"],
-        "procedure_key": cycle["procedure_key"],
-        "candidate_id": population["candidate_id"],
-        "selection_reason": population["selection_reason"],
+        "title": "Vouch invoices to purchase orders",
+        "objective": "Vouch each selected invoice to its approved order.",
+        "requirement_refs": ["RCM-1:invoice_match"],
+        "procedure_key": "match_invoice_to_order",
         "selection": {"mode": "evidence_linked"},
-        "recipe_bindings": copy.deepcopy(cycle["definition"]["recipe_bindings"]),
     }
     value.update(overrides)
     return value
 
 
-def test_generate_worker_compiles_assertions_the_model_never_authors():
-    from test_cycle_vouching_phase2 import _manifest, _row_payload
+def test_a_cycle_test_names_its_rules_and_its_rows_and_nothing_else():
+    gateway = _Gateway([json.dumps({"tests": [_cycle_test()]})])
 
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
+    result = WORKERS.execute(_request(_cycle_bundle()), gateway)
+
+    proposed = result.proposal["tests"][0]
+    assert proposed["definition"]["ruleset_id"] == "lnk-1"
+    assert proposed["definition"]["population"]["selection"] == {
+        "mode": "evidence_linked"
+    }
+    # The roles, join keys and assertions are read from the approved ruleset.
+    assert "roles" not in proposed["definition"]
+    assert "assertions" not in proposed["definition"]
+
+
+def test_the_turn_is_shown_the_rules_rather_than_asked_to_restate_them():
+    gateway = _Gateway([json.dumps({"tests": [_cycle_test()]})])
+
+    WORKERS.execute(_request(_cycle_bundle()), gateway)
+
+    supplied = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
+    assert supplied["available"] is True
+    assert supplied["population"] == {"table": "transactions", "column": "invoice"}
+    assert [role["document_type"] for role in supplied["roles"]] == [
+        "vendor_invoice", "purchase_order"
+    ]
+    # Identity and hashes help it choose nothing.
+    assert "ruleset_hash" not in supplied
+
+
+def test_a_cycle_test_is_refused_where_no_rules_are_approved():
+    """The turn is told what to return instead, rather than left to guess."""
+
+    stubborn = json.dumps({"tests": [_cycle_test()]})
+    gateway = _Gateway([stubborn, stubborn, stubborn])
+
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_bundle(rcm_payload=_cycle_row())), gateway)
+
+    assert "no approved cycle ruleset" in str(raised.value)
+
+
+def test_a_requirement_the_row_does_not_state_is_refused():
+    stubborn = json.dumps(
+        {"tests": [_cycle_test(requirement_refs=["RCM-1:invented"])]}
     )
-    bundle = _bundle(
-        rcm_rows=(contract["cycle_test"]["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
+    gateway = _Gateway([stubborn, stubborn, stubborn])
+
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_cycle_bundle()), gateway)
+
+    assert "cite no transaction_cycle control attribute" in str(raised.value)
+
+
+def test_a_cycle_attribute_left_untested_is_reported():
+    """A three-way match could otherwise be answered by joining the ledgers to
+    themselves — complete by every structural rule, and no voucher examined."""
+
+    ordinary = {
+        "source": "document", "title": "Read the invoices",
+        "objective": "Read them.",
+        "steps": [{
+            "label": "Read", "instruction": "Read it.", "mode": "question",
+            "document_ids": ["DOC-1"], "question": "What does it say?",
+        }],
+    }
+    stubborn = json.dumps({"tests": [ordinary]})
+    gateway = _Gateway([stubborn, stubborn, stubborn])
+
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_cycle_bundle()), gateway)
+
+    assert "invoice_match" in str(raised.value)
+    assert "no returned cycle_vouch test references it" in str(raised.value)
+
+
+def test_a_procedure_admitting_it_does_not_cover_its_requirement_is_refused():
+    """No substitute is accepted: the strategy is corrected, or the evidence is
+    supplied. Papering over it would report the requirement as tested."""
+
+    admitted = _cycle_test(
+        objective="Vouch the orders; the receipts are not available to test.",
     )
-    gateway = _Gateway([json.dumps({"tests": [_cycle_response(contract)]})])
+    stubborn = json.dumps({"tests": [admitted]})
+    gateway = _Gateway([stubborn, stubborn, stubborn])
 
-    result = WORKERS.execute(_request(bundle), gateway)
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_cycle_bundle()), gateway)
 
-    assertions = result.proposal["tests"][0]["definition"]["assertions"]
-    assert assertions, "assertions are derived from the cited recipes"
-    from app import cycle_vouching
-
-    expected = cycle_vouching.required_comparisons_for(
-        rcm_row=_row_payload(contract),
-        requirement_refs=contract["cycle_test"]["requirement_refs"],
-        recipe_bindings=contract["cycle_test"]["definition"]["recipe_bindings"],
+    assert "admits that the proposed cycle procedure does not cover" in str(
+        raised.value
     )
-    # Two attributes may cite one shape over the same records; that is one
-    # assertion, and the compiler dedupes it.
-    assert [item["key"] for item in assertions] == list(
-        dict.fromkeys(item["key"] for item in expected)
-    )
-    # One cited shape answered two record pairs, and each got its own assertion.
-    assert sum(
-        1 for item in assertions if item["key"].startswith("total_amount_agreement")
-    ) == 2
-    # The prompt no longer describes the assertion DSL at all.
-    assert "role_quantifier" not in gateway.calls[0]["system"]
-
-
-def test_generate_worker_requires_requirement_refs_that_carry_comparisons():
-    from test_cycle_vouching_phase2 import _manifest, _row_payload
-
-    contract = json.loads(
-        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    bundle = _bundle(
-        rcm_rows=(contract["cycle_test"]["rcm_id"],),
-        rcm_payload=_row_payload(contract),
-        transaction_manifest=_manifest(contract),
-    )
-    invalid = json.dumps(
-        {"tests": [_cycle_response(contract, requirement_refs=["RCM-1:not_a_real_key"])]}
-    )
-    gateway = _Gateway([invalid, invalid, invalid])
-
-    with pytest.raises(WorkerRunError, match="cite no transaction_cycle control"):
-        WORKERS.execute(_request(bundle), gateway)

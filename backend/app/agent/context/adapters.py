@@ -14,6 +14,7 @@ from dataclasses import replace
 
 from ... import (
     assistant,
+    cycle_linking,
     cycle_vouching,
     doc_tests,
     document_context,
@@ -1045,8 +1046,6 @@ def document_test_document_candidates(
     return tuple(candidates)
 
 
-
-
 TEST_GENERATE_PLANNING_SOURCE_ID = "planning_context"
 TEST_GENERATE_ROW_SOURCE_ID = "rcm_row"
 TEST_GENERATE_TABLE_METADATA_SOURCE_ID = "table_metadata"
@@ -1245,9 +1244,10 @@ def test_generate_scope(
             for key in ("created_by", "agent_run_id", "updated")
         },
     }
-    transaction_manifest = cycle_vouching.transaction_evidence_manifest(
-        workspace, row.get("control_attributes") or []
-    )
+    # The approved cycle rules, and what they reach across the population they
+    # are anchored on. One candidate, not a list of them: the anchor is part of
+    # what the auditor approved.
+    transaction_manifest = cycle_linking.candidate(workspace)
     return ContextScope(
         candidates={
             TEST_GENERATE_PLANNING_SOURCE_ID: (
@@ -2878,6 +2878,9 @@ def promotion_scope(workspace: Workspace, analysis_id: str) -> ContextScope:
 DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
+DOCUMENT_CLASSIFICATION_SOURCE_ID = "document_classification"
+DOCUMENT_SCHEMA_SAMPLE_SOURCE_ID = "document_schema_sample"
+DOCUMENT_STRUCTURED_CHUNK_SOURCE_ID = "document_structured_chunk"
 DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID = "document_page_images"
 DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID = "chunk_analyses"
 
@@ -2979,72 +2982,60 @@ def document_chunk_scope(
     )
 
 
-def document_identity_candidate(
-    workspace: Workspace, document_id: str
-) -> ContextCandidate:
-    """Expose only the identity a citation binds to — never descriptive metadata.
+def document_classification_scope(
+    workspace: Workspace,
+    document_id: str,
+    text: str,
+) -> ContextScope:
+    """Build the local scope for one document type-classification unit.
 
-    The voucher profile extracts transaction identifiers from the record's own
-    text. A filename like ``EXP-2025-003_PV-2025-003.pdf`` contains exactly those
-    identifiers, so supplying the standard metadata projection would let a worker
-    report a value it read off the filename and attach a loosely related excerpt.
-    This candidate carries the document id, its source hash, and its category and
-    nothing else, which is the minimum citation validation needs.
-
-    It also carries the transaction-evidence packs this engagement has already
-    committed to, which is not descriptive metadata about the document and cannot
-    leak a field value: a pack id names a closed vocabulary, and which business
-    cycle an engagement audits is a property of the engagement rather than
-    something to be judged from one chunk of one voucher.
+    The opening page and nothing else — no metadata projection, no filename.
+    A filename like ``PO-2025-17.pdf`` names the type outright, and supplying it
+    would let the worker report a label it read off the path rather than off the
+    document. The same reasoning already keeps the voucher profile on
+    ``document_identity_candidate``; here it is stricter still, because there is
+    no identifier the classifier legitimately needs.
     """
-    document = _document_entry(workspace, document_id)
-    projection = {
-        "document_id": str(document_id),
-        "source_sha1": str(document.get("sha1") or ""),
-        "category": str(document.get("category") or ""),
-        "cycle_pack_ids": cycle_vouching.committed_pack_ids(workspace),
-    }
-    return ContextCandidate(
-        source_ref=f"document:{document_id}",
-        source=projection,
-        # The same registered representation the metadata candidate uses: the
-        # narrowing here is what the projection *contains*, not a new privacy
-        # class. Adding one would change ``ContextPrivacy`` and rehash every
-        # declared spec in the system for no additional protection.
-        representations={"current_artifact": projection},
-        metadata=dict(projection),
+
+    payload = {"document_id": str(document_id), "page": 1, "text": str(text or "")}
+    return ContextScope(
+        candidates={
+            DOCUMENT_CLASSIFICATION_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=f"document:{document_id}:page:1",
+                    source=payload,
+                    representations={"raw_pages": payload},
+                    metadata={"document_id": str(document_id), "page": 1},
+                ),
+            ),
+        },
     )
 
 
-def document_voucher_scope(
+def document_structured_chunk_scope(
     workspace: Workspace,
     document_id: str,
     chunk: Mapping[str, object],
 ) -> ContextScope:
-    """The voucher map unit's scope: one chunk plus bare document identity.
+    """Build the local scope for one schema-guided extraction unit.
 
-    Deliberately not ``document_chunk_scope``: this profile withholds the
-    descriptive metadata that profile supplies, so that every identifier in the
-    structured result is one the worker read out of the record itself.
+    Exactly one chunk, and no metadata projection: the schema names the fields,
+    so a filename carrying an identifier would only invite the worker to report a
+    value it read off the path. The same narrowing the pack profile already
+    applies through ``document_identity_candidate``, taken one step further now
+    that the vocabulary no longer has to be chosen from the document.
     """
+
     payload = {
         "id": str(chunk.get("id") or ""),
         "page": int(chunk.get("page") or 0),
-        "pages": [int(page) for page in chunk.get("pages") or []],
-        "start_character": int(chunk.get("start_character") or 0),
-        "end_character": int(chunk.get("end_character") or 0),
         "text": str(chunk.get("text") or ""),
     }
     return ContextScope(
         candidates={
-            DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID: (
-                document_identity_candidate(workspace, document_id),
-            ),
-            DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID: (
+            DOCUMENT_STRUCTURED_CHUNK_SOURCE_ID: (
                 ContextCandidate(
-                    source_ref=(
-                        f"document:{document_id}:chunk:{payload['id']}"
-                    ),
+                    source_ref=f"document:{document_id}:chunk:{payload['id']}",
                     source=payload,
                     representations={"raw_pages": payload},
                     metadata={
@@ -3052,6 +3043,35 @@ def document_voucher_scope(
                         "chunk_id": payload["id"],
                         "page": payload["page"],
                     },
+                ),
+            ),
+        },
+    )
+
+
+def document_schema_sample_scope(
+    workspace: Workspace,
+    document_id: str,
+    text: str,
+) -> ContextScope:
+    """Build the local scope for one schema-sample unit.
+
+    The document's own text and nothing else. No metadata projection and no
+    filename, for the same reason classification gets none: a path like
+    ``PO-2025-17.pdf`` names fields the document may not actually carry, and a
+    schema induced partly from a filename would be applied to every document of
+    the type.
+    """
+
+    payload = {"document_id": str(document_id), "text": str(text or "")}
+    return ContextScope(
+        candidates={
+            DOCUMENT_SCHEMA_SAMPLE_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=f"document:{document_id}:schema-sample",
+                    source=payload,
+                    representations={"raw_pages": payload},
+                    metadata={"document_id": str(document_id)},
                 ),
             ),
         },
@@ -3266,8 +3286,6 @@ __all__ = [
     "small_table_row_candidates",
     "MAX_SMALL_TABLE_ROWS",
     "document_chunk_scope",
-    "document_identity_candidate",
-    "document_voucher_scope",
     "document_metadata_candidate",
     "document_qa_page_candidates",
     "document_qa_scope",

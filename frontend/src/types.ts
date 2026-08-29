@@ -50,6 +50,237 @@ export interface WorkspaceSummary {
 export type DocumentCategory = 'background' | 'policy' | 'regulation' | 'contract' | 'minutes' | 'voucher' | 'evidence' | 'prior_report' | 'correspondence' | 'other'
 export type DocumentTextState = 'pending' | 'extracted' | 'image_only' | 'partial' | 'failed'
 
+/** Who decided a document's type. A reclassification rerun may replace a
+ *  model assignment; an auditor's stands until another auditor changes it. */
+export type DocumentTypeAssigner = 'model' | 'auditor'
+
+export interface DocumentClassification {
+  document_type: string | null
+  /** Set only when the type is `other`: what the auditor or model called it. */
+  document_type_other: string | null
+  assigned_by: DocumentTypeAssigner | null
+  assigned_at: string | null
+  confidence: 'high' | 'medium' | 'low' | null
+  rationale: string
+  previous_document_type: string | null
+  agent_run_id: string | null
+  unit_id: string | null
+  /** The catalog this answer was chosen from. An `other` is only worth
+   *  re-asking once this differs from the workspace's current catalog. */
+  catalog_sha1: string | null
+}
+
+export interface DocumentTypeDefinition {
+  id: string
+  label: string
+  area: string
+  discriminator: string
+  aliases: string[]
+  active: boolean
+}
+
+export interface DocumentTypeArea {
+  id: string
+  label: string
+}
+
+/** A type an auditor coined for this engagement. Prefixed `local.`. */
+export interface LocalDocumentType {
+  id: string
+  label: string
+  discriminator: string
+  created: string
+  created_by: string
+}
+
+export interface DocumentTypeSummary {
+  documents: number
+  classified: number
+  unclassified: number
+  other: number
+  auditor_assigned: number
+  types_present: string[]
+  local_types: string[]
+}
+
+export interface DocumentTypeCatalog {
+  areas: DocumentTypeArea[]
+  types: DocumentTypeDefinition[]
+  local_prefix: string
+  other: string
+  local_types: LocalDocumentType[]
+  summary: DocumentTypeSummary
+}
+
+export interface UnidentifiedDocument extends DocumentClassification {
+  document_id: string
+  title: string
+}
+
+/** A field on an induced document schema. `role` is the only part with
+ *  downstream meaning: only an `identifier` field may serve as a join key. */
+export interface DocumentSchemaField {
+  name: string
+  role: 'identifier' | 'party' | 'attribute' | 'control'
+  value_type: 'identifier' | 'date' | 'number' | 'text' | 'boolean'
+  cardinality: 'one' | 'many'
+  verbatim: boolean
+  confidence: 'high' | 'medium' | 'low'
+  label: string
+}
+
+export interface DocumentSchema {
+  document_type: string
+  schema_version: number
+  schema_hash: string
+  fields: DocumentSchemaField[]
+  derived_from: string[]
+  reconciled: boolean
+  /** Induced from a single sample, so nothing in it was corroborated. */
+  low_confidence: boolean
+  created: string
+  updated: string
+}
+
+/** What an extraction was made against. Exact-matched on read. */
+export interface DocumentSchemaRef {
+  document_type: string
+  schema_version: number
+  schema_hash: string
+}
+
+export type CycleRulesetStatus = 'proposed' | 'approved' | 'rejected' | 'superseded'
+
+export interface CycleRole {
+  name: string
+  document_type: string
+  cardinality: 'one' | 'many'
+  required: boolean
+}
+
+export interface CycleOperandRef {
+  role: string
+  field: string
+}
+
+export interface CycleJoinKey {
+  id: string
+  left: CycleOperandRef
+  right: CycleOperandRef
+  match: 'normalized_equal' | 'exact_equal'
+  rationale: string
+}
+
+export interface CycleRulesetAssertion {
+  id: string
+  label: string
+  left: CycleOperandRef
+  right: CycleOperandRef | null
+  operator: string
+  tolerance: Record<string, number> | null
+  rationale: string
+}
+
+/** Code-computed, never model-supplied. Fan-out is what makes an entity
+ *  identifier masquerading as a join key visible to a reviewer. */
+export interface JoinKeyMeasurement {
+  left_documents: number
+  right_documents: number
+  left_stating_key: number
+  matched_pairs: number
+  left_unmatched: number
+  fan_out_p50: number
+  fan_out_p95: number
+  fan_out_max: number
+}
+
+export interface AssertionMeasurement {
+  left_stating: number
+  right_stating: number | null
+  evaluable_records: number
+  /** Nothing states both sides, so the rule would never run — which looks the
+   *  same as one that always passes. */
+  silent: boolean
+}
+
+export interface CycleRulesetMeasurement {
+  join_keys: Record<string, JoinKeyMeasurement>
+  assertions: Record<string, AssertionMeasurement>
+  records_measured: number
+}
+
+export interface CycleRulesetConcern {
+  rule: string
+  kind: 'join_key' | 'assertion'
+  concern: 'entity_fan_out' | 'poor_coverage' | 'silent'
+  detail: string
+}
+
+export interface CycleRuleset {
+  ruleset_id: string
+  status: CycleRulesetStatus
+  cycle_label: string
+  roles: CycleRole[]
+  anchor: { table: string; column: string; role: string; field: string }
+  join_keys: CycleJoinKey[]
+  assertions: CycleRulesetAssertion[]
+  schema_refs: DocumentSchemaRef[]
+  ruleset_hash: string
+  proposed_by: string
+  approved_by: string | null
+  approved_at: string | null
+  created: string
+  updated: string
+  measured: CycleRulesetMeasurement
+  concerns: CycleRulesetConcern[]
+}
+
+/** What a cycle test can be built on in a workspace with approved rules.
+ *  One candidate, not a list: the anchor is part of what was approved, so the
+ *  only decision left is the selection. */
+export interface CycleRulesetCandidate {
+  kind: 'ruleset'
+  ruleset_id?: string
+  ruleset_hash?: string
+  cycle_label?: string
+  roles?: CycleRole[]
+  anchor?: { table: string; column: string; role: string; field: string }
+  assertions?: Array<{ id: string; label: string; operator: string; rationale: string }>
+  reach?: {
+    population_rows: number
+    linked_rows: number
+    complete_cycles: number
+    missing_role_counts: Record<string, number>
+  }
+  selection_confirmation?: { reason: string; eligible_row_count: number } | null
+  /** Present when there is nothing to build on, and says which of the two
+   *  reasons it is. */
+  reason?: 'no_approved_ruleset' | 'population_table_missing'
+}
+
+export interface CycleRulesetDefinition {
+  ruleset_id: string
+  population: {
+    selection:
+      | { mode: 'evidence_linked' }
+      | {
+          mode: 'sample'
+          method: string
+          size: number
+          seed: number
+          stratify_by?: string
+        }
+  }
+}
+
+export interface CycleRulesetListing {
+  items: CycleRuleset[]
+  /** At most one ruleset is effective in a workspace. */
+  effective_ruleset_id: string | null
+  schemas: DocumentSchema[]
+  types_present: string[]
+}
+
 export interface AuditDocument {
   id: string
   file: string
@@ -76,6 +307,7 @@ export interface AuditDocument {
   analysis_resumable_run_id: string | null
   search_index_state: DocumentSearchIndexState
   analysis_vision_used: boolean
+  classification: DocumentClassification
 }
 
 export type DocumentAnalysisRunState = 'idle' | 'queued' | 'analyzing' | 'paused' | 'interrupted' | 'failed' | 'cancelled'
@@ -125,12 +357,9 @@ export interface GeneratedDocumentAnalysis {
   audit_notes_markdown: string
   /** Profile-specific structured extraction, such as voucher IDs and approvals. */
   fields?: Record<string, unknown>
-  registry?: CycleRegistryReference
-  record_fragments?: EvidenceRecordFragment[]
-  records?: ReducedEvidenceRecord[]
-  unresolved_fragments?: Array<{ reason: 'missing_identity' | 'ambiguous_identity'; fragment: EvidenceRecordFragment; candidate_component_count?: number }>
-  conflicts?: Array<Record<string, unknown>>
-  evidence_content_sha256?: string
+  /** Records a schema-guided extraction stated, under `schema_ref`. */
+  records?: Array<Record<string, unknown>>
+  schema_ref?: DocumentSchemaRef
   citations: DocumentAnalysisCitation[]
   coverage: {
     state: DocumentAnalysisCoverageState
@@ -143,95 +372,17 @@ export interface GeneratedDocumentAnalysis {
   }
 }
 
-export type CyclePackId = string
-export type EvidenceRecordKindId = string
-export type EvidenceIdentifierKindId = string
-export type EvidenceFieldKindId = string
 export type EvidenceKindId = string
-export type EvidenceSemanticType = 'identifier' | 'date' | 'number' | 'text' | 'boolean'
-
-export interface CycleRegistryReference {
-  pack_id: CyclePackId
-  pack_version: number
-  definition_hash: string
-}
-
-export interface EvidenceIdentifierKindDescriptor {
-  id: EvidenceIdentifierKindId
-  label: string
-  edge_policy: 'transaction' | 'non_linking'
-  value_type: EvidenceSemanticType
-  normalizer_id: string
-}
-
-export interface EvidenceFieldKindDescriptor {
-  id: EvidenceFieldKindId
-  label: string
-  group: string
-  kind: string
-  /** `verbatim: false` marks an attribute that carries a reading of the record
-   * (a party's role, an approval's decision) rather than a quote from it.
-   * `control_evidence` marks one whose mere presence shows a control operated,
-   * which is the only kind a `present` assertion may name on a required role. */
-  attributes: Array<{
-    id: string
-    semantic_type: EvidenceSemanticType
-    verbatim?: boolean
-    control_evidence?: boolean
-  }>
-}
-
-export interface EvidenceRecordKindDescriptor {
-  id: EvidenceRecordKindId
-  label: string
-  primary_identifier_kinds: EvidenceIdentifierKindId[]
-  available_field_kinds: EvidenceFieldKindId[]
-  bindable: boolean
-}
-
-export interface CyclePackDescriptor {
-  id: CyclePackId
-  label: string
-  version: number
-  definition_hash: string
-  normalizer_ids: string[]
-  identifier_kind_ids: EvidenceIdentifierKindId[]
-  field_kind_ids: EvidenceFieldKindId[]
-  record_kind_ids: EvidenceRecordKindId[]
-  /** The pack's own chronology, used to reject a date comparison stated
-   * backwards. Records that state the same event share one `order`, and a date
-   * field the pack leaves out is never direction-checked. */
-  date_lifecycle?: Array<{
-    record_kind_id: EvidenceRecordKindId
-    group: string
-    kind: string
-    order: number
-  }>
-  identifier_kinds: EvidenceIdentifierKindDescriptor[]
-  field_kinds: EvidenceFieldKindDescriptor[]
-  record_kinds: EvidenceRecordKindDescriptor[]
-}
-
-export interface CycleRegistryMetadata {
-  packs: CyclePackDescriptor[]
-  evidence_kinds: Array<{
-    id: EvidenceKindId
-    label: string
-    record_kind_requirement: 'required' | 'forbidden'
-  }>
-}
 
 export interface CycleVouchMetadata {
   schema_version: number
-  registry: CycleRegistryMetadata
-  cardinalities: Array<'one' | 'many'>
-  reuse_rules: Array<'exclusive' | 'allowed'>
+  cardinalities: string[]
+  reuse_rules: string[]
   selection_modes: Array<'evidence_linked' | 'sample'>
   sampling_methods: Array<'random' | 'interval' | 'stratified'>
-  assurance_scopes: CycleAssuranceScope[]
+  assurance_scopes: string[]
+  assertions: string[]
   operators: CycleOperator[]
-  entry_quantifiers: Array<'one' | 'any' | 'all'>
-  role_quantifiers: Array<'all' | 'any'>
   limits: {
     max_graph_hops: number
     max_cycle_records: number
@@ -239,8 +390,9 @@ export interface CycleVouchMetadata {
     max_roles: number
     max_assertions: number
     max_items: number
-    min_cycle_record_kinds: number
   }
+  /** Evidence strategies a control attribute may declare. */
+  registry?: { evidence_kinds: Array<{ id: EvidenceKindId; label: string }> }
 }
 
 export interface NormalizedEvidenceValue<T = unknown> {
@@ -249,28 +401,6 @@ export interface NormalizedEvidenceValue<T = unknown> {
   normalization_status: 'normalized' | 'invalid'
   normalization_error: string | null
   citation: string | DocumentAnalysisCitation | Array<string | DocumentAnalysisCitation>
-}
-
-export interface EvidenceRecordFragment {
-  registry: CycleRegistryReference
-  chunk_id: string
-  page_span: [number, number]
-  record_kind: EvidenceRecordKindId
-  candidate_record_kinds?: EvidenceRecordKindId[]
-  review_reason?: string
-  classification_evidence: Array<string | DocumentAnalysisCitation>
-  identifiers: Array<{ kind: EvidenceIdentifierKindId; value: NormalizedEvidenceValue<string> }>
-  fields: Array<{ group: string; kind: string; attribute: string; entry?: number; value: NormalizedEvidenceValue }>
-}
-
-export interface ReducedEvidenceRecord {
-  registry: CycleRegistryReference
-  record_id: string
-  document_id: string
-  record_kind: EvidenceRecordKindId
-  classification_evidence: Array<string | DocumentAnalysisCitation>
-  identifiers: Array<{ kind: EvidenceIdentifierKindId; value: NormalizedEvidenceValue<string> }>
-  fields: Array<{ group: string; kind: string; attribute: string; entry?: number; value: NormalizedEvidenceValue }>
 }
 
 export interface DocumentAnalysisDetail {
@@ -410,139 +540,6 @@ export type CycleAssuranceScope = 'targeted_evidence_only' | 'sampled_population
 export type CycleOperator = 'equal_exact' | 'equal_normalized' | 'numeric_within' | 'date_on_or_before' | 'date_within' | 'present'
 export type CycleReuseRule = 'exclusive' | 'allowed'
 
-export interface CycleFieldSelector {
-  group: string
-  kind: string
-  attribute: string
-}
-
-export type CycleOperand =
-  | { source: 'row'; column: string; value_type?: 'text' | 'identifier' | 'number' | 'date' | 'boolean' }
-  | { source: 'role'; role: string; field: CycleFieldSelector }
-  | { source: 'roles'; roles: string[]; field: CycleFieldSelector; entry_quantifier: 'one' | 'any' | 'all' }
-
-export interface CycleAssertion {
-  key: string
-  label: string
-  left: CycleOperand
-  right?: CycleOperand
-  operator: CycleOperator
-  tolerance?: number | { absolute: number; percent: number }
-  role_quantifier?: 'all' | 'any'
-}
-
-export type CycleAssertionPlacement =
-  | { before_key: string }
-  | { after_key: string }
-
-export interface CycleAssertionMutationResponse {
-  test_id: string
-  test_sha1: string
-  definition_sha1: string
-  assertion_keys: string[]
-  mutation: {
-    changed: boolean
-    new_assertion_keys: string[]
-    changed_assertion_keys: string[]
-    before_definition_sha1: string
-    after_definition_sha1: string
-    before_test_sha1: string
-    after_test_sha1: string
-    retained_result_count: number
-    pending_result_count: number
-    stale_disposition_count: number
-  }
-}
-
-export interface CycleVouchDefinition {
-  population: {
-    candidate_id: string
-    selection_reason: string
-    table: string
-    row_key: { column: string; identifier_kind: EvidenceIdentifierKindId }
-    cycle_keys: Array<{ column: string; identifier_kind: EvidenceIdentifierKindId }>
-    selection:
-      | { mode: 'evidence_linked'; assurance_scope: 'targeted_evidence_only' }
-      | { mode: 'sample'; assurance_scope: 'sampled_population'; method: 'random' | 'interval' | 'stratified'; size: number; seed: number; stratify_by?: string }
-  }
-  roles: Array<{
-    role: string
-    record_kind: EvidenceRecordKindId
-    required: boolean
-    cardinality: 'one' | 'many'
-    reuse_across_items: 'exclusive' | 'allowed'
-  }>
-  assertions: CycleAssertion[]
-}
-
-export type CycleVouchPopulation = CycleVouchDefinition['population']
-
-export interface CycleCandidate {
-  candidate_id: string
-  /** 1-based position in the deterministic ranking. Among candidates over one
-   * `table` only the best-ranked is accepted: they are the same rows keyed
-   * differently, so a lower-ranked one is a grain error, not a choice. */
-  rank?: number
-  registry: CycleRegistryReference
-  table: string
-  source_kind: 'authoritative' | 'derived_join'
-  row_key: { column: string; identifier_kind: EvidenceIdentifierKindId }
-  cycle_keys: Array<{ column: string; identifier_kind: EvidenceIdentifierKindId }>
-  column_types: Record<string, EvidenceSemanticType>
-  population_rows: number
-  linked_rows: number
-  complete_cycle_count: number
-  reachable_record_kinds: EvidenceRecordKindId[]
-  reachable_roles: string[]
-  missing_role_counts: Record<string, number>
-  relationship_facts: Record<string, {
-    max_records_per_item: number
-    max_items_per_record: number
-  }>
-}
-
-export interface CycleEvidenceManifestGroup {
-  registry: CycleRegistryReference
-  requirement_refs: string[]
-  requirements: Array<{
-    key: string
-    requirement: string
-    required_comparisons: RcmCycleRequiredComparison[]
-  }>
-  required_record_kinds: EvidenceRecordKindId[]
-  roles: CycleVouchDefinition['roles']
-  records: Array<{
-    document_id: string
-    record_id: string
-    record_kind: EvidenceRecordKindId
-    /** One entry per registered field kind the record answers. `attributes` are
-     * the field kind's own registered attribute ids, not envelope keys. */
-    available_fields: Array<{
-      group: string
-      kind: string
-      label?: string
-      attributes: string[]
-      attribute_types?: Record<string, EvidenceSemanticType>
-      control_evidence_attributes?: string[]
-      normalization_status?: string | null
-      /** What extraction claimed about multiplicity. */
-      entry_count?: number
-      /** What the record actually holds, per attribute, and what evaluation
-       * will see: above 1, a scalar operand can only report ambiguity. */
-      distinct_value_counts?: Record<string, number>
-    }>
-  }>
-  candidates: CycleCandidate[]
-  rejected_candidates: Array<Record<string, unknown>>
-  /** Voucher analyses that exist but are not counted as current evidence. */
-  excluded_documents?: Array<{ document_id: string; reason: string }>
-}
-
-export interface CycleEvidenceManifest {
-  groups: CycleEvidenceManifestGroup[]
-  manifest_sha256: string
-}
-
 export interface CycleSelectionConfirmation {
   kind: 'selection_confirmation'
   candidate_id: string
@@ -614,12 +611,13 @@ export interface DocTestItem {
   evidence_request_ids?: string[]
   population_ref?: { table: string; source_row: number; source_sha1: string }
   frozen_row?: Record<string, unknown>
-  cycle_identifiers?: Array<{ kind: EvidenceIdentifierKindId; value: string }>
+  /** The anchor value this item was seeded from, and the field it came from. */
+  cycle_identifiers?: Array<{ role: string; field: string; value: string }>
   role_bindings?: Array<{
     role: string
     document_id: string
     record_id: string
-    record_kind?: string
+    document_type?: string
     record_content_hash?: string
     extraction_hash?: string
     matched_by: Array<Record<string, unknown>>
@@ -842,7 +840,7 @@ export interface CycleVouchGridPayload {
   test_sha1: string
   definition_sha1: string
   title: string
-  population: CycleVouchPopulation
+  population: { table: string; column: string; selection: Record<string, unknown> }
   coverage: Record<string, unknown>
   selection_basis: 'evidence_linked' | 'sample'
   assurance_scope: CycleAssuranceScope
@@ -888,10 +886,13 @@ export interface DocTest extends TestPlan, TestOutcome {
   id: string
   kind: DocTestKind | null
   schema_version?: 2
-  registry?: CycleRegistryReference
   requirement_refs?: string[]
   procedure_key?: string
-  definition?: CycleVouchDefinition
+  definition?: {
+    ruleset_id: string
+    ruleset_hash?: string
+    population: { table: string; column: string; selection: Record<string, unknown> }
+  }
   coverage?: Record<string, unknown>
   title: string
   status: TestStatus
@@ -978,31 +979,40 @@ export interface RcmControlAttributeBase {
   requirement: string
 }
 
-export interface RcmCycleEvidenceOperand {
-  record_kind: EvidenceRecordKindId
-  field: CycleFieldSelector
+/** One side of a schema-backed comparison: a document type and a field on it. */
+export interface RcmSchemaOperand {
+  document_type: string
+  field: string
 }
 
-export interface RcmCycleRequiredComparison {
+/** What a control attribute requires of the cycle, in the vocabulary the
+ *  documents were extracted under. Replaces the pack operand; the two never
+ *  appear on one attribute. */
+export interface RcmSchemaComparison {
   key: string
-  label: string
-  left: RcmCycleEvidenceOperand
-  right?: RcmCycleEvidenceOperand
+  left: RcmSchemaOperand
+  right?: RcmSchemaOperand | null
   operator: CycleOperator
-  tolerance?: number | { absolute: number; percent: number }
+  tolerance?: Record<string, number> | null
+  rationale?: string
+}
+
+/** The induced schemas, as the RCM editor needs to see them. */
+export interface DocumentSchemaCatalogEntry {
+  document_type: string
+  fields: Array<{ name: string; role: string; value_type: string; label: string }>
+}
+
+/** A cycle attribute answered by this engagement's own induced schemas. */
+export interface RcmSchemaCycleAttribute {
+  evidence_kind: 'transaction_cycle'
+  required_comparisons: RcmSchemaComparison[]
 }
 
 export type RcmControlAttribute = RcmControlAttributeBase & (
-  | {
-      evidence_kind: 'transaction_cycle'
-      registry: CycleRegistryReference
-      required_record_kinds: EvidenceRecordKindId[]
-      required_comparisons: RcmCycleRequiredComparison[]
-    }
+  | RcmSchemaCycleAttribute
   | {
       evidence_kind: 'tabular_population' | 'document_content' | 'manual_inspection' | 'inquiry' | 'mixed'
-      registry?: never
-      required_record_kinds?: never
       required_comparisons?: never
     }
 )

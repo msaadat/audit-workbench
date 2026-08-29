@@ -708,15 +708,6 @@ def _normalize_rcm_row(row: dict, *, now: str, strict: bool = True) -> dict:
         item["control_attributes"] = cycle_vouching.validate_control_attributes(
             attributes
         )
-        transaction_packs = {
-            str(attribute["registry"]["pack_id"])
-            for attribute in item["control_attributes"]
-            if attribute.get("evidence_kind") == "transaction_cycle"
-        }
-        if len(transaction_packs) > 1:
-            raise cycle_vouching.CycleSchemaError(
-                "One RCM row cannot mix transaction-cycle packs."
-            )
     except cycle_vouching.CycleSchemaError as error:
         if strict:
             raise WorkspaceError(str(error)) from error
@@ -726,10 +717,10 @@ def _normalize_rcm_row(row: dict, *, now: str, strict: bool = True) -> dict:
         item["business_cycle"] = str(item.get("business_cycle") or "")
         item.pop("assertion", None)
         return _rcm_row_defaults(item, now=now)
-    # The row's business cycle is a projection of its validated attributes, not
-    # a separate editable field: a caller that omits it, or sends a stale one
-    # alongside changed attributes, gets the derived value rather than an error.
-    item["business_cycle"] = next(iter(transaction_packs), "")
+    # The business cycle is the auditor's own label. It used to be a projection
+    # of the pack a transaction-cycle attribute named; with the rules held in
+    # the workspace there is no pack, and nothing for it to be derived from.
+    item["business_cycle"] = str(item.get("business_cycle") or "")
     item["attributes_status"] = "valid"
     item["attributes_error"] = ""
     item.pop("assertion", None)

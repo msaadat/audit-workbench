@@ -326,6 +326,7 @@ def test_only_independent_non_committing_unit_expansions_declare_the_parallel_ba
 
     assert parallel == {
         "documents.analysis_chunks_ready",
+        "documents.schemas_sampled",
         "tests.specified",
         "tests.promoted_from_analysis",
     }

@@ -230,8 +230,9 @@ def remove_document(workspace: Workspace, doc_id: str) -> None:
     except WorkspaceError:
         pass
     cache_path(workspace, doc_id).unlink(missing_ok=True)
-    from . import document_analysis, document_search
+    from . import document_analysis, document_classification, document_search
     document_analysis.remove_sidecars(workspace, doc_id)
+    document_classification.remove_sidecars(workspace, doc_id)
     document_search.remove_sidecars(workspace, doc_id)
     workspace.documents.remove(doc)
     workspace.save()

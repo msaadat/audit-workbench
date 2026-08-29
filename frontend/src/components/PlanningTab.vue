@@ -15,7 +15,7 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditDocument, AuditObservation, CriterionRef, CycleVouchMetadata, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditDocument, AuditObservation, CriterionRef, CycleVouchMetadata, DocumentSchemaCatalogEntry, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
@@ -43,6 +43,9 @@ const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
 const cycleMeta = ref<CycleVouchMetadata | null>(null)
+// The vocabulary a cycle requirement may address. Empty until induction has
+// run, which is what the RCM stage now waits for.
+const documentSchemas = ref<DocumentSchemaCatalogEntry[]>([])
 const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
@@ -111,6 +114,14 @@ async function reload() {
       `/api/workspaces/${props.workspace.id}/doc-tests/meta`,
     )).cycle_vouch
   }
+  // Reloaded every time: induction runs before the RCM stage and can also be
+  // rerun after a retyping, so a cached list would offer fields that moved.
+  // Losing it costs the schema surface, not the matrix.
+  api.get<{ items: DocumentSchemaCatalogEntry[] }>(
+    `/api/workspaces/${props.workspace.id}/documents/schemas`,
+  )
+    .then(payload => { documentSchemas.value = payload.items ?? [] })
+    .catch(() => { documentSchemas.value = [] })
   const requestedRcm = String(route.query.rcm || '')
   const requestedObservation = String(route.query.observation || '')
   // Read before anything opens: `openRcm` rewrites the query, and the paper
@@ -638,7 +649,7 @@ const rcmActions = computed(() => [
               <small v-if="ref.page">p.{{ ref.page }}</small>
             </button>
           </span></label></div>
-        <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" />
+        <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" :schemas="documentSchemas" />
         <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper()"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
         <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
           <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ plural(item.exception_count, 'exception') }} · {{ item.open_exception_count }} open</span></div>

@@ -1535,6 +1535,113 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
+        preset_id="documents.schema_sample",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_schema_sample",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # More of the document than classification reads: naming a
+                    # document needs its first page, but listing the fields its
+                    # type carries needs the body, and a field appearing only
+                    # late would otherwise be absent from every extraction.
+                    # Budgeted above INDUCTION_CHARACTERS for the envelope the
+                    # page is supplied in.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(max_items=1, max_characters=16_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=16_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="documents.analysis_structured",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_structured_chunk",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # One bounded chunk, budgeted above the chunk size for the
+                    # same reason the other map profiles are: a citation binds to
+                    # the chunk, so supplying a truncated one would let the worker
+                    # cite text it never saw in full.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=32_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="documents.schema_reconcile",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_schema_sample",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # A narrower window than the sample reading, and genuinely so
+                    # rather than for the sake of a distinct identity: enumerating
+                    # every field a type carries needs the whole document, while
+                    # judging which of two readings of *one named field* holds
+                    # needs only enough of it to see that field in context.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(max_items=1, max_characters=6_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=6_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="documents.classification",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_classification",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # The opening page only. That is where a document states what
+                    # it is, and a long tail of body text invites the model to
+                    # classify by subject matter rather than by form.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    # Above ``CLASSIFICATION_CHARACTERS`` on purpose. The page is
+                    # supplied as an object wrapping the text, so a budget equal
+                    # to the text cap would omit a full-length page for the size
+                    # of its own envelope — the same reasoning that puts the
+                    # chunk source's budget above the chunk size.
+                    budget=ContextBudget(max_items=1, max_characters=6_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=6_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
         preset_id="documents.analysis_chunk",
         spec=ContextSpec(
             sources=(
@@ -1556,45 +1663,6 @@ PRESETS.register(
                     # purpose: a chunk is the unit of evidence a citation binds
                     # to, so supplying a truncated one would let the worker cite
                     # text it never saw in full.
-                    representations=(ContextRepresentation("raw_pages"),),
-                    budget=ContextBudget(max_items=1, max_characters=32_000),
-                ),
-            ),
-            budget=ContextBudget(max_items=2, max_characters=34_000),
-            privacy=ContextPrivacy(allow_document_text=True),
-        ),
-    )
-)
-
-
-PRESETS.register(
-    ContextPreset(
-        # Deliberately *narrower* than ``documents.analysis_chunk``. This profile
-        # extracts transaction identifiers from the record's own text, and the
-        # standard metadata projection carries the original filename — which for
-        # a voucher pack contains those same identifiers. Supplying it would let
-        # a worker report a value it never read from the document body, so this
-        # preset declares bare identity instead: enough to bind a citation to its
-        # source hash, and nothing a field could be lifted from.
-        preset_id="documents.analysis_voucher",
-        spec=ContextSpec(
-            sources=(
-                ContextSource(
-                    id="document_identity",
-                    source_type="documents",
-                    required=True,
-                    selector=ContextSelector(selector_id="documents.all"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    # Identity plus the engagement's committed pack ids. Still far
-                    # too small to hold a descriptive projection, which is the
-                    # point of the narrowing.
-                    budget=ContextBudget(max_items=1, max_characters=1_500),
-                ),
-                ContextSource(
-                    id="document_chunk",
-                    source_type="documents",
-                    required=True,
-                    selector=ContextSelector(selector_id="documents.all"),
                     representations=(ContextRepresentation("raw_pages"),),
                     budget=ContextBudget(max_items=1, max_characters=32_000),
                 ),

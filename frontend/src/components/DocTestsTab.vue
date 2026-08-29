@@ -12,6 +12,7 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { conclusionCounts } from '../composables/conclusionFacet'
+import { useSession } from '../composables/useSession'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
@@ -29,13 +30,12 @@ import type {
   PlanningPayload,
   TestConclusionState,
   WorkspaceSummary,
-  CycleEvidenceManifestGroup,
-  CycleVouchDefinition,
-  CycleVouchMetadata,
+  CycleRulesetDefinition, CycleVouchMetadata,
 } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import DocTestCreateDialog from './doc-tests/DocTestCreateDialog.vue'
 import CycleVouchGrid from './doc-tests/CycleVouchGrid.vue'
+import CycleRulesetReview from './doc-tests/CycleRulesetReview.vue'
 import DocTestItemDetail from './doc-tests/DocTestItemDetail.vue'
 import DocTestItemList from './doc-tests/DocTestItemList.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -384,8 +384,9 @@ async function createTest({ kind, direction, draft }: {
     title: string; rcmId: string; table: string; size: number; seed: number
     frozenFields: string[]; identifierFields: string[]; requiredDocumentTypes: string[]
     evidenceAware: boolean; attributes: string[]; documentId: string; pages: string; questions: string
-    procedureKey: string; cycleDefinition?: CycleVouchDefinition
-    cycleRegistry?: CycleEvidenceManifestGroup['registry']; requirementRefs?: string[]
+    procedureKey: string
+    cycleRulesetDefinition?: CycleRulesetDefinition
+    requirementRefs?: string[]
   }
 }) {
   creating.value = true
@@ -397,18 +398,17 @@ async function createTest({ kind, direction, draft }: {
     }
     let created: DocTest
     if (kind === 'cycle_vouch') {
-      if (!draft.cycleDefinition || !draft.cycleRegistry || !draft.requirementRefs?.length) {
+      if (!draft.cycleRulesetDefinition) {
         throw new Error('The Cycle vouch definition is incomplete.')
       }
       const result = await api.post<DocTest | { status: 'selection_confirmation'; selection_confirmation: { reason: string } }>(
         `/api/workspaces/${props.workspace.id}/doc-tests/build/cycle-vouch`,
         {
           ...common,
-          objective: `Vouch ${draft.cycleDefinition.population.table} transactions against the selected cycle evidence.`,
-          registry: draft.cycleRegistry,
-          requirement_refs: draft.requirementRefs,
+          objective: 'Vouch each selected transaction against the approved cycle rules.',
+          requirement_refs: draft.requirementRefs ?? [],
           procedure_key: draft.procedureKey,
-          definition: draft.cycleDefinition,
+          definition: draft.cycleRulesetDefinition,
         },
       )
       if ('selection_confirmation' in result) {
@@ -708,11 +708,36 @@ const unsubscribe = agent.onWorkspaceInvalidated(() => {
     .catch(error => fail('Could not refresh document tests', error))
 })
 onUnmounted(unsubscribe)
+const rulesetReviewOpen = ref(false)
+const session = useSession()
+
+/** Approving is an auditor act, so it is signed with who they are. The route
+ *  refuses an anonymous approval rather than recording rules as approved by
+ *  nobody. */
+const approverId = computed(() => session.user.value?.email ?? '')
+
+function onRulesetApproved(): void {
+  rulesetReviewOpen.value = false
+  toast.add({
+    severity: 'success',
+    summary: 'Cycle rules approved',
+    detail: 'Results will be produced under these rules.',
+    life: 3200,
+  })
+}
+
 </script>
 
 <template>
   <div class="doc-tests">
     <UiPageHeader title="Document tests">
+      <Button
+        label="Cycle rules"
+        icon="pi pi-sitemap"
+        severity="secondary"
+        outlined
+        @click="rulesetReviewOpen = true"
+      />
       <Button
         v-if="hasTests"
         label="Prepare with assistant"
@@ -950,6 +975,13 @@ onUnmounted(unsubscribe)
       @error="fail"
     />
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" :documents="documents" />
+    <CycleRulesetReview
+      v-model="rulesetReviewOpen"
+      :workspace-id="props.workspace.id"
+      :approver-id="approverId"
+      @approved="onRulesetApproved"
+      @error="(summary, error) => fail(summary, error)"
+    />
   </div>
 </template>
 

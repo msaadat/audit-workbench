@@ -10,12 +10,12 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-from . import cycle_vouching, embedding
+from . import embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 from .text import plural_word
 
 ANALYSIS_SCHEMA_VERSION = "5"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v6-cycle-record-fragments"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v7-schema-guided-records"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 
@@ -50,108 +50,61 @@ def _evidence_value(envelope: Mapping[str, object]) -> str:
     return f"{text} {markers}".rstrip()
 
 
-def render_voucher_summary(reduction: Mapping[str, object]) -> str:
-    """Render a voucher summary solely from validated reduced evidence."""
+def render_structured_summary(records: list[dict], document_type: str = "") -> str:
+    """Render schema-extracted records as the analysis summary, locally.
 
-    registry = cycle_vouching.DEFAULT_REGISTRY
-    reference = registry.validate_reference(dict(reduction.get("registry") or {}))
-    lines = [
-        "## Structured voucher summary",
-        "",
-        "This summary is generated locally from validated registry-backed evidence.",
-    ]
-    records = [
-        dict(item)
-        for item in reduction.get("records") or []
-        if isinstance(item, Mapping)
-    ]
+    Derived rather than generated: the facts are already exact and typed, so a
+    model turn here would only paraphrase them and could introduce a value the
+    record never stated.
+    """
+
     if not records:
-        lines.extend(
-            [
-                "",
-                "No complete registry-backed transaction record was identified in "
-                "the analyzed content.",
-            ]
-        )
-    for record in records:
-        record_definition = registry.record_kind(
-            reference.pack_id, str(record.get("record_kind") or "")
-        )
-        primary = dict(record.get("primary_identifier") or {})
-        primary_fact = next(
-            (
-                dict(item)
-                for item in record.get("identifiers") or []
-                if isinstance(item, Mapping)
-                and str(item.get("kind") or "") == str(primary.get("kind") or "")
-            ),
-            {},
-        )
-        primary_value = dict(primary_fact.get("value") or {})
-        heading_value = (
-            _evidence_value(primary_value)
-            if primary_value
-            else _markdown_text(primary.get("normalized_value"))
-        )
-        lines.extend(["", f"### {record_definition.label} — {heading_value}"])
-
-        identifiers = []
-        for item in record.get("identifiers") or []:
-            if not isinstance(item, Mapping):
-                continue
-            definition = registry.identifier_kind(
-                reference.pack_id, str(item.get("kind") or "")
-            )
-            identifiers.append(
-                f"{definition.label}: {_evidence_value(dict(item.get('value') or {}))}"
-            )
-        if identifiers:
-            lines.append("- Identifiers: " + "; ".join(identifiers))
-
-        grouped: dict[tuple[str, str, int], list[Mapping[str, object]]] = {}
-        entries_by_kind: dict[tuple[str, str], set[int]] = {}
-        for item in record.get("fields") or []:
-            if not isinstance(item, Mapping):
-                continue
-            selector = (str(item.get("group") or ""), str(item.get("kind") or ""))
-            entry = int(item.get("entry") or 0)
-            grouped.setdefault((*selector, entry), []).append(item)
-            entries_by_kind.setdefault(selector, set()).add(entry)
-        for (group, kind, entry), facts in sorted(grouped.items()):
-            definition = registry.field_kind(reference.pack_id, group, kind)
-            values = [
-                f"{str(item.get('attribute') or '').replace('_', ' ')}: "
-                f"{_evidence_value(dict(item.get('value') or {}))}"
-                for item in facts
-            ]
-            occurrence = (
-                f" #{entry + 1}" if len(entries_by_kind[(group, kind)]) > 1 else ""
-            )
-            lines.append(f"- {definition.label}{occurrence}: " + "; ".join(values))
-
-    unresolved = len(list(reduction.get("unresolved_fragments") or []))
-    conflicts = len(list(reduction.get("conflicts") or []))
-    if unresolved or conflicts:
-        lines.extend(["", "## Evidence requiring review"])
-        if unresolved:
+        return "## Structured evidence\n\nThis document states no record."
+    lines = ["## Structured evidence"]
+    if document_type:
+        lines.append("")
+        lines.append(f"Read as **{document_type}**.")
+    for position, record in enumerate(records, start=1):
+        lines.append("")
+        lines.append(f"### Record {position}")
+        for field in record.get("fields") or []:
+            lines.append(f"- **{field.get('name')}**: {field.get('value')}")
+        for field in record.get("additional_fields") or []:
             lines.append(
-                f"- {unresolved} fragment{'s' if unresolved != 1 else ''} could not "
-                "be assigned to a complete record."
+                f"- *{field.get('name')}*: {field.get('value')} "
+                "(outside the schema)"
             )
-        if conflicts:
-            lines.append(
-                f"- {conflicts} record conflict{'s' if conflicts != 1 else ''} "
-                "require auditor review."
-            )
-    return "\n".join(lines).strip()
+    return "\n".join(lines)
+
+
+def render_structured_audit_notes(analyses: list[dict]) -> str:
+    """Consolidate the audit notes each structured chunk reported."""
+
+    notes = [
+        str(note).strip()
+        for item in analyses
+        for note in item.get("audit_notes") or []
+        if str(note).strip()
+    ]
+    if not notes:
+        return (
+            "## Audit notes\n\nNothing on the face of this document was "
+            "reported as irregular."
+        )
+    return "## Audit notes\n\n" + "\n".join(f"- {note}" for note in notes)
 
 
 def structured_summary(artifact: Mapping[str, object] | None) -> bool:
-    """Whether this artifact's summary is a projection, not authored text."""
+    """Whether this artifact's summary is a projection, not authored text.
+
+    A projection has no auditor-authored override channel: the facts are
+    already exact, so editing the rendering would put words on the record that
+    the extraction does not support.
+    """
 
     return bool(
         artifact
-        and artifact.get("analysis_profile") == "voucher"
+        and artifact.get("analysis_profile") == "structured"
         and artifact.get("summary_origin") == "structured_evidence"
     )
 
@@ -218,7 +171,6 @@ def _empty_index(document_id: str) -> dict:
 def _empty_review(document_id: str) -> dict:
     return {"schema_version": 1, "document_id": document_id, "revision": 0,
             "summary_override": None, "audit_notes_override": None,
-            "fragment_overrides": [], "fragment_override_state": "current",
             "review_state": "not_applicable", "reviewed_at": None,
             "updated_at": None, "decisions": []}
 
@@ -291,15 +243,10 @@ def analysis_content_sha1(payload: dict) -> str:
         "citations": [
             dict(item) for item in payload.get("citations") or []
         ],
-        # The retained generic field surface and the clean registry-backed
-        # evidence surface are both content-addressed; new cycle extraction
-        # populates only the latter.
+        # The generic field surface used by simple vouching, and the records a
+        # schema-guided extraction states. Both content-addressed.
         "fields": dict(payload.get("fields") or {}),
-        "registry": dict(payload.get("registry") or {}),
-        "record_fragments": list(payload.get("record_fragments") or []),
         "records": list(payload.get("records") or []),
-        "unresolved_fragments": list(payload.get("unresolved_fragments") or []),
-        "conflicts": list(payload.get("conflicts") or []),
         "prepared_media_set_hash": str(
             payload.get("prepared_media_set_hash") or ""
         ),
@@ -426,11 +373,7 @@ _GENERATED_PROJECTION_FIELDS = (
     "coverage",
     "analysis_profile",
     "fields",
-    "registry",
-    "record_fragments",
     "records",
-    "unresolved_fragments",
-    "conflicts",
 )
 
 
@@ -441,71 +384,6 @@ def generated_projection(workspace: Workspace, document_id: str) -> dict | None:
     if artifact is None:
         return None
     return {key: artifact.get(key) for key in _GENERATED_PROJECTION_FIELDS}
-
-
-def registry_evidence_records(
-    workspace: Workspace,
-    registry_ref: object,
-    *,
-    excluded: list[dict] | None = None,
-) -> list[dict]:
-    """Load current reduced records for one exact pack, excluding everything else.
-
-    This is the local choke point candidate/linking callers use. An analysis that
-    predates the registry, names a stale pack hash, or has stale reviewed fragment
-    assignments is never reinterpreted as current cycle evidence — but it is also
-    not grounds to refuse the whole workspace. Raising for one document made a
-    single unrefreshed analysis fail every caller in the engagement, including the
-    authoring UX an auditor would use to repair it. Each exclusion is appended to
-    ``excluded`` with its reason so callers can surface the gap instead of
-    silently under-reporting evidence.
-    """
-
-    try:
-        expected = cycle_vouching.DEFAULT_REGISTRY.validate_reference(registry_ref)
-    except ValueError as error:
-        raise WorkspaceError(str(error)) from error
-    records: list[dict] = []
-    for document in workspace.documents:
-        document_id = str(document.get("id") or "")
-        detail = load_analysis(workspace, document_id, document=document)
-        artifact = detail.get("effective")
-        if not artifact or artifact.get("analysis_profile") != "voucher":
-            continue
-
-        def exclude(reason: str) -> None:
-            if excluded is not None:
-                excluded.append({"document_id": document_id, "reason": reason})
-
-        if (detail.get("review") or {}).get("fragment_override_state") == "stale":
-            exclude("stale_fragment_overrides")
-            continue
-        if not artifact.get("registry"):
-            exclude("not_registry_backed")
-            continue
-        try:
-            actual = cycle_vouching.DEFAULT_REGISTRY.validate_reference(
-                artifact.get("registry")
-            )
-        except ValueError:
-            exclude("stale_registry_reference")
-            continue
-        if actual != expected:
-            continue
-        try:
-            reduction = cycle_vouching.validate_evidence_reduction(
-                {
-                    "registry": artifact.get("registry"),
-                    "records": artifact.get("records") or [],
-                    "unresolved_fragments": artifact.get("unresolved_fragments") or [],
-                    "conflicts": artifact.get("conflicts") or [],
-                }
-            )
-        except cycle_vouching.CycleSchemaError:
-            exclude("invalid_reduction")
-            continue
-        records.extend(dict(record) for record in reduction["records"])
-    return records
 
 
 def _authoritative_status(workspace: Workspace, document: dict) -> dict:
@@ -606,8 +484,23 @@ def remove_status(workspace: Workspace, document_id: str) -> None:
 
 
 def inventory(workspace: Workspace) -> list[dict]:
+    from . import document_classification
+
     entries = status_catalog(workspace)["entries"]
-    return [{**doc, **default_status(), **dict(entries.get(doc["id"]) or {})} for doc in workspace.documents]
+    return [
+        {
+            **doc,
+            **default_status(),
+            **dict(entries.get(doc["id"]) or {}),
+            # Read from its sidecar rather than the document entry, so a listing
+            # taken from a workspace handle that is a few revisions behind still
+            # shows the type that was actually assigned.
+            "classification": document_classification.classification(
+                workspace, str(doc["id"])
+            ),
+        }
+        for doc in workspace.documents
+    ]
 
 
 def repair_status(workspace: Workspace, document_id: str) -> dict:
@@ -740,16 +633,15 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             "summary_origin": str(output.get("summary_origin") or "model"),
             "audit_notes_markdown": str(output.get("audit_notes_markdown") or "").strip(),
             "citations": list(output.get("citations") or []),
-            # Retained as the generic field surface used by simple/non-cycle
-            # vouching. New cycle extraction writes only the registry-backed
-            # collections below and does not dual-write this legacy shape.
+            # The generic field surface used by simple/non-cycle vouching, and
+            # the records a schema-guided extraction states.
             "fields": dict(output.get("fields") or {}),
-            "registry": dict(output.get("registry") or {}),
-            "record_fragments": list(output.get("record_fragments") or []),
             "records": list(output.get("records") or []),
-            "unresolved_fragments": list(output.get("unresolved_fragments") or []),
-            "conflicts": list(output.get("conflicts") or []),
             "analysis_profile": str(output.get("analysis_profile") or "standard"),
+            # What vocabulary this extraction was made against. Exact-matched on
+            # read, so a re-derived schema makes the analysis stale rather than
+            # letting it be reinterpreted under fields it never saw.
+            "schema_ref": dict(output.get("schema_ref") or {}),
             "coverage": coverage or {"state": "complete", "analyzed_pages": [int(p["page"]) for p in extracted.get("pages") or [] if p.get("text")], "omitted_pages": []},
         }
         artifact["content_sha1"] = analysis_content_sha1(artifact)
@@ -795,8 +687,7 @@ def load_analysis(workspace: Workspace, document_id: str, *, document: dict | No
     if generated:
         effective = {
             **generated,
-            # Voucher summaries are a deterministic projection of structured
-            # evidence and therefore have no auditor-authored override channel.
+            # A projected summary has no auditor-authored override channel.
             "summary_markdown": (
                 generated.get("summary_markdown", "")
                 if structured_summary(generated)
@@ -810,38 +701,6 @@ def load_analysis(workspace: Workspace, document_id: str, *, document: dict | No
                 else generated.get("audit_notes_markdown", "")
             ),
         }
-        if generated.get("record_fragments"):
-            try:
-                reduction = cycle_vouching.reduce_record_fragments(
-                    document_id,
-                    generated.get("record_fragments") or [],
-                    overrides=review.get("fragment_overrides") or [],
-                )
-                effective.update(
-                    registry=reduction["registry"],
-                    records=reduction["records"],
-                    unresolved_fragments=reduction["unresolved_fragments"],
-                    conflicts=reduction["conflicts"],
-                    **(
-                        {"summary_markdown": render_voucher_summary(reduction)}
-                        if structured_summary(generated)
-                        else {}
-                    ),
-                    evidence_content_sha256=hashlib.sha256(
-                        json.dumps(
-                            reduction,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                            default=str,
-                        ).encode("utf-8")
-                    ).hexdigest(),
-                )
-                review = {**review, "fragment_override_state": "current"}
-            except cycle_vouching.CycleSchemaError:
-                # Reanalysis never silently rebinds an auditor decision.  The
-                # stale override remains in review history and the generated
-                # reduction is exposed unchanged until the auditor resolves it.
-                review = {**review, "fragment_override_state": "stale"}
     return {"document_id": document_id, "index_revision": index["revision"],
             "review_revision": review["revision"], "generated": generated,
             "effective": effective, "candidate": candidate, "review": review,
@@ -868,29 +727,13 @@ def patch_review(workspace: Workspace, document_id: str, payload: dict) -> dict:
             and payload.get("summary_markdown") is not None
         ):
             raise WorkspaceError(
-                "Voucher summaries are derived from structured evidence and cannot be edited."
+                "A structured summary is rendered from the extracted records "
+                "and cannot be edited."
             )
         for request_key, storage_key in (("summary_markdown", "summary_override"), ("audit_notes_markdown", "audit_notes_override")):
             if request_key in payload:
                 value = payload[request_key]
                 review[storage_key] = None if value is None else str(value)
-        if "fragment_overrides" in payload:
-            overrides = payload.get("fragment_overrides")
-            if not isinstance(overrides, list):
-                raise WorkspaceError("fragment_overrides must be an array.")
-            fragments = active.get("record_fragments") or []
-            if not fragments and overrides:
-                raise WorkspaceError(
-                    "This analysis has no registry-backed fragments to assign."
-                )
-            try:
-                cycle_vouching.reduce_record_fragments(
-                    document_id, fragments, overrides=overrides
-                )
-            except cycle_vouching.CycleSchemaError as error:
-                raise WorkspaceError(str(error)) from error
-            review["fragment_overrides"] = list(overrides)
-            review["fragment_override_state"] = "current"
         if "review_state" in payload:
             state = str(payload["review_state"])
             if state not in {"needs_review", "reviewed"}:
@@ -918,16 +761,6 @@ def accept_candidate(workspace: Workspace, document_id: str, payload: dict) -> d
         candidate_artifact = _load_generated(workspace, document_id, candidate)
         if not candidate_artifact or candidate_artifact.get("source_sha1") != document.get("sha1"):
             raise WorkspaceError("The analysis candidate belongs to an earlier document source and cannot be accepted.")
-        if candidate_artifact.get("record_fragments") or review.get("fragment_overrides"):
-            try:
-                cycle_vouching.reduce_record_fragments(
-                    document_id,
-                    candidate_artifact.get("record_fragments") or [],
-                    overrides=review.get("fragment_overrides") or [],
-                )
-                review["fragment_override_state"] = "current"
-            except cycle_vouching.CycleSchemaError:
-                review["fragment_override_state"] = "stale"
         from .documents import utcnow
         review.setdefault("decisions", []).append({"candidate_analysis_id": candidate, "decision": "accepted", "at": utcnow()})
         review.update(revision=review["revision"] + 1, review_state="needs_review", updated_at=utcnow())

@@ -8,7 +8,19 @@ import hashlib
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from .. import document_analysis, document_search, documents, embedding, intake, methodology, workspaces
+from .. import (
+    cycle_linking,
+    document_analysis,
+    document_classification,
+    document_schemas,
+    document_search,
+    document_types,
+    documents,
+    embedding,
+    intake,
+    methodology,
+    workspaces,
+)
 # Aliased: this module already binds the name ``uploads`` to a request's files.
 from .. import uploads as upload_limits
 from ..text import counted, plural_word
@@ -198,6 +210,119 @@ async def create_document_analysis_run(workspace_id: str, payload: dict = Body(.
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
+
+
+def _reclassify_command(ws, mode: str) -> dict:
+    """Re-examine the ``other`` bucket against the workspace's current catalog.
+
+    Only documents whose stored catalog differs from today's are in scope, which
+    is the same rule unit expansion uses — coining a type is what makes an
+    ``other`` worth re-asking, and nothing else does. With no such document the
+    caller is told so rather than a run being started that would do nothing.
+    """
+
+    document_ids = document_classification.reclassifiable_ids(ws)
+    if not document_ids:
+        raise workspaces.WorkspaceError(
+            "No document needs re-examining: every 'other' was already chosen "
+            "from the current list of types."
+        )
+    return runner.start_command_run(
+        ws,
+        mode if mode in {"auto", "permission"} else "auto",
+        {
+            "source": "tab_button",
+            "text": f"Re-examine {counted(len(document_ids), 'unidentified document')}.",
+            "goal_template": "document_analysis",
+            # Only the classification outcome. Re-examining what a document is
+            # must not re-run its analysis, which is unaffected by the catalog.
+            "requested_outcomes": ["documents.types_classified"],
+            "target_refs": [f"document:{value}" for value in document_ids],
+            "generation_mode": "reuse_existing",
+        },
+        context={"document_ids": document_ids, "action": "analyze"},
+    )
+
+
+@router.get("/documents/types")
+async def list_document_types(workspace_id: str):
+    """The catalog a classification may choose from, plus what has been assigned."""
+
+    ws = _ws(workspace_id)
+    return {
+        **document_types.metadata(),
+        "local_types": document_schemas.local_types(ws),
+        "summary": document_classification.summary(ws),
+    }
+
+
+@router.get("/documents/schemas")
+async def list_document_schemas(workspace_id: str):
+    """The induced schemas, and the fields a requirement may be written against.
+
+    The catalog form rather than the stored form: an RCM attribute addresses a
+    type and a field, and nothing about how the schema was induced changes what
+    it can be asked.
+    """
+
+    ws = _ws(workspace_id)
+    return {"items": cycle_linking.schema_catalog(ws)}
+
+
+@router.get("/documents/unidentified")
+async def list_unidentified_documents(workspace_id: str):
+    """The ``other`` bucket an auditor retypes from."""
+
+    ws = _ws(workspace_id)
+    return {
+        "items": document_classification.other_bucket(ws),
+        "reclassifiable": document_classification.reclassifiable_ids(ws),
+    }
+
+
+@router.post("/documents/reclassify")
+async def reclassify_documents(workspace_id: str, payload: dict = Body(default={})):
+    ws = _ws(workspace_id)
+    try:
+        return await asyncio.to_thread(
+            _reclassify_command, ws, str(payload.get("mode") or "auto")
+        )
+    except runner.AgentBusyError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@router.patch("/documents/{doc_id}/type")
+async def retype_document(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+    """Assign a document type by hand.
+
+    ``type_id`` names an existing entry; ``coin`` names a new one for this
+    engagement. Coining registers the type first, so the sweep that follows can
+    put the rest of the bucket onto it — retyping one document and leaving forty
+    like it unidentified would starve schema induction, which needs several
+    documents of a type.
+    """
+
+    ws = _ws(workspace_id)
+    type_id = str(payload.get("type_id") or "").strip() or None
+    coin = str(payload.get("coin") or "").strip() or None
+    record = document_classification.retype(
+        ws,
+        doc_id,
+        type_id=type_id,
+        coin=coin,
+        rationale=str(payload.get("rationale") or ""),
+    )
+    runner.notify_evidence_available(
+        ws, document_ids=[doc_id], reason="document_classified"
+    )
+    return {
+        "document_id": doc_id,
+        "classification": record,
+        # What retyping opened up: the coined type is now on offer, so any
+        # ``other`` chosen from the older list is worth re-asking.
+        "reclassifiable": document_classification.reclassifiable_ids(ws),
+        "summary": document_classification.summary(ws),
+    }
 
 
 @router.get("/documents/{doc_id}")

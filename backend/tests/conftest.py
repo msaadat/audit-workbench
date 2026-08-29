@@ -328,6 +328,17 @@ class FakeAgentLLM:
         },
         "agent:fix_code": {"code": "result = transactions.head(0)"},
         "agent:document_analysis_map": _document_analysis_response,
+        # Every document run classifies before it maps. ``other`` is the one
+        # answer valid against any workspace's catalog — a fixture's offered
+        # types vary, and a default naming a specific one would be rejected by
+        # the semantic validator wherever that type was not on offer. Tests that
+        # care about a real type override this.
+        "agent:document_classification": {
+            "document_type": "other",
+            "document_type_other": "Test fixture document",
+            "confidence": "low",
+            "rationale": "A fixture document with no catalogued form.",
+        },
     }
 
     def __init__(self, overrides: dict | None = None):

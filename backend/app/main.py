@@ -41,6 +41,7 @@ from .routes.workspace_routes import router as workspace_router
 from .assistant_settings import SettingsError
 from .document_analysis import AnalysisConflict
 from .sandbox import SandboxError
+from . import document_types
 from .workspaces import (
     WorkspaceConflict,
     WorkspaceError,
@@ -217,6 +218,11 @@ def create_app() -> FastAPI:
         return JSONResponse({"detail": str(error)}, status_code=400)
 
     @app.exception_handler(WorkspaceError)
+    # A document type that is unknown, malformed, or shadows a listed one is the
+    # caller's mistake, not a fault. Registered here rather than made a
+    # WorkspaceError so ``document_types`` stays a leaf module the catalog can be
+    # read from without pulling in workspace storage.
+    @app.exception_handler(document_types.DocumentTypeError)
     @app.exception_handler(QueryError)
     @app.exception_handler(SandboxError)
     @app.exception_handler(SettingsError)

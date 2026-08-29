@@ -25,7 +25,10 @@ from dataclasses import dataclass
 
 from ... import (
     document_analysis,
+    document_classification,
     document_media,
+    document_schemas,
+    document_types,
     documents as document_service,
     intake,
 )
@@ -36,6 +39,9 @@ from ..workflows import documents as documents_workflow
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "documents.text_ready",
+    "documents.types_classified",
+    "documents.schemas_sampled",
+    "documents.schemas_induced",
     "documents.analysis_chunks_ready",
     "documents.analysis_generated",
     "documents.analysis_reviewed",
@@ -92,23 +98,33 @@ def _planning_relevant(document: dict) -> bool:
     return not category or category in intake.PLANNING_DOCUMENT_CATEGORIES
 
 
-def _voucher_document(document: dict) -> bool:
-    """Whether this document is transaction evidence, by its declared category.
-
-    Explicit only: an unclassified document is never treated as a voucher, so the
-    structured profile runs on what intake (or the auditor) actually marked.
-    """
-    return str(document.get("category") or "") in intake.VOUCHER_DOCUMENT_CATEGORIES
-
-
 def analysis_profile(workspace: Workspace, document_id: str) -> str:
-    """The analysis profile one document's text chunks are mapped under."""
+    """The analysis profile one document's text chunks are mapped under.
+
+    ``structured`` for transaction evidence whose type has an induced schema.
+    There is no separate voucher profile any more: the fields such a document is
+    read under come from the schema rather than from a pack. Both halves are
+    load-bearing — the schema supplies the vocabulary, and the category says
+    this engagement holds the document as transaction evidence at all. A policy
+    that happens to share a type with vouchers is not read under their fields.
+
+    Everything else gets a narrative analysis — readable, citable, and not cycle
+    evidence — which is the honest description of what is known about it, and
+    the form planning consumes.
+    """
 
     document = next(
         (item for item in workspace.documents if str(item.get("id")) == document_id),
         None,
     )
-    return "voucher" if document is not None and _voucher_document(document) else "standard"
+    if document is None:
+        return "standard"
+    if str(document.get("category") or "") not in intake.VOUCHER_DOCUMENT_CATEGORIES:
+        return "standard"
+    document_type = document_classification.document_type(workspace, document_id)
+    if document_type and document_schemas.load_schema(workspace, document_type):
+        return "structured"
+    return "standard"
 
 
 def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
@@ -117,7 +133,7 @@ def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
     ``document_scope_mode == "planning"`` preserves the bounded
     planning-relevant default used by the audit workflow. The standalone
     document-analysis workflow defaults to every imported document, including
-    vouchers, which use their dedicated structured profile.
+    transaction evidence, which is read under its type's induced schema.
     """
 
     known = {str(item.get("id")): item for item in workspace.documents}
@@ -276,12 +292,13 @@ def analysis_unit_specs(
     )
     text_chunks = chunk_specs(workspace, document_id, scope)
     # Which profile a text chunk is mapped under is a property of the document,
-    # not of the chunk: transaction evidence goes to the voucher worker, which
-    # returns structured fields and audit notes; its summary is rendered locally
-    # after deterministic record reduction.
+    # not of the chunk. A document whose type has an induced schema is extracted
+    # against those fields; everything else is read as prose. The structured
+    # profile returns fields and audit notes and has its summary rendered
+    # locally, because those facts are already exact.
     text_kind = (
-        "document_voucher_analysis"
-        if _voucher_document(document)
+        "document_structured_analysis"
+        if analysis_profile(workspace, document_id) == "structured"
         else "document_chunk_analysis"
     )
     by_page: dict[int, list[dict]] = {}
@@ -425,6 +442,281 @@ def _documents_text_ready() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
+# documents.types_classified
+# --------------------------------------------------------------------------- #
+def _classified_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Every scoped document with usable text carries a document type.
+
+    An ``other`` assignment satisfies this. It is a truthful answer — nothing in
+    the catalog fits — and blocking on it would make an engagement wait for an
+    auditor to review a bucket they may reasonably leave alone. The gap is
+    reported instead, in ``details``, so a workspace whose evidence never became
+    classifiable says so rather than passing quietly.
+    """
+
+    document_scope = resolve_document_scope(workspace, scope)
+    blocked = _unknown_documents(document_scope)
+    if blocked is not None:
+        return blocked
+    scoped = set(document_scope.document_ids)
+    pending = [
+        document_id
+        for document_id in document_classification.unclassified_ids(workspace)
+        if document_id in scoped
+    ]
+    summary = document_classification.summary(workspace)
+    details = {
+        "documents": len(scoped),
+        "classified": len(scoped) - len(pending),
+        "other": summary["other"],
+        "types_present": summary["types_present"],
+    }
+    if pending:
+        return Readiness(
+            "missing",
+            (
+                f"{counted(len(pending), 'document')} "
+                f"{verb(len(pending), 'has', 'have')} no document type",
+            ),
+            details=details,
+        )
+    return Readiness("satisfied", details=details)
+
+
+def _classified_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per document needing a type, plus any ``other`` a rerun may revisit.
+
+    The offered catalog travels on the unit input rather than being read from the
+    global list at validation time, because a workspace's coined types are part
+    of what the prompt showed. It is also what re-expands these units when an
+    auditor coins a type: the catalog is in ``input_payload``, so ``input_sha1``
+    moves and the remaining ``other`` documents are swept again.
+    """
+
+    document_scope = resolve_document_scope(workspace, scope)
+    known = {str(item.get("id")): item for item in workspace.documents}
+    scoped = set(document_scope.document_ids)
+    forced = _forced(scope)
+    if forced:
+        candidates = [
+            document_id for document_id in document_scope.document_ids
+            if document_id in known
+        ]
+    else:
+        candidates = [
+            document_id
+            for document_id in (
+                *document_classification.unclassified_ids(workspace),
+                *document_classification.reclassifiable_ids(workspace),
+            )
+            if document_id in scoped
+        ]
+    local = document_schemas.local_types(workspace)
+    selectable = list(document_schemas.effective_type_ids(workspace))
+    catalog = document_types.prompt_catalog(local_types=local)
+    signature = document_classification.catalog_signature(workspace)
+    return [
+        UnitSpec(
+            semantic_unit_id("document_classification", document_id),
+            "document_classification",
+            f"Identify document type — {known[document_id].get('title') or document_id}",
+            (f"document:{document_id}",),
+            {
+                "document_id": document_id,
+                "title": str(known[document_id].get("title") or ""),
+                "text": document_classification.classification_text(
+                    workspace, document_id
+                ),
+                "selectable_types": selectable,
+                "catalog": catalog,
+                "catalog_sha1": signature,
+            },
+        )
+        for document_id in dict.fromkeys(candidates)
+    ]
+
+
+def _documents_types_classified() -> Capability:
+    return Capability(
+        "documents.types_classified",
+        "document_types",
+        "Document types",
+        "document_classification",
+        documents_workflow.dependencies("documents.types_classified"),
+        _classified_ready,
+        _classified_units,
+        context={"document_classification": "documents.classification"},
+        # Sequential, despite each document being classified independently of
+        # every other. The assignment commits onto the shared ``documents``
+        # artifact collection, so two units landing at once would race on the
+        # same collection — which is exactly what the parallel barrier asserts
+        # cannot happen. Independence of *inputs* is not independence of commits.
+        invalidate_on=("documents",),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# documents.schemas_sampled / documents.schemas_induced
+# --------------------------------------------------------------------------- #
+#
+# Two capabilities, not one, and for a reason that is easy to get wrong: units
+# within a stage execute in sorted *id* order, never declaration order. A single
+# capability holding both the sample readings and the freeze that consumes them
+# would bind the freeze first — ``document_schema:x`` sorts before
+# ``document_schema_sample:x:y`` — and it would read back nothing. The map/reduce
+# split is what makes the ordering a dependency edge the scheduler honours,
+# exactly as chunk analysis and its reduction already do.
+def _sampled_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Sample readings are run-local, so readiness is the outcome they feed.
+
+    A reading is an input to the frozen schema and never a durable record of its
+    own, so the only thing outside the run that can show the sampling happened is
+    the schema itself. The scheduler's durable unit state — not a workspace
+    probe — is what stops a resumed run from re-reading a sample it already paid
+    for.
+    """
+
+    awaiting = document_classification.types_awaiting_schema(workspace)
+    details = {"types_awaiting_schema": awaiting}
+    if not awaiting:
+        return Readiness("satisfied", details=details)
+    return Readiness(
+        "missing",
+        (
+            f"{counted(len(awaiting), 'document type')} "
+            f"{verb(len(awaiting), 'has', 'have')} no sampled fields",
+        ),
+        details=details,
+    )
+
+
+def _pending_types(workspace: Workspace, scope: dict) -> list[str]:
+    return (
+        document_classification.types_for_induction(workspace)
+        if _forced(scope)
+        else document_classification.types_awaiting_schema(workspace)
+    )
+
+
+def _sample_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per sampled document, read independently of its siblings.
+
+    Handing one worker every sample at once would produce a tidier answer and
+    destroy the only signal worth having: whether documents of this type actually
+    agree about what fields they carry.
+    """
+
+    known = {str(item.get("id")): item for item in workspace.documents}
+    units: list[UnitSpec] = []
+    for document_type in _pending_types(workspace, scope):
+        for document_id in document_classification.sample_for_induction(
+            workspace, document_type
+        ):
+            units.append(
+                UnitSpec(
+                    semantic_unit_id(
+                        "document_schema_sample", document_type, document_id
+                    ),
+                    "document_schema_sample",
+                    f"Read fields — {known[document_id].get('title') or document_id}",
+                    (f"document:{document_id}",),
+                    {
+                        "document_type": document_type,
+                        "document_id": document_id,
+                        "title": str(known[document_id].get("title") or ""),
+                        "text": document_classification.induction_text(
+                            workspace, document_id
+                        ),
+                    },
+                )
+            )
+    return units
+
+
+def _documents_schemas_sampled() -> Capability:
+    return Capability(
+        "documents.schemas_sampled",
+        "document_schemas",
+        "Document field readings",
+        "document_schema_sample",
+        documents_workflow.dependencies("documents.schemas_sampled"),
+        _sampled_ready,
+        _sample_units,
+        context={"document_schema_sample": "documents.schema_sample"},
+        # Independent of one another and never committing — the same grounds the
+        # chunk capability qualifies on.
+        barrier="all_settled_parallel",
+        invalidate_on=("documents",),
+    )
+
+
+def _schemas_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Every type the engagement's transaction evidence carries has a schema.
+
+    Measured against the types those documents actually carry, not the catalog
+    and not every type present: a type nothing carries needs no schema, and a
+    type only planning material carries needs none either. An engagement whose
+    documents are all still unidentified therefore has nothing to induce and is
+    satisfied, which is correct — the gap it has is a classification gap, and
+    that capability reports it.
+    """
+
+    awaiting = document_classification.types_awaiting_schema(workspace)
+    induced = document_schemas.list_schemas(workspace)
+    details = {
+        "types_for_induction": document_classification.types_for_induction(workspace),
+        "induced": len(induced),
+        "low_confidence": [
+            record["document_type"] for record in induced if record.get("low_confidence")
+        ],
+    }
+    if awaiting:
+        return Readiness(
+            "missing",
+            (
+                f"{counted(len(awaiting), 'document type')} "
+                f"{verb(len(awaiting), 'has', 'have')} no induced schema",
+            ),
+            details=details,
+        )
+    return Readiness("satisfied", details=details)
+
+
+def _schema_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One freeze unit per document type, parented to its own samples."""
+
+    units: list[UnitSpec] = []
+    for document_type in _pending_types(workspace, scope):
+        samples = document_classification.sample_for_induction(workspace, document_type)
+        if not samples:
+            continue
+        units.append(
+            UnitSpec(
+                semantic_unit_id("document_schema", document_type),
+                "document_schema_freeze",
+                f"Settle schema — {document_types.label(document_type)}",
+                tuple(f"document:{document_id}" for document_id in samples),
+                {"document_type": document_type, "sample_document_ids": list(samples)},
+            )
+        )
+    return units
+
+
+def _documents_schemas_induced() -> Capability:
+    return Capability(
+        "documents.schemas_induced",
+        "document_schemas",
+        "Document schemas",
+        "document_schema_reconcile",
+        documents_workflow.dependencies("documents.schemas_induced"),
+        _schemas_ready,
+        _schema_units,
+        context={"document_schema_freeze": "documents.schema_reconcile"},
+        invalidate_on=("documents",),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # documents.analysis_chunks_ready (P9.4 / P9.5)
 # --------------------------------------------------------------------------- #
 def _chunks_ready(workspace: Workspace, scope: dict) -> Readiness:
@@ -536,7 +828,7 @@ def _documents_analysis_chunks_ready() -> Capability:
         context={
             "document_chunk_analysis": "documents.analysis_chunk",
             "document_visual_page_analysis": "documents.analysis_visual_page",
-            "document_voucher_analysis": "documents.analysis_voucher",
+            "document_structured_analysis": "documents.analysis_structured",
         },
         # Chunks are independent of each other and never commit, so they are the
         # one capability whose units the scheduler may run concurrently.
@@ -696,6 +988,9 @@ STAGE_CHECKPOINTS: dict[str, str] = {
 
 _BUILDERS = {
     "documents.text_ready": _documents_text_ready,
+    "documents.types_classified": _documents_types_classified,
+    "documents.schemas_sampled": _documents_schemas_sampled,
+    "documents.schemas_induced": _documents_schemas_induced,
     "documents.analysis_chunks_ready": _documents_analysis_chunks_ready,
     "documents.analysis_generated": _documents_analysis_generated,
     "documents.analysis_reviewed": _documents_analysis_reviewed,

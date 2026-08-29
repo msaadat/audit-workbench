@@ -225,6 +225,18 @@ def _document_workflow_run(ws, document_ids, *, action="analyze"):
     )
 
 
+# Every document run names what each document *is* before mapping it. These
+# hand-rolled fakes dispatch on the prompt tag rather than asserting a single
+# one, so the classification pass is answered and the assertion that follows
+# still pins the map call it cares about.
+CLASSIFY_TAG = "agent:document_classification"
+CLASSIFICATION_REPLY = {
+    "document_type": "other",
+    "document_type_other": "Test fixture document",
+    "confidence": "low",
+    "rationale": "A fixture document with no catalogued form.",
+}
+
 def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
     ws = workspaces.create_workspace("Durable document analysis")
     source = "Invoices require finance director approval before payment."
@@ -232,6 +244,8 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
 
     def fake_chat(messages, **_kwargs):
         tag = messages[0]["content"].split("]", 1)[0].lstrip("[")
+        if tag == CLASSIFY_TAG:
+            return {"content": json.dumps(CLASSIFICATION_REPLY)}
         assert tag == "agent:document_analysis_map"
         payload = {
             "summary_markdown": "Invoices require approval. [1]",
@@ -281,6 +295,8 @@ def test_durable_document_analysis_persists_freeform_long_markdown(monkeypatch):
 
     def fake_chat(messages, **kwargs):
         tag = messages[0]["content"].split("]", 1)[0].lstrip("[")
+        if tag == CLASSIFY_TAG:
+            return {"content": json.dumps(CLASSIFICATION_REPLY)}
         assert tag == "agent:document_analysis_map"
         assert "tools" not in kwargs
         payload = {
@@ -316,6 +332,11 @@ def test_document_analysis_retries_blank_notes_and_persists_complete_output(monk
 
     def fake_chat(messages, **_kwargs):
         nonlocal calls
+        tag = messages[0]["content"].split("]", 1)[0].lstrip("[")
+        if tag == CLASSIFY_TAG:
+            # Not counted: the retry this test pins is the map worker's, and
+            # counting the classification pass would shift every branch below.
+            return {"content": json.dumps(CLASSIFICATION_REPLY)}
         calls += 1
         if calls == 1:
             payload = {

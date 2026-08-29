@@ -19,9 +19,8 @@ from __future__ import annotations
 
 from ... import (
     analysis_promotion,
-    cycle_vouching,
+    cycle_measurement,
     doc_tests,
-    document_analysis,
     rcm_execution,
 )
 from ...text import counted, verb
@@ -63,16 +62,16 @@ def _by_row(manifest: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
-def _unvouched_packs(workspace: Workspace) -> list[tuple[str, list[str]]]:
-    """Packs whose source records were extracted and never vouched against.
+def _unvouched_types(workspace: Workspace) -> list[str]:
+    """Document types whose records were extracted and never vouched against.
 
     The bypass this reports is silent by construction. Cycle vouching is
     reachable only through a ``transaction_cycle`` control attribute; when the
     matrix classifies every attribute some other way, no cycle test is
-    requested, the registry packs and the evaluator are never called, and the
-    run reports success. An engagement whose documents were read *as* a
-    registered transaction cycle and then never tie-matched has degraded from
-    the strongest evidence path available to it, and must say so.
+    requested, the linker and the evaluator are never called, and the run
+    reports success. An engagement whose documents were read against induced
+    schemas and then never tie-matched has degraded from the strongest evidence
+    path available to it, and must say so.
 
     Deliberately keyed on the extracted records rather than on the matrix: it
     is the matrix's classification that is in question, so it cannot also be
@@ -84,28 +83,16 @@ def _unvouched_packs(workspace: Workspace) -> list[tuple[str, list[str]]]:
         doc_tests.is_cycle_test(test) for test in doc_tests.list_tests(workspace)
     ):
         return []
-    unvouched = []
-    for pack in cycle_vouching.DEFAULT_REGISTRY.metadata().get("packs") or []:
-        pack_id = str(pack.get("id") or "")
-        if not pack_id:
-            continue
-        try:
-            reference = cycle_vouching.DEFAULT_REGISTRY.reference(pack_id).to_dict()
-            records = document_analysis.registry_evidence_records(workspace, reference)
-        except Exception:
-            # A pack that cannot be resolved against this workspace is not
-            # evidence of a bypass; readiness must not fail on it.
-            continue
-        kinds = sorted(
-            {
-                str(record.get("record_kind") or "")
-                for record in records
-                if record.get("record_kind")
-            }
-        )
-        if kinds:
-            unvouched.append((pack_id, kinds))
-    return unvouched
+    try:
+        records = cycle_measurement.structured_records(workspace)
+    except Exception:
+        # Readiness reports; it never fails the run on evidence it cannot read.
+        return []
+    return sorted({
+        str(row.get("document_type") or "")
+        for row in records
+        if row.get("document_type")
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -131,17 +118,16 @@ def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
         ):
             review_required += 1
     if total and ready == total:
-        unvouched = _unvouched_packs(workspace)
+        unvouched = _unvouched_types(workspace)
         if unvouched:
             return Readiness(
                 "review_required",
-                tuple(
-                    f"{counted(len(kinds), 'record kind')} of the '{pack}' "
-                    f"transaction cycle {verb(len(kinds), 'was', 'were')} extracted "
-                    f"from the supplied documents ({', '.join(kinds)}) and no cycle "
-                    "test vouches them; the matrix classified no control attribute "
-                    "as transaction_cycle"
-                    for pack, kinds in unvouched
+                (
+                    f"{counted(len(unvouched), 'document type')} "
+                    f"{verb(len(unvouched), 'was', 'were')} extracted against an "
+                    f"induced schema ({', '.join(unvouched)}) and no cycle test "
+                    "vouches them; the matrix classified no control attribute as "
+                    "transaction_cycle",
                 ),
                 details={"ready": ready, "total": total},
             )

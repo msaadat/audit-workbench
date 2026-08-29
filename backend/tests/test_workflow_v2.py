@@ -178,7 +178,11 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
         # without proposing more, which is what "run the saved analyses" means.
         ("analysis_execution", "workflow", ["analysis.executed"]),
         ("table_relationships", "workflow", ["data.joins_ready"]),
-        ("document_analysis", "workflow", ["documents.analysis_generated"]),
+        ("document_analysis", "workflow", [
+        "documents.types_classified",
+        "documents.schemas_induced",
+        "documents.analysis_generated",
+    ]),
         ("document_test_preparation", "workflow", ["tests.specified"]),
         ("document_test_execution", "workflow", ["doc_tests.executed"]),
     ],
@@ -410,7 +414,13 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         # scoped document-analysis edge rather than raw document text.
         "sources.imported": (),
         "documents.text_ready": (),
-        "documents.analysis_chunks_ready": ("documents.text_ready",),
+        "documents.types_classified": ("documents.text_ready",),
+        "documents.schemas_sampled": ("documents.types_classified",),
+        "documents.schemas_induced": ("documents.schemas_sampled",),
+        "documents.analysis_chunks_ready": (
+            "documents.text_ready",
+            "documents.schemas_induced",
+        ),
         "documents.analysis_generated": ("documents.analysis_chunks_ready",),
         "data.relationships_inferred": (),
         "data.join_utility_ready": ("data.relationships_inferred",),
@@ -421,7 +431,11 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "analysis.summarized": ("analysis.executed",),
         "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
         "planning.apm_ready": ("planning.context_ready",),
-        "planning.rcm_ready": ("planning.apm_ready",),
+        "planning.rcm_ready": (
+            "planning.apm_ready",
+            "documents.types_classified",
+            "documents.schemas_induced",
+        ),
         "tests.specified": ("planning.rcm_ready",),
         "tests.promoted_from_analysis": ("tests.specified",),
         "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
@@ -460,6 +474,9 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "analysis.summarized",
         "sources.imported",
         "documents.text_ready",
+        "documents.types_classified",
+        "documents.schemas_sampled",
+        "documents.schemas_induced",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
         "planning.context_ready",
@@ -507,6 +524,9 @@ def test_partial_goal_prunes_current_prerequisites():
         # The workspace carries no document, so every document capability is
         # satisfied and reused without expanding a single unit.
         "documents.text_ready",
+        "documents.types_classified",
+        "documents.schemas_sampled",
+        "documents.schemas_induced",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
         "planning.context_ready",

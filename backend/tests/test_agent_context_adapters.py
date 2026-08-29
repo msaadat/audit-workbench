@@ -898,15 +898,7 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
                 "excerpt": "Purchase order PO-1001 total PKR 50,000.",
             },
         ),
-        evidence={
-            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
-                "procure_to_pay"
-            ).to_dict(),
-            "record_fragments": [],
-            "records": [],
-            "unresolved_fragments": [],
-            "conflicts": [],
-        },
+        evidence={"records": []},
     )
     row = workspace.add_rcm(
         {
@@ -926,9 +918,12 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
     assert "vouch_anchor_candidates" not in table
     document_context = scope.candidates["documents"][0].source
     assert "vouch_profile" not in document_context
-    manifest = scope.candidates["transaction_evidence"][0].source
-    assert manifest["groups"] == []
-    assert manifest["manifest_sha256"].startswith("sha256:")
+    # No approved ruleset, so there is nothing to build a cycle test on and
+    # the scope says which of the two reasons it is rather than offering an
+    # empty shape the turn would have to interpret.
+    candidate = scope.candidates["transaction_evidence"][0].source
+    assert candidate["ruleset"] is None
+    assert candidate["reason"] == "no_approved_ruleset"
 
 
 def test_test_generate_scope_supplies_the_process_description_without_the_audit_notes():

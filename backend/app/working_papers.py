@@ -193,7 +193,7 @@ def _markdown_cell(value: object) -> str:
     return str(value if value not in (None, "") else "—").replace("|", "\\|").replace("\n", " ")
 
 
-def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
+def _cycle_test_lines(workspace: Workspace, test: dict) -> tuple[list[str], list[str]]:
     """Render the canonical Cycle vouch definition and item results once."""
 
     rollup = doc_tests.result_rollup(test)
@@ -201,7 +201,26 @@ def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
     population = definition["population"]
     selection = population["selection"]
     coverage = rollup["coverage"]
-    assertions = list(definition["assertions"])
+    if cycle_vouching.ruleset_backed(test):
+        from . import cycle_linking
+
+        ruleset = cycle_linking.resolve_ruleset(workspace, test)
+        assertions = cycle_linking.grid_assertions(ruleset)
+        anchor_column = str(population.get("column") or "")
+        # The auditor who approved the rules is part of the evidence: a cycle
+        # result is only as authorised as the rules that produced it.
+        provenance = [
+            f"- Rules: ruleset `{definition.get('ruleset_id')}` "
+            f"({definition.get('ruleset_hash')}), approved by "
+            f"{ruleset.get('approved_by') or 'unknown'} on "
+            f"{ruleset.get('approved_at') or 'an unrecorded date'}"
+        ]
+        vocabulary_hash = str(definition.get("ruleset_hash") or "")
+    else:
+        assertions = list(definition["assertions"])
+        anchor_column = str((population.get("row_key") or {}).get("column") or "")
+        provenance = []
+        vocabulary_hash = str(test.get("registry", {}).get("definition_hash") or "")
     tested = [
         item
         for item in test.get("items") or []
@@ -209,7 +228,8 @@ def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
     ]
     lines = [
         "Canonical Cycle vouch procedure:", "",
-        f"- Population: {population['table']} keyed by {population['row_key']['column']}",
+        f"- Population: {population['table']} keyed by {anchor_column}",
+        *provenance,
         f"- Selection basis: {selection['mode']}",
         f"- Assurance scope: **{rollup['assurance_label']}**",
         f"- Conclusion eligible: {'yes' if rollup['conclusion_eligible'] else 'no'}",
@@ -277,7 +297,7 @@ def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
     hashes = [
         str(test.get("sha1") or ""),
         cycle_vouching.cycle_definition_sha1(test),
-        str(test.get("registry", {}).get("definition_hash") or ""),
+        vocabulary_hash,
     ]
     for item in tested:
         evaluation = item.get("evaluation") or {}
@@ -288,8 +308,11 @@ def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
             f"{(item.get('disposition') or {}).get('state')}"
         )
         for binding in item.get("role_bindings") or []:
+            # An edge names the rule that made it: a join key on a ruleset
+            # cycle, an identifier kind on a pack one.
             chain = " → ".join(
-                f"{edge.get('identifier_kind')}={edge.get('normalized_value')}"
+                f"{edge.get('join_key') or edge.get('identifier_kind')}"
+                f"={edge.get('normalized_value')}"
                 for edge in binding.get("matched_by") or []
             ) or "manual/current binding"
             lines.append(
@@ -376,7 +399,7 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
             ]
         )
         if kind == "doctest" and doc_tests.is_cycle_test(test):
-            cycle_lines, cycle_hashes = _cycle_test_lines(test)
+            cycle_lines, cycle_hashes = _cycle_test_lines(workspace, test)
             lines.extend(cycle_lines)
             source_hashes.extend(cycle_hashes)
         else:

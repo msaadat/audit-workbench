@@ -555,23 +555,15 @@ def _validated_rcm(
             raise WorkspaceError("An accepted RCM row is missing its risk.")
         spec["risk_rating"] = str(spec.get("risk_rating") or "").lower()
         try:
+            # The commit is where a schema-backed attribute becomes exact: this
+            # is the turn that has the engagement in hand, so a field no schema
+            # states is refused here rather than surfacing later as a cycle
+            # test that cannot be generated.
             spec["control_attributes"] = cycle_vouching.validate_control_attributes(
-                spec.get("control_attributes")
+                spec.get("control_attributes"), workspace=target.workspace
             )
         except cycle_vouching.CycleSchemaError as error:
             raise WorkspaceError(str(error)) from error
-        transaction_packs = {
-            str(attribute["registry"]["pack_id"])
-            for attribute in spec["control_attributes"]
-            if attribute.get("evidence_kind") == "transaction_cycle"
-        }
-        if len(transaction_packs) > 1:
-            raise WorkspaceError("An accepted RCM row mixes transaction-cycle packs.")
-        expected_cycle = next(iter(transaction_packs), "")
-        if str(spec.get("business_cycle") or "").strip() != expected_cycle:
-            raise WorkspaceError(
-                "An accepted RCM row business_cycle does not match its control attributes."
-            )
         spec["semantic_id"] = rcm_semantic_id(spec)
         rows.append(spec)
     return target, rows

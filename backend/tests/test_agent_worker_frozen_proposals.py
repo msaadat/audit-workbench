@@ -331,6 +331,277 @@ def _documents_request(worker_id, capability_id, *supplied):
     )
 
 
+@builds("documents.classification")
+def _classification(getfixture):
+    from app.agent.workers.documents import DOCUMENT_CLASSIFICATION_SOURCE_ID
+    from app.agent.context import (
+        ContextBundle,
+        ContextBundleItem,
+        ContextRepresentation,
+        supplied_size,
+        total_supplied_size,
+    )
+    from app.agent.workers.model import WorkerRequest
+
+    content = {"document_id": "d1", "text": CHUNK_TEXT}
+    items = (
+        ContextBundleItem(
+            source_id=DOCUMENT_CLASSIFICATION_SOURCE_ID,
+            source_ref="document:d1",
+            representation=ContextRepresentation("document_metadata"),
+            content=content,
+            supplied_size=supplied_size(content),
+        ),
+    )
+    request = WorkerRequest(
+        worker_id="documents.classification",
+        capability_id="documents.types_classified",
+        unit_id="document_classification:d1",
+        context=ContextBundle(
+            capability_id="documents.types_classified",
+            unit_id="document_classification:d1",
+            items=items,
+            supplied_size=total_supplied_size(item.supplied_size for item in items),
+        ),
+        unit_input={
+            "document_id": "d1",
+            "text": CHUNK_TEXT,
+            "selectable_types": ["purchase_order", "vendor_invoice", "other"],
+        },
+    )
+    proposal = {
+        "document_type": "vendor_invoice",
+        "document_type_other": "",
+        "confidence": "high",
+        "rationale": "The header reads Invoice and states an invoice number.",
+    }
+    return proposal, request
+
+
+def _schema_request(worker_id: str, unit_input: dict):
+    from app.agent.context import (
+        ContextBundle,
+        ContextBundleItem,
+        ContextRepresentation,
+        supplied_size,
+        total_supplied_size,
+    )
+    from app.agent.workers.documents import DOCUMENT_SCHEMA_SOURCE_ID
+    from app.agent.workers.model import WorkerRequest
+
+    content = {"document_id": "d1", "text": CHUNK_TEXT}
+    items = (
+        ContextBundleItem(
+            source_id=DOCUMENT_SCHEMA_SOURCE_ID,
+            source_ref="document:d1:schema-sample",
+            representation=ContextRepresentation("raw_pages"),
+            content=content,
+            supplied_size=supplied_size(content),
+        ),
+    )
+    return WorkerRequest(
+        worker_id=worker_id,
+        capability_id="documents.schemas_induced",
+        unit_id="document_schema:vendor_invoice",
+        context=ContextBundle(
+            capability_id="documents.schemas_induced",
+            unit_id="document_schema:vendor_invoice",
+            items=items,
+            supplied_size=total_supplied_size(item.supplied_size for item in items),
+        ),
+        unit_input=unit_input,
+    )
+
+
+@builds("documents.schema_sample")
+def _schema_sample(getfixture):
+    request = _schema_request(
+        "documents.schema_sample",
+        {"document_type": "vendor_invoice", "document_id": "d1", "text": CHUNK_TEXT},
+    )
+    proposal = {
+        "fields": [
+            {
+                "name": "invoice_number", "role": "identifier",
+                "value_type": "identifier", "cardinality": "one",
+                "verbatim": True, "confidence": "high", "label": "Invoice number",
+            },
+            {
+                "name": "total_amount", "role": "attribute",
+                "value_type": "number", "cardinality": "one",
+                "verbatim": True, "confidence": "high", "label": "Total",
+            },
+        ]
+    }
+    return proposal, request
+
+
+@builds("documents.schema_reconcile")
+def _schema_reconcile(getfixture):
+    request = _schema_request(
+        "documents.schema_reconcile",
+        {
+            "document_type": "vendor_invoice",
+            "conflicts": [
+                {"name": "reference", "attribute": "value_type",
+                 "values": ["identifier", "text"]},
+            ],
+        },
+    )
+    proposal = {
+        "resolutions": [
+            {
+                "name": "reference", "attribute": "value_type",
+                "value": "identifier",
+                "reason": "It ties this invoice to the order it bills against.",
+            }
+        ]
+    }
+    return proposal, request
+
+
+@builds("documents.analysis_structured")
+def _structured(getfixture):
+    from app.agent.workers.documents import DOCUMENT_STRUCTURED_SOURCE_ID
+    from app.agent.context import (
+        ContextBundle,
+        ContextBundleItem,
+        ContextRepresentation,
+        supplied_size,
+        total_supplied_size,
+    )
+    from app.agent.workers.model import WorkerRequest
+
+    content = {"id": "ch1", "page": 1, "text": CHUNK_TEXT}
+    items = (
+        ContextBundleItem(
+            source_id=DOCUMENT_STRUCTURED_SOURCE_ID,
+            source_ref="document:d1:chunk:ch1",
+            representation=ContextRepresentation("raw_pages"),
+            content=content,
+            supplied_size=supplied_size(content),
+        ),
+    )
+    request = WorkerRequest(
+        worker_id="documents.analysis_structured",
+        capability_id="documents.analysis_chunks_ready",
+        unit_id="document_chunk:d1:ch1",
+        context=ContextBundle(
+            capability_id="documents.analysis_chunks_ready",
+            unit_id="document_chunk:d1:ch1",
+            items=items,
+            supplied_size=total_supplied_size(item.supplied_size for item in items),
+        ),
+        unit_input={
+            "document_id": "d1",
+            "document_type": "vendor_invoice",
+            "schema_fields": [
+                {"name": "invoice_number", "role": "identifier",
+                 "value_type": "identifier", "cardinality": "one",
+                 "verbatim": True, "confidence": "high"},
+            ],
+        },
+    )
+    proposal = {
+        "analysis_profile": "structured",
+        "records": [
+            {
+                "fields": [
+                    {"name": "invoice_number", "entry": 1,
+                     "value": "INV-1042", "citation": "c1"},
+                ],
+                "additional_fields": [],
+            }
+        ],
+        "audit_notes": [],
+        "citations": [{"id": "c1", "page": 1, "excerpt": EXCERPT}],
+    }
+    return proposal, request
+
+
+@builds("tests.cycle_linkage")
+def _cycle_linkage(getfixture):
+    from app.agent.workers.tests import CYCLE_SCHEMA_SOURCE_ID
+    from app.agent.context import (
+        ContextBundle,
+        ContextBundleItem,
+        ContextRepresentation,
+        supplied_size,
+        total_supplied_size,
+    )
+    from app.agent.workers.model import WorkerRequest
+
+    schemas = [
+        {
+            "document_type": "vendor_invoice",
+            "fields": [
+                {"name": "invoice_number", "role": "identifier",
+                 "value_type": "identifier", "cardinality": "one"},
+                {"name": "order_number", "role": "identifier",
+                 "value_type": "identifier", "cardinality": "one"},
+                {"name": "total_amount", "role": "attribute",
+                 "value_type": "number", "cardinality": "one"},
+            ],
+        },
+        {
+            "document_type": "purchase_order",
+            "fields": [
+                {"name": "order_number", "role": "identifier",
+                 "value_type": "identifier", "cardinality": "one"},
+                {"name": "total_amount", "role": "attribute",
+                 "value_type": "number", "cardinality": "one"},
+            ],
+        },
+    ]
+    content = {"schemas": schemas}
+    items = (
+        ContextBundleItem(
+            source_id=CYCLE_SCHEMA_SOURCE_ID,
+            source_ref="workspace:schemas",
+            representation=ContextRepresentation("current_artifact"),
+            content=content,
+            supplied_size=supplied_size(content),
+        ),
+    )
+    request = WorkerRequest(
+        worker_id="tests.cycle_linkage",
+        capability_id="tests.cycle_ruleset_proposed",
+        unit_id="cycle_linkage:ws",
+        context=ContextBundle(
+            capability_id="tests.cycle_ruleset_proposed",
+            unit_id="cycle_linkage:ws",
+            items=items,
+            supplied_size=total_supplied_size(item.supplied_size for item in items),
+        ),
+        unit_input={"schemas": schemas, "tables": []},
+    )
+    proposal = {
+        "cycle_label": "Procure to pay",
+        "roles": [
+            {"name": "invoice", "document_type": "vendor_invoice",
+             "cardinality": "one", "required": True},
+            {"name": "order", "document_type": "purchase_order",
+             "cardinality": "one", "required": True},
+        ],
+        "anchor": {"table": "register", "column": "INVOICE_NO",
+                   "role": "invoice", "field": "invoice_number"},
+        "join_keys": [{
+            "id": "jk_order", "match": "normalized_equal",
+            "left": {"role": "invoice", "field": "order_number"},
+            "right": {"role": "order", "field": "order_number"},
+            "rationale": "An invoice cites the order it bills against.",
+        }],
+        "assertions": [{
+            "id": "as_total", "label": "Totals agree",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": {"role": "order", "field": "total_amount"},
+            "operator": "numeric_within", "tolerance": {"absolute": 1},
+            "rationale": "The amount billed must be the amount ordered.",
+        }],
+    }
+    return proposal, request
+
+
 def _text_proposal(**overrides):
     value = {
         "summary_markdown": "The order was approved and matched before payment.",
@@ -365,46 +636,6 @@ def _chunk(getfixture):
         ),
     )
     return _text_proposal(), request
-
-
-@builds("documents.analysis_voucher")
-def _voucher(getfixture):
-    from app.agent.workers.documents import (
-        DOCUMENT_CHUNK_SOURCE_ID,
-        DOCUMENT_IDENTITY_SOURCE_ID,
-    )
-
-    request = _documents_request(
-        "documents.analysis_voucher",
-        "documents.analysis_chunks_ready",
-        (
-            DOCUMENT_CHUNK_SOURCE_ID,
-            "document:d1#ch1",
-            "document_chunk",
-            {"id": "ch1", "pages": [1], "text": CHUNK_TEXT},
-        ),
-        (
-            DOCUMENT_IDENTITY_SOURCE_ID,
-            "document:d1",
-            "document_metadata",
-            {"document_id": "d1", "source_sha1": SOURCE_SHA1},
-        ),
-    )
-    # ``audit_notes`` is the array this worker rewrites rather than merely
-    # reads, so it is the one that has to survive the freeze.
-    from app.cycle_registry import DEFAULT_REGISTRY
-
-    proposal = _text_proposal(
-        registry=DEFAULT_REGISTRY.reference("procure_to_pay").to_dict(),
-        audit_notes=[
-            {
-                "observation": "Approval is dated before payment.",
-                "why_it_matters": "The sequence is the control.",
-                "follow_up": "Confirm the approver's limit.",
-            }
-        ]
-    )
-    return proposal, request
 
 
 @builds("documents.analysis_reduction")

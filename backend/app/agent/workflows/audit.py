@@ -53,6 +53,15 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # offer to write a memorandum about nothing.
     "sources.imported": (),
     "documents.text_ready": documents_workflow.dependencies("documents.text_ready"),
+    "documents.types_classified": documents_workflow.dependencies(
+        "documents.types_classified"
+    ),
+    "documents.schemas_sampled": documents_workflow.dependencies(
+        "documents.schemas_sampled"
+    ),
+    "documents.schemas_induced": documents_workflow.dependencies(
+        "documents.schemas_induced"
+    ),
     "documents.analysis_chunks_ready": documents_workflow.dependencies(
         "documents.analysis_chunks_ready"
     ),
@@ -76,7 +85,18 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "analysis.summarized": analysis_workflow.dependencies("analysis.summarized"),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
-    "planning.rcm_ready": ("planning.apm_ready",),
+    # Classification and induction, not extraction. Both are cheap — page-one
+    # text and two samples a type — and both run over the whole document set
+    # rather than the planning-scoped subset, which is what puts voucher schemas
+    # in hand when the RCM is written. The expensive extraction pass keeps its
+    # scope and its position. Without these edges an RCM row can require a
+    # comparison over fields no schema states, and nothing would say so until a
+    # cycle test failed to generate.
+    "planning.rcm_ready": (
+        "planning.apm_ready",
+        "documents.types_classified",
+        "documents.schemas_induced",
+    ),
     "tests.specified": ("planning.rcm_ready",),
     # Placing an exploratory procedure needs the matrix to place it in. It sits
     # after test generation so a promoted test is written against a matrix whose

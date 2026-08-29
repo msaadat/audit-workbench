@@ -20,7 +20,13 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from ... import cycle_vouching, document_analysis, documents as document_service
+from ... import (
+    cycle_vouching,
+    document_analysis,
+    document_classification,
+    document_schemas,
+    documents as document_service,
+)
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError
 from .model import (
@@ -33,6 +39,8 @@ from .model import (
 )
 
 ANALYSIS_EXECUTOR_ID = "documents.analysis"
+CLASSIFICATION_EXECUTOR_ID = "documents.classification"
+SCHEMA_EXECUTOR_ID = "documents.schema"
 
 DOCUMENT_TEXT_UNAVAILABLE = "document_has_no_extractable_text"
 DOCUMENT_REQUIRES_VISION = "document_requires_vision"
@@ -164,6 +172,7 @@ def _validated_analysis(
         "analysis_profile": str(
             request.proposal.get("analysis_profile") or "standard"
         ),
+        "schema_ref": _plain_json(request.proposal.get("schema_ref") or {}),
         "vision_used": bool(request.proposal.get("vision_used")),
         "generation_profiles": [
             _plain_json(profile)
@@ -174,6 +183,15 @@ def _validated_analysis(
             request.proposal.get("prepared_media_set_hash") or ""
         ),
     }
+    if payload["analysis_profile"] == "structured":
+        # The stamp is checked at commit time, not only on read: a schema
+        # re-derived while this run was in flight means the extraction was made
+        # against fields that are no longer current, and storing it would leave
+        # an analysis nothing can safely interpret.
+        if not document_schemas.is_current(target.workspace, payload.get("schema_ref")):
+            raise WorkspaceError(
+                "This extraction was made against a schema that is no longer current."
+            )
     if payload["analysis_profile"] == "voucher":
         if payload["summary_origin"] != "structured_evidence":
             raise WorkspaceError(
@@ -362,6 +380,346 @@ def reconcile_document_analysis(
         ),
         reason="This run's generated document analysis already holds.",
     )
+
+
+# --------------------------------------------------------------------------- #
+# document type classification
+# --------------------------------------------------------------------------- #
+@dataclass
+class DocumentClassificationExecutorTarget:
+    """Mutable target for one document's type assignment."""
+
+    workspace: Workspace
+    run_id: str
+    document_id: str
+    catalog_sha1: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Document classification target requires a Workspace.")
+        for field_name in ("run_id", "document_id"):
+            value = str(getattr(self, field_name) or "").strip()
+            if not value:
+                raise ValueError(
+                    f"Document classification target requires a {field_name}."
+                )
+            setattr(self, field_name, value)
+
+
+def execute_document_classification(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Commit one document's type under the document's own parent guard.
+
+    The assignment is written with ``assigned_by="model"``, which is what makes
+    it revisable by a later rerun — and what makes it *unable* to overwrite an
+    auditor's retyping. That rule lives in ``document_classification.assign``
+    rather than here, so the same guarantee holds however the assignment is
+    reached.
+    """
+
+    if not isinstance(raw_target, DocumentClassificationExecutorTarget):
+        raise WorkspaceError("Unsupported document classification target.")
+    proposal = request.proposal
+    if not isinstance(proposal, Mapping):
+        raise WorkspaceError("Document classification requires a proposal.")
+    document_type = str(proposal.get("document_type") or "")
+    if not document_type:
+        raise WorkspaceError("Document classification proposal names no document type.")
+    target = raw_target
+    state: dict[str, object] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        return document_classification.assign(
+            fresh,
+            target.document_id,
+            document_type,
+            assigned_by="model",
+            confidence=str(proposal.get("confidence") or "medium"),
+            rationale=str(proposal.get("rationale") or ""),
+            other_label=str(proposal.get("document_type_other") or ""),
+            agent_run_id=target.run_id,
+            unit_id=request.unit_id,
+            catalog_sha1=target.catalog_sha1,
+        )
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _classification_result(
+        request,
+        committed.workspace,
+        revision_before=int(state["revision_before"]),
+        document_id=target.document_id,
+        record=dict(committed.value),
+    )
+
+
+def _classification_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    document_id: str,
+    record: Mapping[str, object],
+) -> ExecutorResult:
+    refs = [document_ref(document_id)]
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, refs),
+        output={
+            # ``assigned_by`` is reported because it may not be what this unit
+            # asked for: an auditor retyping while the run was in flight leaves
+            # their decision standing, and the receipt has to show that.
+            "status": "committed",
+            "document_id": document_id,
+            "document_type": str(record.get("document_type") or ""),
+            "assigned_by": str(record.get("assigned_by") or ""),
+            "confidence": str(record.get("confidence") or ""),
+        },
+    )
+
+
+def reconcile_document_classification(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted type-assignment commit.
+
+    The assignment lands in a sidecar, so — as with a generated analysis —
+    parent equality cannot prove the commit never ran. The sidecar's own identity
+    does: an assignment carrying this run and this unit proves it applied.
+
+    An auditor assignment reconciles as applied whatever this unit proposed. The
+    commit path refuses to overwrite one, so the unit's outcome is that their
+    decision stands, and re-running would only reconfirm it.
+    """
+
+    if not isinstance(raw_target, DocumentClassificationExecutorTarget):
+        raise WorkspaceError("Unsupported document classification target.")
+    target = raw_target
+    parent_ref = document_ref(target.document_id)
+    current = Workspace(target.workspace.root)
+    actual = parent_hashes(current, [parent_ref])[parent_ref]
+    expected = request.expected_parents.get(parent_ref)
+    if actual != expected:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=str(
+                ParentConflict(parent_ref, str(expected), actual, current.revision)
+            ),
+        )
+    record = document_classification.classification(current, target.document_id)
+    by = str(record.get("assigned_by") or "")
+    if by != "auditor" and (
+        str(record.get("unit_id") or "") != request.unit_id
+        or str(record.get("agent_run_id") or "") != target.run_id
+    ):
+        return ExecutorReconciliation("not_applied")
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_classification_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            document_id=target.document_id,
+            record=record,
+        ),
+        reason="This run's document type already holds.",
+    )
+
+
+CLASSIFICATION_EXECUTOR = ExecutorDefinition(
+    executor_id=CLASSIFICATION_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_document_classification,
+    reconciler=reconcile_document_classification,
+)
+
+EXECUTORS.register(CLASSIFICATION_EXECUTOR)
+
+
+# --------------------------------------------------------------------------- #
+# document schema freeze
+# --------------------------------------------------------------------------- #
+@dataclass
+class DocumentSchemaExecutorTarget:
+    """Mutable target for one document type's schema freeze."""
+
+    workspace: Workspace
+    run_id: str
+    document_type: str
+    sample_document_ids: tuple[str, ...] = ()
+    reconciled: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Document schema target requires a Workspace.")
+        for field_name in ("run_id", "document_type"):
+            value = str(getattr(self, field_name) or "").strip()
+            if not value:
+                raise ValueError(f"Document schema target requires a {field_name}.")
+            setattr(self, field_name, value)
+        self.sample_document_ids = tuple(
+            str(value) for value in self.sample_document_ids
+        )
+
+
+def schema_ref(document_type: str) -> str:
+    return f"document_schema:{document_type}"
+
+
+def _schema_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    record: Mapping[str, object],
+) -> ExecutorResult:
+    ref = schema_ref(str(record.get("document_type") or ""))
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=[ref],
+        applied_parents=dict(request.expected_parents),
+        # A schema lives in a side store, so ``parent_hashes`` — which projects
+        # workspace artifacts — has nothing to say about it. Its own content hash
+        # is the honest postcondition: after this commit, the schema for this
+        # type is exactly this. Restated as sha1 because the receipt contract
+        # takes that shape.
+        postcondition_hashes={
+            ref: hashlib.sha1(
+                str(record.get("schema_hash") or "").encode("utf-8")
+            ).hexdigest()
+        },
+        output={
+            "status": "committed",
+            "document_type": str(record.get("document_type") or ""),
+            "schema_version": record.get("schema_version"),
+            "schema_hash": str(record.get("schema_hash") or ""),
+            "fields": len(list(record.get("fields") or [])),
+            # Both are how a reader tells a corroborated schema from a guess.
+            "low_confidence": bool(record.get("low_confidence")),
+            "reconciled": bool(record.get("reconciled")),
+        },
+    )
+
+
+def execute_document_schema(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Freeze one document type's schema from its unioned samples.
+
+    The union is already settled by the time this runs — the binder performed it,
+    and called a model again only if two samples disagreed about what a field is.
+    What lands here is the agreed field list.
+    """
+
+    if not isinstance(raw_target, DocumentSchemaExecutorTarget):
+        raise WorkspaceError("Unsupported document schema target.")
+    proposal = request.proposal
+    if not isinstance(proposal, Mapping):
+        raise WorkspaceError("Document schema freeze requires a proposal.")
+    fields = list(proposal.get("fields") or [])
+    if not fields:
+        raise WorkspaceError("Document schema freeze requires at least one field.")
+    target = raw_target
+    state: dict[str, object] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        return document_schemas.save_schema(
+            fresh,
+            target.document_type,
+            fields,
+            derived_from=target.sample_document_ids,
+            reconciled=bool(target.reconciled),
+            low_confidence=len(target.sample_document_ids) < 2,
+        )
+
+    # Through the transaction even though the schema lands in a side store: it is
+    # what takes the write lock, re-checks the sample documents have not been
+    # replaced underneath, and publishes one workspace revision so the commit is
+    # visible as an event rather than an invisible file write.
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _schema_result(
+        request,
+        committed.workspace,
+        revision_before=int(state["revision_before"]),
+        record=dict(committed.value),
+    )
+
+
+def reconcile_document_schema(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted schema freeze.
+
+    The schema store is content-addressed: re-inducing the same fields yields the
+    same hash and does not bump the version. So a stored schema whose hash equals
+    what this proposal would produce *is* this commit, whoever wrote it, and
+    re-running would be a no-op rather than a second version.
+    """
+
+    if not isinstance(raw_target, DocumentSchemaExecutorTarget):
+        raise WorkspaceError("Unsupported document schema target.")
+    target = raw_target
+    proposal = request.proposal
+    fields = list(proposal.get("fields") or []) if isinstance(proposal, Mapping) else []
+    if not fields:
+        return ExecutorReconciliation("not_applied")
+    current = Workspace(target.workspace.root)
+    stored = document_schemas.load_schema(current, target.document_type)
+    if stored is None:
+        return ExecutorReconciliation("not_applied")
+    expected = document_schemas.canonical_sha256(
+        document_schemas.meaning(
+            target.document_type, document_schemas.validate_fields(fields)
+        )
+    )
+    if str(stored.get("schema_hash") or "") != expected:
+        return ExecutorReconciliation("not_applied")
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_schema_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            record=stored,
+        ),
+        reason="This run's document schema already holds.",
+    )
+
+
+SCHEMA_EXECUTOR = ExecutorDefinition(
+    executor_id=SCHEMA_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_document_schema,
+    reconciler=reconcile_document_schema,
+)
+
+EXECUTORS.register(SCHEMA_EXECUTOR)
 
 
 ANALYSIS_EXECUTOR = ExecutorDefinition(

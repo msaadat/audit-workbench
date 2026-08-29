@@ -143,12 +143,6 @@ def _row(**overrides):
     return row
 
 
-def _registry():
-    return planning.cycle_vouching.DEFAULT_REGISTRY.reference(
-        "procure_to_pay"
-    ).to_dict()
-
-
 def _cycle_attribute(**overrides):
     """A transaction-cycle attribute as the judgment pass returns it.
 
@@ -172,19 +166,31 @@ def _contract(**overrides):
     contract = {
         "row_index": 1,
         "attribute_key": "three_way_match",
-        "registry": _registry(),
-        "comparison_recipes": _three_way_recipes(),
+        "required_comparisons": _three_way_comparisons(),
     }
     contract.update(overrides)
     return contract
 
 
-def _three_way_recipes():
-    """The shapes the evidence pass now cites, unbound."""
+def _three_way_comparisons():
+    """What the evidence pass now states: the fields that must agree."""
 
     return [
-        {"recipe_id": "procure_to_pay.three_way_match"},
-        {"recipe_id": "common.party_agreement"},
+        {
+            "key": "totals_agree",
+            "left": {"document_type": "vendor_invoice", "field": "total_amount"},
+            "right": {"document_type": "purchase_order", "field": "total_amount"},
+            "operator": "numeric_within",
+            "tolerance": {"absolute": 1},
+            "rationale": "The amount billed must be the amount ordered.",
+        },
+        {
+            "key": "quantities_agree",
+            "left": {"document_type": "goods_receipt", "field": "quantity"},
+            "right": {"document_type": "purchase_order", "field": "quantity"},
+            "operator": "equal_exact",
+            "rationale": "Only what was received may be billed.",
+        },
     ]
 
 
@@ -771,11 +777,8 @@ def test_rcm_worker_preserves_untouched_rows_byte_for_byte_through_a_repair():
     assert accepted["risk"] == "Unapproved vendors are created"
 
 
-def test_rcm_worker_derives_business_cycle_and_drops_non_durable_keys():
-    row = _row(
-        business_cycle="wrong_model_value",
-        control_attributes=[_cycle_attribute()],
-    )
+def test_rcm_worker_writes_the_evidence_contract_and_drops_non_durable_keys():
+    row = _row(control_attributes=[_cycle_attribute()])
     gateway = _Gateway(
         [
             json.dumps({"rows": [row]}),
@@ -786,24 +789,25 @@ def test_rcm_worker_derives_business_cycle_and_drops_non_durable_keys():
     result = WORKERS.execute(_request(), gateway)
 
     normalized = result.proposal["rows"][0]
-    assert normalized["business_cycle"] == "procure_to_pay"
     # Narrative keys the model likes to add are dropped rather than failing the
     # row; the workspace discards them anyway.
     assert "new_risk_reason" not in normalized
     assert "test_procedure" not in normalized
     attribute = normalized["control_attributes"][0]
-    assert attribute["registry"] == _registry()
-    assert [item["recipe_id"] for item in attribute["comparison_recipes"]] == [
-        "procure_to_pay.three_way_match",
-        "common.party_agreement",
+    assert [item["key"] for item in attribute["required_comparisons"]] == [
+        "totals_agree",
+        "quantities_agree",
     ]
+    # The fields are named outright, so there is no pack to reference.
+    assert "registry" not in attribute
+    assert "comparison_recipes" not in attribute
 
 
 def test_rcm_worker_runs_the_evidence_pass_only_for_cycle_attributes():
-    """The pack catalog is carried by the call that needs it, and no other.
+    """The vocabulary is carried by the call that needs it, and no other.
 
-    It was 11kB of the judgment prompt on every RCM turn, including the great
-    majority of attributes that never reference a record kind.
+    The great majority of attributes never state a comparison, and paying for a
+    second turn on each of them buys nothing.
     """
 
     gateway = _Gateway([json.dumps({"rows": [_row()]})])
@@ -813,22 +817,14 @@ def test_rcm_worker_runs_the_evidence_pass_only_for_cycle_attributes():
     # One call only: no attribute asked for an evidence contract.
     assert len(gateway.calls) == 1
     assert gateway.calls[0]["system"] == planning.RCM_SYSTEM
-    assert "procure_to_pay.purchase_order" not in planning.RCM_SYSTEM
-    # The evidence pass is asked for a pack id and never for the reference
-    # around it: a hash absent from the prompt is a hash no response can
-    # mistype. See the canonicalization tests below.
-    assert "pack_id" in planning.RCM_EVIDENCE_SYSTEM
-    assert "definition_hash" not in planning.RCM_EVIDENCE_SYSTEM
-    assert _registry()["definition_hash"] not in planning.RCM_EVIDENCE_SYSTEM
+    # And the vocabulary is per workspace, so it is not in the prompt at all.
+    assert "vendor_invoice" not in planning.RCM_SCHEMA_EVIDENCE_SYSTEM
 
 
-def test_rcm_worker_completes_a_partial_evidence_contract_from_the_second_pass():
-    """A judgment pass that half-writes a contract is completed, not rejected."""
-
-    partial = _cycle_attribute(registry="procure_to_pay")
+def test_the_evidence_pass_writes_the_contract_the_judgment_pass_was_told_to_omit():
     gateway = _Gateway(
         [
-            json.dumps({"rows": [_row(control_attributes=[partial])]}),
+            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
             json.dumps({"contracts": [_contract()]}),
         ]
     )
@@ -836,9 +832,9 @@ def test_rcm_worker_completes_a_partial_evidence_contract_from_the_second_pass()
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is False
-    assert result.proposal["rows"][0]["control_attributes"][0]["registry"] == (
-        _registry()
-    )
+    assert result.proposal["rows"][0]["control_attributes"][0][
+        "required_comparisons"
+    ]
 
 
 def test_an_attribute_the_evidence_pass_declined_takes_the_next_best_path():
@@ -897,76 +893,6 @@ def test_rcm_worker_aggregates_quality_errors_across_rows():
         "or 'create'",
     )
 
-
-@pytest.mark.parametrize(
-    "supplied_registry",
-    [
-        # The id alone, which is now all the prompt asks for.
-        "procure_to_pay",
-        {"pack_id": "procure_to_pay"},
-        # Shapes a model reaches for anyway, each of which used to cost a turn.
-        {"pack_id": "procure_to_pay", "pack_version": 7},
-        {
-            "pack_id": "procure_to_pay",
-            "required_record_kinds": ["procure_to_pay.purchase_order"],
-        },
-        # The failure this replaced: a sixty-four character hash transcribed by
-        # hand. Six of seven came back corrupted on one live matrix — one by a
-        # transposition, one by a dropped character that shifted the fifty
-        # following it — and each corruption quarantined the row carrying it.
-        {
-            "pack_id": "procure_to_pay",
-            "pack_version": 7,
-            "definition_hash": "sha256:" + "0" * 64,
-        },
-    ],
-)
-def test_the_registry_reference_is_derived_from_the_pack_id_not_transcribed(
-    supplied_registry,
-):
-    """Whatever shape names the pack, the attribute ends with the real reference.
-
-    And ends with it on the first attempt: the reference is wholly derivable
-    from the id, so there is nothing for a repair turn to correct and no reason
-    to spend one. A corrupted hash is not diagnosed better here, it is made
-    impossible.
-    """
-
-    gateway = _Gateway(
-        [
-            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
-            json.dumps({"contracts": [_contract(registry=supplied_registry)]}),
-        ]
-    )
-
-    result = WORKERS.execute(_request(), gateway)
-
-    assert result.repaired is False
-    assert result.proposal["rows"][0]["control_attributes"][0]["registry"] == (
-        _registry()
-    )
-
-
-def test_an_unknown_pack_id_leaves_the_attribute_uncontracted_rather_than_wrong():
-    """An id naming no installed pack resolves to nothing, never to a guess.
-
-    Deriving a reference must not become inventing one. The attribute reaches
-    the gate as a cycle strategy with no contract, which is the existing path
-    that reroutes it to the strongest evidence still open to the requirement.
-    """
-
-    gateway = _Gateway(
-        [
-            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
-            json.dumps({"contracts": [_contract(registry="order_to_cash_v9")]}),
-        ]
-    )
-
-    result = WORKERS.execute(_request(), gateway)
-
-    (attribute,) = result.proposal["rows"][0]["control_attributes"]
-    assert "registry" not in attribute
-    assert attribute["evidence_kind"] != "transaction_cycle"
 
 def test_rcm_worker_tolerates_stray_characters_after_a_complete_object():
     """Run 20260809-140906-19a740: a valid 24-row draft lost to a trailing `]}`.
@@ -1033,12 +959,11 @@ def test_a_whole_document_re_ask_still_runs_the_evidence_pass():
     assert result.repaired is True
     # judgment, whole-document re-ask, then the evidence pass on its output.
     assert len(gateway.calls) == 3
-    assert gateway.calls[2]["system"] == planning.RCM_EVIDENCE_SYSTEM
+    assert gateway.calls[2]["system"] == planning.RCM_SCHEMA_EVIDENCE_SYSTEM
     attribute = result.proposal["rows"][0]["control_attributes"][0]
-    assert attribute["registry"] == _registry()
-    assert [item["recipe_id"] for item in attribute["comparison_recipes"]] == [
-        "procure_to_pay.three_way_match",
-        "common.party_agreement",
+    assert [item["key"] for item in attribute["required_comparisons"]] == [
+        "totals_agree",
+        "quantities_agree",
     ]
 
 
@@ -1080,9 +1005,8 @@ def test_rcm_worker_survives_an_unparseable_evidence_pass():
                                 control_attributes=[
                                     {
                                         **_cycle_attribute(),
-                                        "registry": _registry(),
-                                        "comparison_recipes": [
-                                            _three_way_recipes()[0]
+                                        "required_comparisons": [
+                                            _three_way_comparisons()[0]
                                         ],
                                     }
                                 ]
@@ -1103,7 +1027,7 @@ def test_rcm_worker_survives_an_unparseable_evidence_pass():
         "names no evidence contract" in error
         for entry in repair_request["ROWS TO CORRECT"]
         for error in entry["errors"]
-    )
+    ), repair_request["ROWS TO CORRECT"]
 
 
 def test_rcm_worker_re_asks_the_document_when_the_prior_draft_never_parsed():
@@ -1174,7 +1098,12 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
 
     attribute = _cycle_attribute()
     row = _row(control_attributes=[attribute])
-    broken = _contract(comparison_recipes=[{"recipe_id": "common.invented"}])
+    broken = _contract(required_comparisons=[{
+        "key": "totals_agree",
+        "left": {"document_type": "vendor_invoice", "field": "total_amount"},
+        "right": {"document_type": "purchase_order", "field": "total_amount"},
+        "operator": "equals",
+    }])
     gateway = _Gateway(
         [
             json.dumps({"rows": [row]}),
@@ -1187,9 +1116,8 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
                                 control_attributes=[
                                     {
                                         **attribute,
-                                        "registry": _registry(),
-                                        "comparison_recipes": [
-                                            _three_way_recipes()[0]
+                                        "required_comparisons": [
+                                            _three_way_comparisons()[0]
                                         ],
                                     }
                                 ]
@@ -1207,11 +1135,9 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
     assert result.repaired is True
     repair_request = json.loads(gateway.calls[2]["user"])
     errors = repair_request["ROWS TO CORRECT"][0]["errors"]
-    assert any(
-        "is not a comparison recipe offered for pack" in error for error in errors
-    )
-    # The repair turn is given the catalog, not just the violation.
-    assert "procure_to_pay.three_way_match" in gateway.calls[2]["system"]
+    assert any("'equals' is not supported" in error for error in errors)
+    # The repair turn is given the vocabulary, not just the violation.
+    assert "numeric_within" in gateway.calls[2]["system"]
     assert result.proposal["rows"][0]["risk"] == "Duplicate payments are processed"
 
 
