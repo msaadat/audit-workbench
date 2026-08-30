@@ -208,28 +208,54 @@ def validate_apm_proposal(
     # mechanism is deliberate and honest. What it may not be is a heading with
     # nothing under it, which reads as covered and is not.
     bodies = _section_bodies(markdown)
-    for heading in _section_bodies(template):
+    template_bodies = _section_bodies(template)
+    for heading in template_bodies:
         if not re.search(r"[A-Za-z0-9]", bodies.get(heading, "")):
             raise WorkerResponseValidationError(
                 f"template section '{heading}' is present but has no content"
             )
-    normalized = re.sub(r"\s+", " ", markdown.casefold())
-    # Proximity over the whole memo, so this holds only for fields whose absence
-    # the structured context contradicts outright. The period was such a gate and
-    # is no longer: it is proposed from observed ranges rather than asserted, a
-    # wrong one is corrected in place by the auditor, and the scan discarded a
-    # complete valid memo when "in the audit period; if not available" — prose
-    # about whether evidence exists, twenty thousand characters from the
-    # Engagement section — read as the memo disowning its own period. Proposing
-    # a period is steered by APM_SYSTEM instead of gated here.
+    # Read only the section the template declares the field in, never the whole
+    # memo. The proximity window bounds distance but says nothing about *place*,
+    # and a memo is tens of thousands of characters: any prose pairing the word
+    # with "not available" trips it from anywhere. That is not hypothetical, and
+    # it is the second time — ``period`` was dropped from this gate after
+    # "in the audit period; if not available" read as the memo disowning its own
+    # period. The same shape then rejected a complete treasury memo for saying
+    # its policy extract held "sections 1-3 (scope, definitions, governance) and
+    # 9-11 ... are not available" — an accurate remark about a *source document's*
+    # sections, seventy-nine characters from the word and nowhere near where the
+    # engagement states its scope.
+    #
+    # Following the template rather than naming a heading keeps the guard honest
+    # if the field moves: it checks wherever the template asks for the field, and
+    # checks nothing else.
     for field_name in ("objective", "scope"):
-        if structured.get(field_name) and re.search(
-            rf"\b{field_name}\b.{{0,80}}{_UNAVAILABLE}",
-            normalized,
-        ):
-            raise WorkerResponseValidationError(
-                f"the memorandum says {field_name} is unavailable despite structured context"
-            )
+        if not structured.get(field_name):
+            continue
+        # Leaf sections only. ``_section_bodies`` is depth-aware, so a document's
+        # ``#`` title carries every ``##`` beneath it as its body — matching that
+        # would scope the scan back to the whole memo and change nothing.
+        declared_in = [
+            heading
+            for heading, body in template_bodies.items()
+            if not _HEADING.search(body)
+            and re.search(rf"\b{field_name}\b", f"{heading}\n{body}", re.IGNORECASE)
+        ]
+        # A template that never names the field leaves nowhere to narrow to, so
+        # the whole memo stands in. That is the old behaviour, kept only for the
+        # case that cannot be scoped rather than as the default.
+        searched = (
+            [bodies.get(heading, "") for heading in declared_in]
+            if declared_in
+            else [markdown]
+        )
+        for text in searched:
+            section = re.sub(r"\s+", " ", text.casefold())
+            if re.search(rf"\b{field_name}\b.{{0,80}}{_UNAVAILABLE}", section):
+                raise WorkerResponseValidationError(
+                    f"the memorandum says {field_name} is unavailable "
+                    "despite structured context"
+                )
     return {"apm_markdown": markdown}
 
 

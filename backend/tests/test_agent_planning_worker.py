@@ -134,6 +134,58 @@ def test_apm_semantic_validation_rejects_structured_context_contradiction():
     assert len(gateway.calls) == 2
 
 
+_SHIPPED_TEMPLATE = (
+    "# Audit Planning Memorandum\n\n"
+    "## Engagement\n\n"
+    "- Entity: {{entity}}\n"
+    "- Period: {{period}}\n"
+    "- Objective & Scope: The objective of this audit is to review and assess "
+    "the entity's performance against the established controls.\n\n"
+    "## Introduction and background\n\n{{introduction}}\n"
+)
+
+
+def test_a_source_documents_missing_scope_section_is_not_the_memo_disowning_its_own():
+    """Observed on a treasury engagement, and the second time this shape has bitten.
+
+    The memo remarked, accurately, that the policy extract it was given held only
+    sections 4-8 — so the policy's *own* sections 1-3 ``(scope, definitions,
+    governance) ... are not available``. Seventy-nine characters, and a whole-memo
+    scan read it as the engagement disowning its scope. ``period`` was dropped
+    from this gate for exactly this reason; scoping to where the template asks
+    for the field fixes the remaining two without giving up the check.
+    """
+
+    memo = (
+        "# Audit Planning Memorandum\n\n"
+        "## Engagement\n\n"
+        "- Entity: Meridian Bank Limited\n"
+        "- Period: Half year ended 30 June 2025\n"
+        "- **Objective & Scope:** Risk-based review of treasury dealing, "
+        "confirmation and settlement.\n\n"
+        "## Introduction and background\n\n"
+        "The policy extract covers sections 4-8; sections 1-3 (scope, "
+        "definitions, governance) and 9-11 are not available.\n"
+    )
+    result = WORKERS.execute(
+        _request(_bundle(template=_SHIPPED_TEMPLATE)), _Gateway([memo])
+    )
+    assert "sections 1-3" in result.proposal["apm_markdown"]
+
+
+def test_disowning_the_field_where_the_template_asks_for_it_still_fails():
+    memo = (
+        "# Audit Planning Memorandum\n\n"
+        "## Engagement\n\n"
+        "- Entity: Meridian Bank Limited\n"
+        "- **Objective & Scope:** not available.\n\n"
+        "## Introduction and background\n\nBackground.\n"
+    )
+    gateway = _Gateway([memo, memo])
+    with pytest.raises(WorkerRunError, match="objective is unavailable"):
+        WORKERS.execute(_request(_bundle(template=_SHIPPED_TEMPLATE)), gateway)
+
+
 _DATED = {
     "tables": [
         {
