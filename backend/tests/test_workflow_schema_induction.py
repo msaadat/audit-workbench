@@ -248,13 +248,19 @@ def test_a_workspace_of_unidentified_documents_induces_nothing(monkeypatch):
     assert dc.types_awaiting_schema(reloaded) == []
 
 
-def test_planning_material_is_classified_but_never_induced(monkeypatch):
+def test_planning_material_is_neither_classified_nor_induced(monkeypatch):
     """The shape of a real procurement engagement: vouchers alongside an
     approval matrix and a set of minutes.
 
-    Classification names all three correctly — an approval matrix genuinely is a
-    ``delegation_of_authority``. Induction expands over the voucher only, and
-    the planning documents keep the written narrative the APM selectors read.
+    Classification, induction and structured extraction all expand over
+    transaction evidence and nothing else, so only the voucher is typed. An
+    approval matrix genuinely *is* a ``delegation_of_authority``, but the label
+    is inert on it: it cannot fill a cycle role, induction skips it, and an RCM
+    comparison naming ``{document_type, field}`` needs a schema it will never
+    have. Asking cost a model call nothing read.
+
+    The planning documents keep the written narrative the APM selectors consume,
+    which is the half that has to survive the gate.
     """
 
     ws = workspaces.create_workspace("Procurement")
@@ -343,12 +349,21 @@ def test_planning_material_is_classified_but_never_induced(monkeypatch):
     assert finished["status"] == "completed"
     reloaded = workspaces.load_workspace(ws.id)
 
-    assert dc.types_present(reloaded) == [
-        "board_minutes", "delegation_of_authority", "vendor_invoice",
-    ]
+    assert dc.types_present(reloaded) == ["vendor_invoice"]
     assert [record["document_type"] for record in
             document_schemas.list_schemas(reloaded)] == ["vendor_invoice"]
     assert _tags(fake).count(SAMPLE_TAG) == 1
+
+    # The gate is what saves the turn, so count it rather than inferring it from
+    # the absence of a type: one classification call for one voucher.
+    assert _tags(fake).count(CLASSIFY_TAG) == 1
+    assert not dc.is_classified(reloaded, created[1]["id"])
+    assert not dc.is_classified(reloaded, created[2]["id"])
+
+    # Readiness is measured over the same set, so an engagement whose prose is
+    # untyped is complete rather than permanently part-classified.
+    assert dc.unclassified_ids(reloaded) == []
+    assert dc.summary(reloaded)["documents"] == 1
 
     # Each planning document was read as prose and carries a written summary,
     # which is the form the planning selectors consume.

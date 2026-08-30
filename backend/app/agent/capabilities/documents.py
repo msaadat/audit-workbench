@@ -526,11 +526,19 @@ def _classified_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     document_scope = resolve_document_scope(workspace, scope)
     known = {str(item.get("id")): item for item in workspace.documents}
     scoped = set(document_scope.document_ids)
+    # Classification runs over transaction evidence only. A forced regeneration
+    # widens *which* of those are re-asked, never what the question applies to —
+    # otherwise `refresh` would classify the prose that the normal path, the
+    # readiness check and the summary all agree to leave alone.
+    evidence = {
+        str(document.get("id"))
+        for document in document_classification.transaction_evidence(workspace)
+    }
     forced = _forced(scope)
     if forced:
         candidates = [
             document_id for document_id in document_scope.document_ids
-            if document_id in known
+            if document_id in known and document_id in evidence
         ]
     else:
         candidates = [

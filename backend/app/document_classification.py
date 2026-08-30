@@ -262,12 +262,23 @@ def transaction_evidence(workspace: Workspace) -> list[dict]:
     """Classifiable documents intake routed as transaction-level source material.
 
     Schema induction and structured extraction run over these and nothing else.
+    Classification, schema induction and structured extraction all run over
+    these and nothing else.
+
     Type says what a document *is*; category says what it is *to this
     engagement*, and a procurement policy correctly classified
     ``delegation_of_authority`` is still prose here. Reading it under a field
     schema would replace the narrative analysis planning actually consumes with
     a record dump, because a structured document's summary is rendered from its
     records rather than written.
+
+    Classification shares the gate rather than running corpus-wide, because a
+    type assigned to non-transaction material is inert: it cannot fill a cycle
+    role, induction skips it, and an RCM comparison addressing ``{document_type,
+    field}`` needs a schema it will never have. The label cost a model call and
+    nothing reads it. Gating here also keeps the two axes agreeing about where
+    type stops mattering, instead of the category gate sitting one stage lower
+    than the question it governs.
 
     Explicit only: a document intake left uncategorized is never treated as
     transaction evidence, so the gate opens on a decision rather than on a gap.
@@ -281,9 +292,11 @@ def transaction_evidence(workspace: Workspace) -> list[dict]:
 
 
 def unclassified_ids(workspace: Workspace) -> list[str]:
+    """Transaction evidence still needing a type. Prose is not counted."""
+
     return [
         str(document.get("id"))
-        for document in classifiable(workspace)
+        for document in transaction_evidence(workspace)
         if not is_classified(workspace, str(document.get("id")))
     ]
 
@@ -301,7 +314,7 @@ def reclassifiable_ids(workspace: Workspace) -> list[str]:
     signature = catalog_signature(workspace)
     return [
         str(document.get("id"))
-        for document in classifiable(workspace)
+        for document in transaction_evidence(workspace)
         if is_other(workspace, str(document.get("id")))
         and not is_auditor_assigned(workspace, str(document.get("id")))
         and str(
@@ -516,9 +529,14 @@ def classification_text(
 
 
 def summary(workspace: Workspace) -> dict:
-    """Counts the classification capability reports and the UI shows."""
+    """Counts the classification capability reports and the UI shows.
 
-    eligible = classifiable(workspace)
+    Counted over transaction evidence, which is what classification runs over.
+    Counting prose here would report an engagement as permanently part-classified
+    against documents nothing intends to classify.
+    """
+
+    eligible = transaction_evidence(workspace)
     classified = [
         document for document in eligible
         if is_classified(workspace, str(document.get("id")))
