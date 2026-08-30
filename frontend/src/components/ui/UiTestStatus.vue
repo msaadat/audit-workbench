@@ -78,8 +78,8 @@ const info = computed(() => meta[props.status] ?? {
   flex-shrink: 0;
 }
 
-/* The labelled form exists because an icon alone cannot be scanned down a
-   list of 30 worklist items, and a tooltip is not a substitute for a word. */
+/* The labelled form is for places where the status is the content. Compact
+   rails use the icon form beside a title, backed by a tooltip and aria-label. */
 .status-chip {
   display: inline-flex;
   align-items: center;

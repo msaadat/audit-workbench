@@ -1,13 +1,9 @@
 <script setup lang="ts">
-import Tag from 'primevue/tag'
-
 import type { SavedAnalysis } from '../../types'
-import { classificationMeta, formatExecutedAt, provenance } from './classification'
+import { classificationMeta } from './classification'
 
-// The rail of saved procedures. Every row states what the procedure concluded,
-// because that is what the triage filter above it filters by — a filtered list
-// whose rows do not show their own classification gives no reason for what it
-// is showing.
+// The rail is deliberately only identity plus an icon: provenance, source
+// table, execution time, and the full outcome all live in the open procedure.
 defineProps<{ items: SavedAnalysis[]; selectedId: string | null }>()
 defineEmits<{ select: [analysis: SavedAnalysis] }>()
 </script>
@@ -24,20 +20,18 @@ defineEmits<{ select: [analysis: SavedAnalysis] }>()
         :data-classification="item.classification"
         @click="$emit('select', item)"
       >
-        <span class="row-title">{{ item.title }}</span>
-        <span class="row-meta">
-          <i :class="provenance(item).icon" aria-hidden="true" />
-          {{ provenance(item).label }}
-          <template v-if="item.table"> · {{ item.table }}</template>
-        </span>
-        <span class="row-state">
-          <Tag
-            :value="classificationMeta(item.classification).label"
-            :severity="classificationMeta(item.classification).severity"
+        <span class="row-head">
+          <span class="row-title">{{ item.title }}</span>
+          <i
+            class="row-status"
+            :class="[
+              classificationMeta(item.classification).icon,
+              `tone-${classificationMeta(item.classification).severity}`,
+            ]"
+            :aria-label="classificationMeta(item.classification).label"
+            role="img"
+            v-tooltip.left="classificationMeta(item.classification).label"
           />
-          <small v-if="item.last_result?.executed_at">
-            {{ formatExecutedAt(item.last_result.executed_at) }}
-          </small>
         </span>
       </button>
     </li>
@@ -48,12 +42,9 @@ defineEmits<{ select: [analysis: SavedAnalysis] }>()
 .analysis-list { display: flex; flex-direction: column; gap: var(--aw-space-2); margin: 0; padding: 0; list-style: none; }
 
 .row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
   width: 100%;
   text-align: left;
-  padding: 0.6rem 0.75rem;
+  padding: 0.55rem 0.65rem;
   border: 1px solid var(--aw-border);
   /* The status stripe: the row's outcome is legible before its text is read. */
   border-left: 3px solid var(--aw-border-strong);
@@ -73,23 +64,22 @@ defineEmits<{ select: [analysis: SavedAnalysis] }>()
 .row[data-classification='clear'] { border-left-color: var(--aw-ok); }
 .row[data-classification='informational'] { border-left-color: var(--aw-teal); }
 
+.row-head { display: flex; align-items: flex-start; gap: 0.45rem; min-width: 0; }
 .row-title {
   display: -webkit-box;
+  flex: 1 1 auto;
+  min-width: 0;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   font-size: var(--aw-text-sm);
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1.3;
 }
-.row-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  min-width: 0;
-  color: var(--aw-muted);
-  font-size: var(--aw-text-xs);
-}
-.row-state { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.1rem; }
-.row-state small { color: var(--aw-muted); font-size: var(--aw-text-2xs); }
+.row-status { display: inline-grid; flex: 0 0 auto; width: 1.6rem; height: 1.6rem; place-items: center; border-radius: 50%; font-size: var(--aw-text-sm); }
+.row-status.tone-secondary { color: var(--aw-muted); background: var(--aw-raised); }
+.row-status.tone-success { color: var(--aw-ok); background: var(--aw-ok-soft); }
+.row-status.tone-warn { color: var(--aw-warn); background: var(--aw-warn-soft); }
+.row-status.tone-danger { color: var(--aw-danger); background: var(--aw-danger-soft); }
+.row-status.tone-info { color: var(--aw-teal); background: var(--aw-teal-soft); }
 </style>
