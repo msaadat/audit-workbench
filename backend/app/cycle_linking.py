@@ -28,7 +28,13 @@ import json
 from collections import deque
 from typing import Iterable, Mapping
 
-from . import cycle_measurement, cycle_rulesets, document_schemas, document_types
+from . import (
+    cycle_measurement,
+    cycle_rulesets,
+    document_classification,
+    document_schemas,
+    document_types,
+)
 from .cycle_vouching import (
     ASSERTIONS,
     ASSERTION_VERDICTS,
@@ -1966,17 +1972,52 @@ def unanswerable_cycle_requirements(workspace, rcm_row: Mapping[str, object]) ->
 def schema_catalog(workspace) -> list[dict]:
     """The induced schemas, as the RCM authoring turn needs to see them.
 
-    Only what a comparison can address: the type, and each field's name, role
-    and value type. Nothing about how many documents were sampled or how
-    confident the induction was — a requirement is written against what the
-    documents state, and confidence is a question about the schema rather than
-    about the control.
+    What a comparison can address: the type, what distinguishes it from its
+    neighbours, how many documents carry it, and each field's name, role and
+    value type. Still nothing about how many documents were *sampled* or how
+    confident the induction was — those are questions about the schema rather
+    than about the control.
+
+    ``documents`` and ``discriminator`` are not decoration, and both were added
+    after a treasury engagement wrote a matrix that validated perfectly and meant
+    something else. Every operand named a real field on a real type, because that
+    is all selector-exactness can check.
+
+    The count is the population signal. A requirement is written against a
+    population, and a type carrying one document cannot answer one. That
+    engagement had coined ``local.internal_deal_confirmation`` for a single
+    anomalous document — a confirmation the entity had produced for itself — and
+    the authoring turn made it the deal-record side of three population-wide
+    comparisons on the strength of its name, while ``treasury_deal_ticket`` and
+    its eighteen documents went unnamed.
+
+    The discriminator is the same defence one step earlier. It is the sentence
+    saying a broker's confirmation is an intermediary's record and *not* the
+    counterparty's — the distinction a bare field list cannot carry, and the one
+    the same matrix collapsed by testing "the counterparty's confirmation has
+    been received" against ``broker_confirmation``.
     """
+
+    coined = {
+        str(entry.get("id") or ""): str(entry.get("discriminator") or "")
+        for entry in document_schemas.local_types(workspace)
+    }
+
+    def discriminator(type_id: str) -> str:
+        definition = document_types.BY_ID.get(type_id)
+        if definition is not None:
+            return definition.discriminator
+        return coined.get(type_id, "")
 
     catalog: list[dict] = []
     for schema in document_schemas.list_schemas(workspace):
+        document_type = str(schema.get("document_type") or "")
         catalog.append({
-            "document_type": str(schema.get("document_type") or ""),
+            "document_type": document_type,
+            "discriminator": discriminator(document_type),
+            "documents": len(
+                document_classification.documents_of_type(workspace, document_type)
+            ),
             "fields": [
                 {
                     "name": str(field.get("name") or ""),

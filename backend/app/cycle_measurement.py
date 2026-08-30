@@ -45,7 +45,9 @@ def structured_records(
     An analysis whose schema stamp no longer matches is excluded rather than
     reinterpreted — it was extracted against fields that have since changed, so
     reading it under today's schema would attribute values to a vocabulary that
-    never produced them.
+    never produced them. An analysis whose stamp names a type the document no
+    longer carries is excluded for the same reason from the other direction:
+    the schema it names is current, but it is not this document's schema.
 
     Each exclusion is appended to ``excluded`` with its reason. A document that
     silently contributes nothing is the failure mode this whole design exists to
@@ -72,13 +74,20 @@ def structured_records(
             if artifact.get("records") or artifact.get("record_fragments"):
                 exclude("legacy_pack_analysis")
             continue
-        if not document_schemas.is_current(workspace, artifact.get("schema_ref")):
+        schema_ref = artifact.get("schema_ref") or {}
+        document_type = document_classification.document_type(workspace, document_id)
+        if not document_schemas.is_current(workspace, schema_ref):
             exclude("stale_schema_reference")
             continue
-        document_type = str(
-            (artifact.get("schema_ref") or {}).get("document_type")
-            or document_classification.document_type(workspace, document_id)
-        )
+        if str(schema_ref.get("document_type") or "") != document_type:
+            # Retyped since it was extracted. The stamp is still current — the
+            # old type's schema never moved — so the staleness check above lets
+            # it through, and taking the type from the stamp would file the
+            # records under a type the auditor has said this document is not.
+            # Re-analysis under the new type's schema is the repair, and it is
+            # what ``has_usable_analysis`` now re-expands the chunks for.
+            exclude("retyped_since_extraction")
+            continue
         # The linker needs to know when an extraction moved under a stored
         # result, and it reads this same set: carrying the hash here is what
         # keeps that a single pass over the corpus rather than two.

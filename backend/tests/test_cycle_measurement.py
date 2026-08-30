@@ -240,6 +240,27 @@ def test_a_legacy_pack_analysis_is_named_rather_than_silently_skipped(ws):
     assert stored["summary_markdown"].startswith("Read under a pack")
 
 
+def test_a_document_retyped_since_extraction_is_named_rather_than_misfiled(ws):
+    """The stamp is current, so the staleness check passes it. It is still wrong.
+
+    Nothing about ``vendor_invoice``'s schema moved, so ``is_current`` says yes
+    and the row would be filed under a type the auditor has said this document
+    is not. Excluded and named, because a document that silently contributes
+    under the wrong type is worse than one that contributes nothing.
+    """
+
+    document_id = _extract(ws, "inv.txt", "vendor_invoice", invoice_number="INV-1")
+    dc.retype(ws, document_id, coin="Internal deal confirmation")
+    reloaded = workspaces.load_workspace(ws.id)
+
+    excluded: list[dict] = []
+
+    assert cycle_measurement.structured_records(reloaded, excluded=excluded) == []
+    assert excluded == [
+        {"document_id": document_id, "reason": "retyped_since_extraction"}
+    ]
+
+
 def test_an_extraction_against_a_schema_that_moved_is_named_too(ws):
     document_id = _extract(ws, "inv.txt", "vendor_invoice", invoice_number="INV-1")
     document_schemas.save_schema(ws, "vendor_invoice", [

@@ -397,6 +397,24 @@ def has_usable_analysis(workspace: Workspace, document_id: str) -> bool:
     would have re-generated each chunk — the schema descriptor moving the unit's
     input hash — never got the chance, because the capability was reused whole
     before any unit ran.
+
+    A retype asks the same question from the other side, and the stamp answers
+    it only if the *type* on it is compared too. An extraction stamped
+    ``investment_confirmation`` is still current under that type's schema after
+    an auditor retypes the document to ``local.internal_deal_confirmation`` —
+    nothing about that schema moved — so an existence-shaped check reuses it,
+    the chunks never re-expand, and the correction is half-applied: the type
+    changes, the extraction stays under the old type's fields.
+
+    This is *not* the reclassification case the Phase 2a note in
+    ``docs/dynamic-cycle-contracts.md`` rules out. That note is about the
+    **catalog** changing — re-examining what an ``other`` document might be is a
+    question about the vocabulary, and the answer has no bearing on what the map
+    worker extracted, so ``POST /documents/reclassify`` requests only
+    ``documents.types_classified``. Here the **document's own type** changed, so
+    the fields it was read against are the wrong fields. Conflating the two
+    would either re-analyze a corpus every time a type is coined, or leave every
+    auditor correction half-applied.
     """
 
     record = document_analysis.generated_record(workspace, document_id)
@@ -404,7 +422,11 @@ def has_usable_analysis(workspace: Workspace, document_id: str) -> bool:
         return False
     if str(record.get("analysis_profile") or "") != "structured":
         return True
-    return document_schemas.is_current(workspace, record.get("schema_ref"))
+    return document_schemas.is_current_for(
+        workspace,
+        record.get("schema_ref"),
+        document_classification.document_type(workspace, document_id),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -629,11 +651,32 @@ def _sampled_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 
 def _pending_types(workspace: Workspace, scope: dict) -> list[str]:
-    return (
-        document_classification.types_for_induction(workspace)
-        if _forced(scope)
-        else document_classification.types_awaiting_schema(workspace)
-    )
+    """The types this run samples and freezes a schema for.
+
+    Forcing re-derives, but only for the types the run was actually asked about.
+    Re-deriving every type in the workspace is what a one-document ``refresh``
+    used to do: on an 84-document engagement it spent a budget sized for one
+    document's chunks on re-sampling schemas it was never pointed at, failed on
+    the turn limit before reaching the analysis, and bumped every schema a
+    version — orphaning 68 completed extractions as ``stale_schema_reference``.
+    Scoping it makes the small-target case do what its button says while a
+    whole-workspace refresh still re-derives the whole workspace, because then
+    every type *is* a targeted type.
+
+    Types with no schema at all stay in scope whether or not they were targeted.
+    Nothing is orphaned by inducing what does not exist yet, and this is the
+    only path that fills the gap ``schemas_induced`` reports.
+    """
+
+    awaiting = document_classification.types_awaiting_schema(workspace)
+    if not _forced(scope):
+        return awaiting
+    inducible = set(document_classification.types_for_induction(workspace))
+    targeted = {
+        document_classification.document_type(workspace, document_id)
+        for document_id in resolve_document_scope(workspace, scope).document_ids
+    }
+    return sorted(set(awaiting) | (targeted & inducible))
 
 
 def _sample_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
@@ -738,6 +781,54 @@ def _schema_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             )
         )
     return units
+
+
+def preparation_model_turns(workspace: Workspace, scope: dict) -> int:
+    """Model turns the stages *before* analysis will spend for this scope.
+
+    Classification, schema sampling and the freeze that consumes them each call
+    the model once per unit, and none of that was in the document budget: it was
+    sized from chunks and documents alone, so every preparation turn was spent
+    against an allowance that had not counted it. On a one-document ``refresh``
+    that was the whole failure — seven turns, six of them gone on schema work,
+    and the analysis it was asked for never reached.
+
+    Counted rather than expanded. The unit builders carry each document's
+    classification and induction text with them, and a budget has no use for it.
+    """
+
+    document_scope = resolve_document_scope(workspace, scope)
+    scoped = set(document_scope.document_ids)
+    if _forced(scope):
+        # Forcing widens which documents are re-asked, not what the question
+        # applies to: ``_classified_units`` re-classifies scoped transaction
+        # evidence and leaves prose alone, so counting the whole scope here
+        # would buy turns for units that are never expanded.
+        classifications = len(
+            scoped
+            & {
+                str(document.get("id"))
+                for document in document_classification.transaction_evidence(workspace)
+            }
+        )
+    else:
+        classifications = len(
+            {
+                document_id
+                for document_id in (
+                    *document_classification.unclassified_ids(workspace),
+                    *document_classification.reclassifiable_ids(workspace),
+                )
+                if document_id in scoped
+            }
+        )
+    samples = 0
+    freezes = 0
+    for document_type in _pending_types(workspace, scope):
+        picked = document_classification.sample_for_induction(workspace, document_type)
+        samples += len(picked)
+        freezes += 1 if picked else 0
+    return classifications + samples + freezes
 
 
 def _documents_schemas_induced() -> Capability:
@@ -1056,6 +1147,7 @@ __all__ = [
     "chunk_specs",
     "has_generated_analysis",
     "has_usable_analysis",
+    "preparation_model_turns",
     "page_limit",
     "visual_page_limit",
     "resolve_document_scope",

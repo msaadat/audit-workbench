@@ -357,7 +357,8 @@ def test_a_superseded_schema_stamp_makes_an_analysis_unusable():
     before any unit did.
     """
 
-    from app import document_analysis, document_schemas, documents, workspaces
+    from app import document_analysis, document_classification, document_schemas
+    from app import documents, workspaces
     from app.agent.capabilities.documents import (
         has_generated_analysis,
         has_usable_analysis,
@@ -367,6 +368,14 @@ def test_a_superseded_schema_stamp_makes_an_analysis_unusable():
     document = documents.add_document(
         ws, "invoice.txt", b"Invoice No. INV-1042\nTotal Due USD 100.00",
         category="voucher",
+    )
+    # The type is part of the fixture, not scenery: an extraction is stamped
+    # with the schema of whatever the document was classified as, and usability
+    # asks whether that is still the document's type. Nothing reaches the
+    # structured profile unclassified, so a fixture that did would be testing a
+    # state the workflow cannot produce.
+    document_classification.assign(
+        ws, str(document["id"]), "vendor_invoice", assigned_by="model"
     )
     document_schemas.save_schema(ws, "vendor_invoice", [
         {"name": "invoice_number", "role": "identifier", "value_type": "identifier",

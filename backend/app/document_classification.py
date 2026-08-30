@@ -196,6 +196,7 @@ def retype(
     type_id: str | None = None,
     coin: str | None = None,
     rationale: str = "",
+    discriminator: str = "",
 ) -> dict:
     """An auditor's assignment, either to a listed type or to a coined one.
 
@@ -207,12 +208,23 @@ def retype(
     Not restricted to the ``other`` bucket. The provenance rule already makes
     correcting a wrong model label safe; whether the interface offers that is a
     separate decision from whether the store permits it.
+
+    ``discriminator`` says what separates the coined type from its neighbours. It
+    is worth asking for rather than defaulting to nothing: a shipped type carries
+    one from the catalog, so a coined type left blank is the *least* described
+    entry in the engagement's vocabulary while being the one no reader has seen
+    before. That gap has already cost a matrix — a type coined
+    ``Internal deal confirmation`` for one anomalous document was read by the RCM
+    authoring turn as the deal record, on its name alone, because the name was
+    all there was to read.
     """
 
     if bool(type_id) == bool(coin):
         raise WorkspaceError("Retyping needs exactly one of a type id or a name to coin.")
     if coin:
-        type_id = document_schemas.coin_local_type(workspace, coin)["id"]
+        type_id = document_schemas.coin_local_type(
+            workspace, coin, discriminator=discriminator
+        )["id"]
     return assign(
         workspace,
         document_id,

@@ -874,6 +874,35 @@ its analysis: the catalog has no bearing on what the map worker extracted. It
 also refuses rather than starting a run that would do nothing, when every
 `other` was already chosen from the current catalog.
 
+**That rule is about the catalog, not about a document's own type.** The two read
+alike and are opposites. Coining a type changes the *vocabulary* an `other` was
+chosen from, and every analysis in the workspace was still made against the right
+fields — so nothing re-runs. An auditor **retyping one document** changes what
+that document *is*, and its stored extraction was made against the old type's
+fields — so it must re-run, or the correction is half-applied: the label changes
+and the extraction still reads under the type the auditor rejected.
+`has_usable_analysis` is where the distinction lives. It compares the stored
+`schema_ref.document_type` against the document's current assigned type as well as
+asking whether that schema has moved, because a retype leaves the stamp perfectly
+current — the old type's schema never changed — and an existence-shaped or
+staleness-only check reuses the analysis whole, so no chunk ever re-expands.
+`cycle_measurement.structured_records` excludes the same case as
+`retyped_since_extraction` rather than filing the records under the stamped type.
+
+**Forcing re-derivation is scoped to the targeted documents' types.**
+`action: "refresh"` maps to `generation_mode: "force"`, and force used to re-derive
+every type in the workspace however few documents the run was pointed at. On an
+84-document engagement that made the one repair the UI offers unusable: a
+one-document refresh was budgeted for one document's chunks, spent its whole
+allowance re-sampling schemas it was never pointed at, failed on the turn limit,
+and bumped every schema a version — orphaning 68 completed extractions as
+`stale_schema_reference`. `_pending_types` now takes the targeted documents' own
+types plus any type with no schema at all, so a whole-workspace refresh still
+re-derives the whole workspace and a one-document refresh does not. The document
+turn budget also counts the classification and schema turns the run will spend
+(`preparation_model_turns`), which were model-backed stages of the same workflow
+sitting entirely outside the arithmetic.
+
 `document_types.DocumentTypeError` is registered on the shared user-error
 handler in `main.py` alongside `QueryError` and `SettingsError`, rather than
 being made a `WorkspaceError`. An unknown or shadowing type id is the caller's

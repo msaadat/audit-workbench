@@ -188,9 +188,22 @@ def _validated_analysis(
         # re-derived while this run was in flight means the extraction was made
         # against fields that are no longer current, and storing it would leave
         # an analysis nothing can safely interpret.
-        if not document_schemas.is_current(target.workspace, payload.get("schema_ref")):
+        #
+        # An auditor retyping the document mid-run opens the same window from
+        # the other side — the schema this was read against is untouched and
+        # still current, it is simply no longer this document's schema — so the
+        # type is compared here too. Readiness would re-expand the chunks on the
+        # next run either way; committing an extraction already known to be
+        # under the wrong type and reporting the unit as succeeded would not.
+        current_type = document_classification.document_type(
+            target.workspace, target.document_id
+        )
+        if not document_schemas.is_current_for(
+            target.workspace, payload.get("schema_ref"), current_type
+        ):
             raise WorkspaceError(
-                "This extraction was made against a schema that is no longer current."
+                "This extraction was made against a schema that is no longer "
+                f"current for '{current_type or 'this document'}'."
             )
     if payload["analysis_profile"] == "voucher":
         if payload["summary_origin"] != "structured_evidence":

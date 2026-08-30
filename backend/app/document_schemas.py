@@ -440,6 +440,28 @@ def is_current(workspace: Workspace, ref: object) -> bool:
     )
 
 
+def is_current_for(workspace: Workspace, ref: object, document_type: str) -> bool:
+    """Whether a stamp is current *and* belongs to this document's own type.
+
+    :func:`is_current` answers only whether the schema the stamp names has moved
+    since. That is the right question when the catalog changes underneath a
+    corpus, and the wrong one when a single document changes what it *is*: an
+    extraction stamped ``investment_confirmation`` stays perfectly current under
+    that type's schema after an auditor retypes the document to something else,
+    and reading it as evidence of the new type — or reusing it instead of
+    re-extracting — attributes values to fields they were never read against.
+
+    The type is passed in rather than read here, because ``document_types`` and
+    ``document_classification`` both already read this module.
+    """
+
+    if not isinstance(ref, Mapping):
+        return False
+    if str(ref.get("document_type") or "") != str(document_type or ""):
+        return False
+    return is_current(workspace, ref)
+
+
 def joinable(schema: Mapping[str, object]) -> bool:
     """Whether anything in this schema could serve as a join key."""
 

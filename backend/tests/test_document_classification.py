@@ -52,6 +52,23 @@ def test_an_intermediarys_confirmation_is_its_own_type(ws):
         assert "contract note" not in document_types.BY_ID[neighbour].aliases
 
 
+def test_a_coined_type_carries_what_distinguishes_it(ws):
+    """A shipped type gets a discriminator from the catalog; a coined one has to
+    be given one, or it is the least described entry in the vocabulary while
+    being the only one no reader has seen before."""
+
+    dc.retype(
+        ws,
+        _ids(ws)[0],
+        coin="Internal deal confirmation",
+        discriminator="Entity's own system print of a deal, carrying no counterparty "
+                      "letterhead, reference, or signature.",
+    )
+    coined = {item["id"]: item for item in document_schemas.local_types(ws)}
+    entry = coined["local.internal_deal_confirmation"]
+    assert "no counterparty letterhead" in entry["discriminator"]
+
+
 def test_a_confident_label_is_correctable_and_not_only_an_other(ws):
     """`other` is where a document lands when the model knew nothing fitted.
 

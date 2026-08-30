@@ -890,16 +890,30 @@ def _document_model_turns(workspace: Workspace, scope: dict) -> int:
     document, so the budget follows the resolved scope and the real chunk count.
     A document with no cached extraction yet contributes a conservative estimate;
     the composition refreshes the budget once extraction has run.
+
+    Plus what the run spends before it analyzes anything. Classification and
+    schema induction are model-backed stages of the same workflow, and leaving
+    them out of the arithmetic meant a run could exhaust its whole allowance on
+    preparation and fail the limit before the analysis it was started for.
     """
 
-    from .capabilities.documents import analysis_unit_specs, resolve_document_scope
+    from .capabilities.documents import (
+        analysis_unit_specs,
+        preparation_model_turns,
+        resolve_document_scope,
+    )
 
     document_scope = resolve_document_scope(workspace, scope)
     chunks = sum(
         len(analysis_unit_specs(workspace, document_id, scope)) or 1
         for document_id in document_scope.document_ids
     )
-    return 4 + chunks + 2 * max(1, len(document_scope.document_ids))
+    return (
+        4
+        + chunks
+        + 2 * max(1, len(document_scope.document_ids))
+        + preparation_model_turns(workspace, scope)
+    )
 
 
 def _doc_test_model_turns(workspace: Workspace, scope: dict) -> int:

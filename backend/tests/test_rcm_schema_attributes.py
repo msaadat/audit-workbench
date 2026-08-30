@@ -11,7 +11,15 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from app import cycle_linking, cycle_rulesets, cycle_vouching, document_schemas, workspaces
+from app import (
+    cycle_linking,
+    cycle_rulesets,
+    cycle_vouching,
+    document_classification,
+    document_schemas,
+    document_types,
+    workspaces,
+)
 
 from tests.test_cycle_linking import (  # noqa: F401 - helpers reused
     INVOICE_FIELDS,
@@ -372,6 +380,49 @@ def test_the_catalog_shows_only_what_a_comparison_can_address(engagement):
         item for item in catalog if item["document_type"] == "vendor_invoice"
     )["fields"][0]
     assert sorted(field) == ["label", "name", "role", "value_type"]
+
+
+def test_the_catalog_states_the_population_and_what_distinguishes_the_type(engagement):
+    """Both were added after a matrix that validated perfectly and meant something
+    else: every operand named a real field on a real type, which is all
+    selector-exactness can check. A type carrying one document was chosen as the
+    deal-record side of population-wide comparisons on the strength of its name."""
+
+    catalog = {
+        item["document_type"]: item
+        for item in cycle_linking.schema_catalog(engagement)
+    }
+
+    assert catalog["vendor_invoice"]["documents"] == len(
+        document_classification.documents_of_type(engagement, "vendor_invoice")
+    )
+    assert catalog["vendor_invoice"]["discriminator"] == (
+        document_types.BY_ID["vendor_invoice"].discriminator
+    )
+
+
+def test_a_coined_types_discriminator_reaches_the_authoring_turn(engagement):
+    """The coined type is the one the author has never seen before, so a blank
+    discriminator leaves it described by its name alone."""
+
+    document_schemas.coin_local_type(
+        engagement,
+        "Internal deal confirmation",
+        discriminator="Entity's own system print, carrying no counterparty reference.",
+    )
+    document_schemas.save_schema(
+        engagement,
+        "local.internal_deal_confirmation",
+        [{"name": "deal_reference", "role": "identifier", "value_type": "identifier"}],
+        derived_from=["doc-x"],
+    )
+    entry = next(
+        item
+        for item in cycle_linking.schema_catalog(engagement)
+        if item["document_type"] == "local.internal_deal_confirmation"
+    )
+    assert "no counterparty reference" in entry["discriminator"]
+    assert entry["documents"] == 0  # coined, nothing classified onto it yet
 
 
 def test_the_schema_evidence_prompt_states_the_comparison_contract():

@@ -327,6 +327,7 @@ async def retype_document(workspace_id: str, doc_id: str, payload: dict = Body(.
         type_id=type_id,
         coin=coin,
         rationale=str(payload.get("rationale") or ""),
+        discriminator=str(payload.get("discriminator") or ""),
     )
     runner.notify_evidence_available(
         ws, document_ids=[doc_id], reason="document_classified"

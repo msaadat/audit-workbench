@@ -347,11 +347,13 @@ RCM_WORKER_ID = "planning.rcm"
 RCM_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), control, control_type, and
-control_attributes,
+risk_rating (low|medium|high|critical), control, control_type,
+control_attributes, and business_cycle,
 plus criteria and control_owner where the planning basis supports them.
-All ids and narrative fields are strings. business_cycle is derived locally
-from validated transaction-cycle attributes; do not infer or return it.
+All ids and narrative fields are strings. business_cycle names the cycle this
+row belongs to, in the engagement's own words — "Treasury dealing and
+settlement", "Procure to pay". It is the label the matrix chooses; nothing
+derives it, so a row that omits it carries none.
 Describe the risk and the control. Test populations are decided later.
 Do not invent control operation as fact when evidence is absent.
 
@@ -419,9 +421,8 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   answer.
 - A transaction_cycle attribute states evidence_kind and stops there. Do not
   write registry, required_record_kinds, required_comparisons, or
-  comparison_recipes: the evidence contract for those attributes is authored in a
-  separate step that is given the installed pack catalog, and the row's
-  business_cycle is derived from it locally.
+  comparison_recipes: the evidence contract for those attributes is authored in
+  a separate step that is shown this engagement's own document schemas.
 - criteria and control_owner are optional: cite or name only what the planning
   basis supplies, and leave the field empty otherwise rather than guessing.
 - Where criteria rests on a supplied document, also set criteria_refs, choosing

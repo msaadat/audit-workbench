@@ -45,6 +45,7 @@ from .capabilities.documents import (
     analyzable,
     chunk_specs,
     has_generated_analysis,
+    preparation_model_turns,
     resolve_document_scope,
     visual_page_limit,
 )
@@ -141,7 +142,9 @@ class DocumentWorkflowExecution(BaseRunner):
 
         Document analysis is one turn per source chunk plus one reduction per
         document, so the budget follows the resolved scope and the real chunk
-        count rather than a fixed constant.
+        count rather than a fixed constant — plus the classification and schema
+        turns the run spends before it reaches any analysis, which are stages of
+        this same workflow and were previously unbudgeted.
         """
         scope = workflow_scope(self.run)
         document_scope = self.scope()
@@ -156,14 +159,16 @@ class DocumentWorkflowExecution(BaseRunner):
             and not item.get("unsupported_reason")
             for item in specs
         )
+        preparation = preparation_model_turns(self.ws, scope)
         calculated = 4 + len(specs) + 2 * max(
             1, len(document_scope.document_ids)
-        )
+        ) + preparation
         prompt_allowance = (
             4 * 12_000
             + text_units * 12_000
             + visual_units * 20_480
             + max(1, len(document_scope.document_ids)) * 12_000
+            + preparation * 12_000
         )
         self.update_limits(
             {
