@@ -1,11 +1,11 @@
 """Hold the Appendix A scorer honest, and pin the measured baseline.
 
-The scorer exists because §7.2 of ``docs/eda-pipeline-redesign.md`` was rebuilt
-by hand three times and was wrong once. A scorer that is itself unverified
-would only move where the error lives, so the discriminations it has to make
-are tested one at a time — and the one live workspace it was calibrated against
-is pinned, so a change to the key or the matching rules cannot silently restate
-the baseline it is supposed to be measured against.
+The scorer is the EDA forward plan's regression gate. Earlier measurements were
+rebuilt by hand three times and were wrong once. A scorer that is itself
+unverified would only move where the error lives, so the discriminations it has
+to make are tested one at a time — and the one live workspace it was calibrated
+against is pinned, so a change to the key or matching rules cannot silently
+restate the baseline it is supposed to measure.
 """
 
 from __future__ import annotations
@@ -22,10 +22,8 @@ from app.workspaces import Workspace
 
 WORKSPACES = Path(__file__).resolve().parents[2] / "Workspaces"
 
-# What run 6 reached, from ``Workspaces/pro4`` at commit 46a5a85. Eighteen of
-# these are §7.2's own run-6 column, item for item and count for count; A23 is
-# the nineteenth, reached by that run and listed in §6.2's baseline rather than
-# in §7.2's table.
+# The pinned `pro4` measurement at commit 46a5a85. It reached nineteen
+# scoreable answer-key items.
 PRO4_REACHED = {
     "A01", "A03", "A05", "A06", "A07/A08", "A10", "A12", "A13", "A14", "A16",
     "A17", "A18", "A19", "A21", "A22", "A23", "A27", "A29", "A30",

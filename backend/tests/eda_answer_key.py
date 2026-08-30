@@ -1,12 +1,12 @@
 """The Appendix A regression fixture (``S6``) for the exploratory EDA pipeline.
 
-``docs/eda-pipeline-redesign.md`` §7.2 tabulates what each measured run reached
-against the procurement answer key. That table has been rebuilt by hand three
-times and was wrong once. This module is the rebuild, once, in code: an answer
-key of *computations*, a scorer over a workspace's saved analyses, and a
-rendering of the same table §7.2 prints.
+The EDA forward plan names this scorer as the regression gate. Earlier
+run-by-run tables were rebuilt by hand three times and were wrong once. This
+module is the rebuild, once, in code: an answer key of *computations*, a scorer
+over a workspace's saved analyses, and a rendering of the same reach table.
 
-Two rules govern scoring, both taken from §7.2 and §9 rather than invented here:
+Two rules govern scoring and are intentionally enforced here rather than left to
+documentation:
 
 * **Match the computation, never the title.** Titles move between runs and the
   test a frame ran does not. A key item names a test id and the columns that
@@ -425,8 +425,9 @@ def score_workspace(workspace: Workspace, *, run_id: str | None = None) -> Score
 
     ``run_id`` restricts scoring to one agent run, which is what makes two runs
     in the same workspace comparable. With it absent every saved analysis
-    counts, including any the auditor wrote — the same basis §7.2 used, since
-    the measured runs are unattended and author everything they hold.
+    counts, including any the auditor wrote — the same basis used for the pinned
+    measurement, since the measured runs are unattended and author everything
+    they hold.
     """
     analyses = [
         item
@@ -482,7 +483,7 @@ def score_workspace(workspace: Workspace, *, run_id: str | None = None) -> Score
 
 
 def reach_table(scores: Sequence[Score], labels: Sequence[str]) -> str:
-    """Render §7.2's table across one or more scored runs."""
+    """Render the comparable reach table across one or more scored runs."""
     header = "| item | " + " | ".join(labels) + " |"
     rule = "|---|" + "|".join("---:" for _ in labels) + "|"
     lines = [header, rule]
