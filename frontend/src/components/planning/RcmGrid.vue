@@ -37,6 +37,15 @@ function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_
 function testTitles(row: RcmRow) { return (row.execution_rollup.test_rollups ?? []).map(item => item.title).join('; ') || 'Add a test' }
 function exceptionsLabel(row: RcmRow) { return (row.execution_rollup.completed ?? 0) ? String(row.execution_rollup.exceptions ?? 0) : 'Not assessed' }
 function attributeSummary(row: RcmRow) { return row.control_attributes.map(item => `${item.assertion} · ${item.requirement}`).join('; ') }
+/** What the row asks to be vouched across documents. Comparisons live two
+ *  levels down — row, attribute, then only for the transaction-cycle strategy —
+ *  so a matrix's whole cycle contract is invisible without opening every row in
+ *  turn. This is the count that says which rows are worth opening. */
+function cycleComparisons(row: RcmRow) {
+  return row.control_attributes
+    .filter(item => item.evidence_kind === 'transaction_cycle')
+    .reduce((total, item) => total + (item.required_comparisons?.length ?? 0), 0)
+}
 function statusSeverity(status?: string) { return status?.includes('exception') || status === 'blocked' ? 'danger' : status === 'completed_no_exception' ? 'success' : status === 'review_required' ? 'warn' : 'secondary' }
 </script>
 
@@ -64,7 +73,7 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
         </Select>
       </template></Column>
       <Column header="Control" style="min-width: 20rem"><template #body="{ data }"><Textarea v-model="data.control" rows="2" @change="emit('update', data.id, { control: data.control })" /></template></Column>
-      <Column header="Control attributes" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ plural(data.control_attributes.length, 'attribute') }}</strong><span>{{ attributeSummary(data) }}</span></button></template></Column>
+      <Column header="Control attributes" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ plural(data.control_attributes.length, 'attribute') }}<Tag v-if="cycleComparisons(data)" class="cycle-tag" severity="info" :value="`${plural(cycleComparisons(data), 'comparison')} to vouch`" /></strong><span>{{ attributeSummary(data) }}</span></button></template></Column>
       <Column header="Test summary" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ plural(testCount(data), 'test') }}</strong><span>{{ testTitles(data) }}</span></button></template></Column>
       <Column header="Execution status" style="min-width: 14rem"><template #body="{ data }"><div class="rollup"><Tag :value="testCount(data) ? `${data.execution_rollup.completed ?? 0}/${testCount(data)} complete` : 'not ready'" :severity="data.execution_rollup.blocked ? 'danger' : data.execution_rollup.review_required ? 'warn' : data.execution_rollup.completed === testCount(data) && testCount(data) ? 'success' : 'secondary'"/><small>{{ plural(data.execution_rollup.tested_items ?? 0, 'item') }} tested · {{ data.execution_rollup.failed_items ?? 0 }} failed · {{ plural(data.execution_rollup.assertion_mismatches ?? 0, 'assertion mismatch', 'assertion mismatches') }}</small></div></template></Column>
       <Column header="Exceptions" style="min-width: 8rem"><template #body="{ data }"><Tag :value="exceptionsLabel(data)" :severity="(data.execution_rollup.completed ?? 0) && (data.execution_rollup.exceptions ?? 0) ? 'danger' : 'secondary'"/></template></Column>
@@ -99,6 +108,9 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
    whole list is behind the click this button already performs. */
 .summary-link span { display:-webkit-box; overflow:hidden; color:var(--aw-muted); font-size:var(--aw-text-xs); line-height:1.35; -webkit-box-orient:vertical; -webkit-line-clamp:2 }
 .summary-link:hover strong { color:var(--aw-teal) }
+.summary-link strong { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap }
+/* The row's cycle contract, which otherwise reads only two levels down. */
+.cycle-tag { font-size:var(--aw-text-2xs); font-weight:600 }
 .rollup { display:flex; flex-direction:column; align-items:flex-start; gap:.3rem }
 .rollup small { display:-webkit-box; overflow:hidden; color:var(--aw-muted); -webkit-box-orient:vertical; -webkit-line-clamp:2 }
 .row-actions { display:flex }

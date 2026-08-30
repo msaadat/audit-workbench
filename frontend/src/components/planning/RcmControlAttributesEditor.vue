@@ -37,8 +37,20 @@ const comparisonShapes = [
 ]
 
 const schemaCatalog = computed(() => props.schemas ?? [])
+
+/** Type name, how many documents carry it, and what separates it from its
+ *  neighbours. The population is not decoration: a requirement is written
+ *  against one, and a type carrying a single document cannot answer it. An
+ *  engagement that coined a type for one anomalous document had it chosen as
+ *  the deal-record side of three population-wide comparisons on its name alone,
+ *  which is the only thing a bare list of type names offers a reader. */
 const documentTypeOptions = computed(() =>
-  schemaCatalog.value.map(entry => ({ label: entry.document_type, value: entry.document_type })),
+  schemaCatalog.value.map(entry => ({
+    label: `${entry.document_type} · ${entry.documents === 1 ? '1 document' : `${entry.documents ?? 0} documents`}`,
+    value: entry.document_type,
+    documents: entry.documents ?? 0,
+    discriminator: entry.discriminator ?? '',
+  })),
 )
 
 /** The fields one type states, labelled with the role that decides what a
@@ -198,11 +210,15 @@ function remove(index: number) {
           <label>Key<InputText :modelValue="comparison.key" @update:modelValue="replaceComparison(index, comparisonIndex, { key: String($event) })" /></label>
           <label>Requires<Select :modelValue="Boolean(comparison.right)" :options="comparisonShapes" optionLabel="label" optionValue="value" @update:modelValue="setComparesTwo(index, comparisonIndex, Boolean($event))" /></label>
           <span />
-          <label>Left document<Select :modelValue="comparison.left.document_type" :options="documentTypeOptions" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'left', { document_type: String($event) })" /></label>
+          <label>Left document<Select :modelValue="comparison.left.document_type" :options="documentTypeOptions" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'left', { document_type: String($event) })">
+            <template #option="{ option }"><span class="type-option"><span :class="{ scarce: option.documents <= 1 }">{{ option.label }}</span><small v-if="option.discriminator">{{ option.discriminator }}</small></span></template>
+          </Select></label>
           <label>Left field<Select :modelValue="comparison.left.field" :options="schemaFieldOptions(comparison.left.document_type)" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'left', { field: String($event) })" /></label>
           <span />
           <template v-if="comparison.right">
-            <label>Right document<Select :modelValue="comparison.right.document_type" :options="documentTypeOptions" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'right', { document_type: String($event) })" /></label>
+            <label>Right document<Select :modelValue="comparison.right.document_type" :options="documentTypeOptions" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'right', { document_type: String($event) })">
+              <template #option="{ option }"><span class="type-option"><span :class="{ scarce: option.documents <= 1 }">{{ option.label }}</span><small v-if="option.discriminator">{{ option.discriminator }}</small></span></template>
+            </Select></label>
             <label>Right field<Select :modelValue="comparison.right.field" :options="schemaFieldOptions(comparison.right.document_type)" optionLabel="label" optionValue="value" filter @update:modelValue="setOperand(index, comparisonIndex, 'right', { field: String($event) })" /></label>
             <span />
           </template>
@@ -230,5 +246,9 @@ function remove(index: number) {
 .comparison { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.55rem; padding:.6rem; background:var(--aw-surface); border-radius:var(--aw-radius-control) }.comparison>.p-button { justify-self:start }
 label { display:flex; flex-direction:column; gap:.3rem; min-width:0; color:var(--aw-ink-soft); font-size:var(--aw-text-sm); font-weight:600 }.wide { grid-column:1/-1 }.attribute>.p-button { justify-self:start }
 .warn { color:var(--aw-warn); font-size:var(--aw-text-sm) }
+.type-option { display:flex; flex-direction:column; gap:.1rem; min-width:0; max-width:32rem }
+.type-option small { color:var(--aw-muted); font-weight:400; font-size:var(--aw-text-xs); white-space:normal }
+/* A type carrying one document cannot answer a population requirement. */
+.type-option .scarce { color:var(--aw-warn) }
 @media(max-width:800px){.attribute,.comparison{grid-template-columns:1fr}.wide{grid-column:auto}}
 </style>

@@ -106,4 +106,22 @@ describe('RcmGrid row actions', () => {
     expect(wrapper.emitted('open')?.[0]).toEqual([expect.objectContaining({ id: 'R1' })])
     expect(wrapper.emitted('paper')).toBeUndefined()
   })
+
+  it('marks the rows carrying a cycle contract, which otherwise reads two levels down', () => {
+    // Comparisons live under an attribute, and only under the transaction-cycle
+    // strategy, so a matrix's whole cycle coverage is invisible without opening
+    // every row in turn.
+    const wrapper = mountGrid([row()])
+    const count = (wrapper.vm as never as {
+      cycleComparisons: (row: unknown) => number
+    }).cycleComparisons
+
+    expect(count({ control_attributes: [
+      { evidence_kind: 'transaction_cycle', required_comparisons: [{ key: 'c1' }, { key: 'c2' }] },
+      { evidence_kind: 'tabular_population' },
+    ] })).toBe(2)
+    // An inquiry attribute states no comparison, so the row carries no contract.
+    expect(count({ control_attributes: [{ evidence_kind: 'inquiry' }] })).toBe(0)
+    expect(count({ control_attributes: [] })).toBe(0)
+  })
 })

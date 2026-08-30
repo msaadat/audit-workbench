@@ -1005,6 +1005,11 @@ export interface RcmSchemaComparison {
 /** The induced schemas, as the RCM editor needs to see them. */
 export interface DocumentSchemaCatalogEntry {
   document_type: string
+  /** What separates this type from its neighbours. */
+  discriminator: string
+  /** How many documents carry the type. A requirement is written against a
+   *  population, so a type carrying one document cannot answer one. */
+  documents: number
   fields: Array<{ name: string; role: string; value_type: string; label: string }>
 }
 

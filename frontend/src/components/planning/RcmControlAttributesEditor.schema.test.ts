@@ -7,6 +7,8 @@ import RcmControlAttributesEditor from './RcmControlAttributesEditor.vue'
 const schemas: DocumentSchemaCatalogEntry[] = [
   {
     document_type: 'vendor_invoice',
+    discriminator: "Supplier's demand for payment addressed to the entity",
+    documents: 182,
     fields: [
       { name: 'invoice_number', role: 'identifier', value_type: 'identifier', label: 'Invoice number' },
       { name: 'total_amount', role: 'attribute', value_type: 'number', label: 'Total' },
@@ -14,6 +16,8 @@ const schemas: DocumentSchemaCatalogEntry[] = [
   },
   {
     document_type: 'purchase_order',
+    discriminator: "Entity's committed order to a supplier",
+    documents: 1,
     fields: [
       { name: 'order_number', role: 'identifier', value_type: 'identifier', label: 'Order number' },
       { name: 'total_amount', role: 'attribute', value_type: 'number', label: 'Total' },
@@ -161,5 +165,22 @@ describe('RcmControlAttributesEditor, against induced schemas', () => {
     const wrapper = render([cycleAttribute()])
 
     expect(wrapper.text()).toContain('Manual inspection, Inquiry, or Mixed')
+  })
+
+  it('shows how many documents carry a type, and what separates it from its neighbours', () => {
+    // The blind spot this closes: an authoring pass chose a type coined for one
+    // anomalous document as the deal-record side of population-wide comparisons,
+    // on its name alone — which is all a bare list of type names offers a reader.
+    const wrapper = render([cycleAttribute()])
+
+    const options = (wrapper.vm as never as {
+      documentTypeOptions: Array<{ label: string; documents: number; discriminator: string }>
+    }).documentTypeOptions
+
+    expect(options.map(option => option.label)).toEqual([
+      'vendor_invoice · 182 documents',
+      'purchase_order · 1 document',
+    ])
+    expect(options[1].discriminator).toContain('committed order')
   })
 })
