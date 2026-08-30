@@ -218,11 +218,19 @@ DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
        "Lender's record of drawdowns, interest, and repayments",
        "amortization schedule", "facility statement", "repayment schedule"),
     _t("fx_contract", "FX contract", "treasury_banking",
-       "Confirmation of a foreign-exchange deal",
+       "Counterparty's confirmation of a foreign-exchange deal, issued by the "
+       "party dealt with rather than by an intermediary",
        "forward contract", "FX deal ticket", "foreign exchange confirmation"),
     _t("investment_confirmation", "Investment confirmation", "treasury_banking",
-       "Confirmation of a securities or deposit transaction",
-       "trade confirmation", "deposit advice", "contract note", "fixed deposit receipt"),
+       "Confirmation of a securities or deposit transaction, issued by the "
+       "counterparty or issuer rather than by an intermediary",
+       "trade confirmation", "deposit advice", "fixed deposit receipt"),
+    _t("broker_confirmation", "Broker confirmation", "treasury_banking",
+       "Intermediary's record of a deal it arranged between the entity and a "
+       "counterparty; names the broker and states brokerage, where a "
+       "counterparty confirmation states neither",
+       "broker contract note", "contract note", "broker note",
+       "broker's confirmation", "deal slip (broker)"),
     _t("letter_of_credit", "Letter of credit", "treasury_banking",
        "Bank undertaking to pay on documentary presentation",
        "LC", "documentary credit"),

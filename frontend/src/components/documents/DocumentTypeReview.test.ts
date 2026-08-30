@@ -22,6 +22,10 @@ const CATALOG = {
       discriminator: 'Internal record that goods were received', aliases: ['GRN'], active: true,
     },
     {
+      id: 'delivery_note', label: 'Delivery note', area: 'procure_to_pay',
+      discriminator: "Supplier's document accompanying a shipment", aliases: [], active: true,
+    },
+    {
       id: 'other', label: 'Other', area: 'governance',
       discriminator: 'None of the above', aliases: [], active: true,
     },
@@ -35,23 +39,35 @@ const CATALOG = {
   },
 }
 
-function unidentified(reclassifiable: string[] = []) {
+function assignment(over: Record<string, unknown>) {
   return {
-    items: [{
-      document_id: 'doc-1', title: 'LOI scan',
-      document_type: 'other', document_type_other: 'Letter of indemnity',
-      assigned_by: 'model', assigned_at: '2026-08-29T00:00:00Z', confidence: 'low',
-      rationale: 'No catalogued form matched.', previous_document_type: null,
-      agent_run_id: null, unit_id: null, catalog_sha1: 'abc',
-    }],
+    document_type_other: null, assigned_by: 'model', assigned_at: '2026-08-29T00:00:00Z',
+    confidence: 'high', rationale: '', previous_document_type: null,
+    agent_run_id: null, unit_id: null, catalog_sha1: 'abc', ...over,
+  }
+}
+
+/** One document that announced it needed attention, and two that did not — the
+ *  half of the corpus a confidently wrong label hides in. */
+function classifications(reclassifiable: string[] = []) {
+  return {
+    items: [
+      assignment({
+        document_id: 'doc-1', title: 'LOI scan', document_type: 'other',
+        document_type_other: 'Letter of indemnity', confidence: 'low',
+        rationale: 'No catalogued form matched.',
+      }),
+      assignment({ document_id: 'doc-2', title: 'GRN 4471', document_type: 'goods_receipt' }),
+      assignment({ document_id: 'doc-3', title: 'Despatch 88', document_type: 'goods_receipt' }),
+    ],
     reclassifiable,
   }
 }
 
-function stubGet(bucket = unidentified()) {
+function stubGet(listing = classifications()) {
   return vi.spyOn(api, 'get').mockImplementation(async (url: string) => {
     if (url.endsWith('/types')) return CATALOG as never
-    if (url.endsWith('/unidentified')) return bucket as never
+    if (url.endsWith('/classifications')) return listing as never
     throw new Error(`unexpected GET ${url}`)
   })
 }
@@ -134,7 +150,7 @@ describe('DocumentTypeReview', () => {
           }],
         } as never
       }
-      return unidentified() as never
+      return classifications() as never
     })
     const wrapper = render()
     await flushPromises()
@@ -144,7 +160,7 @@ describe('DocumentTypeReview', () => {
   })
 
   it('offers re-examination only when the catalogue has grown past a stale answer', async () => {
-    stubGet(unidentified([]))
+    stubGet(classifications([]))
     const wrapper = render()
     await flushPromises()
     expect(wrapper.text()).not.toContain('can be re-examined')
@@ -154,10 +170,53 @@ describe('DocumentTypeReview', () => {
       global: { stubs: { Button: true, Message: true, Select: true, InputText: true } },
     })
     vi.spyOn(api, 'get').mockImplementation(async (url: string) =>
-      (url.endsWith('/types') ? CATALOG : unidentified(['doc-2'])) as never)
+      (url.endsWith('/types') ? CATALOG : classifications(['doc-9'])) as never)
     await (second.vm as never as { load: () => Promise<void> }).load()
     await flushPromises()
     expect(second.text()).toContain('can be re-examined')
+  })
+
+  it('groups the already-identified documents by the type they carry', async () => {
+    stubGet()
+    const wrapper = render()
+    await flushPromises()
+
+    const groups = (wrapper.vm as never as {
+      groups: { id: string; label: string; items: unknown[] }[]
+    }).groups
+    // `other` belongs to the bucket above and is not offered as a group.
+    expect(groups.map(group => group.id)).toEqual(['goods_receipt'])
+    expect(groups[0].items).toHaveLength(2)
+  })
+
+  it('corrects a confident label, which never reaches the `other` bucket', async () => {
+    stubGet()
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({} as never)
+    const wrapper = render()
+    await flushPromises()
+
+    ;(wrapper.vm as never as { chosenType: Record<string, string> }).chosenType['doc-3'] = 'delivery_note'
+    await (wrapper.vm as never as { retype: (id: string) => Promise<void> }).retype('doc-3')
+
+    expect(patch).toHaveBeenCalledWith(
+      '/api/workspaces/ws-1/documents/doc-3/type',
+      { type_id: 'delivery_note' },
+    )
+    expect(wrapper.emitted('retyped')).toHaveLength(1)
+  })
+
+  it('filters the identified list by title or type', async () => {
+    stubGet()
+    const wrapper = render()
+    await flushPromises()
+
+    const vm = wrapper.vm as never as {
+      filter: string
+      groups: { items: { document_id: string }[] }[]
+    }
+    vm.filter = 'Despatch'
+    await flushPromises()
+    expect(vm.groups.flatMap(group => group.items.map(item => item.document_id))).toEqual(['doc-3'])
   })
 
   it('reports a failed retype instead of leaving the row looking saved', async () => {

@@ -63,6 +63,47 @@ def test_unidentified_lists_only_the_other_bucket(client, ws):
     assert body["items"][0]["document_type_other"] == "Letter of indemnity"
 
 
+# ------------------------------------------------- every assignment, not just `other`
+def test_classifications_lists_confident_labels_the_bucket_never_shows(client, ws):
+    first, second, third = _ids(ws)
+    dc.assign(ws, first, "other", assigned_by="model", other_label="Letter of indemnity")
+    dc.assign(ws, second, "vendor_invoice", assigned_by="model")
+    dc.assign(ws, third, "goods_receipt", assigned_by="model")
+
+    bucket = client.get(f"{_base(ws)}/unidentified").json()
+    assert [item["document_id"] for item in bucket["items"]] == [first]
+
+    body = client.get(f"{_base(ws)}/classifications").json()
+    assert {item["document_id"] for item in body["items"]} == {first, second, third}
+    assert [item["document_type"] for item in body["items"]] == [
+        "goods_receipt", "other", "vendor_invoice",
+    ]
+
+
+def test_classifications_omits_a_document_nothing_has_classified(client, ws):
+    first, _second, third = _ids(ws)
+    dc.assign(ws, first, "vendor_invoice", assigned_by="model")
+    body = client.get(f"{_base(ws)}/classifications").json()
+    assert [item["document_id"] for item in body["items"]] == [first]
+    assert third not in {item["document_id"] for item in body["items"]}
+
+
+def test_a_confidently_wrong_label_can_be_corrected(client, ws):
+    """The store always permitted this; nothing surfaced the document to fix."""
+
+    document_id = _ids(ws)[1]
+    dc.assign(ws, document_id, "vendor_invoice", assigned_by="model")
+    listed = client.get(f"{_base(ws)}/classifications").json()["items"]
+    assert document_id in {item["document_id"] for item in listed}
+
+    body = client.patch(
+        f"{_base(ws)}/{document_id}/type", json={"type_id": "goods_receipt"}
+    ).json()
+    assert body["classification"]["document_type"] == "goods_receipt"
+    assert body["classification"]["assigned_by"] == "auditor"
+    assert body["classification"]["previous_document_type"] == "vendor_invoice"
+
+
 # ------------------------------------------------------------------ retyping
 def test_retype_to_a_listed_type(client, ws):
     document_id = _ids(ws)[2]

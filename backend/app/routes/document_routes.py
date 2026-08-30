@@ -280,6 +280,22 @@ async def list_unidentified_documents(workspace_id: str):
     }
 
 
+@router.get("/documents/classifications")
+async def list_document_classifications(workspace_id: str):
+    """Every assignment, so a wrong one can be corrected and not only a missing one.
+
+    Wider than :func:`list_unidentified_documents` on purpose: ``other`` is the
+    bucket a document falls into when the model *knew* nothing fitted, and the
+    label a model was confident and wrong about never lands there.
+    """
+
+    ws = _ws(workspace_id)
+    return {
+        "items": document_classification.assignments(ws),
+        "reclassifiable": document_classification.reclassifiable_ids(ws),
+    }
+
+
 @router.post("/documents/reclassify")
 async def reclassify_documents(workspace_id: str, payload: dict = Body(default={})):
     ws = _ws(workspace_id)

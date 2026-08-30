@@ -326,6 +326,35 @@ def other_bucket(workspace: Workspace) -> list[dict]:
     return sorted(values, key=lambda item: str(item.get("assigned_at") or ""), reverse=True)
 
 
+def assignments(workspace: Workspace) -> list[dict]:
+    """Every classified document with its assignment, grouped type-first.
+
+    The ``other`` bucket is only the subset that *announced* it needed attention.
+    A confident wrong label is the more damaging case and never enters it: a
+    broker's confirmation typed as the counterparty confirmation it accompanies
+    pollutes the identifier the two would otherwise join on, and no amount of
+    reviewing ``other`` would ever surface it. The store has always permitted
+    correcting one (:func:`retype`); this is what lets an auditor find one.
+    """
+
+    values = [
+        {
+            "document_id": str(document.get("id")),
+            "title": str(document.get("title") or ""),
+            **classification(workspace, str(document.get("id"))),
+        }
+        for document in workspace.documents
+        if is_classified(workspace, str(document.get("id")))
+    ]
+    return sorted(
+        values,
+        key=lambda item: (
+            str(item.get("document_type") or ""),
+            str(item.get("title") or ""),
+        ),
+    )
+
+
 def types_present(workspace: Workspace) -> list[str]:
     """Distinct assigned types, excluding ``other``.
 

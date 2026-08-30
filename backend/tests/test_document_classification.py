@@ -31,6 +31,48 @@ def _ids(ws) -> list[str]:
 
 
 # --------------------------------------------------------------- assignment
+def test_an_intermediarys_confirmation_is_its_own_type(ws):
+    """A broker's note is a different document from the counterparty's confirmation.
+
+    Observed on a real treasury engagement: nine broker notes were typed as the
+    `fx_contract` and `investment_confirmation` documents they accompany, split
+    by the *instrument of the deal* rather than by what the paper is. The
+    catalog caused it — `investment_confirmation` carried "contract note" as an
+    alias, so the nearest listed type was also the wrong one, and there was no
+    right one to reach for.
+    """
+
+    broker = document_types.BY_ID["broker_confirmation"]
+    assert broker.area == "treasury_banking"
+    assert "contract note" in broker.aliases
+
+    # The alias must not also pull toward the counterparty's own confirmation:
+    # that ambiguity is what a discriminator cannot recover from.
+    for neighbour in ("investment_confirmation", "fx_contract"):
+        assert "contract note" not in document_types.BY_ID[neighbour].aliases
+
+
+def test_a_confident_label_is_correctable_and_not_only_an_other(ws):
+    """`other` is where a document lands when the model knew nothing fitted.
+
+    A label it was confident and wrong about never goes there, so the review
+    listing has to cover every assignment or the wrong ones stay unreachable.
+    """
+
+    first, second, third = _ids(ws)
+    dc.assign(ws, first, "other", assigned_by="model", other_label="Unclear")
+    dc.assign(ws, second, "vendor_invoice", assigned_by="model")
+
+    assert [item["document_id"] for item in dc.other_bucket(ws)] == [first]
+    listed = {item["document_id"] for item in dc.assignments(ws)}
+    assert listed == {first, second}
+    assert third not in listed  # nothing classified it
+
+    dc.retype(ws, second, type_id="goods_receipt")
+    assert dc.document_type(ws, second) == "goods_receipt"
+    assert dc.is_auditor_assigned(ws, second)
+
+
 def test_assignment_records_type_and_provenance(ws):
     document_id = _ids(ws)[0]
     record = dc.assign(

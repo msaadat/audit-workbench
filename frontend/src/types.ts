@@ -112,7 +112,10 @@ export interface DocumentTypeCatalog {
   summary: DocumentTypeSummary
 }
 
-export interface UnidentifiedDocument extends DocumentClassification {
+/** A document and the type it currently carries. Covers both halves of the
+ *  review: the `other` bucket, and an assignment the model got confidently
+ *  wrong — which never enters that bucket. */
+export interface ClassifiedDocument extends DocumentClassification {
   document_id: string
   title: string
 }
