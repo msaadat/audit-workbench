@@ -261,6 +261,7 @@ function executionLane(counts: Counts): StatusLane {
     key: 'execution', label: 'Execution',
     state: counts.rowsWithoutTests.length || counts.blocked ? 'alarm' : done ? 'done' : 'gap',
     value: String(counts.completed),
+    total: String(counts.tests),
     caption: `of ${plural(counts.tests, 'test')} run`,
     segments: [
       { tone: 'ok', portion: portion(counts.completed, counts.tests) },
@@ -298,6 +299,7 @@ function conclusionLane(counts: Counts): StatusLane {
     key: 'conclusion', label: 'Control conclusion',
     state,
     value: String(counts.concluded),
+    total: String(counts.rows),
     caption: `of ${counts.rows} ${pluralWord(counts.rows, 'control')} concluded`,
     // The mix is the point: "all concluded" and "all concluded ineffective"
     // are the same number and opposite engagements.
@@ -338,6 +340,7 @@ function findingsLane(counts: Counts): StatusLane {
       key: 'findings', label: 'Findings',
       state: 'alarm',
       value: String(counts.adverseCovered),
+      total: String(counts.adverse),
       caption: `of ${counts.adverse} adverse ${pluralWord(counts.adverse, 'control')} ${
         counts.adverse === 1 ? 'has' : 'have'} a finding`,
       segments: [{ tone: 'bad', portion: portion(counts.adverseCovered, counts.adverse) }],

@@ -411,6 +411,9 @@ function fail(summaryText: string, error: unknown) {
   min-height: 0;
   height: 100%;
 }
+/* This column has no `gap` — its children space themselves — so the header
+   keeps the margin the shared rule no longer carries. */
+.analysis > .ui-page-header { margin-bottom: var(--aw-section-gap); }
 
 .analysis-nav {
   display: flex;

@@ -1,17 +1,22 @@
 import { plural, pluralWord } from '../../format'
 import { portion } from '../ui/statusLanes'
 import type {
-  StatusChip, StatusDisclosure, StatusLane, StatusModel,
+  StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
 import type { AuditFinding, DataTest } from '../../types'
 
 /**
  * Where the Data Tests stand, above the list of them.
  *
- * The triage chips beside this say how outcomes distributed. They do not say
- * how much has run, how much of it still supports a conclusion, or who reached
- * one — and a page of green "no exception" chips looks identical whether an
- * auditor signed each conclusion or an unattended run wrote them all.
+ * Three questions, in the order the work answers them: how much has run, how
+ * much of it supports a conclusion, and who reached one — because a page of
+ * green "no exception" results looks identical whether an auditor signed each
+ * conclusion or an unattended run wrote them all.
+ *
+ * The same tally also produces `filters`, the page's whole narrowing
+ * vocabulary. Deriving both here is what keeps the menu and the chips from
+ * disagreeing: they are the same numbers, and there is one active filter
+ * between them.
  *
  * Read entirely off the Data Test records the tab already holds.
  */
@@ -23,7 +28,7 @@ export type DataTestFilter =
   | 'effective' | 'partially_effective' | 'ineffective' | 'not_applicable' | 'no_conclusion'
   | 'stale_conclusion'
   | 'missing_finding' | 'has_finding'
-  | 'agent_concluded' | 'exploratory' | 'semantic_warning'
+  | 'agent_concluded' | 'auditor_concluded' | 'exploratory' | 'semantic_warning'
 
 export type DataTestActionKey = 'run_tests' | 'rerun_stale' | 'draft_findings'
 
@@ -44,6 +49,7 @@ interface Counts {
   noConclusion: number
   staleConclusions: number
   agentConcluded: number
+  auditorConcluded: number
   exploratory: number
   semanticWarnings: number
   /** RCM-linked exception tests — the ones a finding can be drafted against. */
@@ -74,7 +80,7 @@ function tally(tests: DataTest[], findings: AuditFinding[]): Counts {
     passed: 0, withExceptions: 0,
     concluded: 0, effective: 0, partiallyEffective: 0, ineffective: 0,
     notApplicable: 0, noConclusion: 0, staleConclusions: 0,
-    agentConcluded: 0, exploratory: 0, semanticWarnings: 0,
+    agentConcluded: 0, auditorConcluded: 0, exploratory: 0, semanticWarnings: 0,
     exceptionTests: 0, exceptionTestsCovered: 0, undrafted: [], exploratoryExceptions: 0,
   }
 
@@ -95,8 +101,9 @@ function tally(tests: DataTest[], findings: AuditFinding[]): Counts {
     else if (conclusion === 'not_applicable') counts.notApplicable += 1
     else counts.noConclusion += 1
     if (test.control_conclusion_stale) counts.staleConclusions += 1
-    if (test.control_conclusion_source === 'agent' && CONCLUDED.has(conclusion)) {
-      counts.agentConcluded += 1
+    if (CONCLUDED.has(conclusion)) {
+      if (test.control_conclusion_source === 'agent') counts.agentConcluded += 1
+      else counts.auditorConcluded += 1
     }
 
     if (!test.rcm_id) counts.exploratory += 1
@@ -151,16 +158,19 @@ function executionLane(counts: Counts): StatusLane {
 
   const settled = !counts.notRun.length && !counts.blocked
     && !counts.awaitingReview && !counts.staleResults.length
-  if (settled) {
-    if (counts.passed) chips.push({ key: 'passed', label: `${counts.passed} no exception`, tone: 'ok' })
-    if (counts.withExceptions) {
-      chips.push({ key: 'with_exceptions', label: `${counts.withExceptions} with exceptions`, tone: 'bad' })
-    }
+  // Shown whether or not the lane has settled. These used to wait for a quiet
+  // lane because a second row of outcome chips was already saying them; that
+  // row is gone, and "how did the results fall" is a question worth answering
+  // while half the programme is still running.
+  if (counts.passed) chips.push({ key: 'passed', label: `${counts.passed} no exception`, tone: 'ok' })
+  if (counts.withExceptions) {
+    chips.push({ key: 'with_exceptions', label: `${counts.withExceptions} with exceptions`, tone: 'bad' })
   }
   return {
     key: 'execution', label: 'Execution',
     state: counts.blocked || counts.staleResults.length ? 'alarm' : settled ? 'done' : 'gap',
     value: String(counts.run),
+    total: String(counts.total),
     caption: `of ${plural(counts.total, 'test')} run`,
     segments: [
       { tone: 'ok', portion: portion(counts.run - counts.staleResults.length, counts.total) },
@@ -194,7 +204,7 @@ function conclusionLane(counts: Counts): StatusLane {
   if (!counts.total || !counts.run) {
     return {
       key: 'conclusion', label: 'Control conclusion', state: 'idle',
-      value: '0', caption: `of ${counts.total} concluded`,
+      value: '0', total: String(counts.total), caption: `of ${counts.total} concluded`,
       segments: [], chips: [], actions: [],
       rest: 'Conclusions follow execution',
     }
@@ -204,6 +214,7 @@ function conclusionLane(counts: Counts): StatusLane {
     key: 'conclusion', label: 'Control conclusion',
     state: counts.staleConclusions ? 'alarm' : counts.noConclusion ? 'gap' : 'done',
     value: String(counts.concluded),
+    total: String(counts.total),
     caption: `of ${counts.total} ${pluralWord(counts.total, 'test')} concluded`,
     segments: [
       { tone: 'ok', portion: portion(counts.effective, counts.total) },
@@ -240,6 +251,7 @@ function findingsLane(counts: Counts): StatusLane {
     key: 'findings', label: 'Findings',
     state: gap ? 'alarm' : 'done',
     value: String(counts.exceptionTestsCovered),
+    total: String(counts.exceptionTests),
     caption: `of ${counts.exceptionTests} exception ${
       pluralWord(counts.exceptionTests, 'test')} written up`,
     segments: [{
@@ -260,6 +272,68 @@ function findingsLane(counts: Counts): StatusLane {
       : [],
     rest: gap ? '' : 'Every exception is written up',
   }
+}
+
+/**
+ * The whole filter vocabulary, grouped by the axis each narrowing belongs to.
+ *
+ * The lanes carry the same keys as chips, but a lane can only show one axis
+ * without misleading: "effective" and "set by the agent" are both true of the
+ * same test, and a single row mixing them reads as a distribution that does
+ * not add up. Grouping here is what let the two permanent chip rows above the
+ * list go away without losing a filter.
+ */
+function filtersFor(counts: Counts): StatusFilterGroup[] {
+  return [
+    {
+      key: 'execution',
+      label: 'Execution',
+      options: [
+        { key: 'not_run', label: 'Not run', value: counts.notRun.length, tone: 'warn' },
+        { key: 'blocked', label: 'Blocked', value: counts.blocked, tone: 'bad' },
+        { key: 'awaiting_review', label: 'Awaiting review', value: counts.awaitingReview, tone: 'warn' },
+        { key: 'stale_result', label: 'Stale result', value: counts.staleResults.length, tone: 'bad' },
+        { key: 'with_exceptions', label: 'With exceptions', value: counts.withExceptions, tone: 'bad' },
+        { key: 'passed', label: 'No exception', value: counts.passed, tone: 'ok' },
+      ],
+    },
+    {
+      key: 'conclusion',
+      label: 'Control conclusion',
+      options: [
+        { key: 'effective', label: 'Effective', value: counts.effective, tone: 'ok' },
+        { key: 'partially_effective', label: 'Partially effective', value: counts.partiallyEffective, tone: 'warn' },
+        { key: 'ineffective', label: 'Ineffective', value: counts.ineffective, tone: 'bad' },
+        { key: 'not_applicable', label: 'Not applicable', value: counts.notApplicable, tone: 'neutral' },
+        { key: 'no_conclusion', label: 'Not concluded', value: counts.noConclusion, tone: 'warn' },
+        { key: 'stale_conclusion', label: 'Stale conclusion', value: counts.staleConclusions, tone: 'bad' },
+      ],
+    },
+    {
+      key: 'source',
+      label: 'Concluded by',
+      options: [
+        { key: 'agent_concluded', label: 'Agent', value: counts.agentConcluded, tone: 'warn' },
+        { key: 'auditor_concluded', label: 'Auditor', value: counts.auditorConcluded, tone: 'ok' },
+      ],
+    },
+    {
+      key: 'findings',
+      label: 'Findings',
+      options: [
+        { key: 'missing_finding', label: 'No finding written', value: counts.undrafted.length, tone: 'bad' },
+        { key: 'has_finding', label: 'Written up', value: counts.exceptionTestsCovered, tone: 'neutral' },
+      ],
+    },
+    {
+      key: 'scope',
+      label: 'Scope',
+      options: [
+        { key: 'exploratory', label: 'Exploratory', value: counts.exploratory, tone: 'neutral' },
+        { key: 'semantic_warning', label: 'Definition warning', value: counts.semanticWarnings, tone: 'warn' },
+      ],
+    },
+  ]
 }
 
 function disclosuresFor(counts: Counts): StatusDisclosure[] {
@@ -300,6 +374,7 @@ export function dataTestStatus(tests: DataTest[], findings: AuditFinding[] = [])
   return {
     lanes: [executionLane(counts), conclusionLane(counts), findingsLane(counts)],
     disclosures: disclosuresFor(counts),
+    filters: filtersFor(counts),
   }
 }
 
@@ -319,6 +394,7 @@ export const DATA_TEST_FILTER_LABELS: Record<DataTestFilter, string> = {
   missing_finding: 'exception tests with no finding',
   has_finding: 'tests written up as a finding',
   agent_concluded: 'conclusions set by the agent',
+  auditor_concluded: 'conclusions an auditor recorded',
   exploratory: 'exploratory tests',
   semantic_warning: 'tests carrying a definition warning',
 }
@@ -349,6 +425,8 @@ export function filterDataTests(
       case 'has_finding': return drafted.has(test.id)
       case 'agent_concluded':
         return test.control_conclusion_source === 'agent' && CONCLUDED.has(conclusion)
+      case 'auditor_concluded':
+        return test.control_conclusion_source !== 'agent' && CONCLUDED.has(conclusion)
       case 'exploratory': return !test.rcm_id
       case 'semantic_warning': return test.semantic_warnings.length > 0
       default: return true

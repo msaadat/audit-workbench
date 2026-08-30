@@ -1,7 +1,7 @@
 import { plural, pluralWord } from '../../format'
 import { portion } from '../ui/statusLanes'
 import type {
-  StatusChip, StatusDisclosure, StatusLane, StatusModel,
+  StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
 import type { AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload } from '../../types'
 
@@ -15,14 +15,15 @@ import type { AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload } from '.
  * in tests, because `conclusion_state` is test-grain and repeated on every item
  * of the test.
  *
- * The outcome chips beside this already say how results distributed. These
- * lanes say how much has run, how much carries a settled conclusion, and how
- * much of what failed has been written up — none of which the chips answer.
+ * The lanes say how much has run, how much carries a settled conclusion, and
+ * how much of what failed has been written up. The same tally also produces
+ * `filters`, the page's whole narrowing vocabulary, so the filter menu and the
+ * lane chips are the same numbers driving one active filter.
  */
 
 export type DocTestFilter =
-  | 'not_run' | 'awaiting_evidence' | 'exceptions' | 'confirmed'
-  | 'no_conclusion' | 'stale_conclusion' | 'agent_concluded'
+  | 'not_run' | 'awaiting_evidence' | 'needs_review' | 'exceptions' | 'confirmed'
+  | 'no_conclusion' | 'stale_conclusion' | 'agent_concluded' | 'auditor_concluded'
   | 'missing_finding' | 'has_finding'
   | 'evidence_request'
 
@@ -34,6 +35,7 @@ interface Counts {
   notRunTests: string[]
   notRunEntries: number
   awaitingEvidence: number
+  needsReview: number
   exceptions: number
   confirmed: number
   evidenceRequests: number
@@ -53,7 +55,7 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
   const drafted = new Set(findings.flatMap(finding => finding.test_refs))
   const counts: Counts = {
     entries: entries.length, executed: 0,
-    notRunTests: [], notRunEntries: 0, awaitingEvidence: 0,
+    notRunTests: [], notRunEntries: 0, awaitingEvidence: 0, needsReview: 0,
     exceptions: 0, confirmed: 0, evidenceRequests: 0,
     tests: 0, concluded: 0, noConclusion: 0, staleConclusion: 0,
     agentConcluded: 0, auditorConcluded: 0,
@@ -70,6 +72,7 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
       notRun.add(entry.test_id)
     } else counts.executed += 1
     if (entry.classification === 'awaiting_evidence') counts.awaitingEvidence += 1
+    if (entry.classification === 'needs_review') counts.needsReview += 1
     if (entry.classification === 'exception') counts.exceptions += 1
     if (entry.classification === 'confirmed') counts.confirmed += 1
     if (entry.entry_type === 'item' && entry.evidence_request_count) counts.evidenceRequests += 1
@@ -114,15 +117,20 @@ function executionLane(counts: Counts): StatusLane {
   if (counts.awaitingEvidence) {
     chips.push({ key: 'awaiting_evidence', label: `${counts.awaitingEvidence} awaiting evidence`, tone: 'bad' })
   }
-  const settled = !counts.notRunEntries && !counts.awaitingEvidence
-  if (settled) {
-    if (counts.confirmed) chips.push({ key: 'confirmed', label: `${counts.confirmed} confirmed`, tone: 'ok' })
-    if (counts.exceptions) chips.push({ key: 'exceptions', label: `${counts.exceptions} exceptions`, tone: 'bad' })
+  if (counts.needsReview) {
+    chips.push({ key: 'needs_review', label: `${counts.needsReview} need review`, tone: 'warn' })
   }
+  const settled = !counts.notRunEntries && !counts.awaitingEvidence
+  // Shown whether or not the lane has settled. A second row of outcome chips
+  // used to carry these; it is gone, and how the calls fell is worth reading
+  // while the rest of the worklist is still being worked.
+  if (counts.confirmed) chips.push({ key: 'confirmed', label: `${counts.confirmed} confirmed`, tone: 'ok' })
+  if (counts.exceptions) chips.push({ key: 'exceptions', label: `${counts.exceptions} exceptions`, tone: 'bad' })
   return {
     key: 'execution', label: 'Execution',
     state: counts.awaitingEvidence ? 'alarm' : counts.notRunEntries ? 'gap' : 'done',
     value: String(counts.executed),
+    total: String(counts.entries),
     caption: `of ${counts.entries} ${pluralWord(counts.entries, 'item')} executed`,
     segments: [{ tone: 'ok', portion: portion(counts.executed, counts.entries) }],
     chips,
@@ -141,7 +149,7 @@ function conclusionLane(counts: Counts): StatusLane {
   if (!counts.tests || !counts.executed) {
     return {
       key: 'conclusion', label: 'Control conclusion', state: 'idle',
-      value: '0', caption: `of ${counts.tests} concluded`,
+      value: '0', total: String(counts.tests), caption: `of ${counts.tests} concluded`,
       segments: [], chips: [], actions: [],
       rest: 'Conclusions follow execution',
     }
@@ -160,6 +168,7 @@ function conclusionLane(counts: Counts): StatusLane {
     key: 'conclusion', label: 'Control conclusion',
     state: counts.staleConclusion ? 'alarm' : counts.noConclusion ? 'gap' : 'done',
     value: String(counts.concluded),
+    total: String(counts.tests),
     caption: `of ${counts.tests} ${pluralWord(counts.tests, 'test')} concluded`,
     segments: [
       { tone: 'ok', portion: portion(counts.auditorConcluded, counts.tests) },
@@ -190,6 +199,7 @@ function findingsLane(counts: Counts): StatusLane {
     key: 'findings', label: 'Findings',
     state: gap ? 'alarm' : 'done',
     value: String(counts.exceptionTestsCovered),
+    total: String(counts.exceptionTests),
     caption: `of ${counts.exceptionTests} exception ${
       pluralWord(counts.exceptionTests, 'test')} written up`,
     segments: [{
@@ -210,6 +220,59 @@ function findingsLane(counts: Counts): StatusLane {
       : [],
     rest: gap ? '' : 'Every exception is written up',
   }
+}
+
+/**
+ * The whole filter vocabulary, grouped by axis. Execution is counted in
+ * worklist items and conclusions in tests, exactly as the lanes count them, so
+ * a menu row and the lane beside it can never report different numbers for the
+ * same narrowing.
+ */
+function filtersFor(counts: Counts): StatusFilterGroup[] {
+  return [
+    {
+      key: 'execution',
+      label: 'Execution',
+      options: [
+        { key: 'not_run', label: 'Not run', value: counts.notRunEntries, tone: 'warn' },
+        { key: 'awaiting_evidence', label: 'Awaiting evidence', value: counts.awaitingEvidence, tone: 'bad' },
+        { key: 'needs_review', label: 'Need review', value: counts.needsReview, tone: 'warn' },
+        { key: 'exceptions', label: 'Exceptions', value: counts.exceptions, tone: 'bad' },
+        { key: 'confirmed', label: 'Confirmed', value: counts.confirmed, tone: 'ok' },
+      ],
+    },
+    {
+      key: 'conclusion',
+      label: 'Control conclusion',
+      options: [
+        { key: 'no_conclusion', label: 'Not concluded', value: counts.noConclusion, tone: 'warn' },
+        { key: 'stale_conclusion', label: 'Stale conclusion', value: counts.staleConclusion, tone: 'bad' },
+      ],
+    },
+    {
+      key: 'source',
+      label: 'Concluded by',
+      options: [
+        { key: 'agent_concluded', label: 'Agent', value: counts.agentConcluded, tone: 'warn' },
+        { key: 'auditor_concluded', label: 'Auditor', value: counts.auditorConcluded, tone: 'ok' },
+      ],
+    },
+    {
+      key: 'findings',
+      label: 'Findings',
+      options: [
+        { key: 'missing_finding', label: 'No finding written', value: counts.undrafted.length, tone: 'bad' },
+        { key: 'has_finding', label: 'Written up', value: counts.exceptionTestsCovered, tone: 'neutral' },
+      ],
+    },
+    {
+      key: 'evidence',
+      label: 'Evidence',
+      options: [
+        { key: 'evidence_request', label: 'Open request', value: counts.evidenceRequests, tone: 'warn' },
+      ],
+    },
+  ]
 }
 
 function disclosuresFor(counts: Counts): StatusDisclosure[] {
@@ -243,17 +306,20 @@ export function docTestStatus(
   return {
     lanes: [executionLane(counts), conclusionLane(counts), findingsLane(counts)],
     disclosures: disclosuresFor(counts),
+    filters: filtersFor(counts),
   }
 }
 
 export const DOC_TEST_FILTER_LABELS: Record<DocTestFilter, string> = {
   not_run: 'items not run',
   awaiting_evidence: 'items awaiting evidence',
+  needs_review: 'items needing review',
   exceptions: 'items concluded as exceptions',
   confirmed: 'items confirmed',
   no_conclusion: 'items whose test has no conclusion',
   stale_conclusion: 'items whose conclusion was reached against evidence that moved',
   agent_concluded: 'items whose conclusion the agent set',
+  auditor_concluded: 'items whose conclusion an auditor recorded',
   missing_finding: 'exception tests with no finding',
   has_finding: 'items written up as a finding',
   evidence_request: 'items with an open evidence request',
@@ -272,11 +338,13 @@ export function filterDocTestEntries(
     switch (filter) {
       case 'not_run': return entry.classification === 'not_run'
       case 'awaiting_evidence': return entry.classification === 'awaiting_evidence'
+      case 'needs_review': return entry.classification === 'needs_review'
       case 'exceptions': return entry.classification === 'exception'
       case 'confirmed': return entry.classification === 'confirmed'
       case 'no_conclusion': return entry.conclusion_state === 'none'
       case 'stale_conclusion': return entry.conclusion_state === 'stale'
       case 'agent_concluded': return entry.conclusion_state === 'agent'
+      case 'auditor_concluded': return entry.conclusion_state === 'auditor'
       case 'missing_finding':
         return entry.test_status === 'completed_with_exception'
           && Boolean(entry.rcm_id) && !drafted.has(entry.test_id)

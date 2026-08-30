@@ -271,7 +271,7 @@ describe('DocTestsTab Cycle vouch navigation', () => {
   })
 })
 
-describe('DocTestsTab conclusion filter', () => {
+describe('DocTestsTab filtering', () => {
   function itemEntry(
     suffix: string,
     conclusion_state: 'none' | 'stale' | 'agent' | 'auditor',
@@ -335,8 +335,13 @@ describe('DocTestsTab conclusion filter', () => {
     })
   }
 
+  /** The chips live in the status card, which rests closed. */
+  async function expand(wrapper: ReturnType<typeof mountTab>) {
+    await wrapper.find('.expander').trigger('click')
+    return wrapper
+  }
   function chip(wrapper: ReturnType<typeof mountTab>, label: string) {
-    return wrapper.findAll('.triage-chip').find(item => item.text().startsWith(label))
+    return wrapper.findAll('.chip').find(item => item.text().endsWith(label))
   }
   function titles(wrapper: ReturnType<typeof mountTab>) {
     return wrapper.findAll('.row-title').map(item => item.text())
@@ -345,26 +350,42 @@ describe('DocTestsTab conclusion filter', () => {
   it('narrows the worklist to exceptions nobody has concluded on', async () => {
     const wrapper = mountTab()
     await flushPromises()
+    await expand(wrapper)
     expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED', 'Item CLEAN'])
 
-    await chip(wrapper, 'Exceptions')!.trigger('click')
+    // Execution and conclusion are separate axes, so the two narrowings hold
+    // at once rather than replacing each other.
+    await chip(wrapper, 'exceptions')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED'])
-    // Counted within the active outcome, so the number is what the click leaves.
-    expect(chip(wrapper, 'Not concluded')!.text()).toBe('Not concluded1')
 
-    await chip(wrapper, 'Not concluded')!.trigger('click')
+    await chip(wrapper, 'no conclusion')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item OPEN'])
-    expect(wrapper.text()).toContain('1 of 3 · exceptions · not concluded')
+    // Two narrowings are only worth a count on the control that carries them.
+    expect(wrapper.find('.ui-filter-menu button').text()).toContain('2 filters')
   })
 
-  it('keeps a conclusion state with no rows in this outcome off the row', async () => {
+  it('replaces a narrowing with another from the same axis', async () => {
     const wrapper = mountTab()
     await flushPromises()
+    await expand(wrapper)
 
-    expect(chip(wrapper, 'By auditor')?.text()).toBe('By auditor1')
-    await chip(wrapper, 'Confirmed')!.trigger('click')
-    expect(chip(wrapper, 'By auditor')).toBeUndefined()
+    await chip(wrapper, 'exceptions')!.trigger('click')
+    expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED'])
+
+    // An item is not both an exception and confirmed, so the second wins
+    // rather than leaving an empty worklist.
+    await chip(wrapper, 'confirmed')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item CLEAN'])
+  })
+
+  it('drops a narrowing when its own chip is pressed again', async () => {
+    const wrapper = mountTab()
+    await flushPromises()
+    await expand(wrapper)
+
+    await chip(wrapper, 'exceptions')!.trigger('click')
+    await chip(wrapper, 'exceptions')!.trigger('click')
+    expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED', 'Item CLEAN'])
   })
 })
 
@@ -396,9 +417,9 @@ describe('DocTestsTab finding generation', () => {
     const wrapper = mountTab([])
     await flushPromises()
 
-    // The offer lives in the findings lane, which counts the gap rather than
-    // sitting in the header whether or not there is one.
-    const button = wrapper.findAll('.lane-actions button')
+    // The findings lane still counts the gap; the button it asks for renders
+    // in the page header, where the page's other actions are.
+    const button = wrapper.findAll('.ui-page-header__actions button')
       .find(item => item.text().includes('Draft findings'))
     expect(button?.text()).toContain('Draft findings (1)')
 
@@ -416,6 +437,7 @@ describe('DocTestsTab finding generation', () => {
     await flushPromises()
 
     expect(wrapper.findAll('button').some(item => item.text().includes('Draft findings'))).toBe(false)
+    await wrapper.find('.expander').trigger('click')
     expect(wrapper.text()).toContain('Every exception is written up')
   })
 })

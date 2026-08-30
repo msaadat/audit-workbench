@@ -20,6 +20,7 @@ import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
 import UiStatusLanes from './ui/UiStatusLanes.vue'
+import { statusActions } from './ui/statusLanes'
 import type { StatusAction } from './ui/statusLanes'
 import { FILTER_LABELS, filterRows, rcmStatus } from './planning/rcmStatus'
 import type { RcmActionKey, RcmFilter } from './planning/rcmStatus'
@@ -518,6 +519,9 @@ const rcmBusy = computed(() => isActive.value
   || generatingTests.value || generatingFindings.value
   || runningAllDataTests.value || runningAllDocumentTests.value
   || markingReviewed.value)
+// The lanes name the gaps; the header renders them, so the answer to "what
+// now" sits with the other buttons rather than at the foot of the status card.
+const rcmHeaderActions = computed(() => statusActions(rcmStatusModel.value))
 // An untouched memorandum gets an empty state rather than a blank editor: there
 // is nothing to attribute, nothing to save, and no reason to show a formatting
 // toolbar above nothing.
@@ -584,9 +588,22 @@ const rcmActions = computed(() => [
         :disabled="agentBusy"
         @click="generate"
       />
-      <!-- The status bar owns every action that depends on where the file
-           stands, so the header keeps only the occasional ones. -->
-      <UiOverflowMenu v-else :items="rcmActions" tooltip="More RCM actions" />
+      <!-- The status bar names every gap that depends on where the file
+           stands; those buttons render here, and the occasional actions stay
+           behind one menu rather than seven controls. -->
+      <template v-else>
+        <Button
+          v-for="action in rcmHeaderActions"
+          :key="action.key"
+          :label="action.label"
+          size="small"
+          :outlined="action.tone === 'ghost'"
+          :severity="action.tone === 'warn' ? 'warn' : undefined"
+          :disabled="rcmBusy || (action.needsAgent && agentBusy)"
+          @click="runStatusAction(action)"
+        />
+        <UiOverflowMenu :items="rcmActions" tooltip="More RCM actions" />
+      </template>
     </UiPageHeader>
     <section v-if="section === 'apm'" class="apm-view">
       <!-- Provenance describes a document that exists. On an untouched
@@ -615,11 +632,11 @@ const rcmActions = computed(() => [
       <UiStatusLanes
         :lanes="rcmStatusModel.lanes"
         :disclosures="rcmStatusModel.disclosures"
-        :filter="rcmFilter"
+        :filter="rcmFilter ? [rcmFilter] : []"
         :filterLabel="rcmFilterLabel"
         :busy="rcmBusy"
         :canRunAgent="!isActive && Boolean(agent.state.status?.configured)"
-        @filter="rcmFilter = ($event as RcmFilter | null)"
+        @filter="rcmFilter = (($event[0] ?? null) as RcmFilter | null)"
         @action="runStatusAction"
       />
       <RcmGrid :rows="visibleRcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @paper="openWorkingPaper" @generate="generatePlannedTests"/>

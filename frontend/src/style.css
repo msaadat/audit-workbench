@@ -468,12 +468,14 @@ button, input, textarea, select { font: inherit; }
 }
 
 /* Shared page and master/detail primitives. */
+/* No bottom margin: every page that uses this stacks it in a flex column whose
+   own `gap` is already `--aw-section-gap`, and the two used to add up to a
+   1.7rem band under every title. Spacing belongs to the stack, not the item. */
 .ui-page-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--aw-space-4);
-  margin-bottom: var(--aw-section-gap);
 }
 .ui-page-header__copy { min-width: 0; }
 .ui-page-header h2 { margin: 0; font-size: var(--aw-text-xl); }

@@ -39,6 +39,13 @@ export interface StatusLane {
   /** The number the lane leads with, and the sentence it completes. */
   value: string
   caption: string
+  /**
+   * What `value` is out of, where the caption is an "of N …" sentence. The
+   * resting bar reads `24 / 30` from these two; the caption's words are the
+   * part the expanded card exists to show. Left unset where the lane counts
+   * no population — the bar then falls back to the sentence.
+   */
+  total?: string
   /** Meter fill. Portions are percentages of the whole and need not total 100. */
   segments: Array<{ tone: Tone; portion: number }>
   chips: StatusChip[]
@@ -69,11 +76,73 @@ export interface StatusDisclosure {
   action?: StatusAction
 }
 
+/**
+ * One narrowing the page offers, as a menu row rather than a lane chip.
+ *
+ * The lane chips show a distribution and happen to filter. This is the whole
+ * vocabulary, including the axes a lane cannot carry without muddling itself —
+ * "effective" and "set by the agent" are both true of the same test, so they
+ * belong in separate groups rather than one chip row.
+ */
+export interface StatusFilterOption {
+  key: string
+  /** Names the subset. The count travels beside it, not baked into the text. */
+  label: string
+  value: number
+  tone: Tone
+}
+
+export interface StatusFilterGroup {
+  key: string
+  label: string
+  options: StatusFilterOption[]
+}
+
 export interface StatusModel {
   lanes: StatusLane[]
   disclosures: StatusDisclosure[]
+  /**
+   * Every filter the page offers, grouped by axis. Derived beside the lanes
+   * from the same tally, so the menu and the chips can never disagree, and
+   * emitted into the same active set the chips drive.
+   */
+  filters?: StatusFilterGroup[]
 }
 
 export function portion(part: number, whole: number): number {
   return whole > 0 ? (part / whole) * 100 : 0
+}
+
+/**
+ * Every action the lanes want taken, in lane order.
+ *
+ * The page header renders these beside its own buttons. A button is already a
+ * complete sentence — "Draft findings (8)" says what is outstanding and what
+ * closes it — so it does not need a row of its own under the status, and
+ * putting it on top means the one urgent control is not the last thing read.
+ */
+export function statusActions(model: StatusModel): StatusAction[] {
+  return model.lanes.flatMap(lane => lane.actions)
+}
+
+/**
+ * Add or drop one narrowing, holding at most one per axis.
+ *
+ * Narrowings compose: "exceptions nobody has concluded on" is two questions
+ * about the same row and neither answers the other, so the active set is a
+ * list rather than a single key. Within one axis they cannot compose — a test
+ * is not both effective and ineffective — so picking a second option from the
+ * same group replaces the first rather than emptying the list.
+ *
+ * A page with no groups declared has one axis by definition, so every pick
+ * replaces: that is what the pages that never had a second axis already did.
+ */
+export function toggleFilter(
+  active: readonly string[], key: string, groups?: StatusFilterGroup[],
+): string[] {
+  if (active.includes(key)) return active.filter(value => value !== key)
+  const group = groups?.find(item => item.options.some(option => option.key === key))
+  if (!group) return [key]
+  const siblings = new Set(group.options.map(option => option.key))
+  return [...active.filter(value => !siblings.has(value)), key]
 }

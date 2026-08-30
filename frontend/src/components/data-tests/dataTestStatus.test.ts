@@ -48,7 +48,9 @@ describe('data test execution lane', () => {
 
     expect(`${lane.value} ${lane.caption}`).toBe('2 of 2 tests run')
     expect(lane.state).toBe('alarm')
-    expect(lane.chips.map(chip => chip.label)).toEqual(['1 stale'])
+    // The distribution is no longer withheld until the lane settles — the
+    // outcome chip row that used to carry it above the list is gone.
+    expect(lane.chips.map(chip => chip.label)).toEqual(['1 stale', '2 no exception'])
     expect(lane.actions).toEqual([{
       key: 'rerun_stale', label: 'Re-run 1 stale test', tone: 'primary', ids: ['DAT-2'],
     }])

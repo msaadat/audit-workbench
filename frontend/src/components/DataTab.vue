@@ -625,6 +625,8 @@ function rangeText(p: ColumnProfile): string {
 </template>
 
 <style scoped>
+/* Not stacked in a gapped column, so the header spaces itself here. */
+.ui-page-header { margin-bottom: var(--aw-section-gap); }
 .import-empty { min-height: 20rem; }
 .data-workbench { display: grid; grid-template-columns: 18rem minmax(0, 1fr); gap: 1rem; align-items: start; }
 

@@ -11,14 +11,12 @@ import InputText from 'primevue/inputtext'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { conclusionCounts } from '../composables/conclusionFacet'
 import { useSession } from '../composables/useSession'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
   AuditFinding,
   DocTest,
-  DocTestClassification,
   DocTestDispositionState,
   DocTestItem,
   DocTestKind,
@@ -28,7 +26,6 @@ import type {
   DocTestSummaryPayload,
   EvidenceRef,
   PlanningPayload,
-  TestConclusionState,
   WorkspaceSummary,
   CycleRulesetDefinition, CycleVouchMetadata,
 } from '../types'
@@ -42,13 +39,12 @@ import UiEmptyState from './ui/UiEmptyState.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiStatusLanes from './ui/UiStatusLanes.vue'
+import { statusActions } from './ui/statusLanes'
 import type { StatusAction } from './ui/statusLanes'
 import {
   DOC_TEST_FILTER_LABELS, docTestStatus, filterDocTestEntries,
 } from './doc-tests/docTestStatus'
 import type { DocTestActionKey, DocTestFilter } from './doc-tests/docTestStatus'
-import UiTriageCounts from './ui/UiTriageCounts.vue'
-import type { TriageCount } from './ui/UiTriageCounts.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -78,14 +74,12 @@ const requestedTestId = ref<string | null>(String(route.query.test || '') || nul
 // RCM grid's "Add Document Test" link loses its own parameters.
 const createRequested = route.query.create === '1'
 const requestedRcmId = String(route.query.rcm || '')
-const filter = ref<'all' | DocTestClassification>('all')
-// What the status bar has asked the worklist to show. It composes with the
-// outcome chips rather than replacing them: the lanes narrow by state of work,
-// the chips by outcome, and both are views over the same entries.
-const statusFilter = ref<DocTestFilter | null>(null)
-// A second axis over the same rows, not a sixth outcome: "exceptions nobody
-// has concluded on" needs both halves at once.
-const conclusionFilter = ref<'all' | TestConclusionState>('all')
+// The narrowings in force. This used to be three separate controls — a status
+// filter, an outcome row and a conclusion row — whose counts restated each
+// other and whose resting state was two permanent rows of chips saying
+// "nothing is filtered". One vocabulary now, from the status model, still
+// composing across axes: "exceptions nobody has concluded on" is two at once.
+const statusFilter = ref<DocTestFilter[]>([])
 const search = ref('')
 const createOpen = ref(false)
 const creating = ref(false)
@@ -100,53 +94,32 @@ const anchor = ref<EvidenceRef | null>(null)
 const selectedIds = ref<string[]>([])
 const bulkBusy = ref(false)
 
-// The triage cards are the only filter. "Needs action" used to be a second
-// control over the same axis, and it was exactly the union of the three cards
-// beside it — the counts say the same thing without the extra row.
-const triage = computed<TriageCount[]>(() => {
-  const counts = summary.value?.entry_counts
-  return [
-    { key: 'all', label: 'All work', value: summary.value?.entries.length ?? 0 },
-    { key: 'exception', label: 'Exceptions', value: counts?.exception ?? 0, tone: 'danger' },
-    { key: 'needs_review', label: 'Need review', value: counts?.needs_review ?? 0, tone: 'warn' },
-    { key: 'awaiting_evidence', label: 'Awaiting evidence', value: counts?.awaiting_evidence ?? 0, tone: 'warn' },
-    { key: 'confirmed', label: 'Confirmed', value: counts?.confirmed ?? 0, tone: 'ok' },
-    { key: 'not_run', label: 'Not run', value: counts?.not_run ?? 0 },
-  ]
-})
-// The outcome chips stay an engagement-wide tally, so the conclusion row is
-// counted within the outcome the auditor is standing in — the number on
-// "Not concluded" is what the click would leave, not a separate total.
 // The lanes count every entry, not the filtered worklist: a count that shrank
 // as you filtered by it could never be clicked back out of.
 const status = computed(() => docTestStatus(summary.value, planning.value?.findings ?? []))
 const statusFilterLabel = computed(() =>
-  (statusFilter.value ? DOC_TEST_FILTER_LABELS[statusFilter.value] : ''))
-const statusScope = computed(() => filterDocTestEntries(
-  summary.value?.entries ?? [], statusFilter.value, planning.value?.findings ?? [],
+  statusFilter.value.map(key => DOC_TEST_FILTER_LABELS[key]).join(' · '))
+// What the lanes want done, rendered in the page header beside the other
+// buttons. A gap the status found is the most urgent control on the page, and
+// it was reading last while it sat at the bottom of the card.
+const headerActions = computed(() => statusActions(status.value))
+const statusBusy = computed(() =>
+  runningAll.value || runningOutstanding.value || generatingFindings.value)
+// Folded rather than combined: each narrowing runs the same predicate over
+// what the last one left, so the filters compose without a second code path.
+const statusScope = computed(() => statusFilter.value.reduce(
+  (entries, key) => filterDocTestEntries(entries, key, planning.value?.findings ?? []),
+  summary.value?.entries ?? [],
 ))
-const outcomeMatches = computed(() => statusScope.value.filter(
-  entry => filter.value === 'all' || entry.classification === filter.value))
-const conclusionFacets = computed(() =>
-  conclusionCounts(outcomeMatches.value.map(entry => entry.conclusion_state)))
 const visibleItems = computed(() => {
   const query = search.value.trim().toLowerCase()
-  return outcomeMatches.value.filter(item => {
-    if (conclusionFilter.value !== 'all' && item.conclusion_state !== conclusionFilter.value) return false
-    if (!query) return true
+  if (!query) return statusScope.value
+  return statusScope.value.filter(item => {
     const values = item.entry_type === 'cycle_test'
       ? [item.title, item.assurance_label, item.rcm_id ?? '']
       : [item.label, item.test_title, item.instruction, item.question, item.response]
-    return values
-      .some(value => value.toLowerCase().includes(query))
+    return values.some(value => value.toLowerCase().includes(query))
   })
-})
-const activeFilterLabel = computed(() => {
-  const outcome = triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items'
-  const conclusion = conclusionFilter.value === 'all'
-    ? null
-    : conclusionFacets.value.find(count => count.key === conclusionFilter.value)?.label.toLowerCase()
-  return conclusion ? `${outcome} · ${conclusion}` : outcome
 })
 // Cycle tests are dispositioned in their own grid, so only item rows are
 // selectable here — a mixed selection would need two different mutations.
@@ -230,13 +203,8 @@ async function loadSummary() {
   const requested = requestedTestId.value
     ? items.find(item => item.test_id === requestedTestId.value)
     : undefined
-  const hiddenByFilters = requested && !(
-    (filter.value === 'all' || requested.classification === filter.value)
-    && (conclusionFilter.value === 'all' || requested.conclusion_state === conclusionFilter.value)
-  )
-  if (hiddenByFilters) {
-    filter.value = 'all'
-    conclusionFilter.value = 'all'
+  if (requested && statusFilter.value.length && !statusScope.value.includes(requested)) {
+    statusFilter.value = []
   }
   // Honour a deep link first, then keep the current selection, then fall back
   // to the most severe item so the tab opens on work that needs doing.
@@ -354,9 +322,9 @@ async function closeCycleGrid() {
  * to go back to the list it narrows — otherwise the click lands on a view that
  * cannot show the result and appears to do nothing.
  */
-function pickStatusFilter(value: DocTestFilter | null) {
+function pickStatusFilter(value: DocTestFilter[]) {
   statusFilter.value = value
-  if (value && selectedCycleTestId.value) {
+  if (value.length && selectedCycleTestId.value) {
     selectedCycleTestId.value = null
     selectedItemId.value = null
     currentTest.value = null
@@ -370,13 +338,6 @@ function runStatusAction(action: StatusAction) {
     case 'draft_findings': return void draftPendingFindings(action.ids)
   }
 }
-function pickFilter(key: string) {
-  filter.value = key as 'all' | DocTestClassification
-}
-function pickConclusion(key: string) {
-  conclusionFilter.value = key as 'all' | TestConclusionState
-}
-
 async function createTest({ kind, direction, draft }: {
   kind: DocTestKind
   direction: string
@@ -452,8 +413,8 @@ async function createTest({ kind, direction, draft }: {
     createOpen.value = false
     requestedTestId.value = created.id
     selectedItemId.value = null
-    filter.value = 'all'
-    conclusionFilter.value = 'all'
+    // A new test has run nothing yet, so any active narrowing would hide it.
+    statusFilter.value = []
     await loadSummary()
     emit('changed')
   } catch (error) { fail('Could not create the document test', error) }
@@ -731,6 +692,18 @@ function onRulesetApproved(): void {
 <template>
   <div class="doc-tests">
     <UiPageHeader title="Document tests">
+      <!-- The gaps the status found lead the row: they are the only buttons
+           here that exist because something is outstanding. -->
+      <Button
+        v-for="action in headerActions"
+        :key="action.key"
+        :label="action.label"
+        size="small"
+        :outlined="action.tone === 'ghost'"
+        :severity="action.tone === 'warn' ? 'warn' : undefined"
+        :disabled="statusBusy || (action.needsAgent && assistantUnavailable)"
+        @click="runStatusAction(action)"
+      />
       <Button
         label="Cycle rules"
         icon="pi pi-sitemap"
@@ -783,32 +756,23 @@ function onRulesetApproved(): void {
       v-if="hasTests"
       :lanes="status.lanes"
       :disclosures="status.disclosures"
+      :filters="status.filters"
       :filter="statusFilter"
       :filterLabel="statusFilterLabel"
-      :busy="runningAll || runningOutstanding || generatingFindings"
+      :busy="statusBusy"
       :canRunAgent="!assistantUnavailable"
-      @filter="pickStatusFilter($event as DocTestFilter | null)"
+      @filter="pickStatusFilter($event as DocTestFilter[])"
       @action="runStatusAction"
     />
 
     <template v-if="hasTests">
-      <div v-if="!selectedCycleTestId" class="facets">
-        <UiTriageCounts :counts="triage" :active="filter" label="Outcome" @select="pickFilter" />
-        <UiTriageCounts
-          :counts="conclusionFacets"
-          :active="conclusionFilter"
-          label="Conclusion"
-          @select="pickConclusion"
-        />
-      </div>
-
       <div v-if="!selectedCycleTestId" class="toolbar">
         <IconField>
           <InputIcon class="pi pi-search" />
           <InputText v-model="search" size="small" placeholder="Search items, tests, and answers" />
         </IconField>
         <span class="muted">
-          {{ visibleItems.length }} of {{ summary?.entries.length ?? 0 }} · {{ activeFilterLabel }}
+          {{ visibleItems.length }} of {{ summary?.entries.length ?? 0 }} items
         </span>
         <Button
           v-if="selectableItems.length"
@@ -987,8 +951,8 @@ function onRulesetApproved(): void {
 
 <style scoped>
 .doc-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; min-height: 0; height: 100%; }
-.facets { display: flex; flex-direction: column; gap: var(--aw-space-2); min-width: 0; }
-.toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+/* The stack's own `gap` spaces this; the global rule's margin would double it. */
+.toolbar { margin-bottom: 0; display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 16rem; min-width: 0; max-width: 26rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }
 .bulk-bar {

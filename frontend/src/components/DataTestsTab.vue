@@ -14,7 +14,6 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { conclusionCounts, dataTestConclusion } from '../composables/conclusionFacet'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditFinding,
@@ -23,7 +22,6 @@ import type {
   DataTestResult,
   DataTestStep,
   PlanningPayload,
-  TestConclusionState,
   WorkspaceSummary,
 } from '../types'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
@@ -37,13 +35,12 @@ import UiEmptyState from './ui/UiEmptyState.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiStatusLanes from './ui/UiStatusLanes.vue'
+import { statusActions } from './ui/statusLanes'
 import type { StatusAction } from './ui/statusLanes'
 import {
   DATA_TEST_FILTER_LABELS, dataTestStatus, filterDataTests,
 } from './data-tests/dataTestStatus'
 import type { DataTestActionKey, DataTestFilter } from './data-tests/dataTestStatus'
-import UiTriageCounts from './ui/UiTriageCounts.vue'
-import type { TriageCount } from './ui/UiTriageCounts.vue'
 import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -74,14 +71,12 @@ const saving = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
 const generatingFindings = ref(false)
-const filter = ref<string>('all')
-// What the status bar has asked the list to show. It composes with the triage
-// chips rather than replacing them: the lanes narrow by state of work, the
-// chips by outcome, and both are views over the same array.
-const statusFilter = ref<DataTestFilter | null>(null)
-// A second axis over the same tests, not a sixth status: "exceptions nobody
-// has concluded on" needs both halves at once.
-const conclusionFilter = ref<'all' | TestConclusionState>('all')
+// The narrowings in force. This used to be three separate controls — a status
+// filter, an outcome row and a conclusion row — which restated each other's
+// counts and spent two permanent rows of chips saying "nothing is filtered".
+// One vocabulary now, from the status model, still composing across axes:
+// "exceptions nobody has concluded on" is two of these at once.
+const statusFilter = ref<DataTestFilter[]>([])
 const search = ref('')
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
 const editAnalyticsReady = ref(false)
@@ -114,19 +109,6 @@ const rcmRows = computed(() => planning.value?.rcm ?? [])
 const rcmOptions = computed(() => rcmRows.value.map(row => ({ label: `${row.id} · ${row.risk}`, value: row.id })))
 const tableOptions = computed(() => props.workspace.tables.map(item => ({ label: item.name, value: item.name })))
 
-// The cards are the only filter. "Needs attention" was a second control over
-// the same axis and was just the union of the three cards beside it.
-const triage = computed<TriageCount[]>(() => {
-  const count = (predicate: (test: DataTest) => boolean) => tests.value.filter(predicate).length
-  return [
-    { key: 'all', label: 'All tests', value: tests.value.length },
-    { key: 'completed_with_exception', label: 'Exceptions', value: count(test => test.status === 'completed_with_exception'), tone: 'danger' },
-    { key: 'review_required', label: 'Need review', value: count(test => test.status === 'review_required'), tone: 'warn' },
-    { key: 'blocked', label: 'Blocked', value: count(test => test.status === 'blocked'), tone: 'warn' },
-    { key: 'completed_no_exception', label: 'No exception', value: count(test => test.status === 'completed_no_exception'), tone: 'ok' },
-    { key: 'not_run', label: 'Not run', value: count(test => !test.last_run) },
-  ]
-})
 // Only offer a facet that can actually split the list. With one engine and two
 // statuses, three always-on dropdowns filtered nothing.
 const rcmFacet = computed(() => {
@@ -134,39 +116,30 @@ const rcmFacet = computed(() => {
   return linked.size > 1 ? rcmOptions.value.filter(option => linked.has(option.value)) : []
 })
 const filterRcm = ref<string | null>(null)
-// The status chips stay a whole-tab tally, so the conclusion row is counted
-// within everything else already applied — the number on a conclusion chip is
-// what clicking it would leave, not a separate total.
 // The lanes count every test, not the filtered list: a count that shrank as you
 // filtered by it could never be clicked back out of.
 const status = computed(() => dataTestStatus(tests.value, planning.value?.findings ?? []))
 const statusFilterLabel = computed(() =>
-  (statusFilter.value ? DATA_TEST_FILTER_LABELS[statusFilter.value] : ''))
-const statusScope = computed(() =>
-  filterDataTests(tests.value, statusFilter.value, planning.value?.findings ?? []))
-const conclusionScope = computed(() => statusScope.value.filter(test => {
-  if (filterRcm.value && test.rcm_id !== filterRcm.value) return false
-  if (filter.value === 'not_run' && test.last_run) return false
-  if (filter.value !== 'all' && filter.value !== 'not_run' && test.status !== filter.value) return false
-  return true
-}))
-const conclusionFacets = computed(() =>
-  conclusionCounts(conclusionScope.value.map(dataTestConclusion)))
+  statusFilter.value.map(key => DATA_TEST_FILTER_LABELS[key]).join(' · '))
+// What the lanes want done, rendered in the page header beside Run all and New
+// test. A gap the status found is still the page's most urgent control, and it
+// was reading last when it sat at the bottom of the card.
+const headerActions = computed(() => statusActions(status.value))
+const statusBusy = computed(() => running.value || runningAll.value || generatingFindings.value)
+const canRunAgent = computed(() => !agent.isActive.value)
+// Folded rather than combined: each narrowing runs the same predicate over
+// what the last one left, so the filters compose without a second code path.
+const statusScope = computed(() => statusFilter.value
+  .reduce(
+    (rows, key) => filterDataTests(rows, key, planning.value?.findings ?? []),
+    tests.value,
+  )
+  .filter(test => !filterRcm.value || test.rcm_id === filterRcm.value))
 const visibleTests = computed(() => {
   const query = search.value.trim().toLowerCase()
-  return conclusionScope.value.filter(test => {
-    if (conclusionFilter.value !== 'all' && dataTestConclusion(test) !== conclusionFilter.value) return false
-    if (!query) return true
-    return [test.title, test.objective, test.criteria, test.rcm_id ?? '']
-      .some(value => (value ?? '').toLowerCase().includes(query))
-  })
-})
-const activeFilterLabel = computed(() => {
-  const status = triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'tests'
-  const conclusion = conclusionFilter.value === 'all'
-    ? null
-    : conclusionFacets.value.find(count => count.key === conclusionFilter.value)?.label.toLowerCase()
-  return conclusion ? `${status} · ${conclusion}` : status
+  if (!query) return statusScope.value
+  return statusScope.value.filter(test => [test.title, test.objective, test.criteria, test.rcm_id ?? '']
+    .some(value => (value ?? '').toLowerCase().includes(query)))
 })
 const definitionReady = computed(() => {
   if (!selected.value) return false
@@ -498,13 +471,6 @@ function runStatusAction(action: StatusAction) {
     case 'draft_findings': return void draftPendingFindings(action.ids)
   }
 }
-function pickFilter(key: string) {
-  filter.value = key
-}
-function pickConclusion(key: string) {
-  conclusionFilter.value = key as 'all' | TestConclusionState
-}
-
 watch(visibleTests, items => {
   if (!items.length || items.some(item => item.id === selectedId.value)) return
   selectTest(items[0])
@@ -523,6 +489,18 @@ onUnmounted(unsubscribe)
 <template>
   <div class="data-tests">
     <UiPageHeader title="Data tests">
+      <!-- The gaps the status found lead the row: they are the only buttons
+           here that exist because something is outstanding. -->
+      <Button
+        v-for="action in headerActions"
+        :key="action.key"
+        :label="action.label"
+        size="small"
+        :outlined="action.tone === 'ghost'"
+        :severity="action.tone === 'warn' ? 'warn' : undefined"
+        :disabled="statusBusy || (action.needsAgent && !canRunAgent)"
+        @click="runStatusAction(action)"
+      />
       <Button label="Run all" icon="pi pi-play" size="small" outlined :loading="runningAll" :disabled="running || runningAll" @click="runAllTests()" />
       <Button label="New test" icon="pi pi-plus" size="small" @click="createOpen = true" />
       <Button
@@ -541,25 +519,16 @@ onUnmounted(unsubscribe)
       v-if="tests.length"
       :lanes="status.lanes"
       :disclosures="status.disclosures"
+      :filters="status.filters"
       :filter="statusFilter"
       :filterLabel="statusFilterLabel"
-      :busy="running || runningAll || generatingFindings"
-      :canRunAgent="!agent.isActive.value"
-      @filter="statusFilter = ($event as DataTestFilter | null)"
+      :busy="statusBusy"
+      :canRunAgent="canRunAgent"
+      @filter="statusFilter = ($event as DataTestFilter[])"
       @action="runStatusAction"
     />
 
     <template v-if="tests.length">
-      <div class="facets">
-        <UiTriageCounts :counts="triage" :active="filter" label="Outcome" @select="pickFilter" />
-        <UiTriageCounts
-          :counts="conclusionFacets"
-          :active="conclusionFilter"
-          label="Conclusion"
-          @select="pickConclusion"
-        />
-      </div>
-
       <div class="toolbar">
         <IconField>
           <InputIcon class="pi pi-search" />
@@ -576,7 +545,7 @@ onUnmounted(unsubscribe)
           showClear
           class="rcm-facet"
         />
-        <span class="muted">{{ visibleTests.length }} of {{ tests.length }} · {{ activeFilterLabel }}</span>
+        <span class="muted">{{ visibleTests.length }} of {{ plural(tests.length, 'test') }}</span>
       </div>
 
       <!-- 16rem, not 20: the width the list gives back is what makes room for
@@ -797,8 +766,8 @@ onUnmounted(unsubscribe)
 
 <style scoped>
 .data-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
-.facets { display: flex; flex-direction: column; gap: var(--aw-space-2); min-width: 0; }
-.toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex-wrap: wrap; }
+/* The stack's own `gap` spaces this; the global rule's margin would double it. */
+.toolbar { margin-bottom: 0; display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex-wrap: wrap; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 14rem; min-width: 0; max-width: 22rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }
 .rcm-facet { flex: 0 1 14rem; min-width: 0; }

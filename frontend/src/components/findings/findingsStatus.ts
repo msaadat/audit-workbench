@@ -100,6 +100,7 @@ function confirmedLane(counts: Counts): StatusLane {
   return {
     key: 'confirmed', label: 'Confirmed', state: outstanding ? 'gap' : 'done',
     value: String(counts.confirmed),
+    total: String(counts.total),
     caption: `of ${counts.total} ${pluralWord(counts.total, 'finding')} confirmed for reporting`,
     segments: [{ tone: 'ok', portion: portion(counts.confirmed, counts.total) }],
     chips: [
@@ -146,6 +147,7 @@ function supportLane(counts: Counts): StatusLane {
   return {
     key: 'support', label: 'Support', state: counts.unsupported ? 'alarm' : 'done',
     value: String(supported),
+    total: String(counts.total),
     caption: `of ${counts.total} traced to evidence, a risk and a test`,
     segments: [{
       tone: counts.unsupported ? 'bad' : 'ok',
@@ -182,6 +184,7 @@ function followUpLane(counts: Counts): StatusLane {
   return {
     key: 'follow_up', label: 'Follow-up', state: outstanding ? 'alarm' : 'done',
     value: String(counts.settled),
+    total: String(counts.total),
     caption: `of ${counts.total} have a settled cause and a response`,
     segments: [{
       tone: outstanding ? 'warn' : 'ok',

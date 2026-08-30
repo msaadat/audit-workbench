@@ -23,6 +23,7 @@ import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiStatusLanes from './ui/UiStatusLanes.vue'
+import { statusActions } from './ui/statusLanes'
 import type { StatusAction } from './ui/statusLanes'
 import { FINDINGS_FILTER_LABELS, filterFindings, findingsStatus } from './findings/findingsStatus'
 import type { FindingsActionKey, FindingsFilter } from './findings/findingsStatus'
@@ -64,6 +65,9 @@ const filtered = computed(() => filterFindings(data.value?.items ?? [], statusFi
 // The lanes count the whole file, not the filtered rail: a count that shrank as
 // you filtered by it could never be clicked back out of.
 const status = computed(() => findingsStatus(data.value?.items ?? []))
+// The lanes name the gaps; the page header renders them beside its own buttons.
+const headerActions = computed(() => statusActions(status.value))
+const statusBusy = computed(() => generatingFindings.value || confirmingAll.value)
 const statusFilterLabel = computed(() => (statusFilter.value ? FINDINGS_FILTER_LABELS[statusFilter.value] : ''))
 const rcmOptions = computed(() => (data.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
 const testOptions = computed(() => [
@@ -263,6 +267,18 @@ function openEvidence(value: EvidenceRef) {
 <template>
   <div class="findings-tab">
     <UiPageHeader title="Findings">
+      <!-- The gaps the status found lead the row. They used to sit at the
+           bottom of the status card, last in the reading order. -->
+      <Button
+        v-for="action in headerActions"
+        :key="action.key"
+        :label="action.label"
+        size="small"
+        :outlined="action.tone === 'ghost'"
+        :severity="action.tone === 'warn' ? 'warn' : undefined"
+        :disabled="statusBusy || (action.needsAgent && agentBusy)"
+        @click="runStatusAction(action)"
+      />
       <Button label="Finding template" icon="pi pi-file-edit" severity="secondary" outlined size="small" @click="openTemplate" />
       <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
     </UiPageHeader>
@@ -270,11 +286,11 @@ function openEvidence(value: EvidenceRef) {
       v-if="data"
       :lanes="status.lanes"
       :disclosures="status.disclosures"
-      :filter="statusFilter"
+      :filter="statusFilter ? [statusFilter] : []"
       :filterLabel="statusFilterLabel"
-      :busy="generatingFindings || confirmingAll"
+      :busy="statusBusy"
       :canRunAgent="!agentBusy"
-      @filter="statusFilter = ($event as FindingsFilter | null)"
+      @filter="statusFilter = (($event[0] ?? null) as FindingsFilter | null)"
       @action="runStatusAction"
     />
     <div v-if="data?.items.length" class="findings-layout">

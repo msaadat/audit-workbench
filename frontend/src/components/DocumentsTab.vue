@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderAsync } from 'docx-preview'
 import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
@@ -160,6 +160,56 @@ const indexingDetail = computed(() => {
   const completed = Math.min(status.completed_documents, status.total_documents)
   return `Preparing local search ${completed} of ${status.total_documents} complete. Ready documents can already be searched.`
 })
+/**
+ * The count alone. Indexing is a transient background job, so it belongs in
+ * the header row as a chip rather than in a two-line card sized like a problem
+ * that needs solving; the sentence above stays on its tooltip.
+ */
+const indexingProgress = computed(() => {
+  const status = indexingStatus.value
+  if (!status || status.state !== 'indexing') return ''
+  return `${Math.min(status.completed_documents, status.total_documents)} of ${status.total_documents}`
+})
+
+/**
+ * Paging belongs to whatever is rendering the document, and only the
+ * extracted-text view is rendered by this component — the PDF goes to the
+ * browser's own viewer, which has page controls and a find of its own, and the
+ * .docx renderer lays the whole file out at once. Duplicating the controls put
+ * a second, worse pager above the real one: each arrow rebuilt the iframe at a
+ * new `#page=` anchor, which reloads the file.
+ */
+const showPageNav = computed(() => showTextView.value)
+/** What the head still has to say once the viewer says the rest. */
+const detailSubtitle = computed(() => {
+  const doc = selected.value
+  if (!doc) return ''
+  const parts: string[] = []
+  if (hasDistinctTitle(doc)) parts.push(doc.title)
+  // Stated by the viewer's own toolbar 250px below, whenever it is showing.
+  if (!(view.value === 'preview' && isPdf.value && sourceView.value === 'original')) {
+    parts.push(`${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`)
+  }
+  return parts.join(' · ')
+})
+// Searching inside one document reads the content index, not the page on
+// screen — it spans the extracted text and any vision transcript, and returns
+// excerpts the viewer's own find cannot. Worth keeping, not worth a permanent
+// row: it opens on demand and stays open while it has something to show.
+const findOpen = ref(false)
+const findInput = ref<{ $el?: HTMLElement } | null>(null)
+const showDocumentSearch = computed(() => findOpen.value || Boolean(sourceSearch.value.trim()))
+function toggleFind() {
+  // Closing clears, so the bar cannot reappear on its own from a stale query.
+  if (showDocumentSearch.value) {
+    findOpen.value = false
+    sourceSearch.value = ''
+    sourceResults.value = []
+    return
+  }
+  findOpen.value = true
+  void nextTick(() => (findInput.value?.$el as HTMLInputElement | undefined)?.focus?.())
+}
 const secondaryActions = computed(() => [
   { label: 'Search contents', icon: 'pi pi-search', command: () => { contentSearchOpen.value = true } },
   { label: 'Reindex documents', icon: 'pi pi-sync', command: () => void reindexAll() },
@@ -595,6 +645,16 @@ onUnmounted(() => {
 <template>
   <section class="documents-tab">
     <UiPageHeader title="Documents">
+      <!-- A background job, reported at the size of a background job. -->
+      <span
+        v-if="indexingActive"
+        class="indexing-chip"
+        role="status"
+        aria-live="polite"
+        v-tooltip.bottom="indexingDetail"
+      >
+        <i class="pi pi-spin pi-spinner" />Indexing<template v-if="indexingProgress"> {{ indexingProgress }}</template>
+      </span>
       <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
       <Button label="Analyse all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
       <Button
@@ -607,11 +667,6 @@ onUnmounted(() => {
       />
       <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
-
-    <div v-if="indexingActive" class="indexing-notice" role="status" aria-live="polite">
-      <i class="pi pi-spin pi-spinner" />
-      <div><strong>Indexing documents for search</strong><p>{{ indexingDetail }}</p></div>
-    </div>
 
     <div v-if="documents.length" class="document-layout surface-panel">
       <aside class="document-rail">
@@ -653,15 +708,14 @@ onUnmounted(() => {
 
       <main v-if="selected" class="document-detail">
         <header class="detail-head">
+          <!-- One line. The name, what state it is in, and whatever the viewer
+               below does not already say for itself. -->
           <div class="detail-identity">
             <h3>{{ selected.source }}</h3>
-            <p>
-              <template v-if="hasDistinctTitle(selected)">{{ selected.title }} · </template>
-              {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }}
-            </p>
+            <Tag v-if="selectedStatus" :value="selectedStatus.label" :severity="selectedStatusSeverity" v-tooltip.bottom="selectedStatus.detail" />
+            <p v-if="detailSubtitle">{{ detailSubtitle }}</p>
           </div>
           <div class="detail-actions">
-            <Tag v-if="selectedStatus" :value="selectedStatus.label" :severity="selectedStatusSeverity" v-tooltip.bottom="selectedStatus.detail" />
             <label class="classification-field">
               <span>Type</span>
               <Select
@@ -678,23 +732,40 @@ onUnmounted(() => {
             <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
           </div>
         </header>
-        <nav class="detail-tabs">
-          <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">{{ item }}</button>
-        </nav>
-
-        <div v-if="view === 'preview'" class="detail-content preview-view">
-          <div class="page-tools">
-            <template v-if="!isImage">
-              <Button icon="pi pi-angle-left" text :disabled="currentPage <= 1" @click="currentPage--" /><span>Page {{ currentPage }} of {{ selected.pages || previewPages.length || 1 }}</span><Button icon="pi pi-angle-right" text :disabled="currentPage >= (selected.pages || previewPages.length || 1)" @click="currentPage++" />
-            </template>
+        <!-- Which view, and how that view is set up: two choices about the
+             same thing, so one row rather than a tab bar above a tool bar. -->
+        <div class="detail-views">
+          <nav class="detail-tabs">
+            <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">{{ item }}</button>
+          </nav>
+          <template v-if="view === 'preview'">
+            <span v-if="showPageNav" class="page-nav">
+              <Button icon="pi pi-angle-left" text :disabled="currentPage <= 1" aria-label="Previous page" @click="currentPage--" /><span>Page {{ currentPage }} of {{ selected.pages || previewPages.length || 1 }}</span><Button icon="pi pi-angle-right" text :disabled="currentPage >= (selected.pages || previewPages.length || 1)" aria-label="Next page" @click="currentPage++" />
+            </span>
             <div v-if="hasOriginalView" class="source-toggle" role="group" aria-label="Preview mode">
               <button :class="{ active: sourceView === 'original' }" @click="sourceView = 'original'">Original</button>
               <button :class="{ active: sourceView === 'text' }" @click="sourceView = 'text'">Extracted text</button>
             </div>
-            <a :href="fileUrl" target="_blank">Open original</a>
-          </div>
-          <div class="source-search-bar">
-            <InputText v-model="sourceSearch" placeholder="Search inside this document" @keyup.enter="runContentSearch(selected ? [selected.id] : [])" />
+            <Button
+              label="Find"
+              icon="pi pi-search"
+              size="small"
+              text
+              :class="{ 'find-on': showDocumentSearch }"
+              @click="toggleFind"
+            />
+            <a :href="fileUrl" target="_blank" class="open-original">Open original</a>
+          </template>
+        </div>
+
+        <div v-if="view === 'preview'" class="detail-content preview-view">
+          <div v-if="showDocumentSearch" class="source-search-bar">
+            <InputText
+              ref="findInput"
+              v-model="sourceSearch"
+              placeholder="Search this document's text and transcripts"
+              @keyup.enter="runContentSearch(selected ? [selected.id] : [])"
+            />
             <Button label="Search" icon="pi pi-search" severity="secondary" outlined :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
           </div>
           <div v-if="sourceResults.length && sourceSearch" class="inline-search-results">
@@ -885,15 +956,34 @@ onUnmounted(() => {
 .documents-tab { display: flex; flex-direction: column; gap: var(--aw-section-gap); height: 100%; min-height: 36rem; }
 .detail-head h3 { margin: 0; }
 .document-layout { display: grid; flex: 1 1 auto; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 0; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }
-.indexing-notice { display:flex; align-items:flex-start; gap:.7rem; margin:0 0 .85rem; padding:.75rem .9rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-control); background:var(--aw-info-soft); color:var(--aw-info); }.indexing-notice > i { margin-top:.15rem; }.indexing-notice p { margin:.15rem 0 0; color:var(--aw-info); font-size:var(--aw-text-sm); }
+/* A running background job, not a problem to be solved. The sentence it used
+   to spell out over two lines is on the tooltip. */
+.indexing-chip { display:inline-flex; align-items:center; gap:.4rem; min-height:var(--aw-control-height-sm); padding:.2rem .6rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-pill); background:var(--aw-info-soft); color:var(--aw-info); font-size:var(--aw-text-xs); font-weight:600; white-space:nowrap; }
+.indexing-chip .pi { font-size:var(--aw-text-xs); }
 .document-rail { min-height:0; padding:.75rem; border-right:1px solid var(--aw-border); background:var(--aw-canvas); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--aw-border); background:var(--aw-canvas); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--aw-border-strong); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:var(--aw-text-sm); }
 .doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:var(--aw-text-2xs); }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-control); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:var(--aw-panel); }.doc-row.active { border-color:var(--aw-teal-line); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); font-size:var(--aw-text-sm); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:var(--aw-text-sm); }.doc-identity small { color:var(--aw-muted); font-size:var(--aw-text-2xs); }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:var(--aw-text-xs); }.doc-status.processing { color:var(--aw-info); }.doc-status.attention { color:var(--aw-warn); }.doc-status.attention.failed { color:var(--aw-danger); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
 .rail-deep-search { display:flex; align-items:center; gap:.45rem; width:100%; margin-top:.7rem; padding:.5rem .6rem; border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-teal); font-size:var(--aw-text-xs); text-align:left; cursor:pointer; }.rail-deep-search:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft); }.rail-deep-search span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.document-detail { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { min-width:0; }.detail-identity p { margin:.25rem 0 0; color:var(--aw-muted); font-size:var(--aw-text-xs); }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.detail-tabs { display:flex; padding:0 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-tabs button { padding:.75rem .85rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--aw-muted); cursor:pointer; text-transform:capitalize; }.detail-tabs button.active { color:var(--aw-teal); border-color:var(--aw-teal); font-weight:700; }.detail-content { flex:1 1 auto; min-height:0; padding:1.25rem; overflow-y:auto; overscroll-behavior:contain; }.page-tools { display:flex; align-items:center; gap:.4rem; margin-bottom:.75rem; }.page-tools a { margin-left:auto; color:var(--aw-teal); }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow: var(--aw-shadow-sm); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }.document-frame { width:100%; height:calc(100vh - 26rem); min-height:32rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }.docx-frame { height:calc(100vh - 26rem); min-height:32rem; overflow:auto; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-raised); }.docx-frame.loading { opacity:.5; }.docx-frame :deep(.docx-wrapper) { background:var(--aw-raised); padding:1.25rem; }.docx-frame :deep(.docx-wrapper > section.docx) { margin-bottom:1rem; box-shadow: var(--aw-shadow-md); }.source-toggle { display:flex; margin-left:.5rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); overflow:hidden; }.source-toggle button { padding:.28rem .75rem; border:0; background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); cursor:pointer; }.source-toggle button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:600; }
+.document-detail { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+/* One line: the name, its state, and whatever the viewer does not say itself. */
+.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:.6rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { display:flex; align-items:baseline; gap:.55rem; min-width:0; }.detail-identity h3 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.detail-identity p { margin:0; color:var(--aw-muted); font-size:var(--aw-text-xs); white-space:nowrap; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }
+/* Which view, and how that view is set up, on one row. They were a tab bar
+   above a tool bar, which spent two bands on one decision. */
+.detail-views { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; padding:.25rem 1.25rem; border-bottom:1px solid var(--aw-border); }
+.detail-tabs { display:flex; gap:.15rem; }.detail-tabs button { padding:.35rem .7rem; border:0; border-radius:var(--aw-radius-pill); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-sm); cursor:pointer; text-transform:capitalize; }.detail-tabs button:hover { background:var(--aw-raised); }.detail-tabs button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:700; }
+.page-nav { display:flex; align-items:center; gap:.2rem; margin-left:.35rem; color:var(--aw-muted); font-size:var(--aw-text-sm); white-space:nowrap; }
+.detail-views .find-on { color:var(--aw-teal); font-weight:700; }
+.open-original { margin-left:auto; color:var(--aw-teal); font-size:var(--aw-text-sm); white-space:nowrap; }
+/* A column, so the viewer can take the height the bars above it gave back. */
+.detail-content { flex:1 1 auto; min-height:0; padding:1.25rem; overflow-y:auto; overscroll-behavior:contain; }.preview-view { display:flex; flex-direction:column; min-height:100%; }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow: var(--aw-shadow-sm); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }/* `flex: 1`, not `calc(100vh - 26rem)`: the old rule subtracted a hard-coded
+   guess at the chrome above it, so trimming that chrome would have handed the
+   height back as whitespace rather than as document. */
+.document-frame { width:100%; flex:1 1 auto; min-height:24rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }.docx-frame { flex:1 1 auto; min-height:24rem; overflow:auto; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-raised); }.docx-frame.loading { opacity:.5; }.docx-frame :deep(.docx-wrapper) { background:var(--aw-raised); padding:1.25rem; }.docx-frame :deep(.docx-wrapper > section.docx) { margin-bottom:1rem; box-shadow: var(--aw-shadow-md); }.source-toggle { display:flex; margin-left:.5rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); overflow:hidden; }.source-toggle button { padding:.28rem .75rem; border:0; background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); cursor:pointer; }.source-toggle button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:600; }
 .classification-field { display:flex; align-items:center; gap:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs); }.classification-field :deep(.p-select) { min-width:8rem; min-height:2rem; font-size:var(--aw-text-sm); text-transform:capitalize; }
-.preview-view .source-search-bar,.preview-view .inline-search-results { margin-bottom:.75rem; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
+.preview-view .source-search-bar { display:flex; gap:.4rem; }
+.preview-view .source-search-bar,.preview-view .inline-search-results { flex:none; margin-bottom:.75rem; }
+.preview-view .scan-notice,.preview-view .document-image,.preview-view .page-text,.preview-view .technical-details { flex:none; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-muted); font-size:var(--aw-text-xs); }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: var(--aw-text-xs); }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
 .analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }.coverage-warning p { margin:.25rem 0 0; }.coverage-warning ul { margin:.35rem 0 0; padding-left:1.1rem; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor,.analysis-fields { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small,.analysis-fields small { color:var(--aw-muted); }.analysis-editor :deep(.markdown-editor) { min-height:18rem; }.analysis-fields>summary { display:flex; align-items:center; justify-content:space-between; gap:1rem; cursor:pointer; list-style:none; }.analysis-fields>summary::-webkit-details-marker { display:none; }.analysis-fields>summary span { display:grid; gap:.2rem; }.analysis-fields>summary i { transition:transform .15s ease; }.analysis-fields[open]>summary i { transform:rotate(180deg); }.analysis-fields pre { max-height:32rem; margin:.8rem 0 0; overflow:auto; padding:1rem; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); font:500 .78rem/1.55 var(--aw-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); white-space:pre; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.analysis-sources button strong { display:flex; align-items:center; gap:.45rem; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-control); background:var(--aw-info-soft); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results button > div > span { display:flex; gap:.35rem; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }.vision-settings { display:grid; gap:1rem; }.vision-settings > p { margin:0; color:var(--aw-muted); line-height:1.5; }.vision-settings label { display:grid; gap:.35rem; font-weight:600; }.vision-settings label :deep(.p-select),.vision-settings label .p-inputtext { width:100%; }.vision-settings .settings-warning { padding:.65rem; border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }
-@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
+@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-identity { flex-wrap:wrap; }.detail-actions { justify-content:flex-start; }.open-original { margin-left:0; } }
 </style>
