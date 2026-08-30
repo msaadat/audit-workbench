@@ -416,6 +416,21 @@ def test_a_disclosed_scope_limitation_is_not_an_inconsistent_conclusion(
     assert result["inconsistent_conclusions"] == []
 
 
+def test_a_row_with_no_tests_at_all_is_owed_a_conclusion(workspace_with_data):
+    ws = workspace_with_data
+    _row(ws)
+    ws.save()
+
+    result = rcm_execution.completion(ws)
+
+    # A scope limitation excuses an unreached conclusion because somebody
+    # stated why the evidence was not there. No test states nothing, and `all`
+    # over an empty list must not be read as that statement: a matrix nothing
+    # has been tested against owes every conclusion on it.
+    assert result["rcm_without_conclusion"] == [ws.rcm[0]["id"]]
+    assert result["status"] == "completed_with_open_items"
+
+
 def _rollup_stub(variant, subject, **overrides):
     return {
         "variant": variant,

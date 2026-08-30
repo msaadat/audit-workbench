@@ -910,12 +910,25 @@ def completion(
         if test["item"].get("status") == "blocked"
     ]
     blocked_without_plan = [item for item in blocked_without_plan if item["missing"]]
+    # A row that reached no conclusion is owed one, unless every test behind it
+    # says why it could not be reached — a scope limitation is somebody stating
+    # on the record that the evidence was not there to look at.
+    #
+    # A row with no tests at all has made no such statement, and `all` over an
+    # empty list agrees with anything: twenty rows carrying `no_conclusion`
+    # against zero tests reported nothing outstanding, and the engagement record
+    # drew the roll-up as filed on a matrix that had never been tested. Absence
+    # of a test is the opposite of a stated limitation, so it is required to be
+    # non-empty rather than allowed to satisfy the rule vacuously.
     rcm_without_conclusion = [
         row["id"] for row in workspace.rcm
         if (row.get("execution_rollup") or {}).get("control_conclusion") == "no_conclusion"
-        and not all(
-            str(test["item"].get("scope_limitations") or "").strip()
-            for test in _tests(workspace, row["id"], document_tests)
+        and not (
+            (row_tests := _tests(workspace, row["id"], document_tests))
+            and all(
+                str(test["item"].get("scope_limitations") or "").strip()
+                for test in row_tests
+            )
         )
     ]
     # A conclusion that was capped rather than earned. Reported separately from
