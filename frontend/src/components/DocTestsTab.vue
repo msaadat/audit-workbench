@@ -986,7 +986,7 @@ function onRulesetApproved(): void {
 </template>
 
 <style scoped>
-.doc-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; min-height: 100%; }
+.doc-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; min-height: 0; height: 100%; }
 .facets { display: flex; flex-direction: column; gap: var(--aw-space-2); min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 16rem; min-width: 0; max-width: 26rem; }
@@ -1004,7 +1004,9 @@ function onRulesetApproved(): void {
 }
 .bulk-count { margin-right: auto; font-size: var(--aw-text-sm); font-weight: 600; }
 .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); white-space: nowrap; }
-.layout { min-height: 32rem; }
+/* Keep the worklist within the space left by this page's status and bulk
+   controls; the shared rail supplies its own vertical scrollbar. */
+.layout { flex: 1; min-height: 12rem; }
 .cycle-review { min-width: 0; }
 .detail-return { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-bottom: .55rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .detail-return code { font-family: var(--aw-font-mono); }

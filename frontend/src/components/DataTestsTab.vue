@@ -796,14 +796,17 @@ onUnmounted(unsubscribe)
 </template>
 
 <style scoped>
-.data-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; max-width: 100%; min-height: 100%; }
+.data-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 .facets { display: flex; flex-direction: column; gap: var(--aw-space-2); min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex-wrap: wrap; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 14rem; min-width: 0; max-width: 22rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }
 .rcm-facet { flex: 0 1 14rem; min-width: 0; }
 .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.layout { min-height: 32rem; }
+/* The status lanes and filters have variable heights. Flexing the split view
+   into their remaining space keeps the test list independently scrollable at
+   every viewport height instead of relying on a fixed viewport offset. */
+.layout { flex: 1; min-height: 12rem; }
 
 /* One panel for the whole detail column — see DocTestItemDetail for why. */
 /* align-content: start — see DocTestItemDetail; min-height plus a stretching

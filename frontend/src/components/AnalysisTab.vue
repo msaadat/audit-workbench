@@ -340,7 +340,7 @@ function fail(summaryText: string, error: unknown) {
         </span>
       </div>
 
-      <UiMasterDetail railWidth="17rem" :empty="!analyses.length">
+      <UiMasterDetail railWidth="17rem" :empty="!analyses.length" class="layout">
         <template #rail>
           <AnalysisList :items="visibleAnalyses" :selectedId="selectedId" @select="select" />
           <p v-if="!visibleAnalyses.length" class="rail-empty">No procedure matches this view.</p>
@@ -404,7 +404,13 @@ function fail(summaryText: string, error: unknown) {
 </template>
 
 <style scoped>
-.analysis { min-width: 0; }
+.analysis {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
 
 .analysis-nav {
   display: flex;
@@ -422,6 +428,11 @@ function fail(summaryText: string, error: unknown) {
   margin: var(--aw-space-3) 0;
 }
 .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+
+/* Bound the procedure rail to the space left below this page's controls.
+   UiMasterDetail owns the rail's overflow, so the list then scrolls without
+   moving the procedure that is open beside it. */
+.layout { flex: 1; min-height: 12rem; }
 
 .rail-empty {
   margin: 0;

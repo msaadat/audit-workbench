@@ -494,6 +494,8 @@ button, input, textarea, select { font: inherit; }
 .ui-master-detail__content { container: master-detail-content / inline-size; }
 .ui-master-detail__rail {
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border-radius: var(--aw-radius-surface);
   background: var(--aw-panel);
 }
