@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import templates_store
-from ..prompts import JSON_RULES, LANGUAGE_RULES
+from ..prompts import LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     WORKERS,
@@ -26,30 +26,37 @@ from .model import (
     WorkerRequest,
     WorkerResponseSchema,
     WorkerResponseValidationError,
-    decode_json_response,
-    submission_response,
 )
 
 
 FINDING_WORKER_ID = "reporting.finding"
 FINDING_SYSTEM = f"""[agent:finding]
 Draft one unconfirmed audit finding from the supplied exception observation and
-immutable execution reference. Return finding with title, severity
-(critical|high|medium|low|info), narrative, and cause_pending.
+immutable execution reference.
 
-narrative is Markdown. Its sections are the `##` headings of the supplied
-finding template, in that order, with no heading added, renamed, or dropped.
+Return the finding as Markdown only, without a JSON wrapper or Markdown code
+fence, in the shape of the supplied finding template:
+
+- a `#` line carrying the finding's title, naming the audit point rather than
+  the test that found it;
+- a `**Severity:**` line carrying exactly one of critical, high, medium, low,
+  info;
+- the template's `##` sections, in that order, with no heading added, renamed,
+  or dropped.
+
 Follow the guidance comments in that template: they are instructions to you and
-must not be copied into the narrative. Every section must carry text, except
-that the root-cause section may be left empty when you set cause_pending true
-because the supplied evidence does not establish why the exception occurred.
+must not be copied into the finding. Every section must carry text. Where the
+supplied evidence does not establish why the exception occurred, write
+`_Root cause pending auditor follow-up._` as the whole of the root-cause section
+rather than leaving it blank or asserting a cause the evidence does not support.
 
-The narrative is copied into the audit report unchanged, so write final report
-prose: no first person, no test ids, run ids, or run mechanics, and no
-commentary about drafting. Use British spelling throughout — analyse,
-summarise, recognise, organisation — so the deliverable matches the rest of the
-audit file. Any number you state must be a number the supplied execution result
-holds.
+Write ordinary Markdown: each heading on its own line, paragraphs separated by a
+blank line, and tables written a row per line. The sections are copied into the
+audit report unchanged, so write final report prose: no first person, no test
+ids, run ids, or run mechanics, and no commentary about drafting. Use British
+spelling throughout — analyse, summarise, recognise, organisation — so the
+deliverable matches the rest of the audit file. Any number you state must be a
+number the supplied execution result holds.
 
 Be specific. A finding that counts exceptions without identifying them is not
 actionable:
@@ -70,17 +77,35 @@ actionable:
   rerunning the check.
 
 Do not create or alter RCM, planned-test, execution, or evidence references. Do
-not claim auditor confirmation. {JSON_RULES} {LANGUAGE_RULES}"""
+not claim auditor confirmation. {LANGUAGE_RULES}"""
 
 FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"
 FINDING_TEMPLATE_SOURCE_ID = "finding_template"
 FINDING_EXCEPTION_ROWS_SOURCE_ID = "exception_rows"
 _FINDING_SEVERITIES = {"critical", "high", "medium", "low", "info"}
-_FINDING_REQUIRED = ("title", "severity", "narrative")
 # The root-cause section is the one a draft may leave open, and only by saying
-# so through ``cause_pending``.
+# so with the deferral note below, which is what sets ``cause_pending``.
 _CAUSE_SECTION_KEYS = frozenset({"cause", "root cause"})
+
+_FENCED_MARKDOWN = re.compile(
+    r"```(?:markdown|md)?\s*\n?(.*?)\n?```", re.DOTALL | re.IGNORECASE
+)
+#: The finding's title: the one ``#`` line, distinguished from the ``##``
+#: section headings that follow it.
+_TITLE_LINE = re.compile(r"^#(?!#)\s*(.+?)\s*$", re.MULTILINE)
+#: The severity line, however the model emphasises it — ``**Severity:** high``,
+#: ``**Severity**: high`` and ``Severity: high`` are the same statement.
+_SEVERITY_LINE = re.compile(
+    r"^\s*[*_]*\s*severity\s*[*_]*\s*[::]\s*(.*)$", re.IGNORECASE | re.MULTILINE
+)
+_NARRATIVE_START = re.compile(r"^##\s+", re.MULTILINE)
+#: The one accepted stand-in for a cause the evidence does not establish.
+#: Matched against the whole section body so a cause that merely mentions
+#: follow-up is not read as a deferral.
+_CAUSE_DEFERRAL = re.compile(
+    r"root cause (?:is )?pending auditor follow-?up\.?", re.IGNORECASE
+)
 
 
 def _sha256_text(value: str) -> str:
@@ -123,13 +148,93 @@ def _optional_item(request: WorkerRequest, source_id: str) -> object | None:
     return matches[0] if matches else None
 
 
+def _plain_note(body: str) -> str:
+    """One section body reduced to its words, emphasis and wrapping removed."""
+    return " ".join(str(body or "").replace("*", "").replace("_", "").split())
+
+
+def _cause_is_deferred(narrative: str) -> bool:
+    """Whether the root-cause section carries the deferral note and nothing else."""
+    bodies = templates_store.section_bodies(narrative)
+    return any(
+        _CAUSE_DEFERRAL.fullmatch(_plain_note(bodies.get(key) or ""))
+        for key in _CAUSE_SECTION_KEYS
+    )
+
+
+def _finding_from_json(value: str) -> Mapping[str, Any] | None:
+    """The finding from a response that arrived as JSON despite the instruction.
+
+    Kept as tolerance, not as the contract: a model that falls back on its JSON
+    habit is repaired against the same rules rather than discarded, and
+    ``strict=False`` accepts the unescaped newline such a response carries
+    inside the narrative.
+    """
+    if not value.startswith("{"):
+        return None
+    try:
+        payload = json.loads(value, strict=False)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    finding = payload.get("finding")
+    if not isinstance(finding, Mapping) or "narrative" not in finding:
+        return None
+    narrative = templates_store.strip_guidance(
+        str(finding.get("narrative") or "")
+    ).strip()
+    return {
+        "title": str(finding.get("title") or "").strip(),
+        "severity": str(finding.get("severity") or "").strip().casefold(),
+        "narrative": narrative,
+        "cause_pending": bool(finding.get("cause_pending"))
+        or _cause_is_deferred(narrative),
+    }
+
+
 def _finding_response_schema(response: str) -> Mapping[str, Any]:
-    payload = decode_json_response(response)
-    if not isinstance(payload, dict) or not isinstance(payload.get("finding"), dict):
-        raise WorkerResponseValidationError(
-            "the response must be a JSON object with a `finding` object"
-        )
-    return {"finding": payload["finding"]}
+    """Read one finding from the Markdown the worker asked for.
+
+    The narrative is multi-line Markdown — a heading per line, a table row per
+    line — so it is carried as the response body rather than as a string field
+    inside JSON. A model that will not emit a newline inside a JSON string
+    delivers every section flattened onto one line, which parses as a single
+    heading with an empty body and fails every section check at once; that is
+    what cost a whole run of eight drafts, including complete ones. Markdown has
+    no such failure mode, and it is how the planning memorandum has always been
+    returned by the same models.
+
+    The title and severity lines are read off the draft and become fields; the
+    narrative is what follows the first ``##`` heading, so neither reaches the
+    prose that is copied into the report.
+    """
+    value = str(response or "").strip()
+    fenced = _FENCED_MARKDOWN.fullmatch(value)
+    if fenced:
+        value = fenced.group(1).strip()
+    wrapped = _finding_from_json(value)
+    if wrapped is not None:
+        return {"finding": dict(wrapped)}
+    title = _TITLE_LINE.search(value)
+    severity = _SEVERITY_LINE.search(value)
+    start = _NARRATIVE_START.search(value)
+    narrative = (
+        templates_store.strip_guidance(value[start.start():]).strip()
+        if start
+        else ""
+    )
+    return {
+        "finding": {
+            "title": title.group(1).strip() if title else "",
+            "severity": _plain_note(severity.group(1) if severity else "")
+            .rstrip(".")
+            .strip()
+            .casefold(),
+            "narrative": narrative,
+            "cause_pending": _cause_is_deferred(narrative),
+        }
+    }
 
 
 def validate_finding_proposal(
@@ -152,88 +257,46 @@ def validate_finding_proposal(
     template = str(_resolved_item(request, FINDING_TEMPLATE_SOURCE_ID) or "")
     finding = _plain_json(value)
     errors: list[str] = []
-    missing = [
-        key for key in _FINDING_REQUIRED if not str(finding.get(key) or "").strip()
-    ]
-    if missing:
-        errors.append(f"finding is missing {missing[0]}")
+    title = str(finding.get("title") or "").strip()
+    if not title or "{{" in title:
+        errors.append(
+            "the finding needs a title on its own `#` line, naming the audit "
+            "point rather than the test"
+        )
     if finding.get("severity") not in _FINDING_SEVERITIES:
-        errors.append("finding severity is unsupported")
-    bodies = templates_store.section_bodies(str(finding.get("narrative") or ""))
+        errors.append(
+            "the finding needs a `**Severity:**` line carrying exactly one of "
+            + ", ".join(sorted(_FINDING_SEVERITIES))
+        )
+    narrative = str(finding.get("narrative") or "")
+    bodies = templates_store.section_bodies(narrative)
     for heading in templates_store.sections(template):
         key = templates_store.section_key(heading)
         if bodies.get(key):
             continue
-        if key in _CAUSE_SECTION_KEYS and finding.get("cause_pending"):
-            continue
-        errors.append(
-            f"narrative section '{heading}' is empty; every template section "
-            "needs text"
-            + (
-                " unless cause_pending is true"
-                if key in _CAUSE_SECTION_KEYS
-                else ""
+        # A heading that never arrived and one that arrived empty are different
+        # mistakes, and saying "is empty" for both is what kept a model
+        # re-emitting a narrative it had in fact written — flattened onto one
+        # line, so every heading was absent rather than blank.
+        if key not in bodies:
+            errors.append(
+                f"the narrative is missing the `## {heading}` heading; every "
+                "template section must appear, each on its own line"
             )
-        )
+        elif key in _CAUSE_SECTION_KEYS:
+            errors.append(
+                f"narrative section '{heading}' is empty; state the cause, or "
+                "write `_Root cause pending auditor follow-up._` as the whole "
+                "of it where the evidence does not establish one"
+            )
+        else:
+            errors.append(
+                f"narrative section '{heading}' is empty; every template "
+                "section needs text"
+            )
     if errors:
         raise WorkerResponseValidationError(errors)
-    return {"finding": finding}
-
-
-FINDING_SUBMISSION_TOOL = "submit_finding"
-
-
-def _finding_submission_tool() -> dict[str, Any]:
-    """The provider-enforced shape of one drafted finding.
-
-    Asking in prose for an object with a `finding` key, and validating it
-    afterwards, leaves the model free to answer with a differently-shaped
-    object that parses perfectly well — four of nineteen drafts did exactly
-    that and spent their whole repair allowance on it. Constraining the shape
-    at the provider is the mechanism the analysis workers already use, and it
-    retires the failure rather than catching it.
-
-    `narrative` stays free Markdown: its sections are the supplied template's
-    headings, so a firm that renames one moves the requirement with it, and
-    pinning them here would put that firm's template into this module.
-    """
-
-    return {
-        "type": "function",
-        "function": {
-            "name": FINDING_SUBMISSION_TOOL,
-            "description": (
-                "Submit the drafted finding, grounded in the supplied "
-                "observation and its immutable execution result."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "finding": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string", "minLength": 1},
-                            "severity": {
-                                "type": "string",
-                                "enum": sorted(_FINDING_SEVERITIES),
-                            },
-                            "narrative": {"type": "string", "minLength": 1},
-                            "cause_pending": {"type": "boolean"},
-                        },
-                        "required": [
-                            "title",
-                            "severity",
-                            "narrative",
-                            "cause_pending",
-                        ],
-                        "additionalProperties": False,
-                    }
-                },
-                "required": ["finding"],
-                "additionalProperties": False,
-            },
-        },
-    }
+    return {"finding": {**finding, "title": title, "narrative": narrative}}
 
 
 def run_finding_worker(
@@ -253,7 +316,11 @@ def run_finding_worker(
                 request, FINDING_EXCEPTION_ROWS_SOURCE_ID
             ),
             "RESOLVED CONTEXT": request.context.to_dict(),
-            "REQUIRED OUTPUT": ["title", "severity", "narrative", "cause_pending"],
+            "REQUIRED OUTPUT": (
+                "Markdown only: a `#` title line, a `**Severity:**` line, then "
+                "the narrative sections below as `##` headings, each on its own "
+                "line."
+            ),
             "REQUIRED NARRATIVE SECTIONS": templates_store.sections(
                 str(_resolved_item(request, FINDING_TEMPLATE_SOURCE_ID) or "")
             ),
@@ -265,7 +332,7 @@ def run_finding_worker(
         user += (
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
+            + ". Return the whole finding again as Markdown, corrected."
         )
     activity = dict(request.activity)
     activity.setdefault(
@@ -277,24 +344,15 @@ def run_finding_worker(
             "selected_items": request.context.supplied_size.items,
         },
     )
-    message = gateway.complete(
-        FINDING_SYSTEM,
-        user,
-        activity,
-        attempt=attempt.number,
-        tools=[_finding_submission_tool()],
-        tool_choice={
-            "type": "function",
-            "function": {"name": FINDING_SUBMISSION_TOOL},
-        },
-        return_message=True,
+    return str(
+        gateway.complete(FINDING_SYSTEM, user, activity, attempt=attempt.number)
+        or ""
     )
-    return submission_response(message, FINDING_SUBMISSION_TOOL)
 
 
 FINDING_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="reporting.finding.response",
-    schema_hash=_sha256_text("finding-response:json-object-with-finding"),
+    schema_hash=_sha256_text("finding-response:template-shaped-markdown"),
     validator=_finding_response_schema,
 )
 FINDING_WORKER = WorkerDefinition(

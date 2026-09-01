@@ -48,16 +48,16 @@ from conftest import FakeAgentLLM, wait_run
 
 
 # One finding draft the fake model returns for `agent:finding`. Its narrative
-# answers every section of the shipped finding template except Root Cause,
-# which `cause_pending` formally defers.
+# answers every section of the shipped finding template; Root Cause carries the
+# deferral note, which is how a draft formally leaves the cause open. A section
+# left blank is an omission rather than a deferral and is repaired as one.
 FINDING_DRAFT = {
     "title": "Duplicate invoice processing",
     "severity": "medium",
-    "cause_pending": True,
     "narrative": (
         "## Condition\n\nA duplicate invoice identifier was processed.\n\n"
         "## Criteria\n\nInvoice identifiers should be unique.\n\n"
-        "## Root Cause\n\n"
+        "## Root Cause\n\n_Root cause pending auditor follow-up._\n\n"
         "## Risk\n\nDuplicate payment risk.\n\n"
         "## Recommendation\n\nPrevent duplicate invoice identifiers.\n"
     ),

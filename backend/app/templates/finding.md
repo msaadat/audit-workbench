@@ -2,8 +2,14 @@
 against them: every heading must carry text before an auditor can confirm the
 finding for formal reporting. Rename, add, or remove headings to match your
 firm's methodology and the gate follows. The one exception is the root-cause
-section, which may be left empty when the finding is marked "root cause pending
-auditor follow-up".
+section, which may carry the deferral note in place of a cause when the finding
+is marked "root cause pending auditor follow-up".
+
+The finding is written as Markdown, not as a JSON object, so tables, paragraphs
+and lists in the sections below are ordinary Markdown and travel into the report
+as written. The `#` title line and the severity line are the finding's typed
+spine: they are read off the draft and stored as fields, and do not form part of
+the narrative that is copied into the report.
 
 Write the narrative so it can be lifted into the report unchanged. It is copied
 verbatim into "Findings and recommendations" under the finding's title, so the
@@ -25,7 +31,22 @@ prose must read as final report text, not as a working note. That means:
   sections belongs in one.
 -->
 
-# Finding
+# {{title}}
+
+<!-- title: The audit point in one line, as it will head the finding in the
+report. Name what is wrong, not what was tested.
+
+    Write: "Payments approved by the officer who created them"
+    Not:   "Segregation of duties test — 37 exceptions"
+    Not:   "DAT-14 exception review" -->
+
+**Severity:** {{severity}}
+
+<!-- severity: Exactly one of critical, high, medium, low, info, judged on the
+exposure the condition creates for the entity — not on the number of exceptions.
+This line is stored as the finding's severity field; it orders the report,
+counts into the severity summary, and constrains the overall conclusion, so it
+is a judgement rather than a label. -->
 
 ## Condition
 
@@ -91,10 +112,15 @@ narrative — the underlying weakness, named.
             period under review, and the SOP was not updated after the 2023
             reorganisation, officers were required to..."
 
-Where the cause is not established by the evidence, leave this section empty and
-mark the finding's cause as pending auditor follow-up rather than guessing. An
-asserted cause the fieldwork does not support is the most common reason a
-finding is challenged. -->
+Where the cause is not established by the evidence, do not guess. Write the
+deferral note and nothing else:
+
+    _Root cause pending auditor follow-up._
+
+That note marks the finding's cause as pending, and is the only accepted stand-in
+for a cause. An asserted cause the fieldwork does not support is the most common
+reason a finding is challenged; a section left blank is not a deferral, it is an
+omission, and it is rejected as one. -->
 
 ## Risk
 

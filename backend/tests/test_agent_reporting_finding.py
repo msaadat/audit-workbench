@@ -33,12 +33,12 @@ from app.workspace_transactions import parent_hashes
 
 
 class _Gateway:
-    """The finding worker submits through a forced tool call.
+    """The finding worker answers in Markdown, as the planning memorandum does.
 
-    Scripted responses stay plain JSON strings, which is what the worker's
-    schema reads; this wraps each one as the tool call the provider would have
-    returned, so a test says what the model answered rather than how the
-    submission is carried.
+    A scripted response is returned verbatim, so a test says what the model
+    answered. The tool-call wrapping below is kept for workers that do submit
+    through a forced call; the finding worker passes neither `tools` nor
+    `tool_choice`, and a test asserts that.
     """
 
     def __init__(self, responses):
@@ -227,6 +227,16 @@ def _draft(**overrides):
     return value
 
 
+def _markdown(**overrides) -> str:
+    """One finding as the worker asks for it: title, severity, then sections."""
+    value = _draft(**overrides)
+    return (
+        f"# {value['title']}\n\n"
+        f"**Severity:** {value['severity']}\n\n"
+        f"{value['narrative']}"
+    )
+
+
 def _without_section(narrative: str, heading: str) -> str:
     """The narrative with one section's body emptied, its heading intact."""
     start = narrative.index(f"## {heading}")
@@ -234,8 +244,17 @@ def _without_section(narrative: str, heading: str) -> str:
     return narrative[:start] + f"## {heading}\n\n" + narrative[end + 1:]
 
 
+def _deferred_cause(narrative: str) -> str:
+    """The narrative with its cause formally deferred rather than asserted."""
+    return _without_section(narrative, "Root Cause").replace(
+        "## Root Cause\n\n",
+        "## Root Cause\n\n_Root cause pending auditor follow-up._\n\n",
+        1,
+    )
+
+
 def test_finding_worker_uses_only_the_supplied_observation_and_execution():
-    gateway = _Gateway([json.dumps({"finding": _draft()})])
+    gateway = _Gateway([_markdown()])
 
     result = WORKERS.execute(_request(), gateway)
 
@@ -251,10 +270,8 @@ def test_finding_worker_uses_only_the_supplied_observation_and_execution():
 def test_finding_worker_repairs_an_empty_template_section_by_name():
     gateway = _Gateway(
         [
-            json.dumps(
-                {"finding": _draft(narrative=_without_section(NARRATIVE, "Criteria"))}
-            ),
-            json.dumps({"finding": _draft()}),
+            _markdown(narrative=_without_section(NARRATIVE, "Criteria")),
+            _markdown(),
         ]
     )
 
@@ -265,10 +282,9 @@ def test_finding_worker_repairs_an_empty_template_section_by_name():
 
 
 def test_finding_worker_accepts_an_open_root_cause_only_when_it_is_deferred():
-    deferred = _draft(
-        narrative=_without_section(NARRATIVE, "Root Cause"), cause_pending=True
-    )
-    gateway = _Gateway([json.dumps({"finding": deferred})])
+    # The deferral is written into the narrative rather than asserted beside it,
+    # so a draft cannot claim a pending cause while the section reads as blank.
+    gateway = _Gateway([_markdown(narrative=_deferred_cause(NARRATIVE))])
 
     result = WORKERS.execute(_request(), gateway)
 
@@ -277,19 +293,26 @@ def test_finding_worker_accepts_an_open_root_cause_only_when_it_is_deferred():
 
 
 def test_finding_worker_repairs_an_undeferred_empty_root_cause():
-    silent = json.dumps(
-        {"finding": _draft(narrative=_without_section(NARRATIVE, "Root Cause"))}
-    )
-    gateway = _Gateway([silent, json.dumps({"finding": _draft()})])
+    silent = _markdown(narrative=_without_section(NARRATIVE, "Root Cause"))
+    gateway = _Gateway([silent, _markdown()])
 
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    assert "unless cause_pending is true" in gateway.calls[1]["user"]
+    assert result.proposal["finding"]["cause_pending"] is False
+    assert "Root cause pending auditor follow-up" in gateway.calls[1]["user"]
+
+
+def test_a_stated_root_cause_is_not_read_as_a_deferral():
+    gateway = _Gateway([_markdown()])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.proposal["finding"]["cause_pending"] is False
 
 
 def test_finding_worker_is_given_the_exception_rows_and_told_to_identify_them():
-    gateway = _Gateway([json.dumps({"finding": _draft()})])
+    gateway = _Gateway([_markdown()])
 
     WORKERS.execute(_request(), gateway)
 
@@ -311,7 +334,7 @@ def test_finding_worker_runs_without_an_exception_table():
         unit_input={"input_sha1": "finding-input"},
         activity={"artifact_refs": ["observation:OBS-1"]},
     )
-    gateway = _Gateway([json.dumps({"finding": _draft()})])
+    gateway = _Gateway([_markdown()])
 
     result = WORKERS.execute(request, gateway)
 
@@ -331,7 +354,7 @@ def test_finding_worker_takes_its_required_sections_from_the_supplied_template()
         activity={"artifact_refs": ["observation:OBS-1"]},
     )
     narrative = "## Observation\n\nA duplicate was released.\n\n## Impact\n\nLoss.\n"
-    gateway = _Gateway([json.dumps({"finding": _draft(narrative=narrative)})])
+    gateway = _Gateway([_markdown(narrative=narrative)])
 
     result = WORKERS.execute(request, gateway)
 
@@ -340,10 +363,10 @@ def test_finding_worker_takes_its_required_sections_from_the_supplied_template()
 
 
 def test_finding_worker_rejects_an_unsupported_severity():
-    invalid = json.dumps({"finding": _draft(severity="catastrophic")})
+    invalid = _markdown(severity="catastrophic")
     gateway = _Gateway([invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="severity is unsupported"):
+    with pytest.raises(WorkerRunError, match="carrying exactly one of"):
         WORKERS.execute(_request(), gateway)
 
 
@@ -447,45 +470,113 @@ def test_finding_executor_reconciles_an_interrupted_commit_idempotently(
     assert len(target.workspace.findings) == 1
 
 
-def test_the_finding_submission_is_shape_enforced_by_the_provider():
-    """Four of nineteen drafts answered with a differently-shaped object.
 
-    Each parsed perfectly well and each failed `the response must be a JSON
-    object with a `finding` object`, spending its whole repair allowance on a
-    shape the provider could have refused outright. `response_format` buys
-    syntactic validity and nothing about structure; a forced submission call is
-    what the analysis workers already use for exactly this.
+
+def test_the_finding_is_answered_as_markdown_not_as_a_tool_call():
+    """A finding is multi-line Markdown, so it is not carried inside JSON.
+
+    A forced submission call bought shape and cost structure: the configured
+    model never emitted a newline inside a tool call's arguments — 35 of 35
+    across every worker that used one — so each narrative arrived with its
+    headings, blank lines and table rows flattened onto a single line. The
+    planning memorandum has always come back as Markdown from the same models,
+    which is what this follows.
     """
 
-    tool = reporting_worker._finding_submission_tool()
-    assert tool["function"]["name"] == reporting_worker.FINDING_SUBMISSION_TOOL
-    parameters = tool["function"]["parameters"]
-    assert parameters["required"] == ["finding"]
-    assert parameters["additionalProperties"] is False
+    gateway = _Gateway([_markdown()])
 
-    finding = parameters["properties"]["finding"]
-    assert finding["additionalProperties"] is False
-    assert sorted(finding["required"]) == [
-        "cause_pending", "narrative", "severity", "title",
-    ]
-    # A severity outside the supported set stops being expressible rather than
-    # being caught by the validator afterwards.
-    assert set(finding["properties"]["severity"]["enum"]) == set(
-        reporting_worker._FINDING_SEVERITIES
-    )
-    # The narrative stays free Markdown: its sections are the supplied
-    # template's headings, so pinning them here would put one firm's template
-    # into this module.
-    assert "enum" not in finding["properties"]["narrative"]
+    result = WORKERS.execute(_request(), gateway)
 
-
-def test_the_worker_forces_that_submission_call():
-    gateway = _Gateway([json.dumps({"finding": _draft()})])
-    WORKERS.execute(_request(), gateway)
     call = gateway.calls[0]
-    assert call["tool_choice"]["function"]["name"] == (
-        reporting_worker.FINDING_SUBMISSION_TOOL
+    assert call["tools"] is None
+    assert call["tool_choice"] is None
+    assert "Markdown only" in call["system"]
+    assert result.proposal["finding"]["title"] == "Duplicate invoice processing"
+    assert result.proposal["finding"]["severity"] == "medium"
+    # Title and severity are the finding's typed spine, read off the draft;
+    # neither reaches the prose that is copied into the report.
+    narrative = result.proposal["finding"]["narrative"]
+    assert narrative.startswith("## Condition")
+    assert "Severity" not in narrative
+
+
+def test_a_narrative_flattened_onto_one_line_is_rejected_as_missing_headings():
+    """The failure that cost a whole run of eight drafts, named accurately.
+
+    Every section was present in the model's prose and every one was reported
+    empty, because a single-line narrative parses as one enormous heading with
+    no body. Saying the heading is missing is something a model can act on;
+    saying the section is empty is what it re-emitted unchanged.
+    """
+
+    flattened = _markdown().replace("\n", " ")
+    gateway = _Gateway([flattened, _markdown()])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    repair = gateway.calls[1]["user"]
+    assert "missing the `## Condition` heading" in repair
+    assert "each on its own line" in repair
+
+
+def test_a_markdown_table_survives_into_the_narrative():
+    """Tables are why the narrative has to keep its line breaks.
+
+    A Markdown table is only a table while each row is on its own line: the
+    renderer needs the header, the delimiter row beneath it, and the body rows
+    as separate lines to build one at all.
+    """
+
+    table = (
+        "| Invoice | Invoice date | Payment date |\n"
+        "| --- | --- | --- |\n"
+        "| INV2024008 | 20 Dec 2024 | 29 Nov 2024 |"
     )
-    assert call["tools"][0]["function"]["name"] == (
-        reporting_worker.FINDING_SUBMISSION_TOOL
+    narrative = NARRATIVE.replace(
+        "Of the 1,284 payments released in the period, 37 were duplicates.",
+        "Of the 1,284 payments released in the period, 37 were duplicates."
+        f"\n\n{table}",
     )
+    gateway = _Gateway([_markdown(narrative=narrative)])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is False
+    assert table in result.proposal["finding"]["narrative"]
+
+
+def test_a_finding_returned_as_json_anyway_is_still_read():
+    # Tolerance, not the contract: a model that falls back on its JSON habit is
+    # repaired against the same rules rather than discarded.
+    gateway = _Gateway([json.dumps({"finding": _draft()})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is False
+    assert result.proposal["finding"]["severity"] == "medium"
+    assert result.proposal["finding"]["narrative"].startswith("## Condition")
+
+
+def test_template_guidance_is_not_copied_into_the_narrative():
+    echoed = _markdown(
+        narrative=NARRATIVE.replace(
+            "## Condition\n",
+            "## Condition\n\n<!-- section: What was found, quantified. -->\n",
+            1,
+        )
+    )
+    gateway = _Gateway([echoed])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert "<!--" not in result.proposal["finding"]["narrative"]
+
+
+def test_the_severity_line_is_read_however_it_is_emphasised():
+    for line in ("**Severity:** high", "**Severity**: high", "Severity: high"):
+        gateway = _Gateway([_markdown().replace("**Severity:** medium", line)])
+
+        result = WORKERS.execute(_request(), gateway)
+
+        assert result.proposal["finding"]["severity"] == "high", line
