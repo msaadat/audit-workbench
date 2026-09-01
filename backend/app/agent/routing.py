@@ -1134,7 +1134,14 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
                     (run.get("context") or {}).get("action")
                     or ("refresh" if generation_mode == "force" else "analyze")
                 ),
-                "vocabulary_mode": str(scope.get("vocabulary_mode") or "frozen"),
+                # Resolved, not raw. ``scope["vocabulary_mode"]`` only says which
+                # of the two *forced* actions this would be; an unforced run
+                # never consults it and accumulates. Recording the raw key made
+                # every ordinary run claim in its own audit trail to have been
+                # frozen — the stale second key the comment above warns about.
+                "vocabulary_mode": audit_capabilities.documents.vocabulary_mode(
+                    scope
+                ),
                 "scope_settled": False,
             },
         )

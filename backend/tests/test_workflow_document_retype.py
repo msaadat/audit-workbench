@@ -574,3 +574,48 @@ def test_a_retype_mid_run_conflicts_the_commit_rather_than_storing_it():
 
     with pytest.raises(WorkspaceError, match="local.internal_deal_confirmation"):
         document_executors._validated_analysis(_request(), retyped_target)
+
+
+def test_the_run_record_reports_the_mode_the_run_actually_used(
+    workspace_with_data, monkeypatch
+):
+    """The audit trail of an audit tool has to say what happened.
+
+    ``scope["vocabulary_mode"]`` answers a narrower question than its name: it
+    says which of the two *forced* actions a forced run would be, and is set
+    unconditionally at routing time. An unforced run never consults it — it
+    accumulates — so recording the raw key made every ordinary run claim in its
+    own record to have been frozen, while its master grew field by field.
+    Nothing read the field, which is exactly why it could stay wrong.
+    """
+
+    from app import llm
+    from app.agent import routing, store
+    from app.agent import capabilities as audit_capabilities
+    from conftest import FakeAgentLLM
+
+    monkeypatch.setattr(llm, "chat", FakeAgentLLM({}))
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "tab_button", "text": "Analyse the documents"},
+    )
+    routing.resolve_route(workspace_with_data, run)
+    persisted = store.load_run(workspace_with_data, run["id"])
+    recorded = persisted.get("document_analysis") or {}
+
+    if not recorded:
+        pytest.skip("command did not route to the document scope")
+
+    # An unforced pass accumulates, and the record now says so.
+    assert recorded["action"] == "analyze"
+    assert recorded["vocabulary_mode"] == "accumulate"
+    assert recorded["vocabulary_mode"] == audit_capabilities.documents.vocabulary_mode(
+        persisted.get("context", {}).get("scope") or {"generation_mode": "reuse_existing"}
+    )
