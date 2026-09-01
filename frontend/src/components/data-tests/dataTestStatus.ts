@@ -65,6 +65,17 @@ function hasRun(test: DataTest): boolean {
 }
 
 /**
+ * A test carrying a warning about what it actually measures.
+ *
+ * Two sources, one lane: what the definition looked wrong about when it was
+ * saved, and what the run could not vouch for once it read the data. Neither
+ * stops the test concluding, so this lane is the only place the page says so.
+ */
+function hasSemanticWarning(test: DataTest): boolean {
+  return test.semantic_warnings.length > 0 || test.last_run?.semantic_valid === false
+}
+
+/**
  * A test the Run action can move. Blocked work needs something else first, and
  * a test awaiting review has already run — neither is served by running it.
  */
@@ -107,7 +118,7 @@ function tally(tests: DataTest[], findings: AuditFinding[]): Counts {
     }
 
     if (!test.rcm_id) counts.exploratory += 1
-    if (test.semantic_warnings.length) counts.semanticWarnings += 1
+    if (hasSemanticWarning(test)) counts.semanticWarnings += 1
 
     if (test.status === 'completed_with_exception') {
       // Drafting is per RCM row, so an exploratory test has no row to draft
@@ -330,7 +341,7 @@ function filtersFor(counts: Counts): StatusFilterGroup[] {
       label: 'Scope',
       options: [
         { key: 'exploratory', label: 'Exploratory', value: counts.exploratory, tone: 'neutral' },
-        { key: 'semantic_warning', label: 'Definition warning', value: counts.semanticWarnings, tone: 'warn' },
+        { key: 'semantic_warning', label: 'Carries a warning', value: counts.semanticWarnings, tone: 'warn' },
       ],
     },
   ]
@@ -362,7 +373,7 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
       key: 'semantic', mark: 'Check', tone: 'warn',
       message: `${plural(counts.semanticWarnings, 'test')} ${
         counts.semanticWarnings === 1 ? 'carries a warning' : 'carry warnings'
-      } about what the definition actually measures.`,
+      } about what the test actually measures.`,
       filter: 'semantic_warning',
     })
   }
@@ -396,7 +407,7 @@ export const DATA_TEST_FILTER_LABELS: Record<DataTestFilter, string> = {
   agent_concluded: 'conclusions set by the agent',
   auditor_concluded: 'conclusions an auditor recorded',
   exploratory: 'exploratory tests',
-  semantic_warning: 'tests carrying a definition warning',
+  semantic_warning: 'tests carrying a warning',
 }
 
 /** Narrow the same list the lanes counted, so the two can never disagree. */
@@ -428,7 +439,7 @@ export function filterDataTests(
       case 'auditor_concluded':
         return test.control_conclusion_source !== 'agent' && CONCLUDED.has(conclusion)
       case 'exploratory': return !test.rcm_id
-      case 'semantic_warning': return test.semantic_warnings.length > 0
+      case 'semantic_warning': return hasSemanticWarning(test)
       default: return true
     }
   })

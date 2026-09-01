@@ -85,9 +85,10 @@ const runVerdict = computed(() => RUN_VERDICTS[props.test.evaluation.state] ?? '
 const openCount = computed(() => props.test.open_exception_count)
 const foundCount = computed(() => props.test.evaluation.exception_count)
 const settled = computed(() => Boolean(foundCount.value) && openCount.value === 0)
-// Semantic issues are what block a conclusion. Recording that somebody read
-// them is what releases the test; the note explaining why is welcome but not
-// the price of releasing it.
+// A run that produced no usable evidence is what holds a test back — not the
+// warnings beside it, which qualify a result rather than withhold one.
+// Recording that somebody read the failure is what releases the test; the note
+// explaining why is welcome but not the price of releasing it.
 const needsSemanticReview = computed(
   () => props.test.evaluation.state === 'inconclusive' && !props.test.semantic_review,
 )
@@ -148,34 +149,44 @@ function commitReview() {
       </p>
     </Message>
 
+    <!-- What the runner could not vouch for. It qualifies the result and the
+         conclusion drawn from it; it does not withhold either, so it reads as a
+         warning and carries no action. -->
     <Message v-if="issues.length" severity="warn" :closable="false">
-      <strong>Review these before relying on the result</strong>
+      <strong>Read these before relying on the result</strong>
       <ul class="issues">
         <li v-for="issue in issues" :key="issue">{{ issue }}</li>
       </ul>
-      <!-- Without this the test is stranded: the runner will not conclude over
-           evidence it cannot vouch for, and nobody could say why it is fine. -->
-      <template v-if="needsSemanticReview">
-        <button v-if="!reviewing" type="button" class="link" @click="reviewing = true">
-          I have reviewed these and they do not invalidate the result
-        </button>
-        <form v-else class="review" @submit.prevent="commitReview">
-          <label>
-            Why these issues do not invalidate the result <span class="optional">(optional)</span>
-            <textarea v-model="reviewNote" rows="2" />
-          </label>
-          <span class="review-actions">
-            <button type="submit" class="link" :disabled="busy">
-              Record review
-            </button>
-            <button type="button" class="link" @click="reviewing = false">Cancel</button>
-          </span>
-        </form>
-      </template>
-      <p v-else-if="test.semantic_review" class="reviewed">
+      <p v-if="test.semantic_review" class="reviewed">
         Reviewed {{ new Date(test.semantic_review.at).toLocaleDateString() }}:
         “{{ test.semantic_review.note }}”
       </p>
+    </Message>
+
+    <!-- The run itself produced nothing to read, so there is nothing to
+         conclude over. Without this the test is stranded: it cannot be released
+         and nobody could say why the failure does not matter. -->
+    <Message v-if="needsSemanticReview" severity="warn" :closable="false">
+      <strong>This run produced no usable evidence</strong>
+      <p class="stale-body">
+        Run it again once the definition or the data is fixed, or record that you
+        have read what went wrong and it does not stand against the control.
+      </p>
+      <button v-if="!reviewing" type="button" class="link" @click="reviewing = true">
+        I have reviewed this and it does not invalidate the result
+      </button>
+      <form v-else class="review" @submit.prevent="commitReview">
+        <label>
+          Why this does not invalidate the result <span class="optional">(optional)</span>
+          <textarea v-model="reviewNote" rows="2" />
+        </label>
+        <span class="review-actions">
+          <button type="submit" class="link" :disabled="busy">
+            Record review
+          </button>
+          <button type="button" class="link" @click="reviewing = false">Cancel</button>
+        </span>
+      </form>
     </Message>
     <Message v-if="warnings.length" severity="warn" :closable="false">
       <ul class="issues">

@@ -259,7 +259,9 @@ def project_status(item: dict) -> str:
     if any(disposition["state"] == "needs_review" for disposition in standing):
         return "review_required"
     if state == "inconclusive" and not (item.get("semantic_review") or {}).get("at"):
-        # Unreliable evidence stays unreliable until somebody says why it is not.
+        # A run that could not execute produced no evidence at all, which is a
+        # different thing from evidence a warning qualifies: there is nothing to
+        # conclude over until somebody says why the failure does not matter.
         return "review_required"
     if state == "passed":
         return "completed_no_exception"
@@ -1364,6 +1366,12 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
     try:
         output, summary, exceptions, exception_count, semantic_issues = _run_engine(workspace, item)
         semantic_issues = list(dict.fromkeys([*join_issues, *semantic_issues]))
+        # ``semantic_valid`` grades how far the result can be trusted, not
+        # whether it may be concluded over. The severe shapes below — a
+        # predicate that cannot match, a join that matches nothing, steps that
+        # never disagree, a pass that is a property of the key — are what the
+        # panel puts in front of whoever concludes, and what the working paper
+        # carries alongside the conclusion. They warn; they no longer decide.
         semantic_valid = not any(
             "0% key match" in issue
             or "multiplies rows" in issue
@@ -1372,25 +1380,19 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
             or "conditional trigger matches zero" in issue
             or "allowed values have no overlap" in issue
             or "failed to execute" in issue
-            # A saturated or unmatchable predicate must not reach a control
-            # conclusion: "every row is an exception" and "no row can be an
-            # exception" are the two ways a wrong literal presents, and reporting
-            # either as an effectiveness conclusion is worse than reporting none.
             or "mis-specified predicate" in issue
             or "can never match" in issue
             or "cannot match the rows it describes" in issue
-            # Steps that never disagree are one condition counted several
-            # times, so neither the shared term nor the ones it masks has been
-            # tested — and the repeated counts read as corroboration.
             or "excepted the same" in issue
-            # A clean pass that is a property of the key rather than of the
-            # population is the most dangerous shape a result can take.
             or "a property of the key" in issue
             for issue in semantic_issues
         )
+        # The run read the data, so it reports what it read. What it could not
+        # execute is the one thing it cannot report on: a step that failed
+        # measured nothing, and the engine says so with an ``error`` verdict.
         status = (
             "review_required"
-            if not semantic_valid
+            if output["verdict"] == "error"
             else "completed_with_exception"
             if exception_count or output["verdict"] in {"warn", "fail"}
             else "completed_no_exception"
@@ -1578,10 +1580,10 @@ def auto_disposition(
     is a separate act from running, it stamps ``agent`` as its author, and it
     never touches anything an auditor has already decided.
 
-    An evaluation the runner could not vouch for is the one case it declines.
-    Unreliable evidence is exactly what ``semantic_valid`` exists to detect, and
-    concluding over it unattended is how a wrong literal becomes an audit
-    opinion.
+    A run that produced no evidence at all — never run, or failed to execute —
+    is the one case it declines; there is nothing to conclude from. Evidence the
+    semantic checks doubt is concluded over and the doubt recorded with it, so
+    the warning reaches whoever reads the conclusion instead of stranding it.
     """
     item = _record(workspace, data_test_id)
     evaluation = item["evaluation"]

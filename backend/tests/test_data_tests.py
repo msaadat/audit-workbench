@@ -164,7 +164,9 @@ def test_auto_disposition_concludes_an_unattended_run_and_signs_it_agent(
     assert {value["source"] for value in concluded["exception_dispositions"]} == {"agent"}
 
 
-def test_auto_disposition_declines_a_run_it_cannot_vouch_for(workspace_with_data):
+def test_auto_disposition_concludes_a_warned_run_and_keeps_the_warning(
+    workspace_with_data,
+):
     ws = workspace_with_data
     item = data_tests.create(ws, {
         "title": "Impossible filter",
@@ -173,16 +175,46 @@ def test_auto_disposition_declines_a_run_it_cannot_vouch_for(workspace_with_data
         "table_refs": ["transactions"],
         "spec": _polars_spec(
             table_refs=["transactions"],
-            code="result = transactions.filter(pl.col('currency') == 'ZZZ')",
+            code="result = transactions.filter(pl.col('cust_id') == 'ZZZ')",
         ),
     })
     result = data_tests.run(ws, item["id"])
     assert result["semantic_valid"] is False
+    assert result["status"] == "completed_no_exception"
+
+    concluded = data_tests.auto_disposition(ws, item["id"])
+
+    # The warning qualifies the conclusion rather than withholding it: the run
+    # read the data, so it says what it read, and what it could not vouch for
+    # stays on the result for whoever relies on it.
+    assert concluded["control_conclusion"] == "effective"
+    assert concluded["control_conclusion_source"] == "agent"
+    assert concluded["status"] == "completed_no_exception"
+    stored = data_tests.load_result(ws, item["id"], result["id"])
+    assert stored["semantic_valid"] is False
+    assert stored["semantic_issues"]
+
+
+def test_auto_disposition_declines_a_run_that_produced_no_evidence(workspace_with_data):
+    ws = workspace_with_data
+    item = data_tests.create(ws, {
+        "title": "Broken step",
+        "objective": "Read a column the table does not have.",
+        "engine": "polars",
+        "table_refs": ["transactions"],
+        "spec": _polars_spec(
+            table_refs=["transactions"],
+            code="result = transactions.filter(pl.col('not_a_column') == 1)",
+        ),
+    })
+    result = data_tests.run(ws, item["id"])
+    assert result["verdict"] == "error"
+    assert result["status"] == "review_required"
 
     unchanged = data_tests.auto_disposition(ws, item["id"])
 
-    # Unreliable evidence is the one thing an unattended run must not conclude
-    # over, however deterministic the machinery underneath it is.
+    # A run that could not execute measured nothing. That is the one case with
+    # nothing to conclude from, however deterministic the machinery is.
     assert unchanged["control_conclusion"] == "no_conclusion"
     assert unchanged["control_conclusion_source"] == "none"
     assert unchanged["status"] == "review_required"
@@ -308,29 +340,29 @@ def test_accepting_an_exception_group_takes_an_optional_reason(workspace_with_da
         )
 
 
-def test_semantic_review_releases_a_test_the_runner_could_not_vouch_for(
+def test_semantic_review_releases_a_run_that_produced_no_evidence(
     workspace_with_data,
 ):
     ws = workspace_with_data
     item = data_tests.create(ws, {
-        "title": "Impossible filter",
-        "objective": "Screen on a value the column never holds.",
+        "title": "Broken step",
+        "objective": "Read a column the table does not have.",
         "engine": "polars",
         "table_refs": ["transactions"],
         "spec": _polars_spec(
             table_refs=["transactions"],
-            code="result = transactions.filter(pl.col('currency') == 'ZZZ')",
+            code="result = transactions.filter(pl.col('not_a_column') == 1)",
         ),
     })
     data_tests.run(ws, item["id"])
     assert data_tests._record(ws, item["id"])["status"] == "review_required"
 
     reviewed = data_tests.record_semantic_review(
-        ws, item["id"], "ZZZ is a valid settlement code that is simply unused this period.",
+        ws, item["id"], "The column was renamed upstream; the control is tested elsewhere.",
     )
 
     assert reviewed["status"] == "completed_no_exception"
-    assert reviewed["semantic_review"]["note"].startswith("ZZZ is a valid")
+    assert reviewed["semantic_review"]["note"].startswith("The column was renamed")
 
 
 def test_deterministic_run_suggests_effective_but_does_not_conclude(workspace_with_data):
@@ -477,7 +509,7 @@ def test_polars_steps_expose_every_workspace_table_without_table_refs(workspace_
     assert set(result["dataset_fingerprints"]) == set(ws.table_names())
 
 
-def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data):
+def test_zero_match_join_is_reported_with_a_warning(workspace_with_data):
     ws = workspace_with_data
     roles = pl.DataFrame({"designation": ["Finance", "Manager"], "limit": [1000, 5000]})
     ws.add_table("authority.csv", roles.write_csv().encode())
@@ -511,11 +543,12 @@ def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data
     result = data_tests.run(ws, item["id"])
 
     assert result["semantic_valid"] is False
-    assert result["status"] == "review_required"
+    # The warning travels with the result rather than withholding it.
+    assert result["status"] == "completed_with_exception"
     assert any("0% key match coverage" in issue for issue in result["semantic_issues"])
 
 
-def test_null_only_result_is_not_accepted_as_success(workspace_with_data):
+def test_null_only_result_is_reported_with_a_warning(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
     item = data_tests.create(
@@ -537,7 +570,7 @@ def test_null_only_result_is_not_accepted_as_success(workspace_with_data):
     result = data_tests.run(ws, item["id"])
 
     assert result["semantic_valid"] is False
-    assert result["status"] == "review_required"
+    assert result["status"] == "completed_with_exception"
     assert any("entirely null" in issue for issue in result["semantic_issues"])
 
 
@@ -1274,12 +1307,13 @@ def _run_step(ws, code: str) -> dict:
     return data_tests.compute(ws, item["id"])
 
 
-def test_step_filtering_on_a_value_the_column_never_holds_cannot_conclude():
+def test_step_filtering_on_a_value_the_column_never_holds_warns_without_withholding_the_result():
     """The dead-literal half of a guessed category value.
 
-    The generating turn is given column names and dtypes, so a literal it guessed
-    wrong matches nothing and the run would otherwise report the control as
-    operating effectively.
+    The generating turn is given column names and dtypes, so a literal it
+    guessed wrong matches nothing and the run reports the control as operating
+    effectively. The reading stands; what the gate owes is the warning beside
+    it, so nobody relies on the clean pass without seeing why it is clean.
     """
     result = _run_step(
         _workspace_with_population(),
@@ -1288,12 +1322,14 @@ def test_step_filtering_on_a_value_the_column_never_holds_cannot_conclude():
 
     assert result["exception_count"] == 0
     assert result["semantic_valid"] is False
-    assert result["status"] == "review_required"
-    assert result["suggested_control_conclusion"] == "no_conclusion"
+    # The run read the population and found nothing, so that is what it reports.
+    # The warning rides alongside the reading for whoever concludes on it.
+    assert result["status"] == "completed_no_exception"
+    assert result["suggested_control_conclusion"] == "effective"
     assert any("cannot match the rows it describes" in issue for issue in result["semantic_issues"])
 
 
-def test_step_excepting_nearly_the_whole_population_cannot_conclude():
+def test_step_excepting_nearly_the_whole_population_warns_without_withholding_the_result():
     """The saturated half: a wrong literal that matches every row instead of none."""
     result = _run_step(
         _workspace_with_population(),
@@ -1302,11 +1338,11 @@ def test_step_excepting_nearly_the_whole_population_cannot_conclude():
 
     assert result["exception_count"] == 40
     assert result["semantic_valid"] is False
-    assert result["status"] == "review_required"
+    assert result["status"] == "completed_with_exception"
     assert any("mis-specified predicate" in issue for issue in result["semantic_issues"])
 
 
-def test_a_duplicate_screen_keyed_too_wide_cannot_conclude():
+def test_a_duplicate_screen_keyed_too_wide_warns_without_withholding_the_result():
     """The clean pass that was a property of the key, not of the population.
 
     A duplicate-payment screen keyed on vendor *and* vendor invoice number
@@ -1350,7 +1386,7 @@ def test_a_duplicate_screen_keyed_too_wide_cannot_conclude():
 
     assert result["exception_count"] == 0
     assert result["semantic_valid"] is False
-    assert result["status"] == "review_required"
+    assert result["status"] == "completed_no_exception"
     assert any("a property of the key" in issue for issue in result["semantic_issues"])
 
 
@@ -1394,7 +1430,7 @@ def test_a_duplicate_screen_on_a_key_that_genuinely_holds_still_concludes():
     assert result["suggested_control_conclusion"] == "effective"
 
 
-def test_steps_excepting_the_same_rows_cannot_conclude():
+def test_steps_excepting_the_same_rows_warns_without_withholding_the_result():
     """Three authority tests that were one null check wearing three hats.
 
     A live test read as three separate conditions — an approver was designated,
@@ -1443,7 +1479,7 @@ def test_steps_excepting_the_same_rows_cannot_conclude():
     result = data_tests.compute(ws, item["id"])
 
     assert result["semantic_valid"] is False
-    assert result["status"] == "review_required"
+    assert result["status"] == "completed_with_exception"
     assert any(
         "excepted the same 2 rows" in issue for issue in result["semantic_issues"]
     )
@@ -1485,7 +1521,7 @@ def test_two_steps_that_disagree_on_a_row_are_not_reported_as_one():
     assert not any("excepted the same" in issue for issue in result["semantic_issues"])
 
 
-def test_step_comparing_identifiers_from_different_schemes_cannot_conclude():
+def test_step_comparing_identifiers_from_different_schemes_warns_without_withholding_the_result():
     """A segregation-of-duties step whose two sides can never be equal."""
     result = _run_step(
         _workspace_with_population(),

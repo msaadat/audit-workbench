@@ -105,4 +105,30 @@ describe('DataTestResultPanel', () => {
     expect(wrapper.text()).toContain('This result is out of date')
     expect(wrapper.find('.two-readings').attributes('data-stale')).toBe('true')
   })
+
+  it('shows what the runner could not vouch for without holding the test back', () => {
+    const wrapper = mountPanel(
+      test(),
+      result({ semantic_issues: ['The step cannot match the rows it describes.'] }),
+    )
+
+    expect(wrapper.text()).toContain('cannot match the rows it describes')
+    // The warning qualifies the result; nothing is being asked of the reader,
+    // and the conclusion below is theirs to reach either way.
+    expect(wrapper.text()).not.toContain('produced no usable evidence')
+    expect(wrapper.find('.review').exists()).toBe(false)
+  })
+
+  it('asks for a review only when the run produced nothing to read', () => {
+    const wrapper = mountPanel(
+      test({
+        status: 'review_required',
+        evaluation: { ...test().evaluation, state: 'inconclusive' },
+      }),
+      result({ semantic_issues: ['Step failed to execute: no such column.'] }),
+    )
+
+    expect(wrapper.text()).toContain('This run produced no usable evidence')
+    expect(wrapper.text()).toContain('I have reviewed this and it does not invalidate the result')
+  })
 })

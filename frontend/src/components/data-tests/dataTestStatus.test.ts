@@ -135,6 +135,21 @@ describe('data test disclosures', () => {
     expect(model.disclosures[0].message).toContain('2 of 3 conclusions were set by the agent')
   })
 
+  it('counts a run the runner could not vouch for as a warning, not a block', () => {
+    // The warning no longer shows up as a status, so this lane is the only
+    // place the page says the run carried one.
+    const model = dataTestStatus([
+      test('DAT-1'),
+      test('DAT-2', { last_run: { id: 'run-2', semantic_valid: false } } as Partial<DataTest>),
+    ])
+
+    const warned = model.disclosures.find(item => item.key === 'semantic')
+    expect(warned?.message).toContain('1 test')
+    expect(filterDataTests([test('DAT-1'), test('DAT-2', {
+      last_run: { id: 'run-2', semantic_valid: false },
+    } as Partial<DataTest>)], 'semantic_warning').map(item => item.id)).toEqual(['DAT-2'])
+  })
+
   it('does not call an unconcluded test an agent conclusion', () => {
     const model = dataTestStatus([test('DAT-1', { control_conclusion: 'no_conclusion' })])
     expect(model.disclosures.map(item => item.key)).not.toContain('agent')

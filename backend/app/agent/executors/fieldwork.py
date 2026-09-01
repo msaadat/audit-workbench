@@ -169,26 +169,26 @@ def run_data_test(workspace: Workspace, data_test_id: str) -> ExecutionOutcome:
     Deterministic and self-committing: ``data_tests.run`` computes the candidate
     with Polars and commits it under the Data Test definition's own parent-hash
     guard, so a definition changed since the run started surfaces as a conflict
-    rather than a result attributed to the wrong basis. A structurally computed
-    result whose semantic contract fails is ``blocked``, not ``failed``: the run
-    happened but its evidence cannot support a reliable outcome.
+    rather than a result attributed to the wrong basis. Only a run that could
+    not execute is ``blocked``; a run the semantic checks merely doubt still
+    concludes, carrying those doubts on the record as warnings.
     """
 
     result = data_tests.run(workspace, data_test_id)
-    if result.get("semantic_valid"):
-        # An unattended run has to conclude or nothing downstream can proceed,
-        # and the evaluation is deterministic enough to support one. It is a
-        # separate act from the run, stamped ``agent``, and it stands aside for
-        # anything an auditor has already decided.
-        data_tests.auto_disposition(workspace, data_test_id)
+    ref = data_test_result_ref(data_test_id, str(result["id"]))
+    if result.get("status") == "review_required":
         return ExecutionOutcome(
-            data_test_result_ref(data_test_id, str(result["id"])), "succeeded"
+            ref,
+            "blocked",
+            result.get("error") or "; ".join(result.get("semantic_issues") or []),
         )
-    return ExecutionOutcome(
-        data_test_result_ref(data_test_id, str(result["id"])),
-        "blocked",
-        "; ".join(result.get("semantic_issues") or []),
-    )
+    # An unattended run has to conclude or nothing downstream can proceed, and
+    # the evaluation is deterministic enough to support one. It is a separate
+    # act from the run, stamped ``agent``, and it stands aside for anything an
+    # auditor has already decided. Semantic issues qualify that conclusion —
+    # they travel with the result and into the roll-up — rather than withhold it.
+    data_tests.auto_disposition(workspace, data_test_id)
+    return ExecutionOutcome(ref, "succeeded")
 
 
 def _register_blocked_unit(workspace: Workspace, test_id: str, unit_id: str) -> None:
