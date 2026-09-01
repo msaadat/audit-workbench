@@ -134,7 +134,8 @@ and carries a *Phase 10 notes* section for the change that forced it.
 ```
 intake      file suffix, no model                     route: table | document
 read (1)    page 1 -> coarse class                    policy | minutes | background | evidence   built
-read (2)    by class; evidence also gets a fine type  records + citations, master schema per type 4b
+read (2)    whole evidence document, text + images    records + citations, master schema per type 4b
+stamp       per type, once the type is read          the schema, and the readings stamped to it  4b
 assemble    one agentic pass per sampled item         role bindings + resolved operands           deferred
 judge       model reader on raw values                verdict + reason                            built
             the auditor overriding a verdict directly                                            deferred
@@ -242,6 +243,91 @@ reaches the rest of the system solely through `transaction_evidence` and
 `types_for_induction`, both evidence-only. That is already what the code does,
 and it is retained rather than introduced.
 
+**The two buckets take different paths, and the routing question gets simpler.**
+Planning material keeps the existing chunked prose analysis, unchanged and still
+parallel. Evidence leaves that path entirely for a whole-document read.
+
+Today `analysis_profile` asks two questions — is this document's category
+transaction evidence, and does its type have an induced schema — and routes to
+the structured profile only when both say yes. The second question disappears.
+A schema is now an *output* of reading the evidence rather than an input to it,
+so there is nothing to ask at routing time and the category alone decides which
+path a document takes. That also removes the circularity Phase 9 had to work
+around: no gate in front of induction, because there is no induction to gate.
+
+**One unit per document; the read does not chunk.** Evidence documents are
+short — a dealing ticket, a payment instruction, a confirmation — and the
+existing chunk window is 24,000 characters, so chunking an evidence document
+almost never splits it and buys a per-chunk unit for nothing. Reading the whole
+document in one call is also what makes the master coherent: a master that moved
+between chunk 1 and chunk 2 would produce one document whose records were read
+under two vocabularies, which is the drift this design removes, relocated inside
+a single document.
+
+The window is bounded and the bound is loud. A citation binds to text the worker
+saw, so an evidence document exceeding the read window is reported as
+over-window rather than silently truncated — the same rule the chunk budgets
+already keep. `induction_text` is not the accessor for this: it is a 3-page,
+12,000-character sample window, and a read that produces citations across a
+document needs the document.
+
+**The read takes both modalities, because a scanned page is where the control
+signature lives.** This is the one place "one unit per document" costs something
+real, and paying it is not optional.
+
+Page routing is independent of the text profile. `_visual_page` sends a page to
+the image worker when the source is a standalone image, when the page is
+`image_only`, when a PDF page has `no_usable_text_no_image`, or when the auditor
+asked for full coverage — and `chunk_specs` then *excludes* those pages from the
+text chunks. So a scanned page contributes no text at all. An evidence document
+today emits structured text units and visual page units side by side.
+
+A text-only read would therefore fail in two ways. A fully scanned confirmation
+yields no text, contributes nothing to the master, and produces no records —
+silently. And the commoner case is worse: a mostly-digital PDF with one scanned
+signature or stamp page is read for everything except the page the control is
+on.
+
+That second case is the late-field failure arriving by a different route. The
+master's value rests entirely on absence meaning *the document does not state
+this*. If a page was never read, absence means *nobody looked at that page*, and
+`second_approver` on 3 of 18 payment instructions — seeded exception D5 — is
+exactly the kind of field that lives in a signature block. A design with 4c in
+it cannot leave the same hole open by modality.
+
+So the read unit's context declares two sources — `raw_pages` for the text and
+`page_image` for the document's visually-routed pages — with
+`allow_document_text` and `allow_document_images` both set, the way
+`documents.analysis_visual_page` already does. A preset is a tuple of
+independent sources with their own representations, so this is a declaration
+rather than new machinery. `document_visual_page_analysis` stops expanding for
+evidence; the `.docx` image-only case still reports
+`document_visual_source_unsupported`, because an unreadable page must be stated
+rather than skipped.
+
+**The visual bound is part of the read's one bound.** Media is the expensive
+half: the per-page visual budget is 4 items and roughly 16k image tokens, and
+`MAX_VISUAL_PAGES` is 20 — so a document at that cap would carry 80 images into
+a single call, which is not a call anyone should make. The read therefore takes
+a much lower per-document visual cap than the page-at-a-time path needs, and a
+document exceeding **either** bound — characters or visual pages — is over-window
+and reported. One rule covers both, which is the point: the read either saw the
+document or it says it did not.
+
+**Unit identity has to cover the prepared sets.** A visual unit today carries
+`prepared_set_identity` — a hash of source, page, frame and preparation policy —
+so re-preparing a page re-runs its analysis. The read unit carries the ordered
+list of those hashes in its input, which keeps the same interlock: a preparation
+policy change moves `input_sha1` and the document is read again rather than
+being reduced under images it never saw.
+
+**And it removes a paraphrase nobody wanted.** The reduction's local
+concatenation path requires *every* proposal to be `analysis_profile:
+"structured"`; a visual proposal is not, so an evidence document with one
+scanned page currently loses the fast path and spends a model turn rewording
+records that were already exact. With one unit per document there is no mixed
+set to break the check.
+
 **Evidence that fits no catalogued type is still read into records.** Today it
 is not. `save_schema` refuses `other` outright —
 
@@ -279,17 +365,64 @@ document is `other` until something reads it and names it. Retyping stays the
 auditor's, and an auditor assignment still overrides a coined one under the
 existing `assigned_by` rule.
 
-**The master schema.** One per document type, held as working state for the run
-and supplied to every document of that type as prior art. A document reads its
-own content, sees what its predecessors settled on, and reuses those names. This
-is what removes field drift, and it removes it at the point the fact is first
-observed rather than by reconciling afterwards: `approved_by_id` and
-`approved_by_employee_id` cannot both enter a master that already holds one of
-them.
+**The master schema.** One per document type, supplied to every document of that
+type as prior art. A document reads its own content, sees what its predecessors
+settled on, and reuses those names. This is what removes field drift, and it
+removes it at the point the fact is first observed rather than by reconciling
+afterwards: `approved_by_id` and `approved_by_employee_id` cannot both enter a
+master that already holds one of them.
 
 Per-document calls can only agree if they are not independent. Serializing them
 per type and handing each the accumulated master is what makes agreement
 possible at all.
+
+**It is persisted, and it is not a schema.** An earlier draft called it "working
+state for the run", which does not survive contact with the mechanism it depends
+on: a serialized unit sees its predecessor's work by rebinding against
+*committed workspace state*, so state that never lands on disk is state the next
+document cannot be shown. The master therefore has its own store —
+`DocumentMasters/<document_type>.json` — beside `DocumentSchemas/` and written
+the same way the other side stores are.
+
+Keeping it a *separate artifact* from the schema is what resolves the
+contradiction the first draft carried. `save_schema` bumps `schema_version` on
+any change of meaning, and that bump is the entire staleness mechanism:
+`is_current` compares version and hash, and `schema_ref` stamps are what
+`has_usable_analysis` and `cycle_measurement.structured_records` read. A master
+mutating in place under a fixed version would either fire staleness on every
+document or, worse, hold a version steady while its content moved — which is not
+staleness, it is a stamp that lies. So the master accumulates in its own file
+under its own `master_ref` content hash, and `DocumentSchemas/` is written
+exactly once per type per run, by the stamp. `save_schema` needs no new mode and
+the staleness family is untouched.
+
+```json
+{
+  "document_type": "payment_instruction",
+  "master_ref": "sha256:...",
+  "documents_read": ["doc-0f21", "doc-13c8", "..."],
+  "fields": [
+    {"name": "approved_by_id", "role": "control", "value_type": "identifier",
+     "cardinality": "one", "verbatim": true,
+     "fill_count": 14, "introduced_at": 0}
+  ],
+  "renames": []
+}
+```
+
+**A reading carries `master_ref` until the type is stamped, then `schema_ref`.**
+The read commits the same structured analysis artifact the corpus already
+consumes — so the documents tab, the citation catalogue and
+`document_analysis.inventory` need nothing new — but it cannot carry a
+`schema_ref` at read time, because the version it would name does not exist
+until the type is done. It carries the master's content hash instead. The stamp
+adds the `schema_ref`, and until it does the reading is a reading and not yet
+evidence.
+
+`introduced_at` is the index into `documents_read` at which a field first
+appeared. That one integer is what makes the late-field sweep computable
+without hash archaeology: the fields document *i* was never asked about are
+exactly those with `introduced_at > i`.
 
 **Both calls run sequentially, and only one of them does so for a reason this
 plan cares about.**
@@ -332,12 +465,16 @@ wrong about the master, they would never have been shown it.
 
 **Order the units by type, then document.** Units within a stage execute in
 sorted **id** order, never declaration order, so a read unit keyed
-`document_read:<document_type>:<document_id>` puts a type's documents in one
-contiguous run for free — which is what makes "the end of a type" a moment the
-stamp can happen at, and what bounds the late-field sweep below. This is the same
-ordering fact that cost the induction pass a rebuild: `document_schema:x` sorts
-before `document_schema_sample:x:y` because `:` precedes `_`, and the freeze ran
-while its samples were still queued.
+`evidence_read:<document_type>:<document_id>` puts a type's documents in one
+contiguous run for free — which is what bounds the late-field sweep below. This
+is the same ordering fact that cost the induction pass a rebuild:
+`document_schema:x` sorts before `document_schema_sample:x:y` because `:`
+precedes `_`, and the freeze ran while its samples were still queued.
+
+The contiguous run is a convenience, not the stamp's correctness condition. The
+stamp is a dependent capability, so it runs after the read stage has settled
+whatever the sort produced — the ordering makes the master accumulate in a
+sensible order, and the dependency edge is what makes it complete.
 
 **The accepted cost is wall time on the read pass.** Fully serialized, the
 treasury corpus is 84 steps against 21 for today's
@@ -371,19 +508,127 @@ renames are not:
 | --- | --- |
 | Add a field | Freely. The document states something the master has no place for. This is the common case and cannot invalidate an earlier read. |
 | Rename a field | Only where the master's name is *wrong* about what the field holds. A synonym is never grounds — that is the drift this design exists to remove. |
-| Split or merge | Must name the earlier extractions affected. |
+| Split or merge | Not expressible in 4b.1. A split composes from a rename plus an addition; a merge needs removal, which nothing in the read may do. See *The response contract*. |
+| Remove a field | Never. The master only grows. |
 
 Without the asymmetry, "the agent may revise the master" is the drift mechanism
 relocated rather than removed: every document has some reason its own phrasing
 reads better, and eighteen sequential renames is the result.
 
-**The version is stamped once, when the type's documents are done.** During the
-run the master is mutable working state, so there is no mid-run bump and the
-staleness family has nothing to detect. This makes the failure that cost this
-engagement three recovery runs — a re-derivation orphaning 65 completed
+**The asymmetry is enforced by cost, not by judging the reason.** Whether a
+proposed rename is a genuine correction or a preferred synonym is not a question
+code can settle, and a validator that tried would either wave everything through
+or refuse corrections that were right. So a rename is applied and *recorded* —
+in `renames`, with the document that asked for it — and it re-opens every prior
+reading of the type on exactly the terms a late-added field does, because prior
+readings used the old name and their silence under the new one would be a lie.
+A rename therefore costs what it actually costs. The rule above stays as the
+prompt's instruction; the sweep is what makes ignoring it expensive rather than
+free.
+
+### The response contract
+
+The read's submission tool is a **merge of two shapes that already exist**, not
+new machinery. `_structured_submission_tool` constrains `name` to an enum of the
+type's fields, so naming a field the type does not carry stops being something
+the model can do rather than something a validator catches. `_schema_field`
+validates a full field descriptor — role, value type, cardinality, verbatim,
+confidence. The extraction worker has the first; the sample worker has the
+second; the read needs both in one call, because reading a document and learning
+what the type carries are now the same act.
+
+```
+submit_document_reading
+  records[]        fields[]  {name: enum(master), entry, value, citation}
+  new_fields[]     {name, role, value_type, cardinality, verbatim,
+                    confidence, label, reason,
+                    entry, value, citation}
+  renames[]        {from: enum(master), to, reason}
+  citations[]      as today
+  audit_notes[]    as today
+```
+
+**`additional_fields` leaves the read's response, and this is the load-bearing
+decision.** It exists to hold a fact a frozen vocabulary has no room for, and
+under a master there is no such fact — the master takes the field. Keeping both
+channels would be worse than not having the master at all: one asks for a full
+descriptor and a reason, the other asks for a name and a value, and a model
+offered both will reach for the cheap one every time. That is the drift this
+design removes, reintroduced as a shortcut.
+
+**A field enters the master only by being filled in the document that
+introduces it.** That is why `new_fields` carries `entry`, `value` and
+`citation` alongside the descriptor rather than declaring a field in the
+abstract. The invariant it buys is worth stating plainly: **the master never
+holds a field no document ever stated.** Today's induction has no such guarantee
+and the gap is measured — the RCM authoring turn chose `fx_contract.received_date`
+at 0 of 11, a field the samples proposed and the corpus did not carry. Under
+this contract a zero-fill field cannot exist, and a new field's `fill_count`
+starts at 1 by construction.
+
+**A renamed field's value travels under the old name.** The enum is fixed when
+the call is made, so a field being renamed in this same response cannot appear
+in `records[].fields[]` under its new name. `renames` names the master field;
+the value goes in `fields[]` under the name the enum offers; the commit applies
+the rename to the master and to the incoming record in that order. This keeps
+the enum static, which is the property that makes it enforceable at all.
+
+**Split and merge are not expressible in 4b.1**, and the modification table
+above promises more than this contract delivers until they are. A split is a
+rename plus a new field and could be composed today; a merge requires *removing*
+a master field, and removal is not in the contract at all. Nothing in the read
+may delete a field: document 18 erasing what document 1 read would leave every
+earlier reading holding a value under a field the vocabulary no longer explains.
+A field one document got wrong is a correction for the auditor, not something
+the next document may quietly retract.
+
+**Validation is the existing pair, in the existing order.** Declared
+descriptors go through `_schema_field` at the worker boundary — same role, value
+type and cardinality vocabularies, same errors — and the resulting master goes
+through `document_schemas.validate_fields` at commit, which is what enforces
+unique names and a non-empty field list. No third validator, and no new
+vocabulary: `FIELD_ROLES`, `VALUE_TYPES` and `CARDINALITIES` are unchanged.
+
+**`role` is required and never defaulted, because `identifier` is the expensive
+one.** A join key may only address an identifier field, so a field declared
+`identifier` changes what the corpus can be joined on, and one declared
+`attribute` by omission is a join the engagement can never make. This is the one
+place in the descriptor where a silent default would cost an assertion.
+
+**Two of today's inputs go.** `sole_chunk` is always true when the unit is the
+document, and `schema_sampled_this_document` has no referent once there is no
+sample. Both exist to make an empty extraction a contradiction rather than a
+quiet page; that job now belongs to the read being whole-document by
+construction. An empty `records` array stays a complete answer — a transaction
+document carrying no record is a truthful reading and must not be forced to
+invent one.
+
+**A value read from a page image cites its page.** The read sees both
+modalities, so a citation may point at a page that contributed no text. The
+excerpt is then what the worker transcribed from the image, which is the same
+rule as ever — a citation binds to what the worker actually saw — and the visual
+worker already returns citations in this shape.
+
+**The version is stamped once, when the type's documents are done, by its own
+capability.** During the read there is no version at all — nothing to bump, so
+the staleness family has nothing to detect. This makes the failure that cost
+this engagement three recovery runs — a re-derivation orphaning 65 completed
 extractions as `stale_schema_reference` — structurally impossible rather than
 merely unlikely. The stamped version is provenance, not a contract: *this is
 the vocabulary that emerged from reading these N documents.*
+
+The stamp is a separate capability rather than the last unit of the read, and
+the reason is the one Phase 3 already paid for. Units within a stage execute in
+sorted id order, so a capability holding both the readings and the freeze binds
+the freeze *first* — `document_schema:x` sorts before
+`document_schema_sample:x:y` because `:` precedes `_` — and reads back nothing.
+Making the stamp a dependent capability is what makes the ordering something the
+scheduler honours rather than something a sort order has to be trusted for.
+
+The stamp takes no model turn. It reads the finished master, calls
+`save_schema` once, and back-stamps the type's readings with the resulting
+`schema_ref`, all through `commit_local` — the same shape the freeze binder
+already uses when its samples agree.
 
 **A field added late re-opens the documents that preceded it.** This is the one
 cost of deferring the version, and it is not optional. If the master gains a
@@ -398,18 +643,142 @@ Because the type is serialized and the master only grows, the repair is
 bounded — re-read documents 1…N−1 of that type for the added field alone. Skip
 it and a late-discovered field reads as absent on everything before it, silently.
 
-**Fill counts travel with the master.** An accumulating master carries fields
-only one document ever stated — a single internally-produced confirmation would
-contribute `printed_by_name`, `printed_on` and `status` to its type. Harmless as
-a hint, dangerous as a selector: the RCM authoring turn chose
-`fx_contract.received_date` at 0 of 11 precisely because it saw names without
-frequencies. The counts added to `schema_catalog` stop being a refinement and
-become what keeps an accumulating master usable.
+**Fill counts travel with the master.** The response contract removes the
+zero-fill field — nothing enters the master without being stated by the document
+that introduced it — but it cannot remove the *one*-fill field, and that is the
+one that stays dangerous. A single internally-produced confirmation genuinely
+contributes `printed_by_name`, `printed_on` and `status` to its type: harmless
+as a hint, misleading as a selector. `fx_contract.received_date` at 0 of 11
+became a comparison because the authoring turn saw names without frequencies,
+and 1 of 18 would have read exactly the same to it. So the counts added to
+`schema_catalog` stop being a refinement and become what keeps an accumulating
+master usable.
 
 **What goes, and what stays.** Deleted with the freeze: the reconcile call,
-union-never-intersect, escape rate, `sample_for_induction`, and the
-`schemas_sampled → schemas_induced` edge pair. All of it exists to police a
-guess made from two or three samples, and there is no guess left to police.
+union-never-intersect, escape rate, and `sample_for_induction`. All of it exists
+to police a guess made from two or three samples, and there is no guess left to
+police.
+
+The `schemas_sampled → schemas_induced` **edge pair survives**, which an earlier
+draft had deleting. Its shape is already the shape this needs — a fan-out that
+reads, then a dependent per-type step that settles — and it is the shape Phase 3
+arrived at by getting it wrong once. Three capabilities depend on the second
+node (`analysis_chunks_ready`, `planning.rcm_ready`,
+`tests.cycle_ruleset_proposed`), so keeping the pair means the graph is rewired
+in one place rather than four. What changes is the content of both nodes, and
+their names, because "sampled" on a pass that reads every document is the
+divergence class this plan exists to remove:
+
+| Today | Becomes |
+| --- | --- |
+| `documents.schemas_sampled` — 2–3 sampled documents per type, parallel, reading fields only | `documents.evidence_read` — **every** evidence document, serialized, keyed `<type>:<document>`, reading records *and* contributing to the master |
+| `documents.schemas_induced` — unions the samples, reconciles conflicts, freezes | `documents.schemas_stamped` — one unit per type, no model turn: `save_schema` on the finished master, then back-stamp the type's readings |
+
+### The graph after 4b.1
+
+```
+documents.text_ready
+  └─ documents.categorized          page 1 -> four-value category        sequential   4a ✅
+      └─ documents.types_classified fine type, evidence only             sequential   built
+          └─ documents.evidence_read one unit per evidence document      SEQUENTIAL   4b.1
+              └─ documents.schemas_stamped  one unit per type            sequential   4b.1
+                  ├─ documents.analysis_chunks_ready  planning prose     parallel     built
+                  │   └─ documents.analysis_generated                                 built
+                  ├─ planning.rcm_ready
+                  └─ tests.cycle_ruleset_proposed
+```
+
+Two edges move. `analysis_chunks_ready` **loses** its schema dependency and
+keeps only `text_ready`: under 4b.1 it carries planning prose, which needs no
+vocabulary, and leaving the edge would make every policy summary wait on the
+whole evidence read for nothing. Its unit generation excludes transaction
+evidence entirely — both modalities, text chunks and visual pages alike — which
+now has its own pass. Planning material keeps the visual path unchanged.
+
+`planning.rcm_ready` and `tests.cycle_ruleset_proposed` keep their edges and
+those edges get more expensive — this is the plan's stated cost, that the matrix
+is written against the complete vocabulary of the corpus rather than one guessed
+from three samples.
+
+**A failed read leaves the type with no vocabulary and no evidence, loudly.**
+This settles an open question the plan had left standing. A stage with any
+failed unit folds to `failed`, so a read that dies at document 9 never reaches
+`schemas_stamped`; no `save_schema` runs, the type has no current schema, and
+its readings keep their `master_ref` and are never stamped into evidence. That
+is the right answer and it falls out of the structure rather than needing a
+rule: a master built from eight of eighteen documents is not the type's
+vocabulary, and the eight readings are not lost — they are on disk, and the
+re-run resumes against them.
+
+**Where the step count actually lands.** Fully serialized the treasury corpus is
+84 categorizations and 84 reads plus one stamp per type. Measured against today
+rather than against nothing, the trade is narrower than "84 against 21": the
+sample pass and its reconcile calls disappear, and the per-chunk structured
+extraction they fed disappears with them. Total model calls go slightly *down*;
+what is spent is wall-clock, because the reads no longer overlap.
+
+### Regenerating: two actions, not one
+
+`force` has to split, because under a master the button that exists today is
+being asked two different questions and can only answer one of them.
+
+**Why the current compromise stops working.** `_pending_types` scopes forced
+re-derivation to the targeted documents' own types, plus any type with no schema
+at all. That scoping was bought expensively — force used to re-derive every
+schema in the workspace, so a one-document refresh spent its whole allowance
+re-sampling schemas it was never pointed at, failed on the turn limit, and
+bumped every schema a version, orphaning 68 completed extractions. The promise
+it makes is *a one-document refresh does what its button says*.
+
+That promise rests on a schema coming from a **sample**, which makes re-deriving
+one type a couple of documents' work. A master comes from every document of the
+type, in order, so "re-read this document" and "possibly move the vocabulary"
+are no longer separable and there is nothing left for the scoping trick to
+scope. Any force that may move the master is type-scoped work by nature.
+
+**So name the two questions and give each its own action.** This is the
+distinction the Phase 2a note already draws between retyping a document and
+coining a type — two operations that read alike and are opposites, one changing
+what a *document* is and the other changing the *vocabulary*.
+
+| Action | Scope | The master |
+| --- | --- | --- |
+| `refresh` — *re-read this document* | the targeted documents | **frozen**. A field the read wants to add is reported, not applied |
+| `revise_vocabulary` — *re-read this type* | every document of the targeted documents' types | **rebuilt** from the pass, in order, and re-stamped |
+
+**`refresh` stays cheap, and stays cheap by construction.** The document is
+re-read under exactly the vocabulary its siblings were read under, so nothing
+about them is disturbed. The stamp still runs and costs nothing:
+`save_schema` returns the prior record unchanged when the meaning has not moved,
+which is the same no-op rule that keeps re-inducing an identical schema from
+bumping its version.
+
+**Its refusal is the useful part.** A refresh is asked for because something
+looks wrong, and one thing that can be wrong is that the master has no place for
+what this document states — which a frozen-master re-read cannot fix and would
+otherwise fail at silently, reading the document a second time under the same
+blind spot. So the addition is reported rather than dropped, and the report
+names `revise_vocabulary` as the action that would take it. The cheap action's
+job is to do the common repair and to recognize the case it cannot handle.
+
+**`revise_vocabulary` is an ordinary read pass over a narrower corpus.** It
+rebuilds rather than appends: reading the type from the start in order is what
+keeps `introduced_at` meaningful and the sweep bounded, where appending to an
+existing master would leave indices that no longer describe what any document
+was asked. Because it is a normal pass, 4c's late-field sweep applies to it
+exactly as it applies to the first one — there is no second mechanism.
+
+The scope widening reuses machinery that exists. `_pending_types` already
+computes the targeted documents' types; `revise_vocabulary` feeds that set back
+into the *document* scope — every document of those types — instead of using it
+to scope schema derivation alone.
+
+**What this costs the auditor is honesty about price.** Re-reading eighteen
+payment instructions to fix one document's vocabulary is expensive and it is
+what the repair actually costs; the failure to avoid is a small button quietly
+doing it, which is the shape of the defect `_pending_types` was written to
+remove. Neither action surprises anyone: one is a document, one is a type, and
+the expensive one is only ever reached deliberately.
 
 Retained, against this plan's later phases: `schema_hash` provenance,
 `schema_ref`, `is_current`, `stale_schema_reference`. These are the interlock
@@ -420,10 +789,87 @@ load-bearing. What changes is that they go quiet: with the version stamped once
 per type per run, nothing goes stale mid-run and the family has nothing to fire
 on. They are deleted in Phase 5, after assembly replaces the join, not here.
 
-`additional_fields` survives as a storage shape and stops being reached for. Its
-purpose was to hold a fact the frozen vocabulary had no room for; under a master
-that grows there is no such fact, because the master takes the field. Deleting
-it is cleanup, not part of this tranche.
+`additional_fields` **leaves the read's response contract in 4b.1** and survives
+only as a storage shape, for records already written under it. Its purpose was
+to hold a fact the frozen vocabulary had no room for; under a master that grows
+there is no such fact, because the master takes the field. Removing it from the
+response is not cleanup and cannot be deferred — leaving both channels open lets
+a model take the one that asks for a name and a value over the one that asks for
+a descriptor and a reason. Deleting the *storage* shape is cleanup, and is not
+part of this tranche.
+
+### Implementation notes
+
+Smaller than the decisions above and each with a failure mode behind it. They
+are here because every one of them is the kind of thing that gets rediscovered
+one at a time, at cost.
+
+**The read needs its own skip predicate.** `has_usable_analysis` asks two
+questions — does the stored `schema_ref` still match the live schema, and does
+the type stamped on it still match the assignment — and an unstamped reading has
+no `schema_ref` to answer either with. So it is not "usable" by that test, and a
+read whose units are generated from it would re-read every document on each
+re-expansion within the same run. It gains a third state: a reading exists, it
+is not yet evidence, and the read is done with it. The two existing questions
+keep their meaning for stamped readings, and the reason they were added holds
+unchanged — readiness that does not ask them reuses a capability whole before
+any unit runs, which is how an engagement once completed with no usable cycle
+evidence at all.
+
+**`preparation_model_turns` has to be recounted.** It is
+`classifications + samples + freezes`, sized from `sample_for_induction`, and it
+exists because classification and schema turns were model-backed stages sitting
+entirely outside the document budget's arithmetic. Under 4b.1 the terms change
+to classifications plus *every evidence document* plus one stamp per type — a
+much larger number. Leaving it stale reproduces the failure it was written for:
+a run that spends its allowance before reaching the analysis it was asked for.
+
+**One `mutate()` per read.** The reading commits three things — the analysis
+artifact, the master update, and the `documents_read` append that assigns this
+document's `introduced_at` — and they have to land together. A partial write
+leaves indices that no longer describe what any document was asked, which does
+not fail; it makes 4c sweep the wrong set, silently.
+
+**`analysis_profile` becomes dead code, not a demoted one.** It has two callers.
+`analysis_unit_specs` uses it to pick the text kind, and that routing question
+disappears; `_warn_unstructured_vouchers` reports evidence that fell to prose,
+and has no referent once evidence has its own pass and its own readiness. Both
+go, and the category question moves into `evidence_read`'s unit generation,
+where it is the only question asked. The Phase 9 lesson survives the deletion —
+type says what a document *is*, category says whether the engagement holds it as
+transaction evidence — but only one of the two gates is still needed, because
+the schema half is now an output.
+
+**`types_awaiting_schema` and `types_for_induction` need their counterparts.**
+Three readiness and unit functions call them today. `evidence_read` expands over
+evidence *documents* rather than types; `schemas_stamped` expands over types
+carrying a master with no current schema. Same shape, different predicate, and
+`types_present` keeps its job unchanged — reporting every type the corpus
+carries is a classification fact and is not the same as extracting against it.
+
+**`documents_read` appends on resume and resets only on `revise_vocabulary`.**
+A run that resumes mid-type must append: the readings already taken stand, and
+the indices they were assigned still describe what they were asked, so
+renumbering them would falsify the sweep. `revise_vocabulary` is the one case
+that rebuilds, and it rebuilds precisely because it is re-reading from the start.
+
+**`low_confidence` survives with a different reason.** `save_schema` takes the
+flag and a one-document type still deserves it, but not because a two-sample
+agreement check could not run — there is no such check. It means one document's
+phrasing is this type's entire vocabulary, which is the same warning the live
+4a run produced when `fx_contract` induced 29 fields from a single document.
+
+**`escape_rate` is already dead and its deletion is free.** It is defined in
+`document_schemas.py`, carries 7 tests, and is called from nowhere in
+`backend/app/` — no route serves it and no component renders it. The Phase 6
+plan in `docs/dynamic-cycle-contracts.md` said the documents tab would show
+escape rate per type; it never did. So removing it re-points nothing, and the
+documents tab has no per-type vocabulary surface at all today — which is where
+fill counts should go, since they are what makes an accumulating master
+readable by the person who has to trust it.
+
+**`capabilityLabels.ts` carries the two renamed rows**, alongside
+`documents.categorized` and `documents.types_classified` which keep theirs.
 
 ### Assemble: search replaces the join
 
@@ -586,7 +1032,7 @@ Each phase leaves the tree working.
 | --- | --- | --- |
 | 0 ✅ | Correct the doc-to-code divergence: `dynamic-cycle-contracts.md` claimed evaluation is computed; it is judged. The operators and tolerances it listed as retained were deleted; assertions state a `requirement` instead | Doc matches code |
 | 4a ✅ | Category domain to four values read from page one; `documents.categorized`; `corpus_scope` | Partition holds; an audit run classifies its evidence |
-| 4b.1 | Master schema, one writer: the read capability takes `all_settled_then_validate`, units keyed `<type>:<document>`; asymmetric modification contract; version stamped at end of type | Field drift gone: one name per fact across a type |
+| 4b.1 | `documents.evidence_read` — one sequential unit per evidence document, text and page images in one call, no chunking, keyed `<type>:<document>`, accumulating `DocumentMasters/<type>.json`; `submit_document_reading` merges value-against-enum with field-descriptor and drops `additional_fields`; `documents.schemas_stamped` calls `save_schema` once per type and back-stamps the readings; `refresh` and `revise_vocabulary` split | Field drift gone: one name per fact across a type; no field the corpus never stated; a scanned approval page is read, not skipped; a one-document refresh does not silently re-read eighteen |
 | 4b.2 | Evidence with no catalogued type read anyway; the read coins a `local.` type carrying a discriminator | Nine broker notes carry one vocabulary, not nine |
 | 4c | Late-field re-sweep over the documents that preceded the addition | Absence means "not stated", never "not asked" |
 
@@ -647,6 +1093,13 @@ stage widens under `force`. This one must not: re-categorizing moves a document
 across the planning/evidence partition mid-run, taking its type, its schema and
 its extraction with it, so a refresh pointed at one document would invalidate
 the vocabulary the rest of the corpus was read under.
+
+That holds for **both** of 4b.1's actions. Neither `refresh` nor
+`revise_vocabulary` re-asks the category: the first is a question about one
+document's extraction and the second about one type's vocabulary, and a document
+that changed category would belong to neither pass. Correcting a category stays
+the auditor's *Held as* control, which is where a decision that moves a document
+across the partition belongs.
 
 **Two axes, two labels, one screen.** The documents tab had the same confusion
 the import dialog did — a control labelled *Type* that set the category. The
@@ -724,14 +1177,24 @@ master that accumulates, not a wider sample.
 
 ## Open questions
 
-Each needs a decision before its phase:
+Each needs a decision before its phase.
 
-- **What a failed read does mid-type.** The type is serialized, so a failure at
-  document 9 leaves a master built from eight. Stamping it anyway records a
-  vocabulary as complete when it is not; refusing loses eight reads. The
-  existing scheduler answer — a stage with any failed unit folds to `failed` —
-  is stricter than the binder underneath it, and `docs/dynamic-cycle-contracts.md`
-  already flags that mismatch as deliberately left open.
+**Settled by the 4b.1 design** — *what a failed read does mid-type.* Splitting
+the stamp into its own capability answers it. A stage with any failed unit folds
+to `failed`, so a read that dies at document 9 never reaches
+`documents.schemas_stamped`: `save_schema` does not run, the type has no current
+schema, and its eight readings keep their `master_ref` and are never stamped
+into evidence. Nothing is lost — the readings are on disk and the re-run resumes
+against them — and nothing records a partial vocabulary as complete. See *The
+graph after 4b.1*.
+
+- **Where the read's visual cap sits.** The page-at-a-time path allows 20 pages
+  at 4 images each; one call cannot. Evidence documents are short, so a low cap
+  costs nothing on this corpus and the over-window report catches the rest — but
+  the number should come from measuring the engagement's evidence rather than
+  from a guess, and it interacts with the character bound rather than sitting
+  beside it. Worth setting once against real page counts, and worth revisiting
+  the first time an engagement carries long scanned evidence.
 - **Whether a model may coin a type no auditor ever sees.** The mechanism allows
   it and the discriminator makes it safe to read, but a workspace whose
   vocabulary is entirely model-coined has had no human look at what its
@@ -748,8 +1211,10 @@ Each needs a decision before its phase:
   cheap and consistent with a master that only grows; it needs the same
   late-field sweep when the new document contributes a field.
 - **When the read pass needs concurrency back.** Serialized, the treasury corpus
-  is 84 steps against 21 today. That is an acceptable trade for one engagement
-  and an obvious one to revisit; what is unsettled is the threshold. Two answers
+  is 84 reads where today's chunked extraction overlaps. Total model calls go
+  down — the sample pass and its reconcile calls are gone — so what is being
+  spent is wall-clock, which is an acceptable trade for one engagement and an
+  obvious one to revisit; what is unsettled is the threshold. Two answers
   exist and neither is foreclosed: a `grouped_sequential` barrier, which is a
   scheduling change touching no stored data and no unit contract; or batching
   several documents into one call, which keeps one writer while cutting the step

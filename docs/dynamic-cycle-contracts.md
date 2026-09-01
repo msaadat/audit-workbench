@@ -63,6 +63,15 @@ treats both as provisional.
 
 ## Pass structure
 
+> **Superseded by `docs/agentic-vouching-plan.md` phase 4b, which is not yet
+> built.** What is below is what ships today and what the rest of this document
+> describes. What changes there is *when* the vocabulary freezes: sampling and
+> the induce pass go, every evidence document is read once in type order against
+> an accumulating master, and the schema is written at the end of a type from
+> what the reading produced. Two premises below also no longer hold — intake is
+> no longer filename-only (phase 4a reads page one), and the induction sample is
+> no longer re-extracted because there is no sample.
+
 Document type cannot come from intake. Intake classification is deliberately
 filename-only with no document contents, as a stated privacy boundary
 (`backend/app/intake.py`), and its `document_category` is coarser than a
@@ -579,6 +588,12 @@ and covered by `workspace_transactions.py`.
     .index.json
 ```
 
+Phase 4b adds one store beside these — `DocumentMasters/<document_type>.json`,
+the vocabulary accumulating as a type is read, deliberately *not* a schema and
+carrying no version. `DocumentSchemas/` keeps its meaning exactly: written once
+per type per run, by the stamp, from the finished master. See
+`docs/agentic-vouching-plan.md`, *The master schema*.
+
 Written directly with `write_json_atomic`, the way `methodology.py` and
 `document_analysis.py` write their side stores — **not** through
 `workspace_transactions.prepare_linked_write`, and not as artifact collections
@@ -797,6 +812,12 @@ Changed:
 - `DocumentsTab.vue` — shows document type, schema, and escape-rate per type;
   hosts the `other` bucket review where an auditor retypes a document, coins a
   `local.` type, and triggers the reclassify-remaining rerun
+
+> **The escape-rate half of that row never shipped.** `document_schemas.escape_rate`
+> exists and is tested, but no route serves it and no component renders it, so
+> the documents tab has no per-type vocabulary surface. Recorded rather than
+> quietly fixed, because it is why the metric below is deletable at no cost —
+> see `docs/agentic-vouching-plan.md`, *Implementation notes*.
 
 ## Migration
 
@@ -1415,7 +1436,9 @@ Deliberately left open, and each needs a decision before its phase:
 - Retry and repair budgets for the three new workers, and what a failed
   induction does — block the type, or fall back to unguided extraction.
 - Whether escape-rate re-derivation is automatic or offered. Automatic
-  re-derivation invalidates extractions mid-run.
+  re-derivation invalidates extractions mid-run. *Moot in practice: nothing
+  calls `escape_rate`, so neither happens. It is answered by deletion in
+  phase 4b.1 rather than by a decision.*
 - Concurrency: a schema re-derived while extraction is in flight. The existing
   execution-identity interlock should cover it, but it is untested for schemas.
 - Whether retyping generalizes from the `other` bucket to correcting any
