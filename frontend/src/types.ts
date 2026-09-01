@@ -47,7 +47,12 @@ export interface WorkspaceSummary {
   finding_count?: number
 }
 
-export type DocumentCategory = 'background' | 'policy' | 'regulation' | 'contract' | 'minutes' | 'voucher' | 'evidence' | 'prior_report' | 'correspondence' | 'other'
+/** What an engagement holds a document as, read from its opening page.
+ *  Three planning values and one evidence value, and the split between them is
+ *  what the pipeline acts on: evidence is read under its type's fields, planning
+ *  material keeps the narrative analysis the planning prompts consume.
+ *  `''` is a document nothing has read yet. */
+export type DocumentCategory = 'policy' | 'minutes' | 'background' | 'evidence' | ''
 export type DocumentTextState = 'pending' | 'extracted' | 'image_only' | 'partial' | 'failed'
 
 /** Who decided a document's type. A reclassification rerun may replace a

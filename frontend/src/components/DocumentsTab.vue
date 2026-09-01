@@ -80,13 +80,20 @@ let indexingTimer: number | undefined
 let indexingPollRunning = false
 let unsubscribeWorkspaceChanged: (() => void) | undefined
 
-const categories = ['background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other']
+// What the engagement holds a document as. Ordered planning-first so the
+// picker reads as the partition it is, with evidence — the one value that puts
+// a document under a field schema — last.
+const categories: DocumentCategory[] = ['policy', 'minutes', 'background', 'evidence']
 const documentCategoryOptions = categories.map(value => ({ value, label: value.replace('_', ' ') }))
 const groupOptions = [
-  { value: 'type', label: 'Group by type' },
+  { value: 'type', label: 'Group by classification' },
   { value: 'folder', label: 'Group by folder' },
   { value: 'status', label: 'Group by status' },
 ]
+/** `fx_contract` -> `fx contract`; `local.broker_note` -> `broker note`. */
+function documentTypeLabel(value: string): string {
+  return value.replace(/^local\./, '').replace(/_/g, ' ')
+}
 const visualPageLimit = 20
 const visionAvailable = computed(() => agent.state.status?.vision_configured === true)
 const structuredFieldsJson = computed(() => {
@@ -127,6 +134,35 @@ function groupValue(doc: AuditDocument): string {
   return groupBy.value === 'status' ? doc.text_state : doc.category
 }
 
+/** Split one group's documents by what they *are*, where that is asked at all.
+ *
+ * Only evidence carries a document type — it is the only material read under a
+ * field schema, so it is the only material a type would mean anything for. A
+ * category holding a mix of types is therefore always evidence, and everything
+ * else returns a single unlabelled section that the rail renders flat.
+ */
+function subgroups(value: string, items: AuditDocument[]) {
+  if (groupBy.value !== 'type' || value !== 'evidence') {
+    return [{ key: '', label: '', items }]
+  }
+  const map = new Map<string, AuditDocument[]>()
+  for (const doc of items) {
+    const type = String(doc.classification?.document_type || '')
+    map.set(type, [...(map.get(type) || []), doc])
+  }
+  return [...map.entries()]
+    .map(([type, docs]) => ({
+      key: type || 'unclassified',
+      // Unread rather than unclassifiable: a document with no type yet has not
+      // reached the classification stage, which is a different thing from the
+      // `other` bucket an auditor is asked to retype.
+      label: type ? documentTypeLabel(type) : 'not yet identified',
+      items: docs,
+    }))
+    .sort((a, b) => (a.key === 'unclassified' ? 1 : 0) - (b.key === 'unclassified' ? 1 : 0)
+      || a.label.localeCompare(b.label))
+}
+
 const groups = computed(() => {
   const map = new Map<string, AuditDocument[]>()
   for (const doc of filtered.value) {
@@ -136,11 +172,14 @@ const groups = computed(() => {
   const entries = [...map.entries()].map(([value, items]) => ({
     value,
     key: `${groupBy.value}:${value}`,
-    label: groupBy.value === 'folder' ? value : value.replace(/_/g, ' '),
+    label: groupBy.value === 'folder'
+      ? value
+      : (value ? value.replace(/_/g, ' ') : 'not yet read'),
     items,
+    sections: subgroups(value, items),
   }))
   entries.sort((a, b) => groupBy.value === 'type'
-    ? categories.indexOf(a.value) - categories.indexOf(b.value)
+    ? categories.indexOf(a.value as DocumentCategory) - categories.indexOf(b.value as DocumentCategory)
     : a.value.localeCompare(b.value))
   return entries
 })
@@ -684,21 +723,30 @@ onUnmounted(() => {
             <span class="group-count">{{ group.items.length }}</span>
           </button>
           <template v-if="!collapsedGroups.has(group.key)">
-            <button
-              v-for="doc in group.items" :key="doc.id" class="doc-row" :class="{ active: doc.id === selectedId }"
-              :title="`${doc.source} · ${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`" @click="selectDocument(doc.id, 1)"
-            >
-              <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
-              <span class="doc-identity"><strong>{{ doc.source }}</strong><small v-if="hasDistinctTitle(doc)">{{ doc.title }}</small></span>
-              <template v-for="status in [documentStatus(doc, { visionAvailable })]" :key="`${doc.id}:status`">
-                <span
-                  v-if="status.level !== 'ready'" class="doc-status" :class="[status.level, { failed: status.failed }]"
-                  :title="`${status.label} — ${status.detail}`"
-                >
-                  <i :class="status.level === 'processing' ? 'pi pi-spin pi-spinner' : 'pi pi-exclamation-circle'" />
-                </span>
-              </template>
-            </button>
+            <template v-for="section in group.sections" :key="`${group.key}:${section.key}`">
+              <!-- Only evidence is split further, and only where a type is what
+                   a document is read under. Everything else renders flat. -->
+              <div v-if="section.label" class="doc-subgroup">
+                <span class="subgroup-name">{{ section.label }}</span>
+                <span class="subgroup-count">{{ section.items.length }}</span>
+              </div>
+              <button
+                v-for="doc in section.items" :key="doc.id" class="doc-row"
+                :class="{ active: doc.id === selectedId, nested: !!section.label }"
+                :title="`${doc.source} · ${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`" @click="selectDocument(doc.id, 1)"
+              >
+                <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
+                <span class="doc-identity"><strong>{{ doc.source }}</strong><small v-if="hasDistinctTitle(doc)">{{ doc.title }}</small></span>
+                <template v-for="status in [documentStatus(doc, { visionAvailable })]" :key="`${doc.id}:status`">
+                  <span
+                    v-if="status.level !== 'ready'" class="doc-status" :class="[status.level, { failed: status.failed }]"
+                    :title="`${status.label} — ${status.detail}`"
+                  >
+                    <i :class="status.level === 'processing' ? 'pi pi-spin pi-spinner' : 'pi pi-exclamation-circle'" />
+                  </span>
+                </template>
+              </button>
+            </template>
           </template>
         </div>
         <button v-if="search.trim()" class="rail-deep-search" @click="openContentSearchFromRail">
@@ -716,18 +764,32 @@ onUnmounted(() => {
             <p v-if="detailSubtitle">{{ detailSubtitle }}</p>
           </div>
           <div class="detail-actions">
+            <!-- Two answers, and they are not the same question. "Held as" is
+                 what this engagement does with the document and is the
+                 auditor's to set — their answer stands against any rerun.
+                 "Read as" is what the document is, asked only of evidence,
+                 because only evidence is read under a type's fields. -->
             <label class="classification-field">
-              <span>Type</span>
+              <span>Held as</span>
               <Select
                 :modelValue="selected.category"
                 :options="documentCategoryOptions"
                 optionLabel="label"
                 optionValue="value"
                 :disabled="classificationBusy"
-                aria-label="Document classification"
+                placeholder="Not yet read"
+                aria-label="What this engagement holds the document as"
                 @update:modelValue="updateClassification"
               />
             </label>
+            <span v-if="selected.category === 'evidence'" class="classification-field read-only">
+              <span>Read as</span>
+              <strong>{{
+                selected.classification?.document_type
+                  ? documentTypeLabel(selected.classification.document_type)
+                  : 'not yet identified'
+              }}</strong>
+            </span>
             <Button label="Add to assistant" icon="pi pi-paperclip" size="small" outlined @click="attachToAssistant" />
             <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
           </div>
@@ -961,7 +1023,7 @@ onUnmounted(() => {
 .indexing-chip { display:inline-flex; align-items:center; gap:.4rem; min-height:var(--aw-control-height-sm); padding:.2rem .6rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-pill); background:var(--aw-info-soft); color:var(--aw-info); font-size:var(--aw-text-xs); font-weight:600; white-space:nowrap; }
 .indexing-chip .pi { font-size:var(--aw-text-xs); }
 .document-rail { min-height:0; padding:.75rem; border-right:1px solid var(--aw-border); background:var(--aw-canvas); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--aw-border); background:var(--aw-canvas); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--aw-border-strong); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:var(--aw-text-sm); }
-.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:var(--aw-text-2xs); }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-control); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:var(--aw-panel); }.doc-row.active { border-color:var(--aw-teal-line); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); font-size:var(--aw-text-sm); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:var(--aw-text-sm); }.doc-identity small { color:var(--aw-muted); font-size:var(--aw-text-2xs); }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:var(--aw-text-xs); }.doc-status.processing { color:var(--aw-info); }.doc-status.attention { color:var(--aw-warn); }.doc-status.attention.failed { color:var(--aw-danger); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:var(--aw-text-2xs); }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-control); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:var(--aw-panel); }.doc-row.active { border-color:var(--aw-teal-line); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); font-size:var(--aw-text-sm); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:var(--aw-text-sm); }.doc-identity small { color:var(--aw-muted); font-size:var(--aw-text-2xs); }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:var(--aw-text-xs); }.doc-status.processing { color:var(--aw-info); }.doc-status.attention { color:var(--aw-warn); }.doc-status.attention.failed { color:var(--aw-danger); }.doc-subgroup { display:flex; align-items:center; gap:.4rem; margin:.35rem 0 .05rem; padding:.1rem .25rem .1rem 1.15rem; color:var(--aw-muted); font-size:var(--aw-text-2xs); font-weight:700; letter-spacing:.02em; text-transform:capitalize; }.subgroup-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.subgroup-count { margin-left:auto; font-weight:400; }.doc-row.nested { margin-left:.9rem; }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
 .rail-deep-search { display:flex; align-items:center; gap:.45rem; width:100%; margin-top:.7rem; padding:.5rem .6rem; border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-teal); font-size:var(--aw-text-xs); text-align:left; cursor:pointer; }.rail-deep-search:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft); }.rail-deep-search span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .document-detail { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
 /* One line: the name, its state, and whatever the viewer does not say itself. */
@@ -978,7 +1040,7 @@ onUnmounted(() => {
    guess at the chrome above it, so trimming that chrome would have handed the
    height back as whitespace rather than as document. */
 .document-frame { width:100%; flex:1 1 auto; min-height:24rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }.docx-frame { flex:1 1 auto; min-height:24rem; overflow:auto; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-raised); }.docx-frame.loading { opacity:.5; }.docx-frame :deep(.docx-wrapper) { background:var(--aw-raised); padding:1.25rem; }.docx-frame :deep(.docx-wrapper > section.docx) { margin-bottom:1rem; box-shadow: var(--aw-shadow-md); }.source-toggle { display:flex; margin-left:.5rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); overflow:hidden; }.source-toggle button { padding:.28rem .75rem; border:0; background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); cursor:pointer; }.source-toggle button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:600; }
-.classification-field { display:flex; align-items:center; gap:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs); }.classification-field :deep(.p-select) { min-width:8rem; min-height:2rem; font-size:var(--aw-text-sm); text-transform:capitalize; }
+.classification-field { display:flex; align-items:center; gap:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs); }.classification-field :deep(.p-select) { min-width:8rem; min-height:2rem; font-size:var(--aw-text-sm); text-transform:capitalize; }.classification-field.read-only strong { color:var(--aw-ink); font-size:var(--aw-text-sm); font-weight:600; text-transform:capitalize; }
 .preview-view .source-search-bar { display:flex; gap:.4rem; }
 .preview-view .source-search-bar,.preview-view .inline-search-results { flex:none; margin-bottom:.75rem; }
 .preview-view .scan-notice,.preview-view .document-image,.preview-view .page-text,.preview-view .technical-details { flex:none; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
