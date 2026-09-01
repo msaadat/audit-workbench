@@ -1242,7 +1242,9 @@ def validate_generate_proposal(
     )
     # Both row-level gaps: a transaction-cycle requirement with no cycle test,
     # and a population a requirement names with no step about it.
-    row_level = coverage + _untested_named_populations(request, normalized)
+    row_level = coverage + _untested_named_populations(
+        request, normalized, known_tables
+    )
     errors.extend(row_level)
     if errors:
         # A row-level coverage gap is the one failure a partial commit must not
@@ -1257,8 +1259,47 @@ def validate_generate_proposal(
     return {"tests": normalized}
 
 
+def _columns_corroborate_name(
+    population: str,
+    columns: Mapping[str, str],
+    requirement_tokens: set[str],
+) -> bool:
+    """Whether a requirement reaches past a population's name into its columns.
+
+    A table name shares words with a requirement for two very different
+    reasons, and the shared words themselves cannot tell them apart.
+
+    ``vendor_master_file`` against "duplicate vendor identities and bank
+    details in the vendor master file" is a requirement naming the population
+    it asserts about, and ``BANK_ACCOUNT_NUMBER`` says so a second time,
+    independently of the name.
+
+    ``financial_approval_matrix`` against "the purchase order date is on or
+    after the financial approval date" is two ordinary words colliding. The
+    requirement means a date column on the requisition; the table it matched
+    is a four-row delegation matrix of job titles and approval limits, holding
+    no date at all. Demanding a step at that grain asks for a test that cannot
+    be written, and the row failed six generation attempts on it.
+
+    So corroboration is scored only on the words the columns add — ``approval``
+    in ``MAX_APPROVAL_AMOUNT`` is the collision restated, not a second
+    witness — and a population whose schema offers nothing the requirement
+    mentions is left alone. That trades away the rows a name alone would have
+    caught, which is the right way round: a missed prompt costs one untested
+    population, and a false one costs the whole row, permanently.
+    """
+
+    name_tokens = relevance_tokens(population)
+    return any(
+        (relevance_tokens(column) - name_tokens) & requirement_tokens
+        for column in columns
+    )
+
+
 def _untested_named_populations(
-    request: WorkerRequest, tests: list[dict]
+    request: WorkerRequest,
+    tests: list[dict],
+    known_tables: Mapping[str, Mapping[str, str]],
 ) -> list[str]:
     """Populations a tabular requirement names by word that no step asserts about.
 
@@ -1273,6 +1314,9 @@ def _untested_named_populations(
     and demanding a step for each would reject rows whose tabular attributes
     are legitimately about one of them. A requirement that says "the maintained
     vendor records" is naming the population it is asserting about.
+
+    A name match alone is not enough to prompt for the step: the population's
+    own columns have to corroborate it, per `_columns_corroborate_name`.
     """
 
     try:
@@ -1296,6 +1340,9 @@ def _untested_named_populations(
         population
         for population in populations
         if relevance_tokens(population) & requirement_tokens
+        and _columns_corroborate_name(
+            population, known_tables.get(population) or {}, requirement_tokens
+        )
     }
     asserted = {
         str(step.get("population") or "")

@@ -1195,6 +1195,137 @@ def test_a_requirement_naming_a_population_must_produce_a_step_about_it():
     assert "at its own grain" in message
 
 
+def test_a_name_collision_alone_does_not_demand_a_step_about_a_population():
+    """RCM-C37D96, which failed six generation attempts on an impossible ask.
+
+    Its requirement — "the purchase order date is on or after the financial
+    approval date" — shares `financial` and `approval` with the four-row
+    `financial_approval_matrix`, a delegation table of job titles and approval
+    limits carrying no date at all. The dates it means live on `requisitions`,
+    whose name shares nothing with the sentence. So the rule demanded a step at
+    a grain that cannot answer the requirement, and because a row-level gap
+    suppresses the partial commit, it discarded the correct test sitting beside
+    it and left the row untestable across two runs.
+    """
+
+    bundle = _bundle(
+        tables=(
+            "requisitions",
+            "financial_approval_matrix",
+            "po_data_requisitions_joined",
+        ),
+        table_columns={
+            "requisitions": ("REQUISITION_ID", "FIN_APPROVAL_DATE", "PO_NUMBER"),
+            "financial_approval_matrix": ("JOB_TITLE", "MAX_APPROVAL_AMOUNT"),
+            "po_data_requisitions_joined": (
+                "REQUISITION_ID",
+                "PO_DATE",
+                "FIN_APPROVAL_DATE",
+            ),
+        },
+        table_grains={"po_data_requisitions_joined": "po_data"},
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Purchase orders may be dated before the financial approval date.",
+            "control": "The Purchase Order is dated on or after the date of financial approval.",
+            "control_attributes": [
+                {
+                    "key": "po_date_after_approval",
+                    "requirement": (
+                        "The purchase order date is on or after the financial "
+                        "approval date."
+                    ),
+                    "evidence_kind": "tabular_population",
+                }
+            ],
+        },
+    )
+    anchored_on_requisitions = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            population="requisitions",
+                            code=(
+                                "result = requisitions.join("
+                                'po_data_requisitions_joined.select('
+                                '["REQUISITION_ID", "PO_DATE"]), '
+                                'on="REQUISITION_ID", how="left").filter('
+                                'pl.col("PO_DATE") < pl.col("FIN_APPROVAL_DATE"))'
+                            ),
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    gateway = _Gateway([anchored_on_requisitions])
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    assert len(gateway.calls) == 1, "the response was sent back for repair"
+    assert result.repaired is False
+    assert result.proposal["tests"][0]["steps"][0]["population"] == "requisitions"
+
+
+def test_a_population_its_columns_corroborate_is_still_demanded():
+    """The vendor-master catch survives the narrowing.
+
+    Same shape as the collision above — a requirement sharing words with a
+    table name — but here `BANK_ACCOUNT_NUMBER` names `bank` a second time,
+    independently of `vendor_master_file`. That is the requirement reaching
+    into the population rather than two words colliding, so the step is still
+    demanded.
+    """
+
+    bundle = _bundle(
+        tables=("vendor_master_file", "invoice_data_staff_details_joined"),
+        table_columns={
+            "vendor_master_file": ("VENDOR_ID", "BANK_ACCOUNT_NUMBER"),
+            "invoice_data_staff_details_joined": ("INVOICE_ID", "BANK_ACCOUNT_NUMBER"),
+        },
+        table_grains={"invoice_data_staff_details_joined": "invoice_data"},
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Duplicate vendor master records may share bank details.",
+            "control": "Vendor master review.",
+            "control_attributes": [
+                {
+                    "key": "vendor_duplicate_review",
+                    "requirement": (
+                        "Duplicate vendor identities and bank details in the "
+                        "vendor master file are identified."
+                    ),
+                    "evidence_kind": "tabular_population",
+                }
+            ],
+        },
+    )
+    wrong_table = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            population="invoice_data",
+                            code=(
+                                "result = invoice_data_staff_details_joined.filter("
+                                'pl.col("BANK_ACCOUNT_NUMBER").is_duplicated())'
+                            ),
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), _Gateway([wrong_table] * 3))
+
+    assert "names population 'vendor_master_file'" in str(caught.value)
+
+
 def test_a_malformed_response_is_repaired_against_the_position_that_broke():
     """"Not a valid JSON object" locates nothing, so nothing gets corrected.
 
