@@ -366,6 +366,13 @@ FINDING_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_finding_worker,
+    # The finding's contract is Markdown, so the provider must not be asked to
+    # constrain the response to a JSON object. Leaving this on told the model to
+    # emit Markdown and forbade it in the same breath: it answered with the
+    # finding filed under a key of its own choosing — `{"agent:finding": {...}}`,
+    # the stage tag — and every template section was then missing. That is the
+    # same failure the APM worker carries this flag for.
+    json_response=False,
     semantic_validator=validate_finding_proposal,
 )
 

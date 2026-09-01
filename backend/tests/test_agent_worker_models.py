@@ -556,7 +556,7 @@ class TestInvisibleCharactersInJsonResponses:
 
 
 class TestJsonModeIsPerWorker:
-    """One worker's response is Markdown, and constraining it broke the APM.
+    """Two workers answer in Markdown, and constraining either one breaks it.
 
     Every response schema in this package can parse JSON, so "it parses JSON"
     is no evidence that JSON is what the worker asked for. The APM prompt says
@@ -564,12 +564,20 @@ class TestJsonModeIsPerWorker:
     schema reads a JSON envelope only as a legacy shape. Asking the provider to
     constrain that call returned a complete 16,000-character memorandum under a
     key the model invented, and the template check failed on an empty document.
+
+    The finding worker joined it for the same reason and failed the same way:
+    its narrative is multi-line Markdown — headings on their own lines, a table
+    row per line — which a JSON string field cannot carry from a model that will
+    not escape a newline. Constrained to JSON while being asked for Markdown, it
+    answered with the finding filed under the `agent:finding` stage tag.
     """
 
-    def test_the_apm_worker_is_not_constrained_to_json(self):
+    def test_the_markdown_workers_are_not_constrained_to_json(self):
         from app.agent.workers import planning as planning_worker
+        from app.agent.workers import reporting as reporting_worker
 
         assert planning_worker.APM_WORKER.json_response is False
+        assert reporting_worker.FINDING_WORKER.json_response is False
 
     def test_every_other_worker_is(self):
         from app.agent.workers import WORKERS
@@ -579,7 +587,7 @@ class TestJsonModeIsPerWorker:
             for worker_id, definition in WORKERS._definitions.items()
             if not definition.json_response
         }
-        assert prose == {"planning.apm"}
+        assert prose == {"planning.apm", "reporting.finding"}
 
     def test_the_default_is_json(self):
         assert (
