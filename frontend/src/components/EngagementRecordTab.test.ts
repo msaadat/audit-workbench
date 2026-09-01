@@ -139,7 +139,11 @@ function owed(overrides: Partial<EngagementStage> = {}): EngagementStage {
     runnable: true,
     headline: 'Write the report from the findings',
     blocked_reason: '',
-    start: { prompt: 'Generate the report.', outcomes: ['report.working_draft'] },
+    start: {
+      prompt: 'Generate the report.',
+      outcomes: ['report.working_draft'],
+      alternates: [],
+    },
     action: 'run',
     links: [],
     filed: { label: 'Report', destination: 'report', unit: '', unit_plural: '', count: null },
@@ -152,6 +156,33 @@ function owed(overrides: Partial<EngagementStage> = {}): EngagementStage {
     history: null,
     ...overrides,
   }
+}
+
+/** The one owed stage that offers a narrower run under its button. */
+function documentsOwed(): EngagementStage {
+  return owed({
+    id: 'stage:documents.analysis_generated',
+    capability: 'documents.analysis_generated',
+    order: 2,
+    headline: 'Analyse the imported documents',
+    start: {
+      prompt: 'Analyse the documents.',
+      outcomes: [
+        'documents.categorized', 'documents.types_classified',
+        'documents.schemas_stamped', 'documents.analysis_generated',
+      ],
+      alternates: [{
+        label: 'Planning documents only',
+        prompt: 'Analyse the planning documents.',
+        outcomes: ['documents.analysis_generated'],
+        note: 'The RCM will read it later.',
+      }],
+    },
+    filed: {
+      label: 'Document analyses', destination: 'documents',
+      unit: 'document', unit_plural: '', count: null,
+    },
+  })
 }
 
 /** A `Storage` for an environment whose window does not provide one. */
@@ -217,6 +248,20 @@ async function render(
         UiPageHeader: { template: '<div><slot /></div>' },
         UiEmptyState: { template: '<div class="empty" />' },
         Button: { template: '<button />' },
+        // Flattened so a test can click the primary and an alternate without
+        // driving the popup PrimeVue teleports.
+        SplitButton: {
+          name: 'SplitButton',
+          props: ['model'],
+          emits: ['click'],
+          template: `<span class="split">
+            <button class="split-main" @click="$emit('click')" />
+            <button
+              v-for="item in model" :key="item.label"
+              class="split-alt" @click="item.command()"
+            >{{ item.label }}</button>
+          </span>`,
+        },
         RouterLink: { props: ['to'], template: '<a :href="String(to?.path)"><slot /></a>' },
       },
     },
@@ -473,6 +518,50 @@ describe('EngagementRecordTab', () => {
     expect(ghost.attributes('data-live')).toBe('queued')
     expect(ghost.find('button').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('asks for the complete outcome set when a split stage is clicked', async () => {
+    // The click is the complete answer. A cheaper one reachable in a click and
+    // a complete one reachable in two is what analysed 1 document of 9.
+    const wrapper = await render([filed(), documentsOwed()])
+    await wrapper.find('.split-main').trigger('click')
+
+    expect(send).toHaveBeenCalledWith(
+      'Analyse the documents.', 'act', 'auto',
+      expect.objectContaining({
+        requestedOutcomes: [
+          'documents.categorized', 'documents.types_classified',
+          'documents.schemas_stamped', 'documents.analysis_generated',
+        ],
+      }),
+    )
+  })
+
+  it('asks for the narrower set when an alternate is chosen', async () => {
+    const wrapper = await render([filed(), documentsOwed()])
+    await wrapper.find('.split-alt').trigger('click')
+
+    expect(send).toHaveBeenCalledWith(
+      'Analyse the planning documents.', 'act', 'auto',
+      expect.objectContaining({
+        requestedOutcomes: ['documents.analysis_generated'],
+      }),
+    )
+  })
+
+  it('carries the alternate note, which is what says the work is deferred', async () => {
+    const wrapper = await render([filed(), documentsOwed()])
+
+    expect(wrapper.find('.split-alt').text()).toBe('Planning documents only')
+    expect(wrapper.findComponent({ name: 'SplitButton' }).props('model'))
+      .toEqual([expect.objectContaining({ note: 'The RCM will read it later.' })])
+  })
+
+  it('draws a plain button for a stage with nothing narrower to offer', async () => {
+    const wrapper = await render([filed(), owed()])
+
+    expect(wrapper.find('.split').exists()).toBe(false)
+    expect(wrapper.find('.row.ghost button').exists()).toBe(true)
   })
 
   it('hands a just-started stage back to the run once its workflow names it', async () => {

@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
+import SplitButton from 'primevue/splitbutton'
+import type { MenuItem } from 'primevue/menuitem'
 import { useToast } from 'primevue/usetoast'
 
 import { api, ApiError } from '../api'
@@ -500,7 +502,17 @@ function openPoint(point: EngagementOpenPoint) {
  * ledger stays on screen and lights up, with the thread beside it in the
  * sidecar for anyone who wants the detail.
  */
-async function start(stage: EngagementStage) {
+type StartRequest = { prompt: string; outcomes: string[] }
+
+function startOptions(stage: EngagementStage): MenuItem[] {
+  return (stage.start?.alternates ?? []).map(alternate => ({
+    label: alternate.label,
+    note: alternate.note,
+    command: () => void start(stage, alternate),
+  }))
+}
+
+async function start(stage: EngagementStage, alternate?: StartRequest) {
   if (starting.value) return
   // Sources is the one stage the assistant cannot begin. Bringing in the audit
   // file is the auditor's act, so the row hands the shell's import dialog back
@@ -510,11 +522,14 @@ async function start(stage: EngagementStage) {
     return
   }
   if (!stage.start) return
+  // A stage may offer narrower outcome sets under its button. The primary
+  // click is always the complete one.
+  const asked = alternate ?? stage.start
   starting.value = stage.capability
   try {
-    await chats.send(stage.start.prompt, 'act', 'auto', {
+    await chats.send(asked.prompt, 'act', 'auto', {
       source: 'shortcut',
-      requestedOutcomes: stage.start.outcomes,
+      requestedOutcomes: asked.outcomes,
     })
     justStarted.value = stage.capability
     agent.openDrawer()
@@ -813,6 +828,25 @@ const pendingNote = computed(() => {
                 <i class="pi pi-spin pi-spinner" aria-hidden="true" />{{ liveSince(stage.capability) }}
               </span>
               <span v-else-if="liveState(stage.capability) === 'queued'" class="waits">queued</span>
+              <!-- A stage offering narrower runs draws them under the button,
+                   never beside it: the click stays the complete answer. -->
+              <SplitButton
+                v-else-if="stage.runnable && stage.start?.alternates.length"
+                label="Run"
+                size="small"
+                :severity="stage.capability === leadStage ? undefined : 'secondary'"
+                :outlined="stage.capability !== leadStage"
+                :disabled="starting === stage.capability"
+                :model="startOptions(stage)"
+                @click="start(stage)"
+              >
+                <template #item="{ item, props }">
+                  <a class="alt" v-bind="props.action">
+                    <span>{{ item.label }}</span>
+                    <small v-if="item.note">{{ item.note }}</small>
+                  </a>
+                </template>
+              </SplitButton>
               <Button
                 v-else-if="stage.runnable"
                 label="Run"
@@ -1152,6 +1186,11 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
 .row.ghost .ttl { color: var(--aw-muted); }
 .row.ghost .took { padding-top: 0; }
 .waits { font-style: italic; }
+
+/* The note is the half that keeps "defer" from reading as "skip", so it is set
+   as a second line rather than a tooltip. */
+.alt { display: grid; gap: .1rem; padding: .4rem .75rem; text-align: left; white-space: normal; }
+.alt small { color: var(--aw-muted); font-size: var(--aw-text-xs); max-width: 18rem; }
 
 /* Only the first runnable stage is drawn as a call to action: a tail of six
    buttons is a menu, not a next step. */

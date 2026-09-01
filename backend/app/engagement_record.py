@@ -34,6 +34,7 @@ from .agent import capabilities as audit_capabilities
 from .agent import store
 from .agent.capabilities.documents import has_generated_analysis
 from .agent.workflows import audit as audit_workflow
+from .agent.workflows import documents as documents_workflow
 from .workspaces import Workspace
 
 # --------------------------------------------------------------------------- #
@@ -92,6 +93,28 @@ _SPINE: dict[str, dict[str, Any]] = {
         "unit": "document", "count": "document_analyses",
         "headline": "Analyse the imported documents",
         "prompt": "Analyse the documents.",
+        # The documents graph forks at `documents.categorized`: prose ends here,
+        # transaction evidence ends at `documents.schemas_stamped`, and the two
+        # never reconverge. The row key alone closes over the prose branch and
+        # reports satisfied over exactly the half it asked for — nine documents
+        # classified on the treasury engagement, eight of them evidence, one
+        # analysis filed, run completed with no warning.
+        "outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+        # The evidence read is sequential, so a large corpus is a long run and
+        # deferring it is a real thing to want. `planning.rcm_ready` depends on
+        # `documents.schemas_stamped`, so the reading is still owed either way —
+        # which is what the note has to say.
+        "alternates": (
+            {
+                "label": "Planning documents only",
+                "prompt": "Analyse the planning documents.",
+                "outcomes": ["documents.analysis_generated"],
+                "note": (
+                    "Leaves transaction evidence unread — the RCM will read it "
+                    "later."
+                ),
+            },
+        ),
     },
     "analysis.executed": {
         "label": "Analysis library", "destination": "analysis",
@@ -770,13 +793,23 @@ def _stages(
             "headline": headline,
             "blocked_reason": blocked,
             # The row key is the outcome to request wherever the stage is
-            # terminal for its own workflow, which is every row but one. Where
-            # it is not, the spec declares what the button actually asks for —
-            # see `analysis.executed`.
+            # terminal for its own workflow. Where it is not, the spec declares
+            # what the button asks for — see `analysis.executed` and
+            # `documents.analysis_generated`. `alternates` is a narrower set the
+            # auditor may pick deliberately; the primary click stays complete.
             "start": (
                 {
                     "prompt": spec["prompt"],
                     "outcomes": list(spec.get("outcomes") or (capability,)),
+                    "alternates": [
+                        {
+                            "label": str(alternate["label"]),
+                            "prompt": str(alternate["prompt"]),
+                            "outcomes": list(alternate["outcomes"]),
+                            "note": str(alternate.get("note") or ""),
+                        }
+                        for alternate in spec.get("alternates") or ()
+                    ],
                 }
                 if headline and owed and spec.get("prompt") else None
             ),

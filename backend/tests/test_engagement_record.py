@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 
 from app import engagement_record
+from app.agent import routing
+from app.agent.workflows import documents as documents_workflow
 from app.workspaces import TEST_STATUSES
 
 
@@ -692,6 +694,7 @@ def test_analysing_the_sources_is_the_next_step_once_they_are_imported(stub_stor
     assert rows["analysis.executed"]["start"] == {
         "prompt": "Analyse the imported tables.",
         "outcomes": ["analysis.summarized"],
+        "alternates": [],
     }
     assert result["next"]["capability"] == "analysis.executed"
 
@@ -707,15 +710,71 @@ def test_the_analysis_button_asks_for_the_memo_not_just_the_procedures(stub_stor
     against was now held.
     """
     stub_store([])
-    rows = _rows(engagement_record.record(_Workspace(tables=["ledger"])))
+    # A document as well as a table: the documents row is only owed once there
+    # is something to analyse, and it is the other row that overrides.
+    rows = _rows(engagement_record.record(
+        _Workspace(tables=["ledger"], documents=[{"id": "d1"}])
+    ))
 
     assert rows["analysis.executed"]["start"]["outcomes"] == ["analysis.summarized"]
-    # Every other stage is terminal for its own workflow, so its button asks
-    # for exactly the row it stands on. Only the analysis row overrides.
-    assert [
+    # Every other stage is terminal for its own workflow, so its button asks for
+    # exactly the row it stands on. Two override, for different reasons: this
+    # row stops one stage short of its own terminus, and the documents row is
+    # one of two termini rather than the only one.
+    # A set: row order is the plan's, not the spine's, and this is a statement
+    # about which rows override rather than about where they sit.
+    assert {
         row["capability"] for row in rows.values()
         if row["start"] and row["start"]["outcomes"] != [row["capability"]]
-    ] == ["analysis.executed"]
+    } == {"documents.analysis_generated", "analysis.executed"}
+
+
+def test_the_documents_button_asks_for_both_branches_not_just_the_prose(stub_store):
+    """The row stands on one of two termini, and has to ask for both.
+
+    The row key alone closed over the prose branch and reported satisfied over
+    exactly the half it asked for: nine documents classified, eight of them
+    evidence, one analysis filed, run completed with no warning.
+    """
+    stub_store([])
+    rows = _rows(engagement_record.record(
+        _Workspace(documents=[{"id": "d1"}], tables=["ledger"])
+    ))
+
+    start = rows["documents.analysis_generated"]["start"]
+    assert start["outcomes"] == list(documents_workflow.FULL_DOCUMENT_OUTCOMES)
+    assert "documents.schemas_stamped" in start["outcomes"]
+
+
+def test_the_documents_button_offers_the_prose_only_run_as_an_alternate(stub_store):
+    """The cheaper answer is reachable, and is not what a click gets.
+
+    Deferring the sequential evidence read is a real thing to want; skipping it
+    by accident is not. The note is what keeps those apart.
+    """
+    stub_store([])
+    rows = _rows(engagement_record.record(
+        _Workspace(documents=[{"id": "d1"}], tables=["ledger"])
+    ))
+
+    alternates = rows["documents.analysis_generated"]["start"]["alternates"]
+    assert [item["outcomes"] for item in alternates] == [
+        ["documents.analysis_generated"]
+    ]
+    assert alternates[0]["label"] == "Planning documents only"
+    assert alternates[0]["note"]
+    # Strictly narrower, or the menu is the complete answer and the button the
+    # partial one — the arrangement this row exists to have corrected.
+    primary = set(rows["documents.analysis_generated"]["start"]["outcomes"])
+    assert set(alternates[0]["outcomes"]) < primary
+
+
+def test_every_alternate_belongs_to_its_row_s_own_workflow(stub_store):
+    """A menu item that could not route would fail at the click, not here."""
+    stub_store([])
+    for stage in engagement_record.record(_Workspace())["stages"]:
+        for alternate in (stage["start"] or {}).get("alternates") or []:
+            assert routing.validate_requested_outcomes(alternate["outcomes"])
 
 
 def test_a_stage_waiting_on_an_earlier_one_says_so_instead_of_offering_a_button(stub_store):
@@ -736,6 +795,7 @@ def test_a_stage_carries_what_to_ask_the_assistant_for(stub_store):
 
     assert rows["planning.apm_ready"]["start"] == {
         "prompt": "Draft the APM.", "outcomes": ["planning.apm_ready"],
+        "alternates": [],
     }
 
 

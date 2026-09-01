@@ -2133,8 +2133,21 @@ export interface EngagementStage {
   headline: string
   /** Empty when nothing holds the stage. */
   blocked_reason: string
-  /** null on a stage the record cannot ask for, and on one already held. */
-  start: { prompt: string; outcomes: string[] } | null
+  /**
+   * null on a stage the record cannot ask for, and on one already held.
+   * `alternates` are narrower outcome sets offered under the button; the
+   * primary click is always the complete one.
+   */
+  start: {
+    prompt: string
+    outcomes: string[]
+    alternates: Array<{
+      label: string
+      prompt: string
+      outcomes: string[]
+      note: string
+    }>
+  } | null
   /**
    * How this stage is begun. `run` sends the assistant its prompt; `import`
    * opens the shell's import dialog, because bringing in the audit file is the
