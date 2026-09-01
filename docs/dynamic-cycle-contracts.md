@@ -4,8 +4,11 @@ This document locks the two contracts the dynamic cycle design hangs off. It
 replaces the authored-pack model in `backend/app/cycle_registry/packs/` with a
 per-workspace vocabulary the model induces and an auditor approves. The
 deterministic pipeline below extraction — reduction, indexing, linking, role
-binding, evaluation, rollup — is retained; only the source of the vocabulary
-and of the cycle semantics moves.
+binding, operand resolution, rollup — is retained; only the source of the
+vocabulary and of the cycle semantics moves.
+
+Judging whether two resolved values agree was originally in that list and is no
+longer. See the correction immediately below, and *Phase 10 notes*.
 
 The governing division of labour:
 
@@ -15,11 +18,48 @@ The governing division of labour:
 | What fields a document type carries | LLM, induced per workspace from samples |
 | Which field pairs join two documents | LLM proposes, code measures, auditor approves |
 | Which field pairs must agree | LLM proposes, auditor approves |
-| Whether a given item passes | Code, deterministically, no model call |
+| Whether an item's operands resolved | Code, deterministically, no model call |
+| Whether two resolved values agree | LLM judges; the auditor disposes the item |
 
-An LLM never decides an item's outcome. It authors rules; approved rules are
+**Corrected against the code, and this is Phase 0 of
+`docs/agentic-vouching-plan.md`.** An earlier draft of this document read *"An
+LLM never decides an item's outcome. It authors rules; approved rules are
 applied by code. Every result is replayable from the stored ruleset without a
-model.
+model."* That was the design intent and it is not what shipped. Phase 7 built
+the engine with a comparison operator per assertion, and the first real
+engagement showed the operator was wrong more often than right: an amount
+printed `PKR 2,000,000.00` against `2,000,000.00`, a vendor carrying its code in
+one record and not the other, a date no ISO parser accepts. Every one of those
+was reported as an exception against documents that agreed. The operators were
+removed rather than widened, because the choice between exact and normalized
+equality is made when the matrix is authored — long before anyone has seen how
+the value is printed — and no tolerance expresses "same fact, different house
+style".
+
+What the split is now:
+
+- **Resolution stays code, and stays deterministic.** Which document fills a
+  role, which field an operand reads, and whether that field yielded exactly one
+  usable value are questions about the records. They decide `missing_evidence`,
+  `ambiguous` and `invalid_extraction` inside `cycle_linking.evaluate_cycle_item`
+  with no model call, and a one-sided assertion is settled entirely there —
+  that a field was stated is answered by reading it.
+- **Agreement is judged.** For a two-sided assertion whose operands both
+  resolved, the verdict is `judgment.get("verdict")`, supplied from outside the
+  engine by the `fieldwork.cycle_vouch` worker and carrying a `reason` in the
+  reader's own words. An assertion no judgment covers stays `not_run` —
+  pending, exactly as it reads before any evaluation. Nothing infers agreement
+  from the absence of a verdict.
+- **The auditor still signs off.** Every item carries a disposition —
+  `confirmed` or `exception` — and rollup counts dispositions, not verdicts. A
+  judged verdict is evidence put in front of the auditor, not a conclusion filed
+  on their behalf.
+
+Replay is correspondingly weaker and the weakening is real: a result is
+reproducible from the stored `result_sha1`, `ruleset_hash` and bound operands,
+but re-deriving a two-sided verdict from the ruleset alone requires the model.
+`docs/agentic-vouching-plan.md` withdraws the two rules above by decision and
+treats both as provisional.
 
 ## Pass structure
 
@@ -220,7 +260,7 @@ the auditor approves or edits it; only then does it produce results.
       "rationale": "An invoice cites the purchase order it bills against.",
       "measured": {
         "left_documents": 182, "right_documents": 176,
-        "matched_pairs": 171, "left_unmatched": 11,
+        "left_stating_key": 179, "matched_pairs": 171, "left_unmatched": 11,
         "fan_out_p50": 1, "fan_out_p95": 1, "fan_out_max": 3
       }
     }
@@ -232,19 +272,20 @@ the auditor approves or edits it; only then does it produce results.
       "label": "Invoice total agrees to purchase order total",
       "left":  {"role": "invoice",        "field": "total_amount"},
       "right": {"role": "purchase_order", "field": "total_amount"},
-      "operator": "numeric_within",
-      "tolerance": {"absolute": 1.0, "percent": 0},
-      "rationale": "The amount billed must be the amount ordered.",
-      "measured": {"evaluable_items": 168, "unevaluable_items": 3}
+      "requirement": "The amount billed must be the amount ordered.",
+      "rationale": "A difference is either a pricing error or an overbilling.",
+      "measured": {"left_stating": 171, "right_stating": 168,
+                   "evaluable_records": 168, "silent": false}
     },
     {
       "id": "as_approval_present",
       "label": "Purchase order carries an approval",
       "left":  {"role": "purchase_order", "field": "approval"},
       "right": null,
-      "operator": "present",
-      "tolerance": null,
-      "rationale": "Approval evidences that the authorization control operated."
+      "requirement": "The order must carry an approval.",
+      "rationale": "Approval evidences that the authorization control operated.",
+      "measured": {"left_stating": 176, "right_stating": null,
+                   "evaluable_records": 176, "silent": false}
     }
   ],
 
@@ -272,6 +313,33 @@ like a single statement while being two: *which* purchase order, and *does it
 agree*. Join keys are applied by code across the whole corpus to build the
 bounded identifier graph the existing BFS already walks. Assertions are
 evaluated only on bound roles, only for sampled items.
+
+**A join key still names its comparison; an assertion no longer does.** The
+asymmetry is deliberate and is the surviving half of the operator design. A join
+key's `match` — `normalized_equal` or `exact_equal` — is a statement about
+*identifiers*, where the conservative normalizer's behaviour is known and folding
+case and whitespace is the whole of the question. An assertion compares stated
+values of any kind, where it is not.
+
+### An assertion names fields and a requirement, not a comparison
+
+`{id, label, left, right, requirement, rationale}`. There is no `operator` and
+no `tolerance`; `requirement` is mandatory and is what the reader is asked
+against.
+
+The author of a matrix is writing it long before anyone has seen that one
+document prints `PKR 2,000,000.00` where another prints `2,000,000.00`, so
+choosing between exact and normalized equality at authoring time is not a
+judgment they are in a position to make — and on the first real engagement the
+choice was wrong more often than right. A tolerance does not rescue it either:
+the differences that mattered were in rendering, not magnitude, and a tolerance
+wide enough to absorb a currency prefix is not a tolerance.
+
+The requirement travels to the reader instead, with the raw values and the
+source excerpt each was read from, and the reader answers `agrees`,
+`disagrees`, or `cannot_determine` with a reason. `cannot_determine` is a real
+answer: a scanning ambiguity between `P02024004` and `PO2024004` may be one
+reference or two, and saying so is better than deciding.
 
 ### The `measured` block
 
@@ -320,7 +388,8 @@ extraction in the workspace. Under these contracts:
 | Change | Consequence |
 | --- | --- |
 | Schema re-derived for one type | Re-extract that type only. Other types unaffected. |
-| Join key or assertion edited | Re-link and re-evaluate. No model calls. |
+| Join key edited | Re-link and re-evaluate. Linking takes no model call; any two-sided assertion whose operands moved is re-judged. |
+| Assertion edited | Re-evaluate. Resolution is recomputed in code; a two-sided verdict is re-judged. |
 | Document type list extended | Nothing invalidated; additive. |
 | Ruleset approved anew | Prior results retained against their own `ruleset_hash`. |
 
@@ -343,19 +412,27 @@ Retained essentially unchanged, because they are already vocabulary-agnostic:
 - Value normalization and the conservative identifier normalizer
 - Fragment reduction into document-local records
 - The identifier index and bounded BFS linking, rekeyed on approved join keys
-- The six operators (`equal_exact`, `equal_normalized`, `numeric_within`,
-  `date_on_or_before`, `date_within`, `present`)
-- Assertion evaluation. `_fact_entries` already matches facts by plain string
-  selectors off the record and never consults the registry.
+- Operand resolution — which document, which field, one usable value or not —
+  and the `missing_evidence` / `ambiguous` / `invalid_extraction` outcomes it
+  reaches without a model
 - Role binding, item materialization, result rollup, grid projection
 
 Replaced:
 
 - `cycle_registry/packs/procure_to_pay.py`, `packs/payroll.py` — deleted
 - Comparison recipes as code — the model proposes per workspace instead
+- **The six operators** (`equal_exact`, `equal_normalized`, `numeric_within`,
+  `date_on_or_before`, `date_within`, `present`) and the per-assertion
+  `tolerance` — deleted outright, not carried over. An earlier draft of this
+  section listed them as retained. See *An assertion names fields and a
+  requirement, not a comparison*. `present` did not survive as an operator
+  either: a one-sided assertion is settled by whether the operand resolved,
+  which resolution already answers.
+- `_fact_entries` — gone with the pack half. Operands resolve through
+  `cycle_linking.resolve_operand` against schema-typed fields.
 - `DATE_LIFECYCLE` — an authoring-time guard only, consulted in exactly one
-  place and never during evaluation. Direction is stated by the auditor when
-  approving a date assertion.
+  place and never during evaluation. Direction is now part of what the
+  assertion's `requirement` states in words, and the reader is asked against it.
 - Per-pack `definition_hash` — replaced by `schema_hash` and `ruleset_hash`
 - `edge_policy` — replaced by approved join keys with measured fan-out
 
@@ -559,7 +636,8 @@ current Treasury failure.
 | `workers/documents.py` `CLASSIFY_SYSTEM` *(new)* | page-1 text -> one label from the closed type list + confidence |
 | `workers/documents.py` `INDUCE_SYSTEM` *(new)* | 2-3 sample extractions -> field schema; separate reconcile prompt for conflicts |
 | `workers/documents.py` `VOUCHER_SYSTEM` *(rewritten)* | schema-guided extraction; `_pack_descriptor`/`_VOUCHER_REGISTRY_DESCRIPTORS` replaced by a schema descriptor; response schema enumerates the type's fields plus `additional_fields` |
-| `workers/tests.py` `LINKAGE_SYSTEM` *(new)* | schemas + type list -> roles, join keys, assertions with rationale |
+| `workers/tests.py` `LINKAGE_SYSTEM` *(new)* | schemas + type list -> roles, join keys, assertions with requirement and rationale |
+| `workers/fieldwork.py` `CYCLE_VOUCH_SYSTEM` *(new, Phase 10)* | one linked cycle + its grid of checks -> `agrees` / `disagrees` / `cannot_determine` per check, with a reason. Raw values, not normalized ones |
 | `workers/planning.py` | RCM control-attribute prompt drops registry selectors (see below) |
 | `agent/prompts.py::comparison_recipe_catalog` | deleted; recipes are no longer a code catalog |
 
@@ -702,7 +780,9 @@ no analogue today:
 - Join keys with their `measured` block. Fan-out is the primary display, not a
   detail: a reviewer approves a join key by reading its fan-out distribution and
   unmatched count. Surface `fan_out_p95` and `left_unmatched` at rule level.
-- Assertions with operator, tolerance, rationale, and evaluable count
+- Assertions with their requirement, rationale, and `evaluable_records` count.
+  No operator or tolerance control: there is nothing there to choose. What the
+  reviewer approves is the requirement in words and the fields it reads.
 - Add / edit / delete on every rule, then a single approve action
 
 Changed:
@@ -737,7 +817,10 @@ that no longer resolves.
 
 - `backend/tests/fixtures/` procure-to-pay and payroll pack fixtures are replaced
   by fixture **workspaces** carrying induced schemas and an approved ruleset, so
-  the deterministic chain is exercised end to end without model calls.
+  the deterministic chain — linking, binding, resolution, rollup — is exercised
+  end to end without model calls. Judged verdicts are supplied to
+  `evaluate_cycle_item` as fixtures, which is what keeps the rest of the chain
+  testable without one.
 - Retain a treasury fixture specifically. The current design's failure is that
   treasury degrades silently; a fixture that would have caught it belongs in the
   suite permanently.
@@ -764,10 +847,16 @@ Dependency-ordered. Each phase leaves the tree working.
 | 7 ✅ | `cycle_linking.py`: linking, role binding, evaluation, and the test lifecycle on approved rulesets | Cycle test builds, materializes, evaluates, and files end to end |
 | 8 ✅ | RCM control attributes addressed by schema field; the two graph edges; coverage gate; authoring turn and editor re-pointed | Selector-exact coverage restored |
 | 9 ✅ | `cycle_registry/` deleted, with the voucher profile, the recipes, and every branch that routed to them | Registry module removed |
+| 10 ✅ | The six operators and per-assertion tolerance deleted; agreement judged by `fieldwork.cycle_vouch` on raw values; assertions carry a `requirement` instead | A presentation difference is no longer reported as an exception |
 
 Phases 1-4 are independent of 5-6 and can proceed in parallel with the ruleset
 work once the contracts are fixed. Phase 9 must be last: the packs remain the
 only working vocabulary until phase 7 proves the replacement.
+
+Phase 10 was not planned. It was forced by the first real engagement and is the
+one place where this document's stated division of labour did not survive
+contact — see the correction under *The governing division of labour* and the
+notes below.
 
 ## Built so far
 
@@ -816,6 +905,12 @@ only working vocabulary until phase 7 proves the replacement.
 | `backend/tests/test_cycle_linkage_worker.py` | 13 tests |
 | `backend/tests/test_cycle_ruleset_routes.py` | 11 tests |
 | `frontend/.../CycleRulesetReview.test.ts` | 7 tests |
+| `workers/fieldwork.py` `fieldwork.cycle_vouch` | Judges one linked cycle's whole grid against the raw values, with the excerpt each was read from. Verdicts `agrees` / `disagrees` / `cannot_determine`, each with a reason. |
+| `executors/fieldwork.py` `execute_cycle_vouch` | Binds the judged verdicts onto the item and re-evaluates it; `reconcile_cycle_vouch` for the repair path. |
+| `cycle_linking.judgment_request` | One item's pending checks and the values each reads. Only `not_run` assertions appear — a verdict already reached is not re-asked. |
+| `backend/tests/test_cycle_vouch_worker.py` | 13 tests |
+| `backend/tests/test_agent_fieldwork_execution.py` | 14 tests |
+| `backend/tests/test_agent_fieldwork_executor.py` | 5 tests |
 
 Invariants these encode, each with a test behind it:
 
@@ -834,11 +929,18 @@ Invariants these encode, each with a test behind it:
 - An approved ruleset is immutable, and approving one supersedes the previous.
 - Approval revalidates against current schemas, names any field that has
   vanished, and refreshes `schema_refs` when a schema merely grew.
+- An assertion must state a `requirement`. It may not state an operator or a
+  tolerance, because there is no longer either to state.
+- A two-sided assertion whose operands resolved and which no judgment covers is
+  `not_run`, never `match`. Nothing infers agreement from a missing verdict.
+- A judged verdict carries a `reason`. One that cannot say what it compared is
+  not evidence of anything.
 
 ## Corrections implementation forced
 
-Three things this plan got wrong, found by building it. Each is now what the
-code does.
+Four things this plan got wrong, found by building it and then by running it.
+Each is now what the code does. The fourth is the largest and has its own
+section — see *Phase 10 notes*.
 
 **Assignments live in `Documents/.types` sidecars, not on the document entry.**
 The plan said classification "stamps `document_type` onto the document artifact"
@@ -1037,6 +1139,11 @@ nothing outside needed them before. Copying them would have produced two
 implementations of the comparison an auditor's stored verdict was made under,
 which is exactly the drift a `result_sha1` cannot detect.
 
+> The operators did not survive the first real engagement and were deleted
+> afterwards; everything else in that list did. The aliasing argument holds for
+> what remains. See *An assertion names fields and a requirement, not a
+> comparison*.
+
 **Records, not documents, are the unit of traversal.** A voucher stating three
 invoice lines is three records. Measurement counted documents and the linker
 would have traversed records, so a fan-out an auditor approved could have been
@@ -1116,9 +1223,12 @@ re-report something `unanswerable_cycle_requirements` already covers.
 nothing states is an evidence gap; a comparison no approved assertion answers is
 a rules gap. They are repaired in different places, so the build refuses with
 different messages and the stage reports them as separate notes. Operands may be
-written either way round for a symmetric operator, because an equality stated in
-the other order is the same requirement — but a different tolerance is a
-different requirement, and a neighbouring field is a different test.
+written either way round, because reading two fields is symmetric and which side
+was written first is not part of what the assertion establishes — but a
+neighbouring field is a different test. Tolerance is no longer among the things
+that could differ: a comparison is `{key, left, right, rationale}` and names no
+operator, so two comparisons over the same field pair are the same requirement
+by construction.
 
 **`business_cycle` stays derived for a pack row and stated for a schema row.**
 It was a projection of the pack id. A schema-backed row has no pack, so it keeps
@@ -1141,9 +1251,10 @@ authoring in `cycle_vouching` (~4,000 lines); then `cycle_registry/` itself
 green at every step, which is what made a deletion this size safe to attempt.
 
 **`cycle_vouching` is now the vocabulary-agnostic half plus delegations.** Value
-normalization, the six operators, the deterministic sampler, the citation
-catalogue, the rollup, the grid, and the state words an auditor's dispositions
-are recorded in — 6,192 lines down to 1,306. Roughly thirty modules import it by
+normalization, the six operators *(since deleted — see Phase 10)*, the
+deterministic sampler, the citation catalogue, the rollup, the grid, and the
+state words an auditor's dispositions are recorded in — 6,192 lines down to
+1,306. Roughly thirty modules import it by
 name; collapsing it in place rather than relocating everything into
 `cycle_linking` kept that surface stable while the pack vocabulary went.
 
@@ -1242,6 +1353,60 @@ deliberately: making the sample edge partial is narrow and matches the binder,
 but making `analysis_chunks_ready ← schemas_induced` partial would silently
 downgrade transaction evidence to prose, which is the failure mode this redesign
 exists to remove. See *Still unspecified*.
+
+## Phase 10 notes
+
+**The operator was wrong more often than it was right, and widening it was not
+the repair.** Measured on the first real engagement: an amount printed
+`PKR 2,000,000.00` against `2,000,000.00`, a vendor carrying its code in one
+record and not the other, a date no ISO parser accepts. Each was reported as an
+exception against documents that agreed. No tolerance reaches any of them —
+they are differences in rendering, not in magnitude — and `equal_normalized`
+does not either, because the conservative normalizer folds case and whitespace
+and nothing else, correctly.
+
+**What replaced it is the requirement, in words.** An assertion carries
+`{id, label, left, right, requirement, rationale}` and `requirement` is
+mandatory. `equal_exact` states a string operation nobody asked for; "the
+invoice is settled for the amount the order committed" states something a reader
+can act on. Validation refuses an assertion that states no requirement, for that
+reason.
+
+**The judge is asked per item, not per cell.** One call sees the whole grid for
+one linked cycle, because the reader needs the other documents in front of it to
+tell a presentation difference from a real one, and cell-by-cell would spend a
+call answering each half of a comparison.
+
+**Raw values travel, not normalized ones.** `judgment_request` sends
+`raw_value` with the source excerpt each was read from. Handing the reader the
+folded value would be asking it an easier question than the one the documents
+pose — and the folding is exactly what was getting the answer wrong.
+
+**`cannot_determine` is a real answer, and the prompt defends it.** A scanning
+ambiguity between `P02024004` and `PO2024004` may be one reference or two. The
+worker is told not to guess to avoid it, and told not to apply a materiality
+threshold of its own: a 2,000,000 order settled by a 2,000,040 invoice
+disagrees, and whether that matters is the audit's decision.
+
+**Absence of a verdict is not agreement.** An assertion whose operands resolved
+but which no judgment covers stays `not_run`. That is the same thing it reads
+before any evaluation has happened, which is the honest state, and it is what
+stops a failed or skipped judging pass from being indistinguishable from a
+clean one.
+
+**Resolution never left code, and that is what keeps the loud failures loud.**
+`missing_evidence`, `ambiguous` and `invalid_extraction` are decided against the
+records with no model call, and a one-sided assertion is settled entirely there.
+The model is asked one question — do these two values state the same fact — and
+only when there are two values to ask about.
+
+**What this costs.** Replay from the stored ruleset alone no longer reproduces a
+two-sided verdict; reproducing one requires the model, and the compensating
+record is that the verdict, its reason, and the raw values it was reached from
+are all stored on the result. `docs/agentic-vouching-plan.md` takes this
+withdrawal as provisional and re-evaluates it against a real engagement.
+Verdict stability under re-judging is untested and is listed there as an open
+question.
 
 ## Still unspecified
 

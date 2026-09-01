@@ -6,32 +6,35 @@ frozen. Today it is frozen before the evidence is read, and everything
 downstream must conform to a guess made from two or three samples. The result is
 a large body of machinery whose only job is to detect and repair the mismatch.
 
-Two rules from that document are withdrawn by decision:
+Two rules from that document are withdrawn:
 
-| Withdrawn | Replaced by |
-| --- | --- |
-| "An LLM never decides an item's outcome" | A model reader reaches verdicts; the auditor reviews and overrides |
-| "Evaluation stays code" | A model evaluator judges agreement on raw values |
+| Withdrawn | Replaced by | State |
+| --- | --- | --- |
+| "An LLM never decides an item's outcome" | A model reader reaches verdicts; the auditor reviews and overrides | Verdicts shipped; the per-verdict override has not |
+| "Evaluation stays code" | A model evaluator judges agreement on raw values | Shipped |
 
-The second was already half-true in name only — see *What the code already
-does*. Both are provisional: they are taken to see what the architecture looks
-like without them, and are to be re-evaluated against a real engagement rather
-than settled here.
+Both are already what the code does — see *What the code already does*. Neither
+was withdrawn to see what the architecture would look like without it: the first
+real engagement withdrew them, by showing that a comparison operator chosen when
+the matrix was written reports a currency prefix as an exception. They remain
+provisional in the sense that matters — they are to be re-evaluated against a
+real engagement rather than settled here — and the open questions at the foot of
+this document say what would settle them.
 
 ## Scope
 
 This plan is cut. The read half — 4a, 4b, 4c — lands against the pipeline
 `docs/dynamic-cycle-contracts.md` already describes: approved join keys, code
-evaluation, the ruleset review screen and the staleness family, all retained and
+resolution, the ruleset review screen and the staleness family, all retained and
 all still doing their work. **4a is built**; what remains is the master schema
 and its late-field sweep.
 
-**Neither withdrawal above is exercised by any of it.** They stand as the plan's
-direction, and as the reason the later phases are shaped the way they are, but
-nothing here puts a model in the verdict slot or replaces a join with a search.
-Phase 0 — correcting the doc-to-code divergence — is separable and should still
-be done, because the divergence is a fact about the code today rather than a
-consequence of anything proposed here.
+**Neither withdrawal above is exercised by any of it.** Nothing in 4a–4c puts a
+model in the verdict slot or replaces a join with a search — the verdict slot was
+already filled before this plan was written, by a change the engagement forced
+rather than one proposed here. What the withdrawals contribute to this tranche is
+direction: they are the reason the later phases are shaped the way they are.
+Phase 0 — correcting the doc-to-code divergence — was separable and is done.
 
 The reason to cut at this line is that the two halves fail for different
 reasons. The 44-field `fx_contract` and the split `approved_by_id` are failures
@@ -97,21 +100,34 @@ and the thing most at risk below.
 
 `cycle_linking.evaluate_cycle_item` does not compute agreement. For a two-sided
 assertion the verdict is `judgment.get("verdict")` — supplied from outside the
-engine. The operators settle only *resolution* (`ambiguous`,
-`missing_evidence`, `invalid_extraction`) and one-sided `present`. The result
-already carries a `reason` for "why the reader reached this verdict, in its own
-words", and `judgment_request` already sends **raw** values rather than
-normalized ones, for a reason it states plainly:
+engine by `fieldwork.cycle_vouch`. What the engine settles is *resolution*
+(`ambiguous`, `missing_evidence`, `invalid_extraction`), deterministically and
+with no model call, and a one-sided assertion is settled entirely there: that a
+field was stated is answered by reading it. The six comparison operators and the
+per-assertion tolerance are gone — deleted, not carried over — and an assertion
+now states a `requirement` in words instead. The result carries a `reason` for
+"why the reader reached this verdict, in its own words", and `judgment_request`
+sends **raw** values rather than normalized ones, for a reason it states
+plainly:
 
 > "presentation carries the difficulty — a currency prefix, a vendor code, a
 > scanned date — and a reader handed the folded value would be answering an
 > easier question than the one the documents pose."
 
-That is the `Rs. 2000` vs `2000` argument, already in the code. So the second
-withdrawal is smaller than it reads: the reader slot exists, receives raw
-values, and records a rationale. What changes is who fills it. The doc claiming
-"evaluation stays code" is a doc-to-code divergence, and correcting it is part
-of this work.
+That is the `Rs. 2000` vs `2000` argument, already in the code.
+
+**So the second withdrawal is not a proposal at all — it already happened.** It
+was not taken to see what the architecture would look like without the rule; it
+was forced by the first real engagement, where the operator was wrong more often
+than right and every presentation difference was filed as an exception. The
+first withdrawal went with it, since a judged verdict *is* a model reaching an
+item's outcome. What is left of both as proposals is the auditor's per-verdict
+override, and the direction they point the later phases in.
+
+The doc claiming "evaluation stays code" is therefore a doc-to-code divergence
+of some standing. Correcting it is Phase 0, and it is done:
+`docs/dynamic-cycle-contracts.md` now records the split it actually implements
+and carries a *Phase 10 notes* section for the change that forced it.
 
 ## Target architecture
 
@@ -120,17 +136,30 @@ intake      file suffix, no model                     route: table | document
 read (1)    page 1 -> coarse class                    policy | minutes | background | evidence   built
 read (2)    by class; evidence also gets a fine type  records + citations, master schema per type 4b
 assemble    one agentic pass per sampled item         role bindings + resolved operands           deferred
-judge       model reader on raw values                verdict + reason, auditor overrides         deferred
+judge       model reader on raw values                verdict + reason                            built
+            the auditor overriding a verdict directly                                            deferred
 ```
 
 Two model stages become one per document and one per item. The frozen artifacts
 move from *before* the evidence to *after* it.
 
-Row one is built. Row two is 4b, and the bottom two stay as they are today:
-approved join keys build the graph, and code decides each item. The sections on
-assembly, judging and replay below describe the target rather than anything
-being built now, and are kept because 4b's shape is chosen to make them
-reachable.
+Row one is built. Row two is 4b. Row three is deferred, and until it lands the
+graph is still built by approved join keys applied in code.
+
+**Row four is already built, which is the one place this table describes the
+present rather than a target.** `fieldwork.cycle_vouch` judges agreement on raw
+values and returns a verdict with a reason; `cycle_linking.evaluate_cycle_item`
+decides resolution in code and takes the verdict from outside. What is deferred
+there is narrower than the row makes it look: the auditor's control is currently
+the item disposition — `confirmed` or `exception` — and not a per-assertion
+override. That is a real difference. A disposition records what the auditor
+concluded about the item; an override would record that the reader was wrong
+about one check, which is the thing a reviewer will want as soon as they
+disagree with a single cell.
+
+The sections on assembly and replay below describe the target rather than
+anything being built now, and are kept because 4b's shape is chosen to make them
+reachable. The judging section describes what shipped.
 
 ### Intake: routing on file type, category on content
 
@@ -262,11 +291,23 @@ Per-document calls can only agree if they are not independent. Serializing them
 per type and handing each the accumulated master is what makes agreement
 possible at all.
 
-**The two calls take the two barriers the scheduler already has.**
+**Both calls run sequentially, and only one of them does so for a reason this
+plan cares about.**
 
-Call one is parallel. Nothing about a page-1 coarse class depends on any other
-document, and it commits nothing that another unit reads, so it qualifies for
-`all_settled_parallel` on exactly the grounds chunk analysis does today.
+Call one was drafted as parallel — nothing about a page-1 coarse class depends
+on any other document, so it looked like it qualified for
+`all_settled_parallel` on the grounds chunk analysis does. It does not, and 4a
+established why: the commit mirrors the category onto the shared `documents`
+collection so the fifteen call sites holding a document dict keep working, and
+two units landing at once would race on it. **Independence of inputs is not
+independence of commits.** `documents.categorized` therefore ships sequential
+(`capabilities/documents.py`), and making it parallel later is a storage change
+— getting those readers off the entry — not a barrier change. See *What 4a
+shipped*.
+
+The distinction is worth keeping straight, because the two calls are sequential
+for unrelated reasons and only one of them is load-bearing here: call one's is
+incidental and removable, call two's is the mechanism.
 
 Call two is sequential — `all_settled_then_validate` — and that is the correct
 barrier rather than a concession. It is what the serialized path already
@@ -300,7 +341,16 @@ while its samples were still queued.
 
 **The accepted cost is wall time on the read pass.** Fully serialized, the
 treasury corpus is 84 steps against 21 for today's
-`84 / max_llm_concurrency`. Type-lane concurrency would be 18 — the largest
+`84 / max_llm_concurrency`.
+
+Across both calls the corpus is 168 sequential steps, because 4a's
+categorization is serialized too. Half of that is already being paid — 4a
+shipped — and it is the half that can be bought back cheaply, since its
+serialization is a storage artifact rather than a semantic one. If the read pass
+turns out to need wall time back, the categorization pass is the first place to
+look and the cheaper of the two to fix.
+
+Type-lane concurrency would be 18 — the largest
 type — but there is no barrier that expresses it: `barrier` is a field on
 `Capability`, one flag for the whole capability, and the runner branches on it
 once for the entire stage. Adding a `grouped_sequential` barrier is a
@@ -390,12 +440,30 @@ That separation is what keeps the next stage reviewable.
 
 ### Judge: the reader slot, filled by a model
 
-*Deferred.*
+*Built, except the override. It landed ahead of this plan, forced by the first
+real engagement rather than chosen here — the operators were reporting
+presentation differences as exceptions. `docs/dynamic-cycle-contracts.md`,*
+Phase 10 notes *records it.*
 
-Raw values, one assertion at a time, verdict plus reason, through the existing
-`judgment_request` shape. The auditor sees every judged item and can change any
-verdict; an auditor verdict is final and is never overwritten by a rerun — the
-same provenance rule `assigned_by` already enforces for classification.
+Raw values through the existing `judgment_request` shape, verdict plus reason.
+Two things differ from what this section originally proposed, and both are
+improvements worth keeping:
+
+**One call per item, not one per assertion.** The reader needs the other
+documents in front of it to tell a presentation difference from a real one, and
+asking cell by cell spends a call to answer each half of a comparison.
+
+**Three verdicts, not two.** `cannot_determine` is a real answer and the prompt
+defends it against being guessed away: a scanning ambiguity between `P02024004`
+and `PO2024004` may be one reference or two, and an audit recording an untested
+check as passed is worse than one recording it as untested.
+
+**The override is what remains.** Today the auditor's control is the item
+disposition, which is a conclusion about the item rather than a correction to
+one cell. The rule this plan wants is the one `assigned_by` already enforces for
+classification: an auditor verdict is final and is never overwritten by a rerun.
+Nothing about the shipped shape blocks it — the verdict is a field on the
+result, and the result already carries who and what produced it.
 
 ### Replay: freeze the resolution, not the vocabulary
 
@@ -516,17 +584,18 @@ Each phase leaves the tree working.
 
 | Phase | Content | Gate |
 | --- | --- | --- |
-| 0 | Correct the doc-to-code divergence: `dynamic-cycle-contracts.md` claims evaluation is computed; it is judged | Doc matches code |
+| 0 ✅ | Correct the doc-to-code divergence: `dynamic-cycle-contracts.md` claimed evaluation is computed; it is judged. The operators and tolerances it listed as retained were deleted; assertions state a `requirement` instead | Doc matches code |
 | 4a ✅ | Category domain to four values read from page one; `documents.categorized`; `corpus_scope` | Partition holds; an audit run classifies its evidence |
 | 4b.1 | Master schema, one writer: the read capability takes `all_settled_then_validate`, units keyed `<type>:<document>`; asymmetric modification contract; version stamped at end of type | Field drift gone: one name per fact across a type |
 | 4b.2 | Evidence with no catalogued type read anyway; the read coins a `local.` type carrying a discriminator | Nine broker notes carry one vocabulary, not nine |
 | 4c | Late-field re-sweep over the documents that preceded the addition | Absence means "not stated", never "not asked" |
 
-No new barrier is built. The coarse class runs under the existing parallel
-barrier and the read under the existing sequential one, which keeps 4b to one
-question rather than two. Type-lane concurrency — `grouped_sequential`, 18 steps
-against 84 — is deferred, and is a pure scheduling change whenever the read pass
-is measured to be worth it.
+No new barrier is built. Both passes run under the existing sequential barrier —
+the coarse class because 4a's category mirror commits to the shared `documents`
+collection, the read because the master has to accumulate — which keeps 4b to
+one question rather than two. Type-lane concurrency — `grouped_sequential`, 18
+steps against 84 — is deferred, and is a pure scheduling change whenever the
+read pass is measured to be worth it.
 
 **Deferred**, in the order the rest of this plan gives them: assembly against
 the 18 known packs, assembler statistics and the screen that shows them, the
@@ -684,22 +753,39 @@ Each needs a decision before its phase:
   exist and neither is foreclosed: a `grouped_sequential` barrier, which is a
   scheduling change touching no stored data and no unit contract; or batching
   several documents into one call, which keeps one writer while cutting the step
-  count but needs a rule for a batch that disagrees with itself.
+  count but needs a rule for a batch that disagrees with itself. A third answer
+  applies only to the coarse class, which is serialized for a storage reason
+  rather than a semantic one: get the fifteen readers off the document entry and
+  it becomes parallel with no barrier work at all, recovering 84 of the corpus's
+  168 steps.
 - **Whether planning should hold its ground.** Reading a document now commits a
   revision, which re-opens the planning chain. Correct — the corpus changed —
   but a workspace carrying only evidence has no planning material to
   re-synthesize from, and its context capability fails rather than keeping what
   it had. The question belongs to the planning capability rather than here.
 
+Open against what already shipped, and therefore open now:
+
+- **Judged verdict stability.** Same values, same verdict. There is no property
+  test for it, and the reader is already in the verdict slot on every two-sided
+  assertion — so this is owed against the current code, not against a later
+  phase. What makes it tractable is that the judged half is narrow: resolution
+  is deterministic, and the only question asked of the model is whether two
+  values state the same fact.
+- **The per-verdict override.** The auditor disposes of the item; they cannot
+  yet say the reader was wrong about one cell. Until they can, disagreeing with
+  a single check means dispositioning the whole item around it.
+
 Open against the deferred phases rather than the next one:
 
 - **Cost per item.** Vouching runs over sampled items, not the 1,000-row
   population — 18 here. At engagement scale this needs a number, not a guess.
+  One call per item rather than per assertion is what makes this affordable at
+  all, and it is the number that decides whether judging can ever widen beyond
+  a sample.
 - **Assembler determinism.** Two runs over the same corpus should bind the same
   documents. If they do not, the stored binding is the record and reruns need a
   diff, not a silent replacement.
-- **Judged verdict stability.** Same values, same verdict. Worth a property
-  test before the reader is trusted on anything but sampled items.
 - **Where the master still earns its keep once assembly lands.** As prior art it
   is cheap and probably useful. If it turns out to bias extraction toward its own
   field names, it should go entirely.
