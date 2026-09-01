@@ -425,3 +425,84 @@ def test_other_never_awaits_a_schema(ws):
     document_id = _add(ws, "odd.txt")
     dc.assign(ws, document_id, "other", assigned_by="model", other_label="Unclear")
     assert dc.types_awaiting_schema(ws) == []
+
+
+# ------------------------------------------------------- the reviewer's surface
+def test_a_vocabulary_that_cannot_carry_a_rule_is_flagged_thin(ws):
+    """The measured silence this exists for.
+
+    A dealing ticket carrying fourteen labelled fields returned one,
+    ``deal_reference``. The type's whole vocabulary became that field, the
+    second ticket then agreed with it, and the master read *1 field, stated by
+    2 of 2* — indistinguishable from a corroborated vocabulary. Nothing refuses
+    that and nothing should: the reading is truthful about what it was given.
+    What was missing was anywhere to see it.
+
+    The test is functional rather than a field-count threshold, because any
+    number would be a guess and types genuinely differ in size. A vocabulary
+    earns its place by supporting a cycle rule, and a rule needs an identifier
+    to join on plus something that is not an identifier to assert about. The
+    one-field ticket could be joined and had nothing to say.
+    """
+
+    for document_id in ("doc-1", "doc-2"):
+        document_masters.apply_reading(
+            ws, "treasury_deal_ticket", document_id=document_id,
+            new_fields=[
+                _declared("deal_reference", role="identifier",
+                          value_type="identifier")
+            ] if document_id == "doc-1" else [],
+            filled=["deal_reference"] if document_id == "doc-2" else [],
+        )
+
+    view = document_masters.vocabulary(ws, "treasury_deal_ticket")
+    assert len(view["fields"]) == 1
+    # Corroborated *and* useless, which is exactly why corroboration alone
+    # cannot be the signal.
+    assert view["corroborated_fields"] == 1
+    assert view["joinable"] is True
+    assert view["comparable"] is False
+    assert view["thin"] is True
+
+
+def test_a_vocabulary_that_can_carry_a_rule_is_not_flagged(ws):
+    for document_id in ("doc-1", "doc-2"):
+        document_masters.apply_reading(
+            ws, "payment_instruction", document_id=document_id,
+            new_fields=[
+                _declared("instruction_reference", role="identifier",
+                          value_type="identifier"),
+                _declared("pay_amount", value_type="number"),
+            ] if document_id == "doc-1" else [],
+            filled=["instruction_reference", "pay_amount"]
+            if document_id == "doc-2" else [],
+        )
+
+    view = document_masters.vocabulary(ws, "payment_instruction")
+    assert view["corroborated_fields"] == 2
+    assert view["joinable"] and view["comparable"]
+    assert view["thin"] is False
+
+
+def test_one_document_is_thin_however_good_its_reading(ws):
+    """A vocabulary nothing corroborates is a guess, whatever its size."""
+
+    document_masters.apply_reading(
+        ws, "fx_contract", document_id="doc-1",
+        new_fields=[
+            _declared("our_reference", role="identifier", value_type="identifier"),
+            _declared("amount", value_type="number"),
+        ],
+    )
+    assert document_masters.vocabulary(ws, "fx_contract")["thin"] is True
+
+
+def test_the_catalog_carries_every_type_with_a_master(ws):
+    document_masters.apply_reading(
+        ws, "vendor_invoice", document_id="doc-1",
+        new_fields=[_declared("invoice_number", role="identifier",
+                              value_type="identifier")],
+    )
+    assert [item["document_type"] for item in document_masters.catalog(ws)] == [
+        "vendor_invoice"
+    ]

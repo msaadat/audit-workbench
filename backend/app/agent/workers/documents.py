@@ -32,7 +32,8 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ... import cycle_vouching, document_analysis
-from ..prompts import JSON_RULES
+from .. import workflow
+from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     WORKERS,
@@ -150,7 +151,7 @@ citations. Distinguish documented requirements from evidence that a control
 operated, and omit unsupported claims. Keep each excerpt focused on the source
 text that supports the point: at most {CITATION_EXCERPT_CHARACTERS} characters
 and {CITATION_EXCERPT_LINES} lines. Never join separate source lines with spaces.
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 REDUCTION_SYSTEM = f"""[agent:document_analysis_reduce]
@@ -163,7 +164,7 @@ objective/scope, engagement background, an audit plan, or a control-operation
 claim. Audit notes must retain concrete observations, why they matter, and
 follow-up evidence; they cannot be blank. Return exactly derived_text_markdown,
 summary_markdown, and audit_notes_markdown.
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 VISUAL_SYSTEM = f"""[agent:document_analysis_visual_map]
@@ -182,7 +183,7 @@ operated.
 Each citation must use kind `visual`, the supplied page, an optional normalized
 region with x, y, width, and height between 0 and 1, a short description, and
 the tile_order that shows it. A visual description is not a verbatim quote.
-Cite at least one material visual fact. {JSON_RULES}"""
+Cite at least one material visual fact. {JSON_RULES} {LANGUAGE_RULES}"""
 
 
 def _sha256_text(value: str) -> str:
@@ -1252,7 +1253,9 @@ Keys:
   category    one of "policy", "minutes", "background", "evidence"
   confidence  "high" | "medium" | "low"
   rationale   one sentence naming what in the text decided it"""
-CATEGORY_SYSTEM = CATEGORY_SYSTEM.replace("{JSON_RULES_PLACEHOLDER}", JSON_RULES)
+CATEGORY_SYSTEM = CATEGORY_SYSTEM.replace(
+    "{JSON_RULES_PLACEHOLDER}", f"{JSON_RULES} {LANGUAGE_RULES}"
+)
 
 
 def _category_response_schema(response: str) -> Mapping[str, Any]:
@@ -1362,7 +1365,7 @@ the id of its principal record.
 You are shown the opening page only. That is where a document states what it is;
 do not infer a type from what a document of some type usually goes on to contain.
 
-{JSON_RULES}
+{JSON_RULES} {LANGUAGE_RULES}
 Keys:
   document_type   one id from the catalog, exactly as written
   document_type_other  short name for the document, required only when the id is
@@ -1614,7 +1617,7 @@ alteration, an incomplete field. State the observation and why it matters. Do
 not conclude that a control operated or failed. Return an empty array when there
 is no such observation.
 
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 def _structured_value(raw: object, label: str, *, extra: bool) -> dict[str, Any]:
@@ -2120,7 +2123,7 @@ alteration, an incomplete field. State the observation and why it matters. Do
 not conclude that a control operated or failed. Return an empty array when there
 is no such observation.
 
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 def _read_descriptor_field(raw: object, label: str) -> dict[str, Any]:
@@ -2657,7 +2660,7 @@ READ_WORKER = WorkerDefinition(
     prompt_hash=_sha256_text(_read_system("<master>")),
     response_schema=READ_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=1,
+        max_repair_attempts=workflow.READ_REPAIR_ATTEMPTS,
         guidance_hash=_sha256_text(
             "Repair the document reading against the type's accumulating master."
         ),

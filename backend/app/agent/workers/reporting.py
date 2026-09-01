@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import templates_store
-from ..prompts import JSON_RULES
+from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     WORKERS,
@@ -70,7 +70,7 @@ actionable:
   rerunning the check.
 
 Do not create or alter RCM, planned-test, execution, or evidence references. Do
-not claim auditor confirmation. {JSON_RULES}"""
+not claim auditor confirmation. {JSON_RULES} {LANGUAGE_RULES}"""
 
 FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"

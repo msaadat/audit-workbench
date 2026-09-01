@@ -15,7 +15,7 @@ from .workspaces import Workspace, WorkspaceError, write_json_atomic
 from .text import plural_word
 
 ANALYSIS_SCHEMA_VERSION = "5"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v7-schema-guided-records"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v8-english-output"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 

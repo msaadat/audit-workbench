@@ -1812,17 +1812,19 @@ _PARTIAL_DEPENDENCIES = {
     "documents.categorized": {"documents.text_ready"},
     "documents.types_classified": {"documents.categorized"},
     "documents.evidence_read": {"documents.types_classified"},
-    # ``documents.schemas_stamped`` is deliberately absent, and it is the one
-    # edge in this graph that must stay blocking. A master built from eight of
-    # eighteen documents is not the type's vocabulary, and stamping it would
-    # write a ``schema_version`` that says otherwise — provenance claiming *this
-    # is what emerged from reading these documents* when ten of them were never
-    # read. A stage with any failed unit folds to ``failed``, so a read that dies
-    # at document 9 never reaches the stamp: no ``save_schema`` runs, the type
-    # has no current schema, and its readings keep their ``master_ref`` and are
-    # never stamped into evidence. Nothing is lost — the readings are on disk and
-    # the re-run resumes against them — and nothing records a partial vocabulary
-    # as complete.
+    # Partial, and the guarantee it used to carry moved to where it belongs. A
+    # master built from eight of eighteen documents is not the type's
+    # vocabulary, and stamping it would write a ``schema_version`` claiming
+    # otherwise — but expressing that as a *stage* edge made it a claim about
+    # the whole corpus. Measured: one bank statement failed on a dangling
+    # citation and blocked every stamp in the engagement, including two types
+    # whose documents had all read cleanly and agreed with each other.
+    #
+    # ``_types_awaiting_stamp`` now asks the question per type, which is where
+    # the plan puts it: a type with an unread document is not offered for
+    # stamping, keeps its ``master_ref`` readings, and is reported — and a type
+    # that read cleanly is stamped whatever happened to its neighbours.
+    "documents.schemas_stamped": {"documents.evidence_read"},
     "documents.analysis_chunks_ready": {
         "documents.text_ready",
         "documents.categorized",

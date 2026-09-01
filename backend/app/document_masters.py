@@ -376,6 +376,79 @@ def late_fields(master_record: Mapping[str, object]) -> list[dict]:
     ]
 
 
+def vocabulary(workspace: Workspace, document_type: str) -> dict:
+    """One type's vocabulary as a reviewer needs to read it.
+
+    Fill counts stop being a refinement here and become the thing that makes an
+    accumulating master usable. An authoring turn shown names without
+    frequencies made ``fx_contract.received_date`` — 0 of 11 — the anchor of
+    three population-wide comparisons, and 1 of 18 would have read exactly the
+    same to it. A field stated by fourteen of eighteen documents and one stated
+    by one are different evidence, and only one of them can carry a rule.
+
+    ``thin`` is the other half, and it exists because of a measured silence: a
+    dealing ticket carrying fourteen labelled fields returned one, the type's
+    whole vocabulary became that one field, and the second ticket then agreed
+    with it — so the master read *1 field, stated by 2 of 2*, indistinguishable
+    from a corroborated vocabulary. Nothing refuses that, and nothing should:
+    the reading is truthful about what it was given. What was missing was
+    anywhere to see it.
+
+    The test is *functional* rather than a threshold, because any field count
+    would be a guess and types genuinely differ in size. A vocabulary earns its
+    place by supporting a cycle rule, and a rule needs two things: an
+    ``identifier`` to join the document to another one, and something that is
+    not an identifier to assert about once joined. The one-field dealing ticket
+    could be joined and had nothing to say — which is exactly what an auditor
+    needs told, in the terms they would have discovered it in.
+    """
+
+    record = master(workspace, document_type)
+    read = [str(value) for value in record.get("documents_read") or []]
+    fields = [dict(field) for field in record.get("fields") or []]
+    corroborated = [
+        field for field in fields if int(field.get("fill_count") or 0) >= 2
+    ]
+    joinable = any(str(field.get("role") or "") == "identifier" for field in fields)
+    comparable = any(str(field.get("role") or "") != "identifier" for field in fields)
+    return {
+        "document_type": str(document_type),
+        "documents_read": read,
+        "fields": [
+            {
+                "name": str(field.get("name")),
+                "role": str(field.get("role")),
+                "value_type": str(field.get("value_type")),
+                "cardinality": str(field.get("cardinality") or "one"),
+                "label": str(field.get("label") or ""),
+                "fill_count": int(field.get("fill_count") or 0),
+                "introduced_at": int(field.get("introduced_at") or 0),
+                # The documents that were never asked about this field, which is
+                # a different answer from the ones that were asked and did not
+                # state it — and in an audit the difference is the finding.
+                "unread": unread_for_field(record, str(field.get("name"))),
+            }
+            for field in fields
+        ],
+        "renames": [dict(item) for item in record.get("renames") or []],
+        "widened": [dict(item) for item in record.get("widened") or []],
+        # A vocabulary only one document contributed to, or one where no field
+        # was stated twice, is a guess rather than a corroborated reading. Said
+        # rather than scored: the number that matters is on the screen beside it.
+        "corroborated_fields": len(corroborated),
+        "joinable": joinable,
+        "comparable": comparable,
+        "thin": bool(read)
+        and (len(read) < 2 or not corroborated or not (joinable and comparable)),
+    }
+
+
+def catalog(workspace: Workspace) -> list[dict]:
+    """Every type's vocabulary, for the documents tab."""
+
+    return [vocabulary(workspace, name) for name in types_with_master(workspace)]
+
+
 def reset(workspace: Workspace, document_type: str) -> None:
     """Discard a type's master so the pass rebuilds it from the start.
 
@@ -457,6 +530,7 @@ def index(workspace: Workspace) -> dict:
 __all__ = [
     "MASTER_ONLY_KEYS",
     "apply_reading",
+    "catalog",
     "empty",
     "field_names",
     "has_read",
@@ -469,5 +543,6 @@ __all__ = [
     "reset",
     "schema_fields",
     "types_with_master",
+    "vocabulary",
     "unread_for_field",
 ]

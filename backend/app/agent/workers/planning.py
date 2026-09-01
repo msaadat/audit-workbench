@@ -11,7 +11,7 @@ from typing import Any
 from ... import cycle_rulesets, cycle_vouching
 from ...text import counted, relevance_tokens
 from .. import prompts
-from ..prompts import JSON_RULES
+from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     WORKERS,
@@ -65,7 +65,7 @@ not apply to this engagement is recorded as considered and not applicable, with
 the reason; an empty section is not the same as a dismissed one.
 
 Return the memorandum as Markdown only, without a JSON wrapper or Markdown code
-fence."""
+fence. """ + LANGUAGE_RULES
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
@@ -432,7 +432,7 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   does not rest on a supplied document.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
   percentage is not an exception rate; a maximum is not a policy limit.
-- One risk and one control per row. {JSON_RULES}"""
+- One risk and one control per row. {JSON_RULES} {LANGUAGE_RULES}"""
 
 
 #: The evidence pass: what must agree, for attributes already judged to need
@@ -473,7 +473,7 @@ If the requirement cannot be expressed over the fields shown, say so by
 returning `unsupported: true` with a one-line reason instead of the contract
 fields. The attribute's evidence strategy is then reconsidered, which is the
 honest outcome; inventing a comparison over a field that does not exist is not.
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
@@ -1928,7 +1928,7 @@ grounded in the documents: objective, entity, period, scope, materiality,
 key_contacts, and background_notes. Every supplied context value must be a
 string; format multiple key contacts as one newline-separated string. Omit fields that the documents do not
 support; do not turn policy requirements into claims about actual control
-operation. {JSON_RULES}"""
+operation. {JSON_RULES} {LANGUAGE_RULES}"""
 
 PLANNING_CONTEXT_CURRENT_SOURCE_ID = "current_planning_context"
 PLANNING_CONTEXT_DOCUMENT_SOURCE_ID = "planning_documents"

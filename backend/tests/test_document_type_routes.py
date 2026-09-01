@@ -218,3 +218,36 @@ def test_document_listing_carries_the_assigned_type(client, ws):
     listed = {item["id"]: item for item in items}
     assert listed[document_id]["classification"]["document_type"] == "vendor_invoice"
     assert listed[_ids(ws)[0]]["classification"]["document_type"] is None
+
+
+def test_the_vocabulary_endpoint_serves_what_a_reviewer_needs(client, ws):
+    """The per-type surface the documents tab never had.
+
+    ``escape_rate`` was meant to be it — the Phase 6 plan said the tab would show
+    it per type — and it was never served or rendered, which is why deleting it
+    cost nothing. Under an accumulating master the question it answered is
+    answered better by the fill counts the master already carries.
+    """
+
+    from app import document_masters
+
+    field = {
+        "name": "invoice_number", "role": "identifier", "value_type": "identifier",
+        "cardinality": "one", "verbatim": True, "confidence": "high", "label": "",
+        "values": [{"record": 1, "entry": 1, "value": "INV", "citation": "1"}],
+    }
+    document_masters.apply_reading(
+        ws, "vendor_invoice", document_id=_ids(ws)[0], new_fields=[field]
+    )
+
+    body = client.get(f"{_base(ws)}/vocabulary").json()
+    assert [item["document_type"] for item in body["items"]] == ["vendor_invoice"]
+    entry = body["items"][0]
+    assert entry["fields"][0]["fill_count"] == 1
+    # One document, and nothing but an identifier: it cannot carry a rule, and
+    # the screen says so rather than showing a tidy one-field vocabulary.
+    assert entry["thin"] is True
+    assert entry["joinable"] is True and entry["comparable"] is False
+    # Why it is not stamped travels with it: a type withheld for an unread
+    # document is a different problem from one nothing has read.
+    assert entry["schema"] is None

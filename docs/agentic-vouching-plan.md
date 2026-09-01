@@ -1181,8 +1181,57 @@ Built, with the suite behind it and no live engagement yet. The code is the
 authority on shape; what is recorded here is what the build decided and what it
 corrected, because neither is recoverable from a diff.
 
-**The failed-read guarantee needed an exception written into the map, not left
-to a comment.** This plan settled *what a failed read does mid-type* by arguing
+**The failed-read guarantee belongs to the type, not the stage.** Corrected
+twice, and the second correction is the one that matters. The guarantee is
+right — a master built from eight of eighteen documents is not the type's
+vocabulary, and stamping it writes a `schema_version` claiming otherwise — but
+expressing it as a *stage* edge made it a claim about the whole corpus.
+Measured on the treasury engagement: one bank statement failed on a dangling
+citation reference, and every stamp in the run was blocked, including
+`fx_contract` and `payment_instruction` whose documents had all read cleanly and
+agreed with each other field for field. The plan's own words are *the type* —
+"a read that dies at document 9 ... **the type** has no current schema" — and
+`_types_awaiting_stamp` now asks it there: a type with an unread document is not
+offered for stamping, keeps its `master_ref` readings, and is reported in
+`types_with_unread_documents`; a type that read cleanly is stamped whatever
+happened to its neighbours. Every edge in the document graph is partial again.
+
+**A near-empty reading commits, and nothing notices.** The emptiness checks fire
+at *zero* — no values, or values-with-citations. One field passes. Measured: a
+dealing ticket carrying fourteen plainly labelled `label\nvalue` pairs in 932
+characters was supplied whole and returned a single field, `deal_reference`. It
+committed, the type's entire vocabulary became that one field, and the second
+ticket then agreed with it — so the master reads *1 field, stated by 2 of 2*,
+which is indistinguishable from a corroborated vocabulary. The same model
+returned nineteen fields for the same document on an earlier run, so this is
+model variance rather than anything the document or the contract did; what is
+owed here is a *surface*, not a refusal. Both halves are now built.
+
+`READ_REPAIR_ATTEMPTS = 2`, where every other document worker takes one. The
+difference is earned: this worker's refusals are precise and recoverable — *you
+returned 18 citations and not one field value*, *cites 'c3', which is not a
+citation you declared* — and a lost read costs not one document but its type's
+whole vocabulary. It lives in `workflow.py` rather than beside the worker
+because two layers must agree on it and neither may import the other: the worker
+spends the attempts and `preparation_model_turns` has to buy them, and a budget
+sized at one turn per read while spending three is the exact failure that budget
+exists to prevent.
+
+`GET /documents/vocabulary` and the tab panel are the surface `escape_rate` was
+supposed to be and never was. What makes it work is that **thinness is a
+functional test, not a field count**: any threshold would be a guess and types
+genuinely differ in size, so a vocabulary is thin when it cannot carry a cycle
+rule — no second document to corroborate it, no field stated twice, no
+`identifier` to join on, or nothing that is *not* an identifier to assert about
+once joined. That last clause is what catches the dealing ticket, and nothing
+else would: its one field was an identifier stated by both documents, so it read
+*1 field, 2 of 2* — corroborated, and useless. On the treasury engagement the
+signal separates the corpus exactly: `fx_contract` (11 fields) and
+`payment_instruction` (13) clean, `treasury_deal_ticket` and `bank_statement`
+flagged, with the reason in the words the auditor would have discovered it in.
+
+**The earlier framing of the same guarantee, kept because it was wrong in an
+instructive way.** This plan settled *what a failed read does mid-type* by arguing
 that a stage with any failed unit folds to `failed`, so the read never reaches
 the stamp. Half of that is true — `_fold_stage` does return `failed` — and the
 other half was not: `_dependency_satisfied` consults `dependency_policy` first,

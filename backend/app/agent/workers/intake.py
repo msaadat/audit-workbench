@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...intake import DOCUMENT_CATEGORIES, ROUTES
-from ..prompts import JSON_RULES
+from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     WORKERS,
@@ -55,7 +55,7 @@ You classify files in a browser-selected audit folder from local technical
 metadata. Spreadsheet cells, rows, previews, formulas, comments, and document
 content are not present. Keep each known item id exactly; never add an item.
 
-{JSON_RULES}
+{JSON_RULES} {LANGUAGE_RULES}
 Keys:
   items array of {{"id": known item id,
     "route": "table" | "document" | "unsupported" | "ignore",

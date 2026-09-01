@@ -151,6 +151,48 @@ export interface DocumentSchema {
 }
 
 /** What an extraction was made against. Exact-matched on read. */
+/** One document type's accumulating vocabulary, as a reviewer reads it.
+ *
+ * Fill counts are the point. A field stated by fourteen of eighteen documents
+ * and one stated by one are different evidence, and only one of them can carry
+ * a rule — an authoring turn shown names without frequencies made a 0-of-11
+ * field the anchor of three population-wide comparisons.
+ */
+export interface DocumentVocabularyField {
+  name: string
+  role: string
+  value_type: string
+  cardinality: string
+  label: string
+  fill_count: number
+  introduced_at: number
+  /** Documents read before this field existed — never asked, not silent. */
+  unread: string[]
+}
+
+export interface DocumentVocabulary {
+  document_type: string
+  documents_read: string[]
+  fields: DocumentVocabularyField[]
+  renames: { from: string; to: string; reason: string; document_id: string }[]
+  widened: { name: string; document_id: string }[]
+  corroborated_fields: number
+  /** Has an identifier to join on. */
+  joinable: boolean
+  /** Has something that is not an identifier, to assert about once joined. */
+  comparable: boolean
+  /**
+   * Cannot carry a cycle rule: one document, nothing corroborated, or nothing
+   * to compare once joined. Functional rather than a field-count threshold —
+   * types genuinely differ in size, and a one-field dealing ticket that reads
+   * "stated by 2 of 2" is indistinguishable from a good vocabulary without it.
+   */
+  thin: boolean
+  /** Why this type is not stamped: its documents that have no reading. */
+  unread_documents: string[]
+  schema: DocumentSchema | null
+}
+
 export interface DocumentSchemaRef {
   document_type: string
   schema_version: number

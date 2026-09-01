@@ -739,7 +739,7 @@ supported outcome IDs, required and non-empty when route is workflow),
 objective, target_refs, generation_mode (reuse_existing|force), action_intent
 (a registered action type, or null), constraints, and clarification (required
 when route is clarification). Never propose actions, workers, dependencies,
-tests, columns, or execution steps. {prompts.JSON_RULES}"""
+tests, columns, or execution steps. {prompts.JSON_RULES} {prompts.LANGUAGE_RULES}"""
 
 
 def validate_router_result(payload: dict, supported: set[str]) -> dict:

@@ -36,7 +36,13 @@ from ... import (
 from ...text import counted, verb
 from ...workspaces import Workspace
 from ..context import presets
-from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
+from ..workflow import (
+    READ_REPAIR_ATTEMPTS,
+    Capability,
+    Readiness,
+    UnitSpec,
+    semantic_unit_id,
+)
 from ..workflows import documents as documents_workflow
 
 CAPABILITY_IDS: tuple[str, ...] = (
@@ -1092,12 +1098,39 @@ def _documents_evidence_read() -> Capability:
     )
 
 
+def unread_documents_of_type(
+    workspace: Workspace, document_type: str, scope: dict
+) -> list[str]:
+    """Evidence documents of one type that this run has no reading for.
+
+    The stamp's correctness condition, asked per type. A master built from eight
+    of eighteen documents is not the type's vocabulary, and stamping it writes a
+    ``schema_version`` claiming otherwise.
+    """
+
+    read = set(document_masters.master(workspace, document_type).get("documents_read") or [])
+    return [
+        document_id
+        for document_id in _readable_evidence(workspace, scope)
+        if document_classification.document_type(workspace, document_id) == document_type
+        and document_id not in read
+    ]
+
+
 def _types_awaiting_stamp(workspace: Workspace, scope: dict) -> list[str]:
-    """Types carrying a master whose vocabulary is not yet a schema.
+    """Types carrying a complete master whose vocabulary is not yet a schema.
 
     ``types_awaiting_schema``'s counterpart: same shape, different predicate.
-    A type is stamped when every document of it has been read, which the
-    capability edge — not this list — is what guarantees.
+
+    **A type whose documents were not all read is not offered for stamping**,
+    and that guard belongs *here* rather than on the capability edge. It was on
+    the edge, which made it a claim about the whole stage: one bank statement
+    failing on a dangling citation blocked every stamp in the corpus, and
+    ``fx_contract`` and ``payment_instruction`` — both read cleanly, both
+    corroborated by two documents — got no schema either. The plan puts the
+    guarantee on *the type*: a read that dies at document 9 leaves that type
+    with no vocabulary and no evidence, and says so. It does not cost a
+    different type its vocabulary, because nothing about that type failed.
     """
 
     targeted = _revision_types(workspace, scope)
@@ -1105,6 +1138,7 @@ def _types_awaiting_stamp(workspace: Workspace, scope: dict) -> list[str]:
         document_type
         for document_type in document_masters.types_with_master(workspace)
         if (targeted is None or document_type in targeted)
+        and not unread_documents_of_type(workspace, document_type, scope)
         and (
             _forced(scope)
             or document_schemas.load_schema(workspace, document_type) is None
@@ -1148,9 +1182,21 @@ def _schemas_stamped_ready(workspace: Workspace, scope: dict) -> Readiness:
         if document_schemas.load_schema(workspace, document_type) is None
     ]
     stamped = document_schemas.list_schemas(workspace)
+    # Reported rather than inferred from the gap: a type left unstamped because
+    # one of its documents could not be read is a different problem from one
+    # nothing has read yet, and they are repaired in different places.
+    incomplete = {
+        document_type: unread_documents_of_type(workspace, document_type, scope)
+        for document_type in inducible
+    }
     details = {
         "types_for_induction": inducible,
         "stamped": len(stamped),
+        "types_with_unread_documents": {
+            document_type: len(unread)
+            for document_type, unread in incomplete.items()
+            if unread
+        },
         "low_confidence": [
             record["document_type"] for record in stamped if record.get("low_confidence")
         ],
@@ -1254,11 +1300,17 @@ def preparation_model_turns(workspace: Workspace, scope: dict) -> int:
                 if document_id in scoped
             }
         )
-    # One per evidence document the read will expand for. ``revise_vocabulary``
-    # widens this to the targeted documents' whole types, which is exactly the
-    # honesty the split is for: re-reading eighteen payment instructions to fix
-    # one document's vocabulary is expensive, and it is what the repair costs.
-    readings = len(_evidence_read_units(workspace, scope))
+    # One per evidence document the read will expand for, times what a *failed*
+    # one is allowed to cost. A repair is a model turn like any other, and the
+    # read takes two of them where the other document workers take one — so a
+    # budget counting one turn per read would be short by a factor of three on
+    # exactly the run that needs it most. ``revise_vocabulary`` widens the
+    # document set to the targeted documents' whole types, which is the honesty
+    # the split is for: re-reading eighteen payment instructions to fix one
+    # document's vocabulary is expensive, and it is what the repair costs.
+    readings = len(_evidence_read_units(workspace, scope)) * (
+        1 + READ_REPAIR_ATTEMPTS
+    )
     # The stamp is deliberately absent. It reads the finished master, calls
     # ``save_schema``, and back-stamps — no model sees any of it.
     return classifications + readings

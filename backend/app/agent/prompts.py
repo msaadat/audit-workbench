@@ -25,6 +25,20 @@ JSON_RULES = (
     "Use exactly the keys described; omit optional keys you have nothing for."
 )
 
+#: Output language is pinned because nothing else pins it. A model whose
+#: training skews to another language will drift there on its own, and the drift
+#: is per-call rather than per-run: one document comes back in English and the
+#: next in Chinese from the same model in the same run. Verbatim text is carved
+#: out so this cannot fight the citation rules, which require excerpts copied
+#: exactly from the source, or the identifier rules, which require field and
+#: table names copied exactly from the schema.
+LANGUAGE_RULES = (
+    "Write every generated field in English, whatever language the source "
+    "material uses. Text copied verbatim — citation excerpts, quoted source "
+    "lines, and identifiers such as table, column, and document names — keeps "
+    "its original form."
+)
+
 
 COMMAND_INTERPRETER_SYSTEM = """[agent:command_interpreter]
 You interpret one auditor command into a bounded graph of registered engagement actions.
@@ -65,7 +79,7 @@ only against in-memory tables: `pl`, each table variable, and `tables['name']` a
 available. Never import modules, read/scan/write/sink files, or load parquet/CSV paths. Assign
 one aggregate or summarized DataFrame to `result`; use Polars expressions such as `pl.date(...)`
 for constants that would otherwise require an import. Request only the minimum tool context needed,
-then return the action graph directly when ready. """ + JSON_RULES
+then return the action graph directly when ready. """ + JSON_RULES + " " + LANGUAGE_RULES
 
 COMMAND_PLANNER_SYSTEM = """[agent:command_planner]
 You may extend an existing audit command graph after locally computed results.
@@ -87,7 +101,7 @@ rows. For run_analytics, use only a supplied analytics_tests id; use create_cust
 tests outside that registry. Custom analysis code is in-memory
 only: `pl`, table variables, and `tables['name']` are already available. Never import, perform
 file I/O, or read/write parquet or CSV paths, and always assign a summarized DataFrame to
-`result`. """ + JSON_RULES
+`result`. """ + JSON_RULES + " " + LANGUAGE_RULES
 
 
 def command_interpreter_user(
@@ -201,7 +215,7 @@ and `tables['name']` are already available. Do not import anything. Do not read,
 sink, serialize, or deserialize files. Use the supplied in-memory tables and assign exactly one
 aggregate or summarized output DataFrame to `result`. Return the complete replacement snippet.
 
-{JSON_RULES}
+{JSON_RULES} {LANGUAGE_RULES}
 Keys:
   code   the corrected Polars snippet (assign the output to `result`)"""
 

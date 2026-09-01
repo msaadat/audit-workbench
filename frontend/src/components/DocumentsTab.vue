@@ -15,7 +15,7 @@ import { TERMINAL_STATUSES, useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useSession } from '../composables/useSession'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AIActivityEvent, AgentRun, AssistantProvider, AssistantStatus, AuditDocument, DocumentAnalysisCitation, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AgentRun, AssistantProvider, AssistantStatus, AuditDocument, DocumentAnalysisCitation, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, DocumentVocabulary, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import MarkdownView from './MarkdownView.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -120,6 +120,48 @@ const selected = computed(() => documents.value.find(doc => doc.id === selectedI
 // Only transaction evidence has a type-level vocabulary to revise. Planning
 // material is read as prose and carries no fields for a rule to name.
 const isEvidence = computed(() => selected.value?.category === 'evidence')
+
+// What each evidence type is read under. Loaded beside the documents because it
+// is a property of the *type*, not of the selected document — the comparison
+// that matters is between types, and a one-field dealing ticket is only obvious
+// next to a thirteen-field payment instruction.
+const vocabulary = ref<DocumentVocabulary[]>([])
+const vocabularyByType = computed(
+  () => new Map(vocabulary.value.map(item => [item.document_type, item])),
+)
+const selectedVocabulary = computed(() =>
+  vocabularyByType.value.get(String(selected.value?.classification?.document_type || '')) || null,
+)
+
+async function loadVocabulary() {
+  try {
+    const payload = await api.get<{ items: DocumentVocabulary[] }>(
+      `/api/workspaces/${props.workspace.id}/documents/vocabulary`,
+    )
+    vocabulary.value = payload.items || []
+  } catch {
+    // A missing vocabulary is not worth a toast: the rail still lists the
+    // documents, and the panel simply does not render.
+    vocabulary.value = []
+  }
+}
+
+/** Why this type cannot carry a rule, in the terms it would be discovered in. */
+function thinReason(item: DocumentVocabulary): string {
+  if (item.unread_documents.length) {
+    return `${item.unread_documents.length} document(s) of this type could not be read, so its vocabulary is withheld rather than stamped.`
+  }
+  if (item.documents_read.length < 2) {
+    return 'Read from one document, so nothing corroborates its field names.'
+  }
+  if (!item.corroborated_fields) {
+    return 'No field was stated by two documents of this type.'
+  }
+  if (!item.joinable) {
+    return 'No identifier field, so nothing can join this document to another.'
+  }
+  return 'Only identifier fields, so there is nothing to test once a document is joined.'
+}
 const filtered = computed(() => documents.value.filter(doc => {
   const term = search.value.toLowerCase()
   return !term || `${doc.title} ${doc.source}`.toLowerCase().includes(term)
@@ -339,6 +381,7 @@ async function loadDocuments() {
   const requested = String(route.query.doc || '')
   if (requested && result.items.some(doc => doc.id === requested)) selectedId.value = requested
   else if (!selectedId.value || !result.items.some(doc => doc.id === selectedId.value)) selectedId.value = result.items[0]?.id || ''
+  await loadVocabulary()
 }
 
 function scheduleIndexingPoll(delay = 800) {
@@ -741,6 +784,16 @@ onUnmounted(() => {
                    a document is read under. Everything else renders flat. -->
               <div v-if="section.label" class="doc-subgroup">
                 <span class="subgroup-name">{{ section.label }}</span>
+                <i
+                  v-if="vocabularyByType.get(section.key)?.thin"
+                  class="pi pi-exclamation-triangle subgroup-thin"
+                  v-tooltip.right="thinReason(vocabularyByType.get(section.key)!)"
+                />
+                <span
+                  v-if="vocabularyByType.get(section.key)"
+                  class="subgroup-fields"
+                  v-tooltip.right="`${vocabularyByType.get(section.key)!.fields.length} field(s) read from ${vocabularyByType.get(section.key)!.documents_read.length} document(s); ${vocabularyByType.get(section.key)!.corroborated_fields} stated by two or more.`"
+                >{{ vocabularyByType.get(section.key)!.fields.length }}f</span>
                 <span class="subgroup-count">{{ section.items.length }}</span>
               </div>
               <button
@@ -919,6 +972,39 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <div v-if="selectedVocabulary" class="vocabulary-panel" :class="{ thin: selectedVocabulary.thin }">
+            <div class="vocabulary-head">
+              <strong>Read as {{ selectedVocabulary.document_type }}</strong>
+              <span class="vocabulary-summary">
+                {{ selectedVocabulary.fields.length }} field(s) from
+                {{ selectedVocabulary.documents_read.length }} document(s) ·
+                {{ selectedVocabulary.corroborated_fields }} stated by two or more
+              </span>
+            </div>
+            <p v-if="selectedVocabulary.thin" class="vocabulary-warning">
+              <i class="pi pi-exclamation-triangle" />
+              {{ thinReason(selectedVocabulary) }}
+            </p>
+            <table class="vocabulary-fields">
+              <tbody>
+                <tr v-for="field in selectedVocabulary.fields" :key="field.name">
+                  <td class="vf-name">{{ field.name }}</td>
+                  <td class="vf-role">{{ field.role }}</td>
+                  <td
+                    class="vf-fill"
+                    :class="{ partial: field.fill_count < selectedVocabulary.documents_read.length }"
+                  >{{ field.fill_count }} / {{ selectedVocabulary.documents_read.length }}</td>
+                  <td class="vf-unread">
+                    <span
+                      v-if="field.unread.length"
+                      v-tooltip.left="`${field.unread.length} document(s) were read before this field existed, so their silence about it means nobody asked — not that they do not state it.`"
+                    >{{ field.unread.length }} never asked</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
           <div v-if="analysis?.status.analysis_coverage_state === 'partial'" class="coverage-warning">
             <i class="pi pi-exclamation-triangle" />
             <div>
@@ -1048,6 +1134,20 @@ onUnmounted(() => {
 .indexing-chip .pi { font-size:var(--aw-text-xs); }
 .document-rail { min-height:0; padding:.75rem; border-right:1px solid var(--aw-border); background:var(--aw-canvas); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--aw-border); background:var(--aw-canvas); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--aw-border-strong); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:var(--aw-text-sm); }
 .doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:var(--aw-text-2xs); }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-control); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:var(--aw-panel); }.doc-row.active { border-color:var(--aw-teal-line); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); font-size:var(--aw-text-sm); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:var(--aw-text-sm); }.doc-identity small { color:var(--aw-muted); font-size:var(--aw-text-2xs); }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:var(--aw-text-xs); }.doc-status.processing { color:var(--aw-info); }.doc-status.attention { color:var(--aw-warn); }.doc-status.attention.failed { color:var(--aw-danger); }.doc-subgroup { display:flex; align-items:center; gap:.4rem; margin:.35rem 0 .05rem; padding:.1rem .25rem .1rem 1.15rem; color:var(--aw-muted); font-size:var(--aw-text-2xs); font-weight:700; letter-spacing:.02em; text-transform:capitalize; }.subgroup-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.subgroup-count { margin-left:auto; font-weight:400; }.doc-row.nested { margin-left:.9rem; }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.subgroup-thin { color:var(--aw-warn); font-size:var(--aw-text-2xs); }
+.subgroup-fields { color:var(--aw-muted); font-weight:400; font-variant-numeric:tabular-nums; }
+.vocabulary-panel { display:grid; gap:.5rem; margin:.75rem 0; padding:.7rem .85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }
+.vocabulary-panel.thin { border-color:var(--aw-warn); }
+.vocabulary-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:.5rem; justify-content:space-between; }
+.vocabulary-summary { color:var(--aw-muted); font-size:var(--aw-text-xs); }
+.vocabulary-warning { display:flex; align-items:flex-start; gap:.45rem; margin:0; color:var(--aw-warn); font-size:var(--aw-text-xs); }
+.vocabulary-fields { width:100%; border-collapse:collapse; font-size:var(--aw-text-xs); }
+.vocabulary-fields td { padding:.18rem .35rem; border-top:1px solid var(--aw-border); }
+.vf-name { font-family:var(--aw-font-mono, monospace); }
+.vf-role { color:var(--aw-muted); }
+.vf-fill { text-align:right; font-variant-numeric:tabular-nums; }
+.vf-fill.partial { color:var(--aw-warn); }
+.vf-unread { color:var(--aw-muted); text-align:right; }
 .rail-deep-search { display:flex; align-items:center; gap:.45rem; width:100%; margin-top:.7rem; padding:.5rem .6rem; border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-teal); font-size:var(--aw-text-xs); text-align:left; cursor:pointer; }.rail-deep-search:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft); }.rail-deep-search span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .document-detail { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
 /* One line: the name, its state, and whatever the viewer does not say itself. */

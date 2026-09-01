@@ -45,7 +45,7 @@ from ..analysis_identity import (
     python_spec_scope,
     spec_scope,
 )
-from ..prompts import JSON_RULES
+from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     MAX_REPAIR_ERRORS,
@@ -101,7 +101,7 @@ tables the test actually reads and no others — a table listed here that the
 test does not use narrows where the test can run for no reason, and one left
 out means the test is prepared against data that cannot answer it. Submit the
 required function tool exactly once; do not return Markdown or plain text.
-"""
+""" + LANGUAGE_RULES
 ANALYSIS_DEFINITION_SYSTEM = f"""[agent:analysis_definitions]
 Propose rerunnable data analyses for exactly one supplied target frame. Submit
 them through the required function tool; its JSON Schema is the authoritative
@@ -173,7 +173,7 @@ columns record — "a GRN records receipt, so it cannot predate the order it
 receives" rather than "checks the dates". If you cannot write that sentence for
 a proposal, you have not established that the two columns belong together, and
 the analysis should not be proposed.
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
 JOIN_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
@@ -1783,7 +1783,7 @@ measurement derives.
 Do not restate a nomination as an added assertion. It is already in the
 register, and adding it again asks a model to rewrite a spec that was measured
 exactly.
-{JSON_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 def _reading_frames(request: WorkerRequest) -> dict[str, set[str]]:
@@ -2365,6 +2365,8 @@ procedure in a finding's `procedures` is what places it, so list every procedure
 the entry rests on, and list none you only mention in passing.
 
 Call {SUMMARY_SUBMISSION_TOOL} exactly once, with every part filled in.
+
+{LANGUAGE_RULES}
 """
 
 SUMMARY_RESULTS_SOURCE_ID = "analysis_results"
@@ -3405,7 +3407,7 @@ Writing the step.
 `title` names the test as an auditor would list it. `objective` states what the
 test determines, in one sentence, without asserting its outcome.
 
-{JSON_RULES}
+{JSON_RULES} {LANGUAGE_RULES}
 
 Return exactly one of:
 {{"promote": true, "rcm_id": "...", "title": "...", "objective": "...",

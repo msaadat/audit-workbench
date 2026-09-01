@@ -32,6 +32,7 @@ from app import (
     llm,
     workspaces,
 )
+from app import document_masters
 from app.agent import runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent.capabilities import documents as document_capabilities
@@ -1536,12 +1537,7 @@ def test_map_json_still_accepts_a_fenced_object_and_rejects_a_non_object():
 
 
 # ------------------------------------------------- partial dependency policy
-#: The one edge in the document graph that must block, and the whole reason it
-#: is named here rather than left to a comment. See the test below.
-BLOCKING_EDGES = {("documents.schemas_stamped", "documents.evidence_read")}
-
-
-def test_every_edge_in_the_document_graph_is_partial_except_the_stamp():
+def test_every_edge_in_the_document_graph_is_partial():
     """The rule the map states, enforced rather than restated.
 
     ``_PARTIAL_DEPENDENCIES`` opens with "every edge in this graph is partial"
@@ -1550,14 +1546,16 @@ def test_every_edge_in_the_document_graph_is_partial_except_the_stamp():
     chunking, and blocked every analysis in the run. Prose cannot hold a map to a
     graph; this can.
 
-    4b.1 adds exactly one exception, and it is the opposite kind of failure. A
-    master built from eight of eighteen documents is not the type's vocabulary,
-    and stamping it writes a ``schema_version`` claiming otherwise — provenance
-    saying *this is what emerged from reading these documents* when ten of them
-    were never read. Every other edge protects the run from one bad document;
-    this one protects the engagement from a vocabulary that lies about its own
-    coverage. Nothing is lost by blocking: the readings that landed are on disk
-    with their ``master_ref``, and the re-run resumes against them.
+    4b.1 briefly added an exception here and it was the wrong shape. A master
+    built from eight of eighteen documents is not the type's vocabulary — true,
+    and worth enforcing — but expressed as a *stage* edge it became a claim
+    about the whole corpus. Measured on the treasury engagement: one bank
+    statement failed on a dangling citation and blocked every stamp in the run,
+    including two types whose documents had all read cleanly and agreed with
+    each other.
+
+    The guarantee moved to ``_types_awaiting_stamp``, which asks it per type —
+    see ``test_a_failed_reading_stops_only_its_own_type_being_stamped``.
     """
     from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
     from app.agent.workflows import documents as documents_workflow
@@ -1573,9 +1571,8 @@ def test_every_edge_in_the_document_graph_is_partial_except_the_stamp():
         for dependency in dependencies
     }
 
-    assert edges - declared == BLOCKING_EDGES, "these edges still block the whole run"
+    assert edges - declared == set(), "these edges still block the whole run"
     assert declared - edges == set(), "these name a dependency the graph does not have"
-    assert BLOCKING_EDGES <= edges, "the blocking edge is no longer in the graph"
 
 
 def test_one_failed_reading_no_longer_blocks_the_rest_of_the_corpus():
@@ -1598,20 +1595,63 @@ def test_one_failed_reading_no_longer_blocks_the_rest_of_the_corpus():
     assert may_proceed("documents.categorized", "documents.text_ready")
 
 
-def test_a_failed_reading_stops_its_type_being_stamped():
-    """The one place a partial edge would be the silent failure, not the loud one.
+def test_a_failed_reading_stops_only_its_own_type_being_stamped():
+    """The guarantee, asked per type rather than per stage.
 
-    Following the map's own rule here would let a read that died at document 9
-    reach the stamp, and ``save_schema`` would write a vocabulary from eight of
-    eighteen documents under a version that says it is complete. The readings are
-    not lost — they keep their ``master_ref`` and are never stamped into evidence
-    — but nothing may record a partial vocabulary as the type's.
+    A vocabulary must never claim coverage it does not have: a type with an
+    unread document is not offered for stamping, keeps its ``master_ref``
+    readings, and is reported. But a type that read cleanly is stamped whatever
+    happened to its neighbours — one bank statement failing costs the bank
+    statements their schema and costs the payment instructions nothing.
     """
-    from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
-
-    assert "documents.evidence_read" not in _PARTIAL_DEPENDENCIES.get(
-        "documents.schemas_stamped", set()
+    from app.agent.capabilities.documents import (
+        _types_awaiting_stamp, unread_documents_of_type,
     )
+
+    ws = workspaces.create_workspace("Per-type stamp guard")
+    read, unread = [
+        documents.add_document(
+            ws, f"{name}.txt", b"Invoice No. INV-1042", category="evidence"
+        )
+        for name in ("read", "unread")
+    ], None
+    other = documents.add_document(
+        ws, "other.txt", b"Statement line", category="evidence"
+    )
+    for document in (*read, other):
+        documents.extract_document(ws, document["id"])
+    document_classification.assign(
+        ws, read[0]["id"], "vendor_invoice", assigned_by="auditor", confidence="high"
+    )
+    document_classification.assign(
+        ws, read[1]["id"], "vendor_invoice", assigned_by="auditor", confidence="high"
+    )
+    document_classification.assign(
+        ws, other["id"], "bank_statement", assigned_by="auditor", confidence="high"
+    )
+    field = {
+        "name": "invoice_number", "role": "identifier", "value_type": "identifier",
+        "cardinality": "one", "verbatim": True, "confidence": "high", "label": "",
+        "values": [{"record": 1, "entry": 1, "value": "INV", "citation": "1"}],
+    }
+    # One type fully read; the other missing a document.
+    document_masters.apply_reading(
+        ws, "bank_statement", document_id=other["id"], new_fields=[field]
+    )
+    document_masters.apply_reading(
+        ws, "vendor_invoice", document_id=read[0]["id"], new_fields=[field]
+    )
+    ws = workspaces.load_workspace(ws.id)
+    scope = {
+        "document_ids": [item["id"] for item in (*read, other)],
+        "document_scope_mode": "all",
+    }
+
+    assert unread_documents_of_type(ws, "vendor_invoice", scope) == [read[1]["id"]]
+    assert unread_documents_of_type(ws, "bank_statement", scope) == []
+    # The complete type is stamped; the incomplete one is withheld, not the
+    # other way round and not both.
+    assert _types_awaiting_stamp(ws, scope) == ["bank_statement"]
 
 
 def test_an_unrelated_dependency_is_not_waved_through():

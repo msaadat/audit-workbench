@@ -51,6 +51,23 @@ def canonical_sha256(value: object) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+#: How many times a failed evidence reading is handed back with its errors.
+#: Two, where every other document worker takes one, and the difference is
+#: earned: this worker's refusals are precise and recoverable — "you returned 18
+#: citations and not one field value", "cites 'c3', which is not a citation you
+#: declared" — and what a lost read costs is not one document but its type's
+#: whole vocabulary, because a type with an unread document is never stamped.
+#: Measured on the treasury engagement: one repair attempt converted none of
+#: five such failures.
+#:
+#: It lives here rather than beside the worker because two layers must agree on
+#: it and neither may import the other: the worker spends the attempts, and
+#: ``preparation_model_turns`` has to buy them. A budget sized at one turn per
+#: read and then spending three is precisely the failure that budget exists to
+#: prevent, so the number is defined once and read from both sides.
+READ_REPAIR_ATTEMPTS = 2
+
+
 def semantic_unit_id(kind: str, *refs: object) -> str:
     suffix = ":".join(slugify(str(ref)) for ref in refs if str(ref or "").strip())
     return f"{kind}:{suffix}" if suffix else kind

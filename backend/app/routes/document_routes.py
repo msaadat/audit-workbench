@@ -12,6 +12,7 @@ from .. import (
     cycle_linking,
     document_analysis,
     document_classification,
+    document_masters,
     document_schemas,
     document_search,
     document_types,
@@ -25,6 +26,7 @@ from .. import (
 from .. import uploads as upload_limits
 from ..text import counted, plural_word
 from ..agent import runner, store
+from ..agent.capabilities import documents as document_capabilities
 from ..agent.workflows import documents as documents_workflow
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["documents"])
@@ -299,6 +301,37 @@ async def list_document_schemas(workspace_id: str):
 
     ws = _ws(workspace_id)
     return {"items": cycle_linking.schema_catalog(ws)}
+
+
+@router.get("/documents/vocabulary")
+async def list_document_vocabulary(workspace_id: str):
+    """What each type is read under, and how well corroborated it is.
+
+    The per-type surface the documents tab never had. ``escape_rate`` was meant
+    to be it and was never served or rendered; under an accumulating master the
+    question it answered — is this vocabulary representative — is answered
+    better by the fill counts the master already carries.
+
+    ``types_with_unread_documents`` is the other half: a type is stamped only
+    when every document of it has been read, so a type missing one is not a
+    vocabulary in progress, it is a vocabulary withheld, and the reason belongs
+    on the same screen as the result.
+    """
+
+    ws = _ws(workspace_id)
+    scope = {"document_scope_mode": "all"}
+    return {
+        "items": [
+            {
+                **entry,
+                "unread_documents": document_capabilities.unread_documents_of_type(
+                    ws, entry["document_type"], scope
+                ),
+                "schema": document_schemas.load_schema(ws, entry["document_type"]),
+            }
+            for entry in document_masters.catalog(ws)
+        ]
+    }
 
 
 @router.get("/documents/unidentified")

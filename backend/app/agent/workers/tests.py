@@ -29,7 +29,7 @@ from typing import Any
 
 from ... import cycle_linking, cycle_vouching, doc_tests, sandbox
 from ...text import counted, relevance_tokens
-from ..prompts import JSON_RULES
+from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
     WORKERS,
@@ -474,7 +474,7 @@ The exact Cycle Vouch response shape is:
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
 attributes use the evidence that is actually supplied. One durable test has one
-source. Use only supplied table/column/document ids. {JSON_RULES}"""
+source. Use only supplied table/column/document ids. {JSON_RULES} {LANGUAGE_RULES}"""
 
 GENERATE_ROW_SOURCE_ID = "rcm_row"
 GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
@@ -1485,7 +1485,7 @@ Give every rule a short lower_snake_case id and a one-sentence rationale saying
 why it holds. The rationale is what an auditor reads when deciding whether to
 approve it, so state the reason, not the mechanics.
 
-{JSON_RULES}
+{JSON_RULES} {LANGUAGE_RULES}
 Keys:
   cycle_label   short name for the cycle
   roles         array of {{"name", "document_type", "cardinality": "one" | "many",
