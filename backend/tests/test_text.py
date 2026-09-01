@@ -40,3 +40,30 @@ def test_zero_takes_the_plural_the_way_english_does():
 def test_plural_word_omits_the_number_for_callers_that_render_it_themselves():
     assert text.plural_word(1, "finding") == "finding"
     assert text.plural_word(4, "finding") == "findings"
+
+
+def test_non_latin_letter_ratio_ignores_everything_that_is_not_a_letter():
+    # Markdown syntax, digits and punctuation must stay out of the denominator,
+    # or a heading-heavy note would score differently from the same prose.
+    assert text.non_latin_letter_ratio("## Deal capture (2023) — 15 minutes!") == 0.0
+    assert text.non_latin_letter_ratio("") == 0.0
+    assert text.non_latin_letter_ratio(None) == 0.0
+    assert text.non_latin_letter_ratio("1234 — ### ...") == 0.0
+
+
+def test_non_latin_letter_ratio_reads_accented_european_text_as_latin():
+    # Latin Extended-B and below is still the Latin script; a policy naming a
+    # French or Turkish counterparty has not drifted out of English.
+    assert text.non_latin_letter_ratio("Société Générale confirmed the deal") == 0.0
+    assert text.non_latin_letter_ratio("Işbank ağı") == 0.0
+
+
+def test_non_latin_letter_ratio_separates_borrowed_names_from_drifted_prose():
+    borrowed = text.non_latin_letter_ratio(
+        "The deal confirms a trade with 中国银行 for USD 5m on 3 February."
+    )
+    drifted = text.non_latin_letter_ratio(
+        "本摘录为财务和投资政策的一部分，文档参考TP/2023/04,版本4.1。"
+    )
+    assert borrowed < 0.2 < drifted
+    assert drifted > 0.85

@@ -12,10 +12,16 @@ from pathlib import Path
 
 from . import embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
-from .text import plural_word
+from .text import non_latin_letter_ratio, plural_word
+
+#: A generated narrative that has drifted into another script scores near 1.0;
+#: English prose naming a Chinese counterparty or quoting a hanzi document title
+#: scores a few percent. The gap between those is wide, so the threshold sits
+#: well clear of legitimate borrowing without admitting a translated summary.
+NARRATIVE_NON_LATIN_LIMIT = 0.20
 
 ANALYSIS_SCHEMA_VERSION = "5"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v8-english-output"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v9-english-narrative-guard"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 
@@ -575,6 +581,15 @@ def validate_analysis_text(payload: dict) -> dict:
         missing.append("audit_notes_markdown")
     if missing:
         raise ValueError(f"Required analysis {plural_word(len(missing), 'field')} were blank: {', '.join(missing)}")
+    for label, value in (("summary_markdown", summary), ("audit_notes_markdown", audit_notes)):
+        ratio = non_latin_letter_ratio(value)
+        if ratio > NARRATIVE_NON_LATIN_LIMIT:
+            raise ValueError(
+                f"{label} is not written in English: {round(ratio * 100)}% of its "
+                "letters are outside the Latin script. Write the analysis in "
+                "English regardless of the language of the source, and keep "
+                "quoted source text in citation excerpts rather than the narrative."
+            )
     return {"summary_markdown": summary, "audit_notes_markdown": audit_notes}
 
 
