@@ -63,11 +63,11 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.types_classified": documents_workflow.dependencies(
         "documents.types_classified"
     ),
-    "documents.schemas_sampled": documents_workflow.dependencies(
-        "documents.schemas_sampled"
+    "documents.evidence_read": documents_workflow.dependencies(
+        "documents.evidence_read"
     ),
-    "documents.schemas_induced": documents_workflow.dependencies(
-        "documents.schemas_induced"
+    "documents.schemas_stamped": documents_workflow.dependencies(
+        "documents.schemas_stamped"
     ),
     "documents.analysis_chunks_ready": documents_workflow.dependencies(
         "documents.analysis_chunks_ready"
@@ -103,7 +103,14 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "planning.apm_ready",
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_induced",
+        # The expensive pass moves ahead of the RCM, and that is the plan's
+        # stated cost. An accumulating master is not final until every document
+        # of its type has been read, and that read *is* the extraction pass — so
+        # this edge now means "read the evidence first". What it buys is a matrix
+        # written against the complete vocabulary of its corpus rather than one
+        # guessed from three samples: the alternative is letting the RCM address
+        # a provisional master and name a field document 15 renames.
+        "documents.schemas_stamped",
     ),
     # Rules are written against the matrix's comparisons and the induced
     # vocabulary, so both must exist first. Proposing is not approving: this
@@ -111,7 +118,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # makes it able to produce a result stays an auditor's, off this graph.
     "tests.cycle_ruleset_proposed": (
         "planning.rcm_ready",
-        "documents.schemas_induced",
+        "documents.schemas_stamped",
     ),
     "tests.specified": ("planning.rcm_ready", "tests.cycle_ruleset_proposed"),
     # Placing an exploratory procedure needs the matrix to place it in. It sits

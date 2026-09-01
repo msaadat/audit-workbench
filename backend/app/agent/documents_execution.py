@@ -23,6 +23,7 @@ import uuid
 from .. import (
     document_analysis,
     document_classification,
+    document_masters,
     document_media,
     document_schemas,
     document_types,
@@ -35,17 +36,21 @@ from . import narration, store, workflow
 from .base import BaseRunner
 from .workflow import semantic_unit_id
 from .capabilities import DOCUMENTS_REGISTRY
+from .capabilities import documents as document_capabilities
 from .capabilities.documents import (
     DOCUMENT_SCOPE_CHECKPOINT,
     MAX_SCOPE_DOCUMENTS,
     STAGE_CHECKPOINTS,
     DocumentScope,
-    analysis_profile,
     analysis_unit_specs,
     analyzable,
     chunk_specs,
+    evidence_read_media,
+    evidence_read_pages,
+    evidence_read_text,
     has_generated_analysis,
     preparation_model_turns,
+    read_over_window,
     resolve_document_scope,
     visual_page_limit,
 )
@@ -54,7 +59,7 @@ from .context import (
     document_category_scope,
     document_chunk_scope,
     document_classification_scope,
-    document_schema_sample_scope,
+    document_evidence_read_scope,
     document_structured_chunk_scope,
     document_reduction_scope,
     document_visual_page_scope,
@@ -63,7 +68,8 @@ from .executors import EXECUTORS
 from .executors.documents import (
     DocumentCategoryExecutorTarget,
     DocumentClassificationExecutorTarget,
-    DocumentSchemaExecutorTarget,
+    DocumentReadExecutorTarget,
+    DocumentStampExecutorTarget,
     DOCUMENT_REVIEW_REQUIRED,
     DOCUMENT_REQUIRES_VISION,
     DOCUMENT_TEXT_UNAVAILABLE,
@@ -95,8 +101,8 @@ from .workers import WORKERS
 from .workers.documents import (
     CATEGORY_WORKER_ID,
     CLASSIFY_WORKER_ID,
-    INDUCE_WORKER_ID,
-    RECONCILE_WORKER_ID,
+    READ_WORKER_ID,
+    master_descriptor,
     STRUCTURED_WORKER_ID,
     schema_descriptor,
     CHUNK_WORKER_ID,
@@ -844,34 +850,7 @@ class DocumentWorkflowExecution(BaseRunner):
             ),
         )
 
-    def _schema_samples(
-        self, document_type: str, sample_ids: list[str]
-    ) -> list[tuple[str, dict]]:
-        """Read back what each sample unit proposed, in stable document order.
-
-        Paired with the document each reading came from, rather than returned as
-        a bare list. A sample that failed leaves no proposal, so the readings are
-        a *subsequence* of the samples — and a schema is a claim about the
-        documents it was actually read from. Positional recovery would attribute
-        it to a prefix of the samples instead, which is the wrong set the moment
-        anything but the last one fails.
-        """
-
-        readings: list[tuple[str, dict]] = []
-        for document_id in sample_ids:
-            unit_id = semantic_unit_id(
-                "document_schema_sample", document_type, document_id
-            )
-            try:
-                payload = self.sidecars.load_proposal(unit_id)
-            except WorkspaceError:
-                payload = None
-            proposal = (payload or {}).get("proposal")
-            if isinstance(proposal, dict) and proposal.get("fields"):
-                readings.append((document_id, dict(proposal)))
-        return readings
-
-    def _bind_schema_sample(
+    def _bind_evidence_read(
         self,
         subject: Workspace,
         run: dict,
@@ -879,7 +858,15 @@ class DocumentWorkflowExecution(BaseRunner):
         stage: dict,
         unit: dict,
     ) -> BoundUnitPipeline | DeterministicUnitResult:
-        """Bind one sample document to be read for the fields its type carries."""
+        """Bind one evidence document to be read whole against its type's master.
+
+        Every document binding against state its predecessor committed *is* the
+        master accumulating. That is what the sequential barrier buys and why it
+        is the mechanism rather than a concession: the parallel path binds every
+        unit before running any of them, so a unit's input is resolved at stage
+        start and can never see what a sibling settled. Reading the master here,
+        at bind time, is the whole design in one line.
+        """
 
         self.ws = subject
         unit_input = dict(unit.get("input_payload") or {})
@@ -887,31 +874,77 @@ class DocumentWorkflowExecution(BaseRunner):
         document_type = str(
             unit_input.get("document_type") or ""
         ) or document_classification.document_type(self.ws, document_id)
-        text = str(unit_input.get("text") or "") or document_classification.induction_text(
-            self.ws, document_id
-        )
+        extracted = analyzable(self.ws, document_id)
+        if extracted is None:
+            return self._unreadable_document(document_id)
+        scope = workflow_scope(self.run)
+        over = read_over_window(self.ws, document_id, scope)
+        if over is not None:
+            # Reported, never truncated. A citation binds to text the worker saw,
+            # and the master's whole value rests on absence meaning "the document
+            # does not state this" rather than "nobody looked at that page".
+            return DeterministicUnitResult("awaiting_confirmation", (), over)
+        text = evidence_read_text(self.ws, document_id)
         if not text:
             return DeterministicUnitResult(
                 "awaiting_confirmation",
                 (),
-                "This document has no extracted text to read a schema from.",
+                "This document has no extracted text to read.",
             )
+        self._reset_master_once(document_type, scope)
+        master = document_masters.master(self.ws, document_type)
+        media = evidence_read_media(self.ws, document_id, scope)
+        handles, unsupported = self._prepared_read_media(document_id, media)
+        if unsupported:
+            return DeterministicUnitResult("awaiting_confirmation", (), unsupported)
         task = self.add_task(
-            "document_schemas", "workflow:document_schemas", "Document schema"
+            "document_analysis", "workflow:document_analysis", "Document analysis"
+        )
+        mode = document_capabilities.vocabulary_mode(scope)
+        target = DocumentReadExecutorTarget(
+            self.ws,
+            self.run["id"],
+            document_id,
+            document_type,
+            extracted=extracted,
+            action=(
+                "refresh"
+                if str(scope.get("generation_mode") or "") == "force"
+                else "analyze"
+            ),
+            vocabulary_mode=mode,
         )
         request = UnitPipelineRequest(
             capability_id=capability.id,
             unit_id=unit["id"],
-            worker_id=INDUCE_WORKER_ID,
-            executor_id=None,
+            worker_id=READ_WORKER_ID,
+            executor_id="documents.read",
             unit_input={
                 "kind": unit.get("kind"),
                 "input_sha1": unit.get("input_sha1"),
                 "parent_refs": list(unit.get("parent_refs") or []),
-                "document_type": document_type,
                 "document_id": document_id,
+                "document_type": document_type,
                 "title": str(unit_input.get("title") or ""),
-                "text": text,
+                # Prior art: what this type's documents before it settled on.
+                # It travels on the unit input rather than in the prompt, so the
+                # prompt hash stays stable while the vocabulary varies per
+                # workspace — and a master that moved re-expands this unit rather
+                # than leaving a reading made under names nobody else used.
+                "master_ref": str(master.get("master_ref") or ""),
+                "master_fields": list(master.get("fields") or []),
+                "master_descriptor": master_descriptor(
+                    document_type,
+                    list(master.get("fields") or []),
+                    documents_read=len(list(master.get("documents_read") or [])),
+                ),
+                "vocabulary_mode": mode,
+                # Re-preparing a page moves this and the document is read again,
+                # rather than being reduced under images it never saw. Same
+                # interlock the page-at-a-time path keeps.
+                "prepared_set_identities": [
+                    str(item.get("prepared_set_identity") or "") for item in media
+                ],
             },
             activity={
                 "artifact_refs": list(unit.get("parent_refs") or []),
@@ -919,11 +952,8 @@ class DocumentWorkflowExecution(BaseRunner):
                 "task_id": task["id"],
             },
             expected_revision=self.ws.revision,
-            expected_parents={},
+            expected_parents=parent_hashes(self.ws, [document_ref(document_id)]),
             capability_definition_hash=workflow.capability_definition_hash(capability),
-            # A sample reading is an input to the frozen schema, never a durable
-            # record of its own: its persisted proposal is the outcome, the way a
-            # chunk analysis works.
             approval_kind=None,
             proposal_reference=unit.get("proposal_sidecar"),
             receipt_reference=unit.get("receipt_sidecar"),
@@ -935,160 +965,12 @@ class DocumentWorkflowExecution(BaseRunner):
                 self.context_resolver,
                 capability,
                 unit,
-                document_schema_sample_scope(self.ws, document_id, text),
-            )
-
-        return BoundUnitPipeline(
-            request=request,
-            context_provider=context_provider,
-            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
-                capability, manifest
-            ),
-            target=None,
-        )
-
-    def _bind_schema(
-        self,
-        subject: Workspace,
-        run: dict,
-        capability: workflow.Capability,
-        stage: dict,
-        unit: dict,
-    ) -> BoundUnitPipeline | DeterministicUnitResult:
-        """Union one type's sample readings and freeze the schema they agree on.
-
-        The samples are unioned by local code, and a model is called a second
-        time *only* if two of them named one field as two different things.
-        Agreement is the common case and costs nothing, which is what makes
-        reading the samples independently affordable in the first place.
-        """
-
-        self.ws = subject
-        unit_input = dict(unit.get("input_payload") or {})
-        document_type = str(unit_input.get("document_type") or "")
-        # ``input_payload`` does not reach a binder — the scheduler stores only
-        # kind, title, parent_refs, and input_sha1 — so the freeze unit recovers
-        # both its samples and its type from the parents it was expanded against.
-        # Those are the sample documents themselves, which makes the recovery
-        # exact rather than a re-derivation that could pick a different sample.
-        sample_ids = [
-            str(ref).split(":", 1)[1]
-            for ref in unit.get("parent_refs") or []
-            if str(ref).startswith("document:")
-        ]
-        if not document_type and sample_ids:
-            document_type = document_classification.document_type(self.ws, sample_ids[0])
-        if not sample_ids:
-            sample_ids = document_classification.sample_for_induction(
-                self.ws, document_type
-            )
-        readings = self._schema_samples(document_type, sample_ids)
-        if not readings:
-            return DeterministicUnitResult(
-                "awaiting_confirmation",
-                (),
-                f"No sample of '{document_type}' could be read for its fields.",
-            )
-        contributing = [document_id for document_id, _ in readings]
-        fields, conflicts = document_schemas.union_fields(
-            [proposal.get("fields") or [] for _, proposal in readings]
-        )
-        task = self.add_task(
-            "document_schemas", "workflow:document_schemas", "Document schema"
-        )
-        target = DocumentSchemaExecutorTarget(
-            self.ws,
-            self.run["id"],
-            document_type,
-            sample_document_ids=tuple(contributing),
-            reconciled=bool(conflicts),
-        )
-        # The documents the schema was read from. A schema is a claim about
-        # them, so replacing one under this commit is a real conflict rather
-        # than a race to ignore.
-        expected = parent_hashes(
-            self.ws, [document_ref(document_id) for document_id in contributing]
-        )
-        request = UnitPipelineRequest(
-            capability_id=capability.id,
-            unit_id=unit["id"],
-            worker_id=RECONCILE_WORKER_ID,
-            executor_id="documents.schema",
-            unit_input={
-                "kind": unit.get("kind"),
-                "input_sha1": unit.get("input_sha1"),
-                "parent_refs": list(unit.get("parent_refs") or []),
-                "document_type": document_type,
-                "sample_document_ids": contributing,
-                "conflicts": conflicts,
-            },
-            activity={
-                "artifact_refs": list(unit.get("parent_refs") or []),
-                "document_ids": contributing,
-                "task_id": task["id"],
-            },
-            expected_revision=self.ws.revision,
-            expected_parents=expected,
-            capability_definition_hash=workflow.capability_definition_hash(capability),
-            approval_kind=None,
-            proposal_reference=unit.get("proposal_sidecar"),
-            receipt_reference=unit.get("receipt_sidecar"),
-        )
-
-        if not conflicts:
-            # The samples agree. Freezing needs no model, so none is billed — the
-            # reconciliation turn exists for disagreement, not as a step. The
-            # commit still goes through the shared pipeline, so it keeps the same
-            # proposal-before-mutation, reconciliation, and receipt guarantees a
-            # model-backed unit gets.
-            return self._commit_schema(unit, request, target, {"fields": fields})
-
-        def accept(proposal):
-            """Apply the chosen readings, then re-union to the settled fields.
-
-            Re-unioning rather than patching the merged list keeps one code path
-            deciding what a schema is: the resolution changes what a sample said,
-            and the union then follows from it exactly as it would have if the
-            samples had agreed.
-            """
-
-            chosen = {
-                (str(item.get("name")), str(item.get("attribute"))): str(item.get("value"))
-                for item in (dict(proposal).get("resolutions") or [])
-            }
-            settled = [
-                [
-                    {
-                        **dict(field),
-                        **{
-                            attribute: chosen[(str(field.get("name")), attribute)]
-                            for attribute in document_schemas.CONFLICTING_ATTRIBUTES
-                            if (str(field.get("name")), attribute) in chosen
-                        },
-                    }
-                    for field in proposal_fields
-                ]
-                for proposal_fields in (
-                    reading.get("fields") or [] for _, reading in readings
-                )
-            ]
-            merged, remaining = document_schemas.union_fields(settled)
-            if remaining:
-                raise WorkspaceError(
-                    f"Reconciliation left '{remaining[0]['name']}' unsettled."
-                )
-            return {**dict(proposal), "fields": merged}
-
-        def context_provider():
-            return resolve_context(
-                self,
-                self.context_resolver,
-                capability,
-                unit,
-                document_schema_sample_scope(
+                document_evidence_read_scope(
                     self.ws,
-                    contributing[0],
-                    document_classification.induction_text(self.ws, contributing[0]),
+                    document_id,
+                    text,
+                    evidence_read_pages(self.ws, document_id),
+                    handles,
                 ),
             )
 
@@ -1099,8 +981,197 @@ class DocumentWorkflowExecution(BaseRunner):
                 capability, manifest
             ),
             target=target,
-            approval_provider=accept,
         )
+
+    def _reset_master_once(self, document_type: str, scope: dict) -> None:
+        """Discard a type's master the first time this run re-reads it.
+
+        ``revise_vocabulary`` rebuilds rather than appends, and the difference
+        matters: reading the type from the start in order is what keeps
+        ``introduced_at`` meaningful and the late-field sweep bounded, where
+        appending to an existing master would leave indices that no longer
+        describe what any document was asked. That does not fail — it makes the
+        sweep run over the wrong set, silently.
+
+        Once per type per run, recorded on the run so a resumed pass appends to
+        what it has already rebuilt rather than discarding it a second time and
+        renumbering the documents it just read.
+        """
+
+        if document_capabilities.vocabulary_mode(scope) != "rebuild":
+            return
+        state = self.run.setdefault("document_analysis", {})
+        rebuilt = state.setdefault("vocabulary_rebuilt", [])
+        if document_type in rebuilt:
+            return
+        document_masters.reset(self.ws, document_type)
+        rebuilt.append(document_type)
+        self.save()
+        self.warn(
+            f"Rebuilding the vocabulary for '{document_type}': every document of "
+            "this type is re-read in order, and the schema is stamped from what "
+            "that pass produces."
+        )
+
+    def _prepared_read_media(
+        self, document_id: str, specs: list[dict]
+    ) -> tuple[list[dict], str | None]:
+        """Prepare the document's visually-routed pages for the read.
+
+        Optional by design and by measurement: most evidence is digital and
+        routes no page here. What is not optional is that a scanned page, where
+        one exists, reaches the same call as the text — a fully scanned
+        confirmation would otherwise contribute nothing and produce no records,
+        silently, and the commoner case is worse: a mostly-digital PDF read for
+        everything except the page the signature is on.
+        """
+
+        handles: list[dict] = []
+        for spec in specs:
+            if spec.get("unsupported_reason"):
+                # An unreadable page must be stated rather than skipped. The
+                # ``.docx`` image-only case still reports
+                # ``document_visual_source_unsupported``.
+                return [], str(spec["unsupported_reason"])
+            try:
+                prepared = document_media.prepare_document_page(
+                    self.ws, document_id, int(spec.get("page") or 0)
+                )
+            except document_media.MediaPreparationError as error:
+                return [], (
+                    f"Page {spec.get('page')} could not be prepared for reading: "
+                    f"{error}"
+                )
+            handles.extend(dict(item) for item in prepared)
+        return handles, None
+
+    def _bind_schema_stamp(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Write one finished master into a schema. No model turn.
+
+        The stamp is a dependent capability rather than the last unit of the
+        read, and the reason is the one Phase 3 already paid for: units within a
+        stage execute in sorted id order, so a capability holding both the
+        readings and the freeze would bind the freeze first and read back
+        nothing.
+        """
+
+        self.ws = subject
+        # ``input_payload`` does not reach a binder — the scheduler stores only
+        # kind, title, parent_refs and input_sha1 — so the stamp recovers its
+        # type from the parents it was expanded against. Those *are* the
+        # documents whose reading built the master, which makes the recovery
+        # exact rather than a re-derivation that could name a different type.
+        read_parents = [
+            str(ref).split(":", 1)[1]
+            for ref in unit.get("parent_refs") or []
+            if str(ref).startswith("document:")
+        ]
+        document_type = next(
+            (
+                document_classification.document_type(self.ws, document_id)
+                for document_id in read_parents
+                if document_classification.document_type(self.ws, document_id)
+            ),
+            "",
+        )
+        if not document_type:
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (),
+                "This stamp names no document type: none of the documents it was "
+                "expanded against carries one.",
+            )
+        master = document_masters.master(self.ws, document_type)
+        read = [str(value) for value in master.get("documents_read") or []]
+        if not document_masters.schema_fields(master):
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (),
+                f"No document of '{document_type}' was read, so it has no "
+                "vocabulary to stamp.",
+            )
+        task = self.add_task(
+            "document_schemas", "workflow:document_schemas", "Document schema"
+        )
+        target = DocumentStampExecutorTarget(self.ws, self.run["id"], document_type)
+        request = UnitPipelineRequest(
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            worker_id=None,
+            executor_id="documents.stamp",
+            unit_input={
+                "kind": unit.get("kind"),
+                "input_sha1": unit.get("input_sha1"),
+                "parent_refs": list(unit.get("parent_refs") or []),
+                "document_type": document_type,
+                "documents_read": read,
+                "master_ref": str(master.get("master_ref") or ""),
+            },
+            activity={
+                "artifact_refs": list(unit.get("parent_refs") or []),
+                "document_ids": read,
+                "task_id": task["id"],
+            },
+            expected_revision=self.ws.revision,
+            # The documents the vocabulary was read from. A schema is a claim
+            # about them, so replacing one under this commit is a real conflict
+            # rather than a race to ignore.
+            expected_parents=parent_hashes(
+                self.ws, [document_ref(document_id) for document_id in read]
+            ),
+            capability_definition_hash=workflow.capability_definition_hash(capability),
+            approval_kind=None,
+            proposal_reference=unit.get("proposal_sidecar"),
+            receipt_reference=unit.get("receipt_sidecar"),
+        )
+        return self._commit_stamp(unit, request, target, {"document_type": document_type})
+
+    def _commit_stamp(
+        self,
+        unit: dict,
+        request: UnitPipelineRequest,
+        target: DocumentStampExecutorTarget,
+        proposal: dict,
+    ) -> DeterministicUnitResult:
+        """Commit a stamp through the shared pipeline, with no model.
+
+        Through ``commit_local`` rather than as a bare file write, so it keeps
+        the same proposal-before-mutation, reconciliation and receipt guarantees
+        a model-backed unit gets — the shape the freeze binder already used when
+        its samples agreed.
+        """
+
+        if self.unit_pipeline is None:
+            raise WorkspaceError(
+                "The document composition requires a UnitPipeline to commit."
+            )
+
+        def record(field: str):
+            def persist(reference) -> None:
+                unit[field] = dict(reference)
+                self.save()
+
+            return persist
+
+        self.unit_pipeline.commit_local(
+            request,
+            proposal=proposal,
+            target=target,
+            origin="master_stamp",
+            on_proposal_persisted=record("proposal_sidecar"),
+            on_receipt_persisted=record("receipt_sidecar"),
+        )
+        return DeterministicUnitResult(
+            "succeeded", (f"document_schema:{target.document_type}",)
+        )
+
 
     def _bind_reduction(
         self,
@@ -1336,39 +1407,6 @@ class DocumentWorkflowExecution(BaseRunner):
             approval_provider=accept,
             readiness_provider=None,
             on_committed=on_committed,
-        )
-
-    def _commit_schema(
-        self,
-        unit: dict,
-        request: UnitPipelineRequest,
-        target: DocumentSchemaExecutorTarget,
-        proposal: dict,
-    ) -> DeterministicUnitResult:
-        """Commit an agreed schema through the shared pipeline, with no model."""
-
-        if self.unit_pipeline is None:
-            raise WorkspaceError(
-                "The document composition requires a UnitPipeline to commit."
-            )
-
-        def record(field: str):
-            def persist(reference) -> None:
-                unit[field] = dict(reference)
-                self.save()
-
-            return persist
-
-        self.unit_pipeline.commit_local(
-            request,
-            proposal=proposal,
-            target=target,
-            origin="agreed_schema_union",
-            on_proposal_persisted=record("proposal_sidecar"),
-            on_receipt_persisted=record("receipt_sidecar"),
-        )
-        return DeterministicUnitResult(
-            "succeeded", (f"document_schema:{target.document_type}",)
         )
 
     def _commit_reduction(
@@ -1614,66 +1652,6 @@ class DocumentWorkflowExecution(BaseRunner):
         )
 
     # ------------------------------------------------------------ checkpoint
-    def _warn_unstructured_vouchers(self) -> None:
-        """Name the transaction evidence about to be read without its schema.
-
-        ``analysis_profile`` reads a voucher under ``structured`` only where its
-        type has an induced schema, and under ``standard`` otherwise. The second
-        is a readable narrative analysis and explicitly not cycle evidence, so a
-        voucher that lands there has dropped out of the strongest evidence path
-        the engagement has — and nothing about the analysis it does get says so.
-
-        That downgrade was unreachable while a failed sample blocked every later
-        stage; completing ``_PARTIAL_DEPENDENCIES`` is what lets these documents
-        through, so this is the other half of that change rather than a separate
-        improvement. Reported per document type, because the repair is per type:
-        induce the schema, and the vouchers of that type are read under it.
-
-        Warned before chunking rather than after analysis, so the run says what
-        is about to happen while an auditor can still stop it.
-        """
-
-        state = self.run.setdefault("document_analysis", {})
-        if state.get("unstructured_vouchers_reported"):
-            return
-        document_scope = self.scope()
-        downgraded: dict[str, list[str]] = {}
-        for document_id in document_scope.document_ids:
-            document = next(
-                (
-                    item
-                    for item in self.ws.documents
-                    if str(item.get("id")) == document_id
-                ),
-                None,
-            )
-            if document is None:
-                continue
-            if (
-                document_classification.category(self.ws, document_id)
-                not in intake.EVIDENCE_DOCUMENT_CATEGORIES
-            ):
-                continue
-            if analysis_profile(self.ws, document_id) == "structured":
-                continue
-            document_type = (
-                document_classification.document_type(self.ws, document_id) or "unclassified"
-            )
-            downgraded.setdefault(document_type, []).append(self._title(document_id))
-        if not downgraded:
-            return
-        state["unstructured_vouchers_reported"] = True
-        for document_type, titles in sorted(downgraded.items()):
-            self.warn(
-                f"{counted(len(titles), 'document')} held as transaction evidence "
-                f"({', '.join(sorted(titles)[:3])}"
-                f"{', …' if len(titles) > 3 else ''}) will be analysed as narrative "
-                f"because document type '{document_type}' has no induced schema. "
-                "A narrative analysis is not cycle evidence, so these documents "
-                "cannot be tie-matched until the schema is induced."
-            )
-        self.save()
-
     def _scope_checkpoint(self) -> None:
         """Settle an ambiguous document scope before any capability fans out.
 
@@ -1822,37 +1800,45 @@ class DocumentWorkflowExecution(BaseRunner):
 #
 # The map used to say that and list three of the seven edges, which left the
 # four upstream ones fully blocking. One failed sample then failed the
-# ``schemas_sampled`` stage, blocked induction, blocked chunking, and blocked
-# every analysis in the run — the whole engagement starved by one document.
+# sampling stage, blocked induction, blocked chunking, and blocked every
+# analysis in the run — the whole engagement starved by one document.
 #
-# Completing it is only half the repair. Unblocking a stage that used to stop
-# means a voucher whose type has no schema now *reaches* analysis, and
-# ``analysis_profile`` reads it under ``standard`` rather than ``structured``:
-# a narrative analysis, which is not cycle evidence. That is a quieter failure
-# than the starvation it replaces, so ``_warn_unstructured_vouchers`` reports it
-# by name. Removing a blockage without reporting what now flows past it would
-# have traded a loud stop for a silent downgrade.
+# Under 4b.1 the downgrade that completion once created is gone with the routing
+# question behind it: transaction evidence has its own pass and its own
+# readiness, so an unschema'd voucher no longer "reaches analysis as prose" —
+# there is no shared stage left for it to fall through. What replaces the
+# warning is the one edge kept blocking below.
 _PARTIAL_DEPENDENCIES = {
     "documents.categorized": {"documents.text_ready"},
     "documents.types_classified": {"documents.categorized"},
-    "documents.schemas_sampled": {"documents.types_classified"},
-    "documents.schemas_induced": {"documents.schemas_sampled"},
+    "documents.evidence_read": {"documents.types_classified"},
+    # ``documents.schemas_stamped`` is deliberately absent, and it is the one
+    # edge in this graph that must stay blocking. A master built from eight of
+    # eighteen documents is not the type's vocabulary, and stamping it would
+    # write a ``schema_version`` that says otherwise — provenance claiming *this
+    # is what emerged from reading these documents* when ten of them were never
+    # read. A stage with any failed unit folds to ``failed``, so a read that dies
+    # at document 9 never reaches the stamp: no ``save_schema`` runs, the type
+    # has no current schema, and its readings keep their ``master_ref`` and are
+    # never stamped into evidence. Nothing is lost — the readings are on disk and
+    # the re-run resumes against them — and nothing records a partial vocabulary
+    # as complete.
     "documents.analysis_chunks_ready": {
         "documents.text_ready",
-        "documents.schemas_induced",
+        "documents.categorized",
     },
     "documents.analysis_generated": {"documents.analysis_chunks_ready"},
     "documents.analysis_reviewed": {"documents.analysis_generated"},
 }
 
 _PIPELINE_BINDERS = {
-    "documents.schemas_sampled": (
-        "_bind_schema_sample",
-        {"worker": INDUCE_WORKER_ID, "executor": None},
+    "documents.evidence_read": (
+        "_bind_evidence_read",
+        {"worker": READ_WORKER_ID, "executor": "documents.read"},
     ),
-    "documents.schemas_induced": (
-        "_bind_schema",
-        {"worker": RECONCILE_WORKER_ID, "executor": "documents.schema"},
+    "documents.schemas_stamped": (
+        "_bind_schema_stamp",
+        {"worker": None, "executor": "documents.stamp"},
     ),
     "documents.categorized": (
         "_bind_category",
@@ -1962,8 +1948,6 @@ def build_documents_workflow_runner(
         _stage: dict,
     ) -> None:
         adapter.ws = subject
-        if capability.id == "documents.analysis_chunks_ready":
-            adapter._warn_unstructured_vouchers()
         checkpoint = STAGE_CHECKPOINTS.get(capability.id)
         if checkpoint is not None:
             checkpoint_handlers[checkpoint]()

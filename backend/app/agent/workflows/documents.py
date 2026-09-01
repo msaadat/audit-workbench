@@ -10,8 +10,8 @@ declared here; they do not redefine the edges.
 ``documents.categorized`` reads each document's opening page and says what this
 engagement holds it as — planning material or transaction evidence,
 ``documents.types_classified`` names what each document *is* from the closed
-global catalog, ``documents.schemas_sampled`` reads a small sample of each type
-and records the fields each sample carries, ``documents.schemas_induced`` unions
+global catalog, ``documents.evidence_read`` reads every evidence document whole
+against its type's accumulating master, ``documents.schemas_stamped`` writes
 those readings into one frozen schema per type,
 ``documents.analysis_chunks_ready`` maps each bounded source chunk through one
 model worker and persists a run-local proposal per chunk,
@@ -45,11 +45,21 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.text_ready": (),
     "documents.categorized": ("documents.text_ready",),
     "documents.types_classified": ("documents.categorized",),
-    "documents.schemas_sampled": ("documents.types_classified",),
-    "documents.schemas_induced": ("documents.schemas_sampled",),
+    "documents.evidence_read": ("documents.types_classified",),
+    "documents.schemas_stamped": ("documents.evidence_read",),
+    # The *schema* edge is gone, and its absence is the point: this capability
+    # carries planning prose, which needs no vocabulary, and leaving it would
+    # make every policy summary wait on the whole evidence read for nothing.
+    #
+    # The *category* edge replaces it and is not optional. This pass excludes
+    # transaction evidence, which now has its own read, and it excludes it by
+    # category — so a document whose category has not been read yet would be
+    # chunked as prose and then read again as evidence, producing one document
+    # analysed twice under two vocabularies. Which is the drift the read
+    # removes, relocated.
     "documents.analysis_chunks_ready": (
         "documents.text_ready",
-        "documents.schemas_induced",
+        "documents.categorized",
     ),
     "documents.analysis_generated": ("documents.analysis_chunks_ready",),
     "documents.analysis_reviewed": ("documents.analysis_generated",),
@@ -62,8 +72,8 @@ AUDIT_CAPABILITY_IDS: tuple[str, ...] = (
     "documents.text_ready",
     "documents.categorized",
     "documents.types_classified",
-    "documents.schemas_sampled",
-    "documents.schemas_induced",
+    "documents.evidence_read",
+    "documents.schemas_stamped",
     "documents.analysis_chunks_ready",
     "documents.analysis_generated",
 )
@@ -73,7 +83,7 @@ AUDIT_CAPABILITY_IDS: tuple[str, ...] = (
 FULL_DOCUMENT_OUTCOMES = [
     "documents.categorized",
     "documents.types_classified",
-    "documents.schemas_induced",
+    "documents.schemas_stamped",
     "documents.analysis_generated",
 ]
 

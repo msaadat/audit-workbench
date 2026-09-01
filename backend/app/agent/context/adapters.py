@@ -2880,9 +2880,14 @@ DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
 DOCUMENT_CATEGORY_SOURCE_ID = "document_category"
 DOCUMENT_CLASSIFICATION_SOURCE_ID = "document_classification"
-DOCUMENT_SCHEMA_SAMPLE_SOURCE_ID = "document_schema_sample"
 DOCUMENT_STRUCTURED_CHUNK_SOURCE_ID = "document_structured_chunk"
 DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID = "document_page_images"
+DOCUMENT_READ_TEXT_SOURCE_ID = "document_pages"
+#: The read takes both modalities in one call, so it reuses the visual source
+#: id rather than coining a second one — the prepared-media handle shape and
+#: the ``page_image`` representation are the same ones the page-at-a-time path
+#: already resolves.
+DOCUMENT_READ_IMAGE_SOURCE_ID = DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID
 DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID = "chunk_analyses"
 
 # The document fields a chunk or reduction turn is allowed to see as
@@ -3189,33 +3194,62 @@ def document_structured_chunk_scope(
     )
 
 
-def document_schema_sample_scope(
+def document_evidence_read_scope(
     workspace: Workspace,
     document_id: str,
     text: str,
+    pages: Iterable[int] = (),
+    handles: Iterable[Mapping[str, object]] = (),
 ) -> ContextScope:
-    """Build the local scope for one schema-sample unit.
+    """Build the local scope for one whole-document evidence read.
 
-    The document's own text and nothing else. No metadata projection and no
-    filename, for the same reason classification gets none: a path like
-    ``PO-2025-17.pdf`` names fields the document may not actually carry, and a
-    schema induced partly from a filename would be applied to every document of
-    the type.
+    Two sources, because a scanned page is where a control signature lives. A
+    text-only read fails two ways: a fully scanned confirmation contributes
+    nothing and produces no records, silently; and the commoner case is worse —
+    a mostly-digital PDF with one scanned approval page is read for everything
+    except the page the control is on. ``second_approver`` on three of eighteen
+    payment instructions is exactly the kind of field that lives in a signature
+    block, and absence there is the finding.
+
+    No metadata projection and no filename, for the reason the schema sample got
+    none: a path like ``PMT-2025-00074.pdf`` names a value the document may not
+    actually print, and a reading that took it would cite a filename.
+
+    Media is optional. Most evidence is digital and routes no page visually, so
+    an empty handle set is an ordinary reading rather than a contract breach —
+    unlike ``document_visual_page_scope``, whose whole unit *is* the page.
     """
 
-    payload = {"document_id": str(document_id), "text": str(text or "")}
-    return ContextScope(
-        candidates={
-            DOCUMENT_SCHEMA_SAMPLE_SOURCE_ID: (
-                ContextCandidate(
-                    source_ref=f"document:{document_id}:schema-sample",
-                    source=payload,
-                    representations={"raw_pages": payload},
-                    metadata={"document_id": str(document_id)},
-                ),
+    payload = {
+        "document_id": str(document_id),
+        "text": str(text or ""),
+        "pages": [int(page) for page in pages],
+    }
+    media = [dict(item) for item in handles]
+    candidates: dict[str, tuple] = {
+        DOCUMENT_READ_TEXT_SOURCE_ID: (
+            ContextCandidate(
+                source_ref=f"document:{document_id}:reading",
+                source=payload,
+                representations={"raw_pages": payload},
+                metadata={"document_id": str(document_id)},
             ),
-        },
-    )
+        ),
+    }
+    if media:
+        candidates[DOCUMENT_READ_IMAGE_SOURCE_ID] = tuple(
+            ContextCandidate(
+                source_ref=str(item.get("source_ref") or ""),
+                source=dict(item),
+                representations={"page_image": dict(item)},
+                metadata={
+                    "document_id": str(document_id),
+                    "page": item.get("page"),
+                },
+            )
+            for item in media
+        )
+    return ContextScope(candidates=candidates)
 
 
 def document_visual_page_scope(
@@ -3431,6 +3465,7 @@ __all__ = [
     "document_qa_page_candidates",
     "document_qa_scope",
     "document_reduction_scope",
+    "document_evidence_read_scope",
     "document_visual_page_scope",
     "document_test_document_candidates",
     "finding_draft_scope",

@@ -63,14 +63,17 @@ treats both as provisional.
 
 ## Pass structure
 
-> **Superseded by `docs/agentic-vouching-plan.md` phase 4b, which is not yet
-> built.** What is below is what ships today and what the rest of this document
-> describes. What changes there is *when* the vocabulary freezes: sampling and
-> the induce pass go, every evidence document is read once in type order against
-> an accumulating master, and the schema is written at the end of a type from
-> what the reading produced. Two premises below also no longer hold — intake is
-> no longer filename-only (phase 4a reads page one), and the induction sample is
-> no longer re-extracted because there is no sample.
+> **Superseded by `docs/agentic-vouching-plan.md` phase 4b.1, which is built.**
+> The three passes below are two: sampling and induction are gone, and every
+> evidence document is read once in type order against an accumulating master
+> (`DocumentMasters/<type>.json`), with the schema written at the end of a type
+> from what the reading produced. Three premises below no longer hold — intake is
+> no longer filename-only (4a reads page one), there is no induction sample to
+> re-extract, and extraction is no longer a third pass at all: the read *is* the
+> extraction. `documents.schemas_sampled` and `documents.schemas_induced` are now
+> `documents.evidence_read` and `documents.schemas_stamped`. What survives below
+> unchanged is Contract 2 and everything under it: approved join keys, measured
+> fan-out, the ruleset review screen, and the staleness family.
 
 Document type cannot come from intake. Intake classification is deliberately
 filename-only with no document contents, as a stated privacy boundary
@@ -588,11 +591,11 @@ and covered by `workspace_transactions.py`.
     .index.json
 ```
 
-Phase 4b adds one store beside these — `DocumentMasters/<document_type>.json`,
-the vocabulary accumulating as a type is read, deliberately *not* a schema and
-carrying no version. `DocumentSchemas/` keeps its meaning exactly: written once
-per type per run, by the stamp, from the finished master. See
-`docs/agentic-vouching-plan.md`, *The master schema*.
+Phase 4b.1 added one store beside these — `DocumentMasters/<document_type>.json`
+with its own `.index.json`, the vocabulary accumulating as a type is read,
+deliberately *not* a schema and carrying no version. `DocumentSchemas/` keeps its
+meaning exactly: written once per type per run, by the stamp, from the finished
+master. See `docs/agentic-vouching-plan.md`, *The master schema*.
 
 Written directly with `write_json_atomic`, the way `methodology.py` and
 `document_analysis.py` write their side stores — **not** through
@@ -649,7 +652,7 @@ current Treasury failure.
 | Worker | Change |
 | --- | --- |
 | `workers/documents.py` `CLASSIFY_SYSTEM` *(new)* | page-1 text -> one label from the closed type list + confidence |
-| `workers/documents.py` `INDUCE_SYSTEM` *(new)* | 2-3 sample extractions -> field schema; separate reconcile prompt for conflicts |
+| ~~`workers/documents.py` `INDUCE_SYSTEM`~~ *(deleted in 4b.1)* | Replaced by `documents.evidence_read`: one whole evidence document, text and page images, read against its type's accumulating master. There is no sample and no reconciliation, because there is no guess left to police |
 | `workers/documents.py` `VOUCHER_SYSTEM` *(rewritten)* | schema-guided extraction; `_pack_descriptor`/`_VOUCHER_REGISTRY_DESCRIPTORS` replaced by a schema descriptor; response schema enumerates the type's fields plus `additional_fields` |
 | `workers/tests.py` `LINKAGE_SYSTEM` *(new)* | schemas + type list -> roles, join keys, assertions with requirement and rationale |
 | `workers/fieldwork.py` `CYCLE_VOUCH_SYSTEM` *(new, Phase 10)* | one linked cycle + its grid of checks -> `agrees` / `disagrees` / `cannot_determine` per check, with a reason. Raw values, not normalized ones |
@@ -869,6 +872,7 @@ Dependency-ordered. Each phase leaves the tree working.
 | 8 ✅ | RCM control attributes addressed by schema field; the two graph edges; coverage gate; authoring turn and editor re-pointed | Selector-exact coverage restored |
 | 9 ✅ | `cycle_registry/` deleted, with the voucher profile, the recipes, and every branch that routed to them | Registry module removed |
 | 10 ✅ | The six operators and per-assertion tolerance deleted; agreement judged by `fieldwork.cycle_vouch` on raw values; assertions carry a `requirement` instead | A presentation difference is no longer reported as an exception |
+| 4b.1 ✅ | `documents.evidence_read` and `documents.schemas_stamped` replace sampling and induction; `DocumentMasters/` accumulates a type's vocabulary as it is read. See `docs/agentic-vouching-plan.md`, *What 4b.1 shipped* | One name per fact across a type; no field the corpus never stated |
 
 Phases 1-4 are independent of 5-6 and can proceed in parallel with the ruleset
 work once the contracts are fixed. Phase 9 must be last: the packs remain the
@@ -1435,10 +1439,9 @@ Deliberately left open, and each needs a decision before its phase:
 
 - Retry and repair budgets for the three new workers, and what a failed
   induction does — block the type, or fall back to unguided extraction.
-- Whether escape-rate re-derivation is automatic or offered. Automatic
-  re-derivation invalidates extractions mid-run. *Moot in practice: nothing
-  calls `escape_rate`, so neither happens. It is answered by deletion in
-  phase 4b.1 rather than by a decision.*
+- ~~Whether escape-rate re-derivation is automatic or offered.~~ *Answered by
+  deletion in 4b.1. Nothing called `escape_rate`, so neither happened; the metric
+  and its threshold are gone with the sample pass they policed.*
 - Concurrency: a schema re-derived while extraction is in flight. The existing
   execution-identity interlock should cover it, but it is untested for schemas.
 - Whether retyping generalizes from the `other` bucket to correcting any

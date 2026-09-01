@@ -363,7 +363,7 @@ def test_the_rcm_waits_for_types_and_schemas():
         "planning.apm_ready",
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_induced",
+        "documents.schemas_stamped",
     )
 
 

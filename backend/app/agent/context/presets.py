@@ -558,6 +558,22 @@ _register_selectors(
 )
 
 
+#: The read's one bound, in two halves, and a document exceeding *either* is
+#: over-window and says so. Characters first: the whole document reaches one
+#: call, and the existing 24,000-character chunk window almost never splits an
+#: evidence document, so twice it carries the long tail without inviting a
+#: fifty-page contract into a single read.
+EVIDENCE_READ_CHARACTERS = 48_000
+
+#: Media is the expensive half. The page-at-a-time path allows 20 pages at 4
+#: images each; one call cannot — that would be 80 images and roughly 320k image
+#: tokens. Evidence documents are short and their scanned pages are typically
+#: the signature page and no more, so the read takes a much lower cap and the
+#: over-window report catches the rest. Provisional: the number should come from
+#: measuring an engagement's evidence, and is the first thing to revisit when
+#: one carries long scanned material.
+EVIDENCE_READ_VISUAL_MEDIA = 6
+
 PRESETS = PresetRegistry(SELECTORS)
 PRESETS.register(
     ContextPreset(
@@ -1612,25 +1628,32 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
-        preset_id="documents.schema_sample",
+        preset_id="documents.analysis_chunk",
         spec=ContextSpec(
             sources=(
                 ContextSource(
-                    id="document_schema_sample",
+                    id="document_metadata",
                     source_type="documents",
                     required=True,
                     selector=ContextSelector(selector_id="documents.all"),
-                    # More of the document than classification reads: naming a
-                    # document needs its first page, but listing the fields its
-                    # type carries needs the body, and a field appearing only
-                    # late would otherwise be absent from every extraction.
-                    # Budgeted above INDUCTION_CHARACTERS for the envelope the
-                    # page is supplied in.
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
+                ContextSource(
+                    id="document_chunk",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # Exactly one bounded chunk of the document's own text. The
+                    # per-source budget is above ``ANALYSIS_CHUNK_CHARACTERS`` on
+                    # purpose: a chunk is the unit of evidence a citation binds
+                    # to, so supplying a truncated one would let the worker cite
+                    # text it never saw in full.
                     representations=(ContextRepresentation("raw_pages"),),
-                    budget=ContextBudget(max_items=1, max_characters=16_000),
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
                 ),
             ),
-            budget=ContextBudget(max_items=1, max_characters=16_000),
+            budget=ContextBudget(max_items=2, max_characters=34_000),
             privacy=ContextPrivacy(allow_document_text=True),
         ),
     )
@@ -1656,32 +1679,6 @@ PRESETS.register(
                 ),
             ),
             budget=ContextBudget(max_items=1, max_characters=32_000),
-            privacy=ContextPrivacy(allow_document_text=True),
-        ),
-    )
-)
-
-
-PRESETS.register(
-    ContextPreset(
-        preset_id="documents.schema_reconcile",
-        spec=ContextSpec(
-            sources=(
-                ContextSource(
-                    id="document_schema_sample",
-                    source_type="documents",
-                    required=True,
-                    selector=ContextSelector(selector_id="documents.all"),
-                    # A narrower window than the sample reading, and genuinely so
-                    # rather than for the sake of a distinct identity: enumerating
-                    # every field a type carries needs the whole document, while
-                    # judging which of two readings of *one named field* holds
-                    # needs only enough of it to see that field in context.
-                    representations=(ContextRepresentation("raw_pages"),),
-                    budget=ContextBudget(max_items=1, max_characters=6_000),
-                ),
-            ),
-            budget=ContextBudget(max_items=1, max_characters=6_000),
             privacy=ContextPrivacy(allow_document_text=True),
         ),
     )
@@ -1744,33 +1741,56 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
-        preset_id="documents.analysis_chunk",
+        preset_id="documents.evidence_read",
         spec=ContextSpec(
             sources=(
                 ContextSource(
-                    id="document_metadata",
+                    id="document_pages",
                     source_type="documents",
                     required=True,
                     selector=ContextSelector(selector_id="documents.all"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                    # The whole document, not a chunk. A citation binds to text
+                    # the worker saw, and a master built from a truncated
+                    # document would record absence for pages nobody read — so
+                    # the budget is the read's bound, and a document exceeding
+                    # it is reported over-window rather than quietly clipped.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(
+                        max_items=1,
+                        max_characters=EVIDENCE_READ_CHARACTERS,
+                    ),
                 ),
                 ContextSource(
-                    id="document_chunk",
+                    id="document_page_images",
                     source_type="documents",
-                    required=True,
+                    # Optional: most evidence is digital and routes no page
+                    # visually. What is not optional is that a scanned page,
+                    # where one exists, reaches the same call as the text.
+                    required=False,
                     selector=ContextSelector(selector_id="documents.all"),
-                    # Exactly one bounded chunk of the document's own text. The
-                    # per-source budget is above ``ANALYSIS_CHUNK_CHARACTERS`` on
-                    # purpose: a chunk is the unit of evidence a citation binds
-                    # to, so supplying a truncated one would let the worker cite
-                    # text it never saw in full.
-                    representations=(ContextRepresentation("raw_pages"),),
-                    budget=ContextBudget(max_items=1, max_characters=32_000),
+                    representations=(ContextRepresentation("page_image"),),
+                    budget=ContextBudget(
+                        max_items=EVIDENCE_READ_VISUAL_MEDIA,
+                        max_characters=1,
+                        max_media_items=EVIDENCE_READ_VISUAL_MEDIA,
+                        max_media_bytes=24 * 1024 * 1024,
+                        max_media_pixels=24_000_000,
+                        max_estimated_image_tokens=EVIDENCE_READ_VISUAL_MEDIA * 4_096,
+                    ),
                 ),
             ),
-            budget=ContextBudget(max_items=2, max_characters=34_000),
-            privacy=ContextPrivacy(allow_document_text=True),
+            budget=ContextBudget(
+                max_items=1 + EVIDENCE_READ_VISUAL_MEDIA,
+                max_characters=EVIDENCE_READ_CHARACTERS + 1_000,
+                max_media_items=EVIDENCE_READ_VISUAL_MEDIA,
+                max_media_bytes=24 * 1024 * 1024,
+                max_media_pixels=24_000_000,
+                max_estimated_image_tokens=EVIDENCE_READ_VISUAL_MEDIA * 4_096,
+            ),
+            privacy=ContextPrivacy(
+                allow_document_text=True,
+                allow_document_images=True,
+            ),
         ),
     )
 )

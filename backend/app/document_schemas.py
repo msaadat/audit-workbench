@@ -38,21 +38,6 @@ VALUE_TYPES = frozenset({"identifier", "date", "number", "text", "boolean"})
 CARDINALITIES = frozenset({"one", "many"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
 
-class SchemaConflict(WorkspaceError):
-    """Two samples named one field as two different things."""
-
-    def __init__(self, document_type: str, conflicts: list[dict]):
-        self.document_type = str(document_type)
-        self.conflicts = list(conflicts)
-        described = "; ".join(
-            f"'{item['name']}' is {' and '.join(item['values'])} ({item['attribute']})"
-            for item in self.conflicts
-        )
-        super().__init__(
-            f"Samples of '{document_type}' disagree on what a field is: {described}."
-        )
-
-
 _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
@@ -196,112 +181,6 @@ def validate_fields(value: object) -> list[dict]:
     if len(names) != len(set(names)):
         raise WorkspaceError("A document schema cannot repeat a field name.")
     return sorted(fields, key=lambda field: field["name"])
-
-
-#: Ordered weakest to strongest, so a union can keep the strongest thing any
-#: sample said about a field it saw.
-_CONFIDENCE_ORDER = ("low", "medium", "high")
-
-#: What two samples must agree on for a field to merge. Everything else about a
-#: field can be reconciled arithmetically; these two change what the field *is*.
-CONFLICTING_ATTRIBUTES = ("value_type", "role")
-
-
-def union_fields(
-    samples: Iterable[Iterable[Mapping[str, object]]],
-) -> tuple[list[dict], list[dict]]:
-    """Merge per-sample field lists into one schema, reporting real conflicts.
-
-    Union, never intersect. A field one sample saw and another did not is
-    optional, not a disagreement — intersecting would permanently discard a field
-    the corpus really contains, while carrying it costs nothing, since an absent
-    field is simply absent at extraction time.
-
-    A conflict is only ever the same name meaning two different things: a
-    differing ``value_type`` or ``role``. Those change what the field *is* and
-    cannot be merged arithmetically, so they are returned for a reconciliation
-    turn to settle rather than resolved by picking a winner here.
-    """
-
-    seen: dict[str, dict] = {}
-    sources: dict[str, list[dict]] = {}
-    for fields in samples:
-        for raw in fields:
-            field = dict(raw)
-            name = str(field.get("name") or "")
-            if not name:
-                continue
-            sources.setdefault(name, []).append(field)
-            prior = seen.get(name)
-            if prior is None:
-                seen[name] = field
-                continue
-            seen[name] = {
-                **prior,
-                # A sample that saw two of something proves the type can carry
-                # two; one that saw one proves nothing about the maximum.
-                "cardinality": (
-                    "many"
-                    if "many" in {prior.get("cardinality"), field.get("cardinality")}
-                    else "one"
-                ),
-                # Interpretive wins. Demanding a quote for a value the document
-                # never prints is unsatisfiable, and a response cannot be
-                # repaired into one.
-                "verbatim": bool(prior.get("verbatim", True))
-                and bool(field.get("verbatim", True)),
-                "confidence": max(
-                    (
-                        str(prior.get("confidence") or "medium"),
-                        str(field.get("confidence") or "medium"),
-                    ),
-                    key=lambda value: (
-                        _CONFIDENCE_ORDER.index(value)
-                        if value in _CONFIDENCE_ORDER
-                        else 0
-                    ),
-                ),
-                "label": str(prior.get("label") or "") or str(field.get("label") or ""),
-            }
-
-    conflicts: list[dict] = []
-    for name, entries in sorted(sources.items()):
-        for attribute in CONFLICTING_ATTRIBUTES:
-            values = sorted({str(entry.get(attribute) or "") for entry in entries})
-            if len(values) > 1:
-                conflicts.append({"name": name, "attribute": attribute, "values": values})
-    return [seen[name] for name in sorted(seen)], conflicts
-
-
-def induce(
-    workspace: Workspace,
-    document_type: str,
-    samples: Iterable[Iterable[Mapping[str, object]]],
-    *,
-    derived_from: Iterable[str] = (),
-    reconciled: bool = False,
-) -> dict:
-    """Union sample schemas and freeze the result. Raises on unsettled conflict.
-
-    ``low_confidence`` marks a schema induced from a single sample: the agreement
-    check cannot run on one document, so nothing here has been corroborated. It
-    is deliberately not a refusal — a one-off document with a real schema is
-    still better evidence than an unclassified one — and the escape-rate metric
-    is what catches it once more documents of the type arrive.
-    """
-
-    supplied = [list(sample) for sample in samples]
-    fields, conflicts = union_fields(supplied)
-    if conflicts:
-        raise SchemaConflict(document_type, conflicts)
-    return save_schema(
-        workspace,
-        document_type,
-        fields,
-        derived_from=derived_from,
-        reconciled=reconciled,
-        low_confidence=len(supplied) < 2,
-    )
 
 
 def meaning(document_type: str, fields: Iterable[Mapping[str, object]]) -> dict:
@@ -474,64 +353,6 @@ def joinable(schema: Mapping[str, object]) -> bool:
 #: The share of a type's documents that may state a field the schema has no room
 #: for before the schema is treated as unrepresentative. Not zero: an occasional
 #: one-off is a document being unusual, not a schema being wrong.
-ESCAPE_RATE_THRESHOLD = 0.25
-
-
-def escape_rate(
-    workspace: Workspace,
-    document_type: str,
-    extractions: Iterable[Mapping[str, object]],
-) -> dict:
-    """Measure how often extraction had to step outside this type's schema.
-
-    This is the safety net for small-n induction. Two samples agreeing tells you
-    little when a corpus is heterogeneous, and agreement is itself biased toward
-    sparse schemas — two documents agree most easily when both state little. What
-    catches an unrepresentative sample is not a better agreement check but this:
-    the rate at which real extraction finds facts the frozen schema cannot hold.
-
-    Deterministic and model-free, so it can run after every extraction pass. A
-    field escaping on a material share of the type is evidence the samples were
-    unrepresentative and marks the schema for re-derivation; a field escaping
-    once is a document being unusual.
-    """
-
-    supplied = list(extractions)
-    documents_seen = len(supplied)
-    escaped_documents = 0
-    by_field: dict[str, int] = {}
-    for extraction in supplied:
-        names = {
-            str(field.get("name") or "")
-            for record in extraction.get("records") or []
-            for field in record.get("additional_fields") or []
-            if str(field.get("name") or "")
-        }
-        if names:
-            escaped_documents += 1
-        for name in names:
-            by_field[name] = by_field.get(name, 0) + 1
-    rate = (escaped_documents / documents_seen) if documents_seen else 0.0
-    schema = load_schema(workspace, document_type)
-    return {
-        "document_type": str(document_type),
-        "schema_version": (schema or {}).get("schema_version"),
-        "documents": documents_seen,
-        "documents_with_escapes": escaped_documents,
-        "rate": rate,
-        # Ordered by how widely a field escapes, because that is what says
-        # whether the schema is missing something the *type* carries rather than
-        # something one document happened to state.
-        "fields": [
-            {"name": name, "documents": count, "rate": count / documents_seen}
-            for name, count in sorted(
-                by_field.items(), key=lambda item: (-item[1], item[0])
-            )
-        ],
-        "unrepresentative": documents_seen > 0 and rate >= ESCAPE_RATE_THRESHOLD,
-    }
-
-
 def _reindex(workspace: Workspace) -> None:
     root = _root(workspace)
     entries = [

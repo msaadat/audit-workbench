@@ -531,7 +531,7 @@ def types_present(workspace: Workspace) -> list[str]:
 def types_for_induction(workspace: Workspace) -> list[str]:
     """Distinct types carried by transaction evidence, excluding ``other``.
 
-    What induction expands over and what ``schemas_induced`` measures against: a
+    What the read expands over and what ``schemas_stamped`` measures against: a
     type nothing carries needs no schema, and a type only prose carries needs no
     schema either.
     """
@@ -552,98 +552,14 @@ def documents_of_type(workspace: Workspace, type_id: str) -> list[dict]:
     ]
 
 
-#: How many documents of a type are read to induce its schema. Two is enough to
-#: corroborate; a third is bought only where the type is common enough that two
-#: could easily share a layout by chance.
-INDUCTION_SAMPLES = 2
-INDUCTION_SAMPLES_HIGH_VOLUME = 3
-HIGH_VOLUME_DOCUMENTS = 10
-
-#: How much of a sample the induction worker reads. Larger than the classifier's
-#: window: naming a document needs its first page, but listing the fields it
-#: carries needs the body, and a field that only appears late would otherwise be
-#: missing from every extraction of that type.
-INDUCTION_CHARACTERS = 12000
-INDUCTION_PAGES = 3
-
-
-def _stratum(document: Mapping[str, object]) -> tuple[str, str]:
-    """A cheap heterogeneity signal to spread samples across.
-
-    Neither half is evidence of layout on its own. Together they separate the
-    common case this guards against: two hundred invoices from a dozen vendors,
-    where the first two in identifier order happen to come from one of them and
-    the schema is frozen on a view of the corpus that most of it does not share.
-    """
-
-    path = str(document.get("relative_path") or "")
-    folder = path.rsplit("/", 1)[0] if "/" in path else ""
-    pages = int(document.get("pages") or 0)
-    bucket = "1" if pages <= 1 else "2-4" if pages <= 4 else "5+"
-    return folder, bucket
-
-
-def sample_for_induction(
-    workspace: Workspace, type_id: str, *, limit: int | None = None
-) -> list[str]:
-    """Pick the documents whose fields define this type's schema.
-
-    Spread across strata rather than taken in identifier order, then round-robin
-    so the picks come from as many strata as there are picks. Deterministic
-    throughout: the same corpus yields the same sample, which is what lets a unit
-    be re-expanded without silently inducing against different documents.
-    """
-
-    eligible = {str(document.get("id")) for document in transaction_evidence(workspace)}
-    candidates = [
-        document
-        for document in documents_of_type(workspace, type_id)
-        if str(document.get("id")) in eligible
-    ]
-    if not candidates:
-        return []
-    wanted = int(
-        limit
-        if limit is not None
-        else (
-            INDUCTION_SAMPLES_HIGH_VOLUME
-            if len(candidates) >= HIGH_VOLUME_DOCUMENTS
-            else INDUCTION_SAMPLES
-        )
-    )
-    strata: dict[tuple[str, str], list[str]] = {}
-    for document in sorted(candidates, key=lambda item: str(item.get("id"))):
-        strata.setdefault(_stratum(document), []).append(str(document.get("id")))
-    picked: list[str] = []
-    while len(picked) < wanted:
-        drawn = False
-        for key in sorted(strata):
-            group = strata[key]
-            if not group:
-                continue
-            picked.append(group.pop(0))
-            drawn = True
-            if len(picked) >= wanted:
-                break
-        if not drawn:
-            break
-    return picked
-
-
-def induction_text(
-    workspace: Workspace,
-    document_id: str,
-    *,
-    pages: int = INDUCTION_PAGES,
-    characters: int = INDUCTION_CHARACTERS,
-) -> str:
-    return classification_text(
-        workspace, document_id, pages=pages, characters=characters
-    )
-
-
 def types_awaiting_schema(workspace: Workspace) -> list[str]:
-    """Assigned types with no current schema. What induction expands over."""
+    """Types the corpus's evidence carries that have no stamped schema yet.
+
+    Under 4b.1 a schema is an *output* of reading the evidence rather than an
+    input to it, so this reports a gap rather than naming work: what fills it is
+    ``documents.evidence_read`` followed by ``documents.schemas_stamped``, and
+    the stamp expands over types carrying a master instead.
+    """
 
     return [
         type_id

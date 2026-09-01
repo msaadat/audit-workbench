@@ -422,7 +422,9 @@ def _classification(getfixture):
     return proposal, request
 
 
-def _schema_request(worker_id: str, unit_input: dict):
+@builds("documents.evidence_read")
+def _evidence_read(getfixture):
+    from app.agent.workers.documents import DOCUMENT_READ_TEXT_SOURCE_ID
     from app.agent.context import (
         ContextBundle,
         ContextBundleItem,
@@ -430,76 +432,66 @@ def _schema_request(worker_id: str, unit_input: dict):
         supplied_size,
         total_supplied_size,
     )
-    from app.agent.workers.documents import DOCUMENT_SCHEMA_SOURCE_ID
     from app.agent.workers.model import WorkerRequest
 
-    content = {"document_id": "d1", "text": CHUNK_TEXT}
+    content = {"document_id": "d1", "text": CHUNK_TEXT, "pages": [1]}
     items = (
         ContextBundleItem(
-            source_id=DOCUMENT_SCHEMA_SOURCE_ID,
-            source_ref="document:d1:schema-sample",
+            source_id=DOCUMENT_READ_TEXT_SOURCE_ID,
+            source_ref="document:d1:reading",
             representation=ContextRepresentation("raw_pages"),
             content=content,
             supplied_size=supplied_size(content),
         ),
     )
-    return WorkerRequest(
-        worker_id=worker_id,
-        capability_id="documents.schemas_induced",
-        unit_id="document_schema:vendor_invoice",
+    request = WorkerRequest(
+        worker_id="documents.evidence_read",
+        capability_id="documents.evidence_read",
+        unit_id="evidence_read:vendor_invoice:d1",
         context=ContextBundle(
-            capability_id="documents.schemas_induced",
-            unit_id="document_schema:vendor_invoice",
+            capability_id="documents.evidence_read",
+            unit_id="evidence_read:vendor_invoice:d1",
             items=items,
             supplied_size=total_supplied_size(item.supplied_size for item in items),
         ),
-        unit_input=unit_input,
-    )
-
-
-@builds("documents.schema_sample")
-def _schema_sample(getfixture):
-    request = _schema_request(
-        "documents.schema_sample",
-        {"document_type": "vendor_invoice", "document_id": "d1", "text": CHUNK_TEXT},
-    )
-    proposal = {
-        "fields": [
-            {
-                "name": "invoice_number", "role": "identifier",
-                "value_type": "identifier", "cardinality": "one",
-                "verbatim": True, "confidence": "high", "label": "Invoice number",
-            },
-            {
-                "name": "total_amount", "role": "attribute",
-                "value_type": "number", "cardinality": "one",
-                "verbatim": True, "confidence": "high", "label": "Total",
-            },
-        ]
-    }
-    return proposal, request
-
-
-@builds("documents.schema_reconcile")
-def _schema_reconcile(getfixture):
-    request = _schema_request(
-        "documents.schema_reconcile",
-        {
+        unit_input={
+            "document_id": "d1",
             "document_type": "vendor_invoice",
-            "conflicts": [
-                {"name": "reference", "attribute": "value_type",
-                 "values": ["identifier", "text"]},
+            "master_fields": [
+                {"name": "invoice_number", "role": "identifier",
+                 "value_type": "identifier", "cardinality": "one",
+                 "verbatim": True, "confidence": "high"},
             ],
         },
     )
+    # A reading that states a master field, declares one the type does not carry
+    # yet, and renames one — all three channels, because the frozen shape turns
+    # each array into a tuple and a validator written against ``json.loads``
+    # output would see none of them.
     proposal = {
-        "resolutions": [
+        "analysis_profile": "structured",
+        "records": [
             {
-                "name": "reference", "attribute": "value_type",
-                "value": "identifier",
-                "reason": "It ties this invoice to the order it bills against.",
+                "fields": [
+                    {"name": "invoice_number", "entry": 1, "value": "INV-1042",
+                     "citation": "c1"},
+                ]
             }
-        ]
+        ],
+        "new_fields": [
+            {
+                "name": "total_amount", "role": "attribute", "value_type": "number",
+                "cardinality": "one", "verbatim": True, "confidence": "high",
+                "label": "Total", "reason": "The invoice states an amount due.",
+                "values": [
+                    {"record": 1, "entry": 1, "value": "12,480.00",
+                     "citation": "c1"},
+                ],
+            }
+        ],
+        "renames": [],
+        "audit_notes": [],
+        "citations": [{"id": "c1", "page": 1, "excerpt": CHUNK_TEXT[:40]}],
     }
     return proposal, request
 

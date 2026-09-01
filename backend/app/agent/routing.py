@@ -993,6 +993,19 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
                 or []
             )
         ]
+        # Which of the two forced actions this is. ``generation_mode`` says
+        # *whether* to redo work; this says whether the vocabulary may move
+        # while it happens, which is the question a master makes separable.
+        # Derived from the action rather than carried beside it. Two keys
+        # saying the same thing is how a stale one survives: the Documents tab
+        # sends one action, and what it is allowed to do to the vocabulary
+        # follows from it.
+        scope["vocabulary_mode"] = (
+            "rebuild"
+            if str((run.get("context") or {}).get("action") or "")
+            == "revise_vocabulary"
+            else "frozen"
+        )
         scope["page_limit"] = document_page_limit()
         scope["visual_page_limit"] = document_visual_page_limit()
         scope["full_visual_document_ids"] = [
@@ -1121,6 +1134,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
                     (run.get("context") or {}).get("action")
                     or ("refresh" if generation_mode == "force" else "analyze")
                 ),
+                "vocabulary_mode": str(scope.get("vocabulary_mode") or "frozen"),
                 "scope_settled": False,
             },
         )

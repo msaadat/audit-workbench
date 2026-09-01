@@ -26,8 +26,8 @@ this document say what would settle them.
 This plan is cut. The read half — 4a, 4b, 4c — lands against the pipeline
 `docs/dynamic-cycle-contracts.md` already describes: approved join keys, code
 resolution, the ruleset review screen and the staleness family, all retained and
-all still doing their work. **4a is built**; what remains is the master schema
-and its late-field sweep.
+all still doing their work. **4a and 4b.1 are built**; what remains is the
+coined type for uncatalogued evidence and the late-field sweep.
 
 **Neither withdrawal above is exercised by any of it.** Nothing in 4a–4c puts a
 model in the verdict slot or replaces a join with a search — the verdict slot was
@@ -1032,7 +1032,7 @@ Each phase leaves the tree working.
 | --- | --- | --- |
 | 0 ✅ | Correct the doc-to-code divergence: `dynamic-cycle-contracts.md` claimed evaluation is computed; it is judged. The operators and tolerances it listed as retained were deleted; assertions state a `requirement` instead | Doc matches code |
 | 4a ✅ | Category domain to four values read from page one; `documents.categorized`; `corpus_scope` | Partition holds; an audit run classifies its evidence |
-| 4b.1 | `documents.evidence_read` — one sequential unit per evidence document, text and page images in one call, no chunking, keyed `<type>:<document>`, accumulating `DocumentMasters/<type>.json`; `submit_document_reading` merges value-against-enum with field-descriptor and drops `additional_fields`; `documents.schemas_stamped` calls `save_schema` once per type and back-stamps the readings; `refresh` and `revise_vocabulary` split | Field drift gone: one name per fact across a type; no field the corpus never stated; a scanned approval page is read, not skipped; a one-document refresh does not silently re-read eighteen |
+| 4b.1 ✅ | `documents.evidence_read` — one sequential unit per evidence document, text and page images in one call, no chunking, keyed `<type>:<document>`, accumulating `DocumentMasters/<type>.json`; `submit_document_reading` merges value-against-enum with field-descriptor and drops `additional_fields`; `documents.schemas_stamped` calls `save_schema` once per type and back-stamps the readings; `refresh` and `revise_vocabulary` split | Field drift gone: one name per fact across a type; no field the corpus never stated; a scanned approval page is read, not skipped; a one-document refresh does not silently re-read eighteen |
 | 4b.2 | Evidence with no catalogued type read anyway; the read coins a `local.` type carrying a discriminator | Nine broker notes carry one vocabulary, not nine |
 | 4c | Late-field re-sweep over the documents that preceded the addition | Absence means "not stated", never "not asked" |
 
@@ -1175,26 +1175,114 @@ size: what stops one document's phrasing becoming the type's vocabulary is a
 master that accumulates, not a wider sample.
 
 
+## What 4b.1 shipped
+
+Built, with the suite behind it and no live engagement yet. The code is the
+authority on shape; what is recorded here is what the build decided and what it
+corrected, because neither is recoverable from a diff.
+
+**The failed-read guarantee needed an exception written into the map, not left
+to a comment.** This plan settled *what a failed read does mid-type* by arguing
+that a stage with any failed unit folds to `failed`, so the read never reaches
+the stamp. Half of that is true — `_fold_stage` does return `failed` — and the
+other half was not: `_dependency_satisfied` consults `dependency_policy` first,
+and `documents_execution._PARTIAL_DEPENDENCIES` had been completed since Phase 9
+to make **every** edge in the document graph partial, including the exact
+analogue `schemas_induced ← schemas_sampled`. Adding the new edge by the
+module's own rule would have let a read that died at document 9 reach the stamp
+and write a vocabulary from eight of eighteen documents under a version claiming
+completeness.
+
+So `schemas_stamped ← evidence_read` is the one blocking edge in the graph, and
+the test that used to assert *every* edge is partial now asserts that set
+difference is exactly this pair. The distinction it draws is worth keeping: every
+other edge protects the run from one bad document, and this one protects the
+engagement from a vocabulary that lies about its own coverage.
+
+**The category edge is what the schema edge became, not something removed.**
+`analysis_chunks_ready` loses its dependency on the vocabulary and gains one on
+`documents.categorized`. It has to: the prose pass now excludes transaction
+evidence, it excludes it *by category*, and a document whose category has not
+been read would be chunked as prose and then read again as evidence — one
+document analysed twice under two vocabularies, which is the drift this design
+removes, relocated.
+
+**The vocabulary mode has three states, not two.** The plan names `refresh`
+(frozen) and `revise_vocabulary` (rebuild) and leaves the ordinary pass unstated.
+Building it with two made a first run frozen, which refused every field the
+corpus stated and stamped an empty vocabulary. `accumulate` is the default and
+the mechanism; the other two are the halves `force` split into. It travels as a
+scope key derived from the action rather than a third `generation_mode`:
+`normalize_generation_mode` validates against exactly two values and `_forced` is
+consulted in six places, so widening it would have touched all of them to express
+something that is not about *whether* to redo work.
+
+**A reading records the type it was read under.** `master_ref` is a content hash
+and names no type, so a retyped document looked already-read: its reading is
+present and its hash is whatever it was. That is the same half-applied correction
+`has_usable_analysis` catches one stage later — the label changes and the reading
+still holds values read under the type the auditor rejected — so the artifact
+carries `master_type` and the read's skip predicate compares it.
+
+**`new_fields` carries the record it fills.** The response contract in this plan
+puts `new_fields` at the top level with `entry`, `value` and `citation`, which
+leaves *which record* the value belongs to unstated on a document carrying more
+than one. It carries a 1-based `record` index, and the commit folds the value
+back onto that record before storage — so what reaches `persist_analysis` is the
+record shape the corpus already consumes, and the enum stays static, which is the
+property that makes it enforceable.
+
+**The stamp recovers its type from its parents.** `input_payload` does not reach
+a binder — the scheduler stores only `kind`, `title`, `parent_refs` and
+`input_sha1` — the same fact that cost the freeze binder a rebuild in Phase 3.
+The stamp unit is parented to the documents its master was read from, and reads
+the type off them.
+
+**What the closure order now says.** Prose analysis and the evidence read are no
+longer one contiguous run: `planning.context_ready` consumes prose, which needs
+no vocabulary, so document work straddles planning rather than preceding it —
+`text_ready → categorized → chunks → generated → context → apm → types_classified
+→ evidence_read → schemas_stamped → rcm`. That is the plan's stated cost arriving
+in the graph, and an APM-only run no longer drags the whole evidence read behind
+it. Two things followed: the plan-spine phase test can no longer assert that
+grouping by domain preserves global run order (it asserts partition and
+per-phase order instead), and the milestone handoff after the memorandum now
+names document types.
+
+**Deleted with the sample pass.** `sample_for_induction`, `induction_text` and
+the induction window constants; `union_fields`, `induce`, `SchemaConflict` and
+`CONFLICTING_ATTRIBUTES`; `escape_rate` and its threshold; the
+`documents.schema_sample` and `documents.schema_reconcile` workers, their
+presets and their scope adapter; `analysis_profile` and
+`_warn_unstructured_vouchers`; and the `documents.schema` freeze executor, which
+the stamp replaced rather than reused. `documents.analysis_structured` is
+retained: it is the storage shape old records were written under, and the plan
+puts deleting that outside this tranche.
+
 ## Open questions
 
 Each needs a decision before its phase.
 
-**Settled by the 4b.1 design** — *what a failed read does mid-type.* Splitting
-the stamp into its own capability answers it. A stage with any failed unit folds
-to `failed`, so a read that dies at document 9 never reaches
-`documents.schemas_stamped`: `save_schema` does not run, the type has no current
-schema, and its eight readings keep their `master_ref` and are never stamped
-into evidence. Nothing is lost — the readings are on disk and the re-run resumes
-against them — and nothing records a partial vocabulary as complete. See *The
-graph after 4b.1*.
+**Settled, and it took more than the design said** — *what a failed read does
+mid-type.* Splitting the stamp into its own capability is necessary and was not
+sufficient. A stage with any failed unit does fold to `failed`, but a dependent
+stage may still proceed when the edge is declared partial — and every edge in
+this graph was, by the module's own stated rule. `schemas_stamped ←
+evidence_read` is therefore the single blocking edge, declared as an exception
+and tested as one. With it, a read that dies at document 9 never reaches the
+stamp: `save_schema` does not run, the type has no current schema, and its eight
+readings keep their `master_ref` and are never stamped into evidence. Nothing is
+lost — the readings are on disk and the re-run resumes against them — and nothing
+records a partial vocabulary as complete. See *What 4b.1 shipped*.
 
-- **Where the read's visual cap sits.** The page-at-a-time path allows 20 pages
-  at 4 images each; one call cannot. Evidence documents are short, so a low cap
-  costs nothing on this corpus and the over-window report catches the rest — but
-  the number should come from measuring the engagement's evidence rather than
-  from a guess, and it interacts with the character bound rather than sitting
-  beside it. Worth setting once against real page counts, and worth revisiting
-  the first time an engagement carries long scanned evidence.
+- **Where the read's visual cap sits.** Shipped provisionally as
+  `EVIDENCE_READ_VISUAL_MEDIA = 6` and `EVIDENCE_READ_CHARACTERS = 48_000`, with
+  a document over *either* reported as over-window. The page-at-a-time path
+  allows 20 pages at 4 images each; one call cannot. Evidence documents are
+  short, so a low cap costs nothing on this corpus and the over-window report
+  catches the rest — but both numbers are guesses and should come from measuring
+  an engagement's evidence. Worth setting once against real page counts, and
+  worth revisiting the first time an engagement carries long scanned evidence.
 - **Whether a model may coin a type no auditor ever sees.** The mechanism allows
   it and the discriminator makes it safe to read, but a workspace whose
   vocabulary is entirely model-coined has had no human look at what its

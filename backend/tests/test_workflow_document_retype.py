@@ -23,10 +23,13 @@ from app.agent import routing, runner
 from app.agent.workflows import documents as documents_workflow
 from conftest import FakeAgentLLM, wait_run
 from app.agent.capabilities.documents import (
-    _pending_types,
+    _evidence_read_units,
+    _revision_documents,
+    _revision_types,
     has_generated_analysis,
     has_usable_analysis,
     preparation_model_turns,
+    vocabulary_mode,
 )
 
 CONFIRMATION_FIELDS = [
@@ -102,11 +105,19 @@ def test_retyping_a_document_makes_its_extraction_unusable():
     assert has_usable_analysis(ws, str(document["id"])) is False
 
 
-def test_a_retyped_document_re_expands_both_analysis_capabilities():
-    """Readiness is what re-opens the units; nothing else in the run can."""
+def test_a_retyped_document_is_read_again_under_its_new_type():
+    """Readiness is what re-opens the units; nothing else in the run can.
+
+    A retype leaves the reading perfectly present — the document was read, and
+    ``master_ref`` is a content hash that names no type — so an existence-shaped
+    check reuses it whole and the correction is half-applied: the label changes
+    and the reading still holds values read under the type the auditor rejected.
+    That is the same question ``is_current_for`` asks of a *stamped* extraction,
+    asked one stage earlier of one that is not stamped yet.
+    """
 
     from app.agent.capabilities.documents import (
-        _chunk_units, _chunks_ready, _generated_ready, _generated_units,
+        _evidence_read_ready, _evidence_read_units, has_evidence_reading,
     )
 
     ws = workspaces.create_workspace("Retype expansion")
@@ -114,18 +125,18 @@ def test_a_retyped_document_re_expands_both_analysis_capabilities():
     ws = workspaces.load_workspace(ws.id)
     document = _extracted(ws, "cnf.txt", "investment_confirmation")
     ws = workspaces.load_workspace(ws.id)
-    scope = {"document_ids": [str(document["id"])]}
+    scope = {"document_ids": [str(document["id"])], "document_scope_mode": "all"}
 
-    assert _generated_ready(ws, scope).state == "satisfied"
-    assert _generated_units(ws, scope) == []
+    assert has_evidence_reading(ws, str(document["id"]))
+    assert _evidence_read_ready(ws, scope).state == "satisfied"
+    assert _evidence_read_units(ws, scope) == []
 
     dc.retype(ws, str(document["id"]), coin="Internal deal confirmation")
     ws = workspaces.load_workspace(ws.id)
 
-    assert _chunks_ready(ws, scope).state == "missing"
-    assert _generated_ready(ws, scope).state == "missing"
-    assert len(_generated_units(ws, scope)) == 1
-    assert _chunk_units(ws, scope) != []
+    assert not has_evidence_reading(ws, str(document["id"]))
+    assert _evidence_read_ready(ws, scope).state == "missing"
+    assert len(_evidence_read_units(ws, scope)) == 1
 
 
 def test_retyping_between_two_schema_bearing_types_is_not_a_reclassification():
@@ -193,53 +204,71 @@ def _typed_corpus(ws, per_type: int = 3) -> dict[str, list[str]]:
     return by_type
 
 
-def test_forcing_re_derives_only_the_targeted_documents_types():
-    """A one-document refresh must not re-derive the whole workspace.
+def test_a_refresh_re_reads_the_documents_it_was_pointed_at_and_no_others():
+    """A one-document refresh must not re-read the whole workspace.
 
-    Re-derivation bumps a schema's version, and every extraction stamped against
-    the old one becomes ``stale_schema_reference``. Doing that for types the run
-    was never pointed at is how a one-document repair orphaned 68 completed
-    extractions on the engagement this came from.
+    The old failure this replaces: re-derivation bumped a schema's version and
+    every extraction stamped against the old one became
+    ``stale_schema_reference``, so a one-document repair orphaned 68 completed
+    extractions. Under a master the same promise is kept differently — the
+    vocabulary is frozen, so nothing about the siblings is disturbed at all.
     """
 
-    ws = workspaces.create_workspace("Forced re-derivation scope")
+    ws = workspaces.create_workspace("Forced refresh scope")
     by_type = _typed_corpus(ws)
     ws = workspaces.load_workspace(ws.id)
-    forced = {
+    target = by_type["investment_confirmation"][0]
+    forced = {"generation_mode": "force", "document_ids": [target]}
+
+    assert vocabulary_mode(forced) == "frozen"
+    assert _revision_documents(ws, forced) == {target}
+    assert [unit.input_payload["document_id"] for unit in
+            _evidence_read_units(ws, forced)] == [target]
+
+
+def test_revise_vocabulary_widens_to_the_targeted_documents_whole_types():
+    """The expensive action, and the honesty the split is for.
+
+    "Re-read this document" and "possibly move the vocabulary" stopped being
+    separable the moment a schema came from every document of its type rather
+    than a couple of samples. So the second question gets its own action, and
+    what it costs is stated rather than hidden behind the cheap one.
+    """
+
+    ws = workspaces.create_workspace("Vocabulary revision scope")
+    by_type = _typed_corpus(ws)
+    ws = workspaces.load_workspace(ws.id)
+    target = by_type["investment_confirmation"][0]
+    revising = {
         "generation_mode": "force",
-        "document_ids": [by_type["investment_confirmation"][0]],
+        "vocabulary_mode": "rebuild",
+        "document_ids": [target],
     }
 
-    assert _pending_types(ws, forced) == ["investment_confirmation"]
-
-    # A whole-workspace refresh still re-derives the whole workspace, because
-    # then every type is a targeted type.
-    assert _pending_types(
-        ws,
-        {
-            "generation_mode": "force",
-            "document_ids": [
-                document_id for ids in by_type.values() for document_id in ids
-            ],
-        },
-    ) == ["investment_confirmation", "vendor_invoice"]
+    assert vocabulary_mode(revising) == "rebuild"
+    assert _revision_types(ws, revising) == {"investment_confirmation"}
+    # Every document of that type, and nothing of the type it was not pointed at.
+    assert _revision_documents(ws, revising) == set(
+        by_type["investment_confirmation"]
+    )
+    assert not (
+        _revision_documents(ws, revising) & set(by_type["vendor_invoice"])
+    )
 
 
-def test_a_type_with_no_schema_is_induced_whether_or_not_it_was_targeted():
-    """Nothing is orphaned by inducing what does not exist yet."""
+def test_an_unforced_run_moves_no_vocabulary_deliberately():
+    """``accumulate`` is the ordinary mode and the third state: a first pass has
+    nothing to freeze, and treating it as frozen would refuse every field the
+    corpus states and stamp an empty vocabulary."""
 
-    ws = workspaces.create_workspace("Untargeted gap")
-    by_type = _typed_corpus(ws)
-    document_schemas.remove_schema(ws, "vendor_invoice")
+    ws = workspaces.create_workspace("Unforced scope")
+    _typed_corpus(ws)
     ws = workspaces.load_workspace(ws.id)
+    reuse = {"generation_mode": "reuse_existing"}
 
-    assert _pending_types(
-        ws,
-        {
-            "generation_mode": "force",
-            "document_ids": [by_type["investment_confirmation"][0]],
-        },
-    ) == ["investment_confirmation", "vendor_invoice"]
+    assert vocabulary_mode(reuse) == "accumulate"
+    assert _revision_documents(ws, reuse) is None
+    assert _revision_types(ws, reuse) is None
 
 
 # ------------------------------------------------------------------- budgeting
@@ -259,8 +288,9 @@ def test_the_turn_budget_pays_for_the_schema_work_the_run_will_do():
     reuse = {"generation_mode": "reuse_existing", "document_ids": [target]}
 
     preparation = preparation_model_turns(ws, forced)
-    # One classification for the targeted document, plus its type's samples and
-    # the freeze that consumes them. Nothing for the type it was not pointed at.
+    # One classification for the targeted document, plus its reading. Nothing
+    # for the type it was not pointed at, and nothing for the stamp — that takes
+    # no model turn at all.
     assert preparation > 1
     assert routing._document_model_turns(ws, forced) >= preparation
 
@@ -274,11 +304,10 @@ def test_the_turn_budget_pays_for_the_schema_work_the_run_will_do():
 
 # --------------------------------------------------------------------- end to end
 CLASSIFY_TAG = "agent:document_classification"
-SAMPLE_TAG = "agent:document_schema_sample"
-STRUCTURED_TAG = "agent:document_analysis_structured"
+READ_TAG = "agent:document_evidence_read"
 
 
-def _sampled(name: str) -> dict:
+def _declared(name: str) -> dict:
     return {
         "name": name,
         "role": "identifier",
@@ -287,14 +316,48 @@ def _sampled(name: str) -> dict:
         "verbatim": True,
         "confidence": "high",
         "label": name.replace("_", " ").title(),
+        "reason": "The document prints it.",
+        "values": [
+            {"record": 1, "entry": 1, "value": "CNF-2025-0517", "citation": "1"}
+        ],
     }
 
 
 def _scripted(monkeypatch, *, classified, sample_fields):
-    """A model that names every document ``classified`` and reads one field."""
+    """A model that names every document ``classified`` and reads its fields.
 
-    def sample(_messages):
-        return {"fields": [_sampled(name) for name in sample_fields()]}
+    The reading declares whatever ``sample_fields`` asks for and reports nothing
+    under the master, which keeps these cases independent of whichever
+    vocabulary a given run had accumulated — a field already in the master is
+    counted as stated rather than refused.
+    """
+
+    def read(messages):
+        # Declare a field the master does not carry yet; report a value under it
+        # once it does. That is the contract, and the prompt is where the master
+        # is stated — so reading it back is exactly what a real worker does.
+        prompt = str(messages)
+        wanted = list(sample_fields())
+        return {
+            "records": [
+                {
+                    "fields": [
+                        {"name": name, "entry": 1, "value": "CNF-2025-0517",
+                         "citation": "1"}
+                        for name in wanted
+                        if name in prompt
+                    ]
+                }
+            ],
+            "new_fields": [
+                _declared(name) for name in wanted if name not in prompt
+            ],
+            "renames": [],
+            "audit_notes": [],
+            "citations": [
+                {"id": "1", "page": 1, "excerpt": "Confirmation"}
+            ],
+        }
 
     fake = FakeAgentLLM({
         CLASSIFY_TAG: {
@@ -303,18 +366,7 @@ def _scripted(monkeypatch, *, classified, sample_fields):
             "confidence": "high",
             "rationale": "The header names it.",
         },
-        SAMPLE_TAG: sample,
-        STRUCTURED_TAG: {
-            "records": [{
-                "fields": [],
-                "additional_fields": [{
-                    "name": "stated_reference", "value_type": "identifier",
-                    "value": "CNF-2025-0517", "entry": 1, "citation": "1",
-                }],
-            }],
-            "audit_notes": [],
-            "citations": [{"id": "1", "page": 1, "excerpt": "Confirmation"}],
-        },
+        READ_TAG: read,
     })
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(

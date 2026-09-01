@@ -1490,73 +1490,15 @@ WORKERS.register(CLASSIFY_WORKER)
 
 
 # --------------------------------------------------------------------------- #
-# document schema induction
+# shared field vocabularies
 # --------------------------------------------------------------------------- #
-INDUCE_WORKER_ID = "documents.schema_sample"
-RECONCILE_WORKER_ID = "documents.schema_reconcile"
-DOCUMENT_SCHEMA_SOURCE_ID = "document_schema_sample"
-
+# The schema store's vocabularies, restated here as ordered tuples because a
+# provider enum needs an order and a frozenset has none. ``_schema_field`` is
+# what a declared descriptor is validated against at the worker boundary, and
+# ``document_schemas.validate_fields`` re-validates the accumulated master at
+# commit — same roles, same value types, same errors, one definition each.
 _FIELD_ROLES = ("identifier", "party", "attribute", "control")
 _VALUE_TYPES = ("identifier", "date", "number", "text", "boolean")
-
-INDUCE_SYSTEM = f"""[agent:document_schema_sample]
-List the fields this document carries, as a schema for documents of its type.
-
-You are describing the *form*, not this copy. Name a field for every fact the
-document states that another document of the same type would also state. Do not
-invent a field the document does not carry, and do not omit one because it looks
-unimportant.
-
-Field names are lower_snake_case and describe the fact, not this instance:
-invoice_number, not inv_1042. Prefer a name another reader would reach for —
-total_amount over amt — because a rule written against this schema has to name
-the same field on a second document type to compare them.
-
-role says what the field is *for*, and is the only part with consequences:
-  identifier — a reference that could tie this document to another one. A
-               document number, an order number, a contract number. Its
-               value_type must be identifier.
-  party      — a named person, company, or department.
-  control    — evidence that someone performed a step: an approval, a signature,
-               a checked box, an attachment reference.
-  attribute  — anything else the document states.
-
-verbatim is false only when the value does not appear in the document as text —
-the *role* a named party plays, the *decision* a signature block represents.
-Anything printed on the page is verbatim.
-
-confidence is high when the field is plainly part of this document's form,
-medium when it may be incidental to this copy, low when you are unsure it
-belongs to the type at all.
-
-{JSON_RULES}
-Keys:
-  fields array of {{"name": lower_snake_case,
-    "role": {" | ".join(_FIELD_ROLES)},
-    "value_type": {" | ".join(_VALUE_TYPES)},
-    "cardinality": "one" | "many",
-    "verbatim": true | false,
-    "confidence": "high" | "medium" | "low",
-    "label": short human-readable name}}"""
-
-RECONCILE_SYSTEM = f"""[agent:document_schema_reconcile]
-Two readings of the same document type named one field as two different things.
-Choose which is right, for each field named below.
-
-Choose only among the values offered. Do not rename the field, do not add a
-field, and do not remove one: everything else about the schema is already
-settled and only these disagreements are yours to resolve.
-
-Prefer the reading that would hold across documents of this type rather than the
-one that fits a single copy. A field is an identifier only if it could tie this
-document to another one.
-
-{JSON_RULES}
-Keys:
-  resolutions array of {{"name": the field name as given,
-    "attribute": "value_type" | "role",
-    "value": one of the offered values,
-    "reason": one sentence}}"""
 
 
 def _schema_field(raw: object, label: str) -> dict[str, Any]:
@@ -1595,214 +1537,6 @@ def _schema_field(raw: object, label: str) -> dict[str, Any]:
         "confidence": confidence,
         "label": str(raw.get("label") or "").strip(),
     }
-
-
-def _induce_response_schema(response: str) -> Mapping[str, Any]:
-    payload = decode_json_response(response)
-    if not isinstance(payload, Mapping):
-        raise WorkerResponseValidationError("The schema response must be an object.")
-    raw_fields = payload.get("fields")
-    if not isinstance(raw_fields, list) or not raw_fields:
-        raise WorkerResponseValidationError("The response must list at least one field.")
-    fields = [
-        _schema_field(item, f"fields[{index}]") for index, item in enumerate(raw_fields)
-    ]
-    names = [field["name"] for field in fields]
-    if len(names) != len(set(names)):
-        raise WorkerResponseValidationError("A schema cannot repeat a field name.")
-    return {"fields": fields}
-
-
-def validate_schema_sample_proposal(
-    proposal: Mapping[str, Any], request: WorkerRequest
-) -> Mapping[str, Any]:
-    """Hold the identifier invariant the schema store also enforces.
-
-    An identifier field typed as a number would compare "0042" against "42"
-    under numeric rules and silently split or merge a cycle. Repairing it here
-    costs one turn; discovering it at freeze time costs the whole induction.
-    """
-
-    offending = [
-        field["name"]
-        for field in proposal.get("fields") or []
-        if field.get("role") == "identifier" and field.get("value_type") != "identifier"
-    ]
-    if offending:
-        raise WorkerResponseValidationError(
-            f"Identifier field '{offending[0]}' must have value_type 'identifier'."
-        )
-    return proposal
-
-
-def run_schema_sample_worker(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-) -> str:
-    """Read one sample document and describe the fields its type carries."""
-
-    payload = {
-        "document_type": str(request.unit_input.get("document_type") or ""),
-        "document_id": str(request.unit_input.get("document_id") or ""),
-        "title": str(request.unit_input.get("title") or ""),
-        "text": str(request.unit_input.get("text") or ""),
-    }
-    user = json.dumps(payload, indent=1, default=str)
-    if attempt.is_repair:
-        user += (
-            "\n\nYour previous response could not be used: "
-            + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
-        )
-    activity = dict(request.activity)
-    activity.setdefault(
-        "context_metrics",
-        {
-            "worker_kind": "document_schema_sample",
-            "total_characters": request.context.supplied_size.characters,
-            "estimated_tokens": request.context.supplied_size.estimated_tokens,
-            "selected_items": request.context.supplied_size.items,
-        },
-    )
-    return gateway.complete(INDUCE_SYSTEM, user, activity, attempt=attempt.number)
-
-
-def _reconcile_response_schema(response: str) -> Mapping[str, Any]:
-    payload = decode_json_response(response)
-    if not isinstance(payload, Mapping):
-        raise WorkerResponseValidationError("The reconciliation response must be an object.")
-    raw = payload.get("resolutions")
-    if not isinstance(raw, list) or not raw:
-        raise WorkerResponseValidationError("The response must resolve every conflict.")
-    resolutions = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, Mapping):
-            raise WorkerResponseValidationError(f"resolutions[{index}] must be an object.")
-        attribute = str(item.get("attribute") or "")
-        if attribute not in {"value_type", "role"}:
-            raise WorkerResponseValidationError(
-                f"resolutions[{index}] names an unsupported attribute '{attribute}'."
-            )
-        resolutions.append({
-            "name": str(item.get("name") or "").strip(),
-            "attribute": attribute,
-            "value": str(item.get("value") or "").strip(),
-            "reason": str(item.get("reason") or "").strip(),
-        })
-    return {"resolutions": resolutions}
-
-
-def validate_schema_reconcile_proposal(
-    proposal: Mapping[str, Any], request: WorkerRequest
-) -> Mapping[str, Any]:
-    """Every conflict settled, and only ever with a value that was on offer.
-
-    A resolution naming some third value would be a rewrite of the schema rather
-    than a choice between two readings of it, and neither sample would support
-    it.
-    """
-
-    offered = {
-        (str(item.get("name")), str(item.get("attribute"))): {
-            str(value) for value in item.get("values") or []
-        }
-        for item in request.unit_input.get("conflicts") or []
-    }
-    resolved = {
-        (str(item.get("name")), str(item.get("attribute")))
-        for item in proposal.get("resolutions") or []
-    }
-    missing = sorted(offered.keys() - resolved)
-    if missing:
-        raise WorkerResponseValidationError(
-            f"Conflict on '{missing[0][0]}' ({missing[0][1]}) was left unresolved."
-        )
-    for item in proposal.get("resolutions") or []:
-        key = (str(item.get("name")), str(item.get("attribute")))
-        if key not in offered:
-            raise WorkerResponseValidationError(
-                f"'{key[0]}' ({key[1]}) is not one of the conflicts to resolve."
-            )
-        if str(item.get("value")) not in offered[key]:
-            raise WorkerResponseValidationError(
-                f"'{item.get('value')}' is not one of the readings offered for "
-                f"'{key[0]}' ({key[1]})."
-            )
-    return proposal
-
-
-def run_schema_reconcile_worker(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-) -> str:
-    """Ask only which reading of each disputed field is right."""
-
-    payload = {
-        "document_type": str(request.unit_input.get("document_type") or ""),
-        "conflicts": list(request.unit_input.get("conflicts") or []),
-    }
-    user = json.dumps(payload, indent=1, default=str)
-    if attempt.is_repair:
-        user += (
-            "\n\nYour previous response could not be used: "
-            + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
-        )
-    activity = dict(request.activity)
-    activity.setdefault(
-        "context_metrics",
-        {
-            "worker_kind": "document_schema_reconcile",
-            "total_characters": request.context.supplied_size.characters,
-            "estimated_tokens": request.context.supplied_size.estimated_tokens,
-            "selected_items": request.context.supplied_size.items,
-        },
-    )
-    return gateway.complete(RECONCILE_SYSTEM, user, activity, attempt=attempt.number)
-
-
-INDUCE_RESPONSE_SCHEMA = WorkerResponseSchema(
-    schema_id="documents.schema_sample.response",
-    schema_hash=_sha256_text("documents-schema-sample-response:fields"),
-    validator=_induce_response_schema,
-)
-INDUCE_WORKER = WorkerDefinition(
-    worker_id=INDUCE_WORKER_ID,
-    prompt_hash=_sha256_text(INDUCE_SYSTEM),
-    response_schema=INDUCE_RESPONSE_SCHEMA,
-    repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=1,
-        guidance_hash=_sha256_text(
-            "Repair the induced document schema against the declared field contract."
-        ),
-    ),
-    implementation=run_schema_sample_worker,
-    semantic_validator=validate_schema_sample_proposal,
-)
-
-RECONCILE_RESPONSE_SCHEMA = WorkerResponseSchema(
-    schema_id="documents.schema_reconcile.response",
-    schema_hash=_sha256_text("documents-schema-reconcile-response:resolutions"),
-    validator=_reconcile_response_schema,
-)
-RECONCILE_WORKER = WorkerDefinition(
-    worker_id=RECONCILE_WORKER_ID,
-    prompt_hash=_sha256_text(RECONCILE_SYSTEM),
-    response_schema=RECONCILE_RESPONSE_SCHEMA,
-    repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=1,
-        guidance_hash=_sha256_text(
-            "Repair the schema reconciliation against the offered readings."
-        ),
-    ),
-    implementation=run_schema_reconcile_worker,
-    semantic_validator=validate_schema_reconcile_proposal,
-)
-
-WORKERS.register(INDUCE_WORKER)
-WORKERS.register(RECONCILE_WORKER)
 
 
 # --------------------------------------------------------------------------- #
@@ -2227,6 +1961,688 @@ STRUCTURED_WORKER = WorkerDefinition(
 
 WORKERS.register(STRUCTURED_WORKER)
 
+# --------------------------------------------------------------------------- #
+# whole-document evidence read
+# --------------------------------------------------------------------------- #
+READ_WORKER_ID = "documents.evidence_read"
+DOCUMENT_READ_TEXT_SOURCE_ID = "document_pages"
+DOCUMENT_READ_IMAGE_SOURCE_ID = "document_page_images"
+
+READ_SUBMISSION_TOOL = "submit_document_reading"
+
+
+def master_descriptor(
+    document_type: str,
+    fields: Iterable[Mapping[str, Any]],
+    *,
+    documents_read: int = 0,
+) -> str:
+    """Render a type's accumulating master as prompt text.
+
+    The prior art a document is shown: what the documents of its type before it
+    settled on, so it reuses those names rather than coining a synonym.
+    ``approved_by_id`` and ``approved_by_employee_id`` cannot both enter a master
+    that already holds one of them, and this text is where that is decided.
+
+    Fill counts travel with it, and they are not a refinement. A single
+    internally-produced confirmation genuinely contributes ``printed_by_name`` to
+    its type — harmless as a hint, misleading as a selector — and an authoring
+    turn shown names without frequencies read a 0-of-11 field as a comparison it
+    could write. One of eighteen would have read exactly the same to it.
+    """
+
+    if not list(fields):
+        return (
+            f"DOCUMENT TYPE {document_type}\n"
+            "No document of this type has been read yet, so it carries no fields "
+            "and the records[].fields array must stay empty. This document is the "
+            "first: every fact it states is a new field. Report all of them under "
+            "new_fields, each with a full descriptor — name, role, value_type, "
+            "cardinality, verbatim, confidence, label, reason — and a values "
+            "array naming every record that states it. Return one entry in "
+            "records per record the document carries, each with an empty fields "
+            "array."
+        )
+    lines = [
+        f"DOCUMENT TYPE {document_type}",
+        f"Read so far: {documents_read} document{'s' if documents_read != 1 else ''}.",
+        "Fields documents of this type have stated:",
+    ]
+    for field in fields:
+        parts = [
+            f"  {field.get('name')} — {field.get('value_type')}",
+            f"role {field.get('role')}",
+        ]
+        fill = field.get("fill_count")
+        if fill is not None:
+            parts.append(f"stated by {fill} of {documents_read}")
+        if str(field.get("cardinality") or "one") == "many":
+            parts.append("may appear more than once")
+        if not bool(field.get("verbatim", True)):
+            parts.append("interpretive; needs no excerpt")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
+
+
+def _read_system(descriptor: str) -> str:
+    return f"""[agent:document_evidence_read]
+Read this whole document and report every record it states.
+
+You are given the document's text and, where a page carries no usable text, that
+page as an image. A stamp, a signature block, or a countersigned approval is
+routinely on a scanned page, and it is evidence like any other — read it.
+
+Report only what the document says. Do not infer a value from a filename, from
+metadata, or from what a document of this type usually contains. A field the
+document does not state is simply absent — never guess one to fill the
+vocabulary.
+
+{descriptor}
+
+records is an array. Each entry is one record the document carries, with:
+  fields — the fields *listed above* that this record states, as
+    {{"name": one of the names above, "entry": 1-based ordinal when the field may
+      appear more than once, "value": the value exactly as printed,
+      "citation": the id of a citation showing it}}
+
+new_fields is for a fact this document states that no field above can hold. Each
+entry both *declares* the field for the type and *fills* it wherever this
+document states it:
+  {{"name": lower_snake_case, "role", "value_type", "cardinality", "verbatim",
+    "confidence", "label", "reason": why the type needs this field,
+    "values": [{{"record": the 1-based index of the record in records this value
+      belongs to, "entry", "value", "citation"}}]}}
+
+Declare each field once, however many records state it, and list one entry in
+its values array per record. A statement with twenty transaction lines declares
+its columns once and fills each of them twenty times — declaring the same name
+twice is refused.
+
+Add a field freely — a document stating something the vocabulary has no place
+for is the common case, and it cannot invalidate an earlier reading. But do not
+add a field that means what an existing one means under a different name. A
+synonym is the one thing this vocabulary cannot absorb: two names for one fact
+split every rule written against either of them.
+
+Field names are lower_snake_case and describe the fact, not this instance:
+invoice_number, not inv_1042.
+
+role says what a new field is *for*, and is the only part with consequences:
+  identifier — a reference that could tie this document to another one. A
+               document number, an order number, a contract number. Its
+               value_type must be identifier. Choosing this wrongly either
+               invents a link or loses one, so state it deliberately.
+  party      — a named person, company, or department.
+  control    — evidence that someone performed a step: an approval, a signature,
+               a checked box, an attachment reference.
+  attribute  — anything else the document states.
+
+verbatim is false only when the value does not appear in the document as text —
+the *role* a named party plays, the *decision* a signature block represents.
+Anything printed on the page is verbatim.
+
+renames is for the rare case where a name above is *wrong* about what the field
+holds, as {{"from": the name above, "to": lower_snake_case, "reason": one
+sentence}}. Preferring your own phrasing is never grounds: every document has
+some reason its wording reads better, and eighteen renames in a row is a
+vocabulary that never settles. A rename re-opens every document of this type
+already read, because they were read under the old name.
+
+A field being renamed still reports its value under the name listed above — the
+rename is applied afterwards.
+
+Never remove a field, and never report a field above under a different meaning.
+
+citations is an array of objects with id, page, and a short exact `excerpt`
+copied verbatim from the document. Every excerpt must appear character for
+character — do not join separate lines, tidy spacing, or paraphrase. Quote the
+line carrying the fact and no more: at most {CITATION_EXCERPT_LINES} lines and
+{CITATION_EXCERPT_CHARACTERS} characters. A value you read from a page image
+cites that page, with the excerpt as you transcribed it.
+
+Every value you report must carry a citation, except a field marked interpretive
+above.
+
+Return an empty records array when this document carries no record at all. A
+transaction document stating no record is a truthful reading and must not be
+made to invent one.
+
+audit_notes records observations visible on the face of the document — a missing
+signature or date, an unreferenced attachment, an internal inconsistency, an
+alteration, an incomplete field. State the observation and why it matters. Do
+not conclude that a control operated or failed. Return an empty array when there
+is no such observation.
+
+{JSON_RULES}"""
+
+
+def _read_descriptor_field(raw: object, label: str) -> dict[str, Any]:
+    """Validate one declared descriptor, plus the value that introduces it.
+
+    ``_schema_field`` is the validator the sample worker already used and is
+    reused unchanged, because the vocabularies — ``FIELD_ROLES``,
+    ``VALUE_TYPES``, ``CARDINALITIES`` — are the same ones the schema store
+    enforces and a second definition of them would drift. What is added here is
+    the half that makes a declaration cost something: a field enters the master
+    only by being filled, so the descriptor arrives with the record it appears
+    on, its value, and its citation.
+    """
+
+    if not isinstance(raw, Mapping):
+        raise WorkerResponseValidationError(f"{label} must be an object.")
+    descriptor = _schema_field(raw, label)
+    supplied = raw.get("values")
+    if not isinstance(supplied, (list, tuple)) or not supplied:
+        raise WorkerResponseValidationError(
+            f"{label} declares a field but states no value. A field enters the "
+            "vocabulary only by being filled in the document that introduces it."
+        )
+    values = []
+    for position, item in enumerate(supplied):
+        where = f"{label}.values[{position}]"
+        if not isinstance(item, Mapping):
+            raise WorkerResponseValidationError(f"{where} must be an object.")
+        record = item.get("record", 1)
+        if isinstance(record, bool) or not isinstance(record, int) or record < 1:
+            raise WorkerResponseValidationError(
+                f"{where} needs the 1-based index of the record it appears on."
+            )
+        entry = item.get("entry", 1)
+        if isinstance(entry, bool) or not isinstance(entry, int) or entry < 1:
+            raise WorkerResponseValidationError(
+                f"{where} needs a positive integer entry."
+            )
+        value = item.get("value")
+        if value is None or str(value).strip() == "":
+            raise WorkerResponseValidationError(f"{where} needs a value.")
+        values.append(
+            {
+                "record": record,
+                "entry": entry,
+                "value": str(value),
+                "citation": str(item.get("citation") or "").strip(),
+            }
+        )
+    return {
+        **descriptor,
+        "reason": str(raw.get("reason") or "").strip(),
+        "values": values,
+    }
+
+
+def _read_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The reading response must be an object.")
+    raw_records = payload.get("records")
+    if not isinstance(raw_records, list):
+        raise WorkerResponseValidationError("The response must carry a records array.")
+    records = []
+    for index, raw in enumerate(raw_records):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(f"records[{index}] must be an object.")
+        records.append(
+            {
+                "fields": [
+                    _structured_value(
+                        item, f"records[{index}].fields[{position}]", extra=False
+                    )
+                    for position, item in enumerate(raw.get("fields") or [])
+                ]
+            }
+        )
+    new_fields = [
+        _read_descriptor_field(item, f"new_fields[{position}]")
+        for position, item in enumerate(payload.get("new_fields") or [])
+    ]
+    renames = []
+    for position, raw in enumerate(payload.get("renames") or []):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(
+                f"renames[{position}] must be an object."
+            )
+        source = str(raw.get("from") or "").strip()
+        target = str(raw.get("to") or "").strip()
+        if not source or not target:
+            raise WorkerResponseValidationError(
+                f"renames[{position}] needs both 'from' and 'to'."
+            )
+        renames.append(
+            {
+                "from": source,
+                "to": target,
+                "reason": str(raw.get("reason") or "").strip(),
+            }
+        )
+    return {
+        "analysis_profile": "structured",
+        "records": records,
+        "new_fields": new_fields,
+        "renames": renames,
+        "audit_notes": list(payload.get("audit_notes") or []),
+        "citations": list(payload.get("citations") or []),
+    }
+
+
+def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
+    """The provider-enforced shape for one whole-document reading.
+
+    A merge of two shapes that already exist rather than new machinery:
+    ``_structured_submission_tool`` constrains ``name`` to an enum of the type's
+    fields, so naming a field the type does not carry stops being something the
+    model can do; ``_schema_field`` validates a full field descriptor. Reading a
+    document and learning what its type carries are now the same act, so the
+    call needs both.
+
+    There is no ``additional_fields``. It existed to hold a fact a frozen
+    vocabulary had no room for, and under a master there is no such fact — the
+    master takes the field. Keeping both channels open would be worse than
+    having no master at all: one asks for a full descriptor and a reason, the
+    other for a name and a value, and a model offered both reaches for the cheap
+    one every time.
+
+    The enum is fixed when the call is made, which is what makes it enforceable.
+    A field being renamed in this same response therefore reports its value under
+    the name the enum offers, and the commit applies the rename afterwards.
+    """
+
+    # A type nothing has been read into yet has no names to offer, and this is
+    # the case that has to be closed *structurally* rather than by the validator.
+    # Measured on the treasury corpus: with a free-string ``name`` here, seven of
+    # eight first-of-type reads put their fields in ``records`` anyway and failed
+    # validation — and because a type's first read is what fills its master, the
+    # sibling behind it faced the same empty master and failed the same way. The
+    # enum is what makes "name a field this type does not carry" impossible, so
+    # where there is nothing to enumerate the array itself is closed: with
+    # ``maxItems: 0`` the only place a value can go is ``new_fields``, which is
+    # where a first document's values belong anyway.
+    #
+    # The alternative — letting an unknown name through and treating it as an
+    # implicit new field — is ``additional_fields`` by another name: a name and a
+    # value with no descriptor, no role, and no reason. The descriptor is the
+    # point.
+    name_property: dict[str, Any] = (
+        {"type": "string", "enum": list(master_names)}
+        if master_names
+        else {"type": "string", "minLength": 1}
+    )
+    stated = {
+        "type": "object",
+        "properties": {
+            "name": dict(name_property),
+            "entry": {"type": "integer", "minimum": 1},
+            "value": {"type": "string", "minLength": 1},
+            # Required, and empty where the field is interpretive: demanding a
+            # quote for a value the document never prints is unsatisfiable.
+            "citation": {"type": "string"},
+        },
+        "required": ["name", "entry", "value", "citation"],
+        "additionalProperties": False,
+    }
+    stated_array: dict[str, Any] = (
+        {"type": "array", "items": stated}
+        if master_names
+        else {"type": "array", "items": stated, "maxItems": 0}
+    )
+    filled = {
+        "type": "object",
+        "properties": {
+            "record": {"type": "integer", "minimum": 1},
+            "entry": {"type": "integer", "minimum": 1},
+            "value": {"type": "string", "minLength": 1},
+            "citation": {"type": "string", "minLength": 1},
+        },
+        "required": ["record", "entry", "value", "citation"],
+        "additionalProperties": False,
+    }
+    declared = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "role": {"type": "string", "enum": list(_FIELD_ROLES)},
+            "value_type": {"type": "string", "enum": list(_VALUE_TYPES)},
+            "cardinality": {"type": "string", "enum": ["one", "many"]},
+            "verbatim": {"type": "boolean"},
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+            "label": {"type": "string"},
+            "reason": {"type": "string"},
+            # Declared once, filled on every record that states it. A nostro
+            # statement carries one record per transaction line, and a field the
+            # type does not carry yet cannot be named in the enum — so without
+            # this a multi-record first document could fill only its first
+            # record, and the model's only way out was to declare the same field
+            # once per record, which the contract refuses.
+            "values": {"type": "array", "items": filled, "minItems": 1},
+        },
+        "required": [
+            "name",
+            "role",
+            "value_type",
+            "cardinality",
+            "verbatim",
+            "confidence",
+            "label",
+            "reason",
+            "values",
+        ],
+        "additionalProperties": False,
+    }
+    renamed = {
+        "type": "object",
+        "properties": {
+            "from": dict(name_property),
+            "to": {"type": "string", "minLength": 1},
+            "reason": {"type": "string", "minLength": 1},
+        },
+        "required": ["from", "to", "reason"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "function",
+        "function": {
+            "name": READ_SUBMISSION_TOOL,
+            "description": (
+                "Submit every record this document states, under the fields its "
+                "type carries, declaring any field the type does not yet have. "
+                "Submit an empty records array only when the document states no "
+                "record at all."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "records": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"fields": dict(stated_array)},
+                            "required": ["fields"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "new_fields": {"type": "array", "items": declared},
+                    "renames": {"type": "array", "items": renamed},
+                    "citations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "minLength": 1},
+                                "page": {"type": "integer", "minimum": 1},
+                                "excerpt": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": CITATION_EXCERPT_CHARACTERS,
+                                },
+                            },
+                            "required": ["id", "page", "excerpt"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "audit_notes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "records",
+                    "new_fields",
+                    "renames",
+                    "citations",
+                    "audit_notes",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _supplied_document_text(request: WorkerRequest) -> Mapping[str, Any]:
+    """The whole document's text, which the reading and its citations bind to.
+
+    Raising when it is absent keeps the read's one bound a contract: a document
+    that exceeded the window is reported as over-window by the unit generator
+    before it gets here, and a read reaching the model with no text would
+    produce an empty reading that looks exactly like a document stating nothing.
+    """
+
+    supplied = _resolved_item(request, DOCUMENT_READ_TEXT_SOURCE_ID)
+    if not str(supplied.get("text") or ""):
+        raise WorkerContractError("The supplied document carries no text to read.")
+    return supplied
+
+
+def validate_read_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    """Hold the master, the citation rule, and the modification asymmetry.
+
+    The asymmetry is enforced by *cost*, not by judging the reason: whether a
+    rename is a genuine correction or a preferred synonym is not a question code
+    can settle, and a validator that tried would either wave everything through
+    or refuse corrections that were right. So a rename is applied and recorded,
+    and it re-opens every prior reading of the type on the same terms a
+    late-added field does. What is refused here is only what is structurally
+    incoherent.
+    """
+
+    known = {
+        str(field.get("name")): field
+        for field in request.unit_input.get("master_fields") or []
+    }
+    records = list(proposal.get("records") or [])
+    new_fields = list(proposal.get("new_fields") or [])
+    renames = list(proposal.get("renames") or [])
+    citations = {
+        str(item.get("id"))
+        for item in proposal.get("citations") or []
+        if isinstance(item, Mapping)
+    }
+
+    if not records and not new_fields and not known:
+        # An empty ``records`` array is normally a complete answer: an evidence
+        # document that carries no transaction record is a truthful reading and
+        # must not be made to invent one. Not here. This document is the first of
+        # its type, so what it states *is* the type's entire vocabulary — an
+        # empty reading leaves every sibling behind it reading against nothing,
+        # and the type reaches its stamp with no fields at all. The read saw the
+        # whole document, so there is no other page the records could be on.
+        #
+        # Measured: a counterparty confirmation came back with zero records, zero
+        # fields and zero citations, and took its type and its sibling with it.
+        # This is the same contradiction the sampled profile refused, asked of
+        # the document that now carries the vocabulary rather than the one the
+        # sample was drawn from.
+        raise WorkerResponseValidationError(
+            "This reading states nothing at all, and it is the first document of "
+            f"'{request.unit_input.get('document_type')}' — what it states is "
+            "the whole vocabulary its type will be read under. Report the fields "
+            "this document prints under new_fields, each with a descriptor and "
+            "the records that fill it."
+        )
+
+    for position, rename in enumerate(renames):
+        source = str(rename.get("from"))
+        if source not in known:
+            raise WorkerResponseValidationError(
+                f"renames[{position}] renames '{source}', which this document "
+                "type does not carry. Only a field listed above can be renamed."
+            )
+        target = str(rename.get("to"))
+        if target in known and target != source:
+            raise WorkerResponseValidationError(
+                f"renames[{position}] renames '{source}' to '{target}', which this "
+                "type already carries. Two names for one fact is what the "
+                "vocabulary exists to prevent."
+            )
+
+    for index, record in enumerate(records):
+        for field in record.get("fields") or []:
+            name = str(field.get("name"))
+            definition = known.get(name)
+            if definition is None:
+                raise WorkerResponseValidationError(
+                    f"records[{index}] names field '{name}', which this document "
+                    "type does not carry yet. Declare it under new_fields with a "
+                    "full descriptor, or use one of the names listed."
+                )
+            if (
+                str(definition.get("cardinality") or "one") == "one"
+                and field["entry"] != 1
+            ):
+                raise WorkerResponseValidationError(
+                    f"Field '{name}' appears once on this type, so entry must be 1."
+                )
+            if bool(definition.get("verbatim", True)) and not field.get("citation"):
+                raise WorkerResponseValidationError(
+                    f"Field '{name}' is stated on the record and needs a citation."
+                )
+            if field.get("citation") and field["citation"] not in citations:
+                raise WorkerResponseValidationError(
+                    f"Field '{name}' cites '{field['citation']}', which is not a "
+                    "citation you declared."
+                )
+
+    renamed_to = {str(item.get("to")) for item in renames}
+    for position, field in enumerate(new_fields):
+        name = str(field.get("name"))
+        if name in known:
+            raise WorkerResponseValidationError(
+                f"new_fields[{position}] declares '{name}', which this type "
+                "already carries. Report its value under fields instead."
+            )
+        if name in renamed_to:
+            raise WorkerResponseValidationError(
+                f"new_fields[{position}] declares '{name}', which a rename in this "
+                "same response also produces. A split is a rename plus a "
+                "different new name."
+            )
+        for index, value in enumerate(field.get("values") or []):
+            where = f"new_fields[{position}].values[{index}]"
+            if int(value.get("record") or 1) > len(records):
+                raise WorkerResponseValidationError(
+                    f"{where} fills record {value.get('record')}, but you "
+                    f"returned {len(records)} record(s). A field enters the "
+                    "vocabulary only by being filled on a record you reported."
+                )
+            if bool(field.get("verbatim", True)) and not value.get("citation"):
+                raise WorkerResponseValidationError(
+                    f"{where} states '{name}' and needs a citation."
+                )
+            if value.get("citation") and value["citation"] not in citations:
+                raise WorkerResponseValidationError(
+                    f"{where} cites '{value['citation']}', which is not a "
+                    "citation you declared."
+                )
+
+    declared_names = [str(field.get("name")) for field in new_fields]
+    if len(declared_names) != len(set(declared_names)):
+        raise WorkerResponseValidationError(
+            "new_fields declares one name twice. Declare a field once and list "
+            "every record that states it under its own values array."
+        )
+    return proposal
+
+
+def run_read_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Read one whole evidence document against its type's accumulating master."""
+
+    supplied = _supplied_document_text(request)
+    # Optional by design. Most evidence is digital, and a document with no
+    # visually-routed page supplies none — which is why this is not
+    # ``_supplied_media``, whose contract is that prepared media must be there.
+    handles = [
+        dict(item)
+        for item in (
+            _plain_json(raw)
+            for raw in _source_items(request, DOCUMENT_READ_IMAGE_SOURCE_ID)
+        )
+        if isinstance(item, Mapping)
+    ]
+    payload = {
+        "document_id": str(request.unit_input.get("document_id") or ""),
+        "document_type": str(request.unit_input.get("document_type") or ""),
+        "pages": supplied.get("pages"),
+        "scanned_pages": sorted({int(item.get("page") or 0) for item in handles}),
+    }
+    user = (
+        f"{json.dumps(payload, indent=1, default=str)}\n\n"
+        f"DOCUMENT TEXT:\n{supplied['text']}"
+    )
+    if handles:
+        user += (
+            "\n\nThe pages listed under scanned_pages carry no usable text and "
+            "are supplied as images. Read them too — a control signature is "
+            "routinely the only thing on such a page."
+        )
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+        if attempt.previous_response:
+            user += "\n\nYOUR PREVIOUS RESPONSE:\n" + attempt.previous_response
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_evidence_read",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    descriptor = str(request.unit_input.get("master_descriptor") or "")
+    master_names = [
+        str(field.get("name"))
+        for field in request.unit_input.get("master_fields") or []
+        if str(field.get("name") or "")
+    ]
+    message = gateway.complete(
+        _read_system(descriptor),
+        user,
+        activity,
+        attempt=attempt.number,
+        tools=[_read_submission_tool(master_names)],
+        tool_choice={
+            "type": "function",
+            "function": {"name": READ_SUBMISSION_TOOL},
+        },
+        return_message=True,
+    )
+    return submission_response(message, READ_SUBMISSION_TOOL)
+
+
+READ_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.evidence_read.response",
+    schema_hash=_sha256_text(
+        "documents-evidence-read-response:records-new-fields-renames-citations"
+    ),
+    validator=_read_response_schema,
+)
+READ_WORKER = WorkerDefinition(
+    worker_id=READ_WORKER_ID,
+    # The master is per-workspace and moves as the type is read, so it cannot be
+    # part of a module-level prompt hash. What is hashed is the instruction text
+    # around it; the descriptor travels on the unit input and is covered by the
+    # unit's own input hash, which is what re-expands a read when the vocabulary
+    # its siblings settled has moved.
+    prompt_hash=_sha256_text(_read_system("<master>")),
+    response_schema=READ_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the document reading against the type's accumulating master."
+        ),
+    ),
+    implementation=run_read_worker,
+    semantic_validator=validate_read_proposal,
+)
+
+WORKERS.register(READ_WORKER)
+
+
 __all__ = [
     "CHUNK_ANALYSES_SOURCE_ID",
     "CHUNK_RESPONSE_SCHEMA",
@@ -2235,7 +2651,13 @@ __all__ = [
     "CHUNK_WORKER_ID",
     "DOCUMENT_CHUNK_SOURCE_ID",
     "DOCUMENT_METADATA_SOURCE_ID",
+    "DOCUMENT_READ_IMAGE_SOURCE_ID",
+    "DOCUMENT_READ_TEXT_SOURCE_ID",
     "DOCUMENT_VISUAL_SOURCE_ID",
+    "READ_RESPONSE_SCHEMA",
+    "READ_SUBMISSION_TOOL",
+    "READ_WORKER",
+    "READ_WORKER_ID",
     "REDUCTION_RESPONSE_SCHEMA",
     "REDUCTION_SYSTEM",
     "REDUCTION_WORKER",
@@ -2245,18 +2667,17 @@ __all__ = [
     "VISUAL_WORKER",
     "VISUAL_WORKER_ID",
     "document_metadata",
+    "master_descriptor",
     "run_chunk_worker",
+    "run_read_worker",
     "run_category_worker",
     "run_classification_worker",
-    "run_schema_reconcile_worker",
-    "run_schema_sample_worker",
     "run_structured_worker",
     "run_reduction_worker",
     "run_visual_worker",
     "validate_chunk_proposal",
+    "validate_read_proposal",
     "validate_classification_proposal",
-    "validate_schema_reconcile_proposal",
-    "validate_schema_sample_proposal",
     "validate_structured_proposal",
     "validate_reduction_proposal",
     "validate_visual_proposal",

@@ -165,11 +165,11 @@ def test_document_graph_declares_a_linear_closure_with_a_stable_hash():
         "documents.text_ready": (),
         "documents.categorized": ("documents.text_ready",),
         "documents.types_classified": ("documents.categorized",),
-        "documents.schemas_sampled": ("documents.types_classified",),
-        "documents.schemas_induced": ("documents.schemas_sampled",),
+        "documents.evidence_read": ("documents.types_classified",),
+        "documents.schemas_stamped": ("documents.evidence_read",),
         "documents.analysis_chunks_ready": (
             "documents.text_ready",
-            "documents.schemas_induced",
+            "documents.categorized",
         ),
         "documents.analysis_generated": ("documents.analysis_chunks_ready",),
         "documents.analysis_reviewed": ("documents.analysis_generated",),
@@ -177,25 +177,35 @@ def test_document_graph_declares_a_linear_closure_with_a_stable_hash():
     assert documents_workflow.FULL_DOCUMENT_OUTCOMES == [
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_induced",
+        "documents.schemas_stamped",
         "documents.analysis_generated",
     ]
     assert documents_workflow.outcomes_for_template("document_analysis") == [
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_induced",
+        "documents.schemas_stamped",
         "documents.analysis_generated",
     ]
 
     registry = capability_registries.build_documents_registry()
+    # The prose closure no longer drags the evidence read behind it. That is the
+    # schema edge coming off ``analysis_chunks_ready``: this pass carries
+    # planning prose, which needs no vocabulary, and making a policy summary wait
+    # on eighteen payment instructions bought nothing. What it does still wait
+    # for is the category, because excluding evidence from this pass requires
+    # knowing which documents are evidence.
     assert registry.closure(["documents.analysis_generated"]) == [
         "documents.text_ready",
         "documents.categorized",
-        "documents.types_classified",
-        "documents.schemas_sampled",
-        "documents.schemas_induced",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
+    ]
+    assert registry.closure(["documents.schemas_stamped"]) == [
+        "documents.text_ready",
+        "documents.categorized",
+        "documents.types_classified",
+        "documents.evidence_read",
+        "documents.schemas_stamped",
     ]
 
     baseline = documents_workflow.definition_hash()
@@ -248,7 +258,7 @@ def test_document_requests_route_to_the_narrowest_declaring_workflow():
     assert resolved["requested_outcomes"] == [
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_induced",
+        "documents.schemas_stamped",
         "documents.analysis_generated",
     ]
 
@@ -856,8 +866,8 @@ def test_reuse_does_not_assess_currency(monkeypatch):
         "documents.text_ready",
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_sampled",
-        "documents.schemas_induced",
+        "documents.evidence_read",
+        "documents.schemas_stamped",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
     ]
@@ -950,34 +960,39 @@ def test_standalone_and_planning_use_the_same_workers_and_executor():
     workers = {definition.worker_id for definition in WORKERS.all()}
     executors = {definition.executor_id for definition in EXECUTORS.all()}
 
-    # Two text map profiles (prose and structured), one visual map worker, one
-    # reduction worker, and one persistence executor are shared by standalone and
-    # audit callers. The profiles differ only in prompt and response contract;
-    # everything downstream of the map — reduction, persistence, reconciliation —
-    # is the single shared implementation.
+    # One text map worker, one visual map worker, one reduction worker, and one
+    # persistence executor are shared by standalone and audit callers. The map
+    # carries planning prose; everything downstream of it — reduction,
+    # persistence, reconciliation — is the single shared implementation.
     #
-    # Three more sit *before* the map, and exist so it has a vocabulary to
-    # extract against: classification names what a document is, the schema
-    # sample reads the fields its type carries, and reconciliation settles a
-    # field two samples named differently. The structured map is taken wherever
-    # that vocabulary exists, and there is no other: a transaction document with
-    # no schema is read as prose rather than against an authored pack.
+    # Two sit *before* it and say what a document is: the category says whether
+    # this engagement holds it as transaction evidence, the type says what it is.
+    # Both have to answer, and only one of them was once being asked.
+    #
+    # ``documents.evidence_read`` is the one that replaced a family. It reads a
+    # whole evidence document — text and page images in one call — against its
+    # type's accumulating master, and there is no sample worker and no
+    # reconciliation, because there is no guess left to police.
     assert {
         "documents.analysis_chunk",
         "documents.analysis_visual_page",
         "documents.analysis_reduction",
         "documents.category",
         "documents.classification",
-        "documents.schema_sample",
-        "documents.schema_reconcile",
+        "documents.evidence_read",
         "documents.analysis_structured",
     } <= workers
-    assert len({name for name in workers if name.startswith("documents.")}) == 8
+    assert len({name for name in workers if name.startswith("documents.")}) == 7
     assert {name for name in executors if name.startswith("documents.")} == {
         "documents.analysis",
         "documents.category",
         "documents.classification",
-        "documents.schema",
+        # The read commits its reading and its type's master in one mutate;
+        # the stamp writes the finished master into a schema and back-stamps
+        # the readings it was built from. Splitting them is what makes a failed
+        # read leave the type with no vocabulary rather than a partial one.
+        "documents.read",
+        "documents.stamp",
     }
 
 
@@ -1421,9 +1436,20 @@ def test_an_audit_without_documents_expands_no_document_unit(fake_agent_llm):
     assert not any(
         capability_id.startswith("documents.") for capability_id in scheduled
     )
-    assert set(documents_workflow.AUDIT_CAPABILITY_IDS) <= set(
-        reloaded["workflow"]["reused_capabilities"]
-    )
+    # Every document capability the *APM closure* reaches is reused. That is a
+    # narrower set than it was: an APM needs planning context, which needs prose
+    # analyses, which under 4b.1 need no vocabulary — so an APM-only run no
+    # longer drags the whole evidence read behind it. What still must hold is
+    # that nothing it does reach expands a unit.
+    reached = {
+        capability_id
+        for capability_id in capability_registries.REGISTRY_BY_WORKFLOW[
+            audit_workflow.WORKFLOW_ID
+        ].closure(["planning.apm_ready"])
+        if capability_id.startswith("documents.")
+    }
+    assert reached
+    assert reached <= set(reloaded["workflow"]["reused_capabilities"])
 
 
 # --------------------------------------------------------------------------- #
@@ -1510,14 +1536,28 @@ def test_map_json_still_accepts_a_fenced_object_and_rejects_a_non_object():
 
 
 # ------------------------------------------------- partial dependency policy
-def test_every_edge_in_the_document_graph_is_partial():
+#: The one edge in the document graph that must block, and the whole reason it
+#: is named here rather than left to a comment. See the test below.
+BLOCKING_EDGES = {("documents.schemas_stamped", "documents.evidence_read")}
+
+
+def test_every_edge_in_the_document_graph_is_partial_except_the_stamp():
     """The rule the map states, enforced rather than restated.
 
     ``_PARTIAL_DEPENDENCIES`` opens with "every edge in this graph is partial"
-    and used to list three of the seven. The four it omitted were the upstream
-    ones, so a single failed sample failed the ``schemas_sampled`` stage,
-    blocked induction, blocked chunking, and blocked every analysis in the run.
-    Prose cannot hold a map to a graph; this can.
+    and once listed three of the seven. The four it omitted were the upstream
+    ones, so a single failed sample failed its stage, blocked induction, blocked
+    chunking, and blocked every analysis in the run. Prose cannot hold a map to a
+    graph; this can.
+
+    4b.1 adds exactly one exception, and it is the opposite kind of failure. A
+    master built from eight of eighteen documents is not the type's vocabulary,
+    and stamping it writes a ``schema_version`` claiming otherwise — provenance
+    saying *this is what emerged from reading these documents* when ten of them
+    were never read. Every other edge protects the run from one bad document;
+    this one protects the engagement from a vocabulary that lies about its own
+    coverage. Nothing is lost by blocking: the readings that landed are on disk
+    with their ``master_ref``, and the re-run resumes against them.
     """
     from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
     from app.agent.workflows import documents as documents_workflow
@@ -1533,27 +1573,45 @@ def test_every_edge_in_the_document_graph_is_partial():
         for dependency in dependencies
     }
 
-    assert edges - declared == set(), "these edges still block the whole run"
+    assert edges - declared == BLOCKING_EDGES, "these edges still block the whole run"
     assert declared - edges == set(), "these name a dependency the graph does not have"
+    assert BLOCKING_EDGES <= edges, "the blocking edge is no longer in the graph"
 
 
-def test_one_failed_sample_no_longer_blocks_induction():
-    """The starvation this map exists to prevent, at the edge that had it.
+def test_one_failed_reading_no_longer_blocks_the_rest_of_the_corpus():
+    """The starvation this map exists to prevent, at the edges that had it.
 
-    A failed unit leaves its stage ``failed``; without a partial edge every
-    later capability is refused. Induction re-expands against the samples that
-    did land, so a type nobody could read costs that type and nothing else.
+    A failed unit leaves its stage ``failed``; without a partial edge every later
+    capability is refused. Each of these re-expands against what the earlier
+    stage actually produced, so a document nobody could read costs that document
+    and nothing else.
     """
     from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
 
     def may_proceed(capability_id: str, dependency_id: str) -> bool:
         return dependency_id in _PARTIAL_DEPENDENCIES.get(capability_id, set())
 
-    assert may_proceed("documents.schemas_induced", "documents.schemas_sampled")
-    assert may_proceed("documents.analysis_chunks_ready", "documents.schemas_induced")
-    assert may_proceed("documents.schemas_sampled", "documents.types_classified")
+    assert may_proceed("documents.evidence_read", "documents.types_classified")
+    assert may_proceed("documents.analysis_chunks_ready", "documents.categorized")
+    assert may_proceed("documents.analysis_chunks_ready", "documents.text_ready")
     assert may_proceed("documents.types_classified", "documents.categorized")
     assert may_proceed("documents.categorized", "documents.text_ready")
+
+
+def test_a_failed_reading_stops_its_type_being_stamped():
+    """The one place a partial edge would be the silent failure, not the loud one.
+
+    Following the map's own rule here would let a read that died at document 9
+    reach the stamp, and ``save_schema`` would write a vocabulary from eight of
+    eighteen documents under a version that says it is complete. The readings are
+    not lost — they keep their ``master_ref`` and are never stamped into evidence
+    — but nothing may record a partial vocabulary as the type's.
+    """
+    from app.agent.documents_execution import _PARTIAL_DEPENDENCIES
+
+    assert "documents.evidence_read" not in _PARTIAL_DEPENDENCIES.get(
+        "documents.schemas_stamped", set()
+    )
 
 
 def test_an_unrelated_dependency_is_not_waved_through():
@@ -1565,84 +1623,41 @@ def test_an_unrelated_dependency_is_not_waved_through():
     )
 
 
-def test_a_voucher_with_no_schema_is_named_rather_than_quietly_narrated():
-    """The other half of completing the partial-dependency map.
+def test_evidence_never_reaches_the_prose_pass():
+    """What replaced the unstructured-voucher warning, and why it can go.
 
-    ``analysis_profile`` reads a voucher under ``structured`` only where its
-    type has an induced schema, and under ``standard`` otherwise — a readable
-    narrative analysis that is explicitly not cycle evidence. While a failed
-    sample blocked every later stage that document never arrived here; now it
-    does, so the run has to say what it is about to do with it. Trading a loud
-    stop for a silent downgrade would have been the worse of the two.
+    That warning existed because completing ``_PARTIAL_DEPENDENCIES`` let a
+    voucher whose type had no schema *reach* the chunk pass, where
+    ``analysis_profile`` read it under ``standard``: a narrative analysis, not
+    cycle evidence, and nothing about it said so. Trading a loud stop for a
+    silent downgrade would have been the worse of the two.
+
+    Under 4b.1 there is no shared stage left to fall through. Transaction
+    evidence has its own pass and its own readiness, and the prose pass excludes
+    it by category — so the downgrade is not reported, it is unreachable. This
+    pins that, because a regression here would silently analyse every voucher
+    twice under two vocabularies.
     """
-    ws, voucher = _voucher_workspace("Unstructured voucher")
+    ws, voucher = _voucher_workspace("Evidence stays out of prose")
     document_classification.assign(
         ws, voucher["id"], "goods_receipt", assigned_by="auditor", confidence="high"
     )
+    documents.extract_document(ws, voucher["id"])
+    scope = {"document_ids": [voucher["id"]], "document_scope_mode": "all"}
 
-    assert document_capabilities.analysis_profile(ws, voucher["id"]) == "standard"
-
-    warnings: list[str] = []
-
-    class _Adapter:
-        ws = None
-        run = {"document_analysis": {}}
-
-        def scope(self):
-            return SimpleNamespace(document_ids=[voucher["id"]], ambiguity=None)
-
-        def _title(self, _document_id):
-            return "GRN2024004.txt"
-
-        def warn(self, text):
-            warnings.append(text)
-
-        def save(self):
-            return None
-
-    adapter = _Adapter()
-    adapter.ws = ws
-    DocumentWorkflowExecution._warn_unstructured_vouchers(adapter)
-
-    assert len(warnings) == 1
-    assert "goods_receipt" in warnings[0]
-    assert "no induced schema" in warnings[0]
-    assert "not cycle evidence" in warnings[0]
+    assert document_capabilities._prose_documents(ws, scope) == []
+    assert document_capabilities._chunk_units(ws, scope) == []
+    assert [
+        unit.id.split(":")[-1]
+        for unit in document_capabilities._evidence_read_units(ws, scope)
+    ] == [voucher["id"]]
 
 
-def test_a_voucher_read_under_its_schema_is_not_warned_about():
-    ws, voucher = _voucher_workspace("Structured voucher")
-    document_classification.assign(
-        ws, voucher["id"], "goods_receipt", assigned_by="auditor", confidence="high"
-    )
-    document_schemas.save_schema(
-        ws,
-        "goods_receipt",
-        [{"name": "receipt_number", "role": "identifier", "value_type": "identifier"}],
-    )
+def test_planning_material_still_reaches_the_prose_pass():
+    """The other side of the same gate. Excluding by category, not by type."""
+    ws, policy = _policy_workspace("Policy stays prose")
+    documents.extract_document(ws, policy["id"])
+    scope = {"document_ids": [policy["id"]], "document_scope_mode": "all"}
 
-    assert document_capabilities.analysis_profile(ws, voucher["id"]) == "structured"
-
-    warnings: list[str] = []
-
-    class _Adapter:
-        ws = None
-        run = {"document_analysis": {}}
-
-        def scope(self):
-            return SimpleNamespace(document_ids=[voucher["id"]], ambiguity=None)
-
-        def _title(self, _document_id):
-            return "GRN2024004.txt"
-
-        def warn(self, text):
-            warnings.append(text)
-
-        def save(self):
-            return None
-
-    adapter = _Adapter()
-    adapter.ws = ws
-    DocumentWorkflowExecution._warn_unstructured_vouchers(adapter)
-
-    assert warnings == []
+    assert document_capabilities._prose_documents(ws, scope) == [policy["id"]]
+    assert document_capabilities._evidence_read_units(ws, scope) == []

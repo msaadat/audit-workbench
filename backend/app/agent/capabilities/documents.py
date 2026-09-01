@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from ... import (
     document_analysis,
     document_classification,
+    document_masters,
     document_media,
     document_schemas,
     document_types,
@@ -34,6 +35,7 @@ from ... import (
 )
 from ...text import counted, verb
 from ...workspaces import Workspace
+from ..context import presets
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import documents as documents_workflow
 
@@ -41,8 +43,8 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "documents.text_ready",
     "documents.categorized",
     "documents.types_classified",
-    "documents.schemas_sampled",
-    "documents.schemas_induced",
+    "documents.evidence_read",
+    "documents.schemas_stamped",
     "documents.analysis_chunks_ready",
     "documents.analysis_generated",
     "documents.analysis_reviewed",
@@ -104,38 +106,6 @@ def _planning_relevant(document: dict) -> bool:
     return not category or category in intake.PLANNING_DOCUMENT_CATEGORIES
 
 
-def analysis_profile(workspace: Workspace, document_id: str) -> str:
-    """The analysis profile one document's text chunks are mapped under.
-
-    ``structured`` for transaction evidence whose type has an induced schema.
-    There is no separate voucher profile any more: the fields such a document is
-    read under come from the schema rather than from a pack. Both halves are
-    load-bearing — the schema supplies the vocabulary, and the category says
-    this engagement holds the document as transaction evidence at all. A policy
-    that happens to share a type with vouchers is not read under their fields.
-
-    Everything else gets a narrative analysis — readable, citable, and not cycle
-    evidence — which is the honest description of what is known about it, and
-    the form planning consumes.
-    """
-
-    document = next(
-        (item for item in workspace.documents if str(item.get("id")) == document_id),
-        None,
-    )
-    if document is None:
-        return "standard"
-    if (
-        document_classification.category(workspace, document_id)
-        not in intake.EVIDENCE_DOCUMENT_CATEGORIES
-    ):
-        return "standard"
-    document_type = document_classification.document_type(workspace, document_id)
-    if document_type and document_schemas.load_schema(workspace, document_type):
-        return "structured"
-    return "standard"
-
-
 def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
     """Resolve the document workflow scope for its owning route.
 
@@ -190,7 +160,7 @@ def corpus_scope(workspace: Workspace, scope: dict) -> DocumentScope:
     it. But the cheap stages ahead of it were bounded by the same rule, and
     ``_planning_relevant`` is disjoint from the evidence category by construction
     — so an audit run extracted no evidence text, classified no evidence, induced
-    no schema, and ``documents.schemas_induced`` reported satisfied having
+    no schema, and ``documents.schemas_stamped`` reported satisfied having
     induced nothing. Both Phase 8 edges into ``planning.rcm_ready`` were then
     satisfied by an empty vocabulary, and the RCM was written against fields no
     document stated.
@@ -220,6 +190,108 @@ def scoped_documents(workspace: Workspace, scope: dict) -> list[dict]:
 
 def _forced(scope: dict) -> bool:
     return str(scope.get("generation_mode") or "") == "force"
+
+
+#: What a forced run is allowed to do to a type's vocabulary. ``force`` has to
+#: split, because under a master the one button that exists today is being asked
+#: two different questions and can only answer one of them.
+#:
+#: The old scoping trick — re-derive only the targeted documents' own types —
+#: rested on a schema coming from a *sample*, which made re-deriving one type a
+#: couple of documents' work. A master comes from every document of the type, in
+#: order, so "re-read this document" and "possibly move the vocabulary" are no
+#: longer separable and there is nothing left for the trick to scope.
+#: Three, not two, and the third is the ordinary one. ``accumulate`` is what an
+#: unforced pass does: the master grows as the type is read, which is the whole
+#: mechanism. The other two are the two halves ``force`` had to split into.
+VOCABULARY_MODES = ("accumulate", "frozen", "rebuild")
+
+
+def vocabulary_mode(scope: dict) -> str:
+    """What this pass may do to a type's vocabulary.
+
+    ``accumulate``          the ordinary read. A document states something the
+                            master has no place for and the master takes the
+                            field. Additions are monotone and cannot invalidate
+                            an earlier reading.
+    ``frozen``              ``refresh``. The targeted documents are re-read under
+                            exactly the vocabulary their siblings were read
+                            under, so nothing about them is disturbed and the
+                            action stays cheap by construction. Its *refusal* is
+                            the useful part: a refresh is asked for because
+                            something looks wrong, and one thing that can be
+                            wrong is that the master has no place for what this
+                            document states — which a frozen re-read cannot fix
+                            and would otherwise fail at silently, reading the
+                            document a second time under the same blind spot.
+    ``rebuild``             ``revise_vocabulary``. An ordinary read pass over a
+                            narrower corpus, from the start in order, which is
+                            what keeps ``introduced_at`` meaningful and the
+                            sweep bounded. Appending instead would leave indices
+                            that no longer describe what any document was asked.
+
+    An unforced run is always ``accumulate``: a first pass has nothing to freeze,
+    and treating it as frozen would refuse every field the corpus states and
+    stamp an empty vocabulary.
+    """
+
+    if not _forced(scope):
+        return "accumulate"
+    value = str(scope.get("vocabulary_mode") or "frozen")
+    return value if value in VOCABULARY_MODES else "frozen"
+
+
+def _rebuilding(scope: dict) -> bool:
+    return vocabulary_mode(scope) == "rebuild"
+
+
+def _revision_types(workspace: Workspace, scope: dict) -> set[str] | None:
+    """The types a forced run may move, or None for "every type in scope".
+
+    ``_pending_types`` computed exactly this set and used it to scope schema
+    *derivation*; ``revise_vocabulary`` feeds it back into the *document* scope
+    instead — every document of those types — which is what makes the expensive
+    action expensive in the honest way rather than a small button quietly doing
+    it.
+    """
+
+    if not _forced(scope):
+        return None
+    requested = _requested_ids(scope)
+    if not requested:
+        return None
+    inducible = set(document_classification.types_for_induction(workspace))
+    return {
+        document_classification.document_type(workspace, document_id)
+        for document_id in requested
+    } & inducible
+
+
+def _revision_documents(workspace: Workspace, scope: dict) -> set[str] | None:
+    """Which documents a forced read re-reads, or None for the whole scope.
+
+    A refresh re-reads the documents it was pointed at and no others. A
+    ``revise_vocabulary`` widens to every document of their types, because a
+    master is rebuilt from the pass rather than patched — and re-reading
+    eighteen payment instructions to fix one document's vocabulary is what the
+    repair actually costs. Neither action surprises anyone: one is a document,
+    one is a type, and the expensive one is only ever reached deliberately.
+    """
+
+    if not _forced(scope):
+        return None
+    requested = _requested_ids(scope)
+    if not requested:
+        return None
+    if not _rebuilding(scope):
+        return set(requested)
+    types = _revision_types(workspace, scope) or set()
+    return {
+        str(document.get("id"))
+        for document in workspace.documents
+        if document_classification.document_type(workspace, str(document.get("id")))
+        in types
+    } | set(requested)
 
 
 def _unknown_documents(document_scope: DocumentScope) -> Readiness | None:
@@ -334,16 +406,15 @@ def analysis_unit_specs(
         item for item in workspace.documents if str(item.get("id")) == document_id
     )
     text_chunks = chunk_specs(workspace, document_id, scope)
-    # Which profile a text chunk is mapped under is a property of the document,
-    # not of the chunk. A document whose type has an induced schema is extracted
-    # against those fields; everything else is read as prose. The structured
-    # profile returns fields and audit notes and has its summary rendered
-    # locally, because those facts are already exact.
-    text_kind = (
-        "document_structured_analysis"
-        if analysis_profile(workspace, document_id) == "structured"
-        else "document_chunk_analysis"
-    )
+    # There is one text kind left. ``analysis_profile`` asked two questions — is
+    # this document transaction evidence, and does its type have a schema — and
+    # routed to the structured profile only when both said yes. The second
+    # disappears under 4b.1: a schema is now an *output* of reading the evidence
+    # rather than an input to it, so there is nothing to ask at routing time.
+    # And the first moves to ``evidence_read``'s unit generation, where it is the
+    # only question asked — this pass carries planning prose, which needs no
+    # vocabulary, and excludes transaction evidence in both modalities.
+    text_kind = "document_chunk_analysis"
     by_page: dict[int, list[dict]] = {}
     for chunk in text_chunks:
         by_page.setdefault(int(chunk["page"]), []).append(
@@ -764,139 +835,324 @@ def _documents_types_classified() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
-# documents.schemas_sampled / documents.schemas_induced
+# documents.evidence_read / documents.schemas_stamped (4b.1)
 # --------------------------------------------------------------------------- #
 #
-# Two capabilities, not one, and for a reason that is easy to get wrong: units
-# within a stage execute in sorted *id* order, never declaration order. A single
-# capability holding both the sample readings and the freeze that consumes them
-# would bind the freeze first — ``document_schema:x`` sorts before
-# ``document_schema_sample:x:y`` — and it would read back nothing. The map/reduce
-# split is what makes the ordering a dependency edge the scheduler honours,
-# exactly as chunk analysis and its reduction already do.
-def _sampled_ready(workspace: Workspace, scope: dict) -> Readiness:
-    """Sample readings are run-local, so readiness is the outcome they feed.
+# One sequential unit per evidence document, then one stamp per type. Two
+# capabilities rather than one, for the reason induction already paid for: units
+# within a stage execute in sorted *id* order, so a capability holding both the
+# readings and the freeze binds the freeze first — ``document_schema:x`` sorts
+# before ``document_schema_sample:x:y`` because ``:`` precedes ``_`` — and reads
+# back nothing. Making the stamp a dependent capability is what makes the
+# ordering something the scheduler honours rather than something a sort order
+# has to be trusted for.
+def evidence_read_text(workspace: Workspace, document_id: str) -> str:
+    """The whole document's text, in page order, bounded by the read's window.
 
-    A reading is an input to the frozen schema and never a durable record of its
-    own, so the only thing outside the run that can show the sampling happened is
-    the schema itself. The scheduler's durable unit state — not a workspace
-    probe — is what stops a resumed run from re-reading a sample it already paid
-    for.
+    Not ``induction_text``: that is a 3-page, 12,000-character sample window, and
+    a read that produces citations across a document needs the document. The
+    bound is applied by :func:`read_over_window`, which reports rather than
+    truncating — a citation binds to text the worker saw, and a master built
+    from a clipped document would record absence for pages nobody read.
     """
 
-    awaiting = document_classification.types_awaiting_schema(workspace)
-    details = {"types_awaiting_schema": awaiting}
-    if not awaiting:
+    extracted = analyzable(workspace, document_id)
+    if extracted is None:
+        return ""
+    pages = sorted(
+        (page for page in (extracted.get("pages") or []) if page.get("text")),
+        key=lambda page: int(page.get("page") or 0),
+    )
+    return "\n\n".join(str(page.get("text") or "").strip() for page in pages).strip()
+
+
+def evidence_read_pages(workspace: Workspace, document_id: str) -> list[int]:
+    extracted = analyzable(workspace, document_id)
+    if extracted is None:
+        return []
+    return sorted(
+        int(page.get("page") or 0)
+        for page in (extracted.get("pages") or [])
+        if page.get("text")
+    )
+
+
+def evidence_read_media(
+    workspace: Workspace, document_id: str, scope: dict
+) -> list[dict]:
+    """The document's visually-routed pages, as prepared-media specs.
+
+    Page routing is independent of the text profile: ``_visual_page`` sends a
+    page to images when the source is a standalone image, when the page is
+    ``image_only``, when a PDF page has ``no_usable_text_no_image``, or when the
+    auditor asked for full coverage — and ``chunk_specs`` then *excludes* those
+    pages from the text. So a scanned page contributes no text at all, and a
+    text-only read of a mostly-digital PDF misses exactly the page a stamp or a
+    countersignature is on.
+
+    The same specs ``analysis_unit_specs`` builds, so ``prepared_set_identity``
+    travels with them: re-preparing a page moves the read's ``input_sha1`` and
+    the document is read again rather than being reduced under images it never
+    saw.
+    """
+
+    return [
+        spec
+        for spec in analysis_unit_specs(workspace, document_id, scope)
+        if spec.get("kind") == "document_visual_page_analysis"
+        and not spec.get("unsupported_reason")
+    ]
+
+
+def read_over_window(
+    workspace: Workspace, document_id: str, scope: dict
+) -> str | None:
+    """Why this document exceeds the read's bound, or None.
+
+    One rule covers both halves, which is the point: the read either saw the
+    document or it says it did not. A document over either bound is reported
+    rather than silently truncated — the same rule the chunk budgets already
+    keep, and the property that makes absence in a master mean *the document
+    does not state this*.
+    """
+
+    characters = len(evidence_read_text(workspace, document_id))
+    if characters > presets.EVIDENCE_READ_CHARACTERS:
+        return (
+            f"This document carries {characters:,} characters, above the "
+            f"{presets.EVIDENCE_READ_CHARACTERS:,} one reading covers. It is "
+            "reported rather than read in part, because a vocabulary built from "
+            "half a document records absence for pages nobody read."
+        )
+    media = evidence_read_media(workspace, document_id, scope)
+    if len(media) > presets.EVIDENCE_READ_VISUAL_MEDIA:
+        return (
+            f"This document routes {len(media)} page images to a single reading, "
+            f"above the {presets.EVIDENCE_READ_VISUAL_MEDIA} one call carries."
+        )
+    return None
+
+
+def has_evidence_reading(workspace: Workspace, document_id: str) -> bool:
+    """Whether the read is done with this document.
+
+    A third state, and it has to exist. ``has_usable_analysis`` asks two
+    questions — does the stored ``schema_ref`` still match the live schema, and
+    does the type stamped on it still match the assignment — and an *unstamped*
+    reading has no ``schema_ref`` to answer either with. It is therefore not
+    "usable" by that test, correctly: it is a reading and not yet evidence. But
+    a read whose units were generated from that test would re-read every
+    document on each re-expansion within the same run.
+
+    So: a reading exists when a structured analysis carries either a master
+    reference (read, awaiting its type's stamp) or a current schema stamp (read
+    and stamped). Both mean the same thing to the *read* — this document has
+    been read under the vocabulary its siblings are being read under.
+    """
+
+    record = document_analysis.generated_record(workspace, document_id)
+    if record is None:
+        return False
+    if str(record.get("analysis_profile") or "") != "structured":
+        return False
+    document_type = document_classification.document_type(workspace, document_id)
+    if str(record.get("master_ref") or ""):
+        # Read, awaiting its type's stamp — but only if it was read under the
+        # type this document now carries. A retype leaves the reading perfectly
+        # present and made against the wrong vocabulary, which is the same
+        # half-applied correction ``is_current_for`` exists to catch one stage
+        # later.
+        return str(record.get("master_type") or "") == str(document_type or "")
+    return document_schemas.is_current_for(
+        workspace, record.get("schema_ref"), document_type
+    )
+
+
+def _readable_evidence(workspace: Workspace, scope: dict) -> list[str]:
+    """Evidence documents this run reads, in type-then-document order.
+
+    Both gates, the pair Phase 9 restored. Category says whether the engagement
+    holds the document as transaction evidence; type says what it is. An
+    approval matrix is genuinely a ``delegation_of_authority`` and genuinely
+    still policy, and only one of those was once being asked.
+
+    ``other`` is excluded here and lands in 4b.2, which coins a type for it. It
+    is a transient state — a document is ``other`` until something reads it and
+    names it — not a terminal one.
+    """
+
+    # ``revise_vocabulary`` widens the document scope to whole types, which is
+    # the honest price of rebuilding a vocabulary and the thing the action exists
+    # to make deliberate. Every other pass reads what it was scoped to.
+    widened = _revision_documents(workspace, scope) if _rebuilding(scope) else None
+    scoped = widened or set(corpus_scope(workspace, scope).document_ids)
+    return [
+        str(document.get("id"))
+        for document in document_classification.transaction_evidence(workspace)
+        if str(document.get("id")) in scoped
+        and document_classification.is_classified(workspace, str(document.get("id")))
+        and not document_classification.is_other(workspace, str(document.get("id")))
+        and analyzable(workspace, str(document.get("id"))) is not None
+    ]
+
+
+def _evidence_read_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Every evidence document in scope has been read under its type's master."""
+
+    document_scope = corpus_scope(workspace, scope)
+    blocked = _unknown_documents(document_scope)
+    if blocked is not None:
+        return blocked
+    documents = _readable_evidence(workspace, scope)
+    pending = [
+        document_id
+        for document_id in documents
+        if not has_evidence_reading(workspace, document_id)
+    ]
+    details = {
+        "evidence": len(documents),
+        "read": len(documents) - len(pending),
+        "types": document_classification.types_for_induction(workspace),
+    }
+    if not pending:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
         (
-            f"{counted(len(awaiting), 'document type')} "
-            f"{verb(len(awaiting), 'has', 'have')} no sampled fields",
+            f"{counted(len(pending), 'evidence document')} "
+            f"{verb(len(pending), 'has', 'have')} not been read",
         ),
         details=details,
     )
 
 
-def _pending_types(workspace: Workspace, scope: dict) -> list[str]:
-    """The types this run samples and freezes a schema for.
+def _evidence_read_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per evidence document, keyed ``<type>:<document>``.
 
-    Forcing re-derives, but only for the types the run was actually asked about.
-    Re-deriving every type in the workspace is what a one-document ``refresh``
-    used to do: on an 84-document engagement it spent a budget sized for one
-    document's chunks on re-sampling schemas it was never pointed at, failed on
-    the turn limit before reaching the analysis, and bumped every schema a
-    version — orphaning 68 completed extractions as ``stale_schema_reference``.
-    Scoping it makes the small-target case do what its button says while a
-    whole-workspace refresh still re-derives the whole workspace, because then
-    every type *is* a targeted type.
-
-    Types with no schema at all stay in scope whether or not they were targeted.
-    Nothing is orphaned by inducing what does not exist yet, and this is the
-    only path that fills the gap ``schemas_induced`` reports.
-    """
-
-    awaiting = document_classification.types_awaiting_schema(workspace)
-    if not _forced(scope):
-        return awaiting
-    inducible = set(document_classification.types_for_induction(workspace))
-    targeted = {
-        document_classification.document_type(workspace, document_id)
-        for document_id in resolve_document_scope(workspace, scope).document_ids
-    }
-    return sorted(set(awaiting) | (targeted & inducible))
-
-
-def _sample_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    """One unit per sampled document, read independently of its siblings.
-
-    Handing one worker every sample at once would produce a tidier answer and
-    destroy the only signal worth having: whether documents of this type actually
-    agree about what fields they carry.
+    Units execute in sorted id order, so keying the type first puts a type's
+    documents in one contiguous run for free — which is what lets the master
+    accumulate in a sensible order and bounds the late-field sweep. The
+    contiguity is a convenience, not the stamp's correctness condition: the
+    stamp is a dependent capability and runs after the whole stage settles.
     """
 
     known = {str(item.get("id")): item for item in workspace.documents}
+    forced = _forced(scope)
+    targeted = _revision_documents(workspace, scope)
     units: list[UnitSpec] = []
-    for document_type in _pending_types(workspace, scope):
-        for document_id in document_classification.sample_for_induction(
-            workspace, document_type
-        ):
-            units.append(
-                UnitSpec(
-                    semantic_unit_id(
-                        "document_schema_sample", document_type, document_id
-                    ),
-                    "document_schema_sample",
-                    f"Read fields — {known[document_id].get('title') or document_id}",
-                    (f"document:{document_id}",),
-                    {
-                        "document_type": document_type,
-                        "document_id": document_id,
-                        "title": str(known[document_id].get("title") or ""),
-                        "text": document_classification.induction_text(
-                            workspace, document_id
-                        ),
-                    },
-                )
+    for document_id in _readable_evidence(workspace, scope):
+        if not forced and has_evidence_reading(workspace, document_id):
+            continue
+        if forced and targeted is not None and document_id not in targeted:
+            continue
+
+        document_type = document_classification.document_type(workspace, document_id)
+        master = document_masters.master(workspace, document_type)
+        units.append(
+            UnitSpec(
+                semantic_unit_id("evidence_read", document_type, document_id),
+                "document_evidence_read",
+                f"Read evidence — {known[document_id].get('title') or document_id}",
+                (f"document:{document_id}",),
+                {
+                    "document_type": document_type,
+                    "document_id": document_id,
+                    "title": str(known[document_id].get("title") or ""),
+                    # The vocabulary this document is read against travels on the
+                    # input, so a master that moved while its siblings were read
+                    # moves this unit's ``input_sha1`` and the document is read
+                    # again rather than reduced under names it never saw.
+                    "master_ref": str(master.get("master_ref") or ""),
+                    "vocabulary_mode": vocabulary_mode(scope),
+                },
             )
+        )
     return units
 
 
-def _documents_schemas_sampled() -> Capability:
+def _documents_evidence_read() -> Capability:
     return Capability(
-        "documents.schemas_sampled",
-        "document_schemas",
-        "Document field readings",
-        "document_schema_sample",
-        documents_workflow.dependencies("documents.schemas_sampled"),
-        _sampled_ready,
-        _sample_units,
-        context={"document_schema_sample": "documents.schema_sample"},
-        # Independent of one another and never committing — the same grounds the
-        # chunk capability qualifies on.
-        barrier="all_settled_parallel",
+        "documents.evidence_read",
+        "document_masters",
+        "Evidence readings",
+        "document_evidence_read",
+        documents_workflow.dependencies("documents.evidence_read"),
+        _evidence_read_ready,
+        _evidence_read_units,
+        context={"document_evidence_read": "documents.evidence_read"},
+        # SEQUENTIAL, and this one is the mechanism rather than a concession.
+        # A serialized unit sees its predecessor's work by rebinding against
+        # committed workspace state; the parallel path binds every unit before
+        # running any of them, so a unit's input is resolved at stage start and
+        # can never see what a sibling settled. Per-document calls can only agree
+        # about a vocabulary if they are not independent — which is why "make the
+        # read parallel and lock the master" is not an option: the reads would
+        # not be wrong about the master, they would never have been shown it.
         invalidate_on=("documents",),
     )
 
 
-def _schemas_ready(workspace: Workspace, scope: dict) -> Readiness:
-    """Every type the engagement's transaction evidence carries has a schema.
+def _types_awaiting_stamp(workspace: Workspace, scope: dict) -> list[str]:
+    """Types carrying a master whose vocabulary is not yet a schema.
 
-    Measured against the types those documents actually carry, not the catalog
-    and not every type present: a type nothing carries needs no schema, and a
-    type only planning material carries needs none either. An engagement whose
-    documents are all still unidentified therefore has nothing to induce and is
-    satisfied, which is correct — the gap it has is a classification gap, and
-    that capability reports it.
+    ``types_awaiting_schema``'s counterpart: same shape, different predicate.
+    A type is stamped when every document of it has been read, which the
+    capability edge — not this list — is what guarantees.
     """
 
-    awaiting = document_classification.types_awaiting_schema(workspace)
-    induced = document_schemas.list_schemas(workspace)
+    targeted = _revision_types(workspace, scope)
+    return [
+        document_type
+        for document_type in document_masters.types_with_master(workspace)
+        if (targeted is None or document_type in targeted)
+        and (
+            _forced(scope)
+            or document_schemas.load_schema(workspace, document_type) is None
+            or not _stamp_current(workspace, document_type)
+        )
+    ]
+
+
+def _stamp_current(workspace: Workspace, document_type: str) -> bool:
+    """Whether the stored schema already says what the master says.
+
+    ``save_schema`` is a no-op when the meaning has not moved, so a stamp that
+    runs anyway costs nothing and bumps nothing — but expanding a unit for it on
+    every re-expansion would make the capability never settle.
+    """
+
+    schema = document_schemas.load_schema(workspace, document_type)
+    if schema is None:
+        return False
+    master = document_masters.master(workspace, document_type)
+    return str(schema.get("schema_hash") or "") == document_schemas.canonical_sha256(
+        document_schemas.meaning(
+            document_type,
+            document_schemas.validate_fields(document_masters.schema_fields(master)),
+        )
+    )
+
+
+def _schemas_stamped_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Every type the corpus's evidence carries has a current schema.
+
+    Measured against the types those documents actually carry, exactly as the
+    induced-schema readiness was: a type nothing carries needs no schema, and a
+    type only planning material carries needs none either.
+    """
+
+    inducible = document_classification.types_for_induction(workspace)
+    awaiting = [
+        document_type
+        for document_type in inducible
+        if document_schemas.load_schema(workspace, document_type) is None
+    ]
+    stamped = document_schemas.list_schemas(workspace)
     details = {
-        "types_for_induction": document_classification.types_for_induction(workspace),
-        "induced": len(induced),
+        "types_for_induction": inducible,
+        "stamped": len(stamped),
         "low_confidence": [
-            record["document_type"] for record in induced if record.get("low_confidence")
+            record["document_type"] for record in stamped if record.get("low_confidence")
         ],
     }
     if awaiting:
@@ -904,61 +1160,89 @@ def _schemas_ready(workspace: Workspace, scope: dict) -> Readiness:
             "missing",
             (
                 f"{counted(len(awaiting), 'document type')} "
-                f"{verb(len(awaiting), 'has', 'have')} no induced schema",
+                f"{verb(len(awaiting), 'has', 'have')} no stamped schema",
             ),
             details=details,
         )
     return Readiness("satisfied", details=details)
 
 
-def _schema_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    """One freeze unit per document type, parented to its own samples."""
+def _schemas_stamped_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per type carrying a master with no current schema.
 
-    units: list[UnitSpec] = []
-    for document_type in _pending_types(workspace, scope):
-        samples = document_classification.sample_for_induction(workspace, document_type)
-        if not samples:
-            continue
-        units.append(
-            UnitSpec(
-                semantic_unit_id("document_schema", document_type),
-                "document_schema_freeze",
-                f"Settle schema — {document_types.label(document_type)}",
-                tuple(f"document:{document_id}" for document_id in samples),
-                {"document_type": document_type, "sample_document_ids": list(samples)},
-            )
+    Keyed ``document_schema:<type>`` — the same id the freeze used — so the
+    executor's artifact ref, its postcondition and every receipt keyed on it
+    keep their meaning across the change.
+    """
+
+    return [
+        UnitSpec(
+            semantic_unit_id("document_schema", document_type),
+            "document_schema_stamp",
+            f"Stamp vocabulary — {document_types.label(document_type)}",
+            tuple(
+                f"document:{document_id}"
+                for document_id in document_masters.master(
+                    workspace, document_type
+                ).get("documents_read")
+                or []
+            ),
+            {"document_type": document_type},
         )
-    return units
+        for document_type in _types_awaiting_stamp(workspace, scope)
+    ]
+
+
+def _documents_schemas_stamped() -> Capability:
+    return Capability(
+        "documents.schemas_stamped",
+        "document_schemas",
+        "Document schemas",
+        "document_schema_stamp",
+        documents_workflow.dependencies("documents.schemas_stamped"),
+        _schemas_stamped_ready,
+        _schemas_stamped_units,
+        # No model turn. The stamp reads the finished master, calls
+        # ``save_schema`` once, and back-stamps the type's readings — all through
+        # ``commit_local``, the shape the freeze binder already used when its
+        # samples agreed.
+        context=None,
+        invalidate_on=("documents",),
+    )
 
 
 def preparation_model_turns(workspace: Workspace, scope: dict) -> int:
     """Model turns the stages *before* analysis will spend for this scope.
 
-    Classification, schema sampling and the freeze that consumes them each call
-    the model once per unit, and none of that was in the document budget: it was
-    sized from chunks and documents alone, so every preparation turn was spent
-    against an allowance that had not counted it. On a one-document ``refresh``
-    that was the whole failure — seven turns, six of them gone on schema work,
-    and the analysis it was asked for never reached.
+    These were model-backed stages of the same workflow sitting entirely outside
+    the document budget's arithmetic, which was sized from chunks and documents
+    alone. On a one-document refresh that was the whole failure: seven turns, six
+    of them gone on schema work, and the analysis it was asked for never reached.
 
-    Counted rather than expanded. The unit builders carry each document's
-    classification and induction text with them, and a budget has no use for it.
+    Under 4b.1 the terms move in both directions and leaving it stale reproduces
+    the failure it was written for. Categorization is unchanged. The sample pass
+    and its reconcile call are gone; in their place is a turn for *every*
+    evidence document, which is a much larger number. The stamp adds nothing —
+    it takes no model turn at all. And the analysis budget that follows shrinks,
+    because evidence documents leave the chunk path entirely: their reading is
+    the extraction pass.
+
+    Counted rather than expanded. The unit builders carry each document's text
+    with them, and a budget has no use for it.
     """
 
     document_scope = resolve_document_scope(workspace, scope)
     scoped = set(document_scope.document_ids)
+    evidence_ids = {
+        str(document.get("id"))
+        for document in document_classification.transaction_evidence(workspace)
+    }
     if _forced(scope):
         # Forcing widens which documents are re-asked, not what the question
         # applies to: ``_classified_units`` re-classifies scoped transaction
         # evidence and leaves prose alone, so counting the whole scope here
         # would buy turns for units that are never expanded.
-        classifications = len(
-            scoped
-            & {
-                str(document.get("id"))
-                for document in document_classification.transaction_evidence(workspace)
-            }
-        )
+        classifications = len(scoped & evidence_ids)
     else:
         classifications = len(
             {
@@ -970,32 +1254,73 @@ def preparation_model_turns(workspace: Workspace, scope: dict) -> int:
                 if document_id in scoped
             }
         )
-    samples = 0
-    freezes = 0
-    for document_type in _pending_types(workspace, scope):
-        picked = document_classification.sample_for_induction(workspace, document_type)
-        samples += len(picked)
-        freezes += 1 if picked else 0
-    return classifications + samples + freezes
-
-
-def _documents_schemas_induced() -> Capability:
-    return Capability(
-        "documents.schemas_induced",
-        "document_schemas",
-        "Document schemas",
-        "document_schema_reconcile",
-        documents_workflow.dependencies("documents.schemas_induced"),
-        _schemas_ready,
-        _schema_units,
-        context={"document_schema_freeze": "documents.schema_reconcile"},
-        invalidate_on=("documents",),
-    )
+    # One per evidence document the read will expand for. ``revise_vocabulary``
+    # widens this to the targeted documents' whole types, which is exactly the
+    # honesty the split is for: re-reading eighteen payment instructions to fix
+    # one document's vocabulary is expensive, and it is what the repair costs.
+    readings = len(_evidence_read_units(workspace, scope))
+    # The stamp is deliberately absent. It reads the finished master, calls
+    # ``save_schema``, and back-stamps — no model sees any of it.
+    return classifications + readings
 
 
 # --------------------------------------------------------------------------- #
 # documents.analysis_chunks_ready (P9.4 / P9.5)
 # --------------------------------------------------------------------------- #
+def _prose_documents(workspace: Workspace, scope: dict) -> list[str]:
+    """The documents this pass analyses: everything that is not evidence.
+
+    ``analysis_chunks_ready`` carries planning prose under 4b.1, and transaction
+    evidence has its own pass in both modalities — text chunks and visual pages
+    alike. Leaving evidence here would analyse it twice under two vocabularies,
+    which is the drift the read removes, relocated.
+
+    The exclusion is by *category*, which is the gate Phase 9 restored and the
+    one this capability still needs. A document the engagement does not hold as
+    transaction evidence is prose whatever its type says it is: an approval
+    matrix is genuinely a ``delegation_of_authority`` and genuinely still policy,
+    and routing it to a record dump replaces the narrative planning consumes.
+
+    **An uncategorized document is not prose — it is undecided, and it expands
+    to nothing.** Treating a blank category as "not evidence" is the inverse of
+    the default ``_planning_relevant`` takes, and it has to be, because
+    ``ensure_stage_units`` only ever *adds* units: a stage expanded before
+    ``documents.categorized`` has run keeps whatever it materialized then, and
+    re-expansion cannot withdraw it. Measured on the treasury corpus: at routing
+    time nothing carried a category, all nine documents looked like prose, nine
+    chunk units were written into the stage, and their reductions later
+    overwrote all eight structured readings with narrative ones — a document
+    read twice under two vocabularies, with the second silently winning. The
+    capability's dependency on ``documents.categorized`` is what makes expanding
+    to nothing safe: by the time it legitimately runs, every document has an
+    answer.
+    """
+
+    classifiable = {
+        str(document.get("id"))
+        for document in document_classification.classifiable(workspace)
+    }
+    prose: list[str] = []
+    for document_id in resolve_document_scope(workspace, scope).document_ids:
+        category = document_classification.category(workspace, document_id)
+        if category:
+            if category not in intake.EVIDENCE_DOCUMENT_CATEGORIES:
+                prose.append(document_id)
+            continue
+        if document_service.cached_extraction(workspace, document_id) is None:
+            # Text has not been extracted yet, so the category question has not
+            # been *asked*. Undecided, and it expands to nothing.
+            continue
+        if document_id not in classifiable:
+            # Extracted, and carries no page-one text to read a category from —
+            # an image-only PDF, a PNG, a failed extraction. It will never be
+            # categorized, so the question is settled rather than pending, and
+            # excluding it here would leave it analysed by nothing at all. Its
+            # visual pages are exactly what this pass still handles.
+            prose.append(document_id)
+    return prose
+
+
 def _chunks_ready(workspace: Workspace, scope: dict) -> Readiness:
     """Chunk maps are run-local, so readiness is the outcome they feed.
 
@@ -1010,16 +1335,18 @@ def _chunks_ready(workspace: Workspace, scope: dict) -> Readiness:
     blocked = _unknown_documents(document_scope)
     if blocked is not None:
         return blocked
+    prose = _prose_documents(workspace, scope)
     pending = [
         document_id
-        for document_id in document_scope.document_ids
+        for document_id in prose
         if not has_usable_analysis(workspace, document_id)
         and analyzable(workspace, document_id) is not None
         and bool(analysis_unit_specs(workspace, document_id, scope))
     ]
     details = {
-        "documents": len(document_scope.document_ids),
+        "documents": len(prose),
         "unanalyzed": len(pending),
+        "evidence_excluded": len(document_scope.document_ids) - len(prose),
     }
     if not pending:
         return Readiness("satisfied", details=details)
@@ -1038,11 +1365,10 @@ def _chunk_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     stage that materialized empty at routing time fans out for real once its
     prerequisite has run.
     """
-    document_scope = resolve_document_scope(workspace, scope)
     known = {str(item.get("id")): item for item in workspace.documents}
     forced = _forced(scope)
     units: list[UnitSpec] = []
-    for document_id in document_scope.document_ids:
+    for document_id in _prose_documents(workspace, scope):
         if not forced and has_usable_analysis(workspace, document_id):
             continue
         title = known[document_id].get("title") or document_id
@@ -1122,9 +1448,15 @@ def _generated_ready(workspace: Workspace, scope: dict) -> Readiness:
     blocked = _unknown_documents(document_scope)
     if blocked is not None:
         return blocked
+    # Prose only. Transaction evidence has its own pass, which commits the same
+    # analysis artifact directly rather than reducing chunk proposals into one —
+    # and a reading that is not yet stamped has no ``schema_ref``, so counting it
+    # here would leave this outcome permanently unmet and block planning behind a
+    # reduction that is never going to run.
+    prose = _prose_documents(workspace, scope)
     analyzed = [
         document_id
-        for document_id in document_scope.document_ids
+        for document_id in prose
         if has_usable_analysis(workspace, document_id)
     ]
     # A document with no extractable text is deliberately *not* treated as
@@ -1133,12 +1465,17 @@ def _generated_ready(workspace: Workspace, scope: dict) -> Readiness:
     # whole point of scoping the document into the request.
     pending = [
         document_id
-        for document_id in document_scope.document_ids
+        for document_id in prose
         if document_id not in analyzed
     ]
     details = {
-        "documents": len(document_scope.document_ids),
+        "documents": len(prose),
         "generated": len(analyzed),
+        "evidence_read": sum(
+            1
+            for document_id in document_scope.document_ids
+            if document_id not in prose and has_evidence_reading(workspace, document_id)
+        ),
     }
     if not pending:
         return Readiness("satisfied", details=details)
@@ -1150,7 +1487,6 @@ def _generated_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 
 def _generated_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    document_scope = resolve_document_scope(workspace, scope)
     known = {str(item.get("id")): item for item in workspace.documents}
     forced = _forced(scope)
     return [
@@ -1161,7 +1497,7 @@ def _generated_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             (f"document:{document_id}",),
             {"document_id": document_id},
         )
-        for document_id in document_scope.document_ids
+        for document_id in _prose_documents(workspace, scope)
         if forced or not has_usable_analysis(workspace, document_id)
     ]
 
@@ -1267,8 +1603,8 @@ _BUILDERS = {
     "documents.text_ready": _documents_text_ready,
     "documents.categorized": _documents_categorized,
     "documents.types_classified": _documents_types_classified,
-    "documents.schemas_sampled": _documents_schemas_sampled,
-    "documents.schemas_induced": _documents_schemas_induced,
+    "documents.evidence_read": _documents_evidence_read,
+    "documents.schemas_stamped": _documents_schemas_stamped,
     "documents.analysis_chunks_ready": _documents_analysis_chunks_ready,
     "documents.analysis_generated": _documents_analysis_generated,
     "documents.analysis_reviewed": _documents_analysis_reviewed,
@@ -1293,11 +1629,18 @@ __all__ = [
     "analyzable",
     "analysis_unit_specs",
     "capabilities",
+    "VOCABULARY_MODES",
     "chunk_specs",
+    "evidence_read_media",
+    "evidence_read_pages",
+    "evidence_read_text",
+    "has_evidence_reading",
     "has_generated_analysis",
     "has_usable_analysis",
     "preparation_model_turns",
     "page_limit",
+    "read_over_window",
+    "vocabulary_mode",
     "visual_page_limit",
     "resolve_document_scope",
     "scoped_documents",

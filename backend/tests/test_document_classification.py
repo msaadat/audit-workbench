@@ -241,7 +241,7 @@ def test_types_present_excludes_other(ws):
     assert len(dc.documents_of_type(ws, "vendor_invoice")) == 2
 
 
-def test_induction_expands_over_transaction_evidence_only(ws):
+def test_the_read_expands_over_transaction_evidence_only(ws):
     """A procurement policy is a correct ``delegation_of_authority`` and is still
     prose to this engagement.
 
@@ -262,14 +262,13 @@ def test_induction_expands_over_transaction_evidence_only(ws):
 
     # Classification reports both, because both are true.
     assert dc.types_present(ws) == ["delegation_of_authority", "vendor_invoice"]
-    # Induction expands over one.
+    # The read expands over one.
     assert dc.types_for_induction(ws) == ["vendor_invoice"]
     assert dc.types_awaiting_schema(ws) == ["vendor_invoice"]
-    assert dc.sample_for_induction(ws, "delegation_of_authority") == []
 
 
-def test_a_type_carried_only_by_planning_material_is_never_sampled(ws):
-    """Not merely deprioritized: the sample is what freezes the schema, so a
+def test_a_type_carried_only_by_planning_material_is_never_read(ws):
+    """Not merely deprioritized: the read is what builds the vocabulary, so a
     planning copy contributing fields would put them in front of every rule
     written against that type."""
 
@@ -279,7 +278,8 @@ def test_a_type_carried_only_by_planning_material_is_never_sampled(ws):
         category="minutes",
     )
     dc.assign(ws, minutes["id"], "board_minutes", assigned_by="model")
-    assert dc.sample_for_induction(ws, "board_minutes") == []
+    assert dc.types_for_induction(ws) == []
+    assert dc.types_awaiting_schema(ws) == []
     assert "board_minutes" not in dc.types_for_induction(ws)
 
 

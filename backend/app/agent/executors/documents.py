@@ -20,13 +20,17 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from collections.abc import Sequence
+
 from ... import (
     cycle_vouching,
     document_analysis,
     document_classification,
+    document_masters,
     document_schemas,
     documents as document_service,
 )
+from ..capabilities import documents as document_capabilities
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError
 from .model import (
@@ -41,7 +45,8 @@ from .model import (
 ANALYSIS_EXECUTOR_ID = "documents.analysis"
 CATEGORY_EXECUTOR_ID = "documents.category"
 CLASSIFICATION_EXECUTOR_ID = "documents.classification"
-SCHEMA_EXECUTOR_ID = "documents.schema"
+READ_EXECUTOR_ID = "documents.read"
+STAMP_EXECUTOR_ID = "documents.stamp"
 
 DOCUMENT_TEXT_UNAVAILABLE = "document_has_no_extractable_text"
 DOCUMENT_REQUIRES_VISION = "document_requires_vision"
@@ -731,29 +736,6 @@ EXECUTORS.register(CLASSIFICATION_EXECUTOR)
 # --------------------------------------------------------------------------- #
 # document schema freeze
 # --------------------------------------------------------------------------- #
-@dataclass
-class DocumentSchemaExecutorTarget:
-    """Mutable target for one document type's schema freeze."""
-
-    workspace: Workspace
-    run_id: str
-    document_type: str
-    sample_document_ids: tuple[str, ...] = ()
-    reconciled: bool = False
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.workspace, Workspace):
-            raise ValueError("Document schema target requires a Workspace.")
-        for field_name in ("run_id", "document_type"):
-            value = str(getattr(self, field_name) or "").strip()
-            if not value:
-                raise ValueError(f"Document schema target requires a {field_name}.")
-            setattr(self, field_name, value)
-        self.sample_document_ids = tuple(
-            str(value) for value in self.sample_document_ids
-        )
-
-
 def schema_ref(document_type: str) -> str:
     return f"document_schema:{document_type}"
 
@@ -764,6 +746,7 @@ def _schema_result(
     *,
     revision_before: int,
     record: Mapping[str, object],
+    readings_stamped: int | None = None,
 ) -> ExecutorResult:
     ref = schema_ref(str(record.get("document_type") or ""))
     return ExecutorResult(
@@ -793,46 +776,396 @@ def _schema_result(
             # Both are how a reader tells a corroborated schema from a guess.
             "low_confidence": bool(record.get("low_confidence")),
             "reconciled": bool(record.get("reconciled")),
+            # How many readings this stamp turned into evidence. Absent for the
+            # freeze, which stamps nothing.
+            **(
+                {"readings_stamped": int(readings_stamped)}
+                if readings_stamped is not None
+                else {}
+            ),
         },
     )
 
 
-def execute_document_schema(
-    request: ExecutorRequest, raw_target: object
-) -> ExecutorResult:
-    """Freeze one document type's schema from its unioned samples.
 
-    The union is already settled by the time this runs — the binder performed it,
-    and called a model again only if two samples disagreed about what a field is.
-    What lands here is the agreed field list.
+
+@dataclass
+class DocumentReadExecutorTarget:
+    """Mutable target for one evidence document's whole-document reading."""
+
+    workspace: Workspace
+    run_id: str
+    document_id: str
+    document_type: str
+    extracted: Mapping[str, object] = field(default_factory=dict)
+    action: str = "analyze"
+    #: A frozen master reports what it cannot take rather than applying it. That
+    #: is ``refresh``'s job: do the common repair, and recognize the case it
+    #: cannot handle instead of reading the document a second time under the same
+    #: blind spot. Every other mode lets the master grow, which is the ordinary
+    #: path and therefore the default.
+    vocabulary_mode: str = "accumulate"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Document read target requires a Workspace.")
+        for field_name in ("run_id", "document_id", "document_type"):
+            value = str(getattr(self, field_name) or "").strip()
+            if not value:
+                raise ValueError(f"Document read target requires a {field_name}.")
+            setattr(self, field_name, value)
+        if self.vocabulary_mode not in document_capabilities.VOCABULARY_MODES:
+            raise ValueError(
+                "Document read vocabulary_mode must be frozen or rebuild."
+            )
+        if not isinstance(self.extracted, Mapping) or not (
+            self.extracted.get("pages")
+        ):
+            raise ValueError("Document read target requires an extraction payload.")
+
+
+def _reading_payload(
+    proposal: Mapping[str, object], master: Mapping[str, object]
+) -> dict:
+    """Fold ``new_fields`` back onto the records they were filled on.
+
+    The response contract splits a new field's *descriptor* from the records
+    array because the ``fields`` enum is fixed when the call is made — a field
+    the type does not carry yet cannot be named in it. Storage has no such
+    split: a record is the fields it states, whichever call learned their names.
+    So the value travels back onto its record here, and what reaches
+    ``persist_analysis`` is the same record shape the corpus already consumes.
     """
 
-    if not isinstance(raw_target, DocumentSchemaExecutorTarget):
-        raise WorkspaceError("Unsupported document schema target.")
+    records = [
+        {"fields": [dict(field) for field in record.get("fields") or []]}
+        for record in proposal.get("records") or []
+    ]
+    renames = {
+        str(item.get("from")): str(item.get("to"))
+        for item in proposal.get("renames") or []
+    }
+    for field in proposal.get("fields_for_records") or []:
+        for value in field.get("values") or []:
+            index = int(value.get("record") or 1) - 1
+            if 0 <= index < len(records):
+                records[index]["fields"].append(
+                    {
+                        "name": str(field.get("name")),
+                        "entry": value.get("entry"),
+                        "value": value.get("value"),
+                        "citation": value.get("citation"),
+                    }
+                )
+    # A renamed field's value travelled under the old name, because that is the
+    # only name the enum offered. The master is renamed at commit and the stored
+    # record has to follow in the same act, or the reading holds a value under a
+    # name its own vocabulary no longer explains.
+    for record in records:
+        for stored in record["fields"]:
+            name = str(stored.get("name"))
+            if name in renames:
+                stored["name"] = renames[name]
+    return {
+        "analysis_profile": "structured",
+        "records": records,
+        "citations": [dict(item) for item in proposal.get("citations") or []],
+        "audit_notes": [str(item) for item in proposal.get("audit_notes") or []],
+    }
+
+
+def read_ref(document_id: str) -> str:
+    return analysis_ref(document_id)
+
+
+def _read_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    document_id: str,
+    artifact: Mapping[str, object],
+    master: Mapping[str, object],
+    refused: Sequence[Mapping[str, object]] = (),
+) -> ExecutorResult:
+    refs = [analysis_ref(document_id)]
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, refs),
+        output={
+            "status": "committed",
+            "document_id": document_id,
+            "document_type": str(master.get("document_type") or ""),
+            "analysis_id": str(artifact.get("id") or ""),
+            "content_sha1": str(artifact.get("content_sha1") or ""),
+            "records": len(list(artifact.get("records") or [])),
+            "citations": len(list(artifact.get("citations") or [])),
+            # What the vocabulary now is, and how much of it this document was
+            # the first to state. Both are what a reader needs to tell an
+            # accumulating master from a drifting one.
+            "master_ref": str(master.get("master_ref") or ""),
+            "master_fields": len(list(master.get("fields") or [])),
+            "documents_read": len(list(master.get("documents_read") or [])),
+            "renames": len(list(master.get("renames") or [])),
+            # A frozen master's refusals. Empty on the ordinary path; on a
+            # ``refresh`` these name what the re-read wanted to add and could
+            # not, which is the case the cheap action exists to recognize.
+            "refused_fields": [dict(item) for item in refused],
+        },
+    )
+
+
+def execute_document_read(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Commit one evidence document's reading and its type's master together.
+
+    **One mutate.** The reading commits three things — the analysis artifact,
+    the master update, and the ``documents_read`` append that assigns this
+    document's ``introduced_at`` — and they have to land together. A partial
+    write leaves indices that no longer describe what any document was asked,
+    which does not fail; it makes the late-field sweep run over the wrong set,
+    silently.
+
+    The artifact carries a ``master_ref`` and no ``schema_ref``. It cannot carry
+    one: the version it would name does not exist until every document of the
+    type has been read. Until the stamp adds one, this is a reading and not yet
+    evidence — which is exactly why nothing goes stale mid-run, and why a
+    re-derivation orphaning sixty-five completed extractions is structurally
+    impossible here rather than merely unlikely.
+    """
+
+    if not isinstance(raw_target, DocumentReadExecutorTarget):
+        raise WorkspaceError("Unsupported document read target.")
+    target = raw_target
     proposal = request.proposal
     if not isinstance(proposal, Mapping):
-        raise WorkspaceError("Document schema freeze requires a proposal.")
-    fields = list(proposal.get("fields") or [])
-    if not fields:
-        raise WorkspaceError("Document schema freeze requires at least one field.")
+        raise WorkspaceError("Document read requires a proposal.")
+    parent_ref = document_ref(target.document_id)
+    if set(request.expected_parents) != {parent_ref}:
+        raise WorkspaceError(
+            "Document read executor requires exactly its document parent hash."
+        )
+
+    declared = [dict(item) for item in proposal.get("new_fields") or []]
+    renames = [dict(item) for item in proposal.get("renames") or []]
+    frozen = target.vocabulary_mode == "frozen"
+    # A frozen master takes no addition and no rename. Reporting rather than
+    # dropping is the whole value of the refusal: a refresh is asked for because
+    # something looks wrong, and the master having no place for what this
+    # document states is one of the things that can be wrong.
+    applied = [] if frozen else declared
+    applied_renames = [] if frozen else renames
+    refused = [
+        {
+            "name": str(item.get("name")),
+            "reason": str(item.get("reason") or ""),
+            "action": "revise_vocabulary",
+        }
+        for item in (declared + [{"name": item.get("to"), "reason": item.get("reason")} for item in renames])
+    ] if frozen else []
+
+    state: dict[str, object] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        document = next(
+            (
+                item
+                for item in fresh.documents
+                if str(item.get("id")) == target.document_id
+            ),
+            None,
+        )
+        if document is None:
+            raise WorkspaceError(f"Document '{target.document_id}' not found.")
+        stated = {
+            str(field.get("name"))
+            for record in proposal.get("records") or []
+            for field in record.get("fields") or []
+        }
+        master = document_masters.apply_reading(
+            fresh,
+            target.document_type,
+            document_id=target.document_id,
+            new_fields=applied,
+            renames=applied_renames,
+            filled=stated,
+        )
+        payload = _reading_payload(
+            {
+                **dict(proposal),
+                "fields_for_records": applied,
+                "renames": applied_renames,
+            },
+            master,
+        )
+        payload["master_ref"] = str(master.get("master_ref") or "")
+        payload["master_type"] = target.document_type
+        payload["summary_markdown"] = document_analysis.render_structured_summary(
+            payload["records"]
+        )
+        payload["summary_origin"] = "structured_evidence"
+        # The renderer consolidates *analyses*, each carrying its own
+        # ``audit_notes``. A whole-document read is one analysis, so it is wrapped
+        # rather than passed as the bare list of notes.
+        payload["audit_notes_markdown"] = (
+            document_analysis.render_structured_audit_notes(
+                [{"audit_notes": payload["audit_notes"]}]
+            )
+        )
+        document_analysis.persist_analysis(
+            fresh,
+            document,
+            dict(target.extracted),
+            payload,
+            provider=None,
+            model=None,
+            action=target.action,
+            coverage={
+                "state": "complete",
+                "analyzed_pages": [
+                    int(page.get("page") or 0)
+                    for page in target.extracted.get("pages") or []
+                ],
+                "omitted_pages": [],
+            },
+            agent_run_id=target.run_id,
+            unit_id=request.unit_id,
+        )
+        state["master"] = master
+        return document_analysis.generated_record(fresh, target.document_id) or {}
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _read_result(
+        request,
+        committed.workspace,
+        revision_before=int(state["revision_before"]),
+        document_id=target.document_id,
+        artifact=dict(committed.value),
+        master=dict(state.get("master") or {}),
+        refused=refused,
+    )
+
+
+def reconcile_document_read(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted reading.
+
+    The master is the record that settles it. A document appears in its type's
+    ``documents_read`` exactly once and only after its reading committed, so a
+    document already listed there *is* this commit — whoever wrote it — and
+    re-running would fold the same reading in a second time, double-counting
+    every fill it contributed.
+    """
+
+    if not isinstance(raw_target, DocumentReadExecutorTarget):
+        raise WorkspaceError("Unsupported document read target.")
+    target = raw_target
+    current = Workspace(target.workspace.root)
+    if not document_masters.has_read(
+        current, target.document_type, target.document_id
+    ):
+        return ExecutorReconciliation("not_applied")
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_read_result(
+            request,
+            current,
+            revision_before=current.revision,
+            document_id=target.document_id,
+            artifact=dict(
+                document_analysis.generated_record(current, target.document_id) or {}
+            ),
+            master=document_masters.master(current, target.document_type),
+        ),
+    )
+
+
+@dataclass
+class DocumentStampExecutorTarget:
+    """Mutable target for one type's schema stamp."""
+
+    workspace: Workspace
+    run_id: str
+    document_type: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Document stamp target requires a Workspace.")
+        for field_name in ("run_id", "document_type"):
+            value = str(getattr(self, field_name) or "").strip()
+            if not value:
+                raise ValueError(f"Document stamp target requires a {field_name}.")
+            setattr(self, field_name, value)
+
+
+def execute_document_stamp(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Write one finished master into a schema and back-stamp its readings.
+
+    No model turn. The stamped version is provenance, not a contract: *this is
+    the vocabulary that emerged from reading these N documents.* It is written
+    once per type per run, which is what leaves the staleness family nothing to
+    fire on mid-run.
+    """
+
+    if not isinstance(raw_target, DocumentStampExecutorTarget):
+        raise WorkspaceError("Unsupported document stamp target.")
     target = raw_target
     state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> dict:
         state["revision_before"] = fresh.revision
-        return document_schemas.save_schema(
+        master = document_masters.master(fresh, target.document_type)
+        fields = document_masters.schema_fields(master)
+        if not fields:
+            raise WorkspaceError(
+                f"'{target.document_type}' has no master to stamp; its documents "
+                "were never read."
+            )
+        read = [str(value) for value in master.get("documents_read") or []]
+        record = document_schemas.save_schema(
             fresh,
             target.document_type,
             fields,
-            derived_from=target.sample_document_ids,
-            reconciled=bool(target.reconciled),
-            low_confidence=len(target.sample_document_ids) < 2,
+            derived_from=read,
+            reconciled=bool(master.get("renames")),
+            # Not because a two-sample agreement check could not run — there is
+            # no such check. It means one document's phrasing is this type's
+            # entire vocabulary, which is the same warning the live 4a run
+            # produced when ``fx_contract`` induced 29 fields from one document.
+            low_confidence=len(read) < 2,
         )
+        stamp = {
+            "document_type": record["document_type"],
+            "schema_version": record["schema_version"],
+            "schema_hash": record["schema_hash"],
+        }
+        # Until this lands, a reading is a reading. Back-stamping is what turns
+        # the type's readings into evidence, and it moves no content: the
+        # artifact's ``content_sha1`` covers what the document states and
+        # deliberately not which vocabulary version names it.
+        for document_id in read:
+            document_analysis.stamp_schema_ref(fresh, document_id, stamp)
+        state["stamped"] = len(read)
+        return record
 
-    # Through the transaction even though the schema lands in a side store: it is
-    # what takes the write lock, re-checks the sample documents have not been
-    # replaced underneath, and publishes one workspace revision so the commit is
-    # visible as an event rather than an invisible file write.
     committed = mutate(
         target.workspace,
         commit,
@@ -844,31 +1177,31 @@ def execute_document_schema(
         committed.workspace,
         revision_before=int(state["revision_before"]),
         record=dict(committed.value),
+        readings_stamped=int(state.get("stamped") or 0),
     )
 
 
-def reconcile_document_schema(
+def reconcile_document_stamp(
     request: ExecutorRequest,
     raw_target: object,
 ) -> ExecutorReconciliation:
-    """Classify an interrupted schema freeze.
+    """Classify an interrupted stamp.
 
-    The schema store is content-addressed: re-inducing the same fields yields the
-    same hash and does not bump the version. So a stored schema whose hash equals
-    what this proposal would produce *is* this commit, whoever wrote it, and
-    re-running would be a no-op rather than a second version.
+    The schema store is content-addressed, so a stored schema whose hash equals
+    what this master would produce *is* this commit. Back-stamping is idempotent
+    for the same reason: it writes the same reference onto the same readings.
     """
 
-    if not isinstance(raw_target, DocumentSchemaExecutorTarget):
-        raise WorkspaceError("Unsupported document schema target.")
+    if not isinstance(raw_target, DocumentStampExecutorTarget):
+        raise WorkspaceError("Unsupported document stamp target.")
     target = raw_target
-    proposal = request.proposal
-    fields = list(proposal.get("fields") or []) if isinstance(proposal, Mapping) else []
-    if not fields:
-        return ExecutorReconciliation("not_applied")
     current = Workspace(target.workspace.root)
     stored = document_schemas.load_schema(current, target.document_type)
     if stored is None:
+        return ExecutorReconciliation("not_applied")
+    master = document_masters.master(current, target.document_type)
+    fields = document_masters.schema_fields(master)
+    if not fields:
         return ExecutorReconciliation("not_applied")
     expected = document_schemas.canonical_sha256(
         document_schemas.meaning(
@@ -883,21 +1216,30 @@ def reconcile_document_schema(
         result=_schema_result(
             request,
             current,
-            revision_before=max(request.expected_revision, current.revision - 1),
+            revision_before=current.revision,
             record=stored,
         ),
-        reason="This run's document schema already holds.",
     )
 
 
-SCHEMA_EXECUTOR = ExecutorDefinition(
-    executor_id=SCHEMA_EXECUTOR_ID,
+READ_EXECUTOR = ExecutorDefinition(
+    executor_id=READ_EXECUTOR_ID,
     concurrency=ExecutorConcurrency("parent_hashes"),
-    implementation=execute_document_schema,
-    reconciler=reconcile_document_schema,
+    implementation=execute_document_read,
+    reconciler=reconcile_document_read,
 )
 
-EXECUTORS.register(SCHEMA_EXECUTOR)
+EXECUTORS.register(READ_EXECUTOR)
+
+
+STAMP_EXECUTOR = ExecutorDefinition(
+    executor_id=STAMP_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_document_stamp,
+    reconciler=reconcile_document_stamp,
+)
+
+EXECUTORS.register(STAMP_EXECUTOR)
 
 
 ANALYSIS_EXECUTOR = ExecutorDefinition(

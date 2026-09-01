@@ -323,6 +323,13 @@ def test_only_independent_non_committing_unit_expansions_declare_the_parallel_ba
     and the test it became under that procedure's own parent hash. Everything
     else commits into shared planning state and stays serialized, so this pins
     the set rather than its members.
+
+    ``documents.evidence_read`` is the interesting non-member. Its inputs *are*
+    independent — a document's own text and images — and it is still sequential,
+    because the master accumulates: a serialized unit sees its predecessor's work
+    by rebinding against committed workspace state, and the parallel path binds
+    every unit before running any of them. Per-document calls can only agree
+    about a vocabulary if they are not independent.
     """
     parallel = {
         capability.id
@@ -332,7 +339,6 @@ def test_only_independent_non_committing_unit_expansions_declare_the_parallel_ba
 
     assert parallel == {
         "documents.analysis_chunks_ready",
-        "documents.schemas_sampled",
         "tests.specified",
         "tests.promoted_from_analysis",
     }

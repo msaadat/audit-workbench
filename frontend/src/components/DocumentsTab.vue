@@ -117,6 +117,9 @@ const visionModelOptions = computed(() => {
   return [...new Set([...(provider.models || []), provider.vision_model || ''].filter(Boolean))]
 })
 const selected = computed(() => documents.value.find(doc => doc.id === selectedId.value) || null)
+// Only transaction evidence has a type-level vocabulary to revise. Planning
+// material is read as prose and carries no fields for a rule to name.
+const isEvidence = computed(() => selected.value?.category === 'evidence')
 const filtered = computed(() => documents.value.filter(doc => {
   const term = search.value.toLowerCase()
   return !term || `${doc.title} ${doc.source}`.toLowerCase().includes(term)
@@ -408,7 +411,17 @@ async function waitForAnalysis(runId: string) {
   throw new Error('Analysis is still running. Its progress remains available in the assistant.')
 }
 
-async function startAnalysis(action: 'analyze' | 'refresh') {
+type AnalysisAction = 'analyze' | 'refresh' | 'revise_vocabulary'
+
+// `force` had to split, because under an accumulating master one button was
+// being asked two different questions and could only answer one of them.
+// `refresh` re-reads this document under the vocabulary its siblings were read
+// under — cheap, and it reports rather than applies a field the vocabulary has
+// no place for. `revise_vocabulary` re-reads every document of this type and
+// rebuilds that vocabulary from the pass. Naming them separately is the point:
+// one is a document, one is a type, and the expensive one is only ever reached
+// deliberately.
+async function startAnalysis(action: AnalysisAction) {
   if (!selected.value) return
   analysisBusy.value = true
   try {
@@ -890,7 +903,18 @@ onUnmounted(() => {
                 v-tooltip.bottom="'Set by an administrator for the whole server.'"
               />
               <Button v-if="!analysis?.generated" label="Analyse" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
-              <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" />
+              <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" v-tooltip.bottom="'Re-read this document under the vocabulary its type already carries.'" />
+              <Button
+                v-if="analysis?.generated && isEvidence"
+                label="Revise vocabulary"
+                icon="pi pi-sitemap"
+                size="small"
+                severity="secondary"
+                outlined
+                :loading="analysisBusy"
+                @click="startAnalysis('revise_vocabulary')"
+                v-tooltip.bottom="'Re-read every document of this type, in order, and rebuild the fields they are read under. Expensive, and what the repair actually costs.'"
+              />
               <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" @click="compareCandidate = !compareCandidate" />
             </div>
           </div>

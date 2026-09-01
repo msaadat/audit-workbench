@@ -42,13 +42,35 @@ def test_an_unknown_template_is_refused_rather_than_guessed():
 
 
 def test_phases_partition_every_outcome_and_keep_run_order():
-    phases = engagement.plan_phases()
-    outcomes = engagement.plan_outcomes()
+    """Every outcome lands in exactly one phase, and each phase runs in order.
 
-    # A phase that swallowed or duplicated a step would put a step count on the
-    # screen that does not describe the run.
+    Global order equality is deliberately *not* asserted, and 4b.1 is why. The
+    document domain now straddles planning: prose analysis feeds
+    ``planning.context_ready``, while the evidence read sits between
+    ``planning.apm_ready`` and ``planning.rcm_ready`` — because the RCM is
+    written against the complete vocabulary of the corpus and a policy summary
+    must not wait on the whole evidence read to get it. An assertion that the
+    grouping preserves global order could only be satisfied by an edge making
+    planning context wait for the evidence read, which is exactly the wait 4b.1
+    removes.
+
+    What still has to hold is what the step counts on the screen claim: every
+    outcome appears once, nothing is swallowed or duplicated, and within a phase
+    the steps are in the order they run.
+    """
+
+    phases = engagement.plan_phases()
+    outcomes = [item["capability"] for item in engagement.plan_outcomes()]
+    position = {capability: index for index, capability in enumerate(outcomes)}
+
     grouped = [step["capability"] for phase in phases for step in phase["steps"]]
-    assert grouped == [item["capability"] for item in outcomes]
+    assert sorted(grouped) == sorted(outcomes)
+    assert len(grouped) == len(set(grouped))
+    for phase in phases:
+        indices = [position[step["capability"]] for step in phase["steps"]]
+        assert indices == sorted(indices), (
+            f"phase '{phase['id']}' lists its steps out of run order"
+        )
 
     order = [phase["id"] for phase in engagement.PLAN_PHASES]
     assert [phase["id"] for phase in phases] == [

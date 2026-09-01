@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app import document_analysis, document_classification as dc
-from app import document_schemas, documents, llm, workspaces
+from app import document_masters, document_schemas, documents, llm, workspaces
 from app.agent import runner
 from app.agent.capabilities import documents as document_capabilities
 from app.agent.workers.documents import (
@@ -18,7 +18,7 @@ from app.agent.workflows import documents as documents_workflow
 from conftest import FakeAgentLLM, wait_run
 
 CLASSIFY_TAG = "agent:document_classification"
-SAMPLE_TAG = "agent:document_schema_sample"
+READ_TAG = "agent:document_evidence_read"
 STRUCTURED_TAG = "agent:document_analysis_structured"
 VOUCHER_TAG = "agent:document_analysis_voucher"
 
@@ -185,65 +185,105 @@ def _workspace(category: str = "evidence"):
     return ws, document
 
 
-def test_a_schema_makes_transaction_evidence_structured():
-    ws, document = _workspace()
-    assert document_capabilities.analysis_profile(ws, document["id"]) == "standard"
+def test_the_category_alone_decides_which_pass_a_document_takes():
+    """``analysis_profile`` asked two questions and now there is one.
 
+    It routed to the structured profile only when the document's category was
+    transaction evidence *and* its type had an induced schema. The second
+    question disappeared with 4b.1: a schema is an *output* of reading the
+    evidence rather than an input to it, so there is nothing to ask at routing
+    time — and the circularity Phase 9 had to work around goes with it, because
+    there is no induction to gate.
+
+    What survives is the half Phase 9 restored. Category says whether this
+    engagement holds the document as transaction evidence; type says what it is.
+    An approval matrix is genuinely a ``delegation_of_authority`` and genuinely
+    still policy, and routing it to the record pass would replace the narrative
+    planning consumes with a record dump — a silent degradation of planning
+    input, from a classification that was correct.
+    """
+
+    ws, document = _workspace()
     dc.assign(ws, document["id"], "vendor_invoice", assigned_by="model")
-    document_schemas.save_schema(ws, "vendor_invoice", SCHEMA_FIELDS)
-    assert document_capabilities.analysis_profile(ws, document["id"]) == "structured"
+    documents.extract_document(ws, document["id"])
+    scope = {"document_ids": [str(document["id"])], "document_scope_mode": "all"}
+
+    # No schema anywhere, and the document is still read as evidence — which is
+    # the change: the read is what produces the vocabulary.
+    assert document_schemas.list_schemas(ws) == []
+    assert document_capabilities._prose_documents(ws, scope) == []
+    assert len(document_capabilities._evidence_read_units(ws, scope)) == 1
 
 
 def test_planning_material_stays_prose_even_where_its_type_has_a_schema():
-    """The same document and the same schema as above; only the category
-    differs, and that is the whole gate.
-
-    It matters more than a wasted extraction: a structured document's summary is
-    rendered from its records rather than written, and the planning selectors
-    read exactly that summary. Routing policy material to the structured profile
-    replaces the narrative planning consumes with a record dump.
-    """
+    """The same document and the same type as above; only the category differs,
+    and that is the whole gate."""
 
     ws, document = _workspace(category="policy")
     dc.assign(ws, document["id"], "vendor_invoice", assigned_by="model")
     document_schemas.save_schema(ws, "vendor_invoice", SCHEMA_FIELDS)
-    assert document_capabilities.analysis_profile(ws, document["id"]) == "standard"
+    documents.extract_document(ws, document["id"])
+    scope = {"document_ids": [str(document["id"])], "document_scope_mode": "all"}
+
+    assert document_capabilities._prose_documents(ws, scope) == [str(document["id"])]
+    assert document_capabilities._evidence_read_units(ws, scope) == []
 
 
-def test_a_type_without_a_schema_is_read_as_prose():
-    """Readable and citable, and not cycle evidence — which is the honest
-    description of a transaction document nothing has induced fields for."""
+def test_an_unclassified_evidence_document_is_not_read_until_it_is_typed():
+    """``other`` and unclassified are out of scope until 4b.2 coins a type. The
+    gap is a classification gap, and that capability is what reports it."""
 
     ws, document = _workspace()
-    dc.assign(ws, document["id"], "vendor_invoice", assigned_by="model")
-    assert document_capabilities.analysis_profile(ws, document["id"]) == "standard"
+    documents.extract_document(ws, document["id"])
+    scope = {"document_ids": [str(document["id"])], "document_scope_mode": "all"}
 
+    assert document_capabilities._evidence_read_units(ws, scope) == []
 
-def test_an_unclassified_document_is_unaffected():
-    ws, document = _workspace()
-    assert document_capabilities.analysis_profile(ws, document["id"]) == "standard"
+    dc.assign(ws, document["id"], "other", assigned_by="model", other_label="Unclear")
+    assert document_capabilities._evidence_read_units(ws, scope) == []
 
 
 # --------------------------------------------------------------- end to end
-def test_extraction_runs_against_the_schema_and_carries_its_stamp(monkeypatch):
+def test_a_reading_lands_as_a_stamped_structured_artifact(monkeypatch):
+    """End to end through the read rather than the sample-then-extract pair.
+
+    The same durable artifact the corpus already consumes — the documents tab,
+    the citation catalogue and ``document_analysis.inventory`` need nothing new —
+    but the vocabulary it is stamped with is an output of reading it rather than
+    an input to it. There is no ``additional_fields`` in the response: it existed
+    to hold a fact a frozen vocabulary had no room for, and under a master there
+    is no such fact, because the master takes the field.
+    """
+
     ws, document = _workspace()
     fake = FakeAgentLLM({
         CLASSIFY_TAG: {"document_type": "vendor_invoice", "document_type_other": "",
                        "confidence": "high", "rationale": "Header reads Invoice."},
-        SAMPLE_TAG: {"fields": SCHEMA_FIELDS},
-        STRUCTURED_TAG: {
-            "records": [{
-                "fields": [
-                    {"name": "invoice_number", "entry": 1, "value": "INV-1042",
-                     "citation": "c1"},
-                    {"name": "party_name", "entry": 1, "value": "Alpha Supplies",
-                     "citation": "c1"},
-                ],
-                "additional_fields": [
-                    {"name": "vat_amount", "value_type": "number", "entry": 1,
-                     "value": "150.00", "citation": "c1"},
-                ],
-            }],
+        READ_TAG: {
+            "records": [{"fields": []}],
+            "new_fields": [
+                {
+                    "name": "invoice_number", "role": "identifier",
+                    "value_type": "identifier", "cardinality": "one",
+                    "verbatim": True, "confidence": "high",
+                    "label": "Invoice number",
+                    "reason": "The header prints an invoice number.",
+                    "values": [{"record": 1, "entry": 1, "value": "INV-1042",
+                                "citation": "c1"}],
+                },
+                {
+                    "name": "vat_amount", "role": "attribute",
+                    "value_type": "number", "cardinality": "one",
+                    "verbatim": True, "confidence": "high", "label": "VAT",
+                    # Under a frozen schema this was an escape. Under a master it
+                    # is simply a field the type carries, declared by the
+                    # document that states it.
+                    "reason": "The invoice states VAT separately.",
+                    "values": [{"record": 1, "entry": 1, "value": "150.00",
+                                "citation": "c1"}],
+                },
+            ],
+            "renames": [],
             "audit_notes": ["No approval signature is present."],
             "citations": [{"id": "c1", "page": 1, "excerpt": "Invoice No. INV-1042"}],
         },
@@ -275,16 +315,17 @@ def test_extraction_runs_against_the_schema_and_carries_its_stamp(monkeypatch):
 
     record = artifact["records"][0]
     assert {field["name"] for field in record["fields"]} == {
-        "invoice_number", "party_name",
+        "invoice_number", "vat_amount",
     }
-    # The escape hatch survives into the stored record, which is what the
-    # escape-rate metric later reads.
-    assert record["additional_fields"][0]["name"] == "vat_amount"
     assert "INV-1042" in artifact["summary_markdown"]
 
-    measured = document_schemas.escape_rate(reloaded, "vendor_invoice", [artifact])
-    assert measured["fields"][0]["name"] == "vat_amount"
-    assert measured["rate"] == 1.0
+    # The vocabulary is exactly what the document said it was — no field the
+    # corpus never stated, and every one of them filled.
+    master = document_masters.master(reloaded, "vendor_invoice")
+    assert [field["name"] for field in master["fields"]] == [
+        "invoice_number", "vat_amount",
+    ]
+    assert all(field["fill_count"] == 1 for field in master["fields"])
 
 
 # ------------------------------------------- the empty extraction that was not

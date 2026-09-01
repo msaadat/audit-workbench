@@ -642,6 +642,23 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             # read, so a re-derived schema makes the analysis stale rather than
             # letting it be reinterpreted under fields it never saw.
             "schema_ref": dict(output.get("schema_ref") or {}),
+            # The accumulating master a whole-document read was made against,
+            # carried until its type is stamped. A read cannot hold a
+            # ``schema_ref`` at the time it runs, because the version it would
+            # name does not exist until every document of the type has been
+            # read. Until the stamp adds one, a reading is a reading and not yet
+            # evidence — which is the state ``has_usable_analysis`` reports and
+            # ``has_evidence_reading`` distinguishes from "never read".
+            "master_ref": str(output.get("master_ref") or ""),
+            # Which type's vocabulary that master belongs to. ``master_ref`` is a
+            # content hash and names no type, so without this a retyped document
+            # would look already-read: its reading is present and its hash is
+            # whatever it was, and the correction would be half-applied — the
+            # label changes and the reading still holds values read under the
+            # type the auditor rejected. This is the same question
+            # ``is_current_for`` asks of a stamped extraction, asked of one that
+            # is not stamped yet.
+            "master_type": str(output.get("master_type") or ""),
             "coverage": coverage or {"state": "complete", "analyzed_pages": [int(p["page"]) for p in extracted.get("pages") or [] if p.get("text")], "omitted_pages": []},
         }
         artifact["content_sha1"] = analysis_content_sha1(artifact)
@@ -673,6 +690,35 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             )
         update_status(workspace, document_id, **_authoritative_status(workspace, document))
         return load_analysis(workspace, document_id, document=document)
+
+
+def stamp_schema_ref(
+    workspace: Workspace, document_id: str, schema_ref: Mapping[str, object]
+) -> dict | None:
+    """Back-stamp a finished type's schema onto one of its readings.
+
+    The reading's own content does not move — ``analysis_content_sha1`` covers
+    what the document states and deliberately not which vocabulary version names
+    it — so stamping is provenance rather than a second analysis. That is the
+    whole reason the version can be deferred: *this is the vocabulary that
+    emerged from reading these N documents*, applied once the N are known.
+
+    Returns the updated artifact, or None where there is nothing to stamp.
+    """
+
+    with document_lock(workspace, document_id):
+        index = load_index(workspace, document_id)
+        analysis_id = str(
+            index.get("active_analysis_id") or index.get("candidate_analysis_id") or ""
+        )
+        artifact = _load_generated(workspace, document_id, analysis_id)
+        if artifact is None:
+            return None
+        artifact["schema_ref"] = dict(schema_ref or {})
+        write_json_atomic(
+            _generated_path(workspace, document_id, analysis_id), artifact
+        )
+        return artifact
 
 
 def load_analysis(workspace: Workspace, document_id: str, *, document: dict | None = None) -> dict:

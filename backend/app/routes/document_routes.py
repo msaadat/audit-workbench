@@ -150,6 +150,12 @@ async def reindex_documents(workspace_id: str, payload: dict = Body(...)):
     )
 
 
+#: What the Documents tab may ask for. ``analyze`` fills gaps, ``refresh``
+#: re-reads named documents under a frozen vocabulary, and ``revise_vocabulary``
+#: rebuilds one from a whole type. See :func:`_analysis_command`.
+DOCUMENT_ANALYSIS_ACTIONS = ("analyze", "refresh", "revise_vocabulary")
+
+
 def _analysis_command(
     ws,
     document_ids: list[str],
@@ -161,8 +167,29 @@ def _analysis_command(
 
     Standalone analysis and the audit-planning dependency request the same
     outcome through the same scheduler: this endpoint names the documents as
-    workflow targets rather than driving a separate runner. ``refresh`` is the
-    explicit regeneration instruction, so it materializes with ``force``.
+    workflow targets rather than driving a separate runner.
+
+    ``force`` has to split, because under an accumulating master one button is
+    being asked two different questions and can only answer one of them. The old
+    compromise — scope forced re-derivation to the targeted documents' own types
+    — rested on a schema coming from a *sample*, which made re-deriving one type
+    a couple of documents' work. A master comes from every document of the type,
+    in order, so "re-read this document" and "possibly move the vocabulary" are
+    no longer separable.
+
+    So each question gets its own action, and the expensive one is only ever
+    reached deliberately:
+
+    ``refresh``            re-read the targeted documents under the vocabulary
+                           their siblings were read under. The master is frozen;
+                           a field the read wants to add is *reported*, not
+                           applied, and the report names the action that would
+                           take it. Cheap by construction.
+    ``revise_vocabulary``  re-read every document of the targeted documents'
+                           types, rebuilding the master from the pass. This is
+                           what re-reading eighteen payment instructions to fix
+                           one document's vocabulary actually costs, and naming
+                           it is the honesty the split is for.
     """
     document_ids = [str(value) for value in document_ids or []]
     if not document_ids:
@@ -171,9 +198,10 @@ def _analysis_command(
     missing = [value for value in document_ids if value not in known]
     if missing:
         raise workspaces.WorkspaceError(f"Document '{missing[0]}' not found.")
-    if action not in {"analyze", "refresh"}:
+    if action not in DOCUMENT_ANALYSIS_ACTIONS:
         raise workspaces.WorkspaceError(
-            "Document analysis action must be analyze or refresh."
+            "Document analysis action must be analyze, refresh, or "
+            "revise_vocabulary."
         )
     return runner.start_command_run(
         ws,
@@ -186,7 +214,9 @@ def _analysis_command(
                 documents_workflow.FULL_DOCUMENT_OUTCOMES
             ),
             "target_refs": [f"document:{value}" for value in document_ids],
-            "generation_mode": "force" if action == "refresh" else "reuse_existing",
+            "generation_mode": (
+                "reuse_existing" if action == "analyze" else "force"
+            ),
         },
         context={
             "document_ids": document_ids,

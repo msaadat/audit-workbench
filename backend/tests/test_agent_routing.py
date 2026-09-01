@@ -68,7 +68,7 @@ def _configured(monkeypatch, overrides: dict | None = None) -> FakeAgentLLM:
         ("Analyse the selected documents", "workflow", DOCUMENTS, [
         "documents.categorized",
         "documents.types_classified",
-        "documents.schemas_induced",
+        "documents.schemas_stamped",
         "documents.analysis_generated",
     ], "reuse_existing"),
         # Declared RCM fieldwork.
