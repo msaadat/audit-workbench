@@ -18,14 +18,15 @@ does*. Both are provisional: they are taken to see what the architecture looks
 like without them, and are to be re-evaluated against a real engagement rather
 than settled here.
 
-## Scope of the first tranche
+## Scope
 
-This plan is cut. The first tranche is the read half — phases 4a, 4b and 4c —
-and it lands against the pipeline `docs/dynamic-cycle-contracts.md` already
-describes: approved join keys, code evaluation, the ruleset review screen and
-the staleness family, all retained and all still doing their work.
+This plan is cut. The read half — 4a, 4b, 4c — lands against the pipeline
+`docs/dynamic-cycle-contracts.md` already describes: approved join keys, code
+evaluation, the ruleset review screen and the staleness family, all retained and
+all still doing their work. **4a is built**; what remains is the master schema
+and its late-field sweep.
 
-**Neither withdrawal above is exercised yet.** They stand as the plan's
+**Neither withdrawal above is exercised by any of it.** They stand as the plan's
 direction, and as the reason the later phases are shaped the way they are, but
 nothing here puts a model in the verdict slot or replaces a join with a search.
 Phase 0 — correcting the doc-to-code divergence — is separable and should still
@@ -44,6 +45,7 @@ does not bind this tranche. It is about removing the schema, whose only
 compensating control is assembler statistics. This tranche keeps the schema and
 keeps join-key fan-out, which is the loud failure signal that warning exists to
 protect.
+
 
 ## The evidence this rests on
 
@@ -111,60 +113,12 @@ values, and records a rationale. What changes is who fills it. The doc claiming
 "evaluation stays code" is a doc-to-code divergence, and correcting it is part
 of this work.
 
-## What an audit run does today
-
-Two facts about the current path, measured against the code rather than
-inferred. Both are repaired by the same edit, and both are reasons to make it.
-
-**Two categories are in neither set, and one of them is the default.**
-
-```
-all      : background contract correspondence evidence minutes other policy prior_report regulation voucher
-planning : background contract correspondence minutes policy prior_report regulation
-voucher  : voucher
-neither  : evidence, other
-```
-
-A document holding `other` or `evidence` is not planning material and is not
-transaction evidence. In an audit run it gets no text extracted, no type, no
-schema and no analysis. `other` is what intake assigns to anything its filename
-rules cannot name — `_validated_decision` forces it, and the import writes
-`document_category or "other"` — so a document whose *name* is uninformative is
-invisible, for a reason that has nothing to do with what is in it.
-
-**In an audit run, evidence never reaches classification at all.**
-`routing.py` sets `document_scope_mode = "planning"` for the audit workflow;
-`resolve_document_scope` then selects only `_planning_relevant` documents, which
-is disjoint from the evidence category by construction. `_text_units` and
-`_classified_units` both intersect with that scope. Run against a workspace
-holding one policy and one voucher:
-
-```
-mode='planning'
-  scoped ids     : ('b645c5ecf1',)          # the policy document only
-  classify units : []
-  ready          : satisfied
-  types_for_induction: []
-```
-
-`documents.schemas_induced` reports **satisfied having induced nothing**, so
-both Phase 8 edges into `planning.rcm_ready` are satisfied vacuously and the RCM
-is written against a vocabulary that does not exist. The end-to-end induction
-tests run the *documents* workflow, whose scope is `all`, so the audit path is
-untested. It works in practice only where an auditor ran a standalone document
-pass first, or named the evidence explicitly.
-
-That is the failure the design it belongs to exists to remove: an engagement
-reads its documents, generates no cycle evidence, and reports success. It is a
-defect in the current code rather than a consequence of anything proposed here.
-The tranche repairs it because the repair and the re-timing are the same edit.
-
 ## Target architecture
 
 ```
 intake      file suffix, no model                     route: table | document
-read (1)    page 1 -> coarse class                    policy | minutes | background | evidence   <- this tranche
-read (2)    by class; evidence also gets a fine type  records + citations, master schema per type <- this tranche
+read (1)    page 1 -> coarse class                    policy | minutes | background | evidence   built
+read (2)    by class; evidence also gets a fine type  records + citations, master schema per type 4b
 assemble    one agentic pass per sampled item         role bindings + resolved operands           deferred
 judge       model reader on raw values                verdict + reason, auditor overrides         deferred
 ```
@@ -172,10 +126,10 @@ judge       model reader on raw values                verdict + reason, auditor 
 Two model stages become one per document and one per item. The frozen artifacts
 move from *before* the evidence to *after* it.
 
-The first tranche builds the top two rows and leaves the bottom two as they are
-today: approved join keys build the graph, and code decides each item. The
-sections on assembly, judging and replay below describe the target rather than
-what is being built now, and are kept because 4b's shape is chosen to make them
+Row one is built. Row two is 4b, and the bottom two stay as they are today:
+approved join keys build the graph, and code decides each item. The sections on
+assembly, judging and replay below describe the target rather than anything
+being built now, and are kept because 4b's shape is chosen to make them
 reachable.
 
 ### Intake: routing on file type, category on content
@@ -185,31 +139,18 @@ unsupported, ignore — stays rule-based on file suffix, because a CSV cannot be
 handed to a page-1 classifier and `loader.SUPPORTED_SUFFIXES` already answers it
 without a model.
 
-**`document_category` stays as a field and loses its derivation.** Every
-consumer tests set membership — `category in PLANNING_DOCUMENT_CATEGORIES`,
-`category in VOUCHER_DOCUMENT_CATEGORIES` — and none of them reads how the value
-was arrived at. Keeping the name and moving the derivation from the filename to
-page one leaves `_planning_relevant`, `analysis_profile`, `transaction_evidence`, the
-planning and APM context selectors and the document listing untouched, and it
-preserves the planning/evidence disjointness by construction rather than
-re-establishing it on a new axis.
+**`document_category` keeps its name and loses its derivation.** Every consumer
+tests set membership and none reads how the value was arrived at, so moving the
+derivation from the filename to page one leaves `_planning_relevant`,
+`analysis_profile`, `transaction_evidence`, the planning and APM context
+selectors and the document listing untouched, and preserves the
+planning/evidence disjointness by construction. Content-blind intake ends, which
+is taken deliberately: in the code that property was framed as an accuracy
+caveat rather than a policy, and reading page one is strictly more accurate than
+guessing from a name.
 
-What the filename cannot support is the *value*, and the current prompt admits
-as much — "Filenames can be suggestive but are not evidence of document
-content." The deterministic rules behind it are token matches on the stem:
-
-```python
-elif any(token in label for token in ("policy", "procedure", "sop", ...)):
-    document_category = "policy"
-```
-
-Content-blind intake therefore ends. Taken deliberately: in the code that
-property is framed as an accuracy caveat rather than a policy, and reading page
-one is strictly more accurate than guessing from a name.
-
-**The domain collapses from ten values to four** — the same four the coarse
-class reads, so there is no mapping layer between what the model answers and
-what the field holds:
+**The domain is four values**, the same four the coarse class reads, so nothing
+maps between what the model answers and what the field holds:
 
 | value | holds |
 | --- | --- |
@@ -218,21 +159,16 @@ what the field holds:
 | `background` | every other planning document: contracts, prior reports, correspondence |
 | `evidence` | transaction-level source material |
 
-`evidence` is today's `voucher`, renamed to what it means. It is not a new
-value — `evidence` is already in `DOCUMENT_CATEGORIES`, referenced by neither
-set — so the new domain is a subset of the old one and the change is a value
-merge rather than a schema change.
-
 **There is no residual bucket.** A document is evidence or it is one of the
-three planning values; nothing lands outside a set. That is what removes the
-limbo above, and it is the property to test rather than the classifier's
-accuracy on any single document.
+three planning values; nothing lands outside a set. That is the property to
+test, rather than the classifier's accuracy on any single document — two
+categories used to sit in neither, and one of them was intake's default, so a
+document whose filename was uninformative was invisible to an audit run
+entirely.
 
-**Intake stops filling the field in.** Today it defaults twice — the import
-writes `document_category or "other"`, and `_validated_decision` forces `other`
-for anything the rules could not name. Leaving it unset instead is what opens
-the ordering below, because `_planning_relevant` already treats unset as in
-scope while `other` is out of it.
+Intake proposes no category at all. A document arrives uncategorized, which is
+in scope for text extraction where a wrong guess would not have been.
+
 
 ### Read: one pass, two calls, a master schema per type
 
@@ -578,26 +514,19 @@ record carries.
 
 Each phase leaves the tree working.
 
-**This tranche.**
-
 | Phase | Content | Gate |
 | --- | --- | --- |
 | 0 | Correct the doc-to-code divergence: `dynamic-cycle-contracts.md` claims evaluation is computed; it is judged | Doc matches code |
-| 4a.1 | Category domain to four values; `voucher` → `evidence`; intake stops defaulting to `other` | No stored category outside the four; nothing lands in a set-less value |
-| 4a.2 | Coarse class capability between `text_ready` and `types_classified`; category derived from page one; routing stays on file suffix | Planning/evidence partition holds; no policy document reaches the structured prompt |
-| 4a.3 | `corpus_scope`: `text_ready`, `categorized` and `types_classified` run over every document, not the planning subset | An audit run classifies its evidence; `schemas_induced` cannot report satisfied having induced nothing |
+| 4a ✅ | Category domain to four values read from page one; `documents.categorized`; `corpus_scope` | Partition holds; an audit run classifies its evidence |
 | 4b.1 | Master schema, one writer: the read capability takes `all_settled_then_validate`, units keyed `<type>:<document>`; asymmetric modification contract; version stamped at end of type | Field drift gone: one name per fact across a type |
 | 4b.2 | Evidence with no catalogued type read anyway; the read coins a `local.` type carrying a discriminator | Nine broker notes carry one vocabulary, not nine |
 | 4c | Late-field re-sweep over the documents that preceded the addition | Absence means "not stated", never "not asked" |
 
-4a.3 is a defect repair, is separable, and can land first on its own. It is
-worth doing whether or not the rest proceeds.
-
 No new barrier is built. The coarse class runs under the existing parallel
-barrier and the read under the existing sequential one, which keeps the first
-change to one question rather than two. Type-lane concurrency —
-`grouped_sequential`, 18 steps against 84 — is deferred, and is a pure
-scheduling change whenever the read pass is measured to be worth it.
+barrier and the read under the existing sequential one, which keeps 4b to one
+question rather than two. Type-lane concurrency — `grouped_sequential`, 18 steps
+against 84 — is deferred, and is a pure scheduling change whenever the read pass
+is measured to be worth it.
 
 **Deferred**, in the order the rest of this plan gives them: assembly against
 the 18 known packs, assembler statistics and the screen that shows them, the
@@ -616,211 +545,113 @@ The warning that Phase 4 must wait on Phase 2 applies to *removing* the schema,
 whose only compensating control is the assembler statistics. This tranche keeps
 the schema and keeps join-key fan-out, so it does not wait.
 
-## Implementing 4a
 
-4a stands alone. It changes where the category comes from and nothing about how
-a schema is induced, so everything below it — sampling, the freeze, structured
-extraction, join keys, evaluation — runs unaltered, and 4b may follow later or
-not at all.
+## What 4a shipped
 
-Two consequences to expect rather than discover:
+Built, with the suite and one live engagement behind it. The code is the
+authority on shape; what is recorded here is what the build decided and what it
+corrected, because neither is recoverable from a diff.
 
-- **An audit run gets more expensive.** Today it classifies and induces nothing.
-  Afterwards it does both, over the whole corpus. That is the defect being
-  repaired, and the cost is what the stage should always have cost.
-- **More documents become evidence.** Filename tokens under-recognise and page
-  one does not, so induction and extraction expand over what the corpus actually
-  holds. The number will be larger than any current run reports.
+**Storage settles the barrier.** The
+category could not live only on the document entry — capability readiness runs
+against a workspace handle that is routinely several revisions behind, which is
+why type assignments moved to `Documents/.types` sidecars. It could not live
+only in the sidecar either: fifteen call sites read `document.get("category")`,
+and most hold a document dict with no workspace to reach a sidecar with. So the
+commit writes both inside one `mutate()` — sidecar authoritative for readiness
+and the evidence gate, entry mirrored for the readers that hold a dict.
 
-### The category is written twice, and that decides the barrier
+**That mirror is why the capability is sequential.** The entry write lands on
+the shared `documents` collection, which is exactly what `all_settled_parallel`
+asserts cannot happen. Page-one categorization is independent per document and
+still cannot run in parallel: independence of inputs is not independence of
+commits. Making it parallel later is a storage change, not a barrier change —
+it needs the fifteen readers off the entry first.
 
-It cannot live only on the document entry. Capability readiness runs against
-whatever workspace handle its caller holds, which is routinely several revisions
-behind; a lazily hydrated collection read from one reported a document
-unclassified moments after it had been classified, which is why type assignments
-moved to `Documents/.types` sidecars. So the category joins the type there, one
-record answering both questions about a document under one provenance rule, and
-`assign`'s auditor-override semantics carry over unchanged.
+`category()` reads the sidecar and falls back to the entry, so an upload that
+names a category outright stands without waiting for a model to agree with it.
+The fallback cannot go stale: a value written during a run goes to the sidecar,
+which wins.
 
-It cannot live *only* in the sidecar either, and this is what building it
-settled. Fifteen call sites read `document.get("category")` — planning document
-ranking, planning and APM context selection, the artifact index, narration, the
-document listing — and most hold a document dict with no workspace to reach a
-sidecar with. Rewriting all of them would be a far wider change than the answer
-moving, and several have no handle to rewrite *to*.
+**A forced regeneration does not re-ask the category.** Every other document
+stage widens under `force`. This one must not: re-categorizing moves a document
+across the planning/evidence partition mid-run, taking its type, its schema and
+its extraction with it, so a refresh pointed at one document would invalidate
+the vocabulary the rest of the corpus was read under.
 
-So the commit writes both, inside one `mutate()`: the sidecar is authoritative
-and is what readiness and the evidence gate ask, the entry carries a mirror for
-the readers that hold a dict. **That is what makes the capability sequential.**
-The entry write lands on the shared `documents` collection, which is exactly what
-`all_settled_parallel` asserts cannot happen — the same constraint, and the same
-reason, as `documents.types_classified` next to it. Page-one categorization is
-independent per document and still cannot run in parallel, because independence
-of inputs is not independence of commits.
+**Two axes, two labels, one screen.** The documents tab had the same confusion
+the import dialog did — a control labelled *Type* that set the category. The
+header now carries both: **Held as** is what the engagement does with the
+document and is the auditor's, editable, and their answer stands against any
+rerun; **Read as** is what the document is, shown only for evidence, because
+that is the only material a type is asked of. The rail nests evidence by type
+for the same reason, and nothing else nests.
 
-The cost is one sequential model pass where there was none, not one where there
-was a parallel one. Making it parallel later is not a barrier change but a
-storage change: it needs the fifteen readers off the entry first.
+**The intake runner stays.** Only `document_category`
+leaves it — from the response schema, the prompt, and the merge. Its remaining
+outputs are all already computed, so a worker for them is a turn spent agreeing
+with arithmetic; but it is retained by an explicit decision record
+(`docs/agent-protocol-runner-decisions.md`) and carries a preset, an adapter and
+an approval path. Retiring it is a question to ask on its own evidence.
 
-`category()` reads the sidecar and falls back to the entry. The fallback is what
-lets an upload that names a category outright stand without waiting for a model
-to agree with it, and it cannot go stale — a value written *during* a run goes to
-the sidecar, which wins, and a value present only on the entry was there from the
-revision the document arrived at.
+**Four intake tests were retired rather than repaired.** They pinned what a
+filename stem should be read as — `Procurement SOP Extracts` policy, a dealing
+ticket voucher rather than the `other` a P2P-shaped vocabulary once made of a
+whole treasury sample. They defended an answer to a question intake should not
+have been answering, and `TRANSACTION_EVIDENCE_FILENAME` went with them. One
+test replaces them: intake proposes nothing.
 
-### Modules
+### The defect it repaired
 
-| Module | Change |
-| --- | --- |
-| `intake.py` | `DOCUMENT_CATEGORIES` to four values; `PLANNING_DOCUMENT_CATEGORIES` to three; `VOUCHER_DOCUMENT_CATEGORIES` → `EVIDENCE_DOCUMENT_CATEGORIES = {"evidence"}`; delete the category branch of `deterministic_classification` and `TRANSACTION_EVIDENCE_FILENAME`; stop defaulting in `_validated_decision` and at import |
-| `documents.py` | `CATEGORIES` is a second copy of the same list and moves with it; `add_document(category="other")` loses its default; `_validate_upload` accepts unset |
-| `document_classification.py` | the sidecar gains `category` and `category_assigned_by`; `transaction_evidence` reads it instead of the document entry; `categorized_ids` / `uncategorized_ids` alongside the existing pair |
-| `agent/workers/documents.py` | new `documents.category` worker |
-| `agent/capabilities/documents.py` | new capability; `_planning_relevant` and `analysis_profile` re-pointed at the sidecar; the scope fix |
-| `agent/workflows/documents.py`, `workflows/audit.py` | one capability, one edge, in both graphs |
-| `agent/workers/intake.py` | deleted, with the batch-refinement path that calls it |
-| `frontend/.../ImportDialog.vue` | the review step and the assistant refinement go |
-| `frontend/.../capabilityLabels.ts` | one entry |
-
-### The capability
+Measured before the change, and the reason the scope fix was not optional. In an audit
+run, `document_scope_mode` is `planning`, `resolve_document_scope` selects only
+`_planning_relevant` documents, and that set is disjoint from the evidence
+category by construction. Text extraction and classification were both bounded
+by it:
 
 ```
-documents.text_ready  ->  documents.categorized  ->  documents.types_classified
+mode='planning'
+  scoped ids     : ('b645c5ecf1',)          # the policy document only
+  classify units : []
+  ready          : satisfied
+  types_for_induction: []
 ```
 
-Declared once in `workflows/documents.py` and reused by the audit graph, the way
-the existing document capabilities already are.
+`documents.schemas_induced` reported **satisfied having induced nothing**, so
+both Phase 8 edges into `planning.rcm_ready` were satisfied by an empty
+vocabulary and the RCM was written against fields no document stated. The
+end-to-end induction tests run the *documents* workflow, whose scope is `all`,
+so the audit path was untested; it worked only where an auditor had run a
+standalone document pass first. `corpus_scope` now runs text, categorization and
+classification over every document. What a document *is* is not a planning
+question.
 
-**Readiness.** Every scoped document with usable text carries a category. Unlike
-`types_classified` there is no truthful "none of these fits" answer — four
-buckets are exhaustive by construction — so a document without one is a gap and
-reports as one.
+The cost that follows is real and is the open question below: reading a document
+commits a revision, so importing evidence re-opens the planning chain.
 
-**Units.** One per uncategorized document, input `{document_id, title, text}`,
-where `text` is the same page-one slice `classification_text` already produces.
-Reusing it keeps one definition of what "page one" means for both calls.
+### What the live run showed
 
-**Barrier.** `all_settled_parallel`, on the sidecar decision above.
+`docs/sample-treasury-min`, the policy and one deal pack, on a configured model:
 
-**Order.** `documents.categorized` sorts before `documents.types_classified`
-lexically as well as by edge, which is incidental but worth not disturbing:
-units within a stage run in sorted id order, and that ordering has already cost
-this design one rebuild.
+```
+01_Treasury_and_Investment_Policy.docx        policy     -                       standard    0 records
+CNF-2025-0166_Counterparty_Confirmation.pdf   evidence   fx_contract             structured  1 record
+PMT-2025-00133_Payment_Instruction.pdf        evidence   payment_instruction     structured  1 record
+STL-2025-0133_Nostro_Account_Statement.pdf    evidence   bank_statement          structured  1 record
+TD-2025-0166_Dealing_Ticket.pdf               evidence   treasury_deal_ticket    structured  1 record
+```
 
-### The worker
+The gate holds where Phase 9 found it broken: the policy read as prose, the four
+vouchers under their own type's fields, both axes answering yes.
 
-Page-one text to one of four values, plus a rationale. No document type, no
-fields, no records — the bucket decides which prompt runs next and nothing else,
-and a worker asked for more would invite the model to answer the next question
-early.
+Two things it says about the phase after this one. Every schema came back
+`low_confidence` — a minimal pack carries one document per type, so the
+two-sample check cannot run, which is the documented allowance doing its job.
+And `fx_contract` induced **29 fields from one document**, against 44 from three
+samples of one identical template in the full corpus. Same shape at a fifth the
+size: what stops one document's phrasing becoming the type's vocabulary is a
+master that accumulates, not a wider sample.
 
-The prompt states the partition rather than the labels, because the labels are
-the part a reader can guess and the partition is the part that carries the
-failure: policy, minutes and background describe how the entity should operate;
-evidence is a record of one transaction. The existing intake prompt's category
-paragraph is the text to lift, minus the six values that no longer exist.
-
-### Intake
-
-`route` stays deterministic on file suffix. What goes with the category is the
-model call over filenames: with `document_category` removed, the intake
-classification worker's remaining outputs are `route` (the suffix),
-`proposed_name` (the slug), `proposed_action` (duplicate detection) and
-`table_role` (referenced nowhere but `types.ts`). Nothing judgemental is left,
-and a worker whose every answer is already computed is a turn spent to agree
-with arithmetic. Confirm `table_role` is genuinely unconsumed before deleting
-it; the rest is safe on inspection.
-
-### The import dialog
-
-Four steps become three: **Add files → Upload → Complete**. The review step goes
-entirely, and with it the classification editor, the attention filter, the
-`document_category` picker, "Refine with assistant", and the permission-mode
-approval batch.
-
-What that step was for, and where each part lands:
-
-| Was reviewed | Now |
-| --- | --- |
-| `document_category` | Read from page one, after import, in the spine |
-| `route` | Deterministic on suffix; shown in the completion summary, not decided there |
-| `proposed_name` | The slug, renameable afterwards where documents are listed |
-| `proposed_action` | Duplicates are already ignored automatically |
-| A file the local parser could not read | A line in the completion summary — the one thing the review step surfaced that nothing else does |
-
-That last row is the only real loss and it must not be dropped silently: an
-unreadable file that vanishes into a count is exactly the failure this plan
-objects to elsewhere. The summary already carries `imported`, `unchanged`,
-`ignored` and `ambiguous`; unreadable files need naming, not counting.
-
-Import therefore completes on upload. The auditor's next decision is not "is
-this a policy" — which they should not have been asked from a filename — but
-the `other` bucket review that already exists, once documents have been read.
-
-### The spine
-
-`documents.categorized` becomes a row in the Record spine like any other
-capability, titled **Document classification**. Its `Capability.title` is the
-label and `capabilityLabels.ts` carries the same string verbatim —
-`test_plan_spine_capability_labels.py` fails if the two drift. It sits directly
-above *Document types*, which reads correctly: the two rows answer the two
-questions about one document, in the order they are asked.
-
-### What building it forced
-
-**The intake worker survives; only its category goes.** Deleting it outright was
-the tidier plan and the wrong scope. `IntakeRunner` is retained by an explicit
-decision record (`docs/agent-protocol-runner-decisions.md`), carries a context
-preset, an adapter and an approval path, and still refines the route and the
-proposed name. Removing `document_category` from what it may merge is the change
-4a actually needs; retiring the runner is a separate question that should be
-asked on its own evidence.
-
-**Four intake tests were retired, not repaired.** They pinned what a filename
-stem should be read as — `Procurement SOP Extracts` policy, a dealing ticket
-voucher rather than the `other` a P2P-shaped vocabulary once made of a whole
-treasury sample. They were defending an answer to a question intake should not
-have been answering, and the vocabulary they defended (`TRANSACTION_EVIDENCE_FILENAME`,
-~60 lines of derived terms and abbreviations with a hand-kept unsafe list) went
-with them.
-
-**The upload route defaulted to a category that no longer exists.** `Form("other")`
-became a 400 the moment the domain shrank. It defaults to unset now, and an
-uploader that does know what a document is may still say so.
-
-**Importing evidence now re-opens the planning chain.** This is 4a.3 working, and
-it is worth stating because it looks like a regression. Before, a voucher was
-outside every capability's scope, so importing one committed nothing and a
-workspace's existing planning state was simply reused. Now the document is read
-and typed, which publishes a revision, which invalidates
-`planning.context_ready` and everything after it.
-
-That is the correct answer — the corpus changed, and planning rests on it — but
-it means an engagement that imports evidence into a planned workspace will
-re-synthesize its planning material. Two consequences follow: a workspace
-carrying *only* evidence has no planning material to re-synthesize from and its
-context capability fails rather than holding what it had, and a re-opened APM
-lands in `review_required` rather than flowing through to fieldwork. Neither is
-introduced here; both were unreachable while evidence was invisible. Whether
-planning should hold its ground when nothing planning-relevant changed is a real
-question, and it belongs to the planning capability rather than to this tranche.
-
-### Tests
-
-- The partition is exhaustive: every value in `DOCUMENT_CATEGORIES` is in
-  exactly one of the planning and evidence sets. This is the test that would
-  have caught the `other`/`evidence` limbo, and it is a set-arithmetic assertion
-  with no fixture behind it.
-- An audit run over a workspace holding one policy and one item of evidence
-  classifies both and induces a schema for the evidence. This is the case
-  `test_workflow_schema_induction.py` does not cover, because it runs the
-  documents workflow; the audit path needs its own.
-- A document intake left uncategorized is in scope for `text_ready`, and is
-  categorized before `types_classified` expands.
-- The category is never assigned by a model over an auditor's, which is the
-  existing `assigned_by` guarantee extended to a second field and worth
-  asserting rather than assuming.
-- An unreadable file is named in the completion summary rather than counted.
 
 ## Open questions
 
@@ -854,8 +685,13 @@ Each needs a decision before its phase:
   scheduling change touching no stored data and no unit contract; or batching
   several documents into one call, which keeps one writer while cutting the step
   count but needs a rule for a batch that disagrees with itself.
+- **Whether planning should hold its ground.** Reading a document now commits a
+  revision, which re-opens the planning chain. Correct — the corpus changed —
+  but a workspace carrying only evidence has no planning material to
+  re-synthesize from, and its context capability fails rather than keeping what
+  it had. The question belongs to the planning capability rather than here.
 
-Open against the deferred phases rather than this tranche:
+Open against the deferred phases rather than the next one:
 
 - **Cost per item.** Vouching runs over sampled items, not the 1,000-row
   population — 18 here. At engagement scale this needs a number, not a guess.
