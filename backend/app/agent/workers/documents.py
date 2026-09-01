@@ -2039,6 +2039,13 @@ vocabulary.
 
 {descriptor}
 
+The fields listed above are what documents of this type have stated before.
+They are prior art, not a record of this document: **report a value for every
+one of them this document states**, under records[].fields. A field listed above
+that this document does not print is simply absent — but silence about a field
+the document does print is a false absence, and absence is what an audit reads
+as the finding.
+
 records is an array. Each entry is one record the document carries, with:
   fields — the fields *listed above* that this record states, as
     {{"name": one of the names above, "entry": 1-based ordinal when the field may
@@ -2422,6 +2429,15 @@ def validate_read_proposal(
     incoherent.
     """
 
+    # Cardinality is deliberately *not* enforced here, and the schema-guided
+    # extraction it replaces did enforce it. Under a frozen schema an ``entry``
+    # above one on a ``cardinality: one`` field was a model error, because the
+    # schema was settled before the document was read. Under an accumulating
+    # master it is evidence: the field's cardinality is a guess made from
+    # whichever document introduced it, and a later document stating it twice
+    # proves the type carries two. Refusing it charged document one's guess to
+    # document two — measured, the second dealing ticket failed outright and
+    # blocked its type's stamp. The master widens instead.
     known = {
         str(field.get("name")): field
         for field in request.unit_input.get("master_fields") or []
@@ -2435,7 +2451,24 @@ def validate_read_proposal(
         if isinstance(item, Mapping)
     }
 
-    if not records and not new_fields and not known:
+    stated_values = sum(len(record.get("fields") or []) for record in records) + sum(
+        len(field.get("values") or []) for field in new_fields
+    )
+    if not stated_values and citations:
+        # Self-contradictory, and the shape a validator can name with certainty.
+        # Measured: an FX confirmation returned fifteen citations and not one
+        # field value — it plainly read the document and then filled nothing.
+        # "This document states no record" cannot be true of a reading that
+        # quoted the document fifteen times, so this is refused whatever the
+        # master holds, and the genuinely empty reading — no records, no
+        # citations — stays the complete answer the plan protects.
+        raise WorkerResponseValidationError(
+            f"You returned {len(citations)} citation(s) and not one field value. "
+            "Every fact you quoted belongs under a field: report the values under "
+            "records[].fields where this type already carries the name, and under "
+            "new_fields where it does not."
+        )
+    if not stated_values and not known:
         # An empty ``records`` array is normally a complete answer: an evidence
         # document that carries no transaction record is a truthful reading and
         # must not be made to invent one. Not here. This document is the first of
@@ -2481,13 +2514,6 @@ def validate_read_proposal(
                     f"records[{index}] names field '{name}', which this document "
                     "type does not carry yet. Declare it under new_fields with a "
                     "full descriptor, or use one of the names listed."
-                )
-            if (
-                str(definition.get("cardinality") or "one") == "one"
-                and field["entry"] != 1
-            ):
-                raise WorkerResponseValidationError(
-                    f"Field '{name}' appears once on this type, so entry must be 1."
                 )
             if bool(definition.get("verbatim", True)) and not field.get("citation"):
                 raise WorkerResponseValidationError(

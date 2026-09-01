@@ -85,6 +85,7 @@ def empty(document_type: str) -> dict:
         "documents_read": [],
         "fields": [],
         "renames": [],
+        "widened": [],
     }
 
 
@@ -155,6 +156,15 @@ def has_read(workspace: Workspace, document_type: str, document_id: str) -> bool
     ]
 
 
+def _highest_entry(field: Mapping[str, object]) -> int:
+    """The largest ``entry`` a declared field was filled at in one document."""
+
+    return max(
+        (int(value.get("entry") or 1) for value in field.get("values") or []),
+        default=1,
+    )
+
+
 def _validate_name(name: str, label: str) -> str:
     value = str(name or "").strip()
     if not _FIELD_NAME_RE.fullmatch(value):
@@ -169,15 +179,26 @@ def apply_reading(
     document_id: str,
     new_fields: Iterable[Mapping[str, object]] = (),
     renames: Iterable[Mapping[str, object]] = (),
-    filled: Iterable[str] = (),
+    filled: Iterable[str] | Mapping[str, int] = (),
 ) -> dict:
     """Fold one document's reading into its type's master and persist it.
 
-    ``filled`` is the set of master field names this document stated, counted
-    once per document rather than per record: breadth is what distinguishes a
-    field the type carries from one record repeating it, and a selector written
-    against a name that fourteen of eighteen documents state is a different
-    thing from one four of them do.
+    ``filled`` is the master field names this document stated, counted once per
+    document rather than per record: breadth is what distinguishes a field the
+    type carries from one record repeating it, and a selector written against a
+    name that fourteen of eighteen documents state is a different thing from one
+    four of them do. Supplied as a mapping it also carries the highest ``entry``
+    each name reached, which is what widens cardinality.
+
+    **Cardinality widens, and never narrows.** A field's cardinality is a guess
+    made from whichever document introduced it, and a later document stating it
+    twice is *evidence* rather than a violation — "one sample seeing two proves
+    the type can carry two" is the rule the sample union already held, and it
+    has to survive the union's deletion. Without it document one silently fixes
+    a constraint document two cannot satisfy, and the failure is charged to
+    document two: measured on the treasury corpus, the first dealing ticket
+    declared ``rate`` as ``one``, the second states it twice, and the second
+    document failed outright and blocked its type's stamp.
 
     Renames are applied before additions, so a document may rename a field and
     add another in one reading without the two colliding. Both are recorded:
@@ -230,10 +251,15 @@ def apply_reading(
                 }
             )
 
+        entries = (
+            {str(name): int(value) for name, value in filled.items()}
+            if isinstance(filled, Mapping)
+            else {str(name): 1 for name in filled}
+        )
         stated = {
-            applied_renames.get(str(name), str(name))
-            for name in filled
-            if str(name or "")
+            applied_renames.get(name, name): entry
+            for name, entry in entries.items()
+            if name
         }
         for position, raw in enumerate(new_fields):
             item = dict(raw)
@@ -242,7 +268,7 @@ def apply_reading(
                 # Not an error the read can be blamed for: a field the master
                 # gained earlier in this same response, or one a rename just
                 # freed. Counting it as stated is the truthful outcome.
-                stated.add(name)
+                stated[name] = max(stated.get(name, 1), _highest_entry(item))
                 continue
             field = {
                 key: item[key]
@@ -265,12 +291,19 @@ def apply_reading(
             field["introduced_at"] = index
             fields.append(field)
             by_name[name] = field
-            stated.add(name)
+            stated[name] = max(stated.get(name, 1), _highest_entry(item))
 
-        for name in stated:
+        widened: list[dict] = []
+        for name, entry in stated.items():
             field = by_name.get(name)
-            if field is not None:
-                field["fill_count"] = int(field.get("fill_count") or 0) + 1
+            if field is None:
+                continue
+            field["fill_count"] = int(field.get("fill_count") or 0) + 1
+            if entry > 1 and str(field.get("cardinality") or "one") == "one":
+                field["cardinality"] = "many"
+                widened.append(
+                    {"name": name, "document_id": str(document_id), "at_index": index}
+                )
 
         # ``validate_fields`` is the same gate a schema goes through, so a master
         # can never accumulate into something ``save_schema`` would refuse at the
@@ -303,6 +336,10 @@ def apply_reading(
             "documents_read": read,
             "fields": ordered,
             "renames": rename_log,
+            # Recorded for the same reason a rename is: a prior reading was made
+            # under a narrower claim about this field, and a reviewer trusting an
+            # accumulating vocabulary needs to see where it moved.
+            "widened": [*(record.get("widened") or []), *widened],
         }
         _write(workspace, type_id, updated)
         return updated

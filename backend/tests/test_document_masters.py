@@ -35,6 +35,7 @@ def _declared(name: str, **overrides) -> dict:
         "verbatim": True,
         "confidence": "high",
         "label": "",
+        "values": [{"record": 1, "entry": 1, "value": "stated", "citation": "1"}],
     }
     field.update(overrides)
     return field
@@ -130,6 +131,71 @@ def test_declaring_a_field_the_master_already_holds_counts_as_stating_it(ws):
     )
     assert [field["name"] for field in master["fields"]] == ["total_amount"]
     assert master["fields"][0]["fill_count"] == 2
+
+
+# --------------------------------------------------------------- cardinality
+def test_a_second_document_stating_a_field_twice_widens_it(ws):
+    """"One sample seeing two proves the type can carry two", kept after the
+    union that held it was deleted.
+
+    A field's cardinality is a guess made from whichever document introduced it.
+    Without widening, document one silently fixes a constraint document two
+    cannot satisfy and the failure is charged to document two: measured on the
+    treasury corpus, the first dealing ticket declared ``rate`` as ``one``, the
+    second states it twice, and the *second* document failed outright — taking
+    its type's stamp with it, because the read edge is the one that blocks.
+    """
+
+    document_masters.apply_reading(
+        ws, "treasury_deal_ticket", document_id="doc-1",
+        new_fields=[_declared("rate", value_type="number")],
+    )
+    assert document_masters.master(ws, "treasury_deal_ticket")["fields"][0][
+        "cardinality"
+    ] == "one"
+
+    master = document_masters.apply_reading(
+        ws, "treasury_deal_ticket", document_id="doc-2", filled={"rate": 2},
+    )
+    assert master["fields"][0]["cardinality"] == "many"
+    assert master["widened"] == [
+        {"name": "rate", "document_id": "doc-2", "at_index": 1}
+    ]
+
+
+def test_cardinality_never_narrows(ws):
+    """The master only grows, and that includes what a field is allowed to be.
+    Narrowing would make a prior reading's second entry unexplainable."""
+
+    document_masters.apply_reading(
+        ws, "treasury_deal_ticket", document_id="doc-1",
+        new_fields=[_declared("rate", value_type="number", cardinality="many")],
+    )
+    master = document_masters.apply_reading(
+        ws, "treasury_deal_ticket", document_id="doc-2", filled={"rate": 1},
+    )
+    assert master["fields"][0]["cardinality"] == "many"
+    assert master["widened"] == []
+
+
+def test_a_field_introduced_on_several_records_arrives_as_many(ws):
+    """A statement declaring one column filled on twenty lines carries ``many``
+    from the moment it enters, not after a second document proves it."""
+
+    master = document_masters.apply_reading(
+        ws, "bank_statement", document_id="doc-1",
+        new_fields=[
+            _declared(
+                "transaction_date",
+                value_type="date",
+                values=[
+                    {"record": 1, "entry": 1, "value": "01 Jan", "citation": "1"},
+                    {"record": 2, "entry": 2, "value": "02 Jan", "citation": "1"},
+                ],
+            )
+        ],
+    )
+    assert master["fields"][0]["cardinality"] == "many"
 
 
 # ------------------------------------------------------------------ late fields

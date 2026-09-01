@@ -985,11 +985,16 @@ def execute_document_read(
         )
         if document is None:
             raise WorkspaceError(f"Document '{target.document_id}' not found.")
-        stated = {
-            str(field.get("name"))
-            for record in proposal.get("records") or []
-            for field in record.get("fields") or []
-        }
+        # Name -> the highest entry this document reached for it. The entry is
+        # what widens a field's cardinality, so it has to survive the trip from
+        # the reading to the master rather than being flattened to a name set.
+        stated: dict[str, int] = {}
+        for record in proposal.get("records") or []:
+            for field in record.get("fields") or []:
+                name = str(field.get("name"))
+                stated[name] = max(
+                    stated.get(name, 1), int(field.get("entry") or 1)
+                )
         master = document_masters.apply_reading(
             fresh,
             target.document_type,
