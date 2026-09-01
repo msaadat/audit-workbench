@@ -690,9 +690,32 @@ def test_analysing_the_sources_is_the_next_step_once_they_are_imported(stub_stor
 
     assert rows["analysis.executed"]["runnable"] is True
     assert rows["analysis.executed"]["start"] == {
-        "prompt": "Analyse the imported tables.", "outcomes": ["analysis.executed"],
+        "prompt": "Analyse the imported tables.",
+        "outcomes": ["analysis.summarized"],
     }
     assert result["next"]["capability"] == "analysis.executed"
+
+
+def test_the_analysis_button_asks_for_the_memo_not_just_the_procedures(stub_store):
+    """The row is sized by the library; the button asks for the write-up.
+
+    These are two different capabilities and the record needs both. Asking for
+    the row key alone sent `requested_outcomes: ["analysis.executed"]`, which
+    the router takes verbatim — `explicit_outcomes` never reads the prompt — so
+    the run stopped at the executed procedures and no summary was ever written.
+    Nothing on the record said one was owed, because the row it would be owed
+    against was now held.
+    """
+    stub_store([])
+    rows = _rows(engagement_record.record(_Workspace(tables=["ledger"])))
+
+    assert rows["analysis.executed"]["start"]["outcomes"] == ["analysis.summarized"]
+    # Every other stage is terminal for its own workflow, so its button asks
+    # for exactly the row it stands on. Only the analysis row overrides.
+    assert [
+        row["capability"] for row in rows.values()
+        if row["start"] and row["start"]["outcomes"] != [row["capability"]]
+    ] == ["analysis.executed"]
 
 
 def test_a_stage_waiting_on_an_earlier_one_says_so_instead_of_offering_a_button(stub_store):

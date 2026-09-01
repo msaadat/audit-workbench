@@ -98,6 +98,14 @@ _SPINE: dict[str, dict[str, Any]] = {
         "unit": "analysis", "unit_plural": "analyses", "count": "analyses",
         "headline": "Analyse the imported tables",
         "prompt": "Analyse the imported tables.",
+        # The one row whose button asks for more than the row is sized by. The
+        # stage is held when the library exists, so `analyses` is what counts
+        # it; but "analyse the imported tables" is answered by what the analysis
+        # *found*, and the workflow's terminus for that request is the memo —
+        # see `FULL_ANALYSIS_OUTCOMES`. Requesting the row key alone stopped the
+        # run one stage short of the write-up, with nothing on the record to say
+        # a summary was still owed.
+        "outcomes": ["analysis.summarized"],
         # The bench beside the library. A query is not an artifact the
         # engagement holds — nothing is filed by running one — so it is marked
         # a tool and drawn as one, or the record would start claiming the
@@ -761,8 +769,15 @@ def _stages(
             "runnable": bool(headline) and owed and not blocked,
             "headline": headline,
             "blocked_reason": blocked,
+            # The row key is the outcome to request wherever the stage is
+            # terminal for its own workflow, which is every row but one. Where
+            # it is not, the spec declares what the button actually asks for —
+            # see `analysis.executed`.
             "start": (
-                {"prompt": spec["prompt"], "outcomes": [capability]}
+                {
+                    "prompt": spec["prompt"],
+                    "outcomes": list(spec.get("outcomes") or (capability,)),
+                }
                 if headline and owed and spec.get("prompt") else None
             ),
             # How this stage is begun. Everything the agent produces is "run";
