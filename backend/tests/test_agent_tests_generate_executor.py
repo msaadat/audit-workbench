@@ -154,7 +154,7 @@ def _voucher_with_fields(workspace, filename: str, identifier: str, amount: floa
         workspace,
         filename,
         f"Invoice for {identifier} totalling {amount:.0f}.".encode(),
-        category="voucher",
+        category="evidence",
     )
     extracted = documents.extract_document(workspace, entry["id"])
     reloaded = workspaces.load_workspace(workspace.id)

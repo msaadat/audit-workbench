@@ -1,12 +1,19 @@
-"""Document type assignment: what a document *is*, and who decided.
+"""Document classification: what a document *is*, what it is *to this
+engagement*, and who decided each.
 
-Type is orthogonal to intake's ``category``. Category governs routing and the
-planning/voucher boundary — whether this engagement holds a document as
-transaction evidence at all; type governs what fields it is read under and which
-role it may fill in a cycle. Neither derives from the other, and a document may
-carry both — ``category: contract, document_type: employment_contract``. Both
-have to say yes before a schema is induced: an approval matrix is genuinely a
+Two answers, one record. ``category`` says whether the engagement holds the
+document as transaction evidence or as planning material; ``document_type`` says
+what form it takes and therefore which fields it is read under and which role it
+may fill in a cycle. Neither derives from the other, and both have to say yes
+before a schema is induced: an approval matrix is genuinely a
 ``delegation_of_authority`` and genuinely still policy.
+
+Category used to be guessed at intake from the filename. It is now read from the
+document's opening page by ``documents.categorized``, one stage ahead of the
+type, because a filename cannot support the answer and a wrong one is not merely
+imprecise — a category outside both sets makes a document invisible, and one on
+the wrong side of the partition either replaces planning's narrative with a
+record dump or withholds evidence from the cycle entirely.
 
 Every assignment records ``assigned_by``. That is not bookkeeping: a
 reclassification rerun is what makes retyping useful — coin one type and the
@@ -81,6 +88,13 @@ def _read(workspace: Workspace, document_id: str) -> dict:
 
 def empty() -> dict:
     return {
+        "category": None,
+        "category_assigned_by": None,
+        "category_assigned_at": None,
+        "category_confidence": None,
+        "category_rationale": "",
+        "category_agent_run_id": None,
+        "category_unit_id": None,
         "document_type": None,
         "document_type_other": None,
         "assigned_by": None,
@@ -100,6 +114,41 @@ def classification(workspace: Workspace, document_id: str) -> dict:
 
 def document_type(workspace: Workspace, document_id: str) -> str:
     return str(classification(workspace, document_id).get("document_type") or "")
+
+
+def category(workspace: Workspace, document_id: str) -> str:
+    """What this engagement holds the document as. Empty until page one is read.
+
+    The sidecar answers where it has one, and the document entry is the fallback.
+    Both halves are needed. The sidecar is what readiness asks, because a
+    capability's workspace handle is routinely several revisions behind and a
+    lazily hydrated collection read from it would report a document
+    uncategorized moments after it was categorized. The entry is what an upload
+    that named a category outright wrote, before any stage ran — an explicit
+    answer that should not have to wait for a model to agree with it.
+
+    The fallback cannot go stale the way a bare entry read would: a value
+    written *during* a run goes to the sidecar, which wins here, and a value
+    present only on the entry was there from the revision the document arrived
+    at.
+    """
+
+    stored = str(classification(workspace, document_id).get("category") or "")
+    if stored:
+        return stored
+    for item in workspace.documents:
+        if str(item.get("id")) == str(document_id):
+            return str(item.get("category") or "")
+    return ""
+
+
+def is_categorized(workspace: Workspace, document_id: str) -> bool:
+    return bool(category(workspace, document_id))
+
+
+def is_category_auditor_assigned(workspace: Workspace, document_id: str) -> bool:
+    record = classification(workspace, document_id)
+    return str(record.get("category_assigned_by") or "") == "auditor"
 
 
 def is_auditor_assigned(workspace: Workspace, document_id: str) -> bool:
@@ -164,6 +213,10 @@ def assign(
             "An 'other' classification must name what the document is."
         )
     record = {
+        # Merged onto what is stored, never replacing it: the category half of
+        # this record was written by an earlier stage, and rebuilding the file
+        # from the type alone would silently drop it.
+        **existing,
         "document_type": type_id,
         "document_type_other": label or None if type_id == document_types.OTHER else None,
         "assigned_by": assigned_by,
@@ -186,6 +239,69 @@ def assign(
     path = _path(workspace, document_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, record)
+    return record
+
+
+def assign_category(
+    workspace: Workspace,
+    document_id: str,
+    value: str,
+    *,
+    assigned_by: str,
+    confidence: str = "medium",
+    rationale: str = "",
+    agent_run_id: str = "",
+    unit_id: str = "",
+) -> dict:
+    """Record what this engagement holds one document as.
+
+    The same provenance rule the type carries: a model assignment against an
+    auditor's is not an error and is not applied, it returns what is stored. An
+    auditor who has said a document is policy has made a decision on the record,
+    and a rerun is not another decision.
+
+    Written twice, deliberately. The sidecar is authoritative and is what
+    readiness and the evidence gate read, because a capability's workspace handle
+    is routinely several revisions behind. The document entry carries a copy
+    because a dozen readers — planning context selection, the artifact index,
+    narration — hold a document dict and no workspace, and rewriting all of them
+    to reach a sidecar would be a far wider change than the answer moving here.
+
+    The entry is mutated in memory only; **the caller persists the workspace**.
+    Inside an executor that is ``mutate()``, which saves a callback that only
+    touched memory and publishes the revision.
+    """
+
+    if assigned_by not in ASSIGNERS:
+        raise WorkspaceError(f"Unknown assigner '{assigned_by}'.")
+    if confidence not in CONFIDENCES:
+        raise WorkspaceError(f"Unknown classification confidence '{confidence}'.")
+    document = _require_document(workspace, document_id)
+    value = str(value or "").strip().lower()
+    if value not in intake.DOCUMENT_CATEGORIES:
+        raise WorkspaceError(f"Unknown document category '{value}'.")
+    existing = classification(workspace, document_id)
+    if assigned_by == "model" and str(existing.get("category_assigned_by") or "") == "auditor":
+        return existing
+
+    record = {
+        **existing,
+        "category": value,
+        "category_assigned_by": assigned_by,
+        "category_assigned_at": utcnow(),
+        "category_confidence": confidence,
+        "category_rationale": str(rationale or "").strip(),
+        # Which run and unit wrote this. The type half records the same, and for
+        # the same reason: the reconciler has to tell an interrupted commit that
+        # landed from one that never ran, and a category is not distinctive
+        # enough to prove it wrote itself.
+        "category_agent_run_id": str(agent_run_id or "") or None,
+        "category_unit_id": str(unit_id or "") or None,
+    }
+    path = _path(workspace, document_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, record)
+    document["category"] = value
     return record
 
 
@@ -270,6 +386,22 @@ def classifiable(workspace: Workspace) -> list[dict]:
     return values
 
 
+def uncategorized_ids(workspace: Workspace) -> list[str]:
+    """Readable documents with no category yet. What ``documents.categorized``
+    expands over.
+
+    Drawn from :func:`classifiable` rather than every document, because the
+    category is read from page one and a document with no extracted text has no
+    page one. The text capability owns that gap and reports it.
+    """
+
+    return [
+        str(document.get("id"))
+        for document in classifiable(workspace)
+        if not is_categorized(workspace, str(document.get("id")))
+    ]
+
+
 def transaction_evidence(workspace: Workspace) -> list[dict]:
     """Classifiable documents intake routed as transaction-level source material.
 
@@ -299,7 +431,8 @@ def transaction_evidence(workspace: Workspace) -> list[dict]:
     return [
         document
         for document in classifiable(workspace)
-        if str(document.get("category") or "") in intake.VOUCHER_DOCUMENT_CATEGORIES
+        if category(workspace, str(document.get("id")))
+        in intake.EVIDENCE_DOCUMENT_CATEGORIES
     ]
 
 

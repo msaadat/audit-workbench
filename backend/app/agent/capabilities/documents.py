@@ -39,6 +39,7 @@ from ..workflows import documents as documents_workflow
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "documents.text_ready",
+    "documents.categorized",
     "documents.types_classified",
     "documents.schemas_sampled",
     "documents.schemas_induced",
@@ -92,7 +93,12 @@ def _requested_ids(scope: dict) -> tuple[str, ...]:
 
 
 def _planning_relevant(document: dict) -> bool:
-    """Whether a document is eligible for unscoped audit planning."""
+    """Whether a document is eligible for unscoped audit planning.
+
+    Reads the entry's mirrored copy rather than the sidecar, because callers hold
+    a document dict. An unset category is relevant — a document nothing has read
+    yet must stay in scope, or the stage that would categorize it never sees it.
+    """
 
     category = str(document.get("category") or "")
     return not category or category in intake.PLANNING_DOCUMENT_CATEGORIES
@@ -119,7 +125,10 @@ def analysis_profile(workspace: Workspace, document_id: str) -> str:
     )
     if document is None:
         return "standard"
-    if str(document.get("category") or "") not in intake.VOUCHER_DOCUMENT_CATEGORIES:
+    if (
+        document_classification.category(workspace, document_id)
+        not in intake.EVIDENCE_DOCUMENT_CATEGORIES
+    ):
         return "standard"
     document_type = document_classification.document_type(workspace, document_id)
     if document_type and document_schemas.load_schema(workspace, document_type):
@@ -164,6 +173,40 @@ def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
         requested=requested,
         unknown=tuple(dict.fromkeys(unknown)),
         ambiguity=ambiguity,
+    )
+
+
+def corpus_scope(workspace: Workspace, scope: dict) -> DocumentScope:
+    """Every readable document, whatever the run's analysis scope.
+
+    Three capabilities run over the corpus rather than the planning-scoped
+    subset: text extraction, categorization and type classification. What a
+    document *is* is not a planning question, and asking it of the planning
+    subset made an audit run answer it about nothing.
+
+    The bound this lifts is real and stays where it belongs. ``planning`` mode
+    exists so an unscoped audit does not push eighty documents through the
+    expensive analysis pass, and ``documents.analysis_chunks_ready`` still honours
+    it. But the cheap stages ahead of it were bounded by the same rule, and
+    ``_planning_relevant`` is disjoint from the evidence category by construction
+    — so an audit run extracted no evidence text, classified no evidence, induced
+    no schema, and ``documents.schemas_induced`` reported satisfied having
+    induced nothing. Both Phase 8 edges into ``planning.rcm_ready`` were then
+    satisfied by an empty vocabulary, and the RCM was written against fields no
+    document stated.
+
+    An explicitly named document set still wins: naming files is the auditor
+    saying which documents this run is about, and that is not overridden here.
+    """
+
+    if _requested_ids(scope):
+        return resolve_document_scope(workspace, scope)
+    known = {str(item.get("id")): item for item in workspace.documents}
+    return DocumentScope(
+        document_ids=tuple(sorted(known)),
+        requested=(),
+        unknown=(),
+        ambiguity=None,
     )
 
 
@@ -433,7 +476,7 @@ def has_usable_analysis(workspace: Workspace, document_id: str) -> bool:
 # documents.text_ready (P9.3)
 # --------------------------------------------------------------------------- #
 def _text_ready(workspace: Workspace, scope: dict) -> Readiness:
-    document_scope = resolve_document_scope(workspace, scope)
+    document_scope = corpus_scope(workspace, scope)
     blocked = _unknown_documents(document_scope)
     if blocked is not None:
         return blocked
@@ -460,7 +503,7 @@ def _text_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 
 def _text_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    document_scope = resolve_document_scope(workspace, scope)
+    document_scope = corpus_scope(workspace, scope)
     known = {str(item.get("id")): item for item in workspace.documents}
     forced = _forced(scope)
     return [
@@ -494,6 +537,111 @@ def _documents_text_ready() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
+# documents.categorized
+# --------------------------------------------------------------------------- #
+def _categorized_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Every readable document says what this engagement holds it as.
+
+    Unlike the type, there is no truthful "none of these fits": the four values
+    partition the corpus by construction, so a document without one is a gap and
+    is reported as one rather than passed over.
+    """
+
+    document_scope = corpus_scope(workspace, scope)
+    blocked = _unknown_documents(document_scope)
+    if blocked is not None:
+        return blocked
+    scoped = set(document_scope.document_ids)
+    pending = [
+        document_id
+        for document_id in document_classification.uncategorized_ids(workspace)
+        if document_id in scoped
+    ]
+    categorized = [
+        document_id
+        for document_id in scoped
+        if document_classification.is_categorized(workspace, document_id)
+    ]
+    details = {
+        "documents": len(scoped),
+        "categorized": len(categorized),
+        "evidence": len(document_classification.transaction_evidence(workspace)),
+    }
+    if pending:
+        return Readiness(
+            "missing",
+            (
+                f"{counted(len(pending), 'document')} "
+                f"{verb(len(pending), 'has', 'have')} no category",
+            ),
+            details=details,
+        )
+    return Readiness("satisfied", details=details)
+
+
+def _categorized_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per document still to be categorized.
+
+    The unit carries the opening page it will be asked about, from the same
+    ``classification_text`` the type worker reads, so both calls agree on what
+    "page one" means and a document is never categorized from a wider window
+    than it is typed from.
+    """
+
+    document_scope = corpus_scope(workspace, scope)
+    known = {str(item.get("id")): item for item in workspace.documents}
+    scoped = set(document_scope.document_ids)
+    # A forced regeneration does **not** re-ask this. Every other document stage
+    # widens under force, and this one deliberately does not: re-categorizing
+    # can move a document across the planning/evidence partition mid-run, which
+    # takes its type, its schema and its extraction with it — a refresh asking
+    # for one document's analysis would silently invalidate the vocabulary the
+    # rest of the corpus was read under. Correcting a category is an auditor
+    # assignment, the same answer the type gives, and it is not overwritten by
+    # any rerun.
+    candidates = [
+        document_id
+        for document_id in document_classification.uncategorized_ids(workspace)
+        if document_id in scoped and document_id in known
+    ]
+    return [
+        UnitSpec(
+            semantic_unit_id("document_category", document_id),
+            "document_category",
+            f"Classify document — {known[document_id].get('title') or document_id}",
+            (f"document:{document_id}",),
+            {
+                "document_id": document_id,
+                "title": str(known[document_id].get("title") or ""),
+                "text": document_classification.classification_text(
+                    workspace, document_id
+                ),
+            },
+        )
+        for document_id in dict.fromkeys(candidates)
+    ]
+
+
+def _documents_categorized() -> Capability:
+    return Capability(
+        "documents.categorized",
+        "document_categories",
+        "Document classification",
+        "document_category",
+        documents_workflow.dependencies("documents.categorized"),
+        _categorized_ready,
+        _categorized_units,
+        context={"document_category": "documents.category"},
+        # Sequential, for the reason the type capability is: the commit mirrors
+        # the category onto the shared ``documents`` collection so the readers
+        # that hold a document dict keep working, and two units landing at once
+        # would race on it. Independence of inputs is not independence of
+        # commits.
+        invalidate_on=("documents",),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # documents.types_classified
 # --------------------------------------------------------------------------- #
 def _classified_ready(workspace: Workspace, scope: dict) -> Readiness:
@@ -506,7 +654,7 @@ def _classified_ready(workspace: Workspace, scope: dict) -> Readiness:
     classifiable says so rather than passing quietly.
     """
 
-    document_scope = resolve_document_scope(workspace, scope)
+    document_scope = corpus_scope(workspace, scope)
     blocked = _unknown_documents(document_scope)
     if blocked is not None:
         return blocked
@@ -545,7 +693,7 @@ def _classified_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     moves and the remaining ``other`` documents are swept again.
     """
 
-    document_scope = resolve_document_scope(workspace, scope)
+    document_scope = corpus_scope(workspace, scope)
     known = {str(item.get("id")): item for item in workspace.documents}
     scoped = set(document_scope.document_ids)
     # Classification runs over transaction evidence only. A forced regeneration
@@ -1117,6 +1265,7 @@ STAGE_CHECKPOINTS: dict[str, str] = {
 
 _BUILDERS = {
     "documents.text_ready": _documents_text_ready,
+    "documents.categorized": _documents_categorized,
     "documents.types_classified": _documents_types_classified,
     "documents.schemas_sampled": _documents_schemas_sampled,
     "documents.schemas_induced": _documents_schemas_induced,

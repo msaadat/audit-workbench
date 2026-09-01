@@ -473,7 +473,7 @@ def test_auto_planning_selects_planning_relevant_documents_deterministically(
         ws,
         "Invoice 42.txt",
         b"Invoice 42 was paid on 3 March for stationery supplied by Acme Limited.",
-        category="voucher",
+        category="evidence",
     )
 
     fake = configure_planning_llm(monkeypatch)
@@ -510,9 +510,17 @@ def test_auto_planning_selects_planning_relevant_documents_deterministically(
         item for item in activity if item.get("stage") in planning_stages
     ]
     assert any(policy["id"] in item.get("document_ids", []) for item in planning_activity)
-    assert not any(
-        voucher["id"] in item.get("document_ids", []) for item in planning_activity
-    )
+    # The voucher now appears in planning-stage provenance as a *listing* — its
+    # name and category — because it has extracted text at all, which it did not
+    # before: text extraction was bounded by the planning scope, so an audit run
+    # never read a voucher and it could not be a candidate for anything. That
+    # bound is what left schemas_induced satisfied having induced nothing.
+    #
+    # The guarantee is about content, not candidacy, so it is asserted on what
+    # every planning stage was actually shown.
+    for call in fake.calls:
+        if call["tag"] in planning_stages:
+            assert "Invoice 42 was paid" not in call["messages"][-1]["content"]
 
 
 def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeypatch):

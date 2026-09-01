@@ -28,96 +28,47 @@ def _stage(ws, batch, relative_path, content):
     )
 
 
-def test_deterministic_document_categories_use_safe_filename_metadata():
-    def classify(path):
-        return intake.deterministic_classification({
-            "relative_path": path,
-            "local_metadata": {"route": "document", "parse_ok": True},
-        })["document_category"]
+def test_intake_proposes_no_document_category():
+    """The filename ladder is gone, and nothing replaces it here.
 
-    assert classify("Planning/Procurement SOP Extracts.docx") == "policy"
-    assert classify("Planning/Minutes of Meeting - CFO.docx") == "minutes"
-    assert classify("Planning/Email from Senior.docx") == "correspondence"
-    assert classify("Samples/INV001_Signed_Payment_Voucher.pdf") == "voucher"
-    for filename in (
-        "INV2024004_Invoice.pdf",
-        "PO2024004_Purchase_Order.pdf",
-        "REQ2024009_Purchase_Requisition.pdf",
-        "GRN2024004_Signed_Receipt.pdf",
-        "Supplier_Quotation_1042.pdf",
-    ):
-        assert classify(f"Samples/Transaction-104/{filename}") == "voucher"
+    Four tests used to stand at this spot pinning what a stem should be read as:
+    ``Procurement SOP Extracts`` policy, ``INV2024004_Invoice`` voucher, a
+    treasury dealing ticket voucher rather than the ``other`` a hand-kept P2P
+    vocabulary once made of a whole treasury sample. They were defending a
+    question intake should not have been answering. Its own prompt conceded the
+    point — filenames "are not evidence of document content" — and the ladder's
+    mistakes were not near-misses: a category outside both the planning and
+    evidence sets made a document invisible to an audit run entirely.
 
-    # A broad "approval" match used to classify ordinary planning records as
-    # transaction evidence. Transaction classification now relies on a
-    # document signal in the filename instead.
-    assert classify("Planning/Financial_Approval_Matrix.docx") == "policy"
-    # A dealer or counterparty limit matrix is delegation-of-authority material
-    # by another name, and every limit test in a treasury engagement cites it.
-    assert classify("Planning/Counterparty_and_Dealer_Limit_Matrix.docx") == "policy"
-    assert classify("Planning/March_Approval_Memo.pdf") == "other"
-
-
-def test_transaction_evidence_vocabulary_spans_engagement_areas():
-    """The voucher rung is not procure-to-pay only.
-
-    Its vocabulary comes from the document-type catalogue, so a treasury
-    dealing ticket and a payroll register have to be recognised as readily as a
-    purchase order. Before this the list was hand-kept and P2P-shaped, and a
-    whole treasury sample classified as ``other``.
+    What a document is to this engagement is now read from its opening page by
+    ``documents.categorized``. See ``test_document_categories.py``, which pins
+    the partition those values form and the run that assigns them.
     """
 
     def classify(path):
         return intake.deterministic_classification({
             "relative_path": path,
             "local_metadata": {"route": "document", "parse_ok": True},
-        })["document_category"]
+        })
 
-    for filename in (
-        # treasury and banking
-        "TD-2025-0094_Dealing_Ticket.pdf",
-        "CNF-2025-0094_Counterparty_Confirmation.pdf",
-        "PMT-2025-00074_Payment_Instruction.pdf",
-        "STL-2025-0074_Nostro_Account_Statement.pdf",
-        "BR-003-2025-0094_Broker_Contract_Note.pdf",
-        "LC-2025-114_Letter_of_Credit.pdf",
-        "Cheque_100234.pdf",
-        # payroll, logistics, fixed assets, general ledger, tax, order to cash
-        "Payslip_EMP-2201_June.pdf",
-        "Payroll_Register_2025_06.pdf",
-        "AWB-77120_Air_Waybill.pdf",
-        "Asset_Disposal_Form_FA-118.pdf",
-        "JV-2025-0431_Journal_Entry.pdf",
-        "Tax_Payment_Receipt_Q1.pdf",
-        "SO-2025-0012_Sales_Order.pdf",
+    for path in (
+        "Planning/Procurement SOP Extracts.docx",
+        "Planning/Minutes of Meeting - CFO.docx",
+        "Samples/INV2024004_Invoice.pdf",
+        "Samples/Deal-0094/TD-2025-0094_Dealing_Ticket.pdf",
+        "Planning/March_Approval_Memo.pdf",
     ):
-        assert classify(f"Samples/Deal-0094/{filename}") == "voucher", filename
+        assert classify(path)["document_category"] is None, path
 
 
-def test_transaction_evidence_does_not_claim_planning_material():
-    def classify(path):
-        return intake.deterministic_classification({
-            "relative_path": path,
-            "local_metadata": {"route": "document", "parse_ok": True},
-        })["document_category"]
+def test_a_model_proposal_cannot_reintroduce_a_category():
+    """The intake worker sees filenames and metadata, which is the wrong evidence.
 
-    # Contract material stays contract material even though the transaction
-    # rung is now tested before it, because named contracts are held out of the
-    # vocabulary rather than reached by rung order.
-    assert classify("Planning/Employment_Contract_Ali.docx") == "contract"
-    assert classify("Planning/Loan_Agreement_2024.docx") == "contract"
-    assert classify("Planning/Service_Agreement_Vendor.docx") == "contract"
-    # Period-end analytical artefacts summarise transactions, they do not
-    # evidence one.
-    assert classify("Planning/Trial_Balance_June.pdf") == "other"
-    assert classify("Planning/Financial_Statements_2024.pdf") == "other"
-    # Ordinary words that are also document-type aliases must not match on
-    # their own.
-    assert classify("Planning/Vendor_Proposal_Summary.pdf") == "other"
-    assert classify("Planning/Billing_Overview.pdf") == "other"
+    It still refines the route and the proposed name. A category it offered
+    would be answering the page-one question from the one input that cannot
+    settle it, so the merge drops it.
+    """
 
-
-def test_model_cannot_replace_high_confidence_transaction_category():
     item = {
         "id": "invoice",
         "relative_path": "Samples/INV2024004_Invoice.pdf",
@@ -131,9 +82,11 @@ def test_model_cannot_replace_high_confidence_transaction_category():
         "route": "document",
         "document_category": "evidence",
         "confidence": "high",
+        "proposed_name": "invoice_2024004",
     }])
 
-    assert item["classification"]["document_category"] == "voucher"
+    assert item["classification"]["document_category"] is None
+    assert item["classification"]["route"] == "document"
 
 
 def test_manifest_compare_is_incremental_and_reports_exclusions():
@@ -489,8 +442,9 @@ def test_intake_run_uses_model_file_classification(fake_agent_llm):
     document = workspaces.load_workspace(ws.id).documents[0]
     assert current["status"] == "completed", current.get("error")
     assert [call["tag"] for call in fake_agent_llm.calls] == ["agent:file_classification"]
-    assert imported["items"][0]["classification"]["document_category"] == "policy"
-    assert document["category"] == "policy"
+    assert imported["items"][0]["classification"]["document_category"] is None
+    # Imported uncategorized: page one has not been read yet.
+    assert document["category"] == ""
 
 
 def test_rootless_batches_share_one_direct_uploads_source():
@@ -523,8 +477,10 @@ def test_deterministic_classification_uses_document_confidence_tiers_only():
     known_category = classify("Docs/procurement policy.pdf", route="document")
     unknown_category = classify("Docs/scan0001.pdf", route="document")
     assert known_category["confidence"] == "high"
-    assert unknown_category["document_category"] == "other"
-    assert unknown_category["confidence"] == "medium"
+    assert unknown_category["document_category"] is None
+    # No middle tier survives. Confidence reports whether the file parsed,
+    # which is the only thing intake still decides about a document.
+    assert unknown_category["confidence"] == "high"
 
 
 def test_apply_endpoint_imports_files_without_an_agent_run():
@@ -555,7 +511,7 @@ def test_apply_endpoint_imports_files_without_an_agent_run():
         f"/api/workspaces/{ws.id}/folder-imports/{batch_id}/complete-upload"
     ).json()
     document_item = next(item for item in completed["items"] if item["relative_path"] == "scan0001.txt")
-    assert document_item["classification"]["document_category"] == "other"
+    assert document_item["classification"]["document_category"] is None
 
     applied = client.post(
         f"/api/workspaces/{ws.id}/folder-imports/{batch_id}/apply",
@@ -565,4 +521,4 @@ def test_apply_endpoint_imports_files_without_an_agent_run():
     assert applied.json()["summary"]["imported"] == 2
     reloaded = workspaces.load_workspace(ws.id)
     assert [table["source_id"] for table in reloaded.tables] == [compared["batch"]["source_id"]]
-    assert reloaded.documents[0]["category"] == "evidence"
+    assert reloaded.documents[0]["category"] == ""

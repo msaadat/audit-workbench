@@ -25,10 +25,11 @@ DOCUMENT_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
 }
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-CATEGORIES = {
-    "background", "policy", "regulation", "contract", "minutes", "voucher",
-    "evidence", "prior_report", "correspondence", "other",
-}
+#: Mirrors ``intake.DOCUMENT_CATEGORIES``. Kept as a literal rather than an
+#: import so ``documents`` stays a leaf module that upload validation can reach
+#: without pulling in intake; ``test_document_categories.py`` fails if the two
+#: drift.
+CATEGORIES = {"policy", "minutes", "background", "evidence"}
 
 
 def display_name(document: object, fallback: str = "") -> str:
@@ -110,8 +111,11 @@ def _validate_upload(filename: str, category: str) -> tuple[str, str, str]:
     suffix = Path(source).suffix.lower()
     if suffix not in DOCUMENT_SUFFIXES:
         raise WorkspaceError(f"Unsupported document type '{suffix or '<none>'}'.")
-    category = str(category or "other").lower()
-    if category not in CATEGORIES:
+    # Unset is the normal state on arrival. What a document is to this
+    # engagement is read from its opening page after import, so an upload that
+    # names no category is stating the truth rather than omitting a field.
+    category = str(category or "").lower()
+    if category and category not in CATEGORIES:
         raise WorkspaceError("Unknown document category.")
     return source, suffix, category
 
@@ -129,7 +133,7 @@ def add_document(
     filename: str,
     content: bytes,
     *,
-    category: str = "other",
+    category: str = "",
     note: str = "",
     replace: bool = False,
 ) -> dict:
@@ -180,7 +184,7 @@ def replace_document(workspace: Workspace, doc_id: str, filename: str, content: 
     from . import document_analysis, document_search
     with document_analysis.document_lock(workspace, doc_id):
         doc = _document(workspace, doc_id)
-        source, suffix, _ = _validate_upload(filename, str(doc.get("category") or "other"))
+        source, suffix, _ = _validate_upload(filename, str(doc.get("category") or ""))
         target = _documents_dir(workspace) / f"{doc_id}{suffix}"
         temporary = _documents_dir(workspace) / f".{doc_id}.upload{suffix}"
         temporary.write_bytes(content)

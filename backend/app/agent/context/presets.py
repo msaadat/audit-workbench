@@ -1690,6 +1690,31 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
+        preset_id="documents.category",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_category",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # The same opening page the type worker reads, deliberately:
+                    # both calls ask what the document is, from different angles,
+                    # and a category read from a wider window than the type would
+                    # let the two disagree about which document they saw.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(max_items=1, max_characters=6_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=1, max_characters=6_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
         preset_id="documents.classification",
         spec=ContextSpec(
             sources=(

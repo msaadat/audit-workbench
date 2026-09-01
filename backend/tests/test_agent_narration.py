@@ -776,9 +776,9 @@ def _documents():
          "source": "Financial Approval Matrix.docx"},
         {"id": "d3", "title": "minutes_of_meeting_cfo", "category": "minutes",
          "source": "Minutes of Meeting - CFO.docx"},
-        {"id": "v1", "title": "po2024004_purchase_order", "category": "voucher",
+        {"id": "v1", "title": "po2024004_purchase_order", "category": "evidence",
          "source": "PO2024004_Purchase_Order.pdf"},
-        {"id": "v2", "title": "grn2024004_signed_receipt", "category": "voucher",
+        {"id": "v2", "title": "grn2024004_signed_receipt", "category": "evidence",
          "source": "GRN2024004_Signed_Receipt.pdf"},
     ]
 
@@ -815,7 +815,7 @@ def test_context_note_reports_a_selector_decision_as_scope_not_failure():
     text = narration.context_note(manifest, _Workspace(_documents()))
 
     # Declined material is named by kind, which is what carries the decision.
-    assert "Holding back 2 vouchers — outside this step's scope." in text
+    assert "Holding back 2 transaction documents — outside this step's scope." in text
     assert "did not match" not in text
     assert "selector" not in text
 
@@ -850,7 +850,7 @@ def test_context_note_counts_one_document_when_pages_are_selected_separately():
 
 def test_context_note_groups_documents_by_category_beyond_the_naming_limit():
     documents = [
-        {"id": f"v{index}", "title": f"voucher_{index}", "category": "voucher",
+        {"id": f"v{index}", "title": f"voucher_{index}", "category": "evidence",
          "source": f"VOUCHER-{index}.pdf"}
         for index in range(10)
     ]
@@ -860,7 +860,7 @@ def test_context_note_groups_documents_by_category_beyond_the_naming_limit():
 
     text = narration.context_note(manifest, _Workspace(documents))
 
-    assert "10 vouchers" in text
+    assert "10 transaction documents" in text
     assert "VOUCHER-0.pdf" not in text
 
 

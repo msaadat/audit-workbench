@@ -39,6 +39,7 @@ from .model import (
 )
 
 ANALYSIS_EXECUTOR_ID = "documents.analysis"
+CATEGORY_EXECUTOR_ID = "documents.category"
 CLASSIFICATION_EXECUTOR_ID = "documents.classification"
 SCHEMA_EXECUTOR_ID = "documents.schema"
 
@@ -393,6 +394,170 @@ def reconcile_document_analysis(
         ),
         reason="This run's generated document analysis already holds.",
     )
+
+
+# --------------------------------------------------------------------------- #
+# document category
+# --------------------------------------------------------------------------- #
+@dataclass
+class DocumentCategoryExecutorTarget:
+    """Mutable target for one document's category assignment."""
+
+    workspace: Workspace
+    run_id: str
+    document_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Document category target requires a Workspace.")
+        for field_name in ("run_id", "document_id"):
+            value = str(getattr(self, field_name) or "").strip()
+            if not value:
+                raise ValueError(f"Document category target requires a {field_name}.")
+            setattr(self, field_name, value)
+
+
+def _category_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    document_id: str,
+    record: Mapping[str, object],
+) -> ExecutorResult:
+    refs = [document_ref(document_id)]
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, refs),
+        output={
+            # ``category_assigned_by`` is reported for the same reason the type
+            # half reports its assigner: an auditor deciding while the run was in
+            # flight leaves their answer standing, and the receipt has to say so.
+            "status": "committed",
+            "document_id": document_id,
+            "category": str(record.get("category") or ""),
+            "assigned_by": str(record.get("category_assigned_by") or ""),
+            "confidence": str(record.get("category_confidence") or ""),
+        },
+    )
+
+
+def execute_document_category(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Commit what this engagement holds one document as.
+
+    The commit writes the sidecar and mirrors the value onto the document entry,
+    both inside one ``mutate()``. The entry write is why this capability is
+    serialized: it lands on the shared ``documents`` collection, and two units
+    committing at once would race on it.
+    """
+
+    if not isinstance(raw_target, DocumentCategoryExecutorTarget):
+        raise WorkspaceError("Unsupported document category target.")
+    proposal = request.proposal
+    if not isinstance(proposal, Mapping):
+        raise WorkspaceError("Document category requires a proposal.")
+    value = str(proposal.get("category") or "")
+    if not value:
+        raise WorkspaceError("Document category proposal names no category.")
+    target = raw_target
+    state: dict[str, object] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        return document_classification.assign_category(
+            fresh,
+            target.document_id,
+            value,
+            assigned_by="model",
+            confidence=str(proposal.get("confidence") or "medium"),
+            rationale=str(proposal.get("rationale") or ""),
+            agent_run_id=target.run_id,
+            unit_id=request.unit_id,
+        )
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _category_result(
+        request,
+        committed.workspace,
+        revision_before=int(state["revision_before"]),
+        document_id=target.document_id,
+        record=dict(committed.value),
+    )
+
+
+def reconcile_document_category(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted category commit.
+
+    This commit touches the document entry, so the parent hash *does* move when
+    it lands — which makes parent equality say "nothing was written here", not
+    "the commit never ran": something else could have changed the document. The
+    sidecar's own provenance is what settles it, exactly as for the type half.
+
+    An auditor's category reconciles as applied whatever this unit proposed. The
+    commit path refuses to overwrite one, so the unit's outcome is that their
+    decision stands.
+    """
+
+    if not isinstance(raw_target, DocumentCategoryExecutorTarget):
+        raise WorkspaceError("Unsupported document category target.")
+    target = raw_target
+    current = Workspace(target.workspace.root)
+    record = document_classification.classification(current, target.document_id)
+    by = str(record.get("category_assigned_by") or "")
+    applied = by == "auditor" or (
+        str(record.get("category_unit_id") or "") == request.unit_id
+        and str(record.get("category_agent_run_id") or "") == target.run_id
+    )
+    if not applied:
+        parent_ref = document_ref(target.document_id)
+        actual = parent_hashes(current, [parent_ref])[parent_ref]
+        expected = request.expected_parents.get(parent_ref)
+        if actual != expected:
+            return ExecutorReconciliation(
+                "conflict",
+                reason=str(
+                    ParentConflict(parent_ref, str(expected), actual, current.revision)
+                ),
+            )
+        return ExecutorReconciliation("not_applied")
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_category_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            document_id=target.document_id,
+            record=record,
+        ),
+        reason="This run's document category already holds.",
+    )
+
+
+CATEGORY_EXECUTOR = ExecutorDefinition(
+    executor_id=CATEGORY_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_document_category,
+    reconciler=reconcile_document_category,
+)
+
+EXECUTORS.register(CATEGORY_EXECUTOR)
 
 
 # --------------------------------------------------------------------------- #

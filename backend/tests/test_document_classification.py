@@ -22,7 +22,7 @@ def ws() -> workspaces.Workspace:
         ("invoice-2.txt", b"Invoice No. INV-1043\nTotal Due USD 900.00"),
         ("odd-1.txt", b"Letter of indemnity in respect of a missing bill of lading."),
     ):
-        documents.add_document(workspace, name, body, category="voucher")
+        documents.add_document(workspace, name, body, category="evidence")
     return workspace
 
 

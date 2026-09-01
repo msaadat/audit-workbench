@@ -43,7 +43,7 @@ def _documents():
         {"id": "d_sop", "source": "Procurement SOP Extracts.docx", "title": "procurement_sop_extracts", "category": "policy"},
         {"id": "d_matrix", "source": "Financial Approval Matrix.docx", "title": "financial_approval_matrix", "category": "policy"},
         {"id": "d_min", "source": "Minutes of Meeting - CFO.docx", "title": "minutes_of_meeting_cfo", "category": "minutes"},
-        {"id": "d_vou", "source": "PO2024004_Purchase_Order.pdf", "title": "po2024004", "category": "voucher"},
+        {"id": "d_vou", "source": "PO2024004_Purchase_Order.pdf", "title": "po2024004", "category": "evidence"},
     ]
 
 

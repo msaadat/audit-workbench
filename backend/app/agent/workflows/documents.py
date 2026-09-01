@@ -7,6 +7,8 @@ readiness, unit expansion, context, workers, and executors to the capability IDs
 declared here; they do not redefine the edges.
 
 ``documents.text_ready`` extracts document text deterministically,
+``documents.categorized`` reads each document's opening page and says what this
+engagement holds it as — planning material or transaction evidence,
 ``documents.types_classified`` names what each document *is* from the closed
 global catalog, ``documents.schemas_sampled`` reads a small sample of each type
 and records the fields each sample carries, ``documents.schemas_induced`` unions
@@ -41,7 +43,8 @@ WORKFLOW_ID = "documents_workflow_v1"
 # consumes exactly what the previous one made durable.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.text_ready": (),
-    "documents.types_classified": ("documents.text_ready",),
+    "documents.categorized": ("documents.text_ready",),
+    "documents.types_classified": ("documents.categorized",),
     "documents.schemas_sampled": ("documents.types_classified",),
     "documents.schemas_induced": ("documents.schemas_sampled",),
     "documents.analysis_chunks_ready": (
@@ -57,6 +60,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
 # generated analysis.
 AUDIT_CAPABILITY_IDS: tuple[str, ...] = (
     "documents.text_ready",
+    "documents.categorized",
     "documents.types_classified",
     "documents.schemas_sampled",
     "documents.schemas_induced",
@@ -67,6 +71,7 @@ AUDIT_CAPABILITY_IDS: tuple[str, ...] = (
 # "Analyze these documents" requests the generated outcome. Auditor review is
 # never requested on the agent's behalf.
 FULL_DOCUMENT_OUTCOMES = [
+    "documents.categorized",
     "documents.types_classified",
     "documents.schemas_induced",
     "documents.analysis_generated",

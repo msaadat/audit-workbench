@@ -284,16 +284,14 @@ _NAMED_DOCUMENT_LIMIT = 8
 # when documents are too numerous to name, so the reader still learns what
 # kind of material was involved rather than only how much.
 _CATEGORY_LABELS: dict[str, tuple[str, str]] = {
-    "background": ("a background document", "background documents"),
     "policy": ("a policy document", "policy documents"),
-    "regulation": ("a regulation", "regulations"),
-    "contract": ("a contract", "contracts"),
     "minutes": ("a set of minutes", "sets of minutes"),
-    "voucher": ("a voucher", "vouchers"),
-    "evidence": ("an evidence document", "evidence documents"),
-    "prior_report": ("a prior report", "prior reports"),
-    "correspondence": ("a letter", "correspondence"),
-    "other": ("a document", "documents"),
+    "background": ("a background document", "background documents"),
+    "evidence": ("a transaction document", "transaction documents"),
+    # A document imported but not yet read. There is no ``other`` category any
+    # more, and an uncategorized document is genuinely one nothing has looked
+    # at rather than one that fits nothing.
+    "": ("a document", "documents"),
 }
 
 # Omission reasons are authored sentences from the context resolver
@@ -408,7 +406,7 @@ def _document_labels(records: list[dict], count: int, *, named: bool) -> list[st
     by_category: dict[str, int] = {}
     order: list[str] = []
     for item in records:
-        category = str(item.get("category") or "other").strip() or "other"
+        category = str(item.get("category") or "").strip()
         by_category[category] = by_category.get(category, 0) + 1
         if category not in order:
             order.append(category)
@@ -418,9 +416,7 @@ def _document_labels(records: list[dict], count: int, *, named: bool) -> list[st
     labels = []
     for category in order:
         total = by_category[category]
-        singular, plural = _CATEGORY_LABELS.get(
-            category, _CATEGORY_LABELS["other"]
-        )
+        singular, plural = _CATEGORY_LABELS.get(category, _CATEGORY_LABELS[""])
         labels.append(singular if total == 1 else f"{total} {plural}")
     if unknown > 0:
         labels.append(_count(unknown, "document"))

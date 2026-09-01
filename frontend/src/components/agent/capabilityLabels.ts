@@ -13,6 +13,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   // audit_workflow_v3
   'sources.imported': 'Sources',
   'documents.text_ready': 'Document content',
+  'documents.categorized': 'Document classification',
   'documents.types_classified': 'Document types',
   'documents.schemas_sampled': 'Document field readings',
   'documents.schemas_induced': 'Document schemas',

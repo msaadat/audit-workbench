@@ -76,7 +76,7 @@ def test_apm_adapters_reuse_document_and_methodology_boundaries(monkeypatch):
         workspace,
         "travel-guide.txt",
         "Travel claims require receipts.",
-        category="other",
+        category="background",
         summary="Travel reimbursement guidance.",
         notes="Inspect travel receipts.",
     )
@@ -888,7 +888,7 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
         workspace,
         "PO-1001.txt",
         "Purchase order PO-1001 total PKR 50,000.",
-        category="voucher",
+        category="evidence",
         summary="Purchase order.",
         notes="None.",
         citations=(

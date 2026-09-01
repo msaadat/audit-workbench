@@ -66,6 +66,7 @@ def _configured(monkeypatch, overrides: dict | None = None) -> FakeAgentLLM:
         ("Perform relevant joins and data analysis", "workflow", ANALYSIS, ["analysis.summarized"], "reuse_existing"),
         # Analyze selected documents.
         ("Analyse the selected documents", "workflow", DOCUMENTS, [
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
         "documents.analysis_generated",

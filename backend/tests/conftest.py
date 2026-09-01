@@ -318,6 +318,17 @@ class FakeAgentLLM:
         # The stages the surviving engines actually call. The deleted v1
         # pipeline's planning/rules/analyses/dashboard/summary scripts went
         # with it in Phase 12.
+        # A document nothing named a category for is planning material by
+        # default here. Choosing background rather than evidence keeps a
+        # fixture that never thought about categories out of induction and
+        # structured extraction, which is where a wrong default would be
+        # expensive rather than merely wrong. Tests about evidence say so, by
+        # passing a category to add_document or by overriding this.
+        "agent:document_category": {
+            "category": "background",
+            "confidence": "medium",
+            "rationale": "A fixture document with no stated category.",
+        },
         "agent:join_utility": _join_utility_response,
         "agent:analysis_reading": _analysis_reading_response,
         "agent:analysis_definitions": _analysis_definitions_response,

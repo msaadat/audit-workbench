@@ -163,7 +163,8 @@ def _policy_workspace(name: str = "Document workflow", *, text: str | None = Non
 def test_document_graph_declares_a_linear_closure_with_a_stable_hash():
     assert documents_workflow.DEPENDENCIES == {
         "documents.text_ready": (),
-        "documents.types_classified": ("documents.text_ready",),
+        "documents.categorized": ("documents.text_ready",),
+        "documents.types_classified": ("documents.categorized",),
         "documents.schemas_sampled": ("documents.types_classified",),
         "documents.schemas_induced": ("documents.schemas_sampled",),
         "documents.analysis_chunks_ready": (
@@ -174,11 +175,13 @@ def test_document_graph_declares_a_linear_closure_with_a_stable_hash():
         "documents.analysis_reviewed": ("documents.analysis_generated",),
     }
     assert documents_workflow.FULL_DOCUMENT_OUTCOMES == [
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
         "documents.analysis_generated",
     ]
     assert documents_workflow.outcomes_for_template("document_analysis") == [
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
         "documents.analysis_generated",
@@ -187,6 +190,7 @@ def test_document_graph_declares_a_linear_closure_with_a_stable_hash():
     registry = capability_registries.build_documents_registry()
     assert registry.closure(["documents.analysis_generated"]) == [
         "documents.text_ready",
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_sampled",
         "documents.schemas_induced",
@@ -242,6 +246,7 @@ def test_document_requests_route_to_the_narrowest_declaring_workflow():
     assert resolved["route"] == "workflow"
     assert resolved["workflow_definition"] == documents_workflow.WORKFLOW_ID
     assert resolved["requested_outcomes"] == [
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
         "documents.analysis_generated",
@@ -849,6 +854,7 @@ def test_reuse_does_not_assess_currency(monkeypatch):
     assert len([call for call in fake.calls if call["tag"] == MAP_TAG]) == 1
     assert finished["workflow"]["reused_capabilities"] == [
         "documents.text_ready",
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_sampled",
         "documents.schemas_induced",
@@ -960,14 +966,16 @@ def test_standalone_and_planning_use_the_same_workers_and_executor():
         "documents.analysis_chunk",
         "documents.analysis_visual_page",
         "documents.analysis_reduction",
+        "documents.category",
         "documents.classification",
         "documents.schema_sample",
         "documents.schema_reconcile",
         "documents.analysis_structured",
     } <= workers
-    assert len({name for name in workers if name.startswith("documents.")}) == 7
+    assert len({name for name in workers if name.startswith("documents.")}) == 8
     assert {name for name in executors if name.startswith("documents.")} == {
         "documents.analysis",
+        "documents.category",
         "documents.classification",
         "documents.schema",
     }
@@ -1000,7 +1008,7 @@ def _voucher_run(ws, voucher):
 
 def _voucher_workspace(name: str, source: bytes = GRN_SOURCE, filename="GRN2024004.txt"):
     ws = workspaces.create_workspace(name)
-    voucher = documents.add_document(ws, filename, source, category="voucher")
+    voucher = documents.add_document(ws, filename, source, category="evidence")
     documents.extract_document(ws, voucher["id"])
     return ws, voucher
 
@@ -1309,7 +1317,7 @@ def test_document_analysis_includes_vouchers_but_planning_default_excludes_them(
         ws, "Policy.txt", b"Purchases require documented approval.", category="policy"
     )
     voucher = documents.add_document(
-        ws, "PV-1.txt", b"Voucher PV-1 for PKR 100.", category="voucher"
+        ws, "PV-1.txt", b"Voucher PV-1 for PKR 100.", category="evidence"
     )
     ws = workspaces.load_workspace(ws.id)
 
@@ -1544,7 +1552,8 @@ def test_one_failed_sample_no_longer_blocks_induction():
     assert may_proceed("documents.schemas_induced", "documents.schemas_sampled")
     assert may_proceed("documents.analysis_chunks_ready", "documents.schemas_induced")
     assert may_proceed("documents.schemas_sampled", "documents.types_classified")
-    assert may_proceed("documents.types_classified", "documents.text_ready")
+    assert may_proceed("documents.types_classified", "documents.categorized")
+    assert may_proceed("documents.categorized", "documents.text_ready")
 
 
 def test_an_unrelated_dependency_is_not_waved_through():

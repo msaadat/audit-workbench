@@ -361,6 +361,7 @@ def test_the_rcm_waits_for_types_and_schemas():
 
     assert audit.DEPENDENCIES["planning.rcm_ready"] == (
         "planning.apm_ready",
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
     )

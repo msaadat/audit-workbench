@@ -31,109 +31,41 @@ DOCUMENT_SUFFIXES = frozenset(
     {".pdf", ".txt", ".md", ".markdown", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 )
 SUPPORTED_SUFFIXES = TABLE_SUFFIXES | DOCUMENT_SUFFIXES
+#: What a document is *to this engagement*. Four values, read from page one by
+#: ``documents.categorized`` rather than guessed from a filename.
+#:
+#: The partition is the load-bearing part, not the labels. Three planning values
+#: describe how the entity should operate; one evidence value is a record of a
+#: transaction. Every consumer tests set membership and none switches on an
+#: individual value, so the names are free to read well while the split carries
+#: the meaning.
+#:
+#: Exhaustive by construction: every value belongs to exactly one side, checked
+#: on import below. A value in neither is invisible — not planning material, so
+#: out of a planning-scoped run; not evidence, so never classified, never
+#: induced, never read under fields.
 DOCUMENT_CATEGORIES = frozenset(
-    {"background", "policy", "regulation", "contract", "minutes", "voucher", "evidence", "prior_report", "correspondence", "other"}
+    {"policy", "minutes", "background", "evidence"}
 )
 ROUTES = frozenset({"table", "document", "unsupported", "ignore"})
-PLANNING_DOCUMENT_CATEGORIES = frozenset(
-    {"background", "policy", "regulation", "contract", "minutes", "prior_report", "correspondence"}
-)
+PLANNING_DOCUMENT_CATEGORIES = frozenset({"policy", "minutes", "background"})
 # Transaction-level evidence: the only material read under its type's induced
 # schema, which extracts the structured records a cycle comparison reads.
-# Deliberately disjoint from ``PLANNING_DOCUMENT_CATEGORIES`` — a voucher is
+# Deliberately disjoint from ``PLANNING_DOCUMENT_CATEGORIES`` — evidence is
 # never planning material, and the planning/APM context selectors stay
 # constrained to that set so a voucher analysis can never enter a planning
 # prompt. The disjointness runs the other way too: planning material keeps its
 # narrative analysis, which is the form those selectors consume.
-VOUCHER_DOCUMENT_CATEGORIES = frozenset({"voucher"})
+EVIDENCE_DOCUMENT_CATEGORIES = frozenset({"evidence"})
+if PLANNING_DOCUMENT_CATEGORIES | EVIDENCE_DOCUMENT_CATEGORIES != DOCUMENT_CATEGORIES:
+    raise RuntimeError("Document categories must partition into planning and evidence.")
+if PLANNING_DOCUMENT_CATEGORIES & EVIDENCE_DOCUMENT_CATEGORIES:
+    raise RuntimeError("A document category cannot be both planning and evidence.")
 PLANNING_DOCUMENT_TERMS = re.compile(
     r"\b(policy|policies|procedure|procedures|process|manual|sop|guideline|"
     r"standard|regulation|control|charter|terms of reference|prior audit|minutes)\b",
     re.IGNORECASE,
 )
-# A ``voucher`` category denotes transaction-level source material, rather
-# than only a document literally titled "voucher". The vocabulary is taken from
-# the document-type catalogue instead of a hand-kept list, so a treasury
-# dealing ticket, a payroll register and a bill of lading are recognised on the
-# same footing as a purchase order, and adding a type to that catalogue extends
-# intake with it. Keep this filename-only so intake remains within its privacy
-# boundary: it has no document contents at this point.
-#
-# Three things are held out of the derivation:
-#   - the governance area, whose types are planning and contract material that
-#     the surrounding ladder already classifies;
-#   - period-end analytical artefacts, which summarise transactions rather than
-#     evidence one;
-#   - terms that are ordinary English before they are document types, and short
-#     abbreviations, which are admitted only with a record number after them
-#     (for example INV-1042 or PO2025-17) so "point" or "or" cannot match.
-_NON_VOUCHER_TYPE_IDS = frozenset(
-    {
-        "trial_balance",
-        "general_ledger_extract",
-        "financial_statements",
-        "accrual_schedule",
-        "depreciation_schedule",
-        "asset_register_extract",
-        # Contract material, whichever area the catalogue files it under.
-        "loan_agreement",
-        "employment_contract",
-    }
-)
-_UNSAFE_VOUCHER_TERMS = frozenset(
-    {
-        "bid", "bill", "check", "cover note", "estimate", "letter", "licence",
-        "license", "memo", "mr", "note", "or", "policy schedule",
-        "proposal", "purchase contract", "email",
-    }
-)
-# Preserved so the vocabulary can only grow: these were recognised before the
-# catalogue derivation existed, and "confirmation" joins them because bank,
-# trade, order and intercompany confirmations are all transaction evidence.
-_BASE_VOUCHER_TERMS = frozenset(
-    {
-        "confirmation", "delivery note", "goods receipt", "goods received",
-        "invoice", "packing slip", "payment request", "payment voucher",
-        "purchase order", "purchase requisition", "quotation", "quote",
-        "receipt", "voucher",
-    }
-)
-_BASE_VOUCHER_ABBREVIATIONS = frozenset({"inv", "po", "req", "grn"})
-
-
-def _voucher_vocabulary() -> tuple[list[str], list[str]]:
-    """Split the catalogue's names into standalone terms and abbreviations."""
-
-    terms = set(_BASE_VOUCHER_TERMS)
-    abbreviations = set(_BASE_VOUCHER_ABBREVIATIONS)
-    for definition in document_types.DEFINITIONS:
-        if not definition.active or definition.area == "governance":
-            continue
-        if definition.id in _NON_VOUCHER_TYPE_IDS:
-            continue
-        for name in (definition.label, *definition.aliases):
-            value = re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
-            if not value or value in _UNSAFE_VOUCHER_TERMS:
-                continue
-            if len(value.replace(" ", "")) <= 3:
-                abbreviations.add(value)
-            else:
-                terms.add(value)
-    return (sorted(terms, key=lambda value: (-len(value), value)),
-            sorted(abbreviations))
-
-
-def _voucher_filename_pattern() -> re.Pattern[str]:
-    terms, abbreviations = _voucher_vocabulary()
-    words = "|".join(r"\s+".join(re.escape(word) for word in term.split())
-                     for term in terms)
-    short = "|".join(r"\s+".join(re.escape(word) for word in term.split())
-                     for term in abbreviations)
-    return re.compile(rf"\b(?:{words})\b|\b(?:{short})[\s_-]*\d",
-                      re.IGNORECASE)
-
-
-TRANSACTION_EVIDENCE_FILENAME = _voucher_filename_pattern()
 MAX_SUGGESTED_PLANNING_DOCUMENTS = 8
 DIRECT_UPLOADS_LABEL = "Direct uploads"
 EXCLUDED_NAMES = frozenset({".ds_store", "thumbs.db"})
@@ -517,44 +449,17 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
     route = meta.get("route") if meta.get("parse_ok") else "unsupported"
     route = route if route in ROUTES else "unsupported"
     name = slugify(Path(item["relative_path"]).stem).replace("-", "_") or "imported_file"
-    label = re.sub(r"[_.-]+", " ", str(item.get("relative_path") or "").casefold())
-    # Folder names often describe the engagement rather than the individual
-    # record. Category signals should therefore come from the filename, not a
-    # potentially unrelated parent directory.
-    filename = re.sub(r"[_.-]+", " ", Path(item["relative_path"]).stem)
+    # Intake no longer proposes a category. What a document is *to this
+    # engagement* is read from its opening page by ``documents.categorized``,
+    # after import, because a filename cannot support the answer: the ladder
+    # that used to stand here matched tokens on the stem, and its own prompt
+    # conceded that filenames "are not evidence of document content". Left
+    # unset rather than defaulted, because an unset category is in scope for
+    # text extraction and a wrong one is not.
     document_category = None
-    if route == "document":
-        if any(token in label for token in ("minute", "meeting note")):
-            document_category = "minutes"
-        elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual", "approval matrix", "authority matrix", "limit matrix", "limits matrix", "delegation of authority")):
-            document_category = "policy"
-        elif any(token in label for token in ("regulation", "regulatory", "statute")):
-            document_category = "regulation"
-        # Ahead of the contract and correspondence rungs on purpose. Those
-        # match single ordinary words, so "contract" would claim a broker's
-        # contract note and "letter" would claim a letter of credit, both of
-        # which are transaction evidence. Named contract material is held out
-        # of the transaction vocabulary instead, so an employment contract or a
-        # loan agreement still falls through to ``contract``.
-        elif TRANSACTION_EVIDENCE_FILENAME.search(filename):
-            document_category = "voucher"
-        elif any(token in label for token in ("contract", "agreement")):
-            document_category = "contract"
-        elif any(token in label for token in ("email", "correspondence", "letter")):
-            document_category = "correspondence"
-        elif any(token in label for token in ("prior audit", "audit report")):
-            document_category = "prior_report"
-        elif any(token in label for token in ("org chart", "organisation chart", "organization chart", "briefing", "background")):
-            document_category = "background"
-        else:
-            document_category = "other"
-    uncertain_metadata = document_category == "other"
     if not meta.get("parse_ok"):
         confidence = "low"
         rationale = meta.get("error") or "Unsupported format."
-    elif uncertain_metadata:
-        confidence = "medium"
-        rationale = "Supported format parsed locally; the document category needs confirmation."
     else:
         confidence = "high"
         rationale = "Supported format parsed locally."
@@ -607,17 +512,9 @@ def merge_model_classifications(batch: dict, proposals: list[dict]) -> None:
         confidence = proposal.get("confidence")
         if route in ROUTES:
             current["route"] = route
-        # The model receives the same filename and technical metadata as the
-        # deterministic classifier, but no document text. It must not undo a
-        # high-confidence deterministic category in auto mode. Auditor edits
-        # still flow through ``apply_batch`` and remain unrestricted.
-        category_conflict = (
-            current.get("confidence") == "high"
-            and current.get("document_category")
-            and proposal.get("document_category") != current.get("document_category")
-        )
-        if proposal.get("document_category") in DOCUMENT_CATEGORIES and not category_conflict:
-            current["document_category"] = proposal["document_category"]
+        # No category is merged. The model here sees filenames and technical
+        # metadata and no document text, which is the wrong evidence for the
+        # question; ``documents.categorized`` answers it from page one instead.
         if confidence in ("high", "medium", "low"):
             current["confidence"] = confidence
         for key in ("subtype", "proposed_name", "rationale"):
@@ -647,8 +544,11 @@ def _validated_decision(item: dict, decision: dict) -> dict:
     action = base.get("proposed_action", base.get("action", "import"))
     if route not in ROUTES or action not in ("import", "ignore"):
         raise WorkspaceError(f"Invalid classification for '{item['relative_path']}'.")
-    if route == "document" and base.get("document_category") not in DOCUMENT_CATEGORIES:
-        base["document_category"] = "other"
+    # A category cannot arrive here: intake does not propose one and the review
+    # step no longer offers one. Dropping anything that does keeps the field
+    # single-sourced, so a stale caller cannot pin a document to a category
+    # chosen before anything read it.
+    base["document_category"] = None
     base["proposed_name"] = slugify(base.get("proposed_name") or Path(item["relative_path"]).stem).replace("-", "_")
     return base
 
@@ -780,7 +680,7 @@ def suggested_actions(workspace: Workspace, batch: dict) -> list[dict]:
         imported_documents.append(
             {
                 **document,
-                "category": classification.get("document_category") or document.get("category") or "other",
+                "category": classification.get("document_category") or document.get("category") or "",
                 "relative_path": item.get("relative_path"),
                 "subtype": classification.get("subtype"),
             }
@@ -792,7 +692,11 @@ def planning_actions_for_documents(imported_documents: list[dict]) -> list[dict]
     """Recommend planning only for guidance/context documents, using metadata."""
     planning_documents = []
     for document in imported_documents:
-        category = str(document.get("category") or "other")
+        # Categories are not known at import any more, so this offer falls back
+        # to the filename terms it always carried as a second signal. It is a
+        # suggestion made before anything has been read, and it says so by
+        # suggesting less rather than by guessing.
+        category = str(document.get("category") or "")
         searchable = " ".join(
             str(document.get(key) or "")
             for key in ("title", "source", "relative_path", "subtype")
@@ -891,7 +795,7 @@ def _incorporate_document_from_path(workspace: Workspace, staged: Path, item: di
             source_id=item.get("source_id"),
             relative_path=item["relative_path"],
             title=classification.get("proposed_name") or replaced.get("title") or Path(item["relative_path"]).stem,
-            category=classification.get("document_category") or "other",
+            category="",
             created_by="intake",
         )
         workspace.save()
@@ -908,7 +812,10 @@ def _incorporate_document_from_path(workspace: Workspace, staged: Path, item: di
         "source_id": item.get("source_id"),
         "relative_path": item["relative_path"],
         "title": classification.get("proposed_name") or Path(item["relative_path"]).stem,
-        "category": classification.get("document_category") or "other",
+        # Unset until ``documents.categorized`` reads page one. The document
+        # entry keeps the key so nothing downstream has to test for its
+        # absence; the answer lives in the classification sidecar.
+        "category": "",
         "pages": None,
         "sha1": item["sha1"],
         "text_state": "image_only" if (item.get("local_metadata") or {}).get("image_only") else "pending",

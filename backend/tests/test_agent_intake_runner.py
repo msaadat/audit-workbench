@@ -261,7 +261,7 @@ def test_a_repeated_classification_reuses_the_proposal_without_re_billing(
     IntakeRunner(ws, store.load_run(ws, record["id"]), handle)._classify(resumed)
 
     assert [call["tag"] for call in fake_agent_llm.calls] == ["agent:file_classification"]
-    assert resumed["items"][0]["classification"]["document_category"] == "policy"
+    assert resumed["items"][0]["classification"]["document_category"] is None
     assert (
         _sidecar(
             store.run_dir(ws, record["id"]) / "proposals",
@@ -352,7 +352,7 @@ def test_permission_mode_review_is_an_editable_approval_batch(fake_agent_llm):
                 "action": "edit",
                 "spec": {
                     **approval["items"][0]["spec"],
-                    "document_category": "background",
+                    "proposed_name": "renamed_by_auditor",
                 },
             }
         ],
@@ -364,8 +364,11 @@ def test_permission_mode_review_is_an_editable_approval_batch(fake_agent_llm):
         store.run_dir(ws, run["id"]) / "proposals", apply_unit_id(batch["id"])
     )
     assert accepted["origin"] == "auditor_approved"
-    assert accepted["proposal"]["decisions"][0]["document_category"] == "background"
-    assert workspaces.load_workspace(ws.id).documents[0]["category"] == "background"
+    # An approved decision no longer carries a category. Intake proposes none and
+    # the review step offers none; the answer comes from page one after import,
+    # so the imported document arrives uncategorized.
+    assert accepted["proposal"]["decisions"][0]["proposed_name"] == "renamed_by_auditor"
+    assert workspaces.load_workspace(ws.id).documents[0]["category"] == ""
 
 
 def test_apply_is_idempotent_for_an_already_completed_batch(fake_agent_llm):

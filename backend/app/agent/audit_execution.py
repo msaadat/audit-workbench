@@ -134,13 +134,13 @@ HIGHLIGHT_LIMIT = 3
 # Planning reads the governing material. Ordering by how directly a category
 # establishes control criteria puts the policy that sets the rule above the
 # meeting that discussed it.
+# Most authoritative first. The three planning categories, in the order an
+# auditor would weigh them: what the entity says it must do, what its board
+# decided, then everything else it agreed or was told.
 _PLANNING_CATEGORY_RANK = {
     "policy": 0,
-    "regulation": 1,
-    "contract": 2,
-    "minutes": 3,
-    "prior_report": 4,
-    "background": 5,
+    "minutes": 1,
+    "background": 2,
 }
 
 

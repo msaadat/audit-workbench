@@ -38,7 +38,7 @@ CONFIRMATION_FIELDS = [
 ]
 
 
-def _extracted(ws, name: str, document_type: str, *, category: str = "voucher"):
+def _extracted(ws, name: str, document_type: str, *, category: str = "evidence"):
     """A document classified and extracted under ``document_type``'s schema."""
 
     document = documents.add_document(
@@ -355,7 +355,7 @@ def test_analyze_repairs_a_retyped_document_without_touching_its_siblings(monkey
         documents.add_document(
             ws, f"cnf-{index}.txt",
             f"Confirmation CNF-2025-051{index}\nNotional USD {index}00".encode(),
-            category="voucher",
+            category="evidence",
         )
         for index in range(2)
     ]
@@ -397,7 +397,7 @@ def test_a_one_document_refresh_leaves_the_other_types_extractions_intact(monkey
         documents.add_document(
             ws, f"cnf-{index}.txt",
             f"Confirmation CNF-{index}\nNotional USD {index}00".encode(),
-            category="voucher",
+            category="evidence",
         )
         for index in range(2)
     ]
@@ -437,7 +437,7 @@ def test_a_forced_refresh_is_budgeted_for_the_schema_work_it_starts(monkeypatch)
         documents.add_document(
             ws, f"cnf-{index}.txt",
             f"Confirmation CNF-{index}\nNotional USD {index}00".encode(),
-            category="voucher",
+            category="evidence",
         )
         for index in range(4)
     ]
@@ -476,7 +476,7 @@ def test_a_retype_mid_run_conflicts_the_commit_rather_than_storing_it():
     ws = workspaces.load_workspace(ws.id)
     document = documents.add_document(
         ws, "cnf.txt", b"Confirmation CNF-2025-0517\nNotional USD 5,000,000",
-        category="voucher",
+        category="evidence",
     )
     dc.assign(ws, str(document["id"]), "investment_confirmation", assigned_by="model")
     ws = workspaces.load_workspace(ws.id)

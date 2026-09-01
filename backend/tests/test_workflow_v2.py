@@ -10,7 +10,7 @@ import httpx
 import polars as pl
 import pytest
 
-from app import data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
+from app import data_tests, doc_tests, document_analysis, document_classification, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
 from app.agent import action_runner, context_bundles, routing, runner, store, workflow
 from app.agent import capabilities as audit_capabilities
 from app.agent.audit_execution import (
@@ -179,6 +179,7 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
         ("analysis_execution", "workflow", ["analysis.executed"]),
         ("table_relationships", "workflow", ["data.joins_ready"]),
         ("document_analysis", "workflow", [
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
         "documents.analysis_generated",
@@ -414,7 +415,8 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         # scoped document-analysis edge rather than raw document text.
         "sources.imported": (),
         "documents.text_ready": (),
-        "documents.types_classified": ("documents.text_ready",),
+        "documents.categorized": ("documents.text_ready",),
+        "documents.types_classified": ("documents.categorized",),
         "documents.schemas_sampled": ("documents.types_classified",),
         "documents.schemas_induced": ("documents.schemas_sampled",),
         "documents.analysis_chunks_ready": (
@@ -433,6 +435,7 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": (
             "planning.apm_ready",
+            "documents.categorized",
             "documents.types_classified",
             "documents.schemas_induced",
         ),
@@ -478,6 +481,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "analysis.summarized",
         "sources.imported",
         "documents.text_ready",
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_sampled",
         "documents.schemas_induced",
@@ -529,6 +533,7 @@ def test_partial_goal_prunes_current_prerequisites():
         # The workspace carries no document, so every document capability is
         # satisfied and reused without expanding a single unit.
         "documents.text_ready",
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_sampled",
         "documents.schemas_induced",
@@ -1227,7 +1232,7 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
 
     unit = stage["units"][0]
     assert unit["kind"] == "document_qa_execution"
-    assert unit["status"] == "succeeded"
+    assert unit["status"] == "succeeded", unit.get("error")
     assert unit["result_refs"] == [
         f"doctest:{test['id']}:item:{item_id}:document:{document['id']}"
     ]
@@ -2218,18 +2223,91 @@ def test_stage_units_expand_one_per_uncovered_rcm_row(monkeypatch):
 
 def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):
     ws = _planning_workspace("Missing workflow evidence")
-    # An unrelated, non-planning-relevant document makes the document source
-    # available at all without perturbing planning readiness (a voucher is
-    # excluded from planning-context synthesis by the same category rule);
-    # the required REQ-404 evidence is still missing, which is the condition
-    # under test.
-    documents.add_document(
+    # An unrelated transaction document makes the document source available at
+    # all; the required REQ-404 evidence is still missing, which is the
+    # condition under test.
+    invoice = documents.add_document(
         ws, "Invoice 99.txt", b"Invoice 99 was paid to a vendor.",
-        category="voucher",
+        category="evidence",
+    )
+    # Classified up front, and the planning state re-stamped after it. Document
+    # text and classification now run over the corpus rather than the
+    # planning-relevant subset, so a voucher that no capability used to touch is
+    # now read and typed — which commits a revision and re-opens the whole
+    # planning chain this fixture seeds by hand. That bound is what this branch
+    # is not about, and it is the same bound that left ``schemas_induced``
+    # reporting satisfied having induced nothing.
+    document_classification.assign_category(
+        ws, invoice["id"], "evidence", assigned_by="model", confidence="high",
+    )
+    # Left in the ``other`` bucket on purpose: a typed voucher would pull schema
+    # induction in behind it, which commits again and re-opens planning for the
+    # same reason. This document exists to make the document source available,
+    # not to be vouched.
+    document_classification.assign(
+        ws, invoice["id"], "other", assigned_by="model", confidence="high",
+        other_label="A vendor invoice this test never vouches.",
+    )
+    ws.save()
+    ws = workspaces.load_workspace(ws.id)
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": (
+                "# Audit Planning Memorandum\n\n## Scope\nAccounts payable."
+            ),
+        }
     )
     ws = workspaces.load_workspace(ws.id)
     fake = FakeAgentLLM(
         {
+            # Planning context re-opens now that importing a document commits a
+            # revision, so the run reaches the synthesis turn this test used to
+            # skip. It is scripted rather than asserted on: the branch under
+            # test is fieldwork.
+            "agent:document_context": {
+                "context": {
+                    "objective": "Assess payments",
+                    "scope": "Accounts payable",
+                }
+            },
+            "agent:apm": {
+                "apm_markdown": (
+                    "# Audit Planning Memorandum\n\n"
+                    "## Engagement\nScope covers accounts payable.\n\n"
+                    "## Introduction and background\nPlanning background.\n\n"
+                    "## Process flow and understanding\nAccounts payable processing.\n\n"
+                    "## Prior audit findings\nNo information available.\n\n"
+                    "## Data analytics performed\nNo data analysis has been performed.\n\n"
+                    "## Fraud risk and management override\nManagement override is presumed.\n\n"
+                    "## Key risks and planned response\nTest duplicate payments.\n\n"
+                    "## Planning assumptions and matters reported\n- None."
+                )
+            },
+            "agent:rcm": {
+                "rows": [
+                    {
+                        "operation": "create",
+                        "process": "Accounts payable",
+                        "risk": "Duplicate payments are processed",
+                        "risk_rating": "high",
+                        "control": "Duplicate invoice validation",
+                        "control_type": "Automated preventive",
+                        "control_attributes": [
+                            {
+                                "key": "duplicate_payment_prevention",
+                                "assertion": "Operational",
+                                "requirement": (
+                                    "Duplicate invoice validation operates "
+                                    "before payment."
+                                ),
+                                "evidence_kind": "manual_inspection",
+                            }
+                        ],
+                        "test_refs": [],
+                    }
+                ]
+            },
             "agent:test_generate": {
                 "tests": [
                     {
@@ -2282,7 +2360,11 @@ def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):
         if stage["capability"] == "fieldwork.executed"
     )
 
-    assert completed["status"] == "completed_with_open_items"
+    assert completed["status"] == "completed_with_open_items", [
+        (s["capability"], u.get("status"), str(u.get("error"))[:200])
+        for s in completed["workflow"]["stages"] for u in (s.get("units") or [])
+        if u.get("status") == "failed"
+    ]
     assert execution["units"][0]["status"] == "blocked"
     assert current.evidence_requests[0]["blocked_unit_id"] == execution["units"][0]["id"]
     assert completed["workflow"]["next_outcomes"][0] == "fieldwork.executed"

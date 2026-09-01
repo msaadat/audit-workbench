@@ -2878,6 +2878,7 @@ def promotion_scope(workspace: Workspace, analysis_id: str) -> ContextScope:
 DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
+DOCUMENT_CATEGORY_SOURCE_ID = "document_category"
 DOCUMENT_CLASSIFICATION_SOURCE_ID = "document_classification"
 DOCUMENT_SCHEMA_SAMPLE_SOURCE_ID = "document_schema_sample"
 DOCUMENT_STRUCTURED_CHUNK_SOURCE_ID = "document_structured_chunk"
@@ -2976,6 +2977,35 @@ def document_chunk_scope(
                         "chunk_id": payload["id"],
                         "page": payload["page"],
                     },
+                ),
+            ),
+        },
+    )
+
+
+def document_category_scope(
+    workspace: Workspace,
+    document_id: str,
+    text: str,
+) -> ContextScope:
+    """Build the local scope for one document category unit.
+
+    The opening page and nothing else, for the reason the type unit gets nothing
+    else: a filename like ``PO-2025-17.pdf`` answers the question outright, and
+    supplying it would let the worker report what it read off the path. That
+    matters more here than for the type, because the filename is exactly the
+    evidence this stage exists to stop relying on.
+    """
+
+    payload = {"document_id": str(document_id), "page": 1, "text": str(text or "")}
+    return ContextScope(
+        candidates={
+            DOCUMENT_CATEGORY_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=f"document:{document_id}:page:1",
+                    source=payload,
+                    representations={"raw_pages": payload},
+                    metadata={"document_id": str(document_id), "page": 1},
                 ),
             ),
         },
@@ -3404,6 +3434,7 @@ __all__ = [
     "document_visual_page_scope",
     "document_test_document_candidates",
     "finding_draft_scope",
+    "document_category_scope",
     "intake_classification_scope",
     "intake_staged_file_candidates",
     "planning_context_document_candidates",

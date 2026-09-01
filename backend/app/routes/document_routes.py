@@ -54,7 +54,9 @@ async def list_documents(workspace_id: str):
 async def upload_documents(
     workspace_id: str,
     files: list[UploadFile] = File(...),
-    category: str = Form("other"),
+    # Unset by default. An uploader that knows what a document is may still
+    # say so, and that answer stands; anything else is read from page one.
+    category: str = Form(""),
     replace: bool = Form(False),
 ):
     ws = _ws(workspace_id)

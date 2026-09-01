@@ -229,6 +229,12 @@ def _document_workflow_run(ws, document_ids, *, action="analyze"):
 # hand-rolled fakes dispatch on the prompt tag rather than asserting a single
 # one, so the classification pass is answered and the assertion that follows
 # still pins the map call it cares about.
+CATEGORY_TAG = "agent:document_category"
+CATEGORY_REPLY = {
+    "category": "policy",
+    "confidence": "high",
+    "rationale": "It states a requirement rather than recording a transaction.",
+}
 CLASSIFY_TAG = "agent:document_classification"
 CLASSIFICATION_REPLY = {
     "document_type": "other",
@@ -244,6 +250,8 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
 
     def fake_chat(messages, **_kwargs):
         tag = messages[0]["content"].split("]", 1)[0].lstrip("[")
+        if tag == CATEGORY_TAG:
+            return {"content": json.dumps(CATEGORY_REPLY)}
         if tag == CLASSIFY_TAG:
             return {"content": json.dumps(CLASSIFICATION_REPLY)}
         assert tag == "agent:document_analysis_map"

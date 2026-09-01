@@ -51,6 +51,7 @@ from .capabilities.documents import (
 )
 from .context import (
     ContextResolver,
+    document_category_scope,
     document_chunk_scope,
     document_classification_scope,
     document_schema_sample_scope,
@@ -60,6 +61,7 @@ from .context import (
 )
 from .executors import EXECUTORS
 from .executors.documents import (
+    DocumentCategoryExecutorTarget,
     DocumentClassificationExecutorTarget,
     DocumentSchemaExecutorTarget,
     DOCUMENT_REVIEW_REQUIRED,
@@ -91,6 +93,7 @@ from .runtime import (
 )
 from .workers import WORKERS
 from .workers.documents import (
+    CATEGORY_WORKER_ID,
     CLASSIFY_WORKER_ID,
     INDUCE_WORKER_ID,
     RECONCILE_WORKER_ID,
@@ -651,6 +654,91 @@ class DocumentWorkflowExecution(BaseRunner):
         return None
 
     # ------------------------------------- documents.analysis_generated
+    def _bind_category(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Bind one document's category to the shared pipeline.
+
+        Nothing per-workspace travels on this unit beyond the page itself: the
+        four values are the same in every engagement, so unlike the type there is
+        no catalog to keep in step between the prompt and the validator.
+        """
+        self.ws = subject
+        document_id = self._parent(unit, "document")
+        extracted = analyzable(self.ws, document_id)
+        if extracted is None:
+            return self._unreadable_document(document_id)
+        unit_input = dict(unit.get("input_payload") or {})
+        text = str(unit_input.get("text") or "") or document_classification.classification_text(
+            self.ws, document_id
+        )
+        if not text:
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (),
+                "This document has no extracted text to classify it from.",
+            )
+        task = self.add_task(
+            "document_categories",
+            "workflow:document_categories",
+            "Document classification",
+        )
+        target = DocumentCategoryExecutorTarget(self.ws, self.run["id"], document_id)
+        expected = parent_hashes(self.ws, [document_ref(document_id)])
+
+        request = UnitPipelineRequest(
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            worker_id=CATEGORY_WORKER_ID,
+            executor_id="documents.category",
+            unit_input={
+                "kind": unit.get("kind"),
+                "input_sha1": unit.get("input_sha1"),
+                "parent_refs": list(unit.get("parent_refs") or []),
+                "document_id": document_id,
+                "title": str(unit_input.get("title") or ""),
+                "text": text,
+            },
+            activity={
+                "artifact_refs": list(unit.get("parent_refs") or []),
+                "document_ids": [document_id],
+                "task_id": task["id"],
+                "page_ranges": [1],
+            },
+            expected_revision=self.ws.revision,
+            expected_parents=expected,
+            capability_definition_hash=workflow.capability_definition_hash(capability),
+            # What an engagement holds a document as is a statement, not evidence
+            # an auditor signs off. It is revisable — by the same auditor
+            # override the type carries — which is where their judgement enters.
+            approval_kind=None,
+            proposal_reference=unit.get("proposal_sidecar"),
+            receipt_reference=unit.get("receipt_sidecar"),
+        )
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                document_category_scope(self.ws, document_id, text),
+            )
+
+        return BoundUnitPipeline(
+            request=request,
+            target=target,
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+        )
+
     def _bind_classification(
         self,
         subject: Workspace,
@@ -1561,7 +1649,10 @@ class DocumentWorkflowExecution(BaseRunner):
             )
             if document is None:
                 continue
-            if str(document.get("category") or "") not in intake.VOUCHER_DOCUMENT_CATEGORIES:
+            if (
+                document_classification.category(self.ws, document_id)
+                not in intake.EVIDENCE_DOCUMENT_CATEGORIES
+            ):
                 continue
             if analysis_profile(self.ws, document_id) == "structured":
                 continue
@@ -1742,7 +1833,8 @@ class DocumentWorkflowExecution(BaseRunner):
 # by name. Removing a blockage without reporting what now flows past it would
 # have traded a loud stop for a silent downgrade.
 _PARTIAL_DEPENDENCIES = {
-    "documents.types_classified": {"documents.text_ready"},
+    "documents.categorized": {"documents.text_ready"},
+    "documents.types_classified": {"documents.categorized"},
     "documents.schemas_sampled": {"documents.types_classified"},
     "documents.schemas_induced": {"documents.schemas_sampled"},
     "documents.analysis_chunks_ready": {
@@ -1761,6 +1853,10 @@ _PIPELINE_BINDERS = {
     "documents.schemas_induced": (
         "_bind_schema",
         {"worker": RECONCILE_WORKER_ID, "executor": "documents.schema"},
+    ),
+    "documents.categorized": (
+        "_bind_category",
+        {"worker": CATEGORY_WORKER_ID, "executor": "documents.category"},
     ),
     "documents.types_classified": (
         "_bind_classification",

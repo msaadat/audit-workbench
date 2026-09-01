@@ -81,12 +81,12 @@ def test_legacy_document_version_chain_hydrates_only_current_record():
 
 def test_document_classification_can_be_updated():
     ws = workspaces.create_workspace("Document classification")
-    doc = documents.add_document(ws, "agreement.txt", b"Supplier terms", category="other")
+    doc = documents.add_document(ws, "agreement.txt", b"Supplier terms", category="background")
 
-    updated = documents.update_document(ws, doc["id"], {"category": "contract"})
+    updated = documents.update_document(ws, doc["id"], {"category": "policy"})
 
-    assert updated["category"] == "contract"
-    assert workspaces.load_workspace(ws.id).documents[0]["category"] == "contract"
+    assert updated["category"] == "policy"
+    assert workspaces.load_workspace(ws.id).documents[0]["category"] == "policy"
     with pytest.raises(workspaces.WorkspaceError, match="Unknown document category"):
         documents.update_document(ws, doc["id"], {"category": "invalid"})
 

@@ -1206,6 +1206,137 @@ WORKERS.register(REDUCTION_WORKER)
 
 
 # --------------------------------------------------------------------------- #
+# document category
+# --------------------------------------------------------------------------- #
+CATEGORY_WORKER_ID = "documents.category"
+DOCUMENT_CATEGORY_SOURCE_ID = "document_category"
+
+#: The four values, in the order the prompt presents them: planning material
+#: first, evidence last, so the partition reads as a partition.
+CATEGORY_VALUES = ("policy", "minutes", "background", "evidence")
+
+CATEGORY_SYSTEM = f"""[agent:document_category]
+Say what the supplied document is *to an audit* — one of four values.
+
+  policy      how the entity says it should operate: a policy, a procedure, a
+              manual, a regulation, an authority or approval matrix, a
+              delegation of authority, a signature schedule
+  minutes     minuted decisions of a governing body: board or committee
+              minutes, a resolution
+  background  any other planning material: a contract or agreement, a prior
+              audit report, correspondence, an org chart, a briefing
+  evidence    a record of one transaction or one step in it: an invoice, a
+              purchase order, a goods receipt, a payslip, a timesheet, a
+              payment instruction, a dealing ticket, a counterparty
+              confirmation, a bank statement, a bill of lading, a journal
+              voucher, a tax payment receipt
+
+The split that matters is the last one against the first three. Policy, minutes
+and background describe how the entity operates, and are read as prose that an
+auditor plans against. Evidence is a record of something that happened, and is
+read under fields as material for a test.
+
+Two traps, both of which have been fallen into:
+
+  - Classify by what the document *is*, not what it is about. An approval matrix
+    setting payment limits is policy, not evidence, however many transactions it
+    governs. A memo discussing an invoice is background; the invoice is evidence.
+  - A document naming one transaction is evidence even where its form looks
+    administrative — a letter confirming one deal is evidence, a letter setting
+    out how deals are confirmed is policy.
+
+You are shown the opening page only. That is where a document states what it is.
+
+{{JSON_RULES_PLACEHOLDER}}
+Keys:
+  category    one of "policy", "minutes", "background", "evidence"
+  confidence  "high" | "medium" | "low"
+  rationale   one sentence naming what in the text decided it"""
+CATEGORY_SYSTEM = CATEGORY_SYSTEM.replace("{JSON_RULES_PLACEHOLDER}", JSON_RULES)
+
+
+def _category_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("The category response must be an object.")
+    value = str(payload.get("category") or "").strip().lower()
+    if value not in CATEGORY_VALUES:
+        raise WorkerResponseValidationError(
+            "category must be one of " + ", ".join(CATEGORY_VALUES) + "."
+        )
+    confidence = str(payload.get("confidence") or "").strip()
+    if confidence not in {"high", "medium", "low"}:
+        raise WorkerResponseValidationError(
+            "confidence must be one of high, medium, low."
+        )
+    return {
+        "category": value,
+        "confidence": confidence,
+        "rationale": str(payload.get("rationale") or "").strip(),
+    }
+
+
+def run_category_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Send one document's opening page and nothing else.
+
+    Deliberately not shown the type catalog. The bucket decides which prompt runs
+    next and nothing more, and a worker holding the catalog would be invited to
+    answer the type question early — under a partition that has not been settled
+    yet, which is the order this stage exists to establish.
+    """
+
+    payload = {
+        "document_id": str(request.unit_input.get("document_id") or ""),
+        "title": str(request.unit_input.get("title") or ""),
+        "text": str(request.unit_input.get("text") or ""),
+    }
+    user = json.dumps(payload, indent=1, default=str)
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_category",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(CATEGORY_SYSTEM, user, activity, attempt=attempt.number)
+
+
+CATEGORY_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.category.response",
+    schema_hash=_sha256_text("documents-category-response:category-confidence-rationale"),
+    validator=_category_response_schema,
+)
+CATEGORY_WORKER = WorkerDefinition(
+    worker_id=CATEGORY_WORKER_ID,
+    # The whole prompt is module-level: unlike the type catalog, the four values
+    # are the same in every workspace, so nothing about this question varies per
+    # engagement and the prompt hash covers all of it.
+    prompt_hash=_sha256_text(CATEGORY_SYSTEM),
+    response_schema=CATEGORY_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text("Repair the document category against the four values."),
+    ),
+    implementation=run_category_worker,
+)
+
+WORKERS.register(CATEGORY_WORKER)
+
+
+# --------------------------------------------------------------------------- #
 # document type classification
 # --------------------------------------------------------------------------- #
 CLASSIFY_WORKER_ID = "documents.classification"
@@ -2115,6 +2246,7 @@ __all__ = [
     "VISUAL_WORKER_ID",
     "document_metadata",
     "run_chunk_worker",
+    "run_category_worker",
     "run_classification_worker",
     "run_schema_reconcile_worker",
     "run_schema_sample_worker",

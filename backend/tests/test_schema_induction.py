@@ -155,7 +155,7 @@ def test_a_reconciled_induction_records_that_it_was(ws):
 
 # ------------------------------------------------------------------ sampling
 def _add(ws, name: str, *, path: str | None = None, body: bytes = b"Invoice text here") -> str:
-    document = documents.add_document(ws, name, body, category="voucher")
+    document = documents.add_document(ws, name, body, category="evidence")
     if path is not None:
         document["relative_path"] = path
         ws.save()

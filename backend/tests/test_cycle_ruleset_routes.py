@@ -43,7 +43,7 @@ def ws():
 
 
 def _extract(ws, name, document_type, **values):
-    document = documents.add_document(ws, name, b"source", category="voucher")
+    document = documents.add_document(ws, name, b"source", category="evidence")
     dc.assign(ws, str(document["id"]), document_type, assigned_by="model")
     schema = document_schemas.get_schema(ws, document_type)
     document_analysis.persist_analysis(

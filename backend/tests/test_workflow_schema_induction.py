@@ -42,7 +42,7 @@ def _workspace(count: int = 2):
             # Transaction evidence, because that is what induction expands
             # over: a schema describes the fields a *voucher* carries, and
             # planning material keeps its narrative analysis instead.
-            category="voucher",
+            category="evidence",
         )
         for index in range(count)
     ]
@@ -268,7 +268,7 @@ def test_planning_material_is_neither_classified_nor_induced(monkeypatch):
         documents.add_document(
             ws, "invoice.txt",
             b"Invoice No. INV-1042\nTotal Due USD 12,480.00",
-            category="voucher",
+            category="evidence",
         ),
         documents.add_document(
             ws, "approval-matrix.txt",

@@ -53,6 +53,13 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # offer to write a memorandum about nothing.
     "sources.imported": (),
     "documents.text_ready": documents_workflow.dependencies("documents.text_ready"),
+    # What a document is *to this engagement*, read from its opening page. It
+    # precedes the type because the type is only asked of evidence, and because
+    # a category guessed from a filename put policy material under voucher
+    # fields and left evidence out of scope entirely.
+    "documents.categorized": documents_workflow.dependencies(
+        "documents.categorized"
+    ),
     "documents.types_classified": documents_workflow.dependencies(
         "documents.types_classified"
     ),
@@ -94,6 +101,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # cycle test failed to generate.
     "planning.rcm_ready": (
         "planning.apm_ready",
+        "documents.categorized",
         "documents.types_classified",
         "documents.schemas_induced",
     ),

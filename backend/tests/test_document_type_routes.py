@@ -23,7 +23,7 @@ def ws():
         ("loi-2.txt", b"Letter of indemnity, second consignment."),
         ("inv-1.txt", b"Invoice No. INV-1042\nTotal Due USD 12,480.00"),
     ):
-        documents.add_document(workspace, name, body, category="voucher")
+        documents.add_document(workspace, name, body, category="evidence")
     return workspace
 
 

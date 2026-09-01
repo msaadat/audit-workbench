@@ -39,7 +39,7 @@ def ws() -> workspaces.Workspace:
 def _extract(ws, name: str, document_type: str, **values) -> str:
     """Store a structured extraction the way the reduction executor would."""
 
-    document = documents.add_document(ws, name, b"source text", category="voucher")
+    document = documents.add_document(ws, name, b"source text", category="evidence")
     dc.assign(ws, str(document["id"]), document_type, assigned_by="model")
     schema = document_schemas.get_schema(ws, document_type)
     document_analysis.persist_analysis(
@@ -217,7 +217,7 @@ def test_a_legacy_pack_analysis_is_named_rather_than_silently_skipped(ws):
     """The failure this whole design exists to remove: a document that
     contributes nothing and says nothing about why."""
 
-    document = documents.add_document(ws, "old.txt", b"source", category="voucher")
+    document = documents.add_document(ws, "old.txt", b"source", category="evidence")
     document_analysis.persist_analysis(
         ws, document, {"pages": [{"page": 1, "text": "source"}]},
         {
