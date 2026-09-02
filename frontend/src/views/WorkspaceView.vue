@@ -82,8 +82,13 @@ async function reload() {
   await Promise.all([loadWorkspace(), loadEngagementStatus()])
 }
 
-async function handleImported() {
-  await reload()
+function handleImported() {
+  // An import is a durable workspace mutation with no agent run behind it, so
+  // nothing on the event stream announces it. Publishing on the shared bus is
+  // what refreshes this shell (through its own subscription below) *and* every
+  // surface listening on it — the engagement record's next step among them,
+  // which is exactly the thing an import moves.
+  agent.invalidateWorkspace()
 }
 
 provide(workspaceContextKey, {

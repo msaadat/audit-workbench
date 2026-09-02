@@ -536,6 +536,13 @@ export function useAgentRun(workspaceId: string) {
     onWorkspaceChanged,
     onWorkspaceInvalidated,
     /**
+     * Publish an invalidation for a durable change made outside an agent run.
+     * The bus is otherwise fed only by a run's event stream, so a plain REST
+     * mutation — a folder import above all — leaves every subscribed surface
+     * showing the workspace as it stood before it.
+     */
+    invalidateWorkspace: () => scheduleInvalidation(workspaceId),
+    /**
      * Show the sidecar without touching the saved preference. A run started
      * from another surface has to be watchable there and then, and the drawer
      * closes again when the run settles rather than becoming the new default —

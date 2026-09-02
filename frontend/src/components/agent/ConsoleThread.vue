@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -77,6 +77,16 @@ watch(() => [
 ].join(':'), () => {
   if (chats.state.activeChatId) void chats.refresh()
 })
+
+// The watcher above only tracks a run. What the assistant should suggest next,
+// and which documents can be attached, both move on any durable change — an
+// import from the shell most of all, which brings the first sources the
+// suggestions are gated on.
+const unsubscribeInvalidated = agent.onWorkspaceInvalidated(() => {
+  if (chats.state.activeChatId) void chats.refresh()
+  void loadDocuments()
+})
+onUnmounted(unsubscribeInvalidated)
 
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
