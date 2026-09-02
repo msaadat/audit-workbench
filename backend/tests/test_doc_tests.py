@@ -442,17 +442,35 @@ def test_the_disclosure_never_overwrites_the_auditors_own_scope_text(
     assert again["scope_limitations"].startswith("Vendor master was out of scope")
 
 
-def test_a_conclusion_still_needs_a_run_and_a_population_it_can_speak_for(
+def test_a_conclusion_on_a_test_nothing_ran_is_recorded_and_disclosed(
     workspace_with_data,
 ):
+    """Nothing structural refuses the write - not even "no run at all".
+
+    A document test whose evidence never arrived sits at ``awaiting_evidence``
+    with every item ``not_run``. Refusing the conclusion there left the auditor
+    with no way to record a judgment they had already made; the disclosure, not
+    the refusal, is what the working paper needs.
+    """
     ws = workspace_with_data
     test_id, _item_ids = _two_item_qa(ws)
     unrun = doc_tests.create_test(ws, {
         "kind": "qa", "title": "Never run",
         "items": [{"label": "Ask", "document_ids": [], "question": "Well?"}],
     })
-    with pytest.raises(workspaces.WorkspaceError, match="Run every item"):
-        doc_tests.update_test(ws, unrun["id"], {"control_conclusion": "effective"})
+    concluded = doc_tests.update_test(
+        ws, unrun["id"], {"control_conclusion": "effective"}
+    )
+    assert concluded["control_conclusion"] == "effective"
+    assert concluded["control_conclusion_source"] == "auditor"
+    assert "Concluded with 1 of 1 item unresolved" in concluded["scope_limitations"]
+    assert "not run" in concluded["scope_limitations"]
+
+    # And it survives the rollup, which used to rewrite it back to nothing.
+    rollup = doc_tests.result_rollup(doc_tests.load_test(ws, unrun["id"]))
+    assert rollup["control_conclusion"] == "effective"
+    assert rollup["conclusion_eligible"] is False
+    assert rollup["conclusion_disclosed"] is True
 
     # Clearing a conclusion is always allowed, whatever the item state.
     assert doc_tests.update_test(

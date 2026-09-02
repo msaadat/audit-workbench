@@ -175,7 +175,7 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
 
     // Narrow selection is a fact the coverage line reports, not a restriction:
     // whether it can carry a conclusion is the auditor's judgment to make.
-    expect(wrapper.findComponent(Select).props('disabled')).toBe(false)
+    expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
     expect(wrapper.find('.assurance-restriction').exists()).toBe(false)
     expect(wrapper.text()).toContain('Targeted evidence — not a sample')
   })
@@ -183,9 +183,26 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
   it('enables an auditor conclusion for a current signed sample', () => {
     const wrapper = render('sample')
 
-    expect(wrapper.findComponent(Select).props('disabled')).toBe(false)
+    expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
     expect(wrapper.find('.assurance-restriction').exists()).toBe(false)
     expect(wrapper.text()).toContain('Sampled population')
+  })
+
+  it('discloses an unsettled cycle rather than withholding the conclusion', () => {
+    // The regression this replaces: an item the runner never reached - because
+    // the evidence never arrived - disabled the control outright, leaving the
+    // auditor's judgment nowhere to go.
+    const { test, item } = cycle('sample')
+    const unrun = {
+      ...item,
+      evaluation: { state: 'not_run' },
+      disposition: { state: 'pending', stale: false },
+    } as unknown as DocTestItem
+    const wrapper = mount({ test: { ...test, items: [unrun] } as DocTest, item: unrun })
+
+    expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
+    expect(wrapper.find('.assurance-restriction').text())
+      .toContain('You can still conclude')
   })
 })
 

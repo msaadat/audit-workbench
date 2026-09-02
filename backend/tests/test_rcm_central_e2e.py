@@ -221,15 +221,16 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
     })
     # Evidence-aware vouching selects the rows that already carry documents, so
     # its assurance scope is targeted rather than sampled. That is reported, not
-    # enforced — what still refuses a conclusion here is the one structural rule
-    # left: items nobody has run. The narrative, the scope limitation, and the
-    # next action remain the auditor's to record.
-    with pytest.raises(workspaces.WorkspaceError, match="Run every item"):
-        doc_tests.update_test(
-            workspace,
-            document_test["id"],
-            {"control_conclusion": "partially_effective"},
-        )
+    # enforced — and neither is an unrun item. A conclusion recorded over one
+    # is kept, with what was open disclosed against it; here the auditor then
+    # declines to reach one, which is a different thing and must read as such.
+    over_open = doc_tests.update_test(
+        workspace,
+        document_test["id"],
+        {"control_conclusion": "partially_effective"},
+    )
+    assert over_open["control_conclusion"] == "partially_effective"
+    assert "[Concluded over unresolved items]" in over_open["scope_limitations"]
     doc_tests.update_test(workspace, document_test["id"], {
         "conclusion": "Open evidence requests remain.",
         "control_conclusion": "no_conclusion",

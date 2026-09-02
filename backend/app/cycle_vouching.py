@@ -765,23 +765,6 @@ _UNRESOLVED_READING = {
 }
 
 
-def conclusion_block(test: Mapping[str, object]) -> str:
-    """Why a Cycle test structurally cannot carry a conclusion, or an empty string.
-
-    The same single rule every other test kind keeps: a test that has not run
-    cannot conclude. An ambiguous or incomplete deterministic result is not a
-    structural bar — it is evidence the auditor weighs and, having concluded
-    anyway, discloses. Gating on it here left an item the auditor had already
-    reviewed and confirmed with nowhere to go, because no auditor action
-    rewrites the runner's reading: the evaluation is derived on every read.
-    """
-
-    items = list(test.get("items") or [])
-    if not items or not all(execution_current(item, cycle=True) for item in items):
-        return "Run every item before recording a control conclusion."
-    return ""
-
-
 def unresolved_items(test: Mapping[str, object]) -> list[dict]:
     """Cycle items carrying no settled auditor reading, with why each is open."""
 
@@ -892,11 +875,10 @@ def result_rollup(test: Mapping[str, object]) -> dict:
         and not item_counts["incomplete"]
         and not item_counts["needs_review"]
     )
-    control_conclusion = (
-        str(test.get("control_conclusion") or "no_conclusion")
-        if not conclusion_block(test)
-        else "no_conclusion"
-    )
+    # Whatever was recorded, reported as recorded. Suppressing it because the
+    # runner never reached every item silently unsigned a conclusion the
+    # auditor had made and disclosed.
+    control_conclusion = str(test.get("control_conclusion") or "no_conclusion")
     return {
         "items": len(items),
         "tested_items": tested_items,

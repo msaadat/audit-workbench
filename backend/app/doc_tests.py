@@ -1521,11 +1521,11 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
         conclusion = str(changes["control_conclusion"] or "no_conclusion")
         if conclusion not in CONTROL_CONCLUSIONS:
             raise WorkspaceError("Unknown control conclusion.")
-        # An incomplete evidence base no longer refuses the write. Concluding
-        # over open items is the auditor's call to make; what the file needs is
-        # that the call be disclosed, not prevented.
-        if conclusion != "no_conclusion" and (blocked := conclusion_block(test)):
-            raise WorkspaceError(blocked)
+        # Nothing refuses the write. Concluding over open items - including
+        # items nobody has run, because the evidence never arrived - is the
+        # auditor's call to make; what the file needs is that the call be
+        # disclosed, not prevented. `record_conclusion_override` below writes
+        # what was open into `scope_limitations`.
         test["control_conclusion"] = conclusion
         test["control_conclusion_source"] = "auditor"
     if "steps" in changes:
@@ -2387,11 +2387,10 @@ def result_rollup(test: dict) -> dict:
         # silently achieve nothing. What travels with it is the disclosure.
         "conclusion_disclosed": bool(test.get("conclusion_override")),
         "unresolved_items": unresolved_items(test),
-        "control_conclusion": (
-            str(test.get("control_conclusion") or "no_conclusion")
-            if not conclusion_block(test)
-            else "no_conclusion"
-        ),
+        # Whatever was recorded, reported as recorded. Suppressing it here
+        # because the runner never reached every item silently unsigned a
+        # conclusion the auditor had made and disclosed.
+        "control_conclusion": str(test.get("control_conclusion") or "no_conclusion"),
     }
 
 
@@ -2466,23 +2465,6 @@ def incomplete_checks(test: dict) -> int:
         )
         for item in test.get("items") or []
     )
-
-
-def conclusion_block(test: dict) -> str:
-    """Why this test structurally cannot carry a conclusion, or an empty string.
-
-    The one thing genuinely not the auditor's call is concluding on a test that
-    has not run. How narrow the evidence is — targeted rather than sampled, or
-    an incomplete base — is a judgment the auditor is entitled to make and
-    disclose, which is what :func:`record_conclusion_override` writes down.
-    """
-
-    if is_cycle_test(test):
-        return cycle_vouching.conclusion_block(test)
-    items = test.get("items") or []
-    if not items or not all(item_execution_current(test, item) for item in items):
-        return "Run every item before recording a control conclusion."
-    return ""
 
 
 def record_conclusion_override(test: dict) -> None:

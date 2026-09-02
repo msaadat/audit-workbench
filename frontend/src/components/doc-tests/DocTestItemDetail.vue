@@ -229,9 +229,12 @@ const cycleConclusionEligible = computed(() => {
     && !item.disposition?.stale,
   )
 })
+// A disclosure, not a bar. Concluding over items the runner never settled -
+// including items nothing ran because the evidence never arrived - is the
+// auditor's call; the backend records what was open as a scope limitation.
 const controlConclusionReason = computed(() => {
   if (!isCanonicalCycle.value || cycleConclusionEligible.value) return ''
-  return 'Complete deterministic evaluation and current auditor disposition are required before recording a control conclusion.'
+  return 'Not every item carries a complete evaluation and a current disposition. You can still conclude — it will be recorded as a scope limitation.'
 })
 // Item-first tests let the auditor conclude over open items — that judgment is
 // theirs. Naming the items is what was missing: the save used to fail with a
@@ -762,7 +765,6 @@ onMounted(() => { void focusAssertion() })
             optionLabel="label"
             optionValue="value"
             class="control-conclusion-select"
-            :disabled="isCanonicalCycle && !cycleConclusionEligible"
           />
         </label>
         <p v-if="controlConclusionReason" class="rail-note assurance-restriction">
