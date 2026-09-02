@@ -911,7 +911,12 @@ def _stages(
 # next stage is something the agent does by itself in auto mode; reading what it
 # decided is the one thing only a person can do, so that is what the record asks
 # for first.
-_OPEN_RANK = {"unread_conclusions": 10, "findings_followup": 20, "draft_rcm": 30}
+# The two findings debts share one rank because they share one slot: only
+# ever one of them is raised, and which one is decided in `_open_points`.
+_OPEN_RANK = {
+    "unread_conclusions": 10, "unconfirmed_findings": 20,
+    "findings_followup": 20, "draft_rcm": 30,
+}
 
 
 def _open_points(workspace: Workspace) -> list[dict]:
@@ -937,12 +942,39 @@ def _open_points(workspace: Workspace) -> list[dict]:
             "destination": "rcm",
         })
 
+    # The findings row carries one debt at a time, and confirmation is the one
+    # that comes first. Only a confirmed finding reaches the report at all --
+    # `report.build_context` carries `auditor_confirmed` findings and no others
+    # -- so an unconfirmed register produces a report that states no findings
+    # were identified over one holding twenty-four. Asking for root causes while
+    # that is true names the smaller debt and hides the larger: the causes would
+    # be written into findings the report still would not carry.
+    unconfirmed = [
+        item for item in workspace.findings if not item.get("auditor_confirmed")
+    ]
     owed = [
         item for item in workspace.findings
         if item.get("cause_pending")
         or not str(item.get("management_response") or "").strip()
     ]
-    if owed:
+    if unconfirmed:
+        points.append({
+            "key": "unconfirmed_findings",
+            "capability": "findings.drafted",
+            "message": (
+                f"{len(unconfirmed)} of {len(workspace.findings)} findings are "
+                "not confirmed for reporting"
+                # Only true while nothing has been confirmed. On a part-confirmed
+                # register the report carries the rest, so the sentence says what
+                # is being left out rather than claiming the report is empty.
+                + (" — the report will carry none of them."
+                   if len(unconfirmed) == len(workspace.findings)
+                   else " and will be left out of the report.")
+            ),
+            "action": "Confirm findings",
+            "destination": "findings",
+        })
+    elif owed:
         points.append({
             "key": "findings_followup",
             "capability": "findings.drafted",

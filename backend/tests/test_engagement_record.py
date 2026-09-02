@@ -981,12 +981,72 @@ def test_a_presence_test_that_raises_does_not_invent_absent_work(stub_store):
 # --------------------------------------------------------------------------- #
 def test_open_points_attach_to_the_stage_that_left_them(stub_store):
     stub_store([])
-    workspace = _Workspace(findings=[{"cause_pending": True}] * 35)
+    workspace = _Workspace(
+        findings=[{"cause_pending": True, "auditor_confirmed": True}] * 35
+    )
     result = engagement_record.record(workspace)
     row = _rows(result)["findings.drafted"]
 
     assert [point["key"] for point in row["open_points"]] == ["findings_followup"]
     assert "35 of 35 findings" in row["open_points"][0]["message"]
+
+
+def test_an_unconfirmed_register_is_asked_to_confirm_before_anything_else(stub_store):
+    """The findings row carries one debt, and this is the one that comes first.
+
+    Only a confirmed finding reaches the report. Asked for root causes instead,
+    an auditor writes them into twenty-four findings the report still states
+    were never identified.
+    """
+    stub_store([])
+    workspace = _Workspace(findings=[{"cause_pending": True}] * 24)
+    result = engagement_record.record(workspace)
+    row = _rows(result)["findings.drafted"]
+
+    assert [point["key"] for point in row["open_points"]] == ["unconfirmed_findings"]
+    assert row["open_points"][0]["message"] == (
+        "24 of 24 findings are not confirmed for reporting — the report will "
+        "carry none of them."
+    )
+    assert row["open_points"][0]["action"] == "Confirm findings"
+    assert row["open_points"][0]["destination"] == "findings"
+    assert result["next"]["key"] == "unconfirmed_findings"
+
+
+def test_a_part_confirmed_register_says_what_is_left_out(stub_store):
+    """The report carries the confirmed ones, so the absolute claim is dropped."""
+    stub_store([])
+    result = engagement_record.record(_Workspace(findings=[
+        {"auditor_confirmed": True, "management_response": "Accepted."},
+        {"auditor_confirmed": False},
+    ]))
+
+    point = next(
+        item for item in result["open_points"] if item["key"] == "unconfirmed_findings"
+    )
+    assert point["message"] == (
+        "1 of 2 findings are not confirmed for reporting and will be left out "
+        "of the report."
+    )
+
+
+def test_confirming_the_register_hands_the_row_back_to_the_cause_debt(stub_store):
+    """One slot, two debts: the smaller one surfaces once the larger is settled."""
+    stub_store([])
+    result = engagement_record.record(_Workspace(findings=[
+        {"auditor_confirmed": True, "cause_pending": True},
+    ]))
+
+    assert [point["key"] for point in result["open_points"]] == ["findings_followup"]
+
+
+def test_a_settled_register_leaves_no_findings_debt(stub_store):
+    stub_store([])
+    result = engagement_record.record(_Workspace(findings=[
+        {"auditor_confirmed": True, "management_response": "Accepted."},
+    ]))
+
+    assert [point["key"] for point in result["open_points"]] == []
 
 
 def test_a_debt_always_has_a_row_to_sit_on(stub_store):
@@ -1035,7 +1095,9 @@ def test_a_fully_reviewed_matrix_leaves_no_sign_off_debt(stub_store):
 def test_review_outranks_unstarted_work_as_the_next_step(stub_store):
     """Auto mode runs the next stage by itself; only a person can read."""
     stub_store([])
-    workspace = _Workspace(findings=[{"cause_pending": True}] * 35)
+    workspace = _Workspace(
+        findings=[{"cause_pending": True, "auditor_confirmed": True}] * 35
+    )
     result = engagement_record.record(workspace)
 
     assert result["next"]["kind"] == "open_point"
@@ -1078,7 +1140,10 @@ def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
             {"id": "T1", "rcm_id": "R1", "status": "completed_no_exception"},
         ],
         analyses=[{}], tiles=[{}], tables=["ledger"],
-        findings=[{"management_response": "Agreed.", "cause_pending": False}],
+        findings=[{
+            "management_response": "Agreed.", "cause_pending": False,
+            "auditor_confirmed": True,
+        }],
     )
     engagement_record.report.hydrate = lambda ws: {"markdown": "# Report"}
     try:
