@@ -45,6 +45,14 @@ MATCH_MODES = frozenset({"normalized_equal", "exact_equal"})
 
 CARDINALITIES = frozenset({"one", "many"})
 
+#: Who made a ruleset effective. ``auditor`` is a person acting through the
+#: review screen; ``agent`` is an ``mode: auto`` run approving rules it wrote,
+#: which the auditor delegated by selecting that mode. Stored rather than
+#: inferred, because the two carry different weight in a file and a reader must
+#: be able to tell them apart years later. Ordered auditor-first: it is the
+#: default for a record written before the distinction existed.
+APPROVER_KINDS = ("auditor", "agent")
+
 
 class RulesetError(WorkspaceError):
     """A ruleset definition or reference is unusable."""
@@ -377,6 +385,9 @@ def save(
         "created": prior.get("created") if prior else utcnow(),
         "updated": utcnow(),
         "approved_by": None,
+        # Stamped at approval. Absent on a record written before auto-mode
+        # approval existed, which `approver_kind` reads as an auditor's.
+        "approved_by_kind": None,
         "approved_at": None,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -429,15 +440,36 @@ def effective(workspace: Workspace) -> dict | None:
     return approved[-1] if approved else None
 
 
-def approve(workspace: Workspace, ruleset_id: str, *, approved_by: str) -> dict:
+def approve(
+    workspace: Workspace,
+    ruleset_id: str,
+    *,
+    approved_by: str,
+    approved_by_kind: str = "auditor",
+) -> dict:
     """Approve a proposal, superseding whatever was approved before.
 
-    ``approved_by`` is required and is never an agent identity by construction:
-    the route that reaches here is an auditor action. Approval is what makes a
-    ruleset able to produce results at all.
+    ``approved_by`` is required. ``approved_by_kind`` says what kind of approver
+    it names, and it is the only thing that distinguishes the two ways a ruleset
+    becomes effective.
+
+    An earlier version of this docstring read "never an agent identity by
+    construction". That is no longer true, and the change is deliberate rather
+    than an erosion: selecting ``mode: auto`` on a run is the auditor delegating
+    the approvals of that run, and withholding this one made auto mode silently
+    unable to vouch a cycle at all — the agent wrote the rules, every stage
+    reported success, and the engagement fell back to prose tests nobody asked
+    for. What auto mode does not buy is the *appearance* of a signature, which
+    is why the kind is stored and the working paper prints it: a reader of the
+    file can always tell which of the two happened.
     """
 
     who = _text(approved_by, "approved_by")
+    kind = str(approved_by_kind or "").strip()
+    if kind not in APPROVER_KINDS:
+        raise RulesetError(
+            f"approved_by_kind must be one of: {', '.join(APPROVER_KINDS)}."
+        )
     record = get(workspace, ruleset_id)
     status = str(record.get("status"))
     if status == "approved":
@@ -466,11 +498,24 @@ def approve(workspace: Workspace, ruleset_id: str, *, approved_by: str) -> dict:
             write_json_atomic(_path(workspace, str(other["ruleset_id"])), other)
     record["status"] = "approved"
     record["approved_by"] = who
+    record["approved_by_kind"] = kind
     record["approved_at"] = utcnow()
     record["updated"] = utcnow()
     write_json_atomic(_path(workspace, ruleset_id), record)
     _reindex(workspace)
     return record
+
+
+def approver_kind(record: Mapping[str, object]) -> str:
+    """What kind of approver made this ruleset effective.
+
+    Defaults to ``auditor`` for a record approved before auto-mode approval
+    existed: every one of those went through the review screen, so reading them
+    that way states a fact rather than guessing one.
+    """
+
+    kind = str(record.get("approved_by_kind") or "").strip()
+    return kind if kind in APPROVER_KINDS else "auditor"
 
 
 def reject(workspace: Workspace, ruleset_id: str) -> dict:

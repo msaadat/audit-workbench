@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app import (
     cycle_measurement,
     cycle_rulesets,
@@ -263,3 +265,152 @@ def test_readiness_sends_the_reader_to_the_unapproved_ruleset(monkeypatch):
     assert "the matrix classified no control attribute" not in reason
     assert readiness.details["unvouched_cause"] == "ruleset_unapproved"
     assert readiness.details["ruleset_id"] == record["ruleset_id"]
+
+
+# ------------------------------------------------------- auto-mode approval
+# Selecting ``mode: auto`` delegates the run's approvals, and that now includes
+# the cycle rules the same run wrote. Permission mode keeps the human gate.
+def _approval_capability():
+    return test_capabilities._cycle_ruleset_approved()
+
+
+_AUTO = {"permission_mode": False}
+_PERMISSION = {"permission_mode": True}
+
+
+def test_nothing_to_approve_where_the_matrix_asks_for_no_cycle():
+    """An engagement without a cycle must not wait on an approval either."""
+
+    workspace = _workspace_with_a_voucher()
+    capability = _approval_capability()
+
+    for scope in (_AUTO, _PERMISSION):
+        assert capability.readiness(workspace, scope).state == "satisfied"
+        assert capability.expand_units(workspace, scope) == []
+
+
+def test_permission_mode_reports_the_gate_and_expands_no_unit():
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    cycle_rulesets.save(workspace, _ruleset_payload())
+    capability = _approval_capability()
+
+    readiness = capability.readiness(workspace, _PERMISSION)
+
+    assert readiness.state == "review_required"
+    assert "auditor" in readiness.reasons[0]
+    assert capability.expand_units(workspace, _PERMISSION) == []
+
+
+def test_a_readiness_read_outside_a_run_defaults_to_the_human_gate():
+    """The status endpoint has no run and therefore no delegation in force.
+
+    ``permission_mode`` absent must not read as auto: the standing state of a
+    workspace holding an unapproved proposal is "waiting for an auditor", which
+    is what a status screen should show.
+    """
+
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    cycle_rulesets.save(workspace, _ruleset_payload())
+    capability = _approval_capability()
+
+    assert capability.readiness(workspace, {}).state == "review_required"
+    assert capability.expand_units(workspace, {}) == []
+
+
+def test_auto_mode_expands_one_unit_naming_the_proposal():
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+    capability = _approval_capability()
+
+    readiness = capability.readiness(workspace, _AUTO)
+    (unit,) = capability.expand_units(workspace, _AUTO)
+
+    assert readiness.state == "missing"
+    assert unit.kind == "cycle_ruleset_approval"
+    assert unit.parent_refs == (f"cycle_ruleset:{record['ruleset_id']}",)
+    assert unit.input_payload["ruleset_id"] == record["ruleset_id"]
+    assert unit.input_payload["ruleset_hash"] == record["ruleset_hash"]
+
+
+def test_editing_the_rules_makes_it_a_different_approval_unit():
+    """Approving is bound to the rules that were read, not to the id.
+
+    A proposal re-expanded against moved schemas is a different question; an
+    approval unit that reused its identity would let a run approve rules it
+    never saw.
+    """
+
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+    (before,) = _approval_capability().expand_units(workspace, _AUTO)
+
+    edited = _ruleset_payload()
+    edited["assertions"][0]["requirement"] = "The billed amount must be ordered."
+    cycle_rulesets.save(workspace, edited, ruleset_id=record["ruleset_id"])
+    (after,) = _approval_capability().expand_units(workspace, _AUTO)
+
+    assert before.id == after.id
+    assert before.input_sha1 != after.input_sha1
+
+
+def test_an_approved_ruleset_settles_the_capability_in_both_modes():
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+    cycle_rulesets.approve(
+        workspace, record["ruleset_id"], approved_by="auditor@example.com"
+    )
+    capability = _approval_capability()
+
+    for scope in (_AUTO, _PERMISSION):
+        assert capability.readiness(workspace, scope).state == "satisfied"
+        assert capability.expand_units(workspace, scope) == []
+
+
+def test_an_auto_approval_is_recorded_as_the_agent_not_a_person():
+    """The delegation is legible in the file, not inferred from a name."""
+
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+
+    approved = cycle_rulesets.approve(
+        workspace,
+        record["ruleset_id"],
+        approved_by=test_capabilities.AGENT_APPROVER,
+        approved_by_kind="agent",
+    )
+
+    assert approved["status"] == "approved"
+    assert approved["approved_by"] == test_capabilities.AGENT_APPROVER
+    assert cycle_rulesets.approver_kind(approved) == "agent"
+
+
+def test_an_auditor_approval_stays_an_auditor_approval():
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+
+    approved = cycle_rulesets.approve(
+        workspace, record["ruleset_id"], approved_by="auditor@example.com"
+    )
+
+    assert cycle_rulesets.approver_kind(approved) == "auditor"
+
+
+def test_a_ruleset_approved_before_the_distinction_existed_reads_as_auditor():
+    """Every one of those went through the review screen, so this is a fact."""
+
+    assert cycle_rulesets.approver_kind({"approved_by": "auditor@example.com"}) == "auditor"
+    assert cycle_rulesets.approver_kind({"approved_by_kind": "nonsense"}) == "auditor"
+
+
+def test_an_unknown_approver_kind_is_refused():
+    workspace = _cycle_matrix(_workspace_with_a_voucher())
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+
+    with pytest.raises(cycle_rulesets.RulesetError, match="approved_by_kind"):
+        cycle_rulesets.approve(
+            workspace,
+            record["ruleset_id"],
+            approved_by="someone",
+            approved_by_kind="robot",
+        )
+    assert cycle_rulesets.get(workspace, record["ruleset_id"])["status"] == "proposed"

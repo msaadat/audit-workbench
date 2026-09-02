@@ -16,8 +16,8 @@ The governing division of labour:
 | --- | --- |
 | What a document type is called | Closed global list |
 | What fields a document type carries | LLM, induced per workspace from samples |
-| Which field pairs join two documents | LLM proposes, code measures, auditor approves |
-| Which field pairs must agree | LLM proposes, auditor approves |
+| Which field pairs join two documents | LLM proposes, code measures; an auditor approves, or an `auto` run does |
+| Which field pairs must agree | LLM proposes; an auditor approves, or an `auto` run does |
 | Whether an item's operands resolved | Code, deterministically, no model call |
 | Whether two resolved values agree | LLM judges; the auditor disposes the item |
 
@@ -381,12 +381,80 @@ proposed  ->  edited  ->  approved  ->  effective
 ```
 
 The auditor may edit any rule, delete rules, and add rules by hand. Approval
-stamps `approved_by`, `approved_at`, and freezes `ruleset_hash` over the roles,
-anchor, join keys, and assertions. Only an approved ruleset may produce results.
+stamps `approved_by`, `approved_by_kind`, `approved_at`, and freezes
+`ruleset_hash` over the roles, anchor, join keys, and assertions. Only an
+approved ruleset may produce results.
+
+`approved_by_kind` is `auditor` or `agent`, and it is the only thing that
+distinguishes the two ways a ruleset becomes effective. A record written before
+the distinction existed reads as `auditor`, which states a fact rather than
+guessing one: every one of those went through the review screen.
 
 Review is at rule level, never at link level. A corpus yields thousands of
 links and roughly ten rules; the rules are what an auditor can meaningfully sign
 off, and rule-level approval is what makes the review step tractable at all.
+
+### Approval in auto mode
+
+**A run marked `mode: auto` approves the rules it proposed. A run marked
+`mode: permission` cannot, and the gate there is unchanged.** This reverses the
+original decision, and the reversal is the auditor's: selecting auto mode is
+already an explicit authorization to execute every locally validated action
+without an approval checkpoint (`agent/actions.py::approval_required`), and
+withholding this one approval from that delegation was not protecting anything.
+
+What it cost is measurable, and it was measured on the first treasury
+engagement. The agent classified nine documents, stamped four schemas, wrote a
+matrix declaring four `transaction_cycle` attributes, and proposed a ruleset of
+three join keys and twelve assertions. Then `cycle_rulesets.effective` returned
+`None`, `cycle_linking.candidate` reported `no_approved_ruleset`, the generation
+turn was told *"Cycle Vouch is forbidden"*, and every one of those rows got a
+document-question test instead. Fourteen runs completed. Nothing said why.
+
+The fallback is not a smaller version of the cycle test; it is a different
+instrument. A cycle vouch judges one linked cycle in one pass, because the
+reader needs the other documents in front of it. A document-question test
+expands one unit per *(item, document)* pair and supplies that document's pages
+alone, so a five-field confirmation match became two isolated calls that each
+reported the counterpart missing — and the one that returned an exception did so
+by comparing a value in its own question text against the single document it
+could see. That is what the gate was buying at the price of the whole cycle.
+
+The bargain, stated plainly:
+
+| | `permission` | `auto` |
+| --- | --- | --- |
+| Who approves | an auditor, through the review screen | the run |
+| Fan-out read before approval | yes, by a person | no |
+| `approved_by_kind` | `auditor` | `agent` |
+| Stage behaviour | expands no unit, reports, run continues | expands one unit, approves |
+
+Three things hold the line that remains:
+
+- **The delegation is legible, never disguised.** `approved_by` records
+  `agent:auto-mode` — not a person, and deliberately not shaped like one — and
+  `approved_by_kind` is `agent`. The working paper prints *"approved
+  automatically by an auto-mode run … no auditor reviewed the measured fan-out
+  before the rules took effect"* rather than a name and a date. A reader of the
+  file years later can always tell which of the two happened.
+- **What the auditor would have read is reported on the run.** The approval
+  measures the ruleset and raises every `concerns()` finding as a run warning:
+  a join key whose values fan out like an entity identifier, a key matching
+  nothing, an assertion no record can evaluate. Auto mode skips the reading,
+  not the measurement.
+- **Absence of a gate is not absence of a decision.** The edge into
+  `tests.specified` is *partial*. Permission mode leaves the gate permanently
+  unsettled by design, and a blocking edge would withhold every test in the
+  engagement — data tests included — waiting on an approval that stage is not
+  allowed to make. Generation without a cycle is a degradation the run already
+  reports; it is not a failure.
+
+What this does **not** buy is a second opinion. Nothing re-reads the rules, and
+no model is asked to bless them, because asking the author to approve its own
+work adds ceremony rather than a check. The measurement is the check, and it is
+code. An auto-mode engagement that wants a human on the rules approves them the
+same way it always could — the review screen is unchanged, and a proposal
+approved there records `auditor`.
 
 ## Provenance and fail-closed behaviour
 
@@ -633,12 +701,17 @@ of `planning.rcm_ready`. See *The RCM coupling*.
 
 | `documents.analysis_generated` *(changed)* | now also requires a current schema for the document's type | per chunk, as today |
 | `tests.cycle_ruleset_proposed` *(new)* | a proposal exists covering the required types | one per cycle |
-| `tests.cycle_ruleset_approved` *(new, human gate)* | an approved ruleset exists with a current `ruleset_hash` | none — auditor action only |
+| `tests.cycle_ruleset_approved` *(new, gate)* | an approved ruleset exists with a current `ruleset_hash` | one in `auto` mode; none in `permission` mode |
 
 The approval gate must be a real capability with readiness, never an executor
 step. The codebase already keeps this separation for dispositions — a separate
 auditor-only binder that never signs off — and rule approval belongs in the same
-category. An agent must not be able to approve its own linkage rules.
+category.
+
+**Who may pass the gate is a property of the run mode, not of the gate.** An
+earlier draft of this section ended *"An agent must not be able to approve its
+own linkage rules."* That is now true only in `permission` mode. See *Approval
+in auto mode* below, which records why it was changed and what it costs.
 
 `capabilities/tests.py::_unvouched` currently iterates `DEFAULT_REGISTRY` packs
 to detect an engagement that extracted transaction evidence and then never
@@ -646,6 +719,23 @@ tie-matched it. It is rewritten against document types, and gains a second case:
 evidence extracted with no proposal, and a proposal never approved. Both are
 degradations that must be reported rather than passing silently — which is the
 current Treasury failure.
+
+**Detection and diagnosis are separate reads, and both are needed.**
+`_unvouched_types` detects the gap from the *extracted records*, deliberately
+not from the matrix: it is the matrix's classification that is in question, so
+it cannot also be the thing that decides whether the question gets asked. That
+keeps the detection honest and leaves the explanation unasked — and for a
+release, the message asserted one anyway. It read *"the matrix classified no
+control attribute as transaction_cycle"* unconditionally, and told a treasury
+engagement whose matrix declared four of them that it had declared none. The
+auditor sent to audit a correct matrix never learns that a proposal is sitting
+unapproved.
+
+`_unvouched_cause` asks, and the causes are different repairs in different
+places: `no_cycle_attribute`, `no_ruleset`, `ruleset_unapproved`,
+`ruleset_rejected`, `no_cycle_test`. Readiness carries the cause and the
+`ruleset_id` in `details`, so the surface can send the reader to the rules
+rather than to the matrix.
 
 ## Workers
 
@@ -667,6 +757,12 @@ one. That interlock is retained exactly; only its content changes.
 `bind_reference`'s lesson carries over — the response supplies the document type
 and field values; `schema_hash`, `schema_version`, and every `normalized_value`
 are bound server-side.
+
+**Approval has no worker, in either mode.** `tests.cycle_ruleset_approved` is
+deterministic: it reads the stored proposal and the statistics `cycle_measurement`
+computes in code. Asking a model to bless rules a model wrote would add a
+ceremony rather than a check, and the check that exists — fan-out, coverage,
+silence — is arithmetic over the corpus.
 
 ## API surface
 
@@ -867,21 +963,22 @@ Dependency-ordered. Each phase leaves the tree working.
 | 3 ✅ | Induction pass: sampling, union, reconcile, schema freeze, escape-rate metric | Schemas induced end to end on a fixture workspace; full suite green |
 | 4 ✅ | Schema-guided extraction alongside the pack profile; `schema_hash` provenance; escape hatch | Records extracted against schemas end to end |
 | 5 ✅ | Linkage proposal worker + `cycle_measurement` (fan-out, coverage, silence) | Proposals measured against the corpus |
-| 6 ◐ | Ruleset review API and review screen done; agent-driven proposal capability outstanding | Auditor can approve a ruleset |
+| 6 ✅ | Ruleset review API and review screen; the proposal capability; the approval capability (phase 11) | Auditor can approve a ruleset; an auto run can too |
 | 7 ✅ | `cycle_linking.py`: linking, role binding, evaluation, and the test lifecycle on approved rulesets | Cycle test builds, materializes, evaluates, and files end to end |
 | 8 ✅ | RCM control attributes addressed by schema field; the two graph edges; coverage gate; authoring turn and editor re-pointed | Selector-exact coverage restored |
 | 9 ✅ | `cycle_registry/` deleted, with the voucher profile, the recipes, and every branch that routed to them | Registry module removed |
 | 10 ✅ | The six operators and per-assertion tolerance deleted; agreement judged by `fieldwork.cycle_vouch` on raw values; assertions carry a `requirement` instead | A presentation difference is no longer reported as an exception |
 | 4b.1 ✅ | `documents.evidence_read` and `documents.schemas_stamped` replace sampling and induction; `DocumentMasters/` accumulates a type's vocabulary as it is read. See `docs/agentic-vouching-plan.md`, *What 4b.1 shipped* | One name per fact across a type; no field the corpus never stated |
+| 11 ✅ | `tests.cycle_ruleset_approved` built as a real capability; auto mode approves, permission mode gates; `approved_by_kind` and the working-paper disclosure; `_unvouched_cause` names the actual repair | An auto run vouches a cycle end to end; a permission run still waits for its auditor |
 
 Phases 1-4 are independent of 5-6 and can proceed in parallel with the ruleset
 work once the contracts are fixed. Phase 9 must be last: the packs remain the
 only working vocabulary until phase 7 proves the replacement.
 
-Phase 10 was not planned. It was forced by the first real engagement and is the
-one place where this document's stated division of labour did not survive
-contact — see the correction under *The governing division of labour* and the
-notes below.
+Phases 10 and 11 were not planned. Both were forced by the first real
+engagement, and they are the two places where this document's stated division of
+labour did not survive contact — see the correction under *The governing
+division of labour*, the section *Approval in auto mode*, and the notes below.
 
 ## Built so far
 
@@ -936,6 +1033,13 @@ notes below.
 | `backend/tests/test_cycle_vouch_worker.py` | 13 tests |
 | `backend/tests/test_agent_fieldwork_execution.py` | 14 tests |
 | `backend/tests/test_agent_fieldwork_executor.py` | 5 tests |
+| `capabilities/tests.py` `tests.cycle_ruleset_approved` | The gate as a capability: satisfied where the matrix asks for no cycle, a reported human gate in `permission`, one deterministic unit in `auto`. A readiness read outside a run defaults to the gate. |
+| `audit_execution._bind_cycle_ruleset_approval` | Approves in auto mode with no model call, stamps `approved_by_kind: agent`, and raises every `concerns()` finding as a run warning — the reading the auditor did not do. |
+| `cycle_rulesets.approve` / `approver_kind` | `approved_by_kind` on the record; legacy records read as `auditor`; an unknown kind is refused. |
+| `working_papers` cycle provenance | Prints an auto approval as one, never as a name and a date. |
+| `capabilities/tests.py` `_unvouched_cause` | Why nothing vouched: the matrix, no proposal, an unapproved one, a rejected one, or a missing test. Carried in readiness `details` with the `ruleset_id`. |
+| `backend/tests/test_cycle_ruleset_auto_approval.py` | 5 tests — both modes end to end through the real runner |
+| `backend/tests/test_agent_capabilities_tests.py` | 20 tests |
 
 Invariants these encode, each with a test behind it:
 
@@ -1433,6 +1537,54 @@ withdrawal as provisional and re-evaluates it against a real engagement.
 Verdict stability under re-judging is untested and is listed there as an open
 question.
 
+## Phase 11 notes
+
+**The gate was never the thing that was missing; the capability was.** The plan
+called for `tests.cycle_ruleset_approved` as a real capability with readiness
+and it was never built — only `tests.cycle_ruleset_proposed` shipped. So there
+was nothing on the graph that knew an unapproved proposal existed, nothing that
+could report it, and nothing for auto mode to act through. Building the
+capability is most of this phase; which modes may pass it is one branch inside
+it.
+
+**Permission mode expands no unit, and that is how the gate reports.**
+`_run_stage` settles a unitless stage from its own readiness, so the permission
+path needs no refusal and no special case: `review_required`, stage `blocked`,
+run continues. The binder still refuses if it is ever reached in permission
+mode, because reaching it would mean the gate had been bypassed and trusting the
+caller is not what a gate is for.
+
+**The edge into `tests.specified` had to be partial, and finding out why was the
+one real design risk.** Made blocking, a permission-mode run would have lost
+every test in the engagement — data tests included — waiting on an approval its
+own mode forbids. The capability that exists to strengthen cycle evidence would
+have broken the tests that have nothing to do with cycles. Generation without a
+cycle was always a supported outcome; it writes document-question tests and says
+so.
+
+**Approving is bound to the rules that were read, not to the id.** The unit's
+input payload carries the `ruleset_hash`, so a proposal re-expanded against
+moved schemas is a different unit rather than a repeat of the same one. Without
+that, a run could approve rules it never saw under the identity of rules it did.
+
+**The measurement runs even though nobody reads it.** Auto mode skips the
+*reading*, not the check. Every `concerns()` finding — entity-scale fan-out, a
+key matching nothing, a silent assertion — is raised as a run warning at the
+moment of approval. On the treasury engagement that is not hypothetical: the
+proposed `deal_to_contract` joined `treasury_deal.deal_reference` to
+`fx_contract.transaction_reference`, which is the confirmation's own `:20:`
+reference, and matched 0 of 2. The deal reference is in `counterparty_reference`.
+An auto approval of those rules is loud about it; the old silent fallback was
+not.
+
+**A known gap this leaves open.** `measure_assertion` counts each side of an
+assertion independently against the corpus, without asking whether any join key
+connects the two roles. So the treasury assertions over that dead join key
+report `evaluable_records: 2, silent: false` — a green light for rules that
+cannot run. `concerns()` catches the join key and not its assertions. Making the
+assertion measurement reachability-aware is the repair, and it is not in this
+phase.
+
 ## Still unspecified
 
 Deliberately left open, and each needs a decision before its phase:
@@ -1446,6 +1598,14 @@ Deliberately left open, and each needs a decision before its phase:
   execution-identity interlock should cover it, but it is untested for schemas.
 - Whether retyping generalizes from the `other` bucket to correcting any
   classification. See *Retyping and workspace-local types*.
+- Whether `measure_assertion` should be reachability-aware, so an assertion
+  whose roles no join key connects reports `silent` instead of a record count
+  it can never evaluate. See *Phase 11 notes*.
+- Whether an auto-mode approval should refuse on a `concerns()` finding rather
+  than warn through it. Warning is what shipped, because refusing would put the
+  run back where it started — no rules, a prose fallback, and the same silence
+  this phase removed — but a runaway fan-out is the one concern where fusing
+  every unrelated transaction may be worse than not vouching at all.
 
 ---
 

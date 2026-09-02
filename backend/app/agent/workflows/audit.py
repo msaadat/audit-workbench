@@ -113,14 +113,26 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "documents.schemas_stamped",
     ),
     # Rules are written against the matrix's comparisons and the induced
-    # vocabulary, so both must exist first. Proposing is not approving: this
-    # edge buys an engagement a reviewable proposal, and the approval that
-    # makes it able to produce a result stays an auditor's, off this graph.
+    # vocabulary, so both must exist first. Proposing is still not approving —
+    # they are two capabilities, and the second one below is where the two run
+    # modes part.
     "tests.cycle_ruleset_proposed": (
         "planning.rcm_ready",
         "documents.schemas_stamped",
     ),
-    "tests.specified": ("planning.rcm_ready", "tests.cycle_ruleset_proposed"),
+    # Approval is on the graph, and in ``permission`` mode it is a gate that
+    # reports and never acts: the stage expands no unit, settles from its own
+    # readiness, and the run carries on without a cycle. In ``auto`` mode the
+    # auditor has delegated the run's approvals, so the stage approves the
+    # rules the previous one wrote and the cycle test becomes generatable.
+    #
+    # The edge into ``tests.specified`` is partial (``_PARTIAL_DEPENDENCIES``
+    # in ``agent/audit_execution.py``) and must stay partial. Generation has
+    # always been able to proceed without a cycle — it writes document-question
+    # tests instead — and making an unapproved ruleset withhold every test in
+    # the engagement would break permission-mode runs to serve auto-mode ones.
+    "tests.cycle_ruleset_approved": ("tests.cycle_ruleset_proposed",),
+    "tests.specified": ("planning.rcm_ready", "tests.cycle_ruleset_approved"),
     # Placing an exploratory procedure needs the matrix to place it in. It sits
     # after test generation so a promoted test is written against a matrix whose
     # own tests already exist, and before fieldwork so a promoted test is

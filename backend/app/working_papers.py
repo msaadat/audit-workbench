@@ -7,7 +7,7 @@ import html
 import re
 from datetime import datetime, timezone
 
-from . import cycle_vouching, data_tests, doc_tests, rcm_execution
+from . import cycle_rulesets, cycle_vouching, data_tests, doc_tests, rcm_execution
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 from .text import counted, verb
 
@@ -207,12 +207,22 @@ def _cycle_test_lines(workspace: Workspace, test: dict) -> tuple[list[str], list
         ruleset = cycle_linking.resolve_ruleset(workspace, test)
         assertions = cycle_linking.grid_assertions(ruleset)
         anchor_column = str(population.get("column") or "")
-        # The auditor who approved the rules is part of the evidence: a cycle
-        # result is only as authorised as the rules that produced it.
+        # Who approved the rules is part of the evidence: a cycle result is only
+        # as authorised as the rules that produced it. An auto-mode run may now
+        # approve rules it wrote, so the file has to distinguish the two — a
+        # reader years later must not have to infer from an identity string
+        # whether a person read the fan-out before signing.
+        if cycle_rulesets.approver_kind(ruleset) == "agent":
+            approval = (
+                "approved automatically by an auto-mode run "
+                f"({ruleset.get('approved_by') or 'unknown'}) — no auditor "
+                "reviewed the measured fan-out before the rules took effect"
+            )
+        else:
+            approval = f"approved by {ruleset.get('approved_by') or 'unknown'}"
         provenance = [
             f"- Rules: ruleset `{definition.get('ruleset_id')}` "
-            f"({definition.get('ruleset_hash')}), approved by "
-            f"{ruleset.get('approved_by') or 'unknown'} on "
+            f"({definition.get('ruleset_hash')}), {approval} on "
             f"{ruleset.get('approved_at') or 'an unrecorded date'}"
         ]
         vocabulary_hash = str(definition.get("ruleset_hash") or "")

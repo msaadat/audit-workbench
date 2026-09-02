@@ -20,6 +20,8 @@ from collections.abc import Mapping
 
 from .. import (
     cycle_linking,
+    cycle_measurement,
+    cycle_rulesets,
     cycle_vouching,
     doc_tests,
     document_analysis,
@@ -48,6 +50,7 @@ from .capabilities.documents import (
     analysis_unit_specs,
     resolve_document_scope,
 )
+from .capabilities import tests as test_capabilities
 from .capabilities._shared import target_rcm_ids
 from .doc_tests_execution import bind_document_test_unit
 from .documents_execution import (
@@ -1753,6 +1756,68 @@ class AuditWorkflowExecution(ActionRunner):
             f"Capability '{capability.id}' expands no units and cannot be executed."
         )
 
+    def _bind_cycle_ruleset_approval(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``tests.cycle_ruleset_approved``.
+
+        No model call: the rules were written by the previous stage and the
+        statistics a reviewer would read them against are computed in code. What
+        this unit supplies is the authority, and the authority came from the
+        auditor selecting ``mode: auto`` — so the record says ``agent``, not a
+        person's name, and the working paper prints it that way.
+
+        The unit only exists in auto mode; ``_ruleset_approval_units`` expands
+        nothing otherwise. Reaching it in permission mode would mean the gate
+        had been bypassed, so it refuses rather than trusting the caller.
+        """
+
+        self.ws = subject
+        if workflow_scope(self.run).get("permission_mode") is not False:
+            raise WorkspaceError(
+                "Cycle rules can be approved by a run only in auto mode."
+            )
+        ruleset_id = str((unit.get("input_payload") or {}).get("ruleset_id") or "")
+        if not ruleset_id:
+            pending = test_capabilities._pending_ruleset(self.ws)
+            ruleset_id = str((pending or {}).get("ruleset_id") or "")
+        if not ruleset_id:
+            # Approved by something else between expansion and execution, or
+            # withdrawn. Either way there is nothing left to do and nothing
+            # went wrong.
+            return DeterministicUnitResult("succeeded")
+        try:
+            record = cycle_rulesets.approve(
+                self.ws,
+                ruleset_id,
+                approved_by=test_capabilities.AGENT_APPROVER,
+                approved_by_kind="agent",
+            )
+        except WorkspaceError as error:
+            return DeterministicUnitResult("failed", error=str(error))
+        # The one thing an auditor reads before approving is the fan-out, and
+        # this run did not read it. Saying so is what keeps the delegation
+        # legible: the rules are effective, and the concerns that would have
+        # been raised against them are on the run.
+        measured = cycle_measurement.measure(self.ws, record)
+        for concern in cycle_measurement.concerns(measured):
+            self.warn(
+                f"Cycle rule '{concern['rule']}' was approved automatically in "
+                f"auto mode with a concern outstanding: {concern['detail']}"
+            )
+        self.emit(
+            "workspace_changed",
+            {"kind": "ruleset", "id": ruleset_id, "action": "approved"},
+        )
+        return DeterministicUnitResult(
+            "succeeded", (f"cycle_ruleset:{ruleset_id}",)
+        )
+
     def _bind_verify(
         self,
         subject: Workspace,
@@ -1902,6 +1967,13 @@ _PARTIAL_DEPENDENCIES = {
     # already has — without this, one unsatisfiable placement blocked every
     # data and document test in the engagement.
     "fieldwork.executed": {"tests.specified", "tests.promoted_from_analysis"},
+    # Generation has always been able to proceed without a cycle: an RCM row
+    # whose transaction-cycle attribute has no approved rules gets a
+    # document-question test instead, and the run says so. Permission mode
+    # leaves this gate permanently unsettled by design, so a blocking edge here
+    # would withhold every test in the engagement — data tests included — to
+    # wait on an approval that stage is not allowed to make.
+    "tests.specified": {"tests.cycle_ruleset_approved"},
     "results.rolled_up": {"fieldwork.executed"},
     "report.working_draft": {"findings.drafted"},
     "audit.verified": {
@@ -1989,6 +2061,10 @@ def build_audit_workflow_runner(
         "sources.imported": (
             adapter._bind_unreachable,
             {"deterministic": "sources.imported"},
+        ),
+        "tests.cycle_ruleset_approved": (
+            adapter._bind_cycle_ruleset_approval,
+            {"deterministic": "tests.cycle_ruleset_approval"},
         ),
         "results.rolled_up": (
             adapter._bind_rollup,

@@ -35,6 +35,7 @@ from ._shared import target_rcm_ids as _target_rcm_ids
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "tests.cycle_ruleset_proposed",
+    "tests.cycle_ruleset_approved",
     "tests.specified",
     "tests.promoted_from_analysis",
 )
@@ -496,6 +497,136 @@ def _cycle_ruleset_proposed() -> Capability:
     )
 
 
+# --------------------------------------------------------------------------- #
+# tests.cycle_ruleset_approved
+# --------------------------------------------------------------------------- #
+#: The agent identity a run records when it approves its own rules. Not a
+#: person, and deliberately not shaped like one.
+AGENT_APPROVER = "agent:auto-mode"
+
+
+def _auto_mode(scope: dict) -> bool:
+    """Whether this run may approve what it proposed.
+
+    Defaults to *permission* when the key is absent, which is every call from
+    outside a run — the status endpoint, engagement progress, a readiness read
+    in a test. Outside a run there is no delegation in force, so the standing
+    state of a workspace holding an unapproved proposal is "waiting for an
+    auditor", and that is what those callers should show.
+    """
+
+    return scope.get("permission_mode") is False
+
+
+def _pending_ruleset(workspace: Workspace) -> dict | None:
+    """The proposal an approval would make effective, if one is waiting."""
+
+    if cycle_rulesets.effective(workspace) is not None:
+        return None
+    pending = [
+        record
+        for record in cycle_rulesets.list_rulesets(workspace)
+        if str(record.get("status")) == "proposed"
+    ]
+    return pending[-1] if pending else None
+
+
+def _ruleset_approval_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Whether the rules this engagement needs are effective.
+
+    Satisfied where nothing asks, for the same reason proposing is: an
+    engagement whose matrix classifies no attribute as transaction-cycle needs
+    no rules and must not wait on rules for one.
+
+    Where the matrix does ask, the two modes part. In ``permission`` this stays
+    what the design intended — a human gate, reported and never actioned, whose
+    unmet state is a fact about the workspace rather than work the run can do.
+    In ``auto`` the auditor has delegated the run's approvals, so an unapproved
+    proposal is work, and the capability expands a unit to do it.
+    """
+
+    if not _cycle_attributes(workspace):
+        return Readiness("satisfied")
+    if cycle_rulesets.effective(workspace) is not None:
+        return Readiness("satisfied")
+    pending = _pending_ruleset(workspace)
+    if not _auto_mode(scope):
+        return Readiness(
+            "review_required",
+            (
+                "the cycle rules are proposed and await an auditor's approval"
+                if pending
+                else "the matrix asks for transaction-cycle evidence and no "
+                "cycle ruleset is effective",
+            ),
+            details={"ruleset_id": str((pending or {}).get("ruleset_id") or "")},
+        )
+    return Readiness(
+        "missing",
+        (
+            "the cycle rules are proposed and not yet effective"
+            if pending
+            else "no cycle ruleset has been proposed to approve",
+        ),
+        details={"ruleset_id": str((pending or {}).get("ruleset_id") or "")},
+    )
+
+
+def _ruleset_approval_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit, and only where the run was given the authority to run it.
+
+    Permission mode expands nothing: a stage with no units settles from its own
+    readiness, so the gate reports and the run carries on to generate whatever
+    tests it can without the cycle — which is exactly what it did before this
+    capability existed.
+
+    The proposal's hash rides on the input payload so that approving is bound to
+    the rules that were actually read. A proposal re-expanded against moved
+    schemas is a different unit, not a repeat of this one.
+    """
+
+    if not _auto_mode(scope) or not _cycle_attributes(workspace):
+        return []
+    pending = _pending_ruleset(workspace)
+    if pending is None:
+        return []
+    ruleset_id = str(pending.get("ruleset_id") or "")
+    return [
+        UnitSpec(
+            semantic_unit_id("cycle_ruleset_approval", ruleset_id),
+            "cycle_ruleset_approval",
+            "Approve the cycle rules for this engagement",
+            (f"cycle_ruleset:{ruleset_id}",),
+            {
+                "ruleset_id": ruleset_id,
+                "ruleset_hash": str(pending.get("ruleset_hash") or ""),
+            },
+        )
+    ]
+
+
+def _cycle_ruleset_approved() -> Capability:
+    return Capability(
+        "tests.cycle_ruleset_approved",
+        "cycle_ruleset_approval",
+        "Cycle rules made effective",
+        "cycle_ruleset_approval",
+        audit_workflow.dependencies("tests.cycle_ruleset_approved"),
+        _ruleset_approval_ready,
+        _ruleset_approval_units,
+        # No context and no worker: approving reads the stored proposal and the
+        # corpus it was measured against. There is no question here for a model
+        # — the judgement the gate exists for was made when the auditor chose
+        # the mode, and re-asking a model to bless its own rules would add a
+        # ceremony rather than a check.
+        barrier="all_settled_then_validate",
+        # Rules answer the matrix's comparisons; a rewritten matrix is a
+        # different question, and an approval of the answer to the old one is
+        # not an approval of the answer to this one.
+        invalidate_on=("rcm",),
+    )
+
+
 def _analysis_promoted() -> Capability:
     return Capability(
         "tests.promoted_from_analysis",
@@ -539,6 +670,7 @@ def _tests_specified() -> Capability:
 
 _BUILDERS = {
     "tests.cycle_ruleset_proposed": _cycle_ruleset_proposed,
+    "tests.cycle_ruleset_approved": _cycle_ruleset_approved,
     "tests.specified": _tests_specified,
     "tests.promoted_from_analysis": _analysis_promoted,
 }
