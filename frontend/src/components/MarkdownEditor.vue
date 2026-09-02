@@ -123,8 +123,8 @@ onBeforeUnmount(() => void unmount())
  * every child one shared edge and lets a wide table use the room it needs.
  */
 .markdown-editor :deep(.milkdown .ProseMirror) {
-  padding-block: 2rem;
-  padding-inline: max(1.75rem, calc((100% - 68ch) / 2));
+  padding-block: 1.5rem;
+  padding-inline: max(1.25rem, calc((100% - 96ch) / 2));
   font-size: var(--aw-text-md);
   line-height: 1.65;
 }
