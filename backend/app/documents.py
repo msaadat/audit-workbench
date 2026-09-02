@@ -9,6 +9,8 @@ import re
 import uuid
 import zipfile
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree
@@ -57,7 +59,20 @@ def _sha1_bytes(content: bytes) -> str:
 
 
 def _documents_dir(workspace: Workspace) -> Path:
-    path = workspace.root / "Documents"
+    """Where this workspace's documents live, named without touching the disk.
+
+    Naming a path is not creating one. Readiness asks for this path once per
+    document per capability — thousands of times to render one record view —
+    and a ``mkdir`` here made every one of those a write syscall against a
+    directory that already existed. Callers that are about to write into the
+    directory use :func:`_ensure_documents_dir` instead.
+    """
+    return workspace.root / "Documents"
+
+
+def _ensure_documents_dir(workspace: Workspace) -> Path:
+    """:func:`_documents_dir`, created if a write is about to land in it."""
+    path = _documents_dir(workspace)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -81,6 +96,26 @@ def cache_path(workspace: Workspace, doc_id: str) -> Path:
     return _documents_dir(workspace) / ".extracted" / f"{doc_id}.json"
 
 
+# Readiness asks whether each document has usable text several times over per
+# pass — once to decide it is analyzable, again for chunking, again for
+# classification text — and each ask opened and parsed the whole extraction,
+# page text included. A caller that writes no extraction in its span may
+# memoize that for its duration. Reentrant, like the classification scope.
+_extraction_cache: ContextVar[dict | None] = ContextVar("documents_request_cache", default=None)
+
+
+@contextmanager
+def request_cache_scope():
+    if _extraction_cache.get() is not None:
+        yield
+        return
+    token = _extraction_cache.set({})
+    try:
+        yield
+    finally:
+        _extraction_cache.reset(token)
+
+
 def cached_extraction(workspace: Workspace, doc_id: str) -> dict | None:
     """Return the cached extraction for the document's current source, or None.
 
@@ -88,7 +123,24 @@ def cached_extraction(workspace: Workspace, doc_id: str) -> dict | None:
     touches the workspace. Deterministic capability readiness and unit expansion
     need to know what text already exists without producing it as a side effect
     of asking.
+
+    Inside a :func:`request_cache_scope` the payload is shared rather than
+    copied — it carries every page of extracted text, and duplicating that for
+    each of the thousands of asks would cost more than the read it saves. The
+    read-only contract above is what makes that safe; callers treat the result
+    as immutable.
     """
+    cache = _extraction_cache.get()
+    key = (str(workspace.root), str(doc_id))
+    if cache is not None and key in cache:
+        return cache[key]
+    payload = _read_extraction(workspace, doc_id)
+    if cache is not None:
+        cache[key] = payload
+    return payload
+
+
+def _read_extraction(workspace: Workspace, doc_id: str) -> dict | None:
     document = next(
         (item for item in workspace.documents if item.get("id") == doc_id), None
     )
@@ -148,7 +200,7 @@ def add_document(
 
     sha1 = _sha1_bytes(content)
     doc_id = uuid.uuid4().hex[:10]
-    target = _documents_dir(workspace) / f"{doc_id}{suffix}"
+    target = _ensure_documents_dir(workspace) / f"{doc_id}{suffix}"
     target.write_bytes(content)
     doc = {
         "id": doc_id,
@@ -185,8 +237,8 @@ def replace_document(workspace: Workspace, doc_id: str, filename: str, content: 
     with document_analysis.document_lock(workspace, doc_id):
         doc = _document(workspace, doc_id)
         source, suffix, _ = _validate_upload(filename, str(doc.get("category") or ""))
-        target = _documents_dir(workspace) / f"{doc_id}{suffix}"
-        temporary = _documents_dir(workspace) / f".{doc_id}.upload{suffix}"
+        target = _ensure_documents_dir(workspace) / f"{doc_id}{suffix}"
+        temporary = _ensure_documents_dir(workspace) / f".{doc_id}.upload{suffix}"
         temporary.write_bytes(content)
         old_path = None
         try:

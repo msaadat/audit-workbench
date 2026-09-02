@@ -29,7 +29,14 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
-from . import doc_tests, engagement, rcm_execution, report
+from . import (
+    doc_tests,
+    document_classification,
+    documents as document_service,
+    engagement,
+    rcm_execution,
+    report,
+)
 from .agent import capabilities as audit_capabilities
 from .agent import store
 from .agent.capabilities.documents import has_generated_analysis
@@ -378,10 +385,20 @@ def _one_read():
     item from its evidence records. Thirty findings paid for that thirty times.
     Inside the scope the whole readiness projection costs 123ms rather than
     2131ms, measured on a 30-finding engagement.
+
+    Documents need the same treatment for the same reason. Readiness sweeps
+    every document once per capability, and each sweep re-read that document's
+    classification sidecar and its cached extraction: 1,936 sidecar reads and
+    2,112 extraction reads for 88 documents on one engagement. Both scopes hold
+    only for this call, so a run that writes an assignment still sees it.
     """
     token = _MEMO.set({})
     try:
-        with doc_tests.request_cache_scope():
+        with (
+            doc_tests.request_cache_scope(),
+            document_classification.request_cache_scope(),
+            document_service.request_cache_scope(),
+        ):
             yield
     finally:
         _MEMO.reset(token)

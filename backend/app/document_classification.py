@@ -32,8 +32,12 @@ read from disk, so readiness sees what actually happened.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -60,8 +64,24 @@ def utcnow() -> str:
 
 
 def _path(workspace: Workspace, document_id: str) -> Path:
-    root = (workspace.root / DIRNAME).resolve()
-    path = (root / f"{str(document_id)}.json").resolve()
+    """The sidecar path for one document, named without asking the filesystem.
+
+    The containment check is lexical. ``Path.resolve`` answers the same
+    question, but on Windows it is a ``_getfinalpathname`` syscall per path
+    component, and readiness names this path once per document per capability —
+    thousands of times to render one record view. The slowest case is the one
+    that matters most: where ``Documents/.types`` does not exist yet, resolution
+    falls back to walking the path component by component, so an engagement pays
+    the most for the documents it has not classified.
+
+    ``normpath`` collapses any ``..`` the identifier smuggled in as string
+    arithmetic, and ``is_relative_to`` compares parts. Together they reject
+    exactly what the pair of ``resolve`` calls rejected. What they no longer do
+    is follow symlinks, which this path never needed: the caller reads, writes,
+    or unlinks the sidecar, and the operating system resolves links for those.
+    """
+    root = Path(os.path.normpath(workspace.root / DIRNAME))
+    path = Path(os.path.normpath(root / f"{str(document_id)}.json"))
     if not path.is_relative_to(root):
         raise WorkspaceError("Unsafe document classification reference.")
     return path
@@ -74,7 +94,36 @@ def _require_document(workspace: Workspace, document_id: str) -> dict:
     raise WorkspaceError(f"Document '{document_id}' not found.")
 
 
+# Readiness asks the same handful of questions about every document once per
+# capability: whether it is categorized, classified, auditor-assigned, of a
+# type the catalog can induce. Each of those is a separate sidecar read, so
+# rendering one record view read 88 sidecars 1,936 times over. Like
+# ``doc_tests.request_cache_scope``, this lets a caller that is certain no
+# assignment is written in its span memoize the read for its duration. It is
+# reentrant, and only the outermost scope pays for setup and teardown.
+_cache: ContextVar[dict | None] = ContextVar("document_classification_request_cache", default=None)
+
+
+@contextmanager
+def request_cache_scope():
+    if _cache.get() is not None:
+        yield
+        return
+    token = _cache.set({})
+    try:
+        yield
+    finally:
+        _cache.reset(token)
+
+
 def _read(workspace: Workspace, document_id: str) -> dict:
+    cache = _cache.get()
+    key = (str(workspace.root), str(document_id))
+    if cache is not None and key in cache:
+        # A copy, because assignment reads a record, edits it, and writes it
+        # back — handing out the cached object would let that edit answer the
+        # next reader from memory.
+        return copy.deepcopy(cache[key])
     try:
         path = _path(workspace, document_id)
     except WorkspaceError:
@@ -82,8 +131,12 @@ def _read(workspace: Workspace, document_id: str) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return empty()
-    return value if isinstance(value, dict) else empty()
+        value = empty()
+    if not isinstance(value, dict):
+        value = empty()
+    if cache is not None:
+        cache[key] = copy.deepcopy(value)
+    return value
 
 
 def empty() -> dict:
