@@ -1070,8 +1070,20 @@ def planning_matters(apm_markdown: str) -> list[str] | None:
 # alone asks a matrix to repeat a label rather than answer a commitment, and
 # fraud-frame labels ("Opportunity.") are words no control matrix will ever
 # write. Both are captured here so ownership can read the commitment.
+#
+# The name is held to one line, exactly as ``_BOLD_LED_ITEM`` holds it, because
+# the two have to enumerate the same themes. Read under DOTALL it did not: an
+# unclosed ``**`` hunted across lines for its partner and took the *next*
+# bullet's opening marker instead. A memo wrote "- **Collusion / rate
+# manipulation.</b>." and the match ran on to swallow the bullet after it, so
+# "Suspension avoidance." kept its place in the enumeration but lost its body
+# here. Scored against the bare label it shared no word with the row that
+# answered it in full, and a 26-row matrix was rejected twice for a coverage
+# gap that did not exist. A malformed bullet may cost its own body; it may not
+# cost its neighbour's.
 _BOLD_LED_BODY = re.compile(
-    r"^\s*[-*]\s+\*\*\s*(.+?)\s*:?\s*\*\*(.*?)(?=^\s*[-*]\s+\*\*|\Z)",
+    r"^[^\S\n]*[-*][^\S\n]+\*\*[^\S\n]*([^\n]+?)[^\S\n]*:?[^\S\n]*\*\*"
+    r"(.*?)(?=^[^\S\n]*[-*][^\S\n]+\*\*|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -1202,15 +1214,41 @@ def _unowned_themes(
     receipt: raised in planning, never a row, so the invoices with no receipt
     evidence had no control to fail.
 
-    Rejection is reserved for a theme with no lexical connection to any row at
-    all. See :data:`MIN_THEME_MATCH`: a stricter bar measures phrasing rather
-    than coverage, and a matrix may not be discarded over phrasing.
+    Reserved for a theme with no lexical connection to any row at all. See
+    :data:`MIN_THEME_MATCH`: a stricter bar measures phrasing rather than
+    coverage, and a matrix may not be judged on phrasing.
     """
     return [
         theme
         for theme, best in _theme_ownership(themes, rows, texts)
         if best < MIN_THEME_MATCH
     ]
+
+
+def unowned_themes(apm_markdown: str, rows: list[dict]) -> list[str]:
+    """Planned risk themes no row in the matrix so much as mentions.
+
+    Reported to the auditor rather than enforced, which is a deliberate trade of
+    coverage assurance for generation robustness. As a gate this measured what
+    it could parse rather than what the matrix covered, and twice threw away a
+    matrix that answered the theme: once on "Suspension avoidance." — a
+    malformed bullet elsewhere in the memo cost this theme its body, leaving a
+    two-word label to match against — and once on "Fraud risks considered.",
+    a sub-heading that never had a body to lose because sections written as
+    sub-headings are not read here at all. Each rejection cost the run two
+    model calls and every row it had drafted, and neither named a real gap.
+
+    A label the matrix does not repeat is not evidence the matrix skipped the
+    theme, so it cannot decide whether a matrix is acceptable. It is still the
+    sharpest coverage signal available — a theme nothing discusses is exactly
+    how a planned response becomes no procedure, which is what happened to goods
+    receipt: raised in planning, never a row, so the invoices with no receipt
+    evidence had no control to fail. The auditor decides, on a matrix that
+    exists rather than on one that was discarded.
+    """
+    return _unowned_themes(
+        planned_risk_themes(apm_markdown), rows, risk_theme_texts(apm_markdown)
+    )
 
 
 def weakly_owned_themes(apm_markdown: str, rows: list[dict]) -> list[str]:
@@ -1301,16 +1339,9 @@ def document_level_errors(
         row for row in _current_rcm_rows(request) if isinstance(row, Mapping)
     ]
     everything = [*existing, *rows]
-    apm = str(_resolved_item(request, "current_apm") or "")
-    themes = planned_risk_themes(apm)
-    unowned = _unowned_themes(themes, everything, risk_theme_texts(apm))
-    if unowned:
-        errors.append(
-            "the planning memorandum plans a response for "
-            f"{counted(len(unowned), 'risk theme')} that no row owns: "
-            f"{'; '.join(unowned)}. Add a row whose risk and control concern "
-            "each, or state in the risk why the theme needs no control."
-        )
+    # Theme coverage was judged here once. It is reported to the auditor now
+    # instead — see :func:`unowned_themes` for what it cost as a gate.
+    #
     # The three-way match's third leg. Sequence and authorization are what a
     # matrix reaches for unprompted; agreement of the amounts is what it omits,
     # and it is where the largest single exception in this engagement lived —

@@ -802,7 +802,14 @@ PRESETS.register(
                     # process sections of a 28.6k-character APM never reached
                     # the turn, so no row could be proposed for them. Paid for
                     # by scoping the table sources to imported populations.
-                    budget=ContextBudget(max_items=1, max_characters=32_000),
+                    #
+                    # Raised again at 32_000, where a 53.5k-character APM lost
+                    # 21.5k of its tail. Two things went wrong at once and only
+                    # one of them was visible: the turn drafted a matrix from
+                    # 60% of the memo, and the coverage gate — which reads this
+                    # same truncated copy — enforced 7 of the memo's 14 themes
+                    # while reporting nothing about the 7 it could not see.
+                    budget=ContextBudget(max_items=1, max_characters=60_000),
                 ),
                 ContextSource(
                     id="current_rcm",

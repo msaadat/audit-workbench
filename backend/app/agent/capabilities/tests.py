@@ -99,6 +99,68 @@ def _unvouched_types(workspace: Workspace) -> list[str]:
     })
 
 
+def _unvouched_cause(workspace: Workspace) -> tuple[str, str, str]:
+    """Why nothing vouches records that were extracted to be vouched.
+
+    ``_unvouched_types`` deliberately detects the gap from the records, so that
+    the matrix cannot both be the thing in question and the thing that decides
+    whether the question is asked. That keeps the detection honest and leaves
+    the *explanation* unasked — and an explanation nobody checked is worse than
+    none, because it sends the reader to the wrong repair. This asks.
+
+    The causes are different repairs in different places: write a
+    transaction-cycle attribute, run a proposal, approve one, or build the test.
+    The approval case is the one that reads like success from every other angle
+    — an agent proposed sound-looking rules, every stage reported completion,
+    and the rules sit unapplied because approving them is not an agent's to do.
+
+    Returns ``(cause, sentence, ruleset_id)``; ``ruleset_id`` is empty unless a
+    specific proposal is what the reader has to go and look at.
+    """
+
+    if not _cycle_attributes(workspace):
+        return (
+            "no_cycle_attribute",
+            "the matrix classified no control attribute as transaction_cycle",
+            "",
+        )
+    rulesets = cycle_rulesets.list_rulesets(workspace)
+    if not rulesets:
+        return (
+            "no_ruleset",
+            "the matrix asks for transaction-cycle evidence and no cycle "
+            "ruleset has been proposed",
+            "",
+        )
+    approved = cycle_rulesets.effective(workspace)
+    if approved is None:
+        pending = [
+            record for record in rulesets
+            if str(record.get("status")) == "proposed"
+        ]
+        if pending:
+            latest = pending[-1]
+            return (
+                "ruleset_unapproved",
+                f"{counted(len(pending), 'cycle ruleset')} "
+                f"{verb(len(pending), 'is', 'are')} proposed and unapproved, so "
+                "no cycle test can be built; review the rules and their "
+                "measured fan-out, then approve",
+                str(latest.get("ruleset_id") or ""),
+            )
+        return (
+            "ruleset_rejected",
+            "every proposed cycle ruleset has been rejected, so no cycle test "
+            "can be built",
+            "",
+        )
+    return (
+        "no_cycle_test",
+        "a cycle ruleset is approved and no cycle test was built against it",
+        str(approved.get("ruleset_id") or ""),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # tests.specified
 # --------------------------------------------------------------------------- #
@@ -166,16 +228,24 @@ def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
     if total and ready == total:
         unvouched = _unvouched_types(workspace)
         if unvouched:
+            cause, because, ruleset_id = _unvouched_cause(workspace)
+            details = {
+                "ready": ready,
+                "total": total,
+                "unvouched_types": unvouched,
+                "unvouched_cause": cause,
+            }
+            if ruleset_id:
+                details["ruleset_id"] = ruleset_id
             return Readiness(
                 "review_required",
                 (
                     f"{counted(len(unvouched), 'document type')} "
                     f"{verb(len(unvouched), 'was', 'were')} extracted against an "
                     f"induced schema ({', '.join(unvouched)}) and no cycle test "
-                    "vouches them; the matrix classified no control attribute as "
-                    "transaction_cycle",
+                    f"vouches them; {because}",
                 ),
-                details={"ready": ready, "total": total},
+                details=details,
             )
         return Readiness("satisfied", details={"ready": ready, "total": total})
     if not _testable(workspace):

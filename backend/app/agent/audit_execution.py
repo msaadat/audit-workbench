@@ -1206,6 +1206,18 @@ class AuditWorkflowExecution(ActionRunner):
                 self.record_artifact(
                     "rcm", str(row["id"]), str(row["semantic_id"]), action, task
                 )
+            # A theme no row mentions at all. Enforced once, and it rejected
+            # matrices over the memo's markdown rather than over their coverage
+            # — see :func:`unowned_themes`. Reported first because it is the
+            # stronger of the two coverage signals.
+            for theme in planning_workers.unowned_themes(
+                str(self.ws.planning.get("apm_markdown") or ""), self.ws.rcm
+            ):
+                self.warn(
+                    f"Check that the matrix covers the planned risk theme "
+                    f"'{theme}': no row mentions it. Add a row whose risk and "
+                    "control concern it, or record why it needs no control."
+                )
             # Reconciliation the matrix passed on a single shared word. Too
             # weak to refuse a matrix over — it flagged three of ten themes on
             # one that covered all of them — and too pointed to discard, since

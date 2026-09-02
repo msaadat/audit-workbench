@@ -299,16 +299,23 @@ Payment before receipt risk.
 """
 
 
-def test_every_risk_theme_the_memorandum_plans_for_must_be_owned_by_a_row():
+def test_a_risk_theme_no_row_owns_is_reported_without_refusing_the_matrix():
     """The matrix is the memo's risk assessment made testable.
 
     A theme planned for and never converted into a control is how goods receipt
-    came to have no owning row while the memo raised it.
+    came to have no owning row while the memo raised it. That is worth telling
+    the auditor and — since the check reads the memo's markdown, and twice threw
+    away a matrix that did answer the theme when the markdown defeated it — not
+    worth refusing a matrix over. The matrix commits; the theme is reported.
     """
     gateway = _Gateway([json.dumps({"rows": [_row()]})] * 2)
 
-    with pytest.raises(WorkerRunError, match="Goods receipt and three-way match"):
-        WORKERS.execute(_request(_bundle(apm=_PLANNED)), gateway)
+    result = WORKERS.execute(_request(_bundle(apm=_PLANNED)), gateway)
+
+    assert len(result.proposal["rows"]) == 1
+    assert planning.unowned_themes(_PLANNED, [_row()]) == [
+        "Goods receipt and three-way match"
+    ]
 
 
 _BULLETED = """# APM
