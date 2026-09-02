@@ -12,7 +12,7 @@ from ..context import ContextManifest, load_manifest, persist_manifest
 from .interactions import InteractionTransitions
 
 DEFAULT_MAX_MODEL_TURNS = 40
-DEFAULT_MAX_RUNTIME_SECONDS = 1800
+DEFAULT_MAX_RUNTIME_SECONDS = 3600
 
 
 class Cancelled(Exception):

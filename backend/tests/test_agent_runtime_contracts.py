@@ -30,6 +30,7 @@ from app.agent.runtime import (
     submit_approval_response,
     submit_interaction_response,
 )
+from app.agent.runtime.run_runtime import DEFAULT_MAX_RUNTIME_SECONDS
 
 
 def _base_runner(workspace_with_data):
@@ -552,7 +553,7 @@ def test_default_run_runtime_owns_restart_safe_approval_transitions(
 
     assert not worker.is_alive()
     assert result["accepted"][0]["spec"] == {"value": 1}
-    assert runtime.deadline == 1915.0
+    assert runtime.deadline == 100.0 + DEFAULT_MAX_RUNTIME_SECONDS + 15.0
     durable = store.load_run(workspace_with_data, run["id"])
     assert durable["status"] == "executing"
     assert durable["approvals"][0]["status"] == "resolved"
@@ -611,7 +612,7 @@ def test_default_run_runtime_owns_restart_safe_structured_interactions(
 
     assert not worker.is_alive()
     assert result["response"] == {"text": "Use the report"}
-    assert runtime.deadline == 2020.0
+    assert runtime.deadline == 200.0 + DEFAULT_MAX_RUNTIME_SECONDS + 20.0
     runtime.resolve_interaction(interaction, result["response"])
     durable = store.load_run(workspace_with_data, run["id"])
     assert durable["status"] == "executing"
