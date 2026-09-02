@@ -22,21 +22,21 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["analyses"])
 
 
 @router.get("/analyses")
-async def get_analyses(workspace_id: str):
+def get_analyses(workspace_id: str):
     """List saved analyses without running any of them."""
     ws = workspaces.load_workspace(workspace_id)
     return analysis_payloads.analyses_payload(ws)
 
 
 @router.get("/analyses/summary")
-async def get_analyses_summary(workspace_id: str):
+def get_analyses_summary(workspace_id: str):
     """Read persisted execution metadata without re-running any procedure."""
     ws = workspaces.load_workspace(workspace_id)
     return analysis_results.analyses_summary_payload(ws)
 
 
 @router.get("/analyses/memo")
-async def get_analysis_memo(workspace_id: str):
+def get_analysis_memo(workspace_id: str):
     """Read the exploratory-analysis memo and whether it still describes now.
 
     The memo is derived and read-only: there is no PUT counterpart. It is
@@ -60,7 +60,7 @@ async def get_analysis_memo(workspace_id: str):
 
 
 @router.get("/analyses/{analysis_id}")
-async def get_analysis(workspace_id: str, analysis_id: str):
+def get_analysis(workspace_id: str, analysis_id: str):
     """Recompute one saved analysis for display, without recording a result.
 
     Opening a procedure shows what its spec returns now. Making that the
@@ -71,7 +71,7 @@ async def get_analysis(workspace_id: str, analysis_id: str):
 
 
 @router.get("/analyses/{analysis_id}/exceptions")
-async def get_analysis_exceptions(workspace_id: str, analysis_id: str):
+def get_analysis_exceptions(workspace_id: str, analysis_id: str):
     """Read back the rows the recorded result flagged, without recomputing.
 
     This is deliberately not the detail endpoint. Opening a procedure asks
@@ -95,7 +95,7 @@ async def get_analysis_exceptions(workspace_id: str, analysis_id: str):
 
 
 @router.post("/analyses/{analysis_id}/execute")
-async def execute_analysis(workspace_id: str, analysis_id: str):
+def execute_analysis(workspace_id: str, analysis_id: str):
     """Run one saved analysis and record what it concluded.
 
     This is the auditor's counterpart to the workflow's execution capability,
@@ -112,7 +112,7 @@ async def execute_analysis(workspace_id: str, analysis_id: str):
 
 
 @router.post("/analyses/execute")
-async def execute_analyses(workspace_id: str, payload: dict = Body(default={})):
+def execute_analyses(workspace_id: str, payload: dict = Body(default={})):
     """Execute several saved analyses in one pass.
 
     ``ids`` names them explicitly; otherwise every procedure whose result is
@@ -150,21 +150,21 @@ async def execute_analyses(workspace_id: str, payload: dict = Body(default={})):
 
 
 @router.post("/analyses")
-async def add_analysis(workspace_id: str, payload: dict = Body(...)):
+def add_analysis(workspace_id: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     analysis = ws.add_analysis(payload)
     return analysis_payloads.analysis_payload(ws, analysis)
 
 
 @router.patch("/analyses/{analysis_id}")
-async def update_analysis(workspace_id: str, analysis_id: str, changes: dict = Body(...)):
+def update_analysis(workspace_id: str, analysis_id: str, changes: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     analysis = ws.update_analysis(analysis_id, changes)
     return analysis_payloads.analysis_payload(ws, analysis)
 
 
 @router.post("/analyses/{analysis_id}/export")
-async def export_analysis(workspace_id: str, analysis_id: str):
+def export_analysis(workspace_id: str, analysis_id: str):
     """Stream one saved analysis' full result as a workbook.
 
     Both kinds export the same way, so a hand-written Polars procedure is as
@@ -177,7 +177,7 @@ async def export_analysis(workspace_id: str, analysis_id: str):
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(analysis.get("title") or analysis_id))
     return excel_response(frame, f"{name}.xlsx")
 @router.delete("/analyses/{analysis_id}")
-async def remove_analysis(workspace_id: str, analysis_id: str):
+def remove_analysis(workspace_id: str, analysis_id: str):
     ws = workspaces.load_workspace(workspace_id)
     ws.remove_analysis(analysis_id)
     return {"ok": True}

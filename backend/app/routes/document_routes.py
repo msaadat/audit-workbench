@@ -46,7 +46,7 @@ def _pages(value: str | None) -> list[int] | None:
 
 
 @router.get("/documents")
-async def list_documents(workspace_id: str):
+def list_documents(workspace_id: str):
     ws = _ws(workspace_id)
     document_search.recover_indexing(ws)
     return {"items": document_analysis.inventory(ws)}
@@ -133,7 +133,7 @@ async def search_documents(workspace_id: str, payload: dict = Body(...)):
 
 
 @router.get("/documents/search-status")
-async def document_search_status(workspace_id: str):
+def document_search_status(workspace_id: str):
     ws = _ws(workspace_id)
     return {"embedding": embedding.status(), "queue": document_search.queue_status(ws), "documents": [
         document_search.manifest_state(ws, document["id"]) for document in ws.documents
@@ -141,7 +141,7 @@ async def document_search_status(workspace_id: str):
 
 
 @router.get("/documents/indexing-status")
-async def document_indexing_status(workspace_id: str):
+def document_indexing_status(workspace_id: str):
     return document_search.queue_status(_ws(workspace_id))
 
 
@@ -279,7 +279,7 @@ def _reclassify_command(ws, mode: str) -> dict:
 
 
 @router.get("/documents/types")
-async def list_document_types(workspace_id: str):
+def list_document_types(workspace_id: str):
     """The catalog a classification may choose from, plus what has been assigned."""
 
     ws = _ws(workspace_id)
@@ -291,7 +291,7 @@ async def list_document_types(workspace_id: str):
 
 
 @router.get("/documents/schemas")
-async def list_document_schemas(workspace_id: str):
+def list_document_schemas(workspace_id: str):
     """The induced schemas, and the fields a requirement may be written against.
 
     The catalog form rather than the stored form: an RCM attribute addresses a
@@ -304,7 +304,7 @@ async def list_document_schemas(workspace_id: str):
 
 
 @router.get("/documents/vocabulary")
-async def list_document_vocabulary(workspace_id: str):
+def list_document_vocabulary(workspace_id: str):
     """What each type is read under, and how well corroborated it is.
 
     The per-type surface the documents tab never had. ``escape_rate`` was meant
@@ -335,7 +335,7 @@ async def list_document_vocabulary(workspace_id: str):
 
 
 @router.get("/documents/unidentified")
-async def list_unidentified_documents(workspace_id: str):
+def list_unidentified_documents(workspace_id: str):
     """The ``other`` bucket an auditor retypes from."""
 
     ws = _ws(workspace_id)
@@ -346,7 +346,7 @@ async def list_unidentified_documents(workspace_id: str):
 
 
 @router.get("/documents/classifications")
-async def list_document_classifications(workspace_id: str):
+def list_document_classifications(workspace_id: str):
     """Every assignment, so a wrong one can be corrected and not only a missing one.
 
     Wider than :func:`list_unidentified_documents` on purpose: ``other`` is the
@@ -373,7 +373,7 @@ async def reclassify_documents(workspace_id: str, payload: dict = Body(default={
 
 
 @router.patch("/documents/{doc_id}/type")
-async def retype_document(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+def retype_document(workspace_id: str, doc_id: str, payload: dict = Body(...)):
     """Assign a document type by hand.
 
     ``type_id`` names an existing entry; ``coin`` names a new one for this
@@ -408,13 +408,13 @@ async def retype_document(workspace_id: str, doc_id: str, payload: dict = Body(.
 
 
 @router.get("/documents/{doc_id}")
-async def get_document(workspace_id: str, doc_id: str):
+def get_document(workspace_id: str, doc_id: str):
     ws = _ws(workspace_id)
     return documents.preview(ws, doc_id, None)
 
 
 @router.get("/documents/{doc_id}/analysis")
-async def get_document_analysis(workspace_id: str, doc_id: str):
+def get_document_analysis(workspace_id: str, doc_id: str):
     return document_analysis.load_analysis(_ws(workspace_id), doc_id)
 
 
@@ -435,7 +435,7 @@ async def create_single_document_analysis_run(workspace_id: str, doc_id: str, pa
 
 
 @router.get("/documents/{doc_id}/analysis-runs/{run_id}")
-async def get_document_analysis_run(workspace_id: str, doc_id: str, run_id: str):
+def get_document_analysis_run(workspace_id: str, doc_id: str, run_id: str):
     run = store.load_run(_ws(workspace_id), run_id)
     scoped = {
         *((run.get("document_analysis") or {}).get("document_ids") or []),
@@ -451,12 +451,12 @@ async def get_document_analysis_run(workspace_id: str, doc_id: str, run_id: str)
 
 
 @router.patch("/documents/{doc_id}/analysis/review")
-async def patch_document_analysis_review(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+def patch_document_analysis_review(workspace_id: str, doc_id: str, payload: dict = Body(...)):
     return document_analysis.patch_review(_ws(workspace_id), doc_id, payload)
 
 
 @router.post("/documents/{doc_id}/analysis/accept-candidate")
-async def accept_document_analysis_candidate(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+def accept_document_analysis_candidate(workspace_id: str, doc_id: str, payload: dict = Body(...)):
     return document_analysis.accept_candidate(_ws(workspace_id), doc_id, payload)
 
 
@@ -466,7 +466,7 @@ async def reindex_document(workspace_id: str, doc_id: str):
 
 
 @router.patch("/documents/{doc_id}")
-async def patch_document(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+def patch_document(workspace_id: str, doc_id: str, payload: dict = Body(...)):
     ws = _ws(workspace_id)
     result = documents.update_document(ws, doc_id, payload)
     runner.notify_evidence_available(ws, document_ids=[doc_id], reason="document_classified")
@@ -474,7 +474,7 @@ async def patch_document(workspace_id: str, doc_id: str, payload: dict = Body(..
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document(workspace_id: str, doc_id: str):
+def delete_document(workspace_id: str, doc_id: str):
     ws = _ws(workspace_id); documents.remove_document(ws, doc_id)
     return {"ok": True}
 
@@ -488,12 +488,12 @@ async def reextract_document(workspace_id: str, doc_id: str):
 
 
 @router.get("/documents/{doc_id}/preview")
-async def preview_document(workspace_id: str, doc_id: str, pages: str | None = None):
+def preview_document(workspace_id: str, doc_id: str, pages: str | None = None):
     return documents.preview(_ws(workspace_id), doc_id, _pages(pages))
 
 
 @router.get("/documents/{doc_id}/file")
-async def serve_document(workspace_id: str, doc_id: str):
+def serve_document(workspace_id: str, doc_id: str):
     ws = _ws(workspace_id)
     doc = next((item for item in ws.documents if item.get("id") == doc_id), None)
     if doc is None:
@@ -506,7 +506,7 @@ async def serve_document(workspace_id: str, doc_id: str):
 
 
 @router.post("/doc-chat")
-async def doc_chat(workspace_id: str, payload: dict = Body(...)):
+def doc_chat(workspace_id: str, payload: dict = Body(...)):
     ws = _ws(workspace_id)
     return documents.document_chat(
         ws, str(payload.get("document_id") or ""), str(payload.get("question") or ""),
@@ -515,12 +515,12 @@ async def doc_chat(workspace_id: str, payload: dict = Body(...)):
 
 
 @router.get("/ai-activity")
-async def ai_activity(workspace_id: str, cursor: int = 0, limit: int = 100, document_id: str | None = None):
+def ai_activity(workspace_id: str, cursor: int = 0, limit: int = 100, document_id: str | None = None):
     return documents.activities(_ws(workspace_id), cursor, limit, document_id)
 
 
 @router.get("/knowledge-packs")
-async def list_knowledge_packs(workspace_id: str):
+def list_knowledge_packs(workspace_id: str):
     return {"items": methodology.list_packs(_ws(workspace_id))}
 
 
@@ -533,17 +533,17 @@ async def upload_knowledge_pack(workspace_id: str, file: UploadFile = File(...),
 
 
 @router.get("/knowledge-packs/search")
-async def search_knowledge_packs(workspace_id: str, q: str = Query(...), limit: int = 10):
+def search_knowledge_packs(workspace_id: str, q: str = Query(...), limit: int = 10):
     return {"items": methodology.search(_ws(workspace_id), q, limit=limit)}
 
 
 @router.get("/knowledge-packs/{scope}/{pack_id}")
-async def get_knowledge_pack(workspace_id: str, scope: str, pack_id: str):
+def get_knowledge_pack(workspace_id: str, scope: str, pack_id: str):
     return methodology.get_pack(_ws(workspace_id), scope, pack_id)
 
 
 @router.patch("/knowledge-packs/{scope}/{pack_id}")
-async def patch_knowledge_pack(workspace_id: str, scope: str, pack_id: str, payload: dict = Body(...)):
+def patch_knowledge_pack(workspace_id: str, scope: str, pack_id: str, payload: dict = Body(...)):
     existing = methodology.get_pack(_ws(workspace_id), scope, pack_id)
     return methodology.save_pack(
         _ws(workspace_id), payload.get("name", existing["name"]), payload.get("markdown", existing["markdown"]),
@@ -552,6 +552,6 @@ async def patch_knowledge_pack(workspace_id: str, scope: str, pack_id: str, payl
 
 
 @router.delete("/knowledge-packs/{scope}/{pack_id}")
-async def delete_knowledge_pack(workspace_id: str, scope: str, pack_id: str):
+def delete_knowledge_pack(workspace_id: str, scope: str, pack_id: str):
     methodology.remove_pack(_ws(workspace_id), scope, pack_id)
     return {"ok": True}

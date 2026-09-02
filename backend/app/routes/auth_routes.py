@@ -55,7 +55,7 @@ def _set_session_cookie(request: Request, response: Response, token: str) -> Non
 
 
 @router.post("/login")
-async def login(request: Request, response: Response, payload: dict = Body(...)):
+def login(request: Request, response: Response, payload: dict = Body(...)):
     email = str(payload.get("email") or "").strip()
     password = str(payload.get("password") or "")
     user = accounts.authenticate(email, password)
@@ -75,7 +75,7 @@ async def login(request: Request, response: Response, payload: dict = Body(...))
 
 
 @router.post("/logout")
-async def logout(request: Request, response: Response):
+def logout(request: Request, response: Response):
     token = request.cookies.get(sessions.COOKIE_NAME)
     if token:
         user = sessions.resolve(token)
@@ -87,7 +87,7 @@ async def logout(request: Request, response: Response):
 
 
 @router.get("/me")
-async def me(request: Request):
+def me(request: Request):
     """The session bootstrap the SPA calls before routing.
 
     Answers for an anonymous caller too — ``user: null`` is how the frontend
@@ -103,7 +103,7 @@ async def me(request: Request):
 
 
 @router.get("/invite/{token}")
-async def read_invite(token: str):
+def read_invite(token: str):
     invite = accounts.peek_invite(token)
     if invite is None:
         return Response(
@@ -115,7 +115,7 @@ async def read_invite(token: str):
 
 
 @router.post("/invite/{token}")
-async def accept_invite(token: str, request: Request, response: Response,
+def accept_invite(token: str, request: Request, response: Response,
                         payload: dict = Body(...)):
     user = accounts.accept_invite(
         token,

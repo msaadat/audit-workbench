@@ -32,35 +32,35 @@ def _frame(workspace_id: str, table_name: str) -> pl.DataFrame:
 
 
 @router.get("/validation/checks")
-async def checks_registry():
+def checks_registry():
     return validation.registry_payload()
 
 
 # ---------------------------------------------------------------- rule sets
 @router.get("/workspaces/{workspace_id}/rulesets")
-async def get_rulesets(workspace_id: str):
+def get_rulesets(workspace_id: str):
     return {"rulesets": workspaces.load_workspace(workspace_id).rulesets}
 
 
 @router.post("/workspaces/{workspace_id}/rulesets")
-async def add_ruleset(workspace_id: str, payload: dict = Body(...)):
+def add_ruleset(workspace_id: str, payload: dict = Body(...)):
     return workspaces.load_workspace(workspace_id).add_ruleset(payload)
 
 
 @router.patch("/workspaces/{workspace_id}/rulesets/{ruleset_id}")
-async def update_ruleset(workspace_id: str, ruleset_id: str, changes: dict = Body(...)):
+def update_ruleset(workspace_id: str, ruleset_id: str, changes: dict = Body(...)):
     return workspaces.load_workspace(workspace_id).update_ruleset(ruleset_id, changes)
 
 
 @router.delete("/workspaces/{workspace_id}/rulesets/{ruleset_id}")
-async def remove_ruleset(workspace_id: str, ruleset_id: str):
+def remove_ruleset(workspace_id: str, ruleset_id: str):
     workspaces.load_workspace(workspace_id).remove_ruleset(ruleset_id)
     return {"ok": True}
 
 
 # --------------------------------------------------------------------- runs
 @router.post("/workspaces/{workspace_id}/rulesets/{ruleset_id}/run")
-async def run_ruleset(workspace_id: str, ruleset_id: str, payload: dict = Body(default={})):
+def run_ruleset(workspace_id: str, ruleset_id: str, payload: dict = Body(default={})):
     ws = workspaces.load_workspace(workspace_id)
     ruleset = ws._ruleset(ruleset_id)
     table = payload.get("table") or ruleset["table"]
@@ -72,21 +72,21 @@ async def run_ruleset(workspace_id: str, ruleset_id: str, payload: dict = Body(d
 
 
 @router.post("/workspaces/{workspace_id}/tables/{table_name}/validate")
-async def validate_table(workspace_id: str, table_name: str, payload: dict = Body(...)):
+def validate_table(workspace_id: str, table_name: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     df = ws.get_frame(table_name)
     return validation.run_rules(df, payload.get("rules") or [], table_name, ws.get_frame)
 
 
 @router.post("/workspaces/{workspace_id}/tables/{table_name}/validate/detail")
-async def validation_detail(workspace_id: str, table_name: str, payload: dict = Body(...)):
+def validation_detail(workspace_id: str, table_name: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     df = ws.get_frame(table_name)
     return validation.detail_payload(df, payload.get("rule") or {}, ws.get_frame)
 
 
 @router.post("/workspaces/{workspace_id}/tables/{table_name}/validate/export")
-async def export_failures(workspace_id: str, table_name: str, payload: dict = Body(...)):
+def export_failures(workspace_id: str, table_name: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     rule = payload.get("rule") or {}
     failures = validation.rule_failures(ws.get_frame(table_name), rule, ws.get_frame)
@@ -104,7 +104,7 @@ def _sheet_name(index: int, base: str, used: set[str]) -> str:
 
 
 @router.post("/workspaces/{workspace_id}/tables/{table_name}/validate/report")
-async def export_report(workspace_id: str, table_name: str, payload: dict = Body(...)):
+def export_report(workspace_id: str, table_name: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     df = ws.get_frame(table_name)
     rules = payload.get("rules") or []
@@ -139,7 +139,7 @@ async def export_report(workspace_id: str, table_name: str, payload: dict = Body
 
 # ----------------------------------------------------------- values picker
 @router.get("/workspaces/{workspace_id}/tables/{table_name}/columns/{column}/values")
-async def column_values(
+def column_values(
     workspace_id: str, table_name: str, column: str, limit: int = 200
 ):
     df = _frame(workspace_id, table_name)

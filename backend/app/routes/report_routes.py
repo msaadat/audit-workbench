@@ -15,7 +15,7 @@ def _ws(workspace_id: str):
 
 
 @router.get("/findings")
-async def list_findings(workspace_id: str):
+def list_findings(workspace_id: str):
     ws = _ws(workspace_id)
     evidence_options: list[dict] = []
     seen: set[str] = set()
@@ -63,48 +63,48 @@ async def list_findings(workspace_id: str):
 
 
 @router.post("/findings")
-async def add_finding(workspace_id: str, payload: dict = Body(...)):
+def add_finding(workspace_id: str, payload: dict = Body(...)):
     return findings.add(_ws(workspace_id), payload, source="manual")
 
 
 @router.post("/findings/promote")
-async def promote_finding(workspace_id: str, payload: dict = Body(...)):
+def promote_finding(workspace_id: str, payload: dict = Body(...)):
     return findings.promote(
         _ws(workspace_id), str(payload.get("run_id") or ""), str(payload.get("finding_id") or "")
     )
 
 
 @router.patch("/findings/{finding_id}")
-async def patch_finding(workspace_id: str, finding_id: str, payload: dict = Body(...)):
+def patch_finding(workspace_id: str, finding_id: str, payload: dict = Body(...)):
     ws = _ws(workspace_id)
     item = findings.update(ws, finding_id, payload)
     return {**item, "evidence_warnings": findings.evidence_warnings(ws, item)}
 
 
 @router.delete("/findings/{finding_id}")
-async def delete_finding(workspace_id: str, finding_id: str):
+def delete_finding(workspace_id: str, finding_id: str):
     ws = _ws(workspace_id)
     findings.remove(ws, finding_id)
     return {"ok": True}
 
 
 @router.get("/report")
-async def get_report(workspace_id: str):
+def get_report(workspace_id: str):
     return report.payload(_ws(workspace_id))
 
 
 @router.get("/report/context")
-async def get_report_context(workspace_id: str):
+def get_report_context(workspace_id: str):
     return report.build_context(_ws(workspace_id))
 
 
 @router.patch("/report")
-async def patch_report(workspace_id: str, payload: dict = Body(...)):
+def patch_report(workspace_id: str, payload: dict = Body(...)):
     return report.update(_ws(workspace_id), payload)
 
 
 @router.post("/report/generate")
-async def generate_report(workspace_id: str, payload: dict = Body(default={})):
+def generate_report(workspace_id: str, payload: dict = Body(default={})):
     return report.generate(
         _ws(workspace_id),
         use_model=payload.get("use_model") is not False,
@@ -113,11 +113,11 @@ async def generate_report(workspace_id: str, payload: dict = Body(default={})):
 
 
 @router.post("/report/reconcile")
-async def reconcile_report(workspace_id: str, payload: dict = Body(...)):
+def reconcile_report(workspace_id: str, payload: dict = Body(...)):
     return report.reconcile(_ws(workspace_id), str(payload.get("action") or ""))
 
 
 @router.post("/report/quality")
-async def check_report_quality(workspace_id: str, payload: dict = Body(default={})):
+def check_report_quality(workspace_id: str, payload: dict = Body(default={})):
     ws = _ws(workspace_id)
     return report.editorial_review(ws) if payload.get("editorial") else report.quality_checks(ws)

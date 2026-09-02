@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api", tags=["assistant"])
 
 
 @router.get("/assistant/status")
-async def assistant_status():
+def assistant_status():
     """Readable by everyone: the UI has to know whether a model is configured."""
     return llm.status()
 
@@ -27,7 +27,7 @@ async def assistant_status():
 # ``request`` follows ``payload`` because FastAPI resolves parameters by
 # annotation rather than position, and callers in-process pass the payload
 # positionally.
-async def assistant_settings(payload: dict = Body(...), request: Request = None):
+def assistant_settings(payload: dict = Body(...), request: Request = None):
     """Administrator-only: assistant configuration is global.
 
     Provider credentials, model, sampling, and the vision profile are one
@@ -42,7 +42,7 @@ async def assistant_settings(payload: dict = Body(...), request: Request = None)
 
 
 @router.post("/workspaces/{workspace_id}/assistant")
-async def ask(workspace_id: str, payload: dict = Body(...)):
+def ask(workspace_id: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     return assistant.ask(
         ws,
@@ -52,7 +52,7 @@ async def ask(workspace_id: str, payload: dict = Body(...)):
 
 
 @router.post("/workspaces/{workspace_id}/run-python")
-async def run_python(workspace_id: str, payload: dict = Body(...)):
+def run_python(workspace_id: str, payload: dict = Body(...)):
     """Execute an auditor-reviewed snippet locally.
 
     ``sandbox.run`` refuses outside single-user mode. The gate lives there

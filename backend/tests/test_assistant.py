@@ -458,13 +458,12 @@ def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
     assert body["base_url"] == "http://localhost:1234/v1"
 
 
-@pytest.mark.anyio
-async def test_assistant_settings_endpoint_persists_provider_model(monkeypatch):
+def test_assistant_settings_endpoint_persists_provider_model(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-key")
 
     # Assistant configuration is administrator-only, so the route needs a
     # request carrying an admin principal.
-    body = await assistant_routes.assistant_settings(
+    body = assistant_routes.assistant_settings(
         {"provider": "mistral", "model": "mistral-small-latest"},
         request=_admin_request(),
     )

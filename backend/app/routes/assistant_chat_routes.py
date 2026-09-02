@@ -12,32 +12,32 @@ router = APIRouter(prefix="/api", tags=["assistant-chats"])
 
 
 @router.get("/assistant/capabilities")
-async def chat_capabilities():
+def chat_capabilities():
     return assistant_chats.capabilities()
 
 
 @router.get("/workspaces/{workspace_id}/assistant/chats")
-async def list_chats(workspace_id: str, limit: int = Query(50, ge=1, le=100), cursor: int = Query(0, ge=0)):
+def list_chats(workspace_id: str, limit: int = Query(50, ge=1, le=100), cursor: int = Query(0, ge=0)):
     return assistant_chats.list_chats(workspaces.load_workspace(workspace_id), limit=limit, cursor=cursor)
 
 
 @router.post("/workspaces/{workspace_id}/assistant/chats")
-async def create_chat(workspace_id: str):
+def create_chat(workspace_id: str):
     return assistant_chats.create_chat(workspaces.load_workspace(workspace_id))
 
 
 @router.get("/workspaces/{workspace_id}/assistant/chats/{chat_id}")
-async def get_chat(workspace_id: str, chat_id: str):
+def get_chat(workspace_id: str, chat_id: str):
     return assistant_chats.get_chat(workspaces.load_workspace(workspace_id), chat_id)
 
 
 @router.patch("/workspaces/{workspace_id}/assistant/chats/{chat_id}")
-async def patch_chat(workspace_id: str, chat_id: str, payload: dict = Body(...)):
+def patch_chat(workspace_id: str, chat_id: str, payload: dict = Body(...)):
     return assistant_chats.update_chat(workspaces.load_workspace(workspace_id), chat_id, payload)
 
 
 @router.delete("/workspaces/{workspace_id}/assistant/chats/{chat_id}", status_code=204)
-async def remove_chat(workspace_id: str, chat_id: str):
+def remove_chat(workspace_id: str, chat_id: str):
     assistant_chats.delete_chat(workspaces.load_workspace(workspace_id), chat_id)
     return Response(status_code=204)
 
@@ -50,7 +50,7 @@ async def send_message(workspace_id: str, chat_id: str, payload: dict = Body(...
 
 
 @router.patch("/workspaces/{workspace_id}/assistant/chats/{chat_id}/artifacts/{artifact_id}")
-async def patch_artifact(workspace_id: str, chat_id: str, artifact_id: str, payload: dict = Body(...)):
+def patch_artifact(workspace_id: str, chat_id: str, artifact_id: str, payload: dict = Body(...)):
     try:
         return assistant_chats.update_artifact(
             workspaces.load_workspace(workspace_id), chat_id, artifact_id,

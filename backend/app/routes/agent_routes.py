@@ -45,12 +45,12 @@ ANALYSIS_COMMAND_TEXT = (
 
 
 @router.get("/agent/status")
-async def agent_status():
+def agent_status():
     return llm.agent_status()
 
 
 @router.get("/workspaces/{workspace_id}/tables/{table}/suggest-rules")
-async def suggest_rules(workspace_id: str, table: str):
+def suggest_rules(workspace_id: str, table: str):
     ws = workspaces.load_workspace(workspace_id)
     if table not in ws.table_names():
         raise HTTPException(404, detail=f"No table named '{table}'.")
@@ -111,26 +111,26 @@ async def create_run(workspace_id: str, payload: dict = Body(default={})):
 
 
 @router.get("/agent/actions")
-async def action_coverage():
+def action_coverage():
     return {"actions": actions.ACTION_COVERAGE}
 
 
 @router.get("/workspaces/{workspace_id}/agent/runs")
-async def list_runs(workspace_id: str):
+def list_runs(workspace_id: str):
     ws = workspaces.load_workspace(workspace_id)
     runner.recover_workspace(ws)
     return {"runs": store.list_runs(ws)}
 
 
 @router.get("/workspaces/{workspace_id}/agent/runs/{run_id}")
-async def get_run(workspace_id: str, run_id: str):
+def get_run(workspace_id: str, run_id: str):
     ws = workspaces.load_workspace(workspace_id)
     runner.recover_workspace(ws)
     return store.load_run(ws, run_id)
 
 
 @router.get("/workspaces/{workspace_id}/agent/runs/{run_id}/sidecars/{sha1}")
-async def get_run_sidecar(workspace_id: str, run_id: str, sha1: str):
+def get_run_sidecar(workspace_id: str, run_id: str, sha1: str):
     ws = workspaces.load_workspace(workspace_id)
     run = store.load_run(ws, run_id)
     if not re.fullmatch(r"[0-9a-f]{40}", sha1):
@@ -143,7 +143,7 @@ async def get_run_sidecar(workspace_id: str, run_id: str, sha1: str):
 
 
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/pause")
-async def pause_run(workspace_id: str, run_id: str):
+def pause_run(workspace_id: str, run_id: str):
     ws = workspaces.load_workspace(workspace_id)
     return runner.pause_run(ws, run_id)
 
@@ -173,7 +173,7 @@ async def continue_audit(workspace_id: str, run_id: str):
 
 
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/cancel")
-async def cancel_run(workspace_id: str, run_id: str, payload: dict = Body(default={})):
+def cancel_run(workspace_id: str, run_id: str, payload: dict = Body(default={})):
     ws = workspaces.load_workspace(workspace_id)
     return runner.cancel_run(
         ws, run_id, reason=payload.get("reason") or "",
@@ -195,7 +195,7 @@ async def send_message(workspace_id: str, run_id: str, payload: dict = Body(...)
 @router.post(
     "/workspaces/{workspace_id}/agent/runs/{run_id}/approvals/{approval_id}"
 )
-async def decide_approval(
+def decide_approval(
     workspace_id: str, run_id: str, approval_id: str, payload: dict = Body(...)
 ):
     ws = workspaces.load_workspace(workspace_id)
@@ -207,7 +207,7 @@ async def decide_approval(
 @router.post(
     "/workspaces/{workspace_id}/agent/runs/{run_id}/interactions/{interaction_id}/respond"
 )
-async def respond_interaction(
+def respond_interaction(
     workspace_id: str, run_id: str, interaction_id: str, payload: dict = Body(...)
 ):
     ws = workspaces.load_workspace(workspace_id)

@@ -13,13 +13,13 @@ router = APIRouter(prefix="/api/workspaces", tags=["folder-intake"])
 
 
 @router.get("/{workspace_id}/folder-sources")
-async def list_folder_sources(workspace_id: str):
+def list_folder_sources(workspace_id: str):
     ws = workspaces.load_workspace(workspace_id)
     return {"sources": intake.list_sources(ws)}
 
 
 @router.post("/{workspace_id}/folder-sources")
-async def create_folder_source(workspace_id: str, payload: dict = Body(...)):
+def create_folder_source(workspace_id: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     return intake.create_source(
         ws, payload.get("label") or "", payload.get("root_name") or ""
@@ -27,7 +27,7 @@ async def create_folder_source(workspace_id: str, payload: dict = Body(...)):
 
 
 @router.post("/{workspace_id}/folder-sources/{source_id}/imports")
-async def compare_folder_import(
+def compare_folder_import(
     workspace_id: str, source_id: str, payload: dict = Body(...)
 ):
     ws = workspaces.load_workspace(workspace_id)
@@ -41,7 +41,7 @@ async def compare_folder_import(
 
 
 @router.post("/{workspace_id}/folder-imports")
-async def start_folder_import(workspace_id: str, payload: dict = Body(...)):
+def start_folder_import(workspace_id: str, payload: dict = Body(...)):
     """Start an import without exposing internal folder-source bookkeeping."""
     ws = workspaces.load_workspace(workspace_id)
     manifest = payload.get("manifest") or []
@@ -93,13 +93,13 @@ async def upload_folder_file(
 
 
 @router.post("/{workspace_id}/folder-imports/{batch_id}/complete-upload")
-async def complete_folder_upload(workspace_id: str, batch_id: str):
+def complete_folder_upload(workspace_id: str, batch_id: str):
     ws = workspaces.load_workspace(workspace_id)
     return intake.complete_upload(ws, batch_id)
 
 
 @router.post("/{workspace_id}/folder-imports/{batch_id}/apply")
-async def apply_folder_import(workspace_id: str, batch_id: str, payload: dict = Body(default={})):
+def apply_folder_import(workspace_id: str, batch_id: str, payload: dict = Body(default={})):
     """Apply the batch from deterministic classifications plus user edits.
 
     This is the assistant-free path: no agent run or model call is involved.
@@ -115,13 +115,13 @@ async def apply_folder_import(workspace_id: str, batch_id: str, payload: dict = 
 
 
 @router.get("/{workspace_id}/folder-imports/{batch_id}")
-async def get_folder_import(workspace_id: str, batch_id: str):
+def get_folder_import(workspace_id: str, batch_id: str):
     ws = workspaces.load_workspace(workspace_id)
     return intake.load_batch(ws, batch_id)
 
 
 @router.delete("/{workspace_id}/folder-imports/{batch_id}")
-async def cancel_folder_import(workspace_id: str, batch_id: str):
+def cancel_folder_import(workspace_id: str, batch_id: str):
     ws = workspaces.load_workspace(workspace_id)
     intake.cancel_batch(ws, batch_id)
     return {"ok": True}

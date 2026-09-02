@@ -10,12 +10,12 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
 
 @router.get("")
-async def list_workspaces():
+def list_workspaces():
     return workspaces.list_workspaces()
 
 
 @router.post("")
-async def create_workspace(payload: dict = Body(...)):
+def create_workspace(payload: dict = Body(...)):
     ws = workspaces.create_workspace(
         payload.get("name", ""),
         payload.get("description", ""),
@@ -24,12 +24,12 @@ async def create_workspace(payload: dict = Body(...)):
 
 
 @router.get("/{workspace_id}")
-async def get_workspace(workspace_id: str):
+def get_workspace(workspace_id: str):
     return workspaces.load_workspace(workspace_id).summary()
 
 
 @router.delete("/{workspace_id}")
-async def delete_workspace(workspace_id: str):
+def delete_workspace(workspace_id: str):
     workspaces.delete_workspace(workspace_id)
     return {"ok": True}
 
@@ -57,28 +57,28 @@ async def replace_table(
 
 
 @router.patch("/{workspace_id}/tables/{table_name}")
-async def rename_table(workspace_id: str, table_name: str, payload: dict = Body(...)):
+def rename_table(workspace_id: str, table_name: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     result = ws.rename_table(table_name, payload.get("name", ""))
     return {"renamed": result, "workspace": ws.summary()}
 
 
 @router.delete("/{workspace_id}/tables/{table_name}")
-async def delete_table(workspace_id: str, table_name: str):
+def delete_table(workspace_id: str, table_name: str):
     ws = workspaces.load_workspace(workspace_id)
     ws.remove_table(table_name)
     return ws.summary()
 
 
 @router.post("/{workspace_id}/joins")
-async def add_join(workspace_id: str, payload: dict = Body(...)):
+def add_join(workspace_id: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
     ws.add_join(payload)
     return ws.summary()
 
 
 @router.delete("/{workspace_id}/joins/{join_name}")
-async def delete_join(workspace_id: str, join_name: str):
+def delete_join(workspace_id: str, join_name: str):
     ws = workspaces.load_workspace(workspace_id)
     ws.remove_join(join_name)
     return ws.summary()

@@ -26,13 +26,13 @@ def _with_counts(user: dict) -> dict:
 
 
 @router.get("/users")
-async def list_users(request: Request):
+def list_users(request: Request):
     _admin(request)
     return [_with_counts(user) for user in accounts.list_users()]
 
 
 @router.post("/users")
-async def create_user(request: Request, payload: dict = Body(...)):
+def create_user(request: Request, payload: dict = Body(...)):
     _admin(request)
     user = accounts.create_user(
         str(payload.get("email") or ""),
@@ -46,7 +46,7 @@ async def create_user(request: Request, payload: dict = Body(...)):
 
 
 @router.post("/users/{user_id}/status")
-async def set_status(user_id: str, request: Request, payload: dict = Body(...)):
+def set_status(user_id: str, request: Request, payload: dict = Body(...)):
     actor = _admin(request)
     status = str(payload.get("status") or "")
     if user_id == actor.user_id and status == "disabled":
@@ -59,7 +59,7 @@ async def set_status(user_id: str, request: Request, payload: dict = Body(...)):
 
 
 @router.post("/users/{user_id}/password")
-async def reset_password(user_id: str, request: Request, payload: dict = Body(...)):
+def reset_password(user_id: str, request: Request, payload: dict = Body(...)):
     _admin(request)
     accounts.set_password(user_id, str(payload.get("password") or ""))
     # A reset is only meaningful if it ends the sessions opened with the old one.
@@ -70,7 +70,7 @@ async def reset_password(user_id: str, request: Request, payload: dict = Body(..
 
 
 @router.get("/usage")
-async def usage_totals(request: Request):
+def usage_totals(request: Request):
     """Who consumed the shared provider budget.
 
     The provider bills one key for the whole server, so this is the only place
@@ -90,13 +90,13 @@ async def usage_totals(request: Request):
 
 
 @router.get("/invites")
-async def list_invites(request: Request):
+def list_invites(request: Request):
     _admin(request)
     return accounts.list_invites()
 
 
 @router.post("/invites")
-async def create_invite(request: Request, payload: dict = Body(...)):
+def create_invite(request: Request, payload: dict = Body(...)):
     actor = _admin(request)
     token, invite = accounts.create_invite(str(payload.get("email") or ""), actor.user_id)
     accounts.record_auth_event("invite.created", user_id=actor.user_id,

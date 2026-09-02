@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api", tags=["engagement"])
 
 
 @router.get("/engagement/plan")
-async def get_engagement_plan(
+def get_engagement_plan(
     template: str = Query(engagement.DEFAULT_TEMPLATE),
     mode: str = Query("auto"),
 ):
@@ -23,7 +23,7 @@ async def get_engagement_plan(
 
 
 @router.get("/workspaces/{workspace_id}/engagement/record")
-async def get_engagement_record(workspace_id: str):
+def get_engagement_record(workspace_id: str):
     """What this engagement filed, in the order each work product settled.
 
     A projection of runs and their milestones — no state of its own.
@@ -33,7 +33,7 @@ async def get_engagement_record(workspace_id: str):
 
 
 @router.get("/workspaces/{workspace_id}/engagement/status")
-async def get_engagement_status(workspace_id: str):
+def get_engagement_status(workspace_id: str):
     """Phase and section states, derived from committed workspace state.
 
     Read by the workspace shell and the console rail. It moved here from
@@ -45,7 +45,7 @@ async def get_engagement_status(workspace_id: str):
 
 
 @router.post("/workspaces/{workspace_id}/engagement/brief")
-async def put_engagement_brief(workspace_id: str, brief: dict = Body(...)):
+def put_engagement_brief(workspace_id: str, brief: dict = Body(...)):
     """Record a brief as planning context.
 
     The brief contains optional engagement details only. Planning derives its
