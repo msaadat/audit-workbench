@@ -581,8 +581,7 @@ def page_deal_ticket(deal: dict, flags: set[str]) -> list:
     story.append(Spacer(1, 10))
     story.append(Paragraph(
         "Form TR-01. Retain with the counterparty confirmation and the "
-        "settlement instruction. Fictional document produced for audit "
-        "training.", S_SMALL))
+        "settlement instruction.", S_SMALL))
     return story
 
 
@@ -793,8 +792,8 @@ def page_nostro(deal: dict, stl: dict) -> list:
     story.append(table)
     story.append(Spacer(1, 10))
     story.append(Paragraph(
-        f"Extract produced by the nostro reconciliation officer for the "
-        f"internal audit sample. Opening balance {money(opening, currency)} "
+        f"Extract produced by the nostro reconciliation officer. "
+        f"Opening balance {money(opening, currency)} "
         f"brought forward.", S_SMALL))
     return story
 
@@ -821,8 +820,7 @@ def footer(canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica", 7)
     canvas.setFillColor(colors.HexColor("#888888"))
-    canvas.drawString(20 * mm, 12 * mm,
-                      f"{ENTITY} - internal audit sample. Fictional document.")
+    canvas.drawString(20 * mm, 12 * mm, ENTITY)
     canvas.drawRightString(A4[0] - 20 * mm, 12 * mm, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -833,8 +831,8 @@ def emit(path: Path, story: list, title: str) -> None:
         leftMargin=21 * mm, rightMargin=21 * mm,
         topMargin=18 * mm, bottomMargin=20 * mm,
         title=title,
-        author=f"{ENTITY} (fictional)",
-        subject="Internal audit sample - treasury dealing")
+        author=ENTITY,
+        subject="Treasury dealing")
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
 
 

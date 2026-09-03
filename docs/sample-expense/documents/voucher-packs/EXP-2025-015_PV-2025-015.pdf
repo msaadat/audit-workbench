@@ -1,74 +1,498 @@
-%PDF-1.4
-%“Œ‹ž ReportLab Generated PDF document (opensource)
+%PDF-1.3
+%âãÏÓ
 1 0 obj
 <<
-/F1 2 0 R /F2 3 0 R
+/PageMode /UseNone
+/Pages 2 0 R
+/Type /Catalog
 >>
 endobj
 2 0 obj
 <<
-/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+/Count 1
+/Kids [ 3 0 R ]
+/Type /Pages
 >>
 endobj
 3 0 obj
 <<
-/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+/Contents 4 0 R
+/MediaBox [ 0 0 595.2756 841.8898 ]
+/Parent 2 0 R
+/Resources <<
+/Font 5 0 R
+/ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>>
+/Rotate 0
+/Trans <<
+>>
+/Type /Page
 >>
 endobj
 4 0 obj
 <<
-/Contents 8 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 7 0 R /Resources <<
-/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
->> /Rotate 0 /Trans <<
-
->> 
-  /Type /Page
+/Length 6130
 >>
+stream
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+q
+1 0 0 1 51.35433 771.3701 cm
+q
+.090196 .211765 .364706 rg
+BT 1 0 0 1 0 4 Tm /F2 18 Tf 22 TL 57.24746 0 Td (EMPLOYEE EXPENSE PAYMENT VOUCHER) Tj T* -57.24746 0 Td ET
+Q
+Q
+q
+1 0 0 1 51.35433 755.3701 cm
+q
+.356863 .396078 .45098 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL 190.51497 0 Td (Northstar Trading \(Pvt.\) Ltd.) Tj T* -190.51497 0 Td ET
+Q
+Q
+q
+1 0 0 1 68.0315 655.3701 cm
+q
+.94902 .956863 .968627 rg
+n 0 88 87.87402 -88 re f*
+.94902 .956863 .968627 rg
+n 243.7795 88 87.87402 -88 re f*
+0 0 0 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 6 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Voucher ID) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (PV-2025-015) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Payment date) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (2025-05-16) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Claim ID) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (EXP-2025-015) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Employee) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Sana Malik) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Department) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Finance) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Cost center) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (CC-130) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Bank reference) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (IBFT-25Q2-00015) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Amount paid) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL 72.03506 0 Td (PKR 3,450) Tj T* -72.03506 0 Td ET
+Q
+Q
+q
+1 J
+1 j
+.717647 .772549 .839216 RG
+.35 w
+n 0 88 m 459.2126 88 l S
+n 0 0 m 459.2126 0 l S
+n 0 0 m 0 88 l S
+n 459.2126 0 m 459.2126 88 l S
+n 0 66 m 459.2126 66 l S
+n 0 44 m 459.2126 44 l S
+n 0 22 m 459.2126 22 l S
+n 87.87402 0 m 87.87402 88 l S
+n 243.7795 0 m 243.7795 88 l S
+n 331.6535 0 m 331.6535 88 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 633.3701 cm
+q
+.090196 .211765 .364706 rg
+BT 1 0 0 1 0 3 Tm /F2 10 Tf 13 TL (Expense details) Tj T* ET
+Q
+Q
+q
+1 0 0 1 55.27559 563.3701 cm
+q
+.909804 .933333 .960784 rg
+n 0 66 484.7244 -18 re f*
+.94902 .956863 .968627 rg
+n 0 20 484.7244 -20 re f*
+0 0 0 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 5 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Date) Tj T* ET
+Q
+Q
+q
+1 0 0 1 67.3622 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Category) Tj T* ET
+Q
+Q
+q
+1 0 0 1 143.8976 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Merchant / description) Tj T* ET
+Q
+Q
+q
+1 0 0 1 325.315 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Receipt) Tj T* ET
+Q
+Q
+q
+1 0 0 1 413.189 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Amount \(PKR\)) Tj T* ET
+Q
+Q
+q
+1 0 0 1 5 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (2025-05-01) Tj T* ET
+Q
+Q
+q
+1 0 0 1 67.3622 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Mobile data) Tj T* ET
+Q
+Q
+q
+1 0 0 1 143.8976 24 cm
+q
+BT 1 0 0 1 0 12 Tm 10 TL /F1 8 Tf 0 0 0 rg (Pakistan Railways) Tj  T* (Business travel support) Tj T* ET
+Q
+Q
+q
+1 0 0 1 325.315 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (RCP-015-1 \(Yes\)) Tj T* ET
+Q
+Q
+q
+1 0 0 1 413.189 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL 46.51943 0 Td (3,450) Tj T* -46.51943 0 Td ET
+Q
+Q
+BT 1 0 0 1 5 6 Tm  T* ET
+BT 1 0 0 1 67.3622 6 Tm  T* ET
+q
+1 0 0 1 143.8976 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F2 8 Tf 10 TL (Total reimbursed) Tj T* ET
+Q
+Q
+BT 1 0 0 1 325.315 6 Tm  T* ET
+q
+1 0 0 1 413.189 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F2 8 Tf 10 TL 46.51943 0 Td (3,450) Tj T* -46.51943 0 Td ET
+Q
+Q
+q
+1 J
+1 j
+.717647 .772549 .839216 RG
+.35 w
+n 0 66 m 484.7244 66 l S
+n 0 0 m 484.7244 0 l S
+n 0 0 m 0 66 l S
+n 484.7244 0 m 484.7244 66 l S
+n 0 48 m 484.7244 48 l S
+n 0 20 m 484.7244 20 l S
+n 62.3622 0 m 62.3622 66 l S
+n 138.8976 0 m 138.8976 66 l S
+n 320.315 0 m 320.315 66 l S
+n 408.189 0 m 408.189 66 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 541.3701 cm
+q
+.090196 .211765 .364706 rg
+BT 1 0 0 1 0 3 Tm /F2 10 Tf 13 TL (Approval and processing) Tj T* ET
+Q
+Q
+q
+1 0 0 1 68.0315 471.3701 cm
+q
+.94902 .956863 .968627 rg
+n 0 66 87.87402 -66 re f*
+.94902 .956863 .968627 rg
+n 243.7795 66 87.87402 -66 re f*
+0 0 0 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 6 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Approved by) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Kashif Iqbal) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Role) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Finance Manager) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Approval date) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (2025-05-11) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Delegated limit) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (PKR 30,000) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Prepared by) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Sana Malik) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Reviewed by) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Zainab Iqbal) Tj T* ET
+Q
+Q
+q
+1 J
+1 j
+.717647 .772549 .839216 RG
+.35 w
+n 0 66 m 459.2126 66 l S
+n 0 0 m 459.2126 0 l S
+n 0 0 m 0 66 l S
+n 459.2126 0 m 459.2126 66 l S
+n 0 44 m 459.2126 44 l S
+n 0 22 m 459.2126 22 l S
+n 87.87402 0 m 87.87402 66 l S
+n 243.7795 0 m 243.7795 66 l S
+n 331.6535 0 m 331.6535 66 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 459.3701 cm
+Q
+q
+1 0 0 1 51.35433 449.3701 cm
+q
+.356863 .396078 .45098 rg
+Q
+Q
+ 
+
+endstream
 endobj
 5 0 obj
 <<
-/PageMode /UseNone /Pages 7 0 R /Type /Catalog
+/F1 6 0 R
+/F2 7 0 R
 >>
 endobj
 6 0 obj
 <<
-/Author (Northstar Trading \(fictional\)) /CreationDate (D:20260729202312+05'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20260729202312+05'00') /Producer (ReportLab PDF Library - \(opensource\)) 
-  /Subject (\(unspecified\)) /Title (Expense voucher PV-2025-015) /Trapped /False
+/BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
+/Name /F1
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 7 0 obj
 <<
-/Count 1 /Kids [ 4 0 R ] /Type /Pages
+/BaseFont /Helvetica-Bold
+/Encoding /WinAnsiEncoding
+/Name /F2
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 8 0 obj
 <<
-/Filter [ /ASCII85Decode /FlateDecode ] /Length 1709
+/Author (Northstar Trading \050Pvt\056\051 Ltd\056)
+/CreationDate (D\07220260729202312\05305\04700\047)
+/Creator (\050unspecified\051)
+/Keywords ()
+/ModDate (D\07220260729202312\05305\04700\047)
+/Producer (ReportLab PDF Library \055 \050opensource\051)
+/Subject (\050unspecified\051)
+/Title (Expense voucher PV\0552025\055015)
+/Trapped /False
 >>
-stream
-Gau0DgJZcs&:N^lq@QW11,n#1_3eLdJJdEYQRuNSHa"6$acU+9WqPJ^7lO(,OsQ7K!]4dhpR.Vrkqa"ZIVAY'^&^3__P[bKPelu(W6bZ@^VFN/o_jTCDsC<^]&4Q%';%rbYofDl@M<JqTJ9&56O/Si_B]<gb9QXNo.]BIK-;(.98-bI"jfu'#u_[ST.]&HF>a'gomS`LdGO!3p$E%)VtX8flRCV;rH%c2BQ=1'D_V+iK5s20H%V_=W4H;gb&tTW3'st]@ToE2S_2L4Uc^q8_2`RK"/XMu36cDKqa%Rr,:A"Ui%/,O#nP):k=BqZJM5D;KE'lHSO]jO3GVa<NUMQui2AObr:t4T]dOsoamkjO(m[WNe\NYp_\P.=T\8RKD#D=I2%C.D=Vb,:Asi^-).4\NnG&]^%hi2(9j=gc8n'JGQJsbgp3A*h&-L,j@Bn"F`3Ni]O73#&HmJm)4O8'=-4;_-0su%/R^_>Ih1-*7%g^^$rA.k0j6m"um(B@oKS:)]g&RY4R\B>=!QkL8d-CdKe@IS(fU[R(f8dIWQ1\2'bFikTG"?rjoV9ZSmD$dZ.IVief's`iEn9YW6csE?F9R(F[n[JL[srhS>IcE)^2Q6US(FP`cZ]o`6U-N;NlYdN39<<-%u1808OL)^cB-?lmg2do7iBCFXQ17;';5j2o'BgH@/:<O&CP<eG9=cf`o#b>Z?=sAiOj@UJ]X![FHY&*q""X`7jQ'DS]WT",6*5/hi9N,.:8HmULQ?&1sP#<6Sb//VRRCJ1-XEBctt<FR%[]!\;^rnpcU'S:%n#jhPbU-(e"P814p-,"1BreefFts[Ltr&I4A.Oa<TdtWQ[fR9['$UA/:CiDkuNb\cTk/]LOQ=09qcZH#b82]9Q\NZ/UQZG9,8;(T\o"(.L4G7Obj,`=NV`)K>AE8d$].6rm>r@YH*bP@5X?ZqX\SM'dp?f]ZF5i/2,@9:BEb3j'lr)g04[&[>bR8o_^pp`6*dV'!A$qPLbJ/DE#X35:WmI-'9Us+I]pc3&9kWl=fTc`eCb^!\^!F,Aah>mne4C>"#?Ve=P43_(5dlB`Ts7S9iUSQ.t/*h:t+hQQjF]9]IOEt1u!'8caP>8mB5gu[BK"KG(AE`"K70Ys=Uik-V-;oLa\gP)dX_[oWg4NfU8]BpBq`PK+R1!IaYX9u66`AtMr@Da'rX.XeN@;%^0"]$SD9IFC])R\K9KoU2A67NhX\Lj8NG$YQ`XH\mI+/).3Uq<&^Jl)G;Z3:J9hQ%g\gSQKQmeQ-=^Bm&8Vf72.8b)["kr4*qn4'f)@205\cc`E>K4PW'Q;"-\B$\"Lb,o2$Pr3L@B$Nq0#;O2pc[2J+MPhR,Rm*ai>5Hc<T<!ocqE<YP"906?PN+4p+6U/5?#Nkq?DZ@^Pcn"(#o1Le([0N8T^Ael[cZRU)DasA>emG42W#`85<IiHI>#f41M?YZAELg;ru-`^C,JtYT!N7[<5!Bc^(MA<-/Kk(o1Opd3e!.D4I9io7-k:`],S51$f@X;A$JBbU2p.1WcK..Ol(3$GF+gOXsW#!2CJ(KPqUD?qlA!%IiM_dZeFg#RFE]C?_aLR;amO[r9;WaG??F;pU!sM*=m.V6BUe-oaAY)Ied8LdodZY;9s1FV^j^Mb#ENXS_[u^If5YkHRfk:8l#Z]5(<,+LfP-`G7-?]^\m#(-GB5THonLmKhj^<\jkWAIo?,PHN~>endstream
 endobj
 xref
 0 9
 0000000000 65535 f 
-0000000061 00000 n 
-0000000102 00000 n 
-0000000209 00000 n 
-0000000321 00000 n 
-0000000524 00000 n 
-0000000592 00000 n 
-0000000904 00000 n 
-0000000963 00000 n 
+0000000015 00000 n 
+0000000083 00000 n 
+0000000142 00000 n 
+0000000341 00000 n 
+0000006523 00000 n 
+0000006564 00000 n 
+0000006671 00000 n 
+0000006783 00000 n 
 trailer
 <<
-/ID 
-[<7b45852711411a30cc63cdc2c212a652><7b45852711411a30cc63cdc2c212a652>]
-% ReportLab generated PDF document -- digest (opensource)
-
-/Info 6 0 R
-/Root 5 0 R
 /Size 9
+/Root 1 0 R
+/Info 8 0 R
+/ID [ <7b45852711411a30cc63cdc2c212a652> <7b45852711411a30cc63cdc2c212a652> ]
 >>
 startxref
-2763
+7147
 %%EOF

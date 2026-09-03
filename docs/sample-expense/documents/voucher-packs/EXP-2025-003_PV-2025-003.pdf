@@ -1,74 +1,526 @@
-%PDF-1.4
-%“Œ‹ž ReportLab Generated PDF document (opensource)
+%PDF-1.3
+%âãÏÓ
 1 0 obj
 <<
-/F1 2 0 R /F2 3 0 R
+/PageMode /UseNone
+/Pages 2 0 R
+/Type /Catalog
 >>
 endobj
 2 0 obj
 <<
-/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+/Count 1
+/Kids [ 3 0 R ]
+/Type /Pages
 >>
 endobj
 3 0 obj
 <<
-/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+/Contents 4 0 R
+/MediaBox [ 0 0 595.2756 841.8898 ]
+/Parent 2 0 R
+/Resources <<
+/Font 5 0 R
+/ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>>
+/Rotate 0
+/Trans <<
+>>
+/Type /Page
 >>
 endobj
 4 0 obj
 <<
-/Contents 8 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 7 0 R /Resources <<
-/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
->> /Rotate 0 /Trans <<
-
->> 
-  /Type /Page
+/Length 6636
 >>
+stream
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+q
+1 0 0 1 51.35433 771.3701 cm
+q
+.090196 .211765 .364706 rg
+BT 1 0 0 1 0 4 Tm /F2 18 Tf 22 TL 57.24746 0 Td (EMPLOYEE EXPENSE PAYMENT VOUCHER) Tj T* -57.24746 0 Td ET
+Q
+Q
+q
+1 0 0 1 51.35433 755.3701 cm
+q
+.356863 .396078 .45098 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL 190.51497 0 Td (Northstar Trading \(Pvt.\) Ltd.) Tj T* -190.51497 0 Td ET
+Q
+Q
+q
+1 0 0 1 68.0315 655.3701 cm
+q
+.94902 .956863 .968627 rg
+n 0 88 87.87402 -88 re f*
+.94902 .956863 .968627 rg
+n 243.7795 88 87.87402 -88 re f*
+0 0 0 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 6 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Voucher ID) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (PV-2025-003) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Payment date) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 71 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (2025-04-21) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Claim ID) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (EXP-2025-003) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Employee) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Sana Malik) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Department) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Finance) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Cost center) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (CC-130) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Bank reference) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (IBFT-25Q2-00003) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Amount paid) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL 72.03506 0 Td (PKR 4,800) Tj T* -72.03506 0 Td ET
+Q
+Q
+q
+1 J
+1 j
+.717647 .772549 .839216 RG
+.35 w
+n 0 88 m 459.2126 88 l S
+n 0 0 m 459.2126 0 l S
+n 0 0 m 0 88 l S
+n 459.2126 0 m 459.2126 88 l S
+n 0 66 m 459.2126 66 l S
+n 0 44 m 459.2126 44 l S
+n 0 22 m 459.2126 22 l S
+n 87.87402 0 m 87.87402 88 l S
+n 243.7795 0 m 243.7795 88 l S
+n 331.6535 0 m 331.6535 88 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 633.3701 cm
+q
+.090196 .211765 .364706 rg
+BT 1 0 0 1 0 3 Tm /F2 10 Tf 13 TL (Expense details) Tj T* ET
+Q
+Q
+q
+1 0 0 1 55.27559 563.3701 cm
+q
+.909804 .933333 .960784 rg
+n 0 66 484.7244 -18 re f*
+.94902 .956863 .968627 rg
+n 0 20 484.7244 -20 re f*
+0 0 0 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 5 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Date) Tj T* ET
+Q
+Q
+q
+1 0 0 1 67.3622 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Category) Tj T* ET
+Q
+Q
+q
+1 0 0 1 143.8976 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Merchant / description) Tj T* ET
+Q
+Q
+q
+1 0 0 1 325.315 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Receipt) Tj T* ET
+Q
+Q
+q
+1 0 0 1 413.189 52 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Amount \(PKR\)) Tj T* ET
+Q
+Q
+q
+1 0 0 1 5 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (2025-04-07) Tj T* ET
+Q
+Q
+q
+1 0 0 1 67.3622 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (Accommodation) Tj T* ET
+Q
+Q
+q
+1 0 0 1 143.8976 24 cm
+q
+BT 1 0 0 1 0 12 Tm 10 TL /F1 8 Tf 0 0 0 rg (Blue Moon Guest House) Tj  T* (Business travel support) Tj T* ET
+Q
+Q
+q
+1 0 0 1 325.315 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL (RCP-003-1 \(No\)) Tj T* ET
+Q
+Q
+q
+1 0 0 1 413.189 29 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F1 8 Tf 10 TL 46.51943 0 Td (4,800) Tj T* -46.51943 0 Td ET
+Q
+Q
+BT 1 0 0 1 5 6 Tm  T* ET
+BT 1 0 0 1 67.3622 6 Tm  T* ET
+q
+1 0 0 1 143.8976 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F2 8 Tf 10 TL (Total reimbursed) Tj T* ET
+Q
+Q
+BT 1 0 0 1 325.315 6 Tm  T* ET
+q
+1 0 0 1 413.189 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 2 Tm /F2 8 Tf 10 TL 46.51943 0 Td (4,800) Tj T* -46.51943 0 Td ET
+Q
+Q
+q
+1 J
+1 j
+.717647 .772549 .839216 RG
+.35 w
+n 0 66 m 484.7244 66 l S
+n 0 0 m 484.7244 0 l S
+n 0 0 m 0 66 l S
+n 484.7244 0 m 484.7244 66 l S
+n 0 48 m 484.7244 48 l S
+n 0 20 m 484.7244 20 l S
+n 62.3622 0 m 62.3622 66 l S
+n 138.8976 0 m 138.8976 66 l S
+n 320.315 0 m 320.315 66 l S
+n 408.189 0 m 408.189 66 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 541.3701 cm
+q
+.090196 .211765 .364706 rg
+BT 1 0 0 1 0 3 Tm /F2 10 Tf 13 TL (Approval and processing) Tj T* ET
+Q
+Q
+q
+1 0 0 1 68.0315 471.3701 cm
+q
+.94902 .956863 .968627 rg
+n 0 66 87.87402 -66 re f*
+.94902 .956863 .968627 rg
+n 243.7795 66 87.87402 -66 re f*
+0 0 0 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 6 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Approved by) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Kashif Iqbal) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Role) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 49 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Finance Manager) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Approval date) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (2025-04-16) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Delegated limit) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 27 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (PKR 30,000) Tj T* ET
+Q
+Q
+q
+1 0 0 1 6 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Prepared by) Tj T* ET
+Q
+Q
+q
+1 0 0 1 93.87402 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Sana Malik) Tj T* ET
+Q
+Q
+q
+1 0 0 1 249.7795 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F2 9 Tf 12 TL (Reviewed by) Tj T* ET
+Q
+Q
+q
+1 0 0 1 337.6535 5 cm
+q
+0 0 0 rg
+BT 1 0 0 1 0 3 Tm /F1 9 Tf 12 TL (Zainab Iqbal) Tj T* ET
+Q
+Q
+q
+1 J
+1 j
+.717647 .772549 .839216 RG
+.35 w
+n 0 66 m 459.2126 66 l S
+n 0 0 m 459.2126 0 l S
+n 0 0 m 0 66 l S
+n 459.2126 0 m 459.2126 66 l S
+n 0 44 m 459.2126 44 l S
+n 0 22 m 459.2126 22 l S
+n 87.87402 0 m 87.87402 66 l S
+n 243.7795 0 m 243.7795 66 l S
+n 331.6535 0 m 331.6535 66 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 464.3701 cm
+Q
+q
+1 0 0 1 68.0315 440.3701 cm
+q
+1 .956863 .956863 rg
+n 0 24 459.2126 -24 re f*
+.498039 .113725 .113725 rg
+BT /F1 10 Tf 12 TL ET
+q
+1 0 0 1 7 6 cm
+q
+BT 1 0 0 1 0 3 Tm 12 TL /F2 9 Tf 0 0 0 rg (Facilitator note:) Tj /F1 9 Tf ( Supporting receipt is recorded as unavailable despite the PKR 1,000 receipt threshold.) Tj T* ET
+Q
+Q
+q
+1 J
+1 j
+.607843 .109804 .109804 RG
+.7 w
+n 0 24 m 459.2126 24 l S
+n 0 0 m 459.2126 0 l S
+n 0 0 m 0 24 l S
+n 459.2126 0 m 459.2126 24 l S
+Q
+Q
+Q
+q
+1 0 0 1 51.35433 428.3701 cm
+Q
+q
+1 0 0 1 51.35433 418.3701 cm
+q
+.356863 .396078 .45098 rg
+Q
+Q
+ 
+
+endstream
 endobj
 5 0 obj
 <<
-/PageMode /UseNone /Pages 7 0 R /Type /Catalog
+/F1 6 0 R
+/F2 7 0 R
 >>
 endobj
 6 0 obj
 <<
-/Author (Northstar Trading \(fictional\)) /CreationDate (D:20260729202312+05'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20260729202312+05'00') /Producer (ReportLab PDF Library - \(opensource\)) 
-  /Subject (\(unspecified\)) /Title (Expense voucher PV-2025-003) /Trapped /False
+/BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
+/Name /F1
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 7 0 obj
 <<
-/Count 1 /Kids [ 4 0 R ] /Type /Pages
+/BaseFont /Helvetica-Bold
+/Encoding /WinAnsiEncoding
+/Name /F2
+/Subtype /Type1
+/Type /Font
 >>
 endobj
 8 0 obj
 <<
-/Filter [ /ASCII85Decode /FlateDecode ] /Length 1906
+/Author (Northstar Trading \050Pvt\056\051 Ltd\056)
+/CreationDate (D\07220260729202312\05305\04700\047)
+/Creator (\050unspecified\051)
+/Keywords ()
+/ModDate (D\07220260729202312\05305\04700\047)
+/Producer (ReportLab PDF Library \055 \050opensource\051)
+/Subject (\050unspecified\051)
+/Title (Expense voucher PV\0552025\055003)
+/Trapped /False
 >>
-stream
-Gau0E>BcQ+&:XAWQq&MO,(&A$2d;E.['?CIC>/=T"\WWf"G$WqC!Pt(mjse?`..k9p9DSOG%YE"B)1Qk$3Yimp4'IP3+'PG$OW-7nd_TP">&HHCjGUEKGH@<C2d*j%^q?u2PIVj`<L;gFY,9aV7're_(B(/$f]D;lD3,B.bp^(#1QKs(fLW4gL.l6(<VtZ31X@#hnB%HS&+I[q<[Bm#4o/sQa<_=I!ktWoZ_4B%$mMoq&CaSFm.rmr,$K)1omd"drI""0"Mh'*AE.<>j$[94SP(lS&HRmPZ$,k[.Nr>MUQF*H8-s\Ds`<!\2g,;VoHt;GaGQBp^]"T<U*)J(Vj5BU+f/K:Q8d'XU[E1VKsUI`=Fk93<nHl"KT6I=1Ep7i>10fnUoM0+!Ie-*,o`3Ym!mji#n>)pUkPV'ATg/f5+S^12$/+AMlf7EN)ro"a8j5Fif9OZ>*cC5=UFY<lXY&<>gu*;/gg>;_RgO]Ud>4:)IF%KFm"?T*[I6rs8A^hKP5\=F7#`28Hb>==3KNTY?!4HSJs9<P8RQ*UNPXnGHRqW:s1rG8efrJ?Y+(I^[u9d<F7gj<M=Pp-K9B]tjZr&TTur6_/ZPpKj@jO+2N'H`=3\IGorf\7uP2NqWh2VbrVo$9aaGiuoN'qfFlmS90G=*:37,(Oj1^fU[t4=&a:[qcKdYrV$.u3FV%TL1T5Bd"cQ!C_n,]m]uTbp#C$6]E=WH]U5LJ[J:mP&2,#to.[.>W*'$>s$!%l2F>-^!I)RX4D9Je?%uaqGce1c^6NrM"(Adn+>?HJ!k?MYV#!6RI8,an.PmOD=B8FPUJ`4&<IgiBJA"HAJ>6ABTheh>")UW)U_6`P1Db+-o.2;p*YdTED%2BAq1r?LQV%:t4MN9C]9cqMZ/\A<5=euD"a^Q1NKFUG<AX&P1IMAS#$h,*('0mM;772V=Q'P'Af/SqmF,*DTLi](%L2V?=OF4NUfgjK=\#I@W1.T>&6h&I'GEYsmhGG4UA0)9DMfb!\@+7aq5'$O>7V8@9?^_JMZ(6R(>DVI_fh-%$I;&A,\h6t/LWQVj,QuBgoG>BIH9NnHhd^.K]GVYAJ[c$7rpaYqq5^!m<6n2l\rDM0GD!NRUV_"c4t*mV%8AO_*PqLKG<A;5pDW/M%3*`VomTTq'#8qR3[;NiEc_M*;4_))37h6Ls7QLF4HRN-t_`ol:=lW$H$]db:onGG_%Af9W8C-Wtgo@G*L.dV2Cp>E)k\8r-EV2C(XT<.2'$jqRbKLSB)e7[\BE'Ha=+VljWPpGe=5iE/p(BXgitFV#(%N(p)n#Ai-P#:/rEsi65pd=D>T\Gq,)d][l?rGOeEWW?,_-B-bYdL9nkld8T%8.EK^Kf7gFDK2")_Gt'RoTC)AmFH=u5KknKI'qT,(gpGtG$A'qrcVur&(&)c[kr9MFn=,d<#38WL1Co=I_ehJY5)!eOi?__.%c2ZJon$Pf2&B-ZCNsGWfT9j&hPPp-N?Xk'&j)^Z4G@^>QqXVh69/Dp5]4sC2$Ep(msr8&cq_Q)3-dg2c_[6)=>BcG,sRoDp38dk"Nn9:pV-RVmJM4OH2<SW<I`bL>R,mb"7b\&Q:Ile,aLZc5AGnsr:(&.NVr<$lk5W2\C$*_JlH]C<o>/$/;]fTmUq-(!`B.66B9HkP[bd,B+LfBn_?7nOgBY\BBuQZ[`B9Aaq+F"9;<?@.$_PYje;#''X%&)=?US`EuG.0U+W3cNV2Q_E!X.(jM'JfTP/;MpJVC_<e<Bq<#p%n0\s`(fg`g3BJ75]s'i'C6&^^t<J5NmK</)u9_>AO4g2C#$ZUOARF@PqirnWUJ*kY5a?(Br+]H.J=`,tNaY=1bgC0@%48m/d[6>NIauI"YhdJEC$I0,s5D?kHprfcJ=53Ru&Y4SHh-uK[3;FY_QeCO~>endstream
 endobj
 xref
 0 9
 0000000000 65535 f 
-0000000061 00000 n 
-0000000102 00000 n 
-0000000209 00000 n 
-0000000321 00000 n 
-0000000524 00000 n 
-0000000592 00000 n 
-0000000904 00000 n 
-0000000963 00000 n 
+0000000015 00000 n 
+0000000083 00000 n 
+0000000142 00000 n 
+0000000341 00000 n 
+0000007029 00000 n 
+0000007070 00000 n 
+0000007177 00000 n 
+0000007289 00000 n 
 trailer
 <<
-/ID 
-[<dcca8e3741e862ce32e0e4dfbf3166a0><dcca8e3741e862ce32e0e4dfbf3166a0>]
-% ReportLab generated PDF document -- digest (opensource)
-
-/Info 6 0 R
-/Root 5 0 R
 /Size 9
+/Root 1 0 R
+/Info 8 0 R
+/ID [ <dcca8e3741e862ce32e0e4dfbf3166a0> <dcca8e3741e862ce32e0e4dfbf3166a0> ]
 >>
 startxref
-2960
+7653
 %%EOF

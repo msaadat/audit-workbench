@@ -8,8 +8,6 @@ at a size that keeps processing time and LLM calls low.
 One policy document, two tables, one deal pack. Every row and every PDF is
 copied unaltered from the full pack, so the two agree wherever they overlap.
 
-All entities, people, counterparties, rates and transactions are fictional.
-
 ## Contents
 
 | | |

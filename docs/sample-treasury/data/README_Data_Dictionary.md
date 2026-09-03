@@ -1,7 +1,6 @@
 # Data dictionary - Meridian Bank treasury dealing
 
-Ten populations covering 1 January to 30 June 2025. All entities, people,
-counterparties, rates and transactions are fictional.
+Ten populations covering 1 January to 30 June 2025.
 
 Load each file as a table using the file stem as the table name. Amounts are
 PKR unless a currency column says otherwise; dates are ISO `YYYY-MM-DD`; times

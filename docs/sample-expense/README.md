@@ -1,6 +1,6 @@
 # Employee Expense Reimbursement Audit Demo Pack
 
-All entities, people, transactions, policies, and documents in this folder are fictional. The pack is designed for a compact Q2 2025 internal-audit demonstration of employee expense reimbursements.
+The pack is designed for a compact Q2 2025 internal audit of employee expense reimbursements.
 
 ## Fast demo setup
 

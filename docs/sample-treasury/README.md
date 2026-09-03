@@ -1,7 +1,6 @@
 # Treasury Dealing Audit Demo Pack
 
-All entities, people, counterparties, rates, transactions and documents in this
-folder are fictional. The pack is built for an internal audit of treasury
+The pack is built for an internal audit of treasury
 dealing, confirmation and settlement at a bank, for the half year ended
 30 June 2025.
 

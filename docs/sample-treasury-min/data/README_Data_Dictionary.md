@@ -1,7 +1,6 @@
 # Data dictionary - Meridian Bank treasury dealing (minimised)
 
 Two populations covering deals struck between 31 January and 10 February 2025.
-All entities, people, counterparties and transactions are fictional.
 
 Load each file as a table using the file stem as the table name. Amounts are
 PKR unless a currency column says otherwise; dates are ISO `YYYY-MM-DD`; times
