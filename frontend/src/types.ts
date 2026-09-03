@@ -2084,6 +2084,8 @@ export interface AgentNarrationEntry {
   text: string
   stage_id: string | null
   unit_id: string | null
+  /** The stage status this line reports. Absent on entries written before it was recorded. */
+  status?: string | null
 }
 
 export interface AgentMilestone {

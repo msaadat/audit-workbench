@@ -627,6 +627,60 @@ def test_stage_lines_report_counts_and_who_is_waiting():
     assert "12s" in settled
 
 
+def test_a_stage_that_never_ran_does_not_read_as_done():
+    """A blocked stage has no units, and counting them alone said "done".
+
+    A treasury run narrated its blocked approval stage as "Cycle rules made
+    effective done" while the rules it would have approved did not exist — the
+    stage never started, so there was nothing to count and nothing to contradict
+    the word. The readiness that stopped it is the only account of why, and on a
+    stage that never began it is still current.
+    """
+
+    stage = _stage("blocked", [], title="Cycle rules made effective")
+    stage["started_at"] = None
+    stage["readiness_before"] = {
+        "state": "missing",
+        "reasons": ["no cycle ruleset has been proposed to approve"],
+    }
+
+    settled = narration.stage_settled(stage)
+    assert settled == (
+        "Cycle rules made effective could not start · "
+        "no cycle ruleset has been proposed to approve"
+    )
+    assert "done" not in settled
+
+
+def test_a_failed_stage_does_not_claim_to_be_done():
+    """It used to read "done · 1 failed", which says both at once."""
+
+    stage = _stage("failed", [_unit("failed")], title="Cycle rules proposed for review")
+
+    settled = narration.stage_settled(stage)
+    assert settled == "Cycle rules proposed for review failed · 12s"
+
+
+def test_a_succeeded_stage_still_reads_as_a_tally():
+    """The common case is unchanged: an outcome word would only add noise."""
+
+    stage = _stage("succeeded", [_unit(), _unit(unit_id="u2")])
+
+    assert narration.stage_settled(stage) == "Document analysis — 2 of 2 done · 12s"
+
+
+def test_partial_work_survives_a_failed_stage():
+    """"3 of 5 done" reads very differently from a bare failure."""
+
+    stage = _stage("failed", [
+        _unit(), _unit(unit_id="u2"), _unit(unit_id="u3"),
+        _unit("failed", unit_id="u4"), _unit("failed", unit_id="u5"),
+    ])
+
+    settled = narration.stage_settled(stage)
+    assert settled == "Document analysis failed · 3 of 5 done · 2 failed · 12s"
+
+
 # --------------------------------------------------------------------------- #
 # Next steps
 # --------------------------------------------------------------------------- #

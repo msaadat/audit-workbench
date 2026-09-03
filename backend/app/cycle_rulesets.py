@@ -35,6 +35,25 @@ _INDEX_NAME = ".index.json"
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _RULE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
+#: How a role, join key or assertion id must read, in the words a proposer is
+#: given. Stated once so the worker that writes rules and the store that keeps
+#: them cannot drift apart.
+RULE_ID_RULE = (
+    "lower_snake_case: letters, digits and underscores only, starting with a "
+    "letter"
+)
+
+
+def valid_rule_id(value: object) -> bool:
+    """Whether a role, join key or assertion id is well formed.
+
+    Public because the worker proposing rules enforces this one turn earlier,
+    where a repair can still fix it. Left to the store alone it costs a whole
+    run: by commit the model turn has already succeeded, and nothing retries it.
+    """
+
+    return bool(_RULE_ID_RE.fullmatch(str(value or "")))
+
 #: Statuses a ruleset moves through. ``superseded`` is terminal and retained:
 #: results keep their own ruleset_hash and stay readable against the rules that
 #: produced them.

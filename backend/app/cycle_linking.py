@@ -1808,7 +1808,7 @@ def assertion_covers(
     )
 
 
-def _comparison_text(comparison: Mapping[str, object]) -> str:
+def comparison_text(comparison: Mapping[str, object]) -> str:
     """One comparison as a sentence, for an error a person has to act on."""
 
     def side(operand: object) -> str:
@@ -1819,6 +1819,57 @@ def _comparison_text(comparison: Mapping[str, object]) -> str:
     if comparison.get("right") is None:
         return f"{side(comparison.get('left'))} must be present"
     return f"{side(comparison.get('left'))} agrees with {side(comparison.get('right'))}"
+
+
+#: Retained for readers that knew the private name.
+_comparison_text = comparison_text
+
+
+def comparison_signature(comparison: Mapping[str, object]) -> tuple:
+    """The operands that decide whether a comparison is covered.
+
+    The same selector ``assertion_covers`` compares on, named so callers can
+    group by it. Sorted for a pair because coverage reads two fields
+    symmetrically: which side the matrix wrote first is not part of the
+    requirement, so the two orderings are one piece of work.
+    """
+
+    def side(operand: object) -> tuple[str, str] | None:
+        if not isinstance(operand, Mapping):
+            return None
+        return (
+            str(operand.get("document_type") or ""),
+            str(operand.get("field") or ""),
+        )
+
+    left, right = side(comparison.get("left")), side(comparison.get("right"))
+    if right is None:
+        return (left,)
+    return tuple(sorted([left, right]))
+
+
+def distinct_comparisons(
+    comparisons: Iterable[Mapping[str, object]]
+) -> list[dict]:
+    """One comparison per distinct operand signature, first occurrence kept.
+
+    A matrix routinely requires the same field pair from several control
+    attributes — an amount that ``deal_accuracy`` and ``match_terms`` both
+    depend on is one test, demanded twice. Counting those apart overstates the
+    work by more than half on a real engagement, and asking for an assertion
+    each yields duplicate rules that differ only by an id no coverage check
+    reads.
+    """
+
+    seen: set[tuple] = set()
+    distinct: list[dict] = []
+    for comparison in comparisons or []:
+        signature = comparison_signature(comparison)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        distinct.append(dict(comparison))
+    return distinct
 
 
 def join_key_covers(

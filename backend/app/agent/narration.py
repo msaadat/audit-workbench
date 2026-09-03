@@ -43,11 +43,17 @@ def note(
     kind: str = "progress",
     stage_id: str | None = None,
     unit_id: str | None = None,
+    status: str | None = None,
 ) -> dict:
     """Append one progress line to the run's narration log and publish it.
 
     Callers hold the run's write lock through ``emit``'s runtime; the entry is
     appended in place so the next ``save()`` persists it.
+
+    ``status`` carries what the line is reporting on, so a reader does not have
+    to infer it from the prose. Without it every settled stage drew the same
+    tick, and a blocked stage read as a completed one at a glance however
+    carefully its sentence was worded.
     """
     entry = {
         "at": store.utcnow(),
@@ -55,6 +61,7 @@ def note(
         "text": str(text or "").strip(),
         "stage_id": stage_id,
         "unit_id": unit_id,
+        "status": status,
     }
     log = run.setdefault("narration", [])
     log.append(entry)
@@ -863,20 +870,68 @@ def _elapsed(stage: dict) -> str:
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60}s".replace(" 0s", "")
 
 
+#: What a settled stage's status says became of it. ``succeeded`` is absent
+#: deliberately: it is the one outcome that reads as plain completion, and it
+#: is told with a unit tally instead.
+_STAGE_OUTCOMES = {
+    "skipped": "skipped",
+    "blocked": "could not start",
+    "review_required": "needs you",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+
 def stage_settled(stage: dict) -> str:
+    """One line saying how a stage ended, led by what became of the stage.
+
+    Led by ``status`` rather than by a tally of units, because the two disagree
+    exactly where it matters. A stage that never ran has no units to count, and
+    counting them alone said "done": one treasury run narrated a blocked
+    approval stage as "Cycle rules made effective done" while the rules it would
+    have approved did not exist, and the reader had no way to tell. A failed
+    stage fared no better, reading "done · 1 failed" in one breath.
+
+    A count is kept only where it still adds something the outcome has not
+    already said — work that did land under a stage that failed, or a failure
+    among several units rather than the single one the outcome describes.
+    """
+
     units = stage.get("units") or []
     counts: dict[str, int] = {}
     for unit in units:
         status = str(unit.get("status") or "")
         counts[status] = counts.get(status, 0) + 1
     title = str(stage.get("title") or "Work").strip()
+    outcome = _STAGE_OUTCOMES.get(str(stage.get("status") or ""))
     done = counts.get("succeeded", 0) + counts.get("skipped", 0)
     failed = sum(counts.get(status, 0) for status in _FAILED_UNIT_STATUSES)
     open_units = sum(counts.get(status, 0) for status in _OPEN_UNIT_STATUSES)
-    parts = [f"{title} — {done} of {len(units)} done"] if len(units) > 1 else [f"{title} done"]
-    if failed:
+    if outcome:
+        parts = [f"{title} {outcome}"]
+        # Work that did land is worth saying even when the stage as a whole did
+        # not: "3 of 5 done" reads very differently from a bare failure.
+        if done:
+            parts.append(f"{done} of {len(units)} done")
+        # A stage that never began has no tally to account for it. Its readiness
+        # is the only account there is, and — unlike on a stage that ran and
+        # moved past it — it is still current.
+        if not stage.get("started_at"):
+            reason = next(
+                (
+                    str(item).strip()
+                    for item in (stage.get("readiness_before") or {}).get("reasons") or []
+                    if str(item).strip()
+                ),
+                "",
+            )
+            if reason:
+                parts.append(reason)
+    else:
+        parts = [f"{title} — {done} of {len(units)} done"] if len(units) > 1 else [f"{title} done"]
+    if failed and len(units) > 1:
         parts.append(f"{failed} failed")
-    if open_units:
+    if open_units and len(units) > 1:
         parts.append(f"{open_units} waiting on you")
     elapsed = _elapsed(stage)
     if elapsed:

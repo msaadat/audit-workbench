@@ -27,8 +27,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_linking, cycle_vouching, doc_tests, sandbox
-from ...text import counted, relevance_tokens
+from ... import cycle_linking, cycle_rulesets, cycle_vouching, doc_tests, sandbox
+from ...text import counted, relevance_tokens, verb
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -1525,12 +1525,21 @@ them in the matrix's own operands rather than equivalent ones — a receipt nami
 its order and an order naming its receipt are different facts, and only one of
 them is what was asked for.
 
+Several comparisons routinely name the same pair of fields, because more than
+one control depends on that pair. They are one assertion, not one each: an
+assertion is matched to a requirement by the fields it reads, so a second rule
+over the same two fields answers nothing the first did not and files a duplicate
+test. Work from the distinct pairs, not from the list.
+
 A comparison whose pair a join key already binds needs no assertion: the join
 established it, and repeating it files a check that cannot fail.
 
 Give every rule a short lower_snake_case id and a one-sentence rationale saying
 why it holds. The rationale is what an auditor reads when deciding whether to
-approve it, so state the reason, not the mechanics.
+approve it, so state the reason, not the mechanics. An id names the rule and
+refers to nothing outside it: letters, digits and underscores only. Do not reuse
+an identifier from the material you were given — a requirement's key is not an
+id, and an id containing a dot is refused.
 
 {JSON_RULES} {LANGUAGE_RULES}
 Keys:
@@ -1673,6 +1682,50 @@ def _supplied_requirements(request: WorkerRequest) -> list[dict]:
     return []
 
 
+def _as_rule_id(value: str) -> str:
+    """The nearest well-formed id to one that is not, for a repair to copy."""
+
+    cleaned = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+    return cleaned if re.match(r"^[a-z]", cleaned) else f"rule_{cleaned}".rstrip("_")
+
+
+def _refuse_malformed_ids(proposal: Mapping[str, Any]) -> None:
+    """Refuse ids the ruleset store will not keep.
+
+    Reported together and with the corrected form spelled out. A proposal that
+    took the id convention from somewhere else took it from there everywhere —
+    all 54 assertions of one treasury proposal were dotted — so naming the first
+    and stopping would spend the repair turn on a single character.
+    """
+
+    fields = (("roles", "name", "Role"), ("join_keys", "id", "Join key"),
+              ("assertions", "id", "Assertion"))
+    offenders = [
+        (label, str((item or {}).get(key) or ""))
+        for section, key, label in fields
+        for item in proposal.get(section) or []
+        if not cycle_rulesets.valid_rule_id((item or {}).get(key))
+    ]
+    if not offenders:
+        return
+    shown = "; ".join(
+        f"{label} '{raw}' should be '{_as_rule_id(raw)}'"
+        for label, raw in offenders[:5]
+    )
+    rest = (
+        f" The same applies to {counted(len(offenders) - 5, 'other id')}."
+        if len(offenders) > 5
+        else ""
+    )
+    raise WorkerResponseValidationError(
+        f"{counted(len(offenders), 'id')} in this proposal "
+        f"{verb(len(offenders), 'is', 'are')} not {cycle_rulesets.RULE_ID_RULE}. "
+        f"Rewrite: {shown}.{rest} An id is a name for the rule, not a reference "
+        "to anything outside it — do not carry over a key from the requirements "
+        "you were given."
+    )
+
+
 def validate_linkage_proposal(
     proposal: Mapping[str, Any], request: WorkerRequest
 ) -> Mapping[str, Any]:
@@ -1681,6 +1734,12 @@ def validate_linkage_proposal(
     The identifier rule is enforced here rather than left to the store because
     it is the one mistake worth spending a repair turn on: a join key on an
     amount reads perfectly and fuses every transaction sharing that amount.
+
+    The *id* rule is enforced here for the opposite reason — not because it is
+    subtle but because the store's copy of it fires too late to matter. A
+    malformed id raises ``RulesetError`` at commit, after the model turn has
+    already succeeded and outside any repair loop, so it costs the entire run.
+    Asked here, it costs one turn.
     """
 
     schemas = {
@@ -1699,6 +1758,7 @@ def validate_linkage_proposal(
                 f"Role '{name}' names '{document_type}', which this engagement "
                 "has no schema for."
             )
+    _refuse_malformed_ids(proposal)
 
     def field_of(operand: Mapping[str, Any], label: str) -> Mapping[str, Any]:
         role = str(operand.get("role"))
@@ -1776,23 +1836,24 @@ def _refuse_uncovered_requirements(
     uncovered = cycle_linking.uncovered_comparisons(proposal, comparisons)
     if not uncovered:
         return
-    named = "; ".join(
-        f"{item.get('control_attribute')}.{item.get('comparison')} "
-        f"({(item.get('left') or {}).get('document_type')}."
-        f"{(item.get('left') or {}).get('field')}"
-        + (
-            f" with {(item.get('right') or {}).get('document_type')}."
-            f"{(item.get('right') or {}).get('field')})"
-            if item.get("right")
-            else " stated at all)"
-        )
-        for item in uncovered
-    )
+    # Reported as field pairs, not as the matrix keys that demanded them.
+    # Coverage is decided by the fields an assertion reads — ``assertion_covers``
+    # never looks at an id — so several control attributes wanting the same pair
+    # are one assertion's work, and listing them apart asks for duplicate rules
+    # that differ only in a name nothing checks. Naming them by key also invites
+    # a proposer to *use* those keys as ids, which the store then rejects.
+    wanted = cycle_linking.distinct_comparisons(uncovered)
+    total = len(cycle_linking.distinct_comparisons(comparisons))
+    named = "; ".join(cycle_linking.comparison_text(item) for item in wanted)
     raise WorkerResponseValidationError(
-        f"The proposal answers {counted(len(required) - len(uncovered), 'required comparison')} "
-        f"of {len(required)}. Add an assertion for each of these, reading exactly "
-        f"the fields named: {named}. An assertion that merely repeats a join key "
-        "is not one of them — the join already binds that pair."
+        f"The proposal answers {total - len(wanted)} of "
+        f"{counted(total, 'required field pair')}. Add one assertion for each "
+        f"pair still unanswered, reading exactly the fields named: {named}. "
+        "An assertion is matched to a requirement by the fields it reads and by "
+        "nothing else, so one assertion answers every requirement over the same "
+        "pair — do not write a second for the same fields. An assertion that "
+        "merely repeats a join key is not wanted either: the join already binds "
+        "that pair."
     )
 
 

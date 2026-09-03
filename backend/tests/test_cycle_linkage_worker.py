@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from app import cycle_rulesets
 from app.agent.workers.model import WorkerResponseValidationError
 from app.agent.workers.tests import (
     _linkage_response_schema,
@@ -552,7 +553,7 @@ def test_a_proposal_leaving_a_matrix_requirement_unanswered_is_refused():
     asserts nothing about the amounts the matrix asked it to compare.
     """
 
-    with pytest.raises(WorkerResponseValidationError, match="answers 0 required comparisons of 1"):
+    with pytest.raises(WorkerResponseValidationError, match="answers 0 of 1 required field pair"):
         validate_linkage_proposal(
             _proposal(assertions=[{
                 "id": "approval_present", "label": "Approval present",
@@ -579,8 +580,113 @@ def test_the_refusal_names_the_fields_the_assertion_has_to_read():
         )
 
     message = str(raised.value)
-    assert "invoice_match.totals_agree" in message
-    assert "vendor_invoice.total_amount with purchase_order.total_amount" in message
+    assert "vendor_invoice.total_amount agrees with purchase_order.total_amount" in message
+
+
+def test_the_refusal_does_not_name_the_matrix_key():
+    """The message must not hand back an identifier the store would reject.
+
+    It used to name each gap ``control_attribute.comparison``, and a proposer
+    reading "add an assertion for each of these" took those dotted strings for
+    the ids it was being asked to write. One treasury run wrote 54 of them,
+    passed coverage, and died at commit on the first dot — a whole run lost to
+    a format this message taught it.
+    """
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        validate_linkage_proposal(
+            _proposal(assertions=[{
+                "id": "approval_present", "label": "Approval present",
+                "left": {"role": "invoice", "field": "approval"},
+                "right": None,
+                "requirement": "The invoice carries an approval.",
+            }]),
+            _request(requirements=[_requirement()]),
+        )
+
+    assert "invoice_match.totals_agree" not in str(raised.value)
+
+
+def test_two_controls_wanting_the_same_pair_are_one_assertion():
+    """Coverage is by operands, so the same pair twice is one piece of work.
+
+    A matrix names the same comparison from every control that depends on it —
+    an amount wanted by both ``invoice_match`` and ``payment_terms`` is one
+    test, demanded twice. Counting them apart overstated the work by more than
+    half on a real engagement and asked for duplicate rules distinguishable
+    only by an id no coverage check reads.
+    """
+
+    proposal = validate_linkage_proposal(
+        _proposal(assertions=[{
+            "id": "totals", "label": "Totals agree",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": {"role": "order", "field": "total_amount"},
+            "requirement": "The invoice agrees to the order.",
+        }]),
+        _request(requirements=[
+            _requirement(),
+            _requirement(control_attribute="payment_terms", comparison="amount_agrees"),
+        ]),
+    )
+
+    assert len(proposal["assertions"]) == 1
+
+
+def test_a_malformed_id_is_refused_where_a_repair_can_still_fix_it():
+    """The store's id rule, asked one turn earlier.
+
+    ``cycle_rulesets`` raises on a malformed id at commit — after the model turn
+    has succeeded, outside the repair loop, costing the whole run. Asked here it
+    costs one turn, and the message carries the corrected id so the repair is
+    mechanical rather than a guess.
+    """
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        validate_linkage_proposal(
+            _proposal(assertions=[{
+                "id": "invoice_match.totals_agree", "label": "Totals agree",
+                "left": {"role": "invoice", "field": "total_amount"},
+                "right": {"role": "order", "field": "total_amount"},
+                "requirement": "The invoice agrees to the order.",
+            }]),
+            _request(),
+        )
+
+    message = str(raised.value)
+    assert "invoice_match_totals_agree" in message
+    assert not cycle_rulesets.valid_rule_id("invoice_match.totals_agree")
+
+
+def test_every_id_is_reported_at_once():
+    """A proposal that got the convention wrong got it wrong everywhere.
+
+    Naming the first and stopping would spend a repair turn per id; the treasury
+    proposal that surfaced this carried 54.
+    """
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        validate_linkage_proposal(
+            _proposal(
+                join_keys=[{
+                    "id": "jk.order", "match": "normalized_equal",
+                    "left": {"role": "invoice", "field": "order_number"},
+                    "right": {"role": "order", "field": "order_number"},
+                    "rationale": "An invoice cites the order it bills against.",
+                }],
+                assertions=[{
+                    "id": "invoice_match.totals_agree", "label": "Totals agree",
+                    "left": {"role": "invoice", "field": "total_amount"},
+                    "right": {"role": "order", "field": "total_amount"},
+                    "requirement": "The invoice agrees to the order.",
+                }],
+            ),
+            _request(),
+        )
+
+    message = str(raised.value)
+    assert "2 ids" in message
+    assert "jk_order" in message and "invoice_match_totals_agree" in message
 
 
 def test_an_answered_requirement_passes():

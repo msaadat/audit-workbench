@@ -1097,6 +1097,7 @@ class WorkflowRunner:
                     narration.stage_settled(stage),
                     kind="stage_settled",
                     stage_id=str(stage.get("id") or ""),
+                    status=status,
                 )
                 self._project_milestone(stage, status)
         self.runtime.save()

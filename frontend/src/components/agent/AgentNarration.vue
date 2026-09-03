@@ -13,12 +13,37 @@ const visible = computed(() => {
   return props.entries.slice(-limit)
 })
 const lastIndex = computed(() => visible.value.length - 1)
+
+// A settled stage used to draw the same tick whatever became of it, so a
+// blocked stage and a finished one were indistinguishable at a glance. Keyed on
+// the status the entry now carries; entries written before it was recorded have
+// none, and keep the tick they were shown with.
+const SETTLED_ICONS: Record<string, string> = {
+  failed: 'pi pi-times-circle',
+  cancelled: 'pi pi-ban',
+  blocked: 'pi pi-lock',
+  review_required: 'pi pi-pause-circle',
+  skipped: 'pi pi-minus-circle',
+}
+
+function icon(entry: AgentNarrationEntry, current: boolean) {
+  if (current) return 'pi pi-spin pi-spinner'
+  if (entry.kind !== 'stage_settled') return 'pi pi-angle-right'
+  return SETTLED_ICONS[entry.status ?? ''] ?? 'pi pi-check'
+}
+
+function tone(entry: AgentNarrationEntry) {
+  const status = entry.kind === 'stage_settled' ? entry.status ?? '' : ''
+  if (status === 'failed' || status === 'cancelled') return 'bad'
+  if (status === 'blocked' || status === 'review_required') return 'gate'
+  return ''
+}
 </script>
 
 <template>
   <div v-if="visible.length" class="narration">
-    <div v-for="(entry, index) in visible" :key="`${entry.at}:${index}`" class="line" :class="{ current: active && index === lastIndex }">
-      <i :class="active && index === lastIndex ? 'pi pi-spin pi-spinner' : entry.kind === 'stage_settled' ? 'pi pi-check' : 'pi pi-angle-right'" />
+    <div v-for="(entry, index) in visible" :key="`${entry.at}:${index}`" class="line" :class="[tone(entry), { current: active && index === lastIndex }]">
+      <i :class="icon(entry, !!active && index === lastIndex)" />
       <span>{{ entry.text }}</span>
     </div>
   </div>
@@ -30,4 +55,6 @@ const lastIndex = computed(() => visible.value.length - 1)
 .line>i{font-size:var(--aw-text-2xs)}
 .line.current{color:var(--aw-ink,inherit)}
 .line.current>i{color:var(--aw-teal)}
+.line.bad>i{color:var(--aw-danger)}
+.line.gate>i{color:var(--aw-warn)}
 </style>
