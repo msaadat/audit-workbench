@@ -92,6 +92,22 @@ const controlConclusions = [
   { label: 'Not applicable', value: 'not_applicable' },
 ]
 const selected = computed(() => tests.value.find(item => item.id === selectedId.value) ?? null)
+// The rail edits a draft carrying the id it belongs to, never the record in
+// `tests`. Binding the fields straight to the selected test made choosing a
+// conclusion re-filter the list mid-edit: the test stopped matching "not
+// concluded", left the list, the watcher below reselected whatever took its
+// place, and Save then wrote the draft to *that* test. A working paper cannot
+// have a conclusion land on a control the auditor never looked at.
+const conclusionDraft = ref<{
+  id: string
+  control_conclusion: DataTest['control_conclusion']
+  conclusion: string
+} | null>(null)
+function seedConclusion(item: DataTest | null) {
+  conclusionDraft.value = item
+    ? { id: item.id, control_conclusion: item.control_conclusion, conclusion: item.conclusion }
+    : null
+}
 function conclusionLabel(value: string) {
   return controlConclusions.find(item => item.value === value)?.label ?? value
 }
@@ -99,11 +115,12 @@ function conclusionLabel(value: string) {
 // tells the auditor the working paper will be thin until they write it up.
 const departsWithoutReason = computed(() => {
   const item = selected.value
-  if (!item) return false
+  const draft = conclusionDraft.value
+  if (!item || !draft) return false
   return (
-    item.control_conclusion !== 'no_conclusion'
-    && item.control_conclusion !== item.evaluation.suggested_control_conclusion
-    && !item.conclusion.trim()
+    draft.control_conclusion !== 'no_conclusion'
+    && draft.control_conclusion !== item.evaluation.suggested_control_conclusion
+    && !draft.conclusion.trim()
   )
 })
 const rcmRows = computed(() => planning.value?.rcm ?? [])
@@ -224,6 +241,7 @@ function onDefinitionHide() {
 function selectTest(item: DataTest) {
   selectedId.value = item.id
   seedEditors(item)
+  seedConclusion(item)
   result.value = null
   void nav.replace('data-tests', { test: item.id })
   if (item.last_run) void loadResult(item, item.last_run.id)
@@ -289,12 +307,16 @@ async function save(thenRun: boolean) {
   finally { saving.value = false; running.value = false }
 }
 async function saveConclusion() {
-  if (!selected.value) return
+  // Against the draft's own id, not whatever is selected by the time the
+  // request goes out: `load()` and the visible-tests watcher can both move the
+  // selection while this is in flight.
+  const draft = conclusionDraft.value
+  if (!draft) return
   saving.value = true
   try {
-    await api.patch(`/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}`, {
-      conclusion: selected.value.conclusion,
-      control_conclusion: selected.value.control_conclusion,
+    await api.patch(`/api/workspaces/${props.workspace.id}/data-tests/${draft.id}`, {
+      conclusion: draft.conclusion,
+      control_conclusion: draft.control_conclusion,
     })
     await load()
     emit('changed')
@@ -306,8 +328,8 @@ async function saveConclusion() {
 // agrees. It still records an auditor conclusion, because agreeing is a
 // decision somebody made.
 async function acceptRunReading() {
-  if (!selected.value) return
-  selected.value.control_conclusion = selected.value.evaluation.suggested_control_conclusion
+  if (!selected.value || !conclusionDraft.value) return
+  conclusionDraft.value.control_conclusion = selected.value.evaluation.suggested_control_conclusion
   await saveConclusion()
 }
 async function ruleExceptionGroup(
@@ -605,18 +627,18 @@ onUnmounted(unsubscribe)
                 Recorded against evidence that has since changed — re-save to re-affirm it.
               </p>
 
-              <label>
+              <label v-if="conclusionDraft">
                 Control conclusion
                 <Select
-                  v-model="selected.control_conclusion"
+                  v-model="conclusionDraft.control_conclusion"
                   :options="controlConclusions"
                   optionLabel="label"
                   optionValue="value"
                 />
               </label>
-              <label>
+              <label v-if="conclusionDraft">
                 Conclusion
-                <Textarea v-model="selected.conclusion" rows="3" autoResize placeholder="What this result means for the control, in your own words." />
+                <Textarea v-model="conclusionDraft.conclusion" rows="3" autoResize placeholder="What this result means for the control, in your own words." />
               </label>
               <!-- Departing from the run is the judgement a working paper most
                    wants to show, so the prompt stays. It no longer blocks the

@@ -819,8 +819,19 @@ def update(
         item["created_by"] = "user"
     source = "agent" if agent else "auditor"
     if "control_conclusion" in changes:
-        item["control_conclusion_source"] = source
-        item["control_conclusion_input_sha1"] = item["evaluation"]["input_sha1"]
+        if conclusion == "no_conclusion":
+            # "Not concluded" is the absence of a decision, not one of them, so
+            # it carries no provenance. Stamping a source here said nobody
+            # concluded this *and* an auditor concluded it, and the rest of the
+            # file believed the second half: `auto_disposition` stopped filling
+            # the test in, guarding a conclusion that was never reached, and the
+            # signed input hash left the empty conclusion reading as stale once
+            # the evidence moved.
+            item["control_conclusion_source"] = "none"
+            item["control_conclusion_input_sha1"] = None
+        else:
+            item["control_conclusion_source"] = source
+            item["control_conclusion_input_sha1"] = item["evaluation"]["input_sha1"]
     if "conclusion" in changes:
         item["conclusion_source"] = source
     # A changed *definition* must be executed again; history remains immutable.

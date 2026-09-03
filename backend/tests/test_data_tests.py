@@ -145,6 +145,43 @@ def test_departing_from_the_run_records_without_a_written_reason(workspace_with_
     assert agreed["control_conclusion_source"] == "auditor"
 
 
+def test_clearing_the_conclusion_clears_who_reached_it(workspace_with_data):
+    """"Not concluded" is the absence of a decision, so it carries no source.
+
+    The rail sends ``control_conclusion`` on every save, so saving prose alone
+    used to stamp "an auditor concluded this" onto a test with no conclusion.
+    The rest of the file believed it: ``auto_disposition`` guards on an
+    auditor's conclusion it must not overwrite, so an unattended run could never
+    conclude the test again, and the signed input hash left the empty conclusion
+    reading as stale once the evidence moved.
+    """
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    data_tests.run(ws, item["id"])
+
+    concluded = data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+    assert concluded["control_conclusion_source"] == "auditor"
+    assert concluded["control_conclusion_input_sha1"] is not None
+
+    cleared = data_tests.update(
+        ws, item["id"],
+        {"control_conclusion": "no_conclusion", "conclusion": "Still looking at this."},
+    )
+    assert cleared["control_conclusion"] == "no_conclusion"
+    assert cleared["control_conclusion_source"] == "none"
+    assert cleared["control_conclusion_input_sha1"] is None
+    assert cleared["control_conclusion_stale"] is False
+    # Writing up why is still the auditor's act; only the decision was withdrawn.
+    assert cleared["conclusion_source"] == "auditor"
+
+    # And an unattended run can reach it again, exactly as it could before
+    # anyone touched it.
+    concluded_again = data_tests.auto_disposition(ws, item["id"])
+    assert concluded_again["control_conclusion"] == "ineffective"
+    assert concluded_again["control_conclusion_source"] == "agent"
+
+
 def test_auto_disposition_concludes_an_unattended_run_and_signs_it_agent(
     workspace_with_data,
 ):
