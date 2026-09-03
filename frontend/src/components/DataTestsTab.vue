@@ -51,6 +51,7 @@ const toast = useToast()
 const confirm = useConfirm()
 const assistantChat = useAssistantChat(props.workspace.id)
 const agent = useAgentRun(props.workspace.id)
+const { launchMode } = agent
 
 const tests = ref<DataTest[]>([])
 const planning = ref<PlanningPayload | null>(null)
@@ -421,7 +422,7 @@ async function draftFinding(regenerate = false) {
     await assistantChat.createChat()
     await assistantChat.send(
       `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${selected.value.rcm_id}.`,
-      'act', 'permission',
+      'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
     )
     if (!agent.state.drawerOpen) agent.toggleDrawer()
@@ -439,7 +440,7 @@ async function draftPendingFindings(testIds?: string[]) {
     await assistantChat.createChat()
     await assistantChat.send(
       `Draft findings for ${plural(rcmIds.length, 'RCM row')} with undrafted exceptions.`,
-      'act', 'permission',
+      'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_ids: rcmIds } },
     )
     if (!agent.state.drawerOpen) agent.toggleDrawer()

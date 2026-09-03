@@ -309,13 +309,15 @@ async function promoteObservation(item: AuditObservation) {
     await assistantChat.createChat()
     await assistantChat.send(
       `Draft a finding from observation ${item.id}.`,
-      'act', 'permission', {
+      'act', launchMode.value, {
         command: 'draft_findings', source: 'tab_button',
         runContext: { observation_id: item.id },
       },
     )
     if (!agent.state.drawerOpen) agent.toggleDrawer()
-    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'Review the proposed finding in the assistant before it is saved.', life: 3200 })
+    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: launchMode.value === 'permission'
+      ? 'Review the proposed finding in the assistant before it is saved.'
+      : 'Follow the finding draft in the assistant.', life: 3200 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
 function openTest(rollup: TestRollup) {
