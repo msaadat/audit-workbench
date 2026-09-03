@@ -253,6 +253,27 @@ function removeEvidence(id: string) {
 function openPlanning(rcmId: string) {
   void nav.replace('rcm', { rcm: rcmId })
 }
+/**
+ * A test link resolved against the tests this payload already carries. The id
+ * prefixes (`DAT-` for data tests, `DT-` for document tests) are too close to
+ * parse by hand, so membership decides which surface answers for the id.
+ */
+type TestLink = { id: string; destination: 'data-tests' | 'doc-tests'; title: string; icon: string }
+function resolveTest(id: string): TestLink | null {
+  const dataTest = (data.value?.data_tests ?? []).find(item => item.id === id)
+  if (dataTest) return { id, destination: 'data-tests', title: dataTest.title, icon: 'pi pi-chart-bar' }
+  const docTest = (data.value?.document_tests ?? []).find(item => item.id === id)
+  if (docTest) return { id, destination: 'doc-tests', title: docTest.title, icon: 'pi pi-file-check' }
+  return null
+}
+const testLinks = computed(() => (selected.value?.test_refs ?? [])
+  .map(resolveTest)
+  .filter((link): link is TestLink => link !== null))
+/** `push`, not `replace`: leaving a finding for its test has to be walkable back. */
+function openTest(id: string) {
+  const link = resolveTest(id)
+  if (link) void nav.push(link.destination, { test: id })
+}
 function openEvidence(value: EvidenceRef) {
   if (value.source_kind === 'doctest') {
     void nav.replace('doc-tests', { test: value.source_id, item: value.item_id })
@@ -305,7 +326,7 @@ function openEvidence(value: EvidenceRef) {
 
       <section v-if="selected" class="finding-detail card">
         <div class="detail-toolbar">
-          <div class="provenance"><strong>{{ selected.id }}</strong><Tag :value="selected.source" severity="secondary"/><span v-if="selected.agent_run_id" class="muted">Run {{ selected.agent_run_id }}</span></div>
+          <div class="provenance"><strong>{{ selected.id }}</strong><Tag :value="selected.source" severity="secondary"/><button v-for="link in testLinks" :key="`head:${link.id}`" type="button" class="source-test" :title="link.title" @click="openTest(link.id)"><i :class="link.icon"/>{{ link.id }}</button><span v-if="selected.agent_run_id" class="muted">Run {{ selected.agent_run_id }}</span></div>
           <span class="grow"/><Button label="Remove" icon="pi pi-trash" severity="danger" outlined size="small" @click="remove"/><Button label="Save finding" icon="pi pi-save" size="small" :loading="saving" @click="save"/>
         </div>
         <h3 class="form-section-title">Finding</h3>
@@ -323,7 +344,7 @@ function openEvidence(value: EvidenceRef) {
         <UiAdvancedSection title="Evidence and traceability" :description="`${plural(selected.evidence_refs.length, 'evidence link')}`" :open="!selected.evidence_refs.length">
         <div class="source-links">
           <h3>Traceability and evidence</h3>
-          <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.test_refs" :key="`test:${id}`" @click="openPlanning(selected.rcm_refs[0] || '')"><i class="pi pi-list-check"/> {{ id }}</button></div>
+          <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.test_refs" :key="`test:${id}`" @click="openTest(id)"><i class="pi pi-list-check"/> {{ id }}</button></div>
           <p v-if="!selected.evidence_refs.length" class="warning"><i class="pi pi-exclamation-triangle"/> No typed evidence is linked. Add evidence through a promoted agent observation or an evidence-enabled workflow.</p>
           <p v-for="warning in selected.evidence_warnings" :key="warning" class="warning"><i class="pi pi-exclamation-triangle"/> {{ warning }}</p>
           <div v-if="selected.evidence_refs.length" class="evidence-list"><div v-for="value in selected.evidence_refs" :key="value.id"><button @click="openEvidence(value)"><i class="pi pi-link"/><span>{{ value.source_kind }}:{{ value.source_id }}<small v-if="value.page">page {{ value.page }}</small></span><code>{{ value.source_sha1?.slice(0, 10) }}</code></button><Button icon="pi pi-times" text rounded severity="danger" size="small" aria-label="Remove evidence link" @click="removeEvidence(value.id)"/></div></div>
@@ -359,6 +380,8 @@ function openEvidence(value: EvidenceRef) {
 .form-section-title { margin:.7rem 0 .5rem; color:var(--aw-muted); font-size:var(--aw-text-xs);}
 .narrative-hint { margin:.2rem 0 .6rem; color:var(--aw-muted); font-size:var(--aw-text-sm) }
 .linkish { border:0; background:none; padding:0; color:var(--aw-teal); font:inherit; text-decoration:underline; cursor:pointer }
+.source-test { display:inline-flex; align-items:center; gap:.35rem; border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.15rem .55rem; font:inherit; font-size:var(--aw-text-sm); font-weight:700; cursor:pointer }
+.source-test:hover { background:var(--aw-teal-soft) }
 .narrative-editor { min-height:26rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }
 .narrative-editor :deep(.markdown-editor) { min-height:26rem }
 .narrative-flags { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.7rem 0 .2rem }
