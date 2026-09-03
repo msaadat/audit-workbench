@@ -160,6 +160,17 @@ _SPINE: dict[str, dict[str, Any]] = {
         "headline": "Specify the tests each control needs",
         "prompt": "Draft the tests the RCM rows still need.", "live_body": True,
     },
+    # Held by the results its register carries, never by the register's size —
+    # see `_doc_tests_ran`. `count` still names the whole register, which is
+    # what the pill shows once the row is held; an unheld row shows "not yet"
+    # rather than a number, so the specified count is never read as a result
+    # count.
+    #
+    # No `headline`, so the row is never drawn as work to start: the button that
+    # runs these lives on `fieldwork.executed` directly below, whose prompt
+    # covers the data and document registers together. The row still crosses to
+    # the owed side of the ledger when nothing has run, which is what says the
+    # results are missing.
     "doc_tests.executed": {
         "label": "Document test results", "destination": "doc-tests",
         "unit": "test", "count": "document_tests",
@@ -345,13 +356,6 @@ def _report_markdown(workspace: Workspace) -> str:
     return str((report.hydrate(workspace) or {}).get("markdown") or "")
 
 
-# A test the runner has not reached yet. Both registers share one status
-# vocabulary (`workspaces.TEST_STATUSES`), so one rule covers data and document
-# tests alike — where `last_run` would not, because document tests do not carry
-# one.
-_UNRUN_TEST_STATUSES = frozenset({"", "draft", "ready"})
-
-
 # --------------------------------------------------------------------------- #
 # One call, one read
 # --------------------------------------------------------------------------- #
@@ -423,11 +427,49 @@ def _completion(workspace: Workspace) -> dict:
 
 
 def _fieldwork_ran(workspace: Workspace) -> bool:
-    """Whether any specified test has been executed."""
+    """Whether any test in either register has a durable result.
+
+    Whether a test has run is `rcm_execution`'s question, and the answer is the
+    result artifact — a document test's item executions, a data test's
+    `last_run` — never the status beside it. Paraphrasing it here as "any status
+    outside draft/ready" put `blocked` on the executed side of the line, and
+    three document tests the runner had refused to start for want of evidence
+    reported a whole engagement's fieldwork as done: 47 tests specified, not one
+    result, and no Run button anywhere on the ledger to start them.
+
+    Both registers, read directly rather than through
+    `rcm_execution.test_manifest`, which covers only the tests linked to a row of
+    the matrix: an executed test that is not linked yet is still a result the
+    engagement holds, and fieldwork having run is not a claim about coverage.
+    The predicate is the manifest's own, so the row and the readiness sentence
+    beside it cannot disagree about what "ran" means.
+    """
     return any(
-        str(item.get("status") or "") not in _UNRUN_TEST_STATUSES
-        for item in (*workspace.data_tests, *_document_tests(workspace))
+        rcm_execution.data_test_has_durable_result(item)
+        for item in workspace.data_tests
+    ) or any(
+        rcm_execution.doc_test_has_durable_result(item)
+        for item in _loaded_document_tests(workspace)
     )
+
+
+def _doc_tests_ran(workspace: Workspace) -> bool | None:
+    """Whether the document-test register holds a result.
+
+    ``None`` where there is no document test to run, on the same reading
+    `analysis.executed` gives an engagement with no tables: a stage with nothing
+    of its kind to work on has nothing to hold and nothing to owe.
+
+    Without this the row fell through to its `count`, which is
+    `document_tests` — the size of the register `tests.specified` fills. The row
+    labelled "Document test results" therefore went green, and stated the number
+    of results it held, the moment the tests were *written*: 32 specifications
+    drawn as 32 results on an engagement that had executed none of them.
+    """
+    tests = _loaded_document_tests(workspace)
+    if not tests:
+        return None
+    return any(rcm_execution.doc_test_has_durable_result(item) for item in tests)
 
 
 def _conclusions_set(workspace: Workspace) -> bool:
@@ -474,6 +516,7 @@ _HOLDS: dict[str, Any] = {
         lambda ws: True if _document_analyses(ws) else (None if not ws.documents else False),
     "planning.apm_ready":
         lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
+    "doc_tests.executed": _doc_tests_ran,
     "fieldwork.executed": _fieldwork_ran,
     "results.rolled_up": _conclusions_set,
     "report.working_draft": lambda ws: bool(_report_markdown(ws).strip()),
@@ -498,14 +541,40 @@ _NOUNS = {
 }
 
 
-def _document_tests(workspace: Workspace) -> list[dict]:
-    def read() -> list[dict]:
-        try:
-            return list(doc_tests.list_tests(workspace))
-        except Exception:
-            return []
+def _document_test_index(workspace: Workspace):
+    """The document-test register, read once and kept in both its shapes.
 
-    return _once("document_tests", read)
+    `doc_tests.list_tests` returns summaries, which is everything counting and
+    linking need and is what the register's size means. It is *not* enough to
+    ask whether a test has run: a summary carries a status and `state_counts`
+    but no ``items``, and a cycle test's result is only ever its items, so
+    `rcm_execution.doc_test_has_durable_result` reads one as never executed
+    however much work is behind it. The loaded records answer that, and both
+    come out of one index so the count and the presence test cannot end up
+    describing different objects.
+
+    Loading every test on top of listing them is free here: `_completion`
+    already builds this index inside the same `doc_tests.request_cache_scope`,
+    and `load_test` is cached within it.
+    """
+    def read():
+        try:
+            return rcm_execution.document_test_index(workspace)
+        except Exception:
+            return rcm_execution.DocumentTestIndex(tests=(), by_rcm_id={}, summaries=())
+
+    return _once("document_test_index", read)
+
+
+def _document_tests(workspace: Workspace) -> list[dict]:
+    """The register as summaries — what `_counts` sizes and `_linked_test_count`
+    walks. Never handed to a presence test; see `_document_test_index`."""
+    return list(_document_test_index(workspace).summaries)
+
+
+def _loaded_document_tests(workspace: Workspace) -> tuple[dict, ...]:
+    """The register as loaded records — the only shape that can say what ran."""
+    return _document_test_index(workspace).tests
 
 
 def _document_analyses(workspace: Workspace) -> int:

@@ -113,6 +113,63 @@ def test_an_untested_rcm_row_holds_planning_open_without_the_derivation(
     assert engagement_progress.progress(workspace_with_data)["planning"] == "in_progress"
 
 
+def test_a_register_of_tests_is_not_fieldwork_having_run(workspace_with_data):
+    """The completeness gate asks whether the work happened, and a test that
+    exists has only been *written*.
+
+    Read as a register length, one drafted test satisfied "fieldwork started"
+    and the phase then turned on the completion status alone — which is
+    vacuously "completed" until an item exists to fail it. The state still says
+    the phase has begun, because a plan is visible work; only the gate is
+    narrowed.
+    """
+    _planned(workspace_with_data)
+    state = engagement_progress._engagement_state_uncached(workspace_with_data)
+
+    assert state["fieldwork_planned"] is True
+    assert state["fieldwork_ran"] is False
+    assert state["fieldwork_complete"] is False
+    assert _console_states(workspace_with_data)["fieldwork"] != "not_started"
+
+
+def test_a_planned_test_still_reads_as_a_plan_that_exists(workspace_with_data):
+    """The wording the gate used to share. Narrowing "started" to "ran" without
+    splitting the two told an engagement holding a test programme that no tests
+    had been planned yet."""
+    _planned(workspace_with_data)
+    payload = engagement_progress.engagement_status_payload(workspace_with_data)
+    fieldwork = next(p for p in payload["phases"] if p["id"] == "fieldwork")
+
+    assert "No tests have been planned yet." not in fieldwork["summary"]
+
+
+def test_a_retired_data_test_is_not_work_the_tab_still_owes(workspace_with_data):
+    """The Data tests badge asks what is left on the tab, which is why it is not
+    folded onto `data_test_has_durable_result` like the fieldwork gate is: a
+    test retired at `not_applicable` has no result and no work either, and the
+    durable-result reading would park a closed tab at "in progress" forever."""
+    _row, test = _planned(workspace_with_data)
+    data_tests.update(workspace_with_data, test["id"], {
+        "control_conclusion": "not_applicable",
+        "conclusion": "Control retired for the period.",
+    })
+    state = engagement_progress._engagement_state_uncached(workspace_with_data)
+
+    assert state["fieldwork_ran"] is False
+    assert state["sections"]["data-tests"]["state"] == "complete"
+
+
+def test_the_terminal_statuses_are_one_set_shared_with_the_status_vocabulary():
+    """Two copies of it is how the three readings of "has this test run" drifted
+    apart in the first place."""
+    assert (
+        engagement_progress.TERMINAL_TEST_STATUSES
+        is workspace_module.TERMINAL_TEST_STATUSES
+        is rcm_execution._DURABLE_DOC_TEST_STATUSES
+    )
+    assert engagement_progress.TERMINAL_TEST_STATUSES <= workspace_module.TEST_STATUSES
+
+
 def test_a_finished_file_agrees_with_the_console(workspace_with_data):
     _completed(workspace_with_data)
 

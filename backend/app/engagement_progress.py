@@ -38,7 +38,7 @@ from pathlib import Path
 
 from . import analysis_results, data_tests, doc_tests, rcm_execution, report
 from .agent import capabilities as audit_capabilities
-from .workspaces import Workspace
+from .workspaces import TERMINAL_TEST_STATUSES, Workspace
 from .text import counted, verb
 
 #: The phases the index draws, in the order it draws them. "Data" is not here:
@@ -59,14 +59,11 @@ _cache_guard = threading.Lock()
 # retired vocabulary on the way.
 PHASE_DESTINATIONS = {"planning": "apm", "fieldwork": "doc-tests", "report": "report"}
 
-# The statuses a test can rest at. Everything else is work still running,
-# and every reader of a phase gate needs the same list.
-TERMINAL_TEST_STATUSES = {
-    "completed",
-    "completed_no_exception",
-    "completed_with_exception",
-    "not_applicable",
-}
+# `TERMINAL_TEST_STATUSES` — the statuses a test rests at — is imported above
+# rather than declared here. Every reader of a phase gate needs the same list,
+# and a second copy of it beside a third reading of "has this test run" is how
+# they drifted apart: `workspaces` declares it once, beside the vocabulary it is
+# a subset of.
 
 
 def _target(destination: str, **query: str) -> dict:
@@ -209,9 +206,19 @@ def _engagement_state_uncached(workspace: Workspace) -> dict:
         test for test in tests
         if test.get("status") not in {*TERMINAL_TEST_STATUSES, "blocked", "review_required"}
     ]
-    fieldwork_started = bool(
-        tests or workspace.data_tests
-        or any(item.get("last_run") for item in workspace.data_tests)
+    # Two questions, and one variable used to answer both. A test that exists is
+    # a test that was *written*: that settles whether there is a plan to speak
+    # of, and it is the wrong answer to whether any of it has run — which is
+    # what the completeness gate below is asking. `rcm_execution` owns the
+    # second, and both registers are asked in the shape that can answer it,
+    # which for a document test is the loaded record rather than its summary.
+    fieldwork_planned = bool(tests or workspace.data_tests)
+    fieldwork_ran = any(
+        rcm_execution.data_test_has_durable_result(item)
+        for item in workspace.data_tests
+    ) or any(
+        rcm_execution.doc_test_has_durable_result(test)
+        for test in document_tests.tests
     )
     fieldwork_issues = [
         f"Coverage gate: {counted(completion['coverage']['issue_count'], 'issue')}."
@@ -231,14 +238,18 @@ def _engagement_state_uncached(workspace: Workspace) -> dict:
     # completion status alone reads "completed" on an empty engagement. Requiring
     # that fieldwork actually happened is what stops the rail claiming every RCM
     # test passed on a workspace that has none — and, downstream, stops the
-    # dashboard offering to write the report off the back of it.
-    fieldwork_complete = fieldwork_started and completion["status"] == "completed"
+    # dashboard offering to write the report off the back of it. "Actually
+    # happened" is a durable result and never a status: a register of tests the
+    # runner refused to start satisfies this as readily as an empty one.
+    fieldwork_complete = fieldwork_ran and completion["status"] == "completed"
     fieldwork_attention = bool(
         completion["status"] in {"completed_with_open_items", "completed_with_issues"}
         or state_counts["manual_review"] or unresolved_exceptions
     )
     fieldwork_state = (
-        "not_started" if not fieldwork_started and not workspace.rcm
+        # Planned, not run: a matrix and a test programme are visible work, and
+        # a phase holding both has started whether or not the runner has been.
+        "not_started" if not fieldwork_planned and not workspace.rcm
         else "attention" if fieldwork_attention
         else "complete" if fieldwork_complete
         else "in_progress"
@@ -247,7 +258,7 @@ def _engagement_state_uncached(workspace: Workspace) -> dict:
         "All RCM tests passed deterministic execution and outcome gates."
         if fieldwork_complete
         else "No tests have been planned yet."
-        if not fieldwork_started else (
+        if not fieldwork_planned else (
             f"{counted(len(workspace.data_tests), 'data test')}, "
             f"{counted(len(tests), 'document test')}, "
             f"{counted(sum(item.get('outcome') == 'exception' for item in workspace.observations), 'exception observation')}."
@@ -357,6 +368,13 @@ def _engagement_state_uncached(workspace: Workspace) -> dict:
             f"{counted(len(stale_data_tests), 'data test result')} "
             f"{verb(len(stale_data_tests), 'is', 'are')} stale."
         )
+    # Deliberately *not* `data_test_has_durable_result`, which the fieldwork gate
+    # above takes. This badge asks whether the tab has work left on it, and a
+    # test retired at `not_applicable` has none and no result either — folding
+    # the two would park a closed tab at "in progress" forever. The spelling is
+    # safe here because a data test's status is derived (`project_status`) and
+    # only ever rests at these two before a run; `blocked`, the status that broke
+    # the gate above, is a document-test state that this list cannot see.
     data_tests_unrun = [
         item for item in workspace.data_tests
         if str(item.get("status") or "") in {"draft", "ready"}
@@ -444,7 +462,11 @@ def _engagement_state_uncached(workspace: Workspace) -> dict:
         "linked_tests": linked_tests,
         "incomplete_linked_tests": incomplete_linked_tests,
         "incomplete_tests": incomplete_tests,
-        "fieldwork_started": fieldwork_started,
+        # Two keys because they are two answers: whether a plan exists, and
+        # whether any of it has run. One name for both is what let a phase gate
+        # read a register's size as work performed.
+        "fieldwork_planned": fieldwork_planned,
+        "fieldwork_ran": fieldwork_ran,
         "fieldwork_complete": fieldwork_complete,
         "fieldwork_issues": fieldwork_issues,
         "unresolved_exceptions": unresolved_exceptions,

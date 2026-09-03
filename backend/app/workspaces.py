@@ -244,6 +244,16 @@ TEST_STATUSES = {
     "completed_with_exception",
     "not_applicable",
 }
+# The subset of the above a test comes to rest at: execution is over and the
+# record it left is durable. Everything else is work still in flight, still
+# waiting on a person, or — for ``blocked`` — refused before it started. Beside
+# the vocabulary it is drawn from, so the two cannot disagree unnoticed.
+TERMINAL_TEST_STATUSES = frozenset({
+    "completed",
+    "completed_no_exception",
+    "completed_with_exception",
+    "not_applicable",
+})
 CONTROL_CONCLUSIONS = {
     "effective",
     "partially_effective",

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from . import analysis_promotion, column_coverage, cycle_vouching, data_tests, doc_tests
 from .evidence import normalize_anchor
 from .workspace_transactions import canonical_sha1, material_projection
-from .workspaces import Workspace
+from .workspaces import TERMINAL_TEST_STATUSES, Workspace
 from .text import counted, relevance_tokens
 
 # A document test of this kind asks whether the documentation *describes* a
@@ -32,12 +32,12 @@ _EMPTY_WORDS = frozenset(
 )
 
 
-_DURABLE_DOC_TEST_STATUSES = frozenset({
-    "completed",
-    "completed_no_exception",
-    "completed_with_exception",
-    "not_applicable",
-})
+# The statuses a test rests at, and the same set under both of its names: a
+# document test resting at one has a durable result, and a phase gate reading
+# "this test is finished" is asking that question. Two copies of it lived here
+# and in `engagement_progress`, which is how the three readings of "has this
+# test run" drifted apart in the first place.
+_DURABLE_DOC_TEST_STATUSES = TERMINAL_TEST_STATUSES
 # The auditor's control-level disposition is the authoritative conclusion for
 # completion gates. The explanatory free-text note remains useful workpaper
 # context, but it is not required to close a test.
@@ -120,6 +120,53 @@ def _executable(test: dict) -> bool:
     )
 
 
+def _doc_test_items_current(test: dict) -> bool:
+    """Whether every item of a Document Test carries a current execution."""
+    return bool(test.get("items")) and all(
+        doc_tests.item_execution_current(test, item)
+        for item in test.get("items") or []
+    )
+
+
+def doc_test_has_durable_result(test: dict) -> bool:
+    """Whether a Document Test has actually been executed.
+
+    Takes a *loaded* test — `doc_tests.load_test`, or `DocumentTestIndex.tests`.
+    A `list_tests` summary carries a status and `state_counts` but no ``items``,
+    and cannot answer this: a cycle test's result is only ever its items, so a
+    summary reads as never executed however much work it has behind it.
+
+    A cycle test is answered by its items alone: its status is a label the
+    planner writes, and ``blocked`` in particular says the runner could not
+    start, which is the opposite of a result. A classic test is answered by
+    either its items or a terminal status, because auditor-completed historical
+    work predates the item-level execution record and must not be read as unrun.
+
+    The one definition of "this test has a result", shared by the execution
+    manifest, the roll-up, and the engagement record. It was written out inline
+    in the first two and paraphrased as a status test in the third, where
+    ``blocked`` fell on the executed side of the line and three tests the runner
+    had refused to start reported an engagement's fieldwork as done.
+    """
+    if doc_tests.is_cycle_test(test):
+        return _doc_test_items_current(test)
+    return (
+        test.get("status") in _DURABLE_DOC_TEST_STATUSES
+        or _doc_test_items_current(test)
+    )
+
+
+def data_test_has_durable_result(test: dict) -> bool:
+    """Whether a Data Test has actually been executed.
+
+    The run that produced the result, never the status beside it: `coverage`
+    reports a ``completed`` data test with no ``last_run`` as
+    ``completed_without_durable_result``, which is a defect it names rather than
+    a result it accepts.
+    """
+    return bool(test.get("last_run"))
+
+
 def test_manifest(workspace: Workspace) -> list[dict]:
     """Build a bounded, model-safe view of every RCM row's linked tests.
 
@@ -133,19 +180,10 @@ def test_manifest(workspace: Workspace) -> list[dict]:
         for test in _tests(workspace, row["id"], document_tests):
             item = test["item"]
             if test["kind"] == "datatest":
-                has_result = bool(item.get("last_run"))
+                has_result = data_test_has_durable_result(item)
                 result_stale = data_tests.result_stale(workspace, item)
             else:
-                current_items = bool(item.get("items")) and all(
-                    doc_tests.item_execution_current(item, test_item)
-                    for test_item in item.get("items") or []
-                )
-                has_result = (
-                    current_items
-                    if doc_tests.is_cycle_test(item)
-                    else item.get("status") in _DURABLE_DOC_TEST_STATUSES
-                    or current_items
-                )
+                has_result = doc_test_has_durable_result(item)
                 result_stale = False
             manifest.append({
                 "rcm_id": row["id"],
@@ -512,15 +550,8 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
         else rollup["exceptions"] + rollup["mismatched"]
     )
     open_exceptions = 0
-    current_items = bool(item.get("items")) and all(
-        doc_tests.item_execution_current(item, test_item)
-        for test_item in item.get("items") or []
-    )
-    executed = int(
-        current_items
-        if cycle
-        else status in _DURABLE_DOC_TEST_STATUSES or current_items
-    )
+    current_items = _doc_test_items_current(item)
+    executed = int(doc_test_has_durable_result(item))
     if cycle and current_items and not all(
         doc_tests.item_disposition_current(item, test_item)
         for test_item in item.get("items") or []

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from app import engagement_record
+from app import engagement_record, rcm_execution
 from app.agent import routing
 from app.agent.workflows import documents as documents_workflow
 from app.workspaces import TEST_STATUSES
@@ -27,8 +27,8 @@ class _Workspace:
     """Only the surface the record's counters and presence tests touch."""
 
     def __init__(self, *, rcm=(), findings=(), documents=(), analyses=(),
-                 data_tests=(), tiles=(), tables=(), apm="", planning=None,
-                 root=None):
+                 data_tests=(), doc_tests=(), tiles=(), tables=(), apm="",
+                 planning=None, root=None):
         # Only the document-analysis presence test reaches the disk, and it
         # reads a missing folder as "no analysis", so a workspace with no
         # documents never needs a real one.
@@ -38,6 +38,9 @@ class _Workspace:
         self.documents = list(documents)
         self.analyses = list(analyses)
         self.data_tests = list(data_tests)
+        # Read through `doc_tests.list_tests`, which `stub_store` points back
+        # here rather than at a workspace on disk.
+        self.doc_tests = list(doc_tests)
         self.tiles = list(tiles)
         self._tables = list(tables)
         self.planning = dict(planning or {})
@@ -46,6 +49,17 @@ class _Workspace:
 
     def table_names(self):
         return list(self._tables)
+
+
+def _ran(test, at="2026-08-14T20:05:00+00:00"):
+    """A Data Test that really ran.
+
+    The status beside a data test is a label; the durable result is the run
+    recorded in `last_run`, and `rcm_execution.coverage` reports the pair
+    without it as `completed_without_durable_result`. A fixture that sets only
+    the status describes a defect, not an executed test.
+    """
+    return {**test, "last_run": {"id": "DTR-CURRENT", "run_at": at}}
 
 
 def _milestone(capability, at, *, status="completed", headline="Done", summary="Filed."):
@@ -101,7 +115,24 @@ def stub_store(monkeypatch):
             engagement_record.store, "load_run",
             lambda workspace, run_id: by_id[run_id],
         )
-        monkeypatch.setattr(engagement_record.doc_tests, "list_tests", lambda workspace: [])
+        # The register in both the shapes the real one has. `list_tests` returns
+        # summaries, which carry no `items`; `load_test` returns the record. A
+        # fixture that made them the same dict would hide the whole class of bug
+        # where a presence test is handed the shape that cannot answer it.
+        def _summaries(workspace):
+            return [
+                {key: value for key, value in test.items() if key != "items"}
+                for test in getattr(workspace, "doc_tests", ())
+            ]
+
+        def _load(workspace, test_id):
+            for test in getattr(workspace, "doc_tests", ()):
+                if test["id"] == test_id:
+                    return dict(test)
+            raise KeyError(test_id)
+
+        monkeypatch.setattr(engagement_record.doc_tests, "list_tests", _summaries)
+        monkeypatch.setattr(engagement_record.doc_tests, "load_test", _load)
         # The record reads the report and the conclusion rollup; neither exists
         # for an in-memory workspace.
         monkeypatch.setattr(engagement_record.report, "hydrate", lambda workspace: {"markdown": ""})
@@ -587,7 +618,7 @@ def test_a_stage_with_no_live_projection_keeps_what_its_run_reported(stub_store)
     ])
     workspace = _Workspace(
         apm="# APM", rcm=[{"id": "R1"}],
-        data_tests=[{"id": "T1", "status": "completed_with_exception"}],
+        data_tests=[_ran({"id": "T1", "status": "completed_with_exception"})],
     )
     row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
 
@@ -923,9 +954,9 @@ def test_every_stage_on_the_spine_has_a_readable_label(stub_store):
         assert "." not in label, label
 
 
-def test_the_unrun_statuses_are_real_members_of_the_shared_vocabulary():
-    """A renamed status would silently make every test look executed."""
-    assert engagement_record._UNRUN_TEST_STATUSES - {""} <= TEST_STATUSES
+def test_the_durable_statuses_are_real_members_of_the_shared_vocabulary():
+    """A renamed status would silently make every document test look executed."""
+    assert rcm_execution._DURABLE_DOC_TEST_STATUSES <= TEST_STATUSES
 
 
 def test_a_half_run_test_register_counts_as_fieldwork_having_run(stub_store):
@@ -938,12 +969,150 @@ def test_a_half_run_test_register_counts_as_fieldwork_having_run(stub_store):
     workspace = _Workspace(
         apm="# APM", rcm=[{"id": "R1"}],
         data_tests=[
-            {"id": "T1", "status": "completed_with_exception"},
+            _ran({"id": "T1", "status": "completed_with_exception"}),
             {"id": "T2", "status": "ready"},
         ],
     )
 
     assert "fieldwork.executed" not in _owed(engagement_record.record(workspace))
+
+
+def test_a_test_the_runner_refused_to_start_is_not_a_test_that_ran(stub_store):
+    """`blocked` says the runner could not start, which is the opposite of a
+    result — and it is not `draft` or `ready` either, so a presence test written
+    as "any status outside draft/ready" read it as executed.
+
+    Three document tests blocked for want of evidence drew a whole engagement's
+    fieldwork as done: 47 tests specified, none run, and no Run button anywhere
+    on the ledger to start them.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        data_tests=[{"id": "T1", "status": "ready"}],
+        doc_tests=[
+            {"id": "D1", "status": "ready"},
+            {"id": "D2", "status": "blocked"},
+        ],
+    )
+    result = engagement_record.record(workspace)
+    rows = _rows(result)
+
+    assert rows["fieldwork.executed"]["held"] is False
+    assert rows["fieldwork.executed"]["runnable"] is True
+    assert "fieldwork.executed" in _owed(result)
+
+
+def test_a_data_test_completed_without_a_result_has_not_run(stub_store):
+    """The status is a label; the result is the run that produced it.
+
+    `rcm_execution.coverage` reports exactly this pair as
+    `completed_without_durable_result` — a defect it names, not a result the
+    ledger may stand on.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        data_tests=[{"id": "T1", "status": "completed_no_exception"}],
+    )
+
+    assert _rows(engagement_record.record(workspace))["fieldwork.executed"]["held"] is False
+
+
+def test_document_test_results_are_not_sized_by_the_tests_that_were_specified(
+    stub_store,
+):
+    """The row is labelled "Document test results" and fell through to its
+    `count` — `document_tests`, the size of the register `tests.specified`
+    fills. It went green, stating the number of results it held, the moment the
+    tests were *written*: 32 specifications drawn as 32 results on an
+    engagement that had executed none of them.
+    """
+    stub_store([])
+    specified = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        doc_tests=[{"id": "D1", "status": "ready"}, {"id": "D2", "status": "blocked"}],
+    )
+    executed = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        doc_tests=[{"id": "D1", "status": "completed"}, {"id": "D2", "status": "ready"}],
+    )
+
+    assert _rows(engagement_record.record(specified))["doc_tests.executed"]["held"] is False
+    assert _rows(engagement_record.record(executed))["doc_tests.executed"]["held"] is True
+
+
+def test_a_cycle_test_that_ran_is_read_from_its_items_not_its_summary(stub_store):
+    """A cycle test's result is *only* its items, and a `list_tests` summary
+    carries none — it has `state_counts` and a status and nothing to execute.
+
+    Asking `doc_test_has_durable_result` for one therefore reads every cycle
+    test as never run, however much work stands behind it, and would report
+    fieldwork as owed on an engagement that had finished it. The presence tests
+    take the loaded record; the count still takes the summary.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        doc_tests=[{
+            # Not a terminal status: nothing but the items says this ran.
+            "id": "D1", "kind": "cycle_vouch", "status": "review_required",
+            "items": [{"id": "I1", "evaluation": {"state": "passed"}}],
+        }],
+    )
+    rows = _rows(engagement_record.record(workspace))
+
+    assert rows["doc_tests.executed"]["held"] is True
+    assert rows["fieldwork.executed"]["held"] is True
+    # The register is still sized by what it contains, not by what has run.
+    assert rows["doc_tests.executed"]["filed"]["count"] == 1
+
+
+def test_the_register_is_read_once_in_both_of_its_shapes(stub_store, monkeypatch):
+    """Loading every test on top of listing them is free only while the index is
+    built once for the whole call."""
+    stub_store([])
+    calls = {"list": 0, "load": 0}
+    listed = engagement_record.doc_tests.list_tests
+    loaded = engagement_record.doc_tests.load_test
+
+    def count_list(workspace):
+        calls["list"] += 1
+        return listed(workspace)
+
+    def count_load(workspace, test_id):
+        calls["load"] += 1
+        return loaded(workspace, test_id)
+
+    monkeypatch.setattr(engagement_record.doc_tests, "list_tests", count_list)
+    monkeypatch.setattr(engagement_record.doc_tests, "load_test", count_load)
+    monkeypatch.setattr(engagement_record, "_readiness", lambda workspace: {})
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        doc_tests=[{"id": "D1", "status": "completed", "rcm_id": "R1"}],
+    )
+
+    engagement_record.record(workspace)
+
+    assert calls == {"list": 1, "load": 1}
+
+
+def test_an_engagement_with_no_document_test_neither_holds_nor_owes_results(
+    stub_store,
+):
+    """The same answer `analysis.executed` gives an engagement with no tables:
+    a stage with nothing of its kind to work on is not a debt."""
+    stub_store([])
+    result = engagement_record.record(
+        _Workspace(apm="# APM", rcm=[{"id": "R1"}], data_tests=[{"id": "T1"}]),
+    )
+    row = _rows(result)["doc_tests.executed"]
+
+    assert row["held"] is False
+    assert "doc_tests.executed" not in _owed(result)
+    assert row["capability"] not in {
+        stage["capability"] for stage in result["stages"] if stage["runnable"]
+    }
 
 
 def test_an_empty_matrix_is_not_a_matrix_whose_rows_are_concluded(stub_store):
@@ -1137,7 +1306,7 @@ def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
         apm="# APM",
         rcm=[{"id": "R1", "review_status": "reviewed", "conclusion": "effective"}],
         data_tests=[
-            {"id": "T1", "rcm_id": "R1", "status": "completed_no_exception"},
+            _ran({"id": "T1", "rcm_id": "R1", "status": "completed_no_exception"}),
         ],
         analyses=[{}], tiles=[{}], tables=["ledger"],
         findings=[{
