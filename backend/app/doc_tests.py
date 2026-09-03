@@ -89,7 +89,15 @@ def _sha1(payload: object) -> str:
 
 
 def test_sha1(test: dict) -> str:
-    return _sha1({key: value for key, value in test.items() if key != "sha1"})
+    # The materialization fingerprint is derived from the items and their
+    # inputs, never authored, so it is no part of what the test asserts: a
+    # finding anchored to this hash must not read "the evidence changed"
+    # because a re-materialization confirmed that it had not.
+    return _sha1({
+        key: value
+        for key, value in test.items()
+        if key not in ("sha1", cycle_vouching.ITEMS_INPUTS_KEY)
+    })
 
 
 # What a finding actually rests on when it cites a Document Test: what was
@@ -629,20 +637,60 @@ def request_cache_scope():
     try:
         # Cycle-vouching materialization is the expensive step underneath
         # both functions here, and is called directly by some readers
-        # (bypassing load_test/list_tests), so it needs the same scope.
-        with cycle_vouching.request_cache_scope():
+        # (bypassing load_test/list_tests), so it needs the same scope. The
+        # evidence it reads is every document's classification sidecar and
+        # extraction, which have scopes of their own with the same read-only
+        # lifetime; opened here so a caller that promised not to write a test
+        # gets the whole read for that one promise.
+        from . import document_classification, documents as document_service
+
+        with (
+            cycle_vouching.request_cache_scope(),
+            document_classification.request_cache_scope(),
+            document_service.request_cache_scope(),
+        ):
             yield
     finally:
         _cache.reset(token)
 
 
+def request_memo(key: str, compute):
+    """``compute()``'s value, computed at most once inside :func:`request_cache_scope`.
+
+    For a reader that resolves the same thing many times in one span and whose
+    answer nothing but this register could move — a Document Test scope is
+    resolved by every capability in its group, and each resolution lists and
+    loads every test. Outside a scope every call recomputes: the scope is the
+    caller's promise that no test is written meanwhile, and without that
+    promise a stale answer is worse than a slow one.
+    """
+    cache = _cache.get()
+    if cache is None:
+        return compute()
+    memo = cache.setdefault("memo", {})
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
 def load_test(workspace: Workspace, test_id: str) -> dict:
+    """One test, hydrated and — for a cycle test — with its items current.
+
+    Inside :func:`request_cache_scope` the record handed back is the cached
+    one, shared with every other reader in the span. The scope is the caller's
+    promise that nothing in it writes a test, and that promise covers the
+    object too: a reader that needs a copy to mark up takes one, the way
+    `rcm_execution.document_test_index` does for the roll-up. Copying on every
+    hit here instead cost a third of an engagement record — four hundred
+    copies of tests whose items ran to hundreds of bound records, made for
+    readers that only ever looked.
+    """
     cache = _cache.get()
     if cache is not None:
         tests = cache.setdefault("tests", {})
         cached = tests.get(test_id)
         if cached is not None:
-            return copy.deepcopy(cached)
+            return cached
     path = _test_path(workspace, test_id)
     if not path.exists():
         raise WorkspaceError(f"Document test '{test_id}' not found.")
@@ -654,7 +702,7 @@ def load_test(workspace: Workspace, test_id: str) -> dict:
     except json.JSONDecodeError as error:
         raise WorkspaceError(f"Document test '{test_id}' is unreadable.") from error
     if cache is not None:
-        cache["tests"][test_id] = copy.deepcopy(result)
+        cache["tests"][test_id] = result
     return result
 
 
@@ -680,7 +728,17 @@ def _project_cycle_items(workspace: Workspace, test: dict) -> dict:
     }
     if table not in known_tables:
         return test
-    test["items"] = cycle_vouching.materialize_cycle_items(workspace, test)
+    # The stored items vouch for themselves when the inputs they were drawn
+    # from have not moved: the projection is idempotent, so drawing them again
+    # would produce what is already on the file. Every write that materializes
+    # stores the fingerprint beside the items; a test that predates it, or
+    # whose inputs moved, is drawn afresh exactly as before.
+    stored = str(test.get(cycle_vouching.ITEMS_INPUTS_KEY) or "")
+    if stored and stored == cycle_vouching.materialization_inputs_sha1(workspace, test):
+        return test
+    test["items"], test[cycle_vouching.ITEMS_INPUTS_KEY] = (
+        cycle_vouching.materialize_cycle_population(workspace, test)
+    )
     return test
 
 
@@ -689,7 +747,7 @@ def list_tests(workspace: Workspace) -> list[dict]:
     if cache is not None:
         cached = cache.get("list_tests")
         if cached is not None:
-            return copy.deepcopy(cached)
+            return cached
     items = []
     for path in tests_dir(workspace).glob("*.json"):
         try:
@@ -701,9 +759,10 @@ def list_tests(workspace: Workspace) -> list[dict]:
             continue
         # This projection already paid for cycle-item materialization; a
         # ``load_test`` call for the same test within this scope should reuse
-        # it rather than materializing a second time.
+        # it rather than materializing a second time. Shared, not copied — see
+        # ``load_test`` for the contract the scope carries.
         if cache is not None and test.get("id"):
-            cache.setdefault("tests", {})[test["id"]] = copy.deepcopy(test)
+            cache.setdefault("tests", {})[test["id"]] = test
         states = [item_state_projection(test, item) for item in test["items"]]
         items.append({
             **{key: test.get(key) for key in (
@@ -722,7 +781,7 @@ def list_tests(workspace: Workspace) -> list[dict]:
         })
     result = sorted(items, key=lambda item: item.get("updated") or "", reverse=True)
     if cache is not None:
-        cache["list_tests"] = copy.deepcopy(result)
+        cache["list_tests"] = result
     return result
 
 
@@ -1694,7 +1753,9 @@ def update_item(
         # keeps the test out of `completed` and out of `conclusion_eligible`,
         # so this never reaches a conclusion unnoticed.  Refusing the write
         # instead only cost the auditor the record that they had looked.
-        test["items"] = cycle_vouching.materialize_cycle_items(workspace, test)
+        test["items"], test[cycle_vouching.ITEMS_INPUTS_KEY] = (
+            cycle_vouching.materialize_cycle_population(workspace, test)
+        )
         item = _item(test, item_id)
         evaluation = item.get("evaluation") or {}
         execution_current = item_execution_current(test, item)

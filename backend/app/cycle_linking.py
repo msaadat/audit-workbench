@@ -41,6 +41,7 @@ from .cycle_vouching import (
     CURRENT_EVALUATION_STATES,
     DISPOSITION_STATES,
     EVALUATION_STATES,
+    ITEMS_INPUTS_KEY,
     MAX_CYCLE_RECORDS,
     MAX_GRAPH_HOPS,
     MAX_ITEMS,
@@ -106,7 +107,10 @@ def structured_evidence(workspace) -> tuple[list[dict], dict[str, str]]:
     if cache is not None:
         cached = cache.get(cache_key)
         if cached is not None:
-            return copy.deepcopy(cached)
+            # Shared, not copied: every reader indexes or traverses these
+            # records and none writes to them, and a request-scoped cache is
+            # a promise that no extraction moves while it is open.
+            return cached
 
     records: list[dict] = []
     extraction_hashes: dict[str, str] = {}
@@ -126,7 +130,7 @@ def structured_evidence(workspace) -> tuple[list[dict], dict[str, str]]:
     records.sort(key=lambda item: (item["document_id"], item["record_index"]))
     result = (records, extraction_hashes)
     if cache is not None:
-        cache[cache_key] = copy.deepcopy(result)
+        cache[cache_key] = result
     return result
 
 
@@ -157,6 +161,8 @@ class PreparedCycle:
         "extraction_hashes",
         "edges",
         "fields",
+        "anchors",
+        "linkages",
     )
 
     def __init__(
@@ -167,6 +173,7 @@ class PreparedCycle:
         extraction_hashes: Mapping[str, str],
         edges: Mapping[str, Mapping[str, Mapping[str, tuple[str, ...]]]],
         fields: Mapping[str, Mapping[str, dict]],
+        anchors: Mapping[str, tuple[str, ...]],
     ):
         self.ruleset = dict(ruleset)
         self.ruleset_hash = str(ruleset.get("ruleset_hash") or "")
@@ -178,6 +185,13 @@ class PreparedCycle:
         self.extraction_hashes = dict(extraction_hashes)
         self.edges = edges
         self.fields = fields
+        self.anchors = anchors
+        # Traversals already made from this index, by the anchor values they
+        # started from. A traversal depends on nothing but the index and its
+        # limits, so one made for one test answers every other test that runs
+        # the same rules over the same rows — seven evidence-linked tests on
+        # one ledger linked every row seven times over.
+        self.linkages: dict[tuple, dict] = {}
 
     def role_type(self, role: object) -> str:
         return str((self.roles.get(str(role)) or {}).get("document_type") or "")
@@ -193,7 +207,21 @@ def prepare(
     records: Iterable[Mapping[str, object]] | None = None,
     extraction_hashes: Mapping[str, str] | None = None,
 ) -> PreparedCycle:
-    """Index the corpus against one ruleset's join keys."""
+    """Index the corpus against one ruleset's join keys.
+
+    Inside a request cache scope, one index per approved ruleset: the index
+    depends on the rules and the corpus, and neither moves inside a scope. The
+    tests of one cycle all name the same rules, and each was re-indexing the
+    same records and re-reading the same schemas as the one before it.
+    """
+
+    cache = _request_cache.get() if records is None else None
+    cache_key = None
+    if cache is not None and str(ruleset.get("ruleset_hash") or ""):
+        cache_key = ("prepared", id(workspace), str(ruleset.get("ruleset_hash")))
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     if records is None:
         record_values, hashes = structured_evidence(workspace)
@@ -241,13 +269,34 @@ def prepare(
             }
         edges[key_id] = sides
 
-    return PreparedCycle(
+    # The anchor seed lookup is the one per-row step in ``link``, and it
+    # depends only on the ruleset and the records. Indexed here with the same
+    # conservative normalizer ``link`` matches with, so a traversal starts from
+    # a dict lookup rather than a scan of the whole corpus per population row.
+    anchor = ruleset.get("anchor") or {}
+    anchor_role = roles.get(str(anchor.get("role"))) or {}
+    anchor_field = str(anchor.get("field") or "")
+    anchor_seeds: dict[str, list[str]] = {}
+    for record in by_type.get(str(anchor_role.get("document_type") or "")) or []:
+        for entry in stated(record, anchor_field):
+            value = cycle_measurement.normalize(entry.get("value"))
+            if value:
+                anchor_seeds.setdefault(value, []).append(str(record["record_id"]))
+    anchors = {
+        value: tuple(sorted(dict.fromkeys(ids))) for value, ids in anchor_seeds.items()
+    }
+
+    prepared = PreparedCycle(
         ruleset=ruleset,
         records=record_values,
         extraction_hashes=hashes,
         edges=edges,
         fields=fields,
+        anchors=anchors,
     )
+    if cache is not None and cache_key is not None:
+        cache[cache_key] = prepared
+    return prepared
 
 
 #: Fields a durable Document Test owns independently of its cycle definition.
@@ -280,30 +329,53 @@ def link(
     The traversal is over records, not documents. A voucher stating three
     invoice lines is three records, and joining them as one would let a rule the
     auditor approved on a per-invoice fan-out silently operate per-voucher.
-    """
 
-    ruleset = prepared.ruleset
-    anchor = ruleset.get("anchor") or {}
-    anchor_field = str(anchor.get("field") or "")
-    anchor_type = prepared.role_type(anchor.get("role"))
-    join_keys = {str(key.get("id")): key for key in ruleset.get("join_keys") or []}
+    Answered from the index's own memo when the same values were traversed
+    from it before — see ``PreparedCycle.linkages``. The result is shared, and
+    every reader copies what it keeps: the materializer lists the bindings
+    into its item and then round-trips the item through JSON.
+    """
 
     # The anchor is matched with the conservative normalizer whatever a join
     # key's match mode is: it compares a population-table value to a printed
-    # one, and those two are written by different systems.
-    wanted = {
+    # one, and those two are written by different systems. ``prepared.anchors``
+    # is keyed by that same normalization and holds only the anchor role's own
+    # document type, so the seed set is a lookup rather than a corpus scan.
+    wanted = tuple(sorted({
         cycle_measurement.normalize(value)
         for value in anchor_values
         if str(value or "").strip()
-    }
-    seeds = sorted(
-        str(record["record_id"])
-        for record in prepared.records
-        if str(record.get("document_type") or "") == anchor_type
-        and any(
-            cycle_measurement.normalize(entry.get("value")) in wanted
-            for entry in stated(record, anchor_field)
+    }))
+    memo_key = (wanted, int(max_hops), int(max_records), int(max_edges))
+    linkage = prepared.linkages.get(memo_key)
+    if linkage is None:
+        linkage = prepared.linkages[memo_key] = _traverse(
+            prepared,
+            wanted=wanted,
+            max_hops=max_hops,
+            max_records=max_records,
+            max_edges=max_edges,
         )
+    return linkage
+
+
+def _traverse(
+    prepared: PreparedCycle,
+    *,
+    wanted: tuple[str, ...],
+    max_hops: int,
+    max_records: int,
+    max_edges: int,
+) -> dict:
+    ruleset = prepared.ruleset
+    join_keys = {str(key.get("id")): key for key in ruleset.get("join_keys") or []}
+
+    seeds = sorted(
+        {
+            record_id
+            for value in wanted
+            for record_id in prepared.anchors.get(value) or ()
+        }
     )
 
     reached: dict[str, dict] = {}
@@ -848,8 +920,83 @@ def normalize_cycle_item(test: Mapping[str, object], value: object) -> dict:
 # --------------------------------------------------------------------------- #
 # materialization and evaluation
 # --------------------------------------------------------------------------- #
+#: Bumped when `materialize_cycle_population` changes what it would produce
+#: from unchanged inputs, so a fingerprint written by the old projection stops
+#: vouching for items the new one would draw differently.
+MATERIALIZATION_VERSION = 1
+
+
+def _inputs_sha1(
+    validated: Mapping[str, object],
+    source_sha1: str,
+    records: Iterable[Mapping[str, object]],
+    extraction_hashes: Mapping[str, str],
+) -> str:
+    """The identity of everything materialization reads.
+
+    The definition and the rules it names, the population as it stands, and the
+    evidence set — each record by its content-addressed id, so a re-extraction
+    that changed a value is a different set, and each document's extraction
+    hash, so one that moved without changing a record still counts. What the
+    projection copies onto an item beside those (the objective, the semantic
+    id the item ids are derived from) is in too. Nothing about the stored items
+    is: the fingerprint says what the items were drawn *from*, and
+    idempotence says the drawing would come out the same.
+    """
+    definition = validated.get("definition") or {}
+    return sha1_hash({
+        "version": MATERIALIZATION_VERSION,
+        "definition_sha1": cycle_definition_sha1(validated),
+        "ruleset_hash": str(definition.get("ruleset_hash") or ""),
+        "semantic_id": str(
+            validated.get("semantic_id") or stable_test_semantic_id(validated)
+        ),
+        "objective": str(validated.get("objective") or ""),
+        "source_sha1": source_sha1,
+        "records": sorted(
+            (
+                str(record.get("document_id") or ""),
+                str(record.get("document_type") or ""),
+                str(record.get("record_id") or ""),
+            )
+            for record in records
+        ),
+        "extraction_hashes": sorted(
+            (str(key), str(value)) for key, value in extraction_hashes.items()
+        ),
+    })
+
+
+def materialization_inputs_sha1(workspace, test: Mapping[str, object]) -> str:
+    """What `materialize_cycle_population` would read now, without reading the rows.
+
+    A stored test carries the fingerprint of the inputs its items were drawn
+    from. A reader that finds this equal to it knows the items are what the
+    projection would produce, and is spared producing them: the whole
+    population is otherwise re-linked against the whole corpus on every read
+    to learn, most of the time, that nothing moved.
+    """
+    validated = validate_cycle_test(workspace, test)
+    frame = workspace.get_frame(validated["definition"]["population"]["table"])
+    records, extraction_hashes = structured_evidence(workspace)
+    return _inputs_sha1(validated, frame_signature(frame), records, extraction_hashes)
+
+
 def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]:
     """Select population rows and bind each one's linked record closure."""
+
+    return materialize_cycle_population(workspace, test)[0]
+
+
+def materialize_cycle_population(
+    workspace, test: Mapping[str, object]
+) -> tuple[list[dict], str]:
+    """The items and the fingerprint of the inputs they were drawn from.
+
+    A writer that persists the items persists the fingerprint beside them —
+    see ``doc_tests.ITEMS_INPUTS_KEY`` — which is what lets a later read tell
+    a current population from one that has to be drawn again.
+    """
 
     cache = _request_cache.get()
     cache_key = None
@@ -862,7 +1009,10 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
         )
         cached = cache.get(cache_key)
         if cached is not None:
-            return copy.deepcopy(cached)
+            # Shared with every reader in the scope rather than copied for
+            # each: a projection reads these items and assigns the list into
+            # its own view of the test, and a writer runs outside any scope.
+            return cached
 
     validated = validate_cycle_test(workspace, test)
     ruleset = validated["ruleset"]
@@ -870,24 +1020,32 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
     population = definition["population"]
     selection = population["selection"]
     assertions = list(ruleset.get("assertions") or [])
+    # Once per assertion, not once per assertion per item: a twenty-assertion
+    # ruleset over a hundred items was hashing the same twenty dicts two
+    # thousand times.
+    assertion_sha1s = {str(assertion["id"]): sha1_hash(assertion) for assertion in assertions}
     roles = list(ruleset.get("roles") or [])
     ruleset_hash = str(definition.get("ruleset_hash") or "")
 
     frame = workspace.get_frame(population["table"])
     source_sha1 = frame_signature(frame)
     column = population["column"]
-    selected_indices = (
-        list(range(frame.height))
+    # The whole ledger is walked in order, so it is streamed rather than fetched
+    # a row at a time by index; a sample is the rows it names.
+    selected_rows = (
+        enumerate(frame.iter_rows(named=True))
         if selection.get("mode") == "evidence_linked"
-        else sample_row_indices(frame, selection)
+        else ((index, frame.row(index, named=True)) for index in sample_row_indices(frame, selection))
     )
     prepared = prepare(workspace, ruleset)
+    inputs_sha1 = _inputs_sha1(
+        validated, source_sha1, prepared.records, prepared.extraction_hashes
+    )
     definition_sha1 = cycle_definition_sha1(validated)
     existing_by_id = {str(item.get("id") or ""): item for item in test.get("items") or []}
 
     materialized: list[dict] = []
-    for source_row in selected_indices:
-        row = frame.row(source_row, named=True)
+    for source_row, row in selected_rows:
         anchor_value = row.get(column)
         if anchor_value is None or not str(anchor_value).strip():
             continue
@@ -955,7 +1113,7 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
         ) in CURRENT_EVALUATION_STATES
         for assertion in assertions:
             key = str(assertion["id"])
-            assertion_sha1 = sha1_hash(assertion)
+            assertion_sha1 = assertion_sha1s[key]
             inputs = assertion_inputs(assertion, item=item)
             old_result = old_results.get(key) or {}
             if result_reusable(
@@ -1025,9 +1183,17 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
             if (item.get("disposition") or {}).get("state") != "pending":
                 item["disposition"]["stale"] = True
     result = sorted(materialized, key=lambda item: item["id"])
+    population = (result, inputs_sha1)
     if cache is not None and cache_key is not None:
-        cache[cache_key] = copy.deepcopy(result)
-    return result
+        cache[cache_key] = population
+        # The projection is idempotent: run again over its own output under
+        # the same inputs it returns the same items, so the output is also
+        # the answer for a test that already carries them. Without this entry
+        # every test was materialized twice per scope — once from its stored
+        # items by the reader that loaded it, and once more from the current
+        # items by the readiness probe handed that loaded test.
+        cache[cache_key[:3] + (sha1_hash(result),)] = population
+    return population
 
 
 def evaluate_cycle_item(
@@ -1174,7 +1340,9 @@ def evaluate_cycle_test(
     """
 
     output = dict(test)
-    output["items"] = materialize_cycle_items(workspace, output)
+    output["items"], output[ITEMS_INPUTS_KEY] = materialize_cycle_population(
+        workspace, output
+    )
     validated = validate_cycle_test(workspace, output)
     prepared = prepare(workspace, validated["ruleset"])
     for item in output["items"]:

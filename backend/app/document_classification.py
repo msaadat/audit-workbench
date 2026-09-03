@@ -120,10 +120,12 @@ def _read(workspace: Workspace, document_id: str) -> dict:
     cache = _cache.get()
     key = (str(workspace.root), str(document_id))
     if cache is not None and key in cache:
-        # A copy, because assignment reads a record, edits it, and writes it
-        # back — handing out the cached object would let that edit answer the
-        # next reader from memory.
-        return copy.deepcopy(cache[key])
+        # Shared, not copied. Assignment builds a new record from the one it
+        # reads rather than editing it in place, so nothing that reaches a
+        # cached record writes on it — and a readiness sweep reads each
+        # document's record once per capability, eight thousand times per
+        # engagement record, where a copy per read was most of the cost.
+        return cache[key]
     try:
         path = _path(workspace, document_id)
     except WorkspaceError:

@@ -80,23 +80,40 @@ def _linked_tests(workspace: Workspace, rcm_id: str) -> list[dict]:
 
 
 def match_test_revision(
-    workspace: Workspace, rcm_id: str, kind: str, semantic: str
+    workspace: Workspace,
+    rcm_id: str,
+    kind: str,
+    semantic: str,
+    *,
+    revises: str = "",
 ) -> dict | None:
     """Match one proposed test to an existing one on the same RCM row.
 
-    The stable semantic id identifies the same test across regenerations;
-    unmatched proposals are created.
+    ``revises`` is the generator naming the test it rewrote, and it is the only
+    identity that survives a rewrite.  The semantic id below is derived from the
+    title, so a row regenerated with its control phrased even slightly
+    differently matched nothing and created a *second* test instead of revising
+    the first — one engagement carried both "Confirmation traceability to the
+    recorded deal register" and "Confirmation traceability to recorded deals and
+    settlement state" on one row, the second a strict superset of the first.
+    A key meant to identify a test across regenerations cannot be built from the
+    one field regeneration is free to change.  Generation is shown every linked
+    test's id precisely so it can point at the one it is replacing.
+
+    The title-derived match stays as the fallback: proposals that name nothing,
+    and tests created before generation was asked to, still have to match.
     """
+    linked = [item for item in _linked_tests(workspace, rcm_id) if item["kind"] == kind]
+    if revises:
+        named = next((item for item in linked if item["id"] == revises), None)
+        if named is not None:
+            return named
     stable_id = stable_test_id(kind, semantic)
     return next(
         (
             item
-            for item in _linked_tests(workspace, rcm_id)
-            if item["kind"] == kind
-            and (
-                item["record"].get("semantic_id") == semantic
-                or item["id"] == stable_id
-            )
+            for item in linked
+            if item["record"].get("semantic_id") == semantic or item["id"] == stable_id
         ),
         None,
     )
@@ -233,6 +250,10 @@ def _validated_generation(
         kind = "datatest" if source == "data" else "doctest"
         spec["kind"] = kind
         spec["rcm_id"] = target.rcm_id
+        # Carried verbatim from the proposal. Whether it names a test that is
+        # still on this row is settled at match time against the locked
+        # workspace, not here against a read that may already be stale.
+        spec["revises"] = str(spec.get("revises") or "").strip()
         spec["semantic_id"] = (
             cycle_vouching.stable_test_semantic_id(
                 {**spec, "kind": "cycle_vouch"}
@@ -476,7 +497,13 @@ def execute_test_generation(request: ExecutorRequest, raw_target: object) -> Exe
         for spec in specs:
             kind = str(spec["kind"])
             semantic = str(spec["semantic_id"])
-            existing = match_test_revision(fresh, target.rcm_id, kind, semantic)
+            existing = match_test_revision(
+                fresh,
+                target.rcm_id,
+                kind,
+                semantic,
+                revises=str(spec.get("revises") or ""),
+            )
             if (
                 existing
                 and existing["record"].get("created_by") != "agent"
@@ -578,7 +605,11 @@ def reconcile_test_generation(
     for spec in specs:
         kind = str(spec["kind"])
         existing = match_test_revision(
-            current, target.rcm_id, kind, str(spec["semantic_id"])
+            current,
+            target.rcm_id,
+            kind,
+            str(spec["semantic_id"]),
+            revises=str(spec.get("revises") or ""),
         )
         if (
             existing

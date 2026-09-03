@@ -271,6 +271,18 @@ def _key_rank(name: str) -> int:
     return 1 if "ID" in upper else 0
 
 
+def key_rank(name: str) -> int:
+    """How strongly a column name reads as a record identifier, for readers
+    outside this module.
+
+    Redundancy detection compares tests on the identifiers their exception
+    frames share, which is the same question this heuristic already answers for
+    a single frame.  Exposing it keeps one definition of "looks like a key"
+    rather than letting a second one drift away from this one.
+    """
+    return _key_rank(name)
+
+
 def _entity_key(
     frame: pl.DataFrame,
     step_frames: list[pl.DataFrame],

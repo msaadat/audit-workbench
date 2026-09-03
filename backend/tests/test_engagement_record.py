@@ -1389,16 +1389,21 @@ def test_the_record_holds_the_document_test_cache_open(stub_store, monkeypatch):
 def test_readiness_is_projected_once_for_the_whole_record(stub_store, monkeypatch):
     """It is the most expensive thing the record reads, and every row wants it."""
     stub_store([])
-    calls = {"n": 0}
+    calls = {"n": 0, "only": None}
 
-    def count(workspace, scope=None):
+    def count(workspace, scope=None, *, only=None):
         calls["n"] += 1
+        calls["only"] = only
         return {}
 
     monkeypatch.setattr(engagement_record.audit_capabilities, "workflow_state", count)
     engagement_record.record(_Workspace())
 
     assert calls["n"] == 1
+    # ...and only for the rows it draws. The registries declare forty-six
+    # capabilities; the ledger reads twelve, and the rest were computed for
+    # nothing — the disposition of every document test among them.
+    assert tuple(calls["only"]) == tuple(engagement_record._SPINE)
 
 
 def test_the_memo_does_not_outlive_the_call_that_opened_it(stub_store, monkeypatch):

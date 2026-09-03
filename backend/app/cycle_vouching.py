@@ -456,12 +456,37 @@ def build_cycle_vouch_test(workspace, payload: Mapping[str, object]) -> dict:
     return cycle_linking.build_cycle_vouch_test(workspace, payload)
 
 
+#: Where a stored cycle test keeps the fingerprint of the inputs its items were
+#: drawn from — see `cycle_linking.materialization_inputs_sha1`. Derived, so
+#: it is left out of the test's own identity hash; a reader compares it to the
+#: inputs as they stand and materializes only on a mismatch.
+ITEMS_INPUTS_KEY = "items_inputs_sha1"
+
+
 def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]:
     """Select population rows and bind each one's linked record closure."""
 
     from . import cycle_linking
 
     return cycle_linking.materialize_cycle_items(workspace, test)
+
+
+def materialize_cycle_population(
+    workspace, test: Mapping[str, object]
+) -> tuple[list[dict], str]:
+    """The items and the fingerprint of the inputs they were drawn from."""
+
+    from . import cycle_linking
+
+    return cycle_linking.materialize_cycle_population(workspace, test)
+
+
+def materialization_inputs_sha1(workspace, test: Mapping[str, object]) -> str:
+    """The fingerprint materialization would produce now, without the rows."""
+
+    from . import cycle_linking
+
+    return cycle_linking.materialization_inputs_sha1(workspace, test)
 
 
 def evaluate_cycle_item(

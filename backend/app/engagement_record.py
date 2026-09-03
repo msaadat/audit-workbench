@@ -713,6 +713,13 @@ def _readiness(workspace: Workspace) -> dict[str, dict]:
     Affordable only inside `_one_read`, which holds the document-test cache
     these readiness functions repeatedly fall through.
 
+    Only the spine and what it depends on is asked. The ledger draws twelve
+    rows; the four registries declare forty-six capabilities, and the full
+    sweep ran every one of them — the disposition of every document test, the
+    stamping of every schema — to fill rows that never read the answer. The
+    closure keeps each drawn row's cascaded state exactly as the full sweep
+    would have given it, because a state depends on nothing outside it.
+
     A registry that cannot answer is skipped rather than allowed to empty the
     row: state read from the workspace is the half of the record that has to
     survive when something else is missing.
@@ -720,6 +727,7 @@ def _readiness(workspace: Workspace) -> dict[str, dict]:
 
     def read() -> dict[str, dict]:
         state: dict[str, dict] = {}
+        drawn = tuple(_SPINE)
         for project in (
             audit_capabilities.workflow_state,
             audit_capabilities.analysis_workflow_state,
@@ -727,7 +735,7 @@ def _readiness(workspace: Workspace) -> dict[str, dict]:
             audit_capabilities.doc_tests_workflow_state,
         ):
             try:
-                state.update(project(workspace))
+                state.update(project(workspace, only=drawn))
             except Exception:
                 continue
         return state

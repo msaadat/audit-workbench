@@ -1726,6 +1726,25 @@ def run(workspace: Workspace, data_test_id: str) -> dict:
     )
 
 
+def _redundancy_sweep(workspace: Workspace) -> None:
+    """Re-mark redundant tests once the batch has finished.
+
+    Redundancy is a statement about a test relative to every other one, so it
+    cannot be settled while the batch is still changing results — it is swept
+    once, at the end, rather than recomputed after each test.
+
+    Never allowed to fail a run.  The marks are advisory; results and their
+    conclusions are not, and a defect in detection must not cost an auditor the
+    batch that produced them.
+    """
+    from . import data_test_redundancy
+
+    try:
+        data_test_redundancy.annotate(workspace, persist=True)
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 def _run_all(workspace: Workspace, test_ids: list[str]) -> dict:
     """Run a selected set of Data Tests one at a time."""
     completed: list[dict] = []
@@ -1748,6 +1767,7 @@ def _run_all(workspace: Workspace, test_ids: list[str]) -> dict:
     from . import rcm_execution
 
     rcm_execution.rollup(workspace)
+    _redundancy_sweep(workspace)
     return {
         "total": len(test_ids),
         "completed": completed,

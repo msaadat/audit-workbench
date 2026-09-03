@@ -7,6 +7,7 @@ layer and nothing to reconcile between a plan and its execution.
 
 from __future__ import annotations
 
+import copy
 import uuid
 from dataclasses import dataclass
 
@@ -64,9 +65,18 @@ def document_test_index(workspace: Workspace) -> DocumentTestIndex:
     The index deliberately lives only for the current calculation. Durable
     document-test mutations write their own files, so rebuilding it for each
     request keeps status surfaces current without cache invalidation state.
+
+    The tests are the index's own copies. `rollup` marks its derived status
+    and summary onto them in memory — and, when persisting, writes them back —
+    and `completion` then reads that marked-up state; inside a read-only cache
+    scope `load_test` hands out the shared record, which the roll-up must not
+    write on. One copy per test here is what keeps a roll-up's projection from
+    answering, through the cache, a readiness probe that asked what is stored.
     """
     summaries = tuple(doc_tests.list_tests(workspace))
-    tests = tuple(doc_tests.load_test(workspace, item["id"]) for item in summaries)
+    tests = tuple(
+        copy.deepcopy(doc_tests.load_test(workspace, item["id"])) for item in summaries
+    )
     grouped: dict[str, list[dict]] = {}
     for test in tests:
         rcm_id = str(test.get("rcm_id") or "")

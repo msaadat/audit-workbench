@@ -14,6 +14,7 @@ from .. import (
     doc_tests,
     document_classification,
     document_schemas,
+    projection_cache,
     working_papers,
     workspaces,
 )
@@ -125,7 +126,18 @@ def reject_cycle_ruleset(workspace_id: str, ruleset_id: str):
 
 @router.get("/doc-tests")
 def list_document_tests(workspace_id: str):
-    return {"items": doc_tests.list_tests(_ws(workspace_id))}
+    ws = _ws(workspace_id)
+
+    def draw() -> dict:
+        # Read-only: the scope lets one cycle-vouching materialization serve
+        # every projection this listing builds per test.
+        with doc_tests.request_cache_scope():
+            return {"items": doc_tests.list_tests(ws)}
+
+    # A pure function of the workspace's files, kept between requests until
+    # any of them changes — the register is opened far more often than it is
+    # written to.
+    return projection_cache.cached(ws.root, "doc_tests_list", draw)
 
 
 @router.get("/doc-tests/summary")

@@ -55,9 +55,28 @@ def structured_records(
     """
 
     rows: list[dict] = []
+    # One schema read per stamp, not per document: eighty documents stamped
+    # with the same seven schemas were re-reading those seven files eighty
+    # times to learn what the first read had already said.
+    current_by_stamp: dict[tuple[str, object, str], bool] = {}
+
+    def stamp_current(ref: object) -> bool:
+        if not isinstance(ref, dict):
+            return False
+        key = (
+            str(ref.get("document_type") or ""),
+            ref.get("schema_version"),
+            str(ref.get("schema_hash") or ""),
+        )
+        if key not in current_by_stamp:
+            current_by_stamp[key] = document_schemas.is_current(workspace, ref)
+        return current_by_stamp[key]
+
     for document in workspace.documents:
         document_id = str(document.get("id") or "")
-        detail = document_analysis.load_analysis(workspace, document_id, document=document)
+        detail = document_analysis.load_analysis(
+            workspace, document_id, document=document, with_status=False
+        )
         artifact = detail.get("effective")
 
         def exclude(reason: str) -> None:
@@ -76,7 +95,7 @@ def structured_records(
             continue
         schema_ref = artifact.get("schema_ref") or {}
         document_type = document_classification.document_type(workspace, document_id)
-        if not document_schemas.is_current(workspace, schema_ref):
+        if not stamp_current(schema_ref):
             exclude("stale_schema_reference")
             continue
         if str(schema_ref.get("document_type") or "") != document_type:

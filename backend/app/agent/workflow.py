@@ -219,10 +219,31 @@ class CapabilityRegistry:
             visit(str(item))
         return ordered
 
-    def workflow_state(self, workspace: Workspace, scope: dict | None = None) -> dict[str, dict]:
+    def workflow_state(
+        self,
+        workspace: Workspace,
+        scope: dict | None = None,
+        *,
+        only: Iterable[str] | None = None,
+    ) -> dict[str, dict]:
+        """Readiness of every capability, or of ``only`` and what they depend on.
+
+        Restricting the sweep changes no answer: a capability's state is its own
+        readiness plus its dependencies' states, and the closure carries every
+        dependency, visited in the same registration order as the full sweep.
+        It changes what is paid for — a ledger drawing twelve rows no longer
+        runs the readiness of thirty-four capabilities it never shows. Names in
+        ``only`` this registry does not declare are skipped rather than refused,
+        because one list is put to several registries.
+        """
         scope = dict(scope or {})
+        wanted: set[str] | None = None
+        if only is not None:
+            wanted = set(self.closure(item for item in only if item in self._values))
         result: dict[str, dict] = {}
         for capability in self.all():
+            if wanted is not None and capability.id not in wanted:
+                continue
             readiness = capability.readiness(workspace, scope)
             payload = readiness.payload()
             unmet = [dep for dep in capability.depends_on if result.get(dep, {}).get("state") != "satisfied"]

@@ -736,7 +736,21 @@ def stamp_schema_ref(
         return artifact
 
 
-def load_analysis(workspace: Workspace, document_id: str, *, document: dict | None = None) -> dict:
+def load_analysis(
+    workspace: Workspace,
+    document_id: str,
+    *,
+    document: dict | None = None,
+    with_status: bool = True,
+) -> dict:
+    """One document's analysis: the effective artifact, the candidate, the
+    review, and — unless ``with_status`` is off — its authoritative status.
+
+    The status re-reads the index, the review, the active artifact and the
+    extraction to describe where the analysis stands. A reader after the
+    records alone — the cycle-evidence read walks every document for them —
+    pays that second read for a catalogue it never opens; it asks without.
+    """
     if document is None:
         document = next((item for item in workspace.documents if item.get("id") == document_id), None)
     if document is None:
@@ -765,7 +779,7 @@ def load_analysis(workspace: Workspace, document_id: str, *, document: dict | No
     return {"document_id": document_id, "index_revision": index["revision"],
             "review_revision": review["revision"], "generated": generated,
             "effective": effective, "candidate": candidate, "review": review,
-            "status": _authoritative_status(workspace, document)}
+            "status": _authoritative_status(workspace, document) if with_status else None}
 
 
 def patch_review(workspace: Workspace, document_id: str, payload: dict) -> dict:

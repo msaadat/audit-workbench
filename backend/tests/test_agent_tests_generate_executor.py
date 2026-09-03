@@ -537,3 +537,116 @@ def test_generate_executor_still_blocks_when_no_step_has_a_document():
     assert committed["status"] == "blocked"
     assert committed["scope_limitations"] == "Approval register; Signed approval memo"
     assert len(target.workspace.evidence_requests) == 2
+
+
+def test_a_retitled_test_naming_what_it_revises_updates_instead_of_duplicating():
+    """The title-drift duplicate, reproduced and fixed.
+
+    Regeneration is free to reword a control. Because identity used to be
+    derived from ``slugify(title)``, the reworded version matched nothing and
+    was stored beside the original — one engagement kept two "confirmation
+    traceability" tests on a single row, the second a strict superset of the
+    first.
+    """
+    workspace, rcm_id, _doc_id = _workspace()
+    first_target = TestGenerateExecutorTarget(workspace, "run-1", rcm_id)
+    first = EXECUTORS.execute(_request(workspace, rcm_id, [_data_test()]), first_target)
+    original_id = first.output["tests"][0]["id"]
+    assert len(first_target.workspace.data_tests) == 1
+
+    workspace = workspaces.load_workspace(workspace.id)
+    retitled = _data_test(
+        title="Duplicate payment detection across the period",
+        objective="Determine whether duplicate payments were prevented, period-wide.",
+        revises=original_id,
+    )
+    second = EXECUTORS.execute(
+        _request(workspace, rcm_id, [retitled]),
+        TestGenerateExecutorTarget(workspace, "run-2", rcm_id),
+    )
+
+    assert second.output["tests"][0]["action"] == "updated"
+    assert second.output["tests"][0]["id"] == original_id
+    assert len(second.output["tests"]) == 1
+    workspace = workspaces.load_workspace(workspace.id)
+    assert len(workspace.data_tests) == 1
+    assert workspace.data_tests[0]["title"] == "Duplicate payment detection across the period"
+    # Identity is the record's, not the new title's: the stored semantic id
+    # still reads from the original wording, and must keep doing so or the next
+    # rewrite is a fresh mismatch again.
+    assert workspace.data_tests[0]["semantic_id"] == semantic_test_id(
+        "datatest", rcm_id, "Duplicate payment detection"
+    )
+
+
+def test_a_retitled_test_that_names_nothing_still_creates_a_second_test():
+    """The unfixed half, pinned deliberately.
+
+    Without ``revises`` there is nothing to match a reworded test on, and the
+    title-derived fallback has to stay for proposals and stored tests that
+    predate the field. This is what the post-run redundancy detector is for.
+    """
+    workspace, rcm_id, _doc_id = _workspace()
+    EXECUTORS.execute(
+        _request(workspace, rcm_id, [_data_test()]),
+        TestGenerateExecutorTarget(workspace, "run-1", rcm_id),
+    )
+    workspace = workspaces.load_workspace(workspace.id)
+    EXECUTORS.execute(
+        _request(workspace, rcm_id, [_data_test(title="Duplicate payments, restated")]),
+        TestGenerateExecutorTarget(workspace, "run-2", rcm_id),
+    )
+
+    workspace = workspaces.load_workspace(workspace.id)
+    assert len(workspace.data_tests) == 2
+
+
+def test_an_unchanged_title_still_matches_without_revises():
+    """The fallback keeps working for everything generated before the field."""
+    workspace, rcm_id, _doc_id = _workspace()
+    first = EXECUTORS.execute(
+        _request(workspace, rcm_id, [_data_test()]),
+        TestGenerateExecutorTarget(workspace, "run-1", rcm_id),
+    )
+    workspace = workspaces.load_workspace(workspace.id)
+    second = EXECUTORS.execute(
+        _request(workspace, rcm_id, [_data_test(objective="Reworded objective.")]),
+        TestGenerateExecutorTarget(workspace, "run-2", rcm_id),
+    )
+
+    assert second.output["tests"][0]["id"] == first.output["tests"][0]["id"]
+    assert len(workspaces.load_workspace(workspace.id).data_tests) == 1
+
+
+def test_revises_naming_a_test_on_another_row_falls_back_rather_than_hijacking():
+    """A reference the row does not own must not reach across to another row."""
+    workspace, rcm_id, _doc_id = _workspace()
+    workspace.add_rcm(
+        {
+            "process": "Payroll",
+            "risk": "Unapproved pay changes",
+            "control": "Change review",
+            "risk_rating": "high",
+        }
+    )
+    other_row = workspace.rcm[1]["id"]
+    owned = EXECUTORS.execute(
+        _request(workspace, rcm_id, [_data_test()]),
+        TestGenerateExecutorTarget(workspace, "run-1", rcm_id),
+    )
+    foreign_id = owned.output["tests"][0]["id"]
+
+    workspace = workspaces.load_workspace(workspace.id)
+    EXECUTORS.execute(
+        _request(
+            workspace,
+            other_row,
+            [_data_test(title="Payroll change review", revises=foreign_id)],
+        ),
+        TestGenerateExecutorTarget(workspace, "run-2", other_row),
+    )
+
+    workspace = workspaces.load_workspace(workspace.id)
+    by_row = {item["id"]: item["rcm_id"] for item in workspace.data_tests}
+    assert len(by_row) == 2
+    assert by_row[foreign_id] == rcm_id

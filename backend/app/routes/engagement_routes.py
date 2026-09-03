@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Query
 
-from .. import engagement, engagement_progress, engagement_record, workspaces
+from .. import (
+    engagement,
+    engagement_progress,
+    engagement_record,
+    projection_cache,
+    workspaces,
+)
 
 router = APIRouter(prefix="/api", tags=["engagement"])
 
@@ -27,9 +33,15 @@ def get_engagement_record(workspace_id: str):
     """What this engagement filed, in the order each work product settled.
 
     A projection of runs and their milestones — no state of its own.
+
+    Kept between requests while nothing under the workspace changes: the shell
+    asks for it on open and after every commit, and drawing it is the most
+    expensive read the workspace has.
     """
     ws = workspaces.load_workspace(workspace_id)
-    return engagement_record.record(ws)
+    return projection_cache.cached(
+        ws.root, "engagement_record", lambda: engagement_record.record(ws)
+    )
 
 
 @router.get("/workspaces/{workspace_id}/engagement/status")
@@ -41,7 +53,11 @@ def get_engagement_status(workspace_id: str):
     described the dashboard, only the engagement behind it.
     """
     ws = workspaces.load_workspace(workspace_id)
-    return engagement_progress.engagement_status_payload(ws)
+    return projection_cache.cached(
+        ws.root,
+        "engagement_status",
+        lambda: engagement_progress.engagement_status_payload(ws),
+    )
 
 
 @router.post("/workspaces/{workspace_id}/engagement/brief")

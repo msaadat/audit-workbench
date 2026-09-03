@@ -375,6 +375,9 @@ GENERATE_WORKER_ID = "tests.generate"
 # existing shape.
 GENERATE_RESPONSE_CONTRACT = {
     "envelope": {"required": ["tests"], "additional_fields": False},
+    # Accepted on every variant, and never required: the id of the test on this
+    # row that the returned one replaces. Absent means a new test.
+    "optional": ["revises"],
     "variants": {
         "data": {
             "required": ["source", "title", "objective", "steps"],
@@ -470,6 +473,14 @@ The exact Cycle Vouch response shape is:
 "objective":"...","requirement_refs":["RCM-ID:attribute_key"],
 "procedure_key":"invoice-three-way-match",
 "selection":{{"mode":"evidence_linked"}}}}
+
+The row carries `existing_tests`, each with its `id`. When a test you return
+replaces one of them — the same control, however you have chosen to word it now
+— set `revises` to that id. Omit `revises` only when you are adding a test the
+row does not already have. This is the only thing that tells a rewrite apart
+from an addition: identity is not inferred from your title, so a re-worded
+version of an existing test without `revises` is stored as a second test
+alongside the first rather than replacing it.
 
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
@@ -615,6 +626,49 @@ def _generate_rcm_row(request: WorkerRequest) -> dict:
     if not isinstance(value, Mapping):
         raise WorkerContractError("RCM-row context must supply one object.")
     return _plain_json(value)
+
+
+def _generate_existing_test_ids(request: WorkerRequest) -> set[str]:
+    """The ids of tests already linked to the row being generated for."""
+    existing = _generate_rcm_row(request).get("existing_tests")
+    if not isinstance(existing, list):
+        return set()
+    return {
+        str(item.get("id") or "").strip()
+        for item in existing
+        if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+    }
+
+
+def _validate_generate_revises(
+    path: str,
+    value: Mapping[str, object],
+    *,
+    known_ids: set[str],
+    errors: list[str],
+) -> str:
+    """The existing test this proposal rewrites, if it says it rewrites one.
+
+    Optional, and absent means "this is a new test".  Naming an id that is not
+    on the row is rejected rather than ignored: falling back to the title-derived
+    match is exactly the behaviour that produced duplicate tests, so a wrong
+    reference is worth one repair turn instead of another silent duplicate.
+    """
+    raw = value.get("revises")
+    if raw in (None, ""):
+        return ""
+    if not isinstance(raw, str) or not raw.strip():
+        errors.append(f"{path}.revises must be the id of a test already on this row")
+        return ""
+    revises = raw.strip()
+    if revises not in known_ids:
+        errors.append(
+            f"{path}.revises names '{revises}', which is not a test on this row; "
+            f"use one of {sorted(known_ids) or 'the existing tests'} or omit it "
+            "to add a new test"
+        )
+        return ""
+    return revises
 
 
 def _validate_generate_cycle_test(
@@ -1112,6 +1166,7 @@ def validate_generate_proposal(
     clean: list[dict] = []
     cycle_identities: set[tuple[str, str, str, str]] = set()
     attempted_refs: set[str] = set()
+    known_test_ids = _generate_existing_test_ids(request)
     for index, raw in enumerate(values, 1):
         path = f"tests[{index - 1}]"
         errors_before = len(errors)
@@ -1132,6 +1187,9 @@ def validate_generate_proposal(
         for key in ("title", "objective"):
             if not isinstance(value.get(key), str) or not value[key].strip():
                 errors.append(f"{path}.{key} must be a non-empty string")
+        revises = _validate_generate_revises(
+            path, value, known_ids=known_test_ids, errors=errors
+        )
         if source == "document" and value.get("kind") == "cycle_vouch":
             forbidden = [
                 key
@@ -1182,6 +1240,7 @@ def validate_generate_proposal(
                     **cycle_test,
                     "rcm_id": rcm_id,
                     "methodology_refs": methodology_refs,
+                    "revises": revises,
                 }
                 normalized.append(entry)
                 if len(errors) == errors_before:
@@ -1233,6 +1292,7 @@ def validate_generate_proposal(
             "steps": steps,
             "rcm_id": rcm_id,
             "methodology_refs": methodology_refs,
+            "revises": revises,
         }
         normalized.append(entry)
         if len(errors) == errors_before:

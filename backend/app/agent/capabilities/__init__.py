@@ -16,6 +16,8 @@ the executors stamp and reconcile against are re-exported here from
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from ..context import PRESETS
 from ..runtime import CapabilityExecutionRegistry
 from ..workflow import CapabilityRegistry
@@ -355,28 +357,40 @@ def workflow_for_outcomes(outcomes) -> str | None:
     return min(matches)[1]
 
 
-def workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
-    """Deterministic readiness projection for every audit capability."""
+def workflow_state(
+    workspace, scope: dict | None = None, *, only: Iterable[str] | None = None
+) -> dict[str, dict]:
+    """Deterministic readiness projection for every audit capability.
 
-    return REGISTRY.workflow_state(workspace, scope)
+    ``only`` narrows the sweep to those capabilities and their dependency
+    closure — see :meth:`CapabilityRegistry.workflow_state`.
+    """
+
+    return REGISTRY.workflow_state(workspace, scope, only=only)
 
 
-def analysis_workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+def analysis_workflow_state(
+    workspace, scope: dict | None = None, *, only: Iterable[str] | None = None
+) -> dict[str, dict]:
     """Deterministic readiness projection for every analysis capability."""
 
-    return ANALYSIS_REGISTRY.workflow_state(workspace, scope)
+    return ANALYSIS_REGISTRY.workflow_state(workspace, scope, only=only)
 
 
-def documents_workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+def documents_workflow_state(
+    workspace, scope: dict | None = None, *, only: Iterable[str] | None = None
+) -> dict[str, dict]:
     """Deterministic readiness projection for every document capability."""
 
-    return DOCUMENTS_REGISTRY.workflow_state(workspace, scope)
+    return DOCUMENTS_REGISTRY.workflow_state(workspace, scope, only=only)
 
 
-def doc_tests_workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+def doc_tests_workflow_state(
+    workspace, scope: dict | None = None, *, only: Iterable[str] | None = None
+) -> dict[str, dict]:
     """Deterministic readiness projection for every document-test capability."""
 
-    return DOC_TESTS_REGISTRY.workflow_state(workspace, scope)
+    return DOC_TESTS_REGISTRY.workflow_state(workspace, scope, only=only)
 
 
 __all__ = [

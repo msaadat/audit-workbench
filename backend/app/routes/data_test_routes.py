@@ -6,7 +6,7 @@ import asyncio
 
 from fastapi import APIRouter, Body
 
-from .. import data_tests, workspaces
+from .. import data_test_redundancy, data_tests, workspaces
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["data tests"])
 
@@ -23,6 +23,26 @@ def list_data_tests(workspace_id: str):
 @router.post("/data-tests")
 def create_data_test(workspace_id: str, payload: dict = Body(...)):
     return data_tests.create(_ws(workspace_id), payload)
+
+
+# Declared ahead of ``/data-tests/{data_test_id}``: a literal segment that
+# arrives after the path-parameter route is captured by it instead.
+@router.get("/data-tests/redundancy")
+def get_data_test_redundancy(workspace_id: str):
+    """Which tests flag the same records as which others. Read-only."""
+
+    return data_test_redundancy.scan(_ws(workspace_id))
+
+
+@router.post("/data-tests/redundancy")
+def post_data_test_redundancy(workspace_id: str):
+    """Re-run the sweep and store the marks.
+
+    Batch runs sweep on their own; this is for a workspace whose tests were run
+    before the detector existed, or run one at a time.
+    """
+
+    return data_test_redundancy.annotate(_ws(workspace_id), persist=True)
 
 
 @router.get("/data-tests/{data_test_id}")

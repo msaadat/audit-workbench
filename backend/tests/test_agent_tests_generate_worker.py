@@ -1737,3 +1737,57 @@ def test_a_procedure_admitting_it_does_not_cover_its_requirement_is_refused():
     assert "admits that the proposed cycle procedure does not cover" in str(
         raised.value
     )
+
+
+def _row_with_tests(*ids):
+    return {
+        "id": "RCM-1",
+        "risk": "Duplicate payments are processed",
+        "control": "Duplicate invoice validation",
+        "existing_tests": [
+            {"id": test_id, "title": "Existing", "created_by": "agent"}
+            for test_id in ids
+        ],
+    }
+
+
+def test_generate_worker_carries_the_test_a_proposal_says_it_revises():
+    bundle = _bundle(rcm_payload=_row_with_tests("DAT-EXISTING1"))
+    gateway = _Gateway(
+        [json.dumps({"tests": [_data_test(revises="DAT-EXISTING1")]})]
+    )
+
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    assert result.proposal["tests"][0]["revises"] == "DAT-EXISTING1"
+
+
+def test_generate_worker_defaults_revises_to_empty_for_a_new_test():
+    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.proposal["tests"][0]["revises"] == ""
+
+
+def test_generate_worker_rejects_a_revises_that_is_not_on_this_row():
+    """Rejected rather than ignored.
+
+    Ignoring it would fall back to the title-derived match, which is the
+    behaviour that stored a reworded test beside the original instead of
+    replacing it. One repair turn is cheaper than another duplicate.
+    """
+    bundle = _bundle(rcm_payload=_row_with_tests("DAT-EXISTING1"))
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_data_test(revises="DAT-NOTHERE")]}),
+            json.dumps({"tests": [_data_test(revises="DAT-EXISTING1")]}),
+        ]
+    )
+
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "DAT-NOTHERE" in guidance
+    assert "DAT-EXISTING1" in guidance
+    assert result.proposal["tests"][0]["revises"] == "DAT-EXISTING1"

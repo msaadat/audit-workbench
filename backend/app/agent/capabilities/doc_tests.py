@@ -20,6 +20,7 @@ Everything in this module is read-only.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from ... import doc_tests as doc_test_service
@@ -129,8 +130,26 @@ def _outstanding(workspace: Workspace, test: dict) -> bool:
 
 
 def resolve_doc_test_scope(workspace: Workspace, scope: dict) -> DocTestScope:
-    """Resolve explicitly named tests, or a bounded set of outstanding ones."""
+    """Resolve explicitly named tests, or a bounded set of outstanding ones.
 
+    Every capability in this group resolves the scope for itself, and an
+    unscoped resolution loads every test to ask which are outstanding. One
+    readiness pass therefore resolved the same scope six times over; inside a
+    read-only span it is resolved once and shared, which the frozen result
+    makes safe.
+    """
+
+    key = json.dumps(
+        ["doc_test_scope", str(getattr(workspace, "root", id(workspace))), scope],
+        sort_keys=True,
+        default=str,
+    )
+    return doc_test_service.request_memo(
+        key, lambda: _resolve_doc_test_scope(workspace, scope)
+    )
+
+
+def _resolve_doc_test_scope(workspace: Workspace, scope: dict) -> DocTestScope:
     known = {
         str(summary["id"]) for summary in doc_test_service.list_tests(workspace)
     }

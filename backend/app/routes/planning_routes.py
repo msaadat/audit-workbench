@@ -9,7 +9,16 @@ import polars as pl
 from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from .. import doc_tests, findings, rcm_execution, templates_store, uploads, workspaces, working_papers
+from .. import (
+    doc_tests,
+    findings,
+    projection_cache,
+    rcm_execution,
+    templates_store,
+    uploads,
+    workspaces,
+    working_papers,
+)
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["planning"])
 
@@ -37,15 +46,27 @@ def put_template(workspace_id: str, name: str, payload: dict = Body(...)):
 @router.get("/planning")
 def get_planning(workspace_id: str):
     ws = _ws(workspace_id)
-    # Present current derived statuses without mutating workspace.json.
-    rcm_execution.rollup(ws, persist=False)
-    return {
-        "planning": ws.planning, "rcm": ws.rcm, "procedures": ws.work_program,
-        "data_tests": ws.data_tests, "observations": ws.observations,
-        "document_tests": doc_tests.list_tests(ws),
-        "findings": ws.findings,
-        "finding_rollups": findings.rollups(ws),
-    }
+
+    def draw() -> dict:
+        # The rollup and the document-test listing below independently resolve
+        # the same tests, and cycle-vouching materialization underneath them
+        # re-reads the whole evidence corpus per test. Nothing in this handler
+        # writes, so a single cache scope lets the second and third pass reuse
+        # the first.
+        with doc_tests.request_cache_scope():
+            # Present current derived statuses without mutating workspace.json.
+            rcm_execution.rollup(ws, persist=False)
+            return {
+                "planning": ws.planning, "rcm": ws.rcm, "procedures": ws.work_program,
+                "data_tests": ws.data_tests, "observations": ws.observations,
+                "document_tests": doc_tests.list_tests(ws),
+                "findings": ws.findings,
+                "finding_rollups": findings.rollups(ws),
+            }
+
+    # A pure function of the workspace's files, and the largest read the
+    # planning surface makes: kept between requests until any of them changes.
+    return projection_cache.cached(ws.root, "planning", draw)
 
 
 @router.patch("/planning")
