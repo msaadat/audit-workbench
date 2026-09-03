@@ -206,22 +206,30 @@ const sourceGroups = computed<SourceGroup[]>(() => {
     }))
 })
 
-/** What a collapsed group says about itself: the count is the fact. */
-function groupSummary(group: { key: GroupKey; rows: unknown[] }) {
-  const total = group.rows.length
-  if (group.key === 'tables') return plural(total, 'table')
-  if (group.key === 'documents') return plural(total, 'document')
+/** How many of a kind of source, in the noun that kind answers to. */
+function countLabel(key: GroupKey, total: number) {
+  if (key === 'tables') return plural(total, 'table')
+  if (key === 'documents') return plural(total, 'document')
   return `${total} other ${total === 1 ? 'source' : 'sources'}`
 }
 
+/** What a collapsed group says about itself: the count is the fact. */
+function groupSummary(group: { key: GroupKey; rows: unknown[] }) {
+  return countLabel(group.key, group.rows.length)
+}
+
 /**
- * The same three groups, for what the step did not read.
+ * What the step did not read, as a tally rather than a roster.
  *
  * Withholding carries a second dimension the supplied side does not — why —
  * and the two correlate without matching: documents are declined by scope,
- * tables fall to size limits, an optional pack is simply absent. So the rows
- * group by kind of source, as above, and each group states its reason once
- * when every row shares it rather than repeating the phrase down the column.
+ * tables fall to size limits, an optional pack is simply absent. So the count
+ * is reported per kind of source and per reason.
+ *
+ * The withheld sources are deliberately not named. A step routinely declines
+ * eighty documents by scope, and eighty rows nobody reads bury the two facts
+ * that matter here — how much was held back, and what held it. What the step
+ * *did* read is named above, and that is the list a reviewer can act on.
  */
 type WithheldKind = 'truncated' | 'limit' | 'unavailable' | 'scope'
 
@@ -234,93 +242,74 @@ const WITHHELD_PHRASE: Record<WithheldKind, string> = {
 // Losses first, decisions last: what went missing outranks what was declined.
 const WITHHELD_ORDER: WithheldKind[] = ['truncated', 'limit', 'unavailable', 'scope']
 
-interface WithheldRow {
-  ref: string
-  label: string
-  badge: string
-  kind: WithheldKind
-  note: string
-  documentId: string
-}
-
-interface WithheldGroup {
+interface WithheldTally {
   key: GroupKey
+  kind: WithheldKind
+  /** "83 documents", "2 tables". */
   label: string
-  rows: WithheldRow[]
-  collapsible: boolean
-  /** The one reason shared by every row, when there is one. */
   reason: string
+  /** For a cut-short group, how much of it was lost, added up. */
+  note: string
 }
 
-function withheldLabel(group: GroupKey, ref: string, sourceId: string) {
-  if (group === 'documents') return sourceLabel(ref)
-  if (group === 'tables') return ref.includes(':') ? ref.slice(ref.indexOf(':') + 1) : ref
-  // A source-level omission has no ref at all — the id is the only name it has.
-  const name = (ref ? ref.slice(ref.indexOf(':') + 1) : sourceId).replaceAll('_', ' ').trim()
-  return name ? name[0].toUpperCase() + name.slice(1) : sourceId
-}
-
-const withheldGroups = computed<WithheldGroup[]>(() => {
-  const raw: { ref: string; sourceId: string; kind: WithheldKind; note: string }[] = [
+const withheldTallies = computed<WithheldTally[]>(() => {
+  interface Bucket {
+    key: GroupKey
+    kind: WithheldKind
+    /** Counted by source, so a file withheld page by page counts once. */
+    seen: Set<string>
+    original?: ProvenanceSize
+    supplied?: ProvenanceSize
+  }
+  const raw: {
+    ref: string
+    sourceId: string
+    kind: WithheldKind
+    original?: ProvenanceSize
+    supplied?: ProvenanceSize
+  }[] = [
     ...truncations.value.map(item => ({
       ref: item.source_ref,
       sourceId: item.source_id,
       kind: 'truncated' as WithheldKind,
-      note: `${size(item.original_size)} → ${size(item.supplied_size)}`,
+      original: item.original_size,
+      supplied: item.supplied_size,
     })),
     ...(context.value?.omissions ?? []).map(item => ({
       ref: item.source_ref ?? '',
       sourceId: item.source_id,
       kind: omissionKind(item.reason ?? ''),
-      note: '',
     })),
   ]
 
-  const buckets = new Map<GroupKey, Map<string, WithheldRow>>()
+  const buckets = new Map<string, Bucket>()
   for (const item of raw) {
     const key = groupKeyFor('', item.ref)
-    const identity = `${documentIdFor(item.ref) || item.ref || item.sourceId}|${item.kind}`
-    const rows = buckets.get(key) ?? new Map<string, WithheldRow>()
-    buckets.set(key, rows)
-    if (rows.has(identity)) continue
-    const label = withheldLabel(key, item.ref, item.sourceId)
-    rows.set(identity, {
-      ref: item.ref || item.sourceId,
-      label,
-      badge: badgeFor(key, label),
-      kind: item.kind,
-      note: item.note,
-      documentId: documentIdFor(item.ref),
-    })
+    const identity = documentIdFor(item.ref) || item.ref || item.sourceId
+    const bucketKey = `${key}|${item.kind}`
+    const bucket = buckets.get(bucketKey) ?? { key, kind: item.kind, seen: new Set<string>() }
+    buckets.set(bucketKey, bucket)
+    if (bucket.seen.has(identity)) continue
+    bucket.seen.add(identity)
+    bucket.original = addSize(bucket.original, item.original)
+    bucket.supplied = addSize(bucket.supplied, item.supplied)
   }
 
   const order: GroupKey[] = ['documents', 'tables', 'other']
-  return order
-    .filter(key => buckets.get(key)?.size)
-    .map(key => {
-      const rows = [...(buckets.get(key) as Map<string, WithheldRow>).values()]
-        .sort((left, right) =>
-          WITHHELD_ORDER.indexOf(left.kind) - WITHHELD_ORDER.indexOf(right.kind))
-      const kinds = new Set(rows.map(row => row.kind))
-      return {
-        key,
-        label: GROUP_LABEL[key],
-        rows,
-        collapsible: key !== 'documents',
-        reason: kinds.size === 1 ? WITHHELD_PHRASE[rows[0].kind] : '',
-      }
-    })
+  return [...buckets.values()]
+    .sort((left, right) =>
+      WITHHELD_ORDER.indexOf(left.kind) - WITHHELD_ORDER.indexOf(right.kind)
+      || order.indexOf(left.key) - order.indexOf(right.key))
+    .map(bucket => ({
+      key: bucket.key,
+      kind: bucket.kind,
+      label: countLabel(bucket.key, bucket.seen.size),
+      reason: WITHHELD_PHRASE[bucket.kind],
+      note: bucket.original && bucket.supplied
+        ? `${size(bucket.original)} → ${size(bucket.supplied)}`
+        : '',
+    }))
 })
-
-const withheldExpanded = ref<GroupKey[]>([])
-const isWithheldOpen = (group: WithheldGroup) =>
-  !group.collapsible || withheldExpanded.value.includes(group.key)
-function toggleWithheld(group: WithheldGroup) {
-  if (!group.collapsible) return
-  withheldExpanded.value = withheldExpanded.value.includes(group.key)
-    ? withheldExpanded.value.filter(key => key !== group.key)
-    : [...withheldExpanded.value, group.key]
-}
 
 const expanded = ref<GroupKey[]>([])
 const isOpen = (group: SourceGroup) =>
@@ -452,42 +441,18 @@ defineExpose({ reload: load })
       <div v-if="context?.state === 'available'" class="card">
         <h6>Not supplied <span>{{ omissions.length + truncations.length }}</span></h6>
         <div class="body">
-          <section v-for="group in withheldGroups" :key="group.key" class="group">
-            <button
-              v-if="group.collapsible"
-              class="group-head toggle"
-              :aria-expanded="isWithheldOpen(group)"
-              @click="toggleWithheld(group)"
-            >
-              <i :class="isWithheldOpen(group) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
-              <span>{{ groupSummary(group) }}</span>
-              <em v-if="group.reason">{{ group.reason }}</em>
-            </button>
-            <div v-else class="group-head">
-              <span>{{ group.label }}</span>
-              <em v-if="group.reason">{{ group.reason }}</em>
-              <b v-else>{{ group.rows.length }}</b>
-            </div>
-            <div v-if="isWithheldOpen(group)" class="group-body">
-              <div v-for="row in group.rows" :key="row.ref + row.kind" class="source">
-                <span
-                  class="ic badge"
-                  :class="row.kind === 'truncated' ? 'warn' : row.kind === 'scope' ? 'scope-ic' : 'muted-ic'"
-                >{{ row.badge }}</span>
-                <span class="detail">
-                  <b :title="row.ref">{{ row.label }}</b>
-                  <!-- The reason repeats per row only where the group is mixed. -->
-                  <small v-if="!group.reason">{{ WITHHELD_PHRASE[row.kind] }}</small>
-                  <small v-if="row.note" class="muted">{{ row.note }}</small>
-                  <button
-                    v-if="row.documentId"
-                    class="jump"
-                    @click="nav.push('documents', { doc: row.documentId })"
-                  >Open the document</button>
-                </span>
-              </div>
-            </div>
-          </section>
+          <!-- A count and a reason per line. The sources are not named: see
+               `withheldTallies` for why a roster is the wrong shape here. -->
+          <div
+            v-for="row in withheldTallies"
+            :key="`${row.key}:${row.kind}`"
+            class="tally"
+            :class="{ cut: row.kind === 'truncated' }"
+          >
+            <span class="what">{{ row.label }}</span>
+            <em>{{ row.reason }}</em>
+            <small v-if="row.note">{{ row.note }}</small>
+          </div>
           <p v-if="!omissions.length && !truncations.length" class="muted">
             Nothing was omitted or truncated — the model saw every candidate source in full.
           </p>
@@ -608,8 +573,6 @@ defineExpose({ reload: load })
   font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
 }
 .group-head b { margin-left: auto; font-variant-numeric: tabular-nums; }
-/* The reason a whole group was withheld, stated once beside its count. */
-.group-head em { margin-left: auto; font-style: normal; font-weight: 400; text-transform: none; letter-spacing: 0; }
 .group-head.toggle { cursor: pointer; }
 .group-head.toggle:hover { color: var(--aw-ink); }
 .group-head.toggle:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; border-radius: 3px; }
@@ -632,14 +595,23 @@ defineExpose({ reload: load })
   font-family: var(--aw-font-mono);
   font-size: var(--aw-text-2xs); letter-spacing: 0.02em;
 }
-.ic.warn { background: var(--aw-warn-soft); color: var(--aw-warn); }
-.ic.muted-ic { background: var(--aw-raised); color: var(--aw-muted); }
-/* A scope decision is neither a warning nor a gap, so it reads as neither. */
-.ic.scope-ic { background: var(--aw-raised); color: var(--aw-ink-soft); }
 .detail { display: grid; gap: 0.05rem; min-width: 0; }
 .detail b { font-size: var(--aw-text-xs); font-weight: 600; overflow-wrap: anywhere; }
 .detail small { color: var(--aw-muted); font-size: var(--aw-text-2xs); line-height: 1.35; }
 .jump { justify-self: start; margin-top: 0.15rem; padding: 0; border: 0; background: none; color: var(--aw-teal); font-size: var(--aw-text-2xs); text-decoration: underline; cursor: pointer; }
+
+/* One withheld tally: how many, and what held them back. */
+.tally { display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
+.tally + .tally { padding-top: 0.4rem; border-top: 1px dashed var(--aw-border); }
+.tally .what {
+  color: var(--aw-ink);
+  font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs);
+  font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}
+/* A loss reads as a loss; a scope decision and an absence do not. */
+.tally.cut .what { color: var(--aw-warn); }
+.tally em { margin-left: auto; color: var(--aw-muted); font-style: normal; }
+.tally small { flex-basis: 100%; color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 
 .total { margin: 0.15rem 0 0; padding-top: 0.35rem; border-top: 1px dashed var(--aw-border); color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 

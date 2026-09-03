@@ -52,7 +52,8 @@ function categoryLabel(value: string) {
  * decision rather than a gap. The files themselves are not named here: a step
  * can decline a great many of them, and a wall of dimmed cards buries the four
  * documents the work actually rests on. The provenance rail on the artifact
- * lists them individually for anyone who wants the roster.
+ * counts them the same way, for the same reason; nothing names a withheld
+ * source, because what the step *did* read is the list worth reading.
  */
 const withheldSummary = computed(() => {
   const counts = new Map<string, number>()

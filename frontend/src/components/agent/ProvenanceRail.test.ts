@@ -121,8 +121,8 @@ describe('ProvenanceRail source grouping', () => {
   })
 })
 
-describe('ProvenanceRail withheld grouping', () => {
-  it('states one shared reason on the group instead of on every row', async () => {
+describe('ProvenanceRail withheld tally', () => {
+  it('counts what was withheld instead of naming it', async () => {
     const wrapper = await render({
       selections: [selection('documents', 'documents', 'document:d1', 'summary')],
       omissions: [
@@ -134,33 +134,39 @@ describe('ProvenanceRail withheld grouping', () => {
     const withheld = wrapper.findAll('.card').find(card => card.text().startsWith('Not supplied'))
     expect(withheld).toBeTruthy()
     const text = withheld!.text()
+    // One line: how many, and why.
+    expect(withheld!.findAll('.tally')).toHaveLength(1)
+    expect(text).toContain('2 documents')
     expect(text).toContain("Outside this step's scope")
-    // Said once for the group, not once per document.
-    expect(text.match(/Outside this step's scope/g)).toHaveLength(1)
-    expect(text).toContain('PO2024004_Purchase_Order.pdf')
+    // The roster is the point of the change: no file is named here.
+    expect(text).not.toContain('PO2024004_Purchase_Order.pdf')
+    expect(text).not.toContain('Minutes of Meeting - CFO.docx')
     // Never the selector implementation.
     expect(text).not.toContain('did not match')
   })
 
-  it('falls back to per-row reasons when a group holds more than one', async () => {
+  it('tallies separately per reason and per kind of source', async () => {
     const wrapper = await render({
       selections: [selection('documents', 'documents', 'document:d1', 'summary')],
       omissions: [
         omission('methodology', 'Optional context source is unavailable.'),
         omission('population_summary', 'Global or per-source size limit reached.', 'workspace:populations'),
+        omission('documents', SELECTOR_DECLINED, 'document:v1'),
       ],
     })
 
     const withheld = wrapper.findAll('.card').find(card => card.text().startsWith('Not supplied'))!
-    await withheld.find('.group-head.toggle').trigger('click')
-
-    const text = withheld.text()
-    expect(text).toContain('Not available')
-    expect(text).toContain('Past the size limit')
-    expect(text).toContain('Methodology')
+    const rows = withheld.findAll('.tally').map(row => row.text())
+    expect(rows).toHaveLength(3)
+    // Losses and capacity facts lead; scope decisions come last.
+    expect(rows[0]).toContain('Past the size limit')
+    expect(rows[1]).toContain('Not available')
+    expect(rows[2]).toContain("Outside this step's scope")
+    expect(rows[2]).toContain('1 document')
+    expect(withheld.text()).not.toContain('Methodology')
   })
 
-  it('reports a truncation as cut short, with what it lost', async () => {
+  it('reports a truncation as cut short, with what the group lost', async () => {
     const wrapper = await render({
       selections: [selection('documents', 'documents', 'document:d1', 'summary')],
       truncations: [{
@@ -173,9 +179,12 @@ describe('ProvenanceRail withheld grouping', () => {
     })
 
     const withheld = wrapper.findAll('.card').find(card => card.text().startsWith('Not supplied'))!
-    expect(withheld.text()).toContain('Cut short')
-    expect(withheld.text()).toContain('Minutes of Meeting - CFO.docx')
-    expect(withheld.text()).toContain('8,000 chars')
+    const text = withheld.text()
+    expect(text).toContain('1 document')
+    expect(text).toContain('Cut short')
+    expect(text).toContain('8,000 chars')
+    expect(text).toContain('4,000 chars')
+    expect(text).not.toContain('Minutes of Meeting - CFO.docx')
   })
 })
 
