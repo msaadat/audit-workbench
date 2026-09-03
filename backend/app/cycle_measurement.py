@@ -194,6 +194,13 @@ def measure_join_key(
         "left_stating_key": len(fan_out),
         "matched_pairs": matched_pairs,
         "left_unmatched": unmatched,
+        # Whether the cycle says the right-hand document must exist at all.
+        # Without it an unmatched count cannot be read: a deal ticket reaching
+        # no investment confirmation is a defect when every deal must have one,
+        # and simply an FX deal when they need not.
+        "right_required": bool(
+            (roles.get(str(right.get("role"))) or {}).get("required", True)
+        ),
         # The distribution, not just an average: one runaway value is exactly
         # what an average hides, and it is the case that matters.
         "fan_out_p50": _percentile(fan_out, 0.5),
@@ -282,19 +289,43 @@ def concerns(measured: Mapping[str, object]) -> list[dict]:
                     "unrelated transactions."
                 ),
             })
-        if stats.get("left_stating_key") and stats.get("left_unmatched"):
-            share = stats["left_unmatched"] / stats["left_stating_key"]
-            if share >= 0.5:
-                found.append({
-                    "rule": key,
-                    "kind": "join_key",
-                    "concern": "poor_coverage",
-                    "detail": (
-                        f"{stats['left_unmatched']} of {stats['left_stating_key']} "
-                        "records stating this key match nothing. The field may be "
-                        "inconsistently named or inconsistently present."
-                    ),
-                })
+        # An unmatched count means something different on each side of this.
+        # Where the right-hand document must exist, a record reaching none of
+        # them is missing evidence or a mis-stated key. Where it need not, the
+        # same number is mostly the shape of the population: a treasury cycle
+        # measured 12 of 18 deal tickets reaching no investment confirmation
+        # and read it as a naming fault, when 11 were FX deals that have an
+        # fx_contract instead and could not have had one.
+        if stats.get("right_required", True):
+            if stats.get("left_stating_key") and stats.get("left_unmatched"):
+                share = stats["left_unmatched"] / stats["left_stating_key"]
+                if share >= 0.5:
+                    found.append({
+                        "rule": key,
+                        "kind": "join_key",
+                        "concern": "poor_coverage",
+                        "detail": (
+                            f"{stats['left_unmatched']} of {stats['left_stating_key']} "
+                            "records stating this key match nothing. The field may be "
+                            "inconsistently named or inconsistently present."
+                        ),
+                    })
+        # Optionality excuses a low match rate, not a total absence of one. A
+        # key that reaches none of the documents the engagement actually holds
+        # is wrong however optional they are, and the ratio cannot say so:
+        # it reads the same as a cycle that legitimately has none of them.
+        elif stats.get("right_documents") and not stats.get("matched_pairs"):
+            found.append({
+                "rule": key,
+                "kind": "join_key",
+                "concern": "no_coverage",
+                "detail": (
+                    f"This engagement holds {stats['right_documents']} of these "
+                    "documents and the key reaches none of them. The role is "
+                    "optional, so a low match rate would be unremarkable; "
+                    "matching nothing at all is not."
+                ),
+            })
     for key, stats in (measured.get("assertions") or {}).items():
         if stats.get("silent"):
             found.append({

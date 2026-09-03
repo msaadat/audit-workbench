@@ -66,11 +66,12 @@ def _extract(ws, name: str, document_type: str, **values) -> str:
     return str(document["id"])
 
 
-def _ruleset(join_field: str = "order_number") -> dict:
+def _ruleset(join_field: str = "order_number", *, right_required: bool = True) -> dict:
     return {
         "roles": [
             {"name": "invoice", "document_type": "vendor_invoice"},
-            {"name": "order", "document_type": "purchase_order"},
+            {"name": "order", "document_type": "purchase_order",
+             "required": right_required},
         ],
         "join_keys": [{
             "id": "jk",
@@ -131,6 +132,68 @@ def test_poor_coverage_points_back_at_the_field(ws):
     assert measured["join_keys"]["jk"]["left_unmatched"] == 3
     concerns = [item["concern"] for item in cycle_measurement.concerns(measured)]
     assert "poor_coverage" in concerns
+
+
+def test_an_optional_document_absent_is_not_a_fault_in_the_key(ws):
+    """Most of an unmatched count is the population, not the field.
+
+    A treasury cycle measured 12 of 18 deal tickets reaching no investment
+    confirmation and reported the field as inconsistently named. Eleven of the
+    twelve were FX deals, which carry an fx_contract instead and could not have
+    had one; the key matched every investment confirmation that existed. Where
+    the cycle says the document need not be there, its absence says nothing
+    about the key that would have reached it.
+    """
+
+    for index in range(4):
+        _extract(ws, f"inv{index}.txt", "vendor_invoice",
+                 invoice_number=f"INV-{index}", order_number=f"PO-{index}",
+                 total_amount="100")
+    _extract(ws, "po0.txt", "purchase_order", order_number="PO-0", total_amount="100")
+
+    measured = cycle_measurement.measure(ws, _ruleset(right_required=False))
+    stats = measured["join_keys"]["jk"]
+    # The measurement still counts what it counted; only the reading changes.
+    assert stats["left_unmatched"] == 3
+    assert stats["right_required"] is False
+    assert [item["concern"] for item in cycle_measurement.concerns(measured)] == []
+
+
+def test_an_optional_role_still_has_to_be_reached_by_something(ws):
+    """Optionality excuses a low match rate, not the absence of one.
+
+    The ratio cannot tell these apart: a key reaching none of the documents the
+    engagement holds reads exactly like a cycle that legitimately has none of
+    them. The count of those documents can, so the concern is raised on that.
+    """
+
+    for index in range(4):
+        _extract(ws, f"inv{index}.txt", "vendor_invoice",
+                 invoice_number=f"INV-{index}", order_number=f"PO-{index}",
+                 total_amount="100")
+    _extract(ws, "po0.txt", "purchase_order", order_number="PO-999", total_amount="100")
+
+    measured = cycle_measurement.measure(ws, _ruleset(right_required=False))
+    raised = cycle_measurement.concerns(measured)
+    assert [item["concern"] for item in raised] == ["no_coverage"]
+    assert "reaches none of them" in raised[0]["detail"]
+
+
+def test_an_optional_role_with_no_documents_at_all_is_silent(ws):
+    """Nothing to match against is not a defect in the key."""
+
+    for index in range(4):
+        _extract(ws, f"inv{index}.txt", "vendor_invoice",
+                 invoice_number=f"INV-{index}", order_number=f"PO-{index}",
+                 total_amount="100")
+
+    measured = cycle_measurement.measure(ws, _ruleset(right_required=False))
+    assert measured["join_keys"]["jk"]["right_documents"] == 0
+    join_key_concerns = [
+        item for item in cycle_measurement.concerns(measured)
+        if item["kind"] == "join_key"
+    ]
+    assert join_key_concerns == []
 
 
 def test_a_record_not_stating_the_key_is_not_counted_against_it(ws):
