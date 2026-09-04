@@ -1,7 +1,11 @@
 import json
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
+from app import accounts, config, db, telemetry_db, workspaces
 from app.agent import store
 from app.workspaces import WorkspaceError
 
@@ -169,3 +173,127 @@ def test_explicit_run_limit_still_overrides_the_concurrency_default(monkeypatch)
         run.get("limits", {}).get("max_llm_concurrency")
         or routing.default_llm_concurrency()
     ) == 2
+
+
+# ``write_json_atomic`` writes ".<name>.<6 hex>.tmp" alongside its destination,
+# so a sidecar costs its own path plus this before Windows' 260-character
+# ceiling is reached.
+_ATOMIC_TMP_OVERHEAD = len(".") + len(".abcdef.tmp")
+
+
+def _wide_unit_id(tables: int, stem: str = "table-with-a-longish-name") -> str:
+    """A join-utility unit ID, which names every table in its scope."""
+    return "join_utility:" + ":".join(f"{index:02d}-{stem}" for index in range(tables))
+
+
+def test_unit_filename_keeps_short_semantic_names_verbatim():
+    # Nearly every unit names one or two refs and must keep the readable name it
+    # has always had, so sidecars written before the cap stay addressable.
+    for unit_id in (
+        "analysis_reading",
+        "relationship:01-employees:02-expense-claims",
+        "analysis_definitions:02-expense-claims",
+    ):
+        assert store.unit_filename(unit_id) == store.legacy_unit_filename(unit_id)
+    assert (
+        store.unit_filename("relationship:01-employees:02-expense-claims")
+        == "relationship%3A01-employees%3A02-expense-claims.json"
+    )
+
+
+def test_unit_filename_caps_names_that_grow_with_their_scope():
+    unit_id = _wide_unit_id(40)
+    name = store.unit_filename(unit_id)
+    assert len(store.legacy_unit_filename(unit_id)) > store.UNIT_FILENAME_LIMIT
+    assert len(name) <= store.UNIT_FILENAME_LIMIT
+    # The readable prefix survives, cut on a whole percent-escape.
+    assert name.startswith("join_utility%3A00-table")
+    assert name.endswith(".json")
+    assert "%" not in name.split("+")[0][-2:]
+
+
+def test_unit_filename_is_deterministic_and_collision_free_across_scopes():
+    names: dict[str, int] = {}
+    for count in range(2, 60):
+        unit_id = _wide_unit_id(count)
+        name = store.unit_filename(unit_id)
+        assert name == store.unit_filename(unit_id)
+        assert name not in names, f"{count} tables collides with {names[name]}"
+        names[name] = count
+
+
+def test_capped_unit_filename_clears_the_windows_ceiling_in_a_real_run_folder():
+    """The six-table expenses join-utility unit that first hit this ceiling.
+
+    Asserted against a measured run-folder depth rather than the test's own
+    temporary directory, which pytest nests far deeper than a real workspace.
+    """
+    run_folder = (
+        r"C:\Users\913300\Desktop\audit-workbench\Workspaces\Users\local"
+        r"\Workspaces\expenses\AgentRuns\20260903-122859-fe940f\contexts"
+    )
+    unit_id = (
+        "join_utility:01-employees:02-expense-claims:03-claim-line-items"
+        ":04-approval-log:05-payment-vouchers:06-gl-postings"
+    )
+    legacy = len(run_folder) + 1 + len(store.legacy_unit_filename(unit_id))
+    capped = len(run_folder) + 1 + len(store.unit_filename(unit_id))
+    assert legacy + _ATOMIC_TMP_OVERHEAD > 260  # the reported failure
+    assert capped + _ATOMIC_TMP_OVERHEAD < 260
+
+
+@pytest.fixture
+def shallow_workspace():
+    """A workspace at a realistically shallow root.
+
+    pytest nests ``tmp_path`` roughly 50 characters deeper than any real
+    installation, which leaves too little of Windows' 260-character budget to
+    exercise a scope-wide unit at all.
+    """
+    root = Path(tempfile.mkdtemp(prefix="awb"))
+    previous = config.DATA_ROOT
+    db.close_all()
+    telemetry_db.close_all()
+    config.DATA_ROOT = root
+    try:
+        accounts.ensure_local_user()
+        yield workspaces.create_workspace("Expenses")
+    finally:
+        db.close_all()
+        telemetry_db.close_all()
+        config.DATA_ROOT = previous
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_unit_sidecar_round_trips_a_scope_wide_unit(shallow_workspace):
+    from app.agent.runtime.unit_pipeline import UnitSidecarStore
+
+    run = store.new_run(shallow_workspace, "auto")
+    folder = store.run_dir(shallow_workspace, run["id"]) / "proposals"
+    unit_id = _wide_unit_id(40)
+    assert len(str(folder)) + 1 + len(store.legacy_unit_filename(unit_id)) > 260
+    sidecars = UnitSidecarStore(shallow_workspace, run["id"])
+    reference = sidecars.persist_proposal(unit_id, {"status": "proposed"})
+    assert (folder / reference["path"].split("/", 1)[1]).is_file()
+    assert sidecars.load_proposal(unit_id, reference) == {"status": "proposed"}
+    assert not list(folder.glob("*.tmp"))
+
+
+def test_unit_sidecar_still_reads_an_uncapped_name_from_an_earlier_run(
+    shallow_workspace,
+):
+    """A run written where no ceiling applied keeps its uncapped name readable."""
+    from app.agent.runtime.unit_pipeline import UnitSidecarStore
+
+    run = store.new_run(shallow_workspace, "auto")
+    folder = store.run_dir(shallow_workspace, run["id"]) / "proposals"
+    unit_id = _wide_unit_id(12, stem="t")
+    legacy_name = store.legacy_unit_filename(unit_id)
+    assert len(legacy_name) > store.UNIT_FILENAME_LIMIT
+    assert store.unit_filename(unit_id) != legacy_name
+    folder.mkdir(parents=True, exist_ok=True)
+    payload = {"status": "proposed"}
+    (folder / legacy_name).write_text(json.dumps(payload), encoding="utf-8")
+    assert UnitSidecarStore(shallow_workspace, run["id"]).load_proposal(
+        unit_id
+    ) == payload

@@ -20,12 +20,14 @@ API layer goes through the runner's control surface instead of writing here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from .. import telemetry_db
 from ..workspaces import Workspace, WorkspaceError, write_json_atomic
@@ -128,6 +130,66 @@ def _run_lock(path: Path) -> threading.RLock:
         if key not in _run_locks:
             _run_locks[key] = threading.RLock()
         return _run_locks[key]
+
+
+# Unit sidecars (contexts, proposals, receipts, rejections) are named after the
+# semantic unit ID they hold, one unit per file. Percent-encoding keeps that
+# layout portable: unit IDs are colon-separated, and a colon is reserved on
+# Windows.
+#
+# The encoded name is capped because some unit IDs grow with their scope — a
+# join-utility unit names every table it covers — while Windows resolves any
+# path over 260 characters as ENOENT, and ``write_json_atomic`` spends a further
+# 12 characters on its ``.<name>.<hex>.tmp`` sidecar before the destination is
+# ever reached. Over the cap the readable prefix is kept and the full ID is
+# carried by a digest, so long units stay diagnosable and stay distinct.
+#
+# The cap is a fixed character count rather than a budget derived from the run
+# folder's own length, so one unit ID names one file on every host a workspace
+# is copied to.
+UNIT_FILENAME_LIMIT = 100
+
+# ``+`` marks an elided name. ``quote`` always percent-encodes it, so a capped
+# name can never collide with an uncapped one.
+_UNIT_ELISION = "+"
+_UNIT_DIGEST_CHARS = 16
+
+
+def _encode_unit_id(unit_id: str) -> str:
+    encoded = quote(unit_id, safe="._-")
+    if encoded in {".", ".."}:
+        encoded = "".join(f"%{byte:02X}" for byte in unit_id.encode("utf-8"))
+    return encoded
+
+
+def unit_filename(unit_id: str) -> str:
+    """Name the one file that holds ``unit_id``'s sidecar, within the path cap."""
+    value = str(unit_id or "").strip()
+    if not value:
+        raise ValueError("Unit id must be non-empty.")
+    encoded = _encode_unit_id(value)
+    name = f"{encoded}.json"
+    if len(name) <= UNIT_FILENAME_LIMIT:
+        return name
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_UNIT_DIGEST_CHARS]
+    suffix = f"{_UNIT_ELISION}{digest}.json"
+    head = encoded[: UNIT_FILENAME_LIMIT - len(suffix)]
+    # Cutting mid-escape would leave a dangling "%" or "%3"; drop the fragment.
+    if "%" in head[-2:]:
+        head = head[: head.rindex("%")]
+    return f"{head}{suffix}"
+
+
+def legacy_unit_filename(unit_id: str) -> str:
+    """Name a sidecar as it was written before :data:`UNIT_FILENAME_LIMIT`.
+
+    Only readers use this. Runs written on a filesystem without the 260-character
+    ceiling may hold uncapped names, and their references stay resolvable.
+    """
+    value = str(unit_id or "").strip()
+    if not value:
+        raise ValueError("Unit id must be non-empty.")
+    return f"{_encode_unit_id(value)}.json"
 
 
 def runs_dir(workspace: Workspace) -> Path:

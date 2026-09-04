@@ -1094,3 +1094,106 @@ def test_document_candidates_index_the_slug_even_though_they_stop_showing_it(
     # What a lexical selector still matches on.
     assert source["title"] in candidate.lexical_text
     assert "Procurement SOP Extracts.docx" in candidate.lexical_text
+
+
+def _relationship_candidate(left, right, left_on, right_on, **diagnostics):
+    return {
+        "left": left,
+        "right": right,
+        "left_on": [left_on],
+        "right_on": [right_on],
+        "how": "left",
+        "strength": "strong",
+        "role_key": False,
+        "diagnostics": {"row_multiplication": 1.0, **diagnostics},
+        "ref": f"relationship:{left}:{right}:{left_on}:{right_on}",
+    }
+
+
+def _join_catalog(workspace, relationships):
+    scope = context_adapters.join_utility_scope(workspace, relationships)
+    return next(item.source for item in scope.candidates["join_candidates"])
+
+
+def test_join_gate_sees_one_entry_per_join_not_both_orientations(workspace_with_data):
+    """Diagnosis records a relationship from both sides; the gate must see it once.
+
+    Shown both ways round, the mirror reads as two independent candidates that
+    each make the other redundant, and a reader told to keep one route per pair
+    rejects each in favour of the other until nothing survives.
+    """
+    record = {
+        "left": "transactions",
+        "right": "customers",
+        "candidates": [
+            _relationship_candidate("transactions", "customers", "id", "id"),
+            _relationship_candidate("customers", "transactions", "id", "id"),
+        ],
+    }
+
+    catalog = _join_catalog(workspace_with_data, [record])
+
+    assert len(catalog["candidates"]) == 1
+
+
+def test_join_gate_keeps_genuinely_different_routes_over_the_same_pair(
+    workspace_with_data,
+):
+    """An alternate key is a real choice for the gate to make, not a mirror."""
+    record = {
+        "left": "transactions",
+        "right": "customers",
+        "candidates": [
+            _relationship_candidate("transactions", "customers", "id", "id"),
+            _relationship_candidate("customers", "transactions", "id", "id"),
+            _relationship_candidate("transactions", "customers", "customer", "customer"),
+        ],
+    }
+
+    catalog = _join_catalog(workspace_with_data, [record])
+
+    # Both routes survive the mirror collapse; which side each is stated from
+    # is a stable tie-break, not part of what the gate is being asked.
+    routes = sorted(
+        tuple(item["left_on"]) + tuple(item["right_on"])
+        for item in catalog["candidates"]
+    )
+    assert routes == [("customer", "customer"), ("id", "id")]
+
+
+def test_join_gate_keeps_the_orientation_that_does_not_multiply_rows(
+    workspace_with_data,
+):
+    """The retained side order is the one later materialized, so it must not fan out."""
+    record = {
+        "left": "transactions",
+        "right": "customers",
+        "candidates": [
+            _relationship_candidate(
+                "customers", "transactions", "id", "id",
+                relationship="one_to_many", row_multiplication=4.0,
+            ),
+            _relationship_candidate(
+                "transactions", "customers", "id", "id",
+                relationship="many_to_one", row_multiplication=1.0,
+            ),
+        ],
+    }
+
+    catalog = _join_catalog(workspace_with_data, [record])
+
+    kept = catalog["candidates"][0]
+    assert kept["ref"] == "relationship:transactions:customers:id:id"
+    assert kept["diagnostics"]["row_multiplication"] == 1.0
+
+
+def test_join_gate_collapse_does_not_depend_on_the_order_diagnosis_recorded(
+    workspace_with_data,
+):
+    forward = _relationship_candidate("transactions", "customers", "id", "id")
+    mirror = _relationship_candidate("customers", "transactions", "id", "id")
+
+    one = _join_catalog(workspace_with_data, [{"candidates": [forward, mirror]}])
+    other = _join_catalog(workspace_with_data, [{"candidates": [mirror, forward]}])
+
+    assert one["candidates"] == other["candidates"]

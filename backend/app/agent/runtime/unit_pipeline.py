@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from ...workspaces import WorkspaceError, write_json_atomic
 from .. import store
@@ -101,16 +100,6 @@ def _sha256_text(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
-def _unit_filename(unit_id: str) -> str:
-    value = str(unit_id or "").strip()
-    if not value:
-        raise ValueError("Pipeline unit_id must be non-empty.")
-    filename = quote(value, safe="._-")
-    if filename in {".", ".."}:
-        filename = "".join(f"%{byte:02X}" for byte in value.encode("utf-8"))
-    return f"{filename}.json"
-
-
 class UnitSidecarStore:
     """Atomic proposal and receipt persistence using semantic unit paths."""
 
@@ -137,7 +126,7 @@ class UnitSidecarStore:
         payload: Mapping[str, Any],
     ) -> dict[str, str]:
         normalized = json.loads(_canonical_json(dict(payload)))
-        path = self._folder(kind) / _unit_filename(unit_id)
+        path = self._folder(kind) / store.unit_filename(unit_id)
         write_json_atomic(path, normalized)
         return {
             "path": f"{kind}/{path.name}",
@@ -167,9 +156,14 @@ class UnitSidecarStore:
         unit_id: str,
         reference: Mapping[str, str] | None = None,
     ) -> dict[str, Any] | None:
-        path = self._folder(kind) / _unit_filename(unit_id)
+        folder = self._folder(kind)
+        path = folder / store.unit_filename(unit_id)
         if not path.is_file():
-            return None
+            # A run written before the filename cap holds the uncapped name.
+            legacy = folder / store.legacy_unit_filename(unit_id)
+            if not legacy.is_file():
+                return None
+            path = legacy
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -835,7 +829,7 @@ class UnitPipeline:
             )
         else:
             proposal_reference = {
-                "path": f"proposals/{_unit_filename(request.unit_id)}",
+                "path": f"proposals/{store.unit_filename(request.unit_id)}",
                 "unit_id": request.unit_id,
                 "payload_hash": _sha256(proposal_payload),
             }
@@ -916,7 +910,7 @@ class UnitPipeline:
                     proposal_reuse_rejection_reasons=rejection_reasons,
                 )
             receipt_reference = request.receipt_reference or {
-                "path": f"receipts/{_unit_filename(request.unit_id)}",
+                "path": f"receipts/{store.unit_filename(request.unit_id)}",
                 "unit_id": request.unit_id,
                 "payload_hash": _sha256(
                     {**receipt.to_dict(), "receipt_hash": receipt.receipt_hash}

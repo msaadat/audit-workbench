@@ -108,7 +108,13 @@ def hydrate(workspace: Workspace) -> dict:
         "workflow_parent_sha1": None,
     }
     stored = workspace.report or {}
-    return {**defaults, **{key: stored[key] for key in defaults if key in stored}}
+    current = {**defaults, **{key: stored[key] for key in defaults if key in stored}}
+    # Both bodies are upgraded together: `edited` is derived by comparing them,
+    # so rewriting one and not the other would report an auditor edit that
+    # nobody made.
+    for key in ("markdown", "generated_markdown"):
+        current[key] = _upgrade_legacy_finding_links(workspace.id, current[key])
+    return current
 
 
 def _safe_finding(item: dict) -> dict:
@@ -594,8 +600,30 @@ def _finding_narrative(item: dict) -> str:
     )
 
 
-def _finding_link(item: dict) -> str:
-    return f"[Finding {item['id']}](?tab=findings&finding={quote(str(item['id']))})"
+def _finding_href(workspace_id: str, finding_id: str) -> str:
+    """The in-app route that opens one finding.
+
+    Findings live on their own path (``/workspace/<id>/findings``) and the
+    finding they open is the ``finding`` query key that surface owns. The link
+    is absolute because the report is read from its own path: a query-only href
+    resolves against whatever page the reader is on and lands nowhere.
+    """
+    return (
+        f"/workspace/{quote(str(workspace_id), safe='')}"
+        f"/findings?finding={quote(str(finding_id), safe='')}"
+    )
+
+
+def _finding_link(workspace_id: str, item: dict) -> str:
+    return f"[Finding {item['id']}]({_finding_href(workspace_id, item['id'])})"
+
+
+# The report route once carried its destination in a ``?tab=`` query, and that
+# form survives in every report generated before findings moved onto their own
+# path. Both spellings name the same finding, so citation matching keys on the
+# ``finding`` query key rather than on the route that precedes it.
+_FINDING_QUERY = re.compile(r"[?&]finding=([A-Za-z0-9_-]+)")
+_LEGACY_FINDING_LINK = re.compile(r"\(\?tab=findings\\?&finding=([A-Za-z0-9_-]+)\)")
 
 
 def _finding_citations(markdown: str) -> set[str]:
@@ -608,10 +636,7 @@ def _finding_citations(markdown: str) -> set[str]:
     # Treat the Markdown escape as equivalent to a literal ampersand for
     # citation matching; it is presentation syntax, not a different route.
     searchable = str(markdown).replace(r"\&", "&")
-    citations = {
-        match.group(1)
-        for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", searchable)
-    }
+    citations = {match.group(1) for match in _FINDING_QUERY.finditer(searchable)}
     citations.update(
         match.group(1)
         for match in re.finditer(
@@ -636,8 +661,21 @@ def _normalize_finding_citations(workspace: Workspace, markdown: str) -> str:
     for finding in workspace.findings:
         finding_id = str(finding["id"])
         pattern = re.compile(rf"\[\s*(?:Finding\s+)?{re.escape(finding_id)}\s*\](?!\s*\()")
-        normalized = pattern.sub(_finding_link(finding), normalized)
+        normalized = pattern.sub(_finding_link(workspace.id, finding), normalized)
     return normalized
+
+
+def _upgrade_legacy_finding_links(workspace_id: str, markdown: str) -> str:
+    """Point a stored report's ``?tab=`` finding links at the route they name.
+
+    Reports are long-lived documents that outlive the URL shape they were
+    written against, and an auditor-edited one is not regenerated just because
+    the route moved. Rewriting the destination on read keeps those links live
+    without touching the prose around them; the next save persists it.
+    """
+    return _LEGACY_FINDING_LINK.sub(
+        lambda match: f"({_finding_href(workspace_id, match.group(1))})", str(markdown)
+    )
 
 
 def _ensure_preliminary_label(markdown: str, preliminary: bool) -> str:
@@ -932,7 +970,7 @@ def _detailed_findings(context: dict) -> str:
         parts = [
             f"### {numbers[str(item['id'])]}. {item.get('title') or item['id']}",
             f"**Severity:** {str(item.get('severity') or 'medium').title()} · "
-            f"**Reference:** {_finding_link(item)}",
+            f"**Reference:** {_finding_link(context['workspace']['id'], item)}",
             _finding_narrative(item),
         ]
         if response:
@@ -1562,7 +1600,7 @@ def _quality_checks(
 
     if not text.strip():
         issues.append(_issue("report_empty", "warning", "The report has not been drafted yet."))
-    for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", text):
+    for match in _FINDING_QUERY.finditer(text.replace(r"\&", "&")):
         if not any(item.get("id") == match.group(1) for item in workspace.findings):
             issues.append(_issue("broken_report_citation", "error", f"The report cites missing finding {match.group(1)}.", [f"finding:{match.group(1)}"]))
     claims = _report_claims(workspace, text)

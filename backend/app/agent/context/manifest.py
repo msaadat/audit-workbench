@@ -14,7 +14,6 @@ import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from ...workspaces import Workspace, WorkspaceError, write_json_atomic
 from .. import store
@@ -165,16 +164,6 @@ def manifest_identity(manifest: ContextManifest) -> str:
     return manifest.manifest_hash
 
 
-def _unit_filename(unit_id: str) -> str:
-    # Unit IDs are semantic and may contain Windows-reserved characters such as
-    # colons. Percent-encoding them keeps the one-unit/one-file layout portable
-    # without lossy slugging.
-    filename = quote(unit_id, safe="._-")
-    if filename in {".", ".."}:
-        filename = "".join(f"%{byte:02X}" for byte in unit_id.encode("utf-8"))
-    return f"{filename}.json"
-
-
 def _contexts_dir(workspace: Workspace, run_id: str) -> Path:
     run_folder = store.run_dir(workspace, run_id)
     if (
@@ -197,7 +186,7 @@ def persist_manifest(
             "Only ContextManifest values may be persisted; bundle content is local-only."
         )
     folder = _contexts_dir(workspace, run_id)
-    path = folder / _unit_filename(manifest.unit_id)
+    path = folder / store.unit_filename(manifest.unit_id)
     identity = manifest_identity(manifest)
     write_json_atomic(path, manifest.to_dict())
     return {
@@ -224,7 +213,12 @@ def load_manifest(
         or not expected_unit
         or not path.is_file()
         or path.parent != folder
-        or path.name != _unit_filename(expected_unit)
+        # A run written before the filename cap holds the uncapped name; both
+        # are derived from the unit ID alone, so neither loosens the binding.
+        or path.name not in {
+            store.unit_filename(expected_unit),
+            store.legacy_unit_filename(expected_unit),
+        }
     ):
         raise WorkspaceError("Context manifest not found.")
     try:

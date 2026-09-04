@@ -765,7 +765,37 @@ def test_bare_markdown_finding_reference_is_a_citation_and_model_output_is_norma
     )
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "fake", "model": "fake"})
     generated = report.generate(ws)
-    assert f"[Finding {item['id']}](?tab=findings&finding={item['id']})" in generated["markdown"]
+    assert (
+        f"[Finding {item['id']}](/workspace/{ws.id}/findings?finding={item['id']})"
+        in generated["markdown"]
+    )
+
+
+def test_stored_legacy_finding_links_are_upgraded_to_the_findings_route(
+    workspace_with_data,
+):
+    """A report written against the retired `?tab=` route still links out.
+
+    An auditor-edited report is not regenerated just because the route moved,
+    so the destination is rewritten when the stored report is read.
+    """
+    ws = workspace_with_data
+    ws.report = {
+        "markdown": "# Report\n\n[Finding F-1](?tab=findings&finding=F-1)\n",
+        # The Markdown editor escapes the ampersand; it is the same route.
+        "generated_markdown": "# Report\n\n[Finding F-1](?tab=findings\\&finding=F-1)\n",
+        "edited": False,
+    }
+    ws.save()
+
+    current = report.hydrate(ws)
+
+    href = f"](/workspace/{ws.id}/findings?finding=F-1)"
+    assert href in current["markdown"]
+    assert href in current["generated_markdown"]
+    assert "?tab=" not in current["markdown"] + current["generated_markdown"]
+    # Both bodies moved together, so no edit is invented for the auditor.
+    assert current["markdown"] == current["generated_markdown"]
 
 
 @pytest.mark.parametrize(
@@ -774,6 +804,7 @@ def test_bare_markdown_finding_reference_is_a_citation_and_model_output_is_norma
         "[F-{id}](#f-{id_lower})",
         "[F-{id}](finding:F-{id})",
         "[Finding F-{id}](?tab=findings\\&finding=F-{id})",
+        "[Finding F-{id}](/workspace/WS/findings?finding=F-{id})",
     ],
 )
 def test_linked_markdown_finding_references_satisfy_report_quality(

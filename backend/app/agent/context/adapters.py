@@ -2078,12 +2078,52 @@ def analysis_relationship_candidates(
     return tuple(candidates)
 
 
+def _join_candidate_identity(item: Mapping[str, object]) -> frozenset:
+    """One join, whichever way round its two sides were diagnosed.
+
+    Pairing each table with its own key columns keeps genuinely different routes
+    over the same pair distinct — an alternate key, or a role key reaching the
+    same dimension as requester rather than approver — while collapsing the
+    mirror that only swaps the sides.
+    """
+    return frozenset({
+        (
+            str(item.get("left") or ""),
+            tuple(str(column) for column in item.get("left_on") or []),
+        ),
+        (
+            str(item.get("right") or ""),
+            tuple(str(column) for column in item.get("right_on") or []),
+        ),
+    })
+
+
+def _join_orientation_rank(item: Mapping[str, object]) -> tuple[float, str]:
+    """Prefer the side order that does not fan out, then the stable reference.
+
+    Both directions of a one-to-one relationship carry identical diagnostics,
+    but a one-to-many multiplies rows one way round and not the other, and the
+    orientation retained here is the one that later gets materialized.
+    """
+    diagnostics = item.get("diagnostics") or {}
+    try:
+        multiplication = float(diagnostics.get("row_multiplication"))
+    except (TypeError, ValueError):
+        multiplication = float("inf")
+    return (multiplication, str(item.get("ref") or ""))
+
+
 def join_utility_scope(
     workspace: Workspace,
     relationships: Iterable[Mapping[str, object]],
 ) -> ContextScope:
     """Bounded, row-free catalog for the pre-materialization join gate."""
-    candidates: list[dict[str, object]] = []
+    # Diagnosis records a relationship from both sides, so the same join
+    # arrives twice with its sides swapped. The gate must see it once: shown
+    # both ways round it reads as two independent candidates that each make the
+    # other redundant, and a reader told to retain one route per pair rejects
+    # each of them in favour of the other until nothing is left.
+    chosen: dict[frozenset, dict[str, object]] = {}
     tables: set[str] = set()
     for record in relationships:
         for item in record.get("candidates") or []:
@@ -2094,7 +2134,7 @@ def join_utility_scope(
                 continue
             left, right = str(item.get("left") or ""), str(item.get("right") or "")
             tables.update((left, right))
-            candidates.append({
+            entry = {
                 "ref": ref,
                 "left": left,
                 "right": right,
@@ -2103,8 +2143,12 @@ def join_utility_scope(
                 "role_key": bool(item.get("role_key")),
                 "strength": item.get("strength"),
                 "diagnostics": dict(item.get("diagnostics") or {}),
-            })
-    candidates.sort(key=lambda item: str(item["ref"]))
+            }
+            identity = _join_candidate_identity(entry)
+            incumbent = chosen.get(identity)
+            if incumbent is None or _join_orientation_rank(entry) < _join_orientation_rank(incumbent):
+                chosen[identity] = entry
+    candidates = sorted(chosen.values(), key=lambda item: str(item["ref"]))
     schemas = [
         item for item in assistant.schema_brief(workspace)
         if str(item.get("table") or "") in tables and not item.get("error")
