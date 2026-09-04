@@ -1789,7 +1789,8 @@ def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
             command._run_stage(stage)
 
     run_root = store.run_dir(ws, command.run["id"])
-    assert [call["tag"] for call in fake.calls] == ["agent:rcm"]
+    drafted = ["agent:rcm", "agent:rcm_attributes"]
+    assert [call["tag"] for call in fake.calls] == drafted
     assert (run_root / unit["proposal_sidecar"]["path"]).is_file()
     assert not (run_root / "receipts" / "rcm.json").exists()
 
@@ -1801,8 +1802,8 @@ def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
     )
     resumed._run_stage(stage)
 
-    # Resume reused the durable proposal; no second provider call was billed.
-    assert [call["tag"] for call in fake.calls] == ["agent:rcm"]
+    # Resume reused the durable proposal; neither call was billed again.
+    assert [call["tag"] for call in fake.calls] == drafted
     assert unit["status"] == "succeeded"
     assert (run_root / unit["receipt_sidecar"]["path"]).is_file()
     assert "proposal_reused" in {
@@ -2669,6 +2670,8 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
     )
 
 
+# The rows call's answer. It states no attributes: that is the second call's
+# job, and the rows prompt does not ask for them.
 _RCM_CYCLE_RESPONSE = {
     "rows": [
         {
@@ -2676,6 +2679,17 @@ _RCM_CYCLE_RESPONSE = {
             "process": "Invoice processing",
             "risk": "An invoice is paid for more than the order authorised.",
             "risk_rating": "high",
+            "control": "Finance matches the invoice to the purchase order before payment.",
+            "control_type": "Manual preventive",
+            "test_procedure": "Compare invoice and order totals.",
+        }
+    ]
+}
+
+_RCM_CYCLE_ATTRIBUTES = {
+    "attributes": [
+        {
+            "row_index": 1,
             "control_attributes": [
                 {
                     "key": "amount_agrees",
@@ -2684,9 +2698,6 @@ _RCM_CYCLE_RESPONSE = {
                     "evidence_kind": "transaction_cycle",
                 }
             ],
-            "control": "Finance matches the invoice to the purchase order before payment.",
-            "control_type": "Manual preventive",
-            "test_procedure": "Compare invoice and order totals.",
         }
     ]
 }
@@ -2695,12 +2706,12 @@ _RCM_CYCLE_RESPONSE = {
 def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
     monkeypatch,
 ):
-    """The step-1 invariant, end to end: one call, and an uncontracted row.
+    """Two calls, and a row that commits uncontracted.
 
-    The matrix used to make a second call authoring the comparisons, against a
-    schema catalog carried on its unit input. It now says a requirement needs
-    linked source records and stops; the cycle design names the fields, and
-    writes them back onto this row. So the row commits with a transaction-cycle
+    The rows call writes the risk and the control; the attributes call
+    classifies where the evidence lives; and what a transaction-cycle attribute
+    must *show* is settled further downstream still, by the cycle design, which
+    writes it back onto this row. So the row commits with a transaction-cycle
     attribute and no ``required_comparisons``, and nothing about the RCM depends
     on a schema having been induced.
     """
@@ -2715,7 +2726,10 @@ def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
     ws = workspaces.load_workspace(ws.id)
 
     command, stage, unit = _rcm_only_runner(ws)
-    fake = FakeAgentLLM({"agent:rcm": _RCM_CYCLE_RESPONSE})
+    fake = FakeAgentLLM({
+        "agent:rcm": _RCM_CYCLE_RESPONSE,
+        "agent:rcm_attributes": _RCM_CYCLE_ATTRIBUTES,
+    })
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm, "agent_status",
@@ -2731,3 +2745,4 @@ def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
     (attribute,) = row["control_attributes"]
     assert attribute["evidence_kind"] == "transaction_cycle"
     assert "required_comparisons" not in attribute
+    assert [call["tag"] for call in fake.calls] == ["agent:rcm", "agent:rcm_attributes"]

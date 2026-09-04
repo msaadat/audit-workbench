@@ -1,5 +1,11 @@
 # Risk and Control Matrix Guidance
 
+<!-- The control attributes of a row are governed by `rcm_attributes.md`, and
+are written by a separate pass shown that file and these rows. A workspace
+override of this file that still carries the attribute rules is harmless: this
+pass is not asked for attributes and ignores guidance about fields it does not
+write. -->
+
 ## What a row is
 
 One row = one risk + one control. Never bundle several controls into one row: if
@@ -120,33 +126,6 @@ control; leave the exceptions to the tests.
   or fraud with no compensating control; `high` where the exposure is material
   but partly mitigated; `medium` and `low` below that. Two rows describing the
   same underlying failure must not carry different ratings.
-- **control_attributes** — the distinct requirements of the asserted control.
-  Each attribute has a unique stable `key`, one assertion from `Existence`,
-  `Completeness`, `Accuracy`, `Authorization`, `Valuation`, `Cut-off`,
-  `Compliance`, or `Operational`, a plain-language `requirement`, and one
-  evidence strategy — and nothing else. Enumerate the requirements the control
-  actually makes rather than collapsing every control to a single attribute; a
-  three-way match before payment asserts the match, the receipt-before-payment
-  order, and the amount agreement separately. Keep all attributes of one
-  risk/control on the same RCM row.
-
-  An attribute whose evidence strategy is `transaction_cycle` says so and stops
-  there: which fields must agree is decided later, against this engagement's
-  own documents, and is not written here. Deciding *that* a requirement needs
-  linked source records is the judgment this matrix makes; naming the fields
-  belongs to the turn that has read the documents, which this one has not.
-- **evidence_kind** — where the evidence for that requirement lives, judged from
-  the supplied material rather than the requirement's wording. Use
-  `tabular_population` whenever the imported tables carry the fields named —
-  uniqueness, missing values, thresholds, date ordering, status combinations, or
-  one column compared with another — because that reaches the whole population.
-  Reserve `transaction_cycle` for requirements that genuinely need several
-  linked *documents* of different registered record kinds; it reaches only the
-  transactions that have uploaded documents, so it can never support a
-  population-level conclusion. `document_content` is for a fact one document
-  states. `manual_inspection`, `inquiry`, and `mixed` are for requirements no
-  imported evidence answers — never for something a supplied table can measure.
-  Only `transaction_cycle` carries cycle vocabulary.
 - **control_type** — `preventive` where the control stops the error before it
   occurs, `detective` where it identifies the error afterwards. Validation,
   mandatory-field, and blocking rules are preventive *where the planning basis

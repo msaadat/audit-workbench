@@ -793,6 +793,17 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=16_000),
                 ),
                 ContextSource(
+                    id="rcm_attributes_template",
+                    source_type="templates",
+                    # The attribute rules alone, for the second call. Required
+                    # like the first: a pass asked for closed-vocabulary values
+                    # with the vocabulary withheld would guess them.
+                    required=True,
+                    selector=ContextSelector(selector_id="templates.current"),
+                    representations=(ContextRepresentation("artifact_template"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+                ContextSource(
                     id="current_apm",
                     source_type="artifacts",
                     required=True,
@@ -886,7 +897,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=252, max_characters=116_000),
+            budget=ContextBudget(max_items=253, max_characters=124_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_template_text=True,

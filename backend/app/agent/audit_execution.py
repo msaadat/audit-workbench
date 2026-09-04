@@ -24,6 +24,7 @@ from .. import (
     cycle_vouching,
     doc_tests,
     document_analysis,
+    document_classification,
     rcm_execution,
     tooling,
 )
@@ -1260,6 +1261,16 @@ class AuditWorkflowExecution(ActionRunner):
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
+                    # The record kinds this engagement holds, by name and
+                    # count. What the attributes call needs to choose an
+                    # evidence strategy, and the reason ``types_classified``
+                    # is still an edge into this stage. Names only: what those
+                    # records *state* is the cycle design's question, and
+                    # supplying it here is what had the matrix naming fields it
+                    # had never seen a document of.
+                    "document_types": document_classification.evidence_type_counts(
+                        self.ws
+                    ),
                 },
                 activity={
                     "artifact_refs": ["planning:apm"],

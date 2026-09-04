@@ -22,7 +22,19 @@ from .workspaces import Workspace, WorkspaceError
 _COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.DOTALL)
 _SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
-TEMPLATE_NAMES = ("apm", "rcm", "interview", "workpaper", "report", "finding")
+TEMPLATE_NAMES = (
+    "apm",
+    "rcm",
+    # The attribute rules, split out of ``rcm`` when the matrix turn split into
+    # a rows pass and an attributes pass. Its own name so a firm that
+    # customised those rules can still override exactly them, and so the pass
+    # that writes attributes carries only the guidance for the fields it writes.
+    "rcm_attributes",
+    "interview",
+    "workpaper",
+    "report",
+    "finding",
+)
 DEFAULTS_DIR = Path(__file__).resolve().parent / "templates"
 
 

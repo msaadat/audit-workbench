@@ -1,6 +1,6 @@
 # RCM generation redesign: a staged pipeline, delivered in small steps
 
-**Status:** steps 0 and 1 are implemented (4 September 2026); steps 2, 3 and 4
+**Status:** steps 0, 1 and 2 are implemented (4 September 2026); steps 3 and 4
 are still design. This is the handoff for splitting the single RCM judgment
 turn into a per-process, per-job pipeline, and for moving the cycle-vouching
 evidence contract out of planning. Each step lands on its own, leaves
@@ -564,6 +564,45 @@ latency of the largest call; attribute-path errors per run and which call
 repaired them.
 **Rollback:** revert the worker and the template split; proposals from before
 and after are the same shape.
+
+**Landed as:**
+
+- **`templates_store` does not serve any name.** 2a says it "already serves any
+  name and honours a workspace override"; `TEMPLATE_NAMES` is a closed tuple and
+  `_name` raises for anything outside it. `rcm_attributes` was added to it,
+  which also makes the file editable through the existing
+  `GET/PUT /templates/{name}` route — the override path the step wanted.
+- **The document types had to come from somewhere.** 2c has the attributes call
+  shown "document types held … from `document_classification` counts already
+  computed for the schema catalog", but step 1 removed the schema catalog from
+  the RCM unit input. New helper
+  `document_classification.evidence_type_counts(workspace)` returns names and
+  counts only, and `_bind_rcm` puts it on the unit input. It is hashed into
+  `unit_input_hash`, so a newly classified document invalidates a persisted
+  proposal — correct, because the attributes call's vocabulary moved.
+- **A document-level error must not short-circuit the row repair.** 2d routes
+  document-level errors to a whole-matrix call-2 re-ask, and read literally
+  that skips the scoped call-1 repair — so a draft with both a bad rating and a
+  missing agreement requirement would have the rating left unrepaired, on the
+  one attempt available. Implemented as: the scoped rows repair runs for the
+  rows that failed, *and* the attributes call is then asked over every row with
+  the document errors appended. Call 1 is still never re-asked *for* a
+  document-level error.
+- 2d's stage rule needed a second prefix. A row the attributes call omits
+  entirely fails as `RCM row N is missing control_attributes`, which does not
+  match `RCM row N: control_attributes` — and that failure is call 2's to fix.
+  `_failure_stage` matches both.
+- `agent:rcm_attributes` is registered in `base.MODEL_WAIT_LABELS` and in
+  `_model_template_context`, so the run says what it is doing and the activity
+  record names which of the two templates a turn was written against.
+- **The step-0b table went live.** `rcm_attributes` was declared there ahead of
+  this step; the first thing it broke was every fixture, because
+  `FakeAgentLLM.__call__` had no `reasoning` parameter. The fake now accepts and
+  records it.
+- Test fixtures: `conftest.FakeAgentLLM` gains a scripted `agent:rcm_attributes`
+  default derived from the supplied rows, and the RCM worker suite's `_Gateway`
+  answers the attributes call by echoing whatever the scripted rows carry. Both
+  exist so a test that is not about attributes need not script them.
 
 ---
 

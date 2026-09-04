@@ -119,6 +119,34 @@ def test_templates_default_override_and_reset():
     assert reset["source"] == "default"
 
 
+def test_the_attribute_rules_are_their_own_overridable_template():
+    """Split from ``rcm`` when the matrix turn split into two calls.
+
+    Each call carries only the guidance for the fields it writes: a rows call
+    told how to choose an ``evidence_kind`` it is not asked for spends prompt
+    on rules it cannot follow, and the attributes call is shown no engagement
+    prose it could use to second-guess a risk.
+    """
+
+    ws = workspaces.create_workspace("Attribute template")
+    rows = templates_store.get_template(ws, "rcm")["markdown"]
+    attributes = templates_store.get_template(ws, "rcm_attributes")["markdown"]
+
+    assert "evidence_kind" not in rows
+    assert "control_attributes" not in rows
+    assert "evidence_kind" in attributes
+    assert "control_attributes" in attributes
+    # The rows rules stay where they were.
+    assert "risk_rating" in rows and "risk_rating" not in attributes
+
+    # And a firm can override exactly the attribute rules.
+    override = templates_store.put_template(
+        ws, "rcm_attributes", "# Firm attribute rules\n"
+    )
+    assert override["source"] == "workspace"
+    assert templates_store.get_template(ws, "rcm")["source"] == "default"
+
+
 def test_template_sections_are_parsed_without_their_guidance():
     markdown = (
         "<!-- A preamble comment.\n\n## Not a heading, only guidance prose. -->\n\n"
@@ -618,7 +646,7 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
     apm_calls = []
 
     def chat(messages, tools=None, temperature=0.0, profile="assistant", on_delta=None,
-             tool_choice=None, response_format=None):
+             tool_choice=None, response_format=None, reasoning=None):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
         if tag == "agent:apm":
@@ -632,6 +660,7 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
             temperature=temperature,
             profile=profile,
             on_delta=on_delta,
+            reasoning=reasoning,
         )
 
     monkeypatch.setattr(llm, "chat", chat)

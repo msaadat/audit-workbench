@@ -32,8 +32,20 @@ from app.agent.workers import planning
 
 
 class _Gateway:
-    def __init__(self, responses):
+    """Scripted rows calls, with the attributes call answered by agreement.
+
+    ``responses`` is the rows call's script, in order — what every test in this
+    file was written against. The attributes call is a second real call in
+    every run, and answering it by hand in each test would say nothing about
+    the test, so by default it returns exactly the attributes the scripted rows
+    already carry. A test about the attributes call passes ``attributes``, in
+    which case ``None`` at a position means "answer by agreement here".
+    """
+
+    def __init__(self, responses, attributes=None):
         self.responses = list(responses)
+        self.attributes = None if attributes is None else list(attributes)
+        self.rows_seen: list[dict] = []
         self.calls = []
 
     def complete(
@@ -48,16 +60,66 @@ class _Gateway:
                 "conversation": conversation,
             }
         )
-        return self.responses.pop(0)
+        if system == planning.RCM_ATTRIBUTES_SYSTEM:
+            scripted = self.attributes.pop(0) if self.attributes else None
+            # ``None`` in the script means "answer by agreement here", so a
+            # test about the second attributes call need not spell out the
+            # first.
+            if scripted is not None:
+                return scripted
+            return json.dumps({"attributes": self._agreed(user)})
+        response = self.responses.pop(0)
+        try:
+            parsed = json.loads(response)
+        except (TypeError, ValueError):
+            parsed = {}
+        if isinstance(parsed, dict) and isinstance(parsed.get("rows"), list):
+            self.rows_seen = [
+                row for row in parsed["rows"] if isinstance(row, dict)
+            ]
+        return response
+
+    def _agreed(self, user: str) -> list[dict]:
+        """Echo whatever the scripted rows said their attributes are."""
+
+        payload = json.loads(user)
+        if "ATTRIBUTES TO CORRECT" in payload:
+            return [
+                {
+                    "row_index": item["row_index"],
+                    "control_attributes": item.get("current_attributes") or [],
+                }
+                for item in payload["ATTRIBUTES TO CORRECT"]
+            ]
+        answers = []
+        for row in payload.get("ROWS") or []:
+            index = int(row["row_index"])
+            scripted = (
+                self.rows_seen[index - 1] if index <= len(self.rows_seen) else {}
+            )
+            if "control_attributes" in scripted:
+                answers.append(
+                    {
+                        "row_index": index,
+                        "control_attributes": scripted["control_attributes"],
+                    }
+                )
+        return answers
 
 
-def _bundle(*, current_rows=None, profiles=(), apm=None):
+def _bundle(*, current_rows=None, profiles=(), metadata=(), apm=None):
     values = [
         (
             "rcm_template",
             "template:rcm",
             ContextRepresentation("artifact_template"),
             "# Risk and control matrix\n",
+        ),
+        (
+            "rcm_attributes_template",
+            "template:rcm_attributes",
+            ContextRepresentation("artifact_template"),
+            "# Control attribute guidance\n",
         ),
         (
             "current_apm",
@@ -88,6 +150,15 @@ def _bundle(*, current_rows=None, profiles=(), apm=None):
                 f"table:{profile['table']}",
                 ContextRepresentation("table_profile"),
                 profile,
+            )
+        )
+    for table in metadata:
+        values.append(
+            (
+                "table_metadata",
+                f"table:{table['table']}",
+                ContextRepresentation("table_metadata"),
+                table,
             )
         )
     items = tuple(
@@ -168,9 +239,17 @@ def test_rcm_worker_uses_only_bundle_and_returns_validated_rows():
     assert [row["risk"] for row in result.proposal["rows"]] == [
         "Duplicate payments are processed"
     ]
-    assert gateway.calls[0]["system"] == planning.RCM_SYSTEM
+    assert gateway.calls[0]["system"] == planning.RCM_ROWS_SYSTEM
     assert gateway.calls[0]["attempt"] == 1
-    assert gateway.calls[0]["activity"]["context_metrics"]["worker_kind"] == "rcm"
+    assert (
+        gateway.calls[0]["activity"]["context_metrics"]["worker_kind"] == "rcm_rows"
+    )
+    # And a second call, for the attributes alone.
+    assert gateway.calls[1]["system"] == planning.RCM_ATTRIBUTES_SYSTEM
+    assert (
+        gateway.calls[1]["activity"]["context_metrics"]["worker_kind"]
+        == "rcm_attributes"
+    )
     # The APM narrative and template reach the model.
     assert "Assess procurement approvals" in gateway.calls[0]["user"]
     assert "Risk and control matrix" in gateway.calls[0]["user"]
@@ -565,15 +644,19 @@ def test_a_theme_owned_on_one_shared_word_passes_but_is_reported():
     )
 
 
-def test_a_document_level_failure_re_asks_the_whole_matrix():
+def test_a_document_level_failure_re_asks_the_attributes_of_every_row():
     """A scoped repair cannot add what the document as a whole is missing.
 
-    Every row validating means there is nothing to scope to, and the previous
+    Every row validating means there is nothing to scope to, and the earlier
     behaviour returned the identical rows without asking the model anything —
     which made a document-level error unrepairable by construction.
+
+    Which call answers it is settled by what the gate reads. ``_asserts_agreement``
+    reads attribute requirement text, so the correction is to add an attribute,
+    and the rows call — the expensive one — is not re-asked at all.
     """
-    corrected = _tabular_row()
-    corrected["control_attributes"].append(
+    corrected = list(_tabular_row()["control_attributes"])
+    corrected.append(
         {
             "key": "invoice_to_order_agreement",
             "assertion": "Accuracy",
@@ -582,10 +665,13 @@ def test_a_document_level_failure_re_asks_the_whole_matrix():
         }
     )
     gateway = _Gateway(
-        [
-            json.dumps({"rows": [_tabular_row()]}),
-            json.dumps({"rows": [corrected]}),
-        ]
+        [json.dumps({"rows": [_tabular_row()]})],
+        attributes=[
+            None,  # the initial attributes call answers by agreement
+            json.dumps(
+                {"attributes": [{"row_index": 1, "control_attributes": corrected}]}
+            ),
+        ],
     )
 
     result = WORKERS.execute(
@@ -593,10 +679,19 @@ def test_a_document_level_failure_re_asks_the_whole_matrix():
     )
 
     assert result.repaired is True
-    repair = gateway.calls[1]
+    # Rows call once, attributes call twice. The largest completion in the
+    # system is not re-asked to add one requirement.
+    assert [call["system"] for call in gateway.calls] == [
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+    ]
+    repair = gateway.calls[2]
     assert "ROWS TO CORRECT" not in repair["user"]
-    assert "Return the complete matrix again" in repair["user"]
     assert "recorded values agree" in repair["user"]
+    # Every row, because the fix is to add something and the scoped envelope
+    # forbids returning a row it was not given.
+    assert len(json.loads(repair["user"])["ATTRIBUTES TO CORRECT"]) == 1
     assert len(result.proposal["rows"]) == 1
 
 
@@ -653,9 +748,15 @@ def test_row_and_document_failures_are_reported_in_one_pass():
     message = str(error.value)
     assert "unsupported risk rating" in message
     assert "recorded values agree" in message
-    # Both were on the table from the first repair, not discovered one per turn.
-    assert "recorded values agree" in gateway.calls[1]["user"]
-    assert "unsupported risk rating" in gateway.calls[1]["user"]
+    # Both were on the table from the first repair, not discovered one per
+    # turn — and each went to the call whose job it is. The rating is the rows
+    # call's; the missing agreement requirement is an attribute, so it is the
+    # attributes call's.
+    rows_repair, attributes_repair = gateway.calls[2], gateway.calls[3]
+    assert rows_repair["system"] == planning.RCM_ROWS_SYSTEM
+    assert "unsupported risk rating" in rows_repair["user"]
+    assert attributes_repair["system"] == planning.RCM_ATTRIBUTES_SYSTEM
+    assert "recorded values agree" in attributes_repair["user"]
 
 
 def test_a_theme_owned_by_any_proposed_row_reconciles():
@@ -700,14 +801,28 @@ def test_rcm_worker_repairs_only_the_failing_row_and_preserves_the_rest():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    assert [call["attempt"] for call in gateway.calls] == [1, 2]
-    repair_request = json.loads(gateway.calls[1]["user"])
+    # Draft and its attributes on attempt 1; the scoped row repair and the
+    # attributes of what it rewrote on attempt 2.
+    assert [call["attempt"] for call in gateway.calls] == [1, 1, 2, 2]
+    assert [call["system"] for call in gateway.calls] == [
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+    ]
+    repair_request = json.loads(gateway.calls[2]["user"])
     # Only the failing row travels, carrying its index and its own reasons.
     assert [entry["row_index"] for entry in repair_request["ROWS TO CORRECT"]] == [2]
     assert repair_request["ROWS TO CORRECT"][0]["errors"] == [
         "RCM row 2 has an unsupported risk rating; it must be exactly one of "
         "critical, high, low, medium"
     ]
+    # The rewritten row's attributes are stated against its new wording; the
+    # row that never failed is not re-asked at all.
+    assert [
+        entry["row_index"]
+        for entry in json.loads(gateway.calls[3]["user"])["ATTRIBUTES TO CORRECT"]
+    ] == [2]
     rows = result.proposal["rows"]
     assert [row["risk"] for row in rows] == [
         "Unapproved vendors are created",
@@ -782,9 +897,12 @@ def test_a_cycle_attribute_naming_no_comparison_is_accepted():
     (attribute,) = result.proposal["rows"][0]["control_attributes"]
     assert attribute["evidence_kind"] == "transaction_cycle"
     assert "required_comparisons" not in attribute
-    # One call. The second existed only to author the contract.
-    assert len(gateway.calls) == 1
-    assert gateway.calls[0]["system"] == planning.RCM_SYSTEM
+    # Two calls, and neither of them is an evidence pass: the rows, then their
+    # attributes. What a cycle attribute must show is settled downstream.
+    assert [call["system"] for call in gateway.calls] == [
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+    ]
 
 
 def test_a_cycle_attribute_stating_an_empty_contract_is_still_refused():
@@ -897,8 +1015,13 @@ def test_a_whole_document_re_ask_is_the_second_and_last_call():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    assert len(gateway.calls) == 2
-    assert gateway.calls[1]["system"] == planning.RCM_SYSTEM
+    # The rows call twice — the draft, then the re-ask — with the attributes
+    # call following each of them over whatever parsed.
+    assert [call["system"] for call in gateway.calls] == [
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+    ]
     (attribute,) = result.proposal["rows"][0]["control_attributes"]
     assert attribute["evidence_kind"] == "transaction_cycle"
     assert "required_comparisons" not in attribute
@@ -986,12 +1109,12 @@ def test_rcm_worker_still_fails_when_no_row_survives():
         WORKERS.execute(_request(), gateway)
 
 
-def test_a_repair_over_a_cycle_row_re_asks_the_matrix_prompt_alone():
-    """One prompt, so a repair carries the matrix's rules and nothing else.
+def test_a_repair_carries_only_the_prompt_of_the_call_it_is_correcting():
+    """Each repair is sent the rules of the job it is repairing and no others.
 
-    The scoped repair used to be sent both system prompts concatenated, because
-    a row it was correcting might carry an evidence contract. Nothing it writes
-    now does.
+    The scoped repair used to be sent two system prompts concatenated, because
+    a row it was correcting might carry an evidence contract. A rating is the
+    rows call's rule; nothing about the attributes belongs in that turn.
     """
 
     attribute = _cycle_attribute()
@@ -1008,12 +1131,235 @@ def test_a_repair_over_a_cycle_row_re_asks_the_matrix_prompt_alone():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    assert gateway.calls[1]["system"] == planning.RCM_SYSTEM
-    errors = json.loads(gateway.calls[1]["user"])["ROWS TO CORRECT"][0]["errors"]
+    rows_repair = gateway.calls[2]
+    assert rows_repair["system"] == planning.RCM_ROWS_SYSTEM
+    # The rules of the other call are not in it.
+    assert "evidence_kind" not in rows_repair["system"]
+    errors = json.loads(rows_repair["user"])["ROWS TO CORRECT"][0]["errors"]
     assert any("unsupported risk rating" in error for error in errors)
+    # And the row travels without the attributes the other call owns.
+    assert "control_attributes" not in json.loads(rows_repair["user"])[
+        "ROWS TO CORRECT"
+    ][0]["row"]
     (repaired,) = result.proposal["rows"]
     assert repaired["risk"] == "Duplicate payments are processed"
     assert "required_comparisons" not in repaired["control_attributes"][0]
+
+
+# ------------------------------------------------ the two calls of one matrix
+def test_the_rows_call_is_not_asked_for_attributes_and_the_second_supplies_them():
+    """The seam. Each call is asked for the fields it is competent to write.
+
+    A row's risk is domain recall from a memorandum; its assertion is a choice
+    from a list of eight. Asked together, a wrong assertion name discarded the
+    risk with it — and the risk was the expensive half.
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row(control_attributes=None)]})],
+        attributes=[
+            json.dumps(
+                {
+                    "attributes": [
+                        {
+                            "row_index": 1,
+                            "control_attributes": [
+                                {
+                                    "key": "validation_operates",
+                                    "assertion": "Operational",
+                                    "requirement": "Duplicate validation runs.",
+                                    "evidence_kind": "tabular_population",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+        ],
+    )
+
+    result = WORKERS.execute(_request(_bundle(profiles=[_INVOICES])), gateway)
+
+    rows_call, attributes_call = gateway.calls
+    # The rows prompt no longer asks for attributes, and its request carries no
+    # vocabulary for them.
+    assert "control_attributes" not in rows_call["system"].split("Keys:")[0]
+    assert "evidence_kind" not in rows_call["system"]
+    assert "evidence_kind" in attributes_call["system"]
+    # And the attributes call sees the rows and where an answer could live —
+    # not the memorandum it would need to second-guess one.
+    sent = json.loads(attributes_call["user"])
+    assert sent["ROWS"] == [
+        {
+            "row_index": 1,
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "control": "Duplicate invoice validation",
+            "control_type": "Automated preventive",
+        }
+    ]
+    assert "Assess procurement approvals" not in attributes_call["user"]
+
+    (attribute,) = result.proposal["rows"][0]["control_attributes"]
+    assert attribute["key"] == "validation_operates"
+
+
+def test_the_attributes_call_is_shown_tables_by_name_and_never_by_statistic():
+    """Where an answer lives, and nothing it could misread as an answer.
+
+    A null percentage is not an exception rate and a maximum is not a policy
+    limit — the two mistakes the template spends a section warning against. The
+    call that classifies is simply never shown one.
+    """
+
+    gateway = _Gateway([json.dumps({"rows": [_row()]})])
+
+    WORKERS.execute(
+        _request(_bundle(profiles=[_INVOICES], metadata=[_INVOICES])), gateway
+    )
+
+    sent = json.loads(gateway.calls[1]["user"])
+    assert sent["TABLES"] == [
+        {
+            "table": "invoice_data",
+            "columns": ["INVOICE_ID", "VENDOR_INVOICE_NUMBER", "INVOICE_AMOUNT"],
+        }
+    ]
+    assert "null_percent" not in gateway.calls[1]["user"]
+
+
+def test_the_attributes_call_is_told_which_record_kinds_the_engagement_holds():
+    """By name and count, and nothing about what their fields are.
+
+    The count is the population signal a strategy turns on: a type carrying one
+    document cannot answer a requirement written against a population. What
+    those records *state* belongs to the cycle design, and supplying it here is
+    what had a matrix naming fields it had never seen a document of.
+    """
+
+    gateway = _Gateway([json.dumps({"rows": [_row()]})])
+    request = _request()
+    request = WorkerRequest(
+        worker_id=request.worker_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        context=request.context,
+        unit_input={
+            "input_sha1": "rcm-input",
+            "document_types": [
+                {"document_type": "vendor_invoice", "documents": 18},
+                {"document_type": "purchase_order", "documents": 12},
+            ],
+        },
+        activity={"artifact_refs": ["planning:apm"]},
+    )
+
+    WORKERS.execute(request, gateway)
+
+    sent = json.loads(gateway.calls[1]["user"])
+    assert sent["DOCUMENT TYPES HELD"] == [
+        {"document_type": "vendor_invoice", "documents": 18},
+        {"document_type": "purchase_order", "documents": 12},
+    ]
+    assert "fields" not in gateway.calls[1]["user"]
+
+
+def test_a_row_the_attributes_call_omits_fails_on_its_own():
+    """Not invented locally, and not fatal to the rows beside it.
+
+    Writing a plausible attribute here would answer for a control this call
+    never classified. The row reaches the gate as one with no attributes, which
+    is what the scoped attributes repair exists to correct.
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row(control_attributes=None)]})] * 2,
+        attributes=[json.dumps({"attributes": []}), json.dumps({"attributes": []})],
+    )
+
+    with pytest.raises(WorkerRunError, match="missing control_attributes"):
+        WORKERS.execute(_request(), gateway)
+
+
+def test_an_attribute_only_failure_repairs_at_the_attributes_call_alone():
+    """The rows are right. Re-asking for them would pay for the expensive half."""
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row(control_attributes=None)]})],
+        attributes=[
+            json.dumps(
+                {
+                    "attributes": [
+                        {
+                            "row_index": 1,
+                            "control_attributes": [
+                                {
+                                    "key": "validation_operates",
+                                    "assertion": "Sufficiency",
+                                    "requirement": "Duplicate validation runs.",
+                                    "evidence_kind": "manual_inspection",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+            json.dumps(
+                {
+                    "attributes": [
+                        {
+                            "row_index": 1,
+                            "control_attributes": [
+                                {
+                                    "key": "validation_operates",
+                                    "assertion": "Operational",
+                                    "requirement": "Duplicate validation runs.",
+                                    "evidence_kind": "manual_inspection",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+        ],
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    # Rows once; attributes twice. No second rows call.
+    assert [call["system"] for call in gateway.calls] == [
+        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+        planning.RCM_ATTRIBUTES_SYSTEM,
+    ]
+    correcting = json.loads(gateway.calls[2]["user"])["ATTRIBUTES TO CORRECT"][0]
+    assert correcting["row_index"] == 1
+    # The repair is given the attributes it wrote, not only the violation.
+    assert correcting["current_attributes"][0]["assertion"] == "Sufficiency"
+    assert any("assertion" in error for error in correcting["errors"])
+    (attribute,) = result.proposal["rows"][0]["control_attributes"]
+    assert attribute["assertion"] == "Operational"
+
+
+def test_a_row_that_never_failed_is_not_re_asked_at_either_call():
+    """A scoped repair is scoped at both calls or at neither."""
+
+    good = _row(process="Vendor onboarding", risk="Unapproved vendors are created")
+    bad = _row(risk_rating="urgent")
+    gateway = _Gateway(
+        [
+            json.dumps({"rows": [good, bad]}),
+            json.dumps({"rows": [{**bad, "risk_rating": "high", "row_index": 2}]}),
+        ]
+    )
+
+    WORKERS.execute(_request(), gateway)
+
+    assert [
+        entry["row_index"]
+        for entry in json.loads(gateway.calls[3]["user"])["ATTRIBUTES TO CORRECT"]
+    ] == [2]
 
 
 def test_rcm_worker_rejects_update_to_unknown_existing_row():

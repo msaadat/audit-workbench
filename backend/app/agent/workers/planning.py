@@ -344,11 +344,11 @@ WORKERS.register(APM_WORKER)
 # planning.rcm worker (P7C)
 # --------------------------------------------------------------------------- #
 RCM_WORKER_ID = "planning.rcm"
-RCM_SYSTEM = f"""[agent:rcm]
+RCM_ROWS_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,
 risk_rating (low|medium|high|critical), control, control_type,
-control_attributes, and business_cycle,
+and business_cycle,
 plus criteria and control_owner where the planning basis supports them.
 All ids and narrative fields are strings. business_cycle names the cycle this
 row belongs to, in the engagement's own words — "Treasury dealing and
@@ -379,6 +379,43 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   table shows a value is recorded, never that it is controlled.
 - The risk wording rules apply to the control field too. No percentages, null
   rates, counts, or column names, and no appended deficiency clause.
+- criteria and control_owner are optional: cite or name only what the planning
+  basis supplies, and leave the field empty otherwise rather than guessing.
+- Where criteria rests on a supplied document, also set criteria_refs, choosing
+  from CITABLE DOCUMENTS: one entry per document, `document` its `ref` number
+  and `citations` the `[C...]` ids you are relying on. Cite only ids listed for
+  that ref. Never write a document id. Omit criteria_refs where the criterion
+  does not rest on a supplied document.
+- Supplied table profiles are value-free shape statistics, not evidence. A null
+  percentage is not an exception rate; a maximum is not a policy limit.
+- One risk and one control per row. {JSON_RULES} {LANGUAGE_RULES}"""
+
+
+#: The attribute pass: the closed-vocabulary half of a matrix row.
+#:
+#: Split from the rows prompt because it is a different job at a different
+#: altitude. Enumerating a process's risks is domain recall; choosing an
+#: assertion from a list of eight and an evidence strategy from a list of six is
+#: classification against a supplied catalogue. Fused, a defect in either cost
+#: the whole matrix — and the whole matrix is the largest completion in the
+#: system, so it cost the most to re-ask.
+#:
+#: It is shown the rows and no engagement prose. The strategy is a question
+#: about *where an answer lives*, which the names of the tables and record kinds
+#: this engagement holds already settle; the documents that would let it revise
+#: a risk are deliberately withheld, because revising one is not its job.
+RCM_ATTRIBUTES_SYSTEM = f"""[agent:rcm_attributes]
+State the control attributes of matrix rows that are already written.
+
+Return an object with `attributes`, one entry per supplied row, each with
+row_index copied exactly from the request and control_attributes.
+
+The rows are settled. Do not revise, restate or reorder them, and do not return
+any field of a row other than its row_index: the risk, the control and the
+rating are judgments already made, and a row you were not asked about is not
+yours to change.
+
+Follow the ACTIVE ATTRIBUTE TEMPLATE. Its non-negotiable rules:
 - control_attributes is a non-empty array. Each entry has exactly key,
   assertion, requirement, and evidence_kind — and nothing else. Each describes
   one distinct requirement of this same asserted control. Assertions use exactly
@@ -423,16 +460,8 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   write registry, required_record_kinds, required_comparisons, or
   comparison_recipes: what must agree is decided later, against this
   engagement's own documents.
-- criteria and control_owner are optional: cite or name only what the planning
-  basis supplies, and leave the field empty otherwise rather than guessing.
-- Where criteria rests on a supplied document, also set criteria_refs, choosing
-  from CITABLE DOCUMENTS: one entry per document, `document` its `ref` number
-  and `citations` the `[C...]` ids you are relying on. Cite only ids listed for
-  that ref. Never write a document id. Omit criteria_refs where the criterion
-  does not rest on a supplied document.
-- Supplied table profiles are value-free shape statistics, not evidence. A null
-  percentage is not an exception rate; a maximum is not a policy limit.
-- One risk and one control per row. {JSON_RULES} {LANGUAGE_RULES}"""
+
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
@@ -808,14 +837,37 @@ def _partition_rcm_rows(
                 _normalized_rcm_row(row, index, existing_ids, answers, sheet)
             )
         except WorkerResponseValidationError as error:
+            errors = list(error.errors)
             failures.append(
                 {
                     "index": index,
                     "row": row,
-                    "errors": list(error.errors),
+                    "errors": errors,
+                    "stage": _failure_stage(index, errors),
                 }
             )
     return normalized, failures
+
+
+#: A row error the attributes call is answerable for. Two shapes, because the
+#: row gate reports a wholly absent attribute list as a missing required field
+#: and a malformed one through the attribute validator's own paths.
+def _failure_stage(index: int, errors: list[str]) -> str:
+    """Which call is answerable for this row's errors.
+
+    ``attributes`` only when *every* error is one: a row that also names a bad
+    rating or an rcm_id that does not exist has to go back to the call that
+    wrote those, and the attributes call is not shown enough of the engagement
+    to fix them if it wanted to.
+    """
+
+    prefixes = (
+        f"RCM row {index}: control_attributes",
+        f"RCM row {index} is missing control_attributes",
+    )
+    if errors and all(error.startswith(prefixes) for error in errors):
+        return "attributes"
+    return "rows"
 
 
 def _normalized_rcm_row(
@@ -1506,11 +1558,18 @@ def run_rcm_worker(
 ) -> str:
     """Author one RCM revision from the supplied bundle.
 
-    One call. The matrix decides the risks, the controls, and each attribute's
-    evidence strategy, and stops there: what a transaction-cycle attribute must
-    show is settled downstream, by the stage that has this engagement's document
-    schemas in front of it. A repair is scoped to the rows that actually failed
-    and merged locally over the rows that did not.
+    Two calls at two altitudes. The rows call enumerates the risks of every
+    in-scope process and describes the control management asserts against each:
+    domain recall, then grounded reading. The attributes call states each
+    control's distinct requirements and classifies where the evidence for them
+    lives: closed-vocabulary choices from lists it is handed. Fused, a wrong
+    assertion name cost the whole matrix — the largest completion in the system
+    — and every repair of it re-asked all of it.
+
+    What a transaction-cycle attribute must *show* is settled further
+    downstream still, by the stage that has this engagement's document schemas
+    in front of it. A repair is scoped to the rows that failed, and routed to
+    the call whose job it was.
     """
 
     user = _rcm_judgment_user(request)
@@ -1519,30 +1578,144 @@ def run_rcm_worker(
             raise WorkerContractError("An RCM repair requires the previous response.")
         return _repaired_rcm(request, gateway, attempt, user)
     response = gateway.complete(
-        RCM_SYSTEM,
+        RCM_ROWS_SYSTEM,
         user,
-        _rcm_activity(request, "rcm"),
+        _rcm_activity(request, "rcm_rows"),
         attempt=attempt.number,
     )
-    return _parsed_document(request, attempt, response)
-
-
-def _parsed_document(
-    request: WorkerRequest,
-    attempt: WorkerAttempt,
-    response: str,
-) -> str:
-    """Turn one whole-matrix response into the finished document."""
-
     try:
         rows = _parsed_rows(response)
     except WorkerResponseValidationError:
         # A worker returns response text; the registry owns rejection and the
         # bounded repair that follows it. Raising from here would escape that
         # loop entirely, so an unusable draft is handed back verbatim to be
-        # rejected — and repaired — through the normal path.
+        # rejected — and repaired — through the normal path. Nothing is spent
+        # on an attributes call over rows that do not parse.
         return response
-    return _rcm_document(request, attempt, rows)
+    return _rcm_document(
+        request, attempt, _with_attributes(request, gateway, attempt, rows)
+    )
+
+
+def _attributes_user(request: WorkerRequest, rows: list[dict]) -> str:
+    """The attributes call's message: the rows, and where an answer could live.
+
+    No engagement prose. This call classifies, and the documents and profiles
+    that would let it second-guess a risk are exactly what it must not do.
+    Tables by name and column name, record kinds by name and count: enough to
+    answer "can the population answer this, or does it need the documents",
+    which is the whole of what ``evidence_kind`` asks.
+    """
+
+    return json.dumps(
+        {
+            "ROWS": [
+                {
+                    "row_index": index,
+                    "process": str(row.get("process") or ""),
+                    "risk": str(row.get("risk") or ""),
+                    "control": str(row.get("control") or ""),
+                    "control_type": str(row.get("control_type") or ""),
+                }
+                for index, row in enumerate(rows, start=1)
+            ],
+            "TABLES": _table_column_names(request),
+            "DOCUMENT TYPES HELD": _plain_json(
+                request.unit_input.get("document_types") or []
+            ),
+            "ACTIVE ATTRIBUTE TEMPLATE (verbatim)": str(
+                _resolved_item(request, "rcm_attributes_template") or ""
+            ),
+            "INSTRUCTIONS": (
+                "Return one attributes entry per supplied row, each carrying "
+                "its exact row_index and its control_attributes. Every row "
+                "gets an entry: a row you omit reaches the gate with no "
+                "attributes and fails there."
+            ),
+        },
+        indent=1,
+        ensure_ascii=False,
+    )
+
+
+def _table_column_names(request: WorkerRequest) -> list[dict]:
+    """Each supplied population as its name and its column names.
+
+    Not the profile. A null percentage or a maximum says nothing about where an
+    answer lives, and reading one as an exception rate is the mistake the
+    template spends a section warning against — so this call is never shown a
+    statistic it could misread.
+    """
+
+    tables: list[dict] = []
+    for item in _supplied_items(request, "table_metadata"):
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("table") or item.get("name") or "")
+        columns = [
+            str(column.get("name") or "")
+            for column in item.get("columns") or []
+            if isinstance(column, Mapping) and column.get("name")
+        ]
+        if name:
+            tables.append({"table": name, "columns": columns})
+    return tables
+
+
+def _with_attributes(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    rows: list[dict],
+) -> list[dict]:
+    """Ask for the attributes of these rows and splice them on."""
+
+    if not rows:
+        return rows
+    response = gateway.complete(
+        RCM_ATTRIBUTES_SYSTEM,
+        _attributes_user(request, rows),
+        _rcm_activity(request, "rcm_attributes"),
+        attempt=attempt.number,
+    )
+    try:
+        return _merged_attributes(rows, response)
+    except WorkerResponseValidationError:
+        # Nothing to splice. The rows reach the gate without attributes and
+        # fail there as such, which is bounded and repairable — where raising
+        # from inside the worker would escape the loop that exists to fix it.
+        return rows
+
+
+def _merged_attributes(rows: list[dict], response: str) -> list[dict]:
+    """Write returned attributes onto the rows that asked for them, by index.
+
+    An entry naming no row, or naming one twice, is not written. That row then
+    fails the gate as a row with no attributes — the honest outcome, and one
+    the scoped attributes repair can act on. Inventing an attribute here would
+    answer for a control this call never classified.
+    """
+
+    entries = _first_json_object(response).get("attributes")
+    if not isinstance(entries, list):
+        raise WorkerResponseValidationError(
+            "the attributes response must be a JSON object with an "
+            "`attributes` array"
+        )
+    by_index: dict[int, object] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            index = int(entry.get("row_index"))
+        except (TypeError, ValueError):
+            continue
+        if "control_attributes" in entry:
+            by_index[index] = _plain_json(entry["control_attributes"])
+    return [
+        row if index not in by_index else {**row, "control_attributes": by_index[index]}
+        for index, row in enumerate(rows, start=1)
+    ]
 
 
 def _rcm_document(
@@ -1591,90 +1764,199 @@ def _repaired_rcm(
     except WorkerResponseValidationError:
         # The prior draft was rejected by the schema rather than the quality
         # gate — a linked retry from a parent run can start here — so there are
-        # no rows to scope to and the whole document is re-asked.
-        return _parsed_document(
-            request,
-            attempt,
-            gateway.complete(
-                RCM_SYSTEM,
-                user
-                + "\n\nThe previous response could not be parsed: "
-                + "; ".join(attempt.validation_errors)
-                + ". Return the complete JSON object.",
-                _rcm_activity(request, "rcm_repair"),
-                attempt=attempt.number,
-            ),
+        # no rows to scope to and the whole document is re-asked. It is a rows
+        # response like any other and goes through the attributes call on the
+        # way out.
+        response = gateway.complete(
+            RCM_ROWS_SYSTEM,
+            user
+            + "\n\nThe previous response could not be parsed: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return the complete JSON object.",
+            _rcm_activity(request, "rcm_rows_repair"),
+            attempt=attempt.number,
+        )
+        try:
+            reparsed = _parsed_rows(response)
+        except WorkerResponseValidationError:
+            return response
+        return _rcm_document(
+            request, attempt, _with_attributes(request, gateway, attempt, reparsed)
         )
     _, failures = _partition_rcm_rows(rows, request)
     document_errors = document_level_errors(
         request, [row for row in rows if isinstance(row, Mapping)]
     )
-    if document_errors or not failures:
-        # The matrix is wrong as a whole — a risk theme no row owns, no
-        # requirement that recorded values agree — and a scoped repair cannot
-        # express that: the correction is to *add* something, and the scoped
-        # prompt forbids returning rows it did not list. Whole-document even
-        # when individual rows also failed, because one repair attempt has to
-        # answer everything that is wrong or the next gate is never reached.
-        return _parsed_document(
-            request,
-            attempt,
-            gateway.complete(
-                RCM_SYSTEM,
-                user
-                + "\n\nThe previous matrix failed the engagement quality gate: "
-                + "; ".join(attempt.validation_errors)
-                + ". Return the complete matrix again, correcting every listed "
-                "error and preserving every other row unchanged.",
-                _rcm_activity(request, "rcm_repair"),
-                attempt=attempt.number,
-            ),
+    if not failures and not document_errors:
+        # Nothing reproduced. The gate rejected the draft and this pass cannot
+        # see why, so the whole matrix is asked again rather than a repair
+        # scoped to nothing.
+        response = gateway.complete(
+            RCM_ROWS_SYSTEM,
+            user
+            + "\n\nThe previous matrix failed the engagement quality gate: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return the complete matrix again, correcting every listed "
+            "error and preserving every other row unchanged.",
+            _rcm_activity(request, "rcm_rows_repair"),
+            attempt=attempt.number,
         )
+        try:
+            reparsed = _parsed_rows(response)
+        except WorkerResponseValidationError:
+            return response
+        return _rcm_document(
+            request, attempt, _with_attributes(request, gateway, attempt, reparsed)
+        )
+    row_failures = [item for item in failures if item["stage"] == "rows"]
+    attribute_failures = [item for item in failures if item["stage"] == "attributes"]
+    repaired = rows
+    if row_failures:
+        response = gateway.complete(
+            RCM_ROWS_SYSTEM,
+            json.dumps(
+                {
+                    "ROWS TO CORRECT": [
+                        {
+                            "row_index": failure["index"],
+                            "row": _row_without_attributes(failure["row"]),
+                            "errors": failure["errors"],
+                        }
+                        for failure in row_failures
+                    ],
+                    "INSTRUCTIONS": (
+                        "Each supplied row failed the engagement quality gate "
+                        "for the listed reasons. Return an object with `rows` "
+                        "containing one corrected row per supplied row, each "
+                        "carrying its exact row_index. Correct every listed "
+                        "error and change nothing else. Rows not supplied here "
+                        "are already accepted and must not be returned: they "
+                        "are preserved unchanged."
+                    ),
+                },
+                indent=1,
+                ensure_ascii=False,
+            ),
+            _rcm_activity(request, "rcm_rows_repair"),
+            attempt=attempt.number,
+        )
+        try:
+            repaired = _repair_scoped_rows(rows, row_failures, response)
+        except WorkerResponseValidationError:
+            return response
+    # A row the rows call rewrote needs its attributes stated against the new
+    # wording; a row that failed only on its attributes needs them corrected.
+    # Both are one call, scoped to exactly those rows.
+    scoped = {
+        failure["index"]: list(failure["errors"])
+        for failure in (*row_failures, *attribute_failures)
+    }
+    if document_errors:
+        # The matrix is wrong as a whole: no control requirement asserts that
+        # recorded values agree. That gate reads attribute requirement text, so
+        # the correction is the attributes call's — and it needs every row in
+        # view, because the fix is to *add* a requirement and the scoped
+        # envelope forbids returning a row it was not given. The rows call is
+        # never re-asked for a document-level error again; where a row also
+        # failed on its own terms it was re-asked above, for that.
+        for index in range(1, len(repaired) + 1):
+            scoped.setdefault(index, []).extend(document_errors)
+    pending = [
+        {
+            "row_index": index,
+            "row": _row_without_attributes(repaired[index - 1]),
+            "current_attributes": _plain_json(
+                repaired[index - 1].get("control_attributes")
+            ),
+            "errors": errors,
+        }
+        for index, errors in sorted(scoped.items())
+        if index <= len(repaired)
+    ]
+    return _rcm_document(
+        request,
+        attempt,
+        _repaired_attributes(request, gateway, attempt, repaired, pending),
+    )
+
+
+def _row_without_attributes(row: object) -> dict:
+    """A row as the attributes call is shown it: everything but its attributes."""
+
+    if not isinstance(row, Mapping):
+        return {}
+    return {
+        key: _plain_json(value)
+        for key, value in row.items()
+        if key != "control_attributes"
+    }
+
+
+def _repaired_attributes(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    rows: list[dict],
+    pending: list[dict],
+) -> list[dict]:
+    """Re-ask the attributes call for exactly the rows that need it."""
+
+    if not pending:
+        return rows
     response = gateway.complete(
-        RCM_SYSTEM,
+        RCM_ATTRIBUTES_SYSTEM,
         json.dumps(
             {
-                "ROWS TO CORRECT": [
-                    {
-                        "row_index": failure["index"],
-                        "row": failure["row"],
-                        "errors": failure["errors"],
-                    }
-                    for failure in failures
-                ],
+                "ATTRIBUTES TO CORRECT": pending,
+                "TABLES": _table_column_names(request),
+                "DOCUMENT TYPES HELD": _plain_json(
+                    request.unit_input.get("document_types") or []
+                ),
+                "ACTIVE ATTRIBUTE TEMPLATE (verbatim)": str(
+                    _resolved_item(request, "rcm_attributes_template") or ""
+                ),
                 "INSTRUCTIONS": (
-                    "Each supplied row failed the engagement quality gate for "
-                    "the listed reasons. Return an object with `rows` containing "
-                    "one corrected row per supplied row, each carrying its exact "
-                    "row_index. Correct every listed error and change nothing "
-                    "else. Rows not supplied here are already accepted and must "
-                    "not be returned: they are preserved unchanged."
+                    "Return an object with `attributes` containing one entry "
+                    "per supplied row, each carrying its exact row_index and "
+                    "its corrected control_attributes. Correct every listed "
+                    "error. Rows not supplied here are already accepted and "
+                    "must not be returned."
                 ),
             },
             indent=1,
             ensure_ascii=False,
         ),
-        _rcm_activity(request, "rcm_repair"),
+        _rcm_activity(request, "rcm_attributes_repair"),
         attempt=attempt.number,
     )
     try:
-        repaired = _repair_scoped_rows(rows, failures, response)
+        merged = _merged_attributes(rows, response)
     except WorkerResponseValidationError:
-        return response
-    return _rcm_document(request, attempt, repaired)
+        # The rows keep whatever attributes they had; the gate reports them
+        # again, and the quarantine sets aside what will not repair.
+        return rows
+    scoped = {int(item["row_index"]) for item in pending}
+    # Only the rows this call was asked about. A response naming one it was not
+    # would otherwise replace attributes the gate already accepted.
+    return [
+        merged[index - 1] if index in scoped else row
+        for index, row in enumerate(rows, start=1)
+    ]
 
 
 RCM_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="planning.rcm.response",
     schema_hash=_sha256_text(
-        "rcm-response:v5:first-json-object-with-rows-array-uncontracted-"
-        "control-attributes-and-quarantine"
+        "rcm-response:v6:first-json-object-with-rows-array-spliced-"
+        "uncontracted-control-attributes-and-quarantine"
     ),
     validator=_rcm_response_schema,
 )
 RCM_WORKER = WorkerDefinition(
     worker_id=RCM_WORKER_ID,
-    prompt_hash=_sha256_text(RCM_SYSTEM),
+    # Both prompts: the sequence is what decides what reaches the model, so
+    # both halves belong in the identity a persisted proposal is reused against.
+    prompt_hash=_sha256_text(RCM_ROWS_SYSTEM + RCM_ATTRIBUTES_SYSTEM),
     response_schema=RCM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=_RCM_MAX_REPAIR_ATTEMPTS,
@@ -1884,7 +2166,8 @@ __all__ = [
     "PLANNING_CONTEXT_WORKER",
     "PLANNING_CONTEXT_WORKER_ID",
     "RCM_RESPONSE_SCHEMA",
-    "RCM_SYSTEM",
+    "RCM_ATTRIBUTES_SYSTEM",
+    "RCM_ROWS_SYSTEM",
     "RCM_WORKER",
     "RCM_WORKER_ID",
     "run_apm_worker",

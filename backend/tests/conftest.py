@@ -309,6 +309,43 @@ def _scripted_user_view(messages: list[dict]) -> str:
     )
 
 
+def _rcm_attributes_response(user: str) -> dict:
+    """One attribute per supplied row, derived from the row it belongs to.
+
+    Every RCM run makes this call, so every agent-run fixture needs an answer
+    for it — and a fixed answer would name row indices that do not exist in the
+    test at hand and be merged onto nothing. ``manual_inspection`` because it is
+    the one strategy valid against any workspace: a fixture may hold no table
+    and no record kind, and a default naming ``tabular_population`` would assert
+    a population that is not there. Tests about the strategy override this.
+    """
+
+    payload = json.loads(user.split("\nRepair the prior response")[0])
+    rows = payload.get("ROWS") or [
+        item["row"] | {"row_index": item["row_index"]}
+        for item in payload.get("ATTRIBUTES TO CORRECT") or []
+    ]
+    return {
+        "attributes": [
+            {
+                "row_index": row["row_index"],
+                "control_attributes": [
+                    {
+                        "key": "control_operates",
+                        "assertion": "Operational",
+                        "requirement": (
+                            f"{row.get('control') or 'The control'} operates as "
+                            "described."
+                        ),
+                        "evidence_kind": "manual_inspection",
+                    }
+                ],
+            }
+            for row in rows
+        ]
+    }
+
+
 class FakeAgentLLM:
     """Scripted model for agent-run tests: dispatches on the stable
     ``[agent:<stage>]`` tag each prompt starts with. Override any stage's
@@ -341,6 +378,10 @@ class FakeAgentLLM:
             "reason": "The procedure describes the population rather than a control.",
         },
         "agent:fix_code": {"code": "result = transactions.head(0)"},
+        # The matrix's second call. Scripted by default because it runs in
+        # every RCM run and its answer is a function of the rows the first call
+        # returned, which vary per fixture.
+        "agent:rcm_attributes": _rcm_attributes_response,
         "agent:document_analysis_map": _document_analysis_response,
         # Every document run classifies before it maps. ``other`` is the one
         # answer valid against any workspace's catalog — a fixture's offered
@@ -368,6 +409,7 @@ class FakeAgentLLM:
         tool_choice=None,
         on_delta=None,
         response_format=None,
+        reasoning=None,
     ):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
@@ -380,6 +422,10 @@ class FakeAgentLLM:
                 "tool_choice": tool_choice,
                 "response_format": response_format,
                 "streamed": on_delta is not None,
+                # What the gateway budgeted this kind of turn at, from
+                # ``agent/runtime/reasoning.py``. ``None`` where the kind takes
+                # whatever the deployment configured.
+                "reasoning": reasoning,
             }
         )
         response = self.overrides.get(tag, self.DEFAULTS.get(tag))

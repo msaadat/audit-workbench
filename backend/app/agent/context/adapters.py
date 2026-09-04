@@ -714,6 +714,7 @@ def planning_context_scope(
 
 RCM_PLANNING_SOURCE_ID = "planning_context"
 RCM_TEMPLATE_SOURCE_ID = "rcm_template"
+RCM_ATTRIBUTES_TEMPLATE_SOURCE_ID = "rcm_attributes_template"
 RCM_CURRENT_APM_SOURCE_ID = "current_apm"
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
 RCM_DOCUMENT_SOURCE_ID = "documents"
@@ -779,6 +780,9 @@ def rcm_scope(
         },
     }
     template = templates_store.get_template(workspace, "rcm")["markdown"]
+    attributes_template = templates_store.get_template(
+        workspace, "rcm_attributes"
+    )["markdown"]
     current_apm = str(workspace.planning.get("apm_markdown") or "")
     return ContextScope(
         candidates={
@@ -796,6 +800,14 @@ def rcm_scope(
                     source=template,
                     representations={"artifact_template": template},
                     metadata={"template": "rcm"},
+                ),
+            ),
+            RCM_ATTRIBUTES_TEMPLATE_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="template:rcm_attributes",
+                    source=attributes_template,
+                    representations={"artifact_template": attributes_template},
+                    metadata={"template": "rcm_attributes"},
                 ),
             ),
             RCM_CURRENT_APM_SOURCE_ID: (
@@ -3485,6 +3497,7 @@ __all__ = [
     "RCM_TABLE_METADATA_SOURCE_ID",
     "RCM_TABLE_PROFILE_SOURCE_ID",
     "RCM_SMALL_TABLE_ROWS_SOURCE_ID",
+    "RCM_ATTRIBUTES_TEMPLATE_SOURCE_ID",
     "RCM_TEMPLATE_SOURCE_ID",
     "apm_document_candidates",
     "apm_document_methodology_scope",

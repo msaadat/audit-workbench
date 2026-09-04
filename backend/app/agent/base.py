@@ -46,6 +46,7 @@ MODEL_WAIT_LABELS = {
     "agent:document_context": "Analyzing planning documents",
     "agent:apm": "Drafting the audit planning memorandum",
     "agent:rcm": "Drafting the risk and control matrix",
+    "agent:rcm_attributes": "Stating what each control has to demonstrate",
     "agent:test_generate": "Generating RCM tests",
     "agent:document_qa": "Answering from document evidence",
     "agent:finding": "Drafting an evidence-linked finding",
@@ -80,9 +81,13 @@ def _rcm_row_progress(accumulated: str) -> list[dict[str, str]]:
     """How many RCM rows the draft has written so far.
 
     ``risk_rating`` is a required field on every row (agent/workers/planning.py
-    RCM_SYSTEM), so counting its occurrences in the raw JSON stream is a cheap,
-    reliable proxy for rows completed — without waiting for the response to
-    parse, which only happens once the whole call has returned.
+    ``RCM_ROWS_SYSTEM``), so counting its occurrences in the raw JSON stream is
+    a cheap, reliable proxy for rows completed — without waiting for the
+    response to parse, which only happens once the whole call has returned.
+
+    Keyed on the rows call alone. The attributes call that follows it streams
+    an ``attributes`` array carrying no rating, so this reads nothing there and
+    the progress line stops moving rather than counting the same rows twice.
     """
     count = len(_RCM_ROW_FIELD_RE.findall(accumulated))
     if not count:
@@ -368,6 +373,10 @@ class BaseRunner:
         template_name = {
             "agent:apm": "apm",
             "agent:rcm": "rcm",
+            # Its own entry, so the activity record says which of the two
+            # matrix templates a given turn was written against — and an
+            # override of one is visible on the call it actually reached.
+            "agent:rcm_attributes": "rcm_attributes",
             "agent:work_program": "workpaper",
         }.get(tag)
         if not template_name:

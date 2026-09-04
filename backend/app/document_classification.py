@@ -607,6 +607,31 @@ def documents_of_type(workspace: Workspace, type_id: str) -> list[dict]:
     ]
 
 
+def evidence_type_counts(workspace: Workspace) -> list[dict]:
+    """The record kinds this engagement actually holds, with how many of each.
+
+    Names and counts, and nothing about what a type's fields are: the matrix
+    chooses an evidence strategy, which is a question about *where an answer
+    lives*, and the record kinds present settle it. What those records state is
+    the cycle design's question, one stage on, and supplying it here is what
+    made the matrix name fields it had never seen a document of.
+
+    The count is the population signal a strategy turns on. A type carrying one
+    document cannot answer a requirement written against a population, and
+    ``transaction_cycle`` chosen over it reaches exactly that one transaction.
+    """
+
+    counts: dict[str, int] = {}
+    for document in transaction_evidence(workspace):
+        type_id = document_type(workspace, str(document.get("id")))
+        if type_id:
+            counts[type_id] = counts.get(type_id, 0) + 1
+    return [
+        {"document_type": type_id, "documents": counts[type_id]}
+        for type_id in sorted(counts)
+    ]
+
+
 def types_awaiting_schema(workspace: Workspace) -> list[str]:
     """Types the corpus's evidence carries that have no stamped schema yet.
 
