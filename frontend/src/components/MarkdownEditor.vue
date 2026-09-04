@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -14,6 +15,7 @@ const props = withDefaults(defineProps<{ modelValue: string; placeholder?: strin
 })
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
 
+const router = useRouter()
 const host = ref<HTMLElement>()
 let crepe: Crepe | null = null
 // Last value that originated inside the editor — lets the watcher below tell an
@@ -62,10 +64,33 @@ watch(
 )
 
 onBeforeUnmount(() => void unmount())
+
+/**
+ * Follow a workbench link in place instead of in a second tab.
+ *
+ * Milkdown's link tooltip renders its anchor with `target="_blank"` — right for
+ * an external citation, wrong for a workspace route: the finding references in
+ * a generated report opened a fresh copy of the app rather than moving to the
+ * finding. Only the tooltip's anchor is intercepted. Inside the document a
+ * click on a link places the cursor, which is what an editor should do, and
+ * modified or middle clicks keep the browser's own "open elsewhere" meaning.
+ */
+function followInternalLink(event: MouseEvent) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  const anchor = (event.target as HTMLElement | null)
+    ?.closest?.('.milkdown-link-preview a[href]') as HTMLAnchorElement | null
+  // `origin` and `pathname` are the DOM's own resolution of the href, so a
+  // relative link is already absolute by the time it is compared.
+  if (!anchor || anchor.origin !== window.location.origin) return
+  event.preventDefault()
+  void router.push(anchor.pathname + anchor.search + anchor.hash)
+}
 </script>
 
 <template>
-  <div ref="host" class="markdown-editor" />
+  <!-- The tooltip is appended inside the editor's own DOM, so one delegated
+       listener on the host catches it without reaching across the component. -->
+  <div ref="host" class="markdown-editor" @click="followInternalLink" />
 </template>
 
 <style scoped>
