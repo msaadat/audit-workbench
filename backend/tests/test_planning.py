@@ -296,19 +296,19 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     # Each milestone is handed off in the agent's own voice, so a long run reads
     # as work arriving piece by piece rather than as a block of cards at the end.
     #
-    # What the memorandum hands off *to* moved with 4b.1, and the new answer is
-    # the honest one: the RCM is written against the complete vocabulary of the
-    # corpus, so the evidence is typed and read between the two. Planning context
-    # no longer waits for that — it consumes prose, which needs no vocabulary —
-    # which is why the document work straddles planning rather than preceding it.
+    # What the memorandum hands off *to* moved again when the matrix stopped
+    # authoring evidence contracts. It needs to know which record *kinds* the
+    # engagement holds — hence the type classification between the two — and no
+    # longer what fields they carry, so the expensive evidence read now follows
+    # the matrix rather than standing between it and the memorandum.
     said = [item["content"] for item in completed["messages"] if item["role"] == "agent"]
     assert (
         "Audit planning memorandum is done — now working on document types."
         in said
     )
     assert (
-        "Risk and control matrix is done — now working on cycle rules proposed "
-        "for review." in said
+        "Risk and control matrix is done — now working on evidence readings."
+        in said
     )
     # The last stage hands off to nothing: the closing turn is the run's last word.
     assert not any(

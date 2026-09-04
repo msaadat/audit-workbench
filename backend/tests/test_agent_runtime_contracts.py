@@ -30,6 +30,7 @@ from app.agent.runtime import (
     submit_approval_response,
     submit_interaction_response,
 )
+from app.agent.runtime import reasoning as reasoning_policy
 from app.agent.runtime.run_runtime import DEFAULT_MAX_RUNTIME_SECONDS
 
 
@@ -1013,7 +1014,7 @@ def _no_output_gateway(workspace_with_data, monkeypatch, message):
     calls = []
 
     def fake_chat(messages, **kwargs):
-        calls.append(kwargs)
+        calls.append({"messages": messages, **kwargs})
         return message
 
     monkeypatch.setattr(llm, "chat", fake_chat)
@@ -1126,8 +1127,149 @@ def test_a_dead_completion_is_metered_before_it_is_raised(
         active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
 
     usage = store.load_run(workspace_with_data, active.run["id"])["usage"]
-    assert usage["completion_tokens"] == 65_536
-    assert usage["llm_turns"] == 1
+    # Both tries: the retry is a provider turn like any other and is charged
+    # like one, which is the only thing that keeps a run's spend adding up.
+    assert usage["completion_tokens"] == 131_072
+    assert usage["llm_turns"] == 2
+
+
+def test_an_empty_completion_is_asked_once_more_before_the_unit_fails(
+    workspace_with_data, monkeypatch
+):
+    """Run ``f7eb12``: 216 s, finish reason ``error``, nothing to repair.
+
+    The retry that mattered was the operator's, and it paid for a whole fresh
+    attempt of a unit that had already been bound, resolved and prompted. How
+    long a model reasons varies between identical calls, so the cheapest thing
+    that could have worked was asking the same question again.
+    """
+    calls = []
+    replies = [
+        {"content": "", "finish_reason": "error", "usage": {"completion_tokens": 13_305}},
+        {"content": "the matrix", "usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+    ]
+
+    def fake_chat(messages, **kwargs):
+        calls.append({"messages": messages, **kwargs})
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "empty-test", "model": "model"},
+    )
+    active = _base_runner(workspace_with_data)
+    active.run["limits"] = {
+        "max_model_turns": 4,
+        "max_estimated_prompt_tokens": 100_000,
+        "max_completion_tokens": 200_000,
+    }
+    active.save()
+
+    assert (
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload", attempt=2)
+        == "the matrix"
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["messages"] == calls[1]["messages"], "the same ask, not a repair"
+
+    activities = documents.activities(workspace_with_data)["items"]
+    dead, retried = activities[-2], activities[-1]
+    assert "retry_reason" not in dead
+    assert retried["retry_reason"] == "unusable"
+    # The worker attempted once. The provider is what tried twice, and saying
+    # otherwise would read as a repair the worker never asked for.
+    assert dead["retry_number"] == retried["retry_number"] == 2
+
+    usage = store.load_run(workspace_with_data, active.run["id"])["usage"]
+    assert usage["llm_turns"] == 2
+
+
+def test_the_retry_stops_after_one_more_try(workspace_with_data, monkeypatch):
+    """Two tries is the whole bet. A third pays again for an unchanged ask."""
+    active, calls = _no_output_gateway(
+        workspace_with_data,
+        monkeypatch,
+        {"content": "", "finish_reason": "length", "usage": {"completion_tokens": 100}},
+    )
+
+    with pytest.raises(ModelResponseUnusable):
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
+
+    assert len(calls) == 2
+
+
+def test_a_limit_or_transport_failure_is_not_retried_here(
+    workspace_with_data, monkeypatch
+):
+    """Only an absent answer is worth asking for twice.
+
+    ``LLMError`` arrives having already exhausted the transport's own attempts,
+    and asking again at this level would multiply them.
+    """
+    calls = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(kwargs)
+        raise llm.LLMError("provider refused")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "empty-test", "model": "model"},
+    )
+    active = _base_runner(workspace_with_data)
+
+    with pytest.raises(llm.LLMError):
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
+
+    assert len(calls) == 1
+
+
+def test_a_worker_kind_with_its_own_reasoning_budget_sends_it(
+    workspace_with_data, monkeypatch
+):
+    """Attribute classification is a lookup, and is budgeted like one.
+
+    Call ``c810f13`` spent 56,944 of its 65,853 completion tokens reasoning
+    about a turn that was, in part, choosing values from a closed list.
+    """
+    calls = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(kwargs)
+        return {"content": "{}", "usage": {"completion_tokens": 1}}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "empty-test", "model": "model"},
+    )
+    active = _base_runner(workspace_with_data)
+
+    active.model_gateway.complete(
+        "[agent:rcm]\nClassify",
+        "payload",
+        {"context_metrics": {"worker_kind": "rcm_attributes"}},
+    )
+    active.model_gateway.complete(
+        "[agent:apm]\nDraft",
+        "payload",
+        {"context_metrics": {"worker_kind": "apm"}},
+    )
+
+    assert calls[0]["reasoning"] == "low"
+    assert llm._reasoning_parameters("low") == {"reasoning": {"max_tokens": 2048}}
+    # The gateway applies the budget and does not decide it: which kinds get
+    # what is domain policy, and lives beside the prompts rather than here.
+    assert reasoning_policy.budget_for("rcm_attributes") == "low"
+    # Absent from the table is not a budget of zero: the memorandum turn is
+    # judgement end to end and keeps whatever the operator configured.
+    assert "reasoning" not in calls[1]
 
 
 def test_no_output_does_not_spend_the_worker_repair_allowance(
@@ -1154,4 +1296,8 @@ def test_no_output_does_not_spend_the_worker_repair_allowance(
     with pytest.raises(ModelResponseUnusable):
         WORKERS.execute(_request(), active.model_gateway)
 
-    assert len(calls) == 1, "the dead turn must not be retried"
+    # Two provider tries, both of them the same ask. The gateway's own retry
+    # is not a repair: a repair would carry a corrected prompt quoting the
+    # response it is fixing, and there is no response here to quote.
+    assert len(calls) == 2
+    assert calls[0]["messages"] == calls[1]["messages"]

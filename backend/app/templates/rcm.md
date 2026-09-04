@@ -131,21 +131,18 @@ control; leave the exceptions to the tests.
   risk/control on the same RCM row.
 
   An attribute whose evidence strategy is `transaction_cycle` says so and stops
-  there. The comparisons that would answer it — which records, which fields,
-  which operator — are authored in a separate step that is given the installed
-  pack catalogue, and are not written on the row here. Deciding *that* a
-  requirement needs linked source records is the judgment this matrix makes;
-  expressing it as a comparison is mechanical, and mixing the two into one pass
-  is what produced rows whose evidence contracts were unusable.
+  there: which fields must agree is decided later, against this engagement's
+  own documents, and is not written here. Deciding *that* a requirement needs
+  linked source records is the judgment this matrix makes; naming the fields
+  belongs to the turn that has read the documents, which this one has not.
 - **evidence_kind** — where the evidence for that requirement lives, judged from
   the supplied material rather than the requirement's wording. Use
   `tabular_population` whenever the imported tables carry the fields named —
   uniqueness, missing values, thresholds, date ordering, status combinations, or
   one column compared with another — because that reaches the whole population.
   Reserve `transaction_cycle` for requirements that genuinely need several
-  linked *documents* of different registered record kinds; it selects an exact
-  installed pack and at least two of its bindable record kinds, and reaches only
-  the transactions that have uploaded documents, so it can never support a
+  linked *documents* of different registered record kinds; it reaches only the
+  transactions that have uploaded documents, so it can never support a
   population-level conclusion. `document_content` is for a fact one document
   states. `manual_inspection`, `inquiry`, and `mixed` are for requirements no
   imported evidence answers — never for something a supplied table can measure.

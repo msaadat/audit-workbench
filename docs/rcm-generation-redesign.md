@@ -1,10 +1,15 @@
 # RCM generation redesign: a staged pipeline, delivered in small steps
 
-**Status:** design, not yet implemented. This is the handoff for splitting the
-single RCM judgment turn into a per-process, per-job pipeline, and for moving
-the cycle-vouching evidence contract out of planning. Each step lands on its
-own, leaves `rcm_only` regenerating a matrix end to end, and is measured
-against the previous step before the next one starts.
+**Status:** steps 0 and 1 are implemented (4 September 2026); steps 2, 3 and 4
+are still design. This is the handoff for splitting the single RCM judgment
+turn into a per-process, per-job pipeline, and for moving the cycle-vouching
+evidence contract out of planning. Each step lands on its own, leaves
+`rcm_only` regenerating a matrix end to end, and is measured against the
+previous step before the next one starts.
+
+Where the implementation departed from what is written below, the step says so
+in a **Landed as** note. Nothing in steps 2 to 4 has been revised against those
+departures; read the notes before building on the step above them.
 
 `docs/rcm-generation-quality.md` is the history this rests on: three rounds of
 prompt and gate work on the same turn. Read its *Round 3* before touching the
@@ -214,6 +219,25 @@ next.
 **Measure:** failed runs per regeneration; reasoning tokens per call.
 **Rollback:** revert.
 
+**Landed as** (0a, 0b; 0c skipped as superseded):
+
+- The retry could not wrap `llm.chat` alone: `ModelResponseUnusable` is raised
+  at the *end* of `complete`, after metering and provenance, so the whole turn
+  is the retryable unit. `complete` became a thin loop over `_complete_once`,
+  which is the old body plus a `retry_reason` field. That is what the step
+  wanted — the retry is reserved, metered and logged like any turn.
+- `REASONING_BY_WORKER_KIND` is in `agent/runtime/reasoning.py`, not in the
+  gateway module. `test_runtime_contracts_and_gateway_are_domain_neutral`
+  asserts the gateway's source names no domain term, and a table of worker
+  kinds is domain policy. The gateway now calls `reasoning_policy.budget_for`
+  and knows nothing about which kinds exist.
+- `rcm_evidence` is not in the table: step 1 deletes that call in the same
+  change. `rcm_attributes` and `rcm_scope` are declared ahead of the calls that
+  will send them, and are inert until steps 2 and 4.
+- `LLM_REASONING` is validated even when an override will win it, so a
+  misspelled setting is reported on every call rather than on whichever ones
+  happen not to name a budget.
+
 ---
 
 ### Step 1. Cycle vouching out of the RCM
@@ -386,6 +410,50 @@ attributes and no schema dependency.
 **Measure:** RCM calls per run (expect 1); RCM prompt size; cycle tests on
 treasuryfull equal to before; the ruleset stage's coverage list.
 **Rollback:** revert; the row shape is unchanged.
+
+**Landed as:**
+
+- **The requirements were never reaching the model.** `run_linkage_worker` sent
+  `{schemas, tables}` and nothing else, while `LINKAGE_SYSTEM` promised the
+  worker the matrix's comparisons and `_refuse_uncovered_requirements` refused
+  it for not answering them. The context source resolved and was dropped on the
+  floor. Fixed here — the payload now carries `requirements`, read through the
+  same accessor the gate reads — but it predates this change, and any earlier
+  measurement of that stage was taken against a worker answering questions it
+  could not see.
+- **1e's stated mechanism was wrong; the intent is implemented.** The step says
+  `update_rcm` "re-normalizes through `validate_control_attributes`, which is
+  the same validator the old evidence pass satisfied, so a comparison naming a
+  field the schema does not carry fails here". It does not: `_normalize_rcm_row`
+  calls that validator *without* a workspace, which checks shape only. Exactness
+  lives in `execute_rcm`'s `_validated_rcm`, which passes one. The write-back
+  therefore calls `validate_control_attributes(..., workspace=fresh)` itself
+  before `update_rcm`, and a bad field fails the commit as the step intended.
+- `downgrade_uncontracted(workspace, row, attribute_key)` takes no `reason`: a
+  row has nowhere to put one, and the executor already reports it. It takes an
+  optional precomputed `answers`, because the fallback profiles every table and
+  a row with several unsupported attributes would otherwise do it per attribute.
+  It reaches `_answering_table` and `tabular_answers` by a lazy import of
+  `agent.workers.planning` — core importing an agent module, which
+  `documents.py` already does at module level, but a smell worth naming.
+- `cycle_linking.distinct_comparisons` lost its last caller with
+  `_refuse_uncovered_requirements` and was deleted.
+- **A residual window.** The write-back runs inside `commit(fresh)` after
+  `cycle_rulesets.save`, as written. A process death between the two leaves a
+  saved ruleset and uncontracted rows; `reconcile_cycle_ruleset` then reports
+  `already_applied` and the stage settles. Not silent — 1f's note says the
+  attribute has had no cycle design and is untested, and `tests.generate` falls
+  back to a document question — but not repaired either. Reversing the order
+  trades it for a different visible failure (rows contracted against assertions
+  no saved ruleset contains), so it was left as the step specifies.
+- **The frontend carried the old contract.** `RcmSchemaCycleAttribute` typed
+  `required_comparisons` as required, and the editor wrote `[]` when switching
+  an attribute to `transaction_cycle` — an empty contract, which the backend
+  refuses. Both now produce and accept the uncontracted state.
+- The closure reorders: `planning.rcm_ready` now precedes
+  `documents.evidence_read` and `documents.schemas_stamped`. That is the point
+  of the dropped edge — the matrix no longer waits on the extraction pass —
+  and it moves the milestone the memorandum hands off to.
 
 ---
 

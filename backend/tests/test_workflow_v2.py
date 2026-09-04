@@ -437,7 +437,6 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
             "planning.apm_ready",
             "documents.categorized",
             "documents.types_classified",
-            "documents.schemas_stamped",
         ),
         "tests.cycle_ruleset_proposed": (
             "planning.rcm_ready",
@@ -488,9 +487,11 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
+        # The matrix needs the record kinds, not their fields, so it runs
+        # before the expensive read rather than behind it.
+        "planning.rcm_ready",
         "documents.evidence_read",
         "documents.schemas_stamped",
-        "planning.rcm_ready",
         "tests.cycle_ruleset_proposed",
         "tests.cycle_ruleset_approved",
         "tests.specified",
@@ -541,9 +542,11 @@ def test_partial_goal_prunes_current_prerequisites():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
+        # The matrix needs the record kinds, not their fields, so it runs
+        # before the expensive read rather than behind it.
+        "planning.rcm_ready",
         "documents.evidence_read",
         "documents.schemas_stamped",
-        "planning.rcm_ready",
         # Both in the closure, and both reused rather than staged: this matrix
         # classifies no attribute as transaction-cycle evidence, so there are
         # no cycle rules for anyone to write and none to approve. An engagement
@@ -2689,64 +2692,30 @@ _RCM_CYCLE_RESPONSE = {
 }
 
 
-def test_the_rcm_evidence_turn_is_shown_this_engagement_s_schema_fields(monkeypatch):
-    """The catalog travelled on the APM's unit input, and the RCM reads it.
+def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
+    monkeypatch,
+):
+    """The step-1 invariant, end to end: one call, and an uncontracted row.
 
-    ``_with_evidence_contracts`` is called by the RCM worker and reads
-    ``unit_input['schema_catalog']``; the APM worker never reads it. Attached to
-    the wrong unit, the evidence turn was handed an empty vocabulary beneath a
-    prompt promising it "this engagement's document types and the fields each
-    one states", and answered `unsupported` for every transaction-cycle
-    attribute — correctly, and for a reason no reader of the matrix could have
-    guessed. The staleness interlock the catalog carries landed on the wrong
-    unit with it.
+    The matrix used to make a second call authoring the comparisons, against a
+    schema catalog carried on its unit input. It now says a requirement needs
+    linked source records and stops; the cycle design names the fields, and
+    writes them back onto this row. So the row commits with a transaction-cycle
+    attribute and no ``required_comparisons``, and nothing about the RCM depends
+    on a schema having been induced.
     """
 
-    from app import document_schemas
-
-    ws = workspaces.create_workspace("RCM evidence vocabulary")
+    ws = workspaces.create_workspace("RCM without a contract")
     ws.update_planning(
         {
             "context": {"objective": "Assess procurement", "scope": "Purchasing"},
             "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nPurchasing.",
         }
     )
-    document_schemas.save_schema(ws, "vendor_invoice", [
-        {"name": "invoice_number", "role": "identifier", "value_type": "identifier",
-         "cardinality": "one", "verbatim": True, "confidence": "high"},
-        {"name": "total_amount", "role": "attribute", "value_type": "number",
-         "cardinality": "one", "verbatim": True, "confidence": "high"},
-    ])
     ws = workspaces.load_workspace(ws.id)
 
     command, stage, unit = _rcm_only_runner(ws)
-    seen = {}
-
-    def evidence(user):
-        seen["user"] = user
-        return {
-            "contracts": [
-                {
-                    "row_index": 0,
-                    "attribute_key": "amount_agrees",
-                    "required_comparisons": [
-                        {
-                            "key": "invoice_to_order",
-                            "left": {"document_type": "vendor_invoice",
-                                     "field": "total_amount"},
-                            "right": {"document_type": "vendor_invoice",
-                                      "field": "total_amount"},
-                            "rationale": "The amount billed must be the amount ordered.",
-                        }
-                    ],
-                }
-            ]
-        }
-
-    fake = FakeAgentLLM({
-        "agent:rcm": _RCM_CYCLE_RESPONSE,
-        "agent:rcm_schema_evidence": evidence,
-    })
+    fake = FakeAgentLLM({"agent:rcm": _RCM_CYCLE_RESPONSE})
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm, "agent_status",
@@ -2755,8 +2724,10 @@ def test_the_rcm_evidence_turn_is_shown_this_engagement_s_schema_fields(monkeypa
     command._run_stage(stage)
 
     assert unit["status"] == "succeeded"
-    assert "user" in seen, "the evidence turn never ran"
-    # The vocabulary reached it, rather than an empty list under a prompt that
-    # says those fields are the whole vocabulary.
-    assert "vendor_invoice" in seen["user"]
-    assert "total_amount" in seen["user"]
+    # No schema was ever induced for this engagement, and the matrix wrote
+    # anyway. Under the old edge set the stage could not have been reached.
+    committed = workspaces.load_workspace(ws.id)
+    (row,) = committed.rcm
+    (attribute,) = row["control_attributes"]
+    assert attribute["evidence_kind"] == "transaction_cycle"
+    assert "required_comparisons" not in attribute

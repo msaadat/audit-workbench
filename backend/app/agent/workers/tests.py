@@ -1577,22 +1577,28 @@ Propose only what the fields support. A rule naming a field a type does not carr
 cannot run, and a plausible rule that never runs is worse than an absent one —
 it reads as a passing test.
 
-Where required comparisons are supplied, they are what the matrix has already
-decided this cycle must demonstrate, and your assertions must answer every one
-of them: an assertion reading exactly the two fields a comparison names, or
-exactly the one field it names where it asks only that a field be stated. Answer
-them in the matrix's own operands rather than equivalent ones — a receipt naming
-its order and an order naming its receipt are different facts, and only one of
-them is what was asked for.
+Where requirements are supplied, they are what the matrix has decided this cycle
+must demonstrate, stated in words. The matrix has read none of these documents
+and names no fields; choosing which fields answer a requirement is your work,
+and it is the reason you are the turn that sees the schemas.
 
-Several comparisons routinely name the same pair of fields, because more than
-one control depends on that pair. They are one assertion, not one each: an
-assertion is matched to a requirement by the fields it reads, so a second rule
-over the same two fields answers nothing the first did not and files a duplicate
-test. Work from the distinct pairs, not from the list.
+Answer every one. Return `coverage`, one entry per supplied requirement, either
+  {{"rcm_id", "control_attribute", "assertion_id"}}
+naming the assertion that answers it, or
+  {{"rcm_id", "control_attribute", "unsupported": true, "reason"}}
+where no field these schemas carry can express it. Copy rcm_id and
+control_attribute exactly. Say unsupported rather than reaching for a nearby
+field: a requirement about amounts answered by comparing vendor names proves
+something else, and the control reads as tested when it is not.
 
-A comparison whose pair a join key already binds needs no assertion: the join
-established it, and repeating it files a check that cannot fail.
+Several requirements routinely want the same pair of fields, because more than
+one control depends on that pair. They are one assertion, not one each: name it
+in each of their coverage entries rather than writing a second rule over the
+same fields.
+
+A requirement a join key already binds needs no assertion of its own: the join
+established that pair, and a rule repeating it cannot fail. Name the join's
+pair through the assertion that rests on it.
 
 Give every rule a short lower_snake_case id and a one-sentence rationale saying
 why it holds. The rationale is what an auditor reads when deciding whether to
@@ -1612,6 +1618,9 @@ Keys:
   assertions    array of {{"id", "label", "left": {{"role", "field"}},
                 "right": {{"role", "field"}} or null, "requirement",
                 "rationale"}}
+  coverage      array of {{"rcm_id", "control_attribute", "assertion_id"}} or
+                {{"rcm_id", "control_attribute", "unsupported": true, "reason"}},
+                one per supplied requirement; omit where none were supplied
 
 requirement says what these fields must show for the control to hold, in the
 terms the control is written in — "the invoice is settled for the amount the
@@ -1690,6 +1699,21 @@ def _linkage_response_schema(response: str) -> Mapping[str, Any]:
             "nothing is not a cycle."
         )
 
+    coverage = []
+    for index, raw in enumerate(payload.get("coverage") or []):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(f"coverage[{index}] must be an object.")
+        entry = {
+            "rcm_id": str(raw.get("rcm_id") or "").strip(),
+            "control_attribute": str(raw.get("control_attribute") or "").strip(),
+        }
+        if raw.get("unsupported"):
+            entry["unsupported"] = True
+            entry["reason"] = str(raw.get("reason") or "").strip()
+        else:
+            entry["assertion_id"] = str(raw.get("assertion_id") or "").strip()
+        coverage.append(entry)
+
     anchor = payload.get("anchor")
     if not isinstance(anchor, Mapping):
         raise WorkerResponseValidationError("The response must name an anchor.")
@@ -1704,6 +1728,9 @@ def _linkage_response_schema(response: str) -> Mapping[str, Any]:
         },
         "join_keys": join_keys,
         "assertions": assertions,
+        # Absent where nothing was asked, which is the shape a proposal written
+        # from the vocabulary alone has always had.
+        "coverage": coverage,
     }
 
 
@@ -1723,7 +1750,7 @@ def _supplied_schemas(request: WorkerRequest) -> list[object]:
 def _supplied_requirements(request: WorkerRequest) -> list[dict]:
     """What the matrix asks this cycle to demonstrate, if it asks anything.
 
-    Optional by declaration: an engagement may proposes rules before its matrix
+    Optional by declaration: an engagement may propose rules before its matrix
     asks anything of them. Where it does ask, these are what the assertions have
     to answer, and they are read through one accessor by both the prompt and the
     validator so a proposal is judged against exactly what it was shown.
@@ -1736,7 +1763,7 @@ def _supplied_requirements(request: WorkerRequest) -> list[dict]:
     if isinstance(item, Mapping):
         return [
             dict(value)
-            for value in item.get("required_comparisons") or []
+            for value in item.get("cycle_requirements") or []
             if isinstance(value, Mapping)
         ]
     return []
@@ -1855,11 +1882,11 @@ def validate_linkage_proposal(
                 "fields must show for the control to hold."
             )
     field_of(proposal["anchor"], "The anchor")
-    _refuse_uncovered_requirements(proposal, request)
+    _require_every_requirement_answered(proposal, request)
     return proposal
 
 
-def _refuse_uncovered_requirements(
+def _require_every_requirement_answered(
     proposal: Mapping[str, Any], request: WorkerRequest
 ) -> None:
     """Refuse a proposal that leaves a matrix requirement unanswered.
@@ -1868,52 +1895,97 @@ def _refuse_uncovered_requirements(
     three stages downstream, by which time the ruleset had been approved and an
     approved ruleset is immutable — so the repair was a successor proposal and a
     second signature, for a defect the worker's own bounded loop could have
-    fixed for one attempt. Nothing about the check changed; only when it is
-    asked.
+    fixed for one attempt.
 
-    Scoped to what the worker was shown. A requirement naming a document type
-    this cycle does not carry is not this proposal's to answer.
+    What changed is who answers. The matrix used to name the fields and this
+    turn had to hit them exactly; now the matrix states the requirement and this
+    turn names the fields, so coverage is what the proposal *says* it covers and
+    the check is that it said something about everything it was asked.
+
+    Scoped to what the worker was shown. A requirement whose row is not part of
+    this cycle at all is not this proposal's to answer — but a requirement is
+    now words rather than operands, so there is no document type on it to scope
+    by, and every supplied requirement is in scope by construction: the
+    candidates are built from the matrix's uncontracted cycle attributes, which
+    is precisely the set this stage exists to serve.
     """
 
     required = _supplied_requirements(request)
     if not required:
         return
-    document_types = {
-        str(role.get("document_type") or "") for role in proposal.get("roles") or []
+    assertion_ids = {
+        str(item.get("id") or "") for item in proposal.get("assertions") or []
     }
-
-    def in_scope(comparison: Mapping[str, Any]) -> bool:
-        sides = [comparison.get("left"), comparison.get("right")]
-        return all(
-            str((side or {}).get("document_type") or "") in document_types
-            for side in sides
-            if isinstance(side, Mapping)
+    answered: dict[tuple[str, str], Mapping[str, Any]] = {}
+    problems: list[str] = []
+    for entry in proposal.get("coverage") or []:
+        target = (
+            str(entry.get("rcm_id") or ""),
+            str(entry.get("control_attribute") or ""),
         )
-
-    comparisons = [item for item in required if in_scope(item)]
-    if not comparisons:
+        if target in answered:
+            problems.append(
+                f"Requirement {target[0]}/{target[1]} has two coverage entries. "
+                "Give exactly one per requirement; where the same assertion "
+                "answers several, name it in each of their entries."
+            )
+            continue
+        answered[target] = entry
+    for item in required:
+        target = (
+            str(item.get("rcm_id") or ""),
+            str(item.get("control_attribute") or ""),
+        )
+        entry = answered.get(target)
+        requirement = str(item.get("requirement") or "")
+        if entry is None:
+            problems.append(
+                f"Requirement {target[0]}/{target[1]} has no coverage entry: "
+                f"\"{requirement}\". Name the assertion that answers it, or "
+                "say it is unsupported and why."
+            )
+            continue
+        if entry.get("unsupported"):
+            if not str(entry.get("reason") or "").strip():
+                problems.append(
+                    f"Requirement {target[0]}/{target[1]} is reported "
+                    "unsupported with no reason. Say which field these schemas "
+                    "would need to carry."
+                )
+            continue
+        assertion_id = str(entry.get("assertion_id") or "")
+        if assertion_id not in assertion_ids:
+            # An id naming nothing is the one failure mode that reads as
+            # coverage from every angle: the requirement is answered, the
+            # proposal validates, and the executor finds no assertion to derive
+            # a comparison from.
+            problems.append(
+                f"Requirement {target[0]}/{target[1]} names assertion "
+                f"'{assertion_id or 'nothing'}', which this proposal does not "
+                "contain. Name one of its own assertions, or say the "
+                "requirement is unsupported."
+            )
+    if not problems:
         return
-    uncovered = cycle_linking.uncovered_comparisons(proposal, comparisons)
-    if not uncovered:
-        return
-    # Reported as field pairs, not as the matrix keys that demanded them.
-    # Coverage is decided by the fields an assertion reads — ``assertion_covers``
-    # never looks at an id — so several control attributes wanting the same pair
-    # are one assertion's work, and listing them apart asks for duplicate rules
-    # that differ only in a name nothing checks. Naming them by key also invites
-    # a proposer to *use* those keys as ids, which the store then rejects.
-    wanted = cycle_linking.distinct_comparisons(uncovered)
-    total = len(cycle_linking.distinct_comparisons(comparisons))
-    named = "; ".join(cycle_linking.comparison_text(item) for item in wanted)
+    # Counted over the requirements, not over the problems: one requirement can
+    # raise two (answered twice, and one of those naming nothing), and a repair
+    # prompt saying the proposal answered minus-one of two teaches nothing.
+    unanswered = len(
+        {
+            (str(item.get("rcm_id") or ""), str(item.get("control_attribute") or ""))
+            for item in required
+        }
+        - {
+            target
+            for target, entry in answered.items()
+            if entry.get("unsupported")
+            or str(entry.get("assertion_id") or "") in assertion_ids
+        }
+    )
     raise WorkerResponseValidationError(
-        f"The proposal answers {total - len(wanted)} of "
-        f"{counted(total, 'required field pair')}. Add one assertion for each "
-        f"pair still unanswered, reading exactly the fields named: {named}. "
-        "An assertion is matched to a requirement by the fields it reads and by "
-        "nothing else, so one assertion answers every requirement over the same "
-        "pair — do not write a second for the same fields. An assertion that "
-        "merely repeats a join key is not wanted either: the join already binds "
-        "that pair."
+        f"The proposal answers {len(required) - unanswered} of "
+        f"{counted(len(required), 'supplied requirement')}. "
+        + " ".join(problems)
     )
 
 
@@ -1933,6 +2005,14 @@ def run_linkage_worker(
         "schemas": _plain_json(_supplied_schemas(request)),
         "tables": _plain_json(list(request.unit_input.get("tables") or [])),
     }
+    # Read through the same accessor the gate reads, so the proposal is judged
+    # against exactly what it was shown. It was resolved into the context and
+    # left out of the message before this: the prompt promised the worker the
+    # matrix's requirements, the worker was sent the vocabulary alone, and the
+    # gate then refused it for not answering questions it was never asked.
+    requirements = _supplied_requirements(request)
+    if requirements:
+        payload["requirements"] = requirements
     user = json.dumps(payload, indent=1, default=str)
     if attempt.is_repair:
         user += (
@@ -1955,7 +2035,9 @@ def run_linkage_worker(
 
 LINKAGE_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="tests.cycle_linkage.response",
-    schema_hash=_sha256_text("tests-cycle-linkage-response:roles-joins-assertions"),
+    schema_hash=_sha256_text(
+        "tests-cycle-linkage-response:roles-joins-assertions-coverage"
+    ),
     validator=_linkage_response_schema,
 )
 LINKAGE_WORKER = WorkerDefinition(

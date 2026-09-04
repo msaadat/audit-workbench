@@ -72,11 +72,16 @@ function replace(index: number, changes: Record<string, unknown>) {
 function setEvidenceKind(index: number, evidenceKind: string) {
   // Comparisons belong to the transaction-cycle strategy and mean nothing under
   // any other, so they go with it rather than being left behind to be rejected.
+  //
+  // Switching *to* transaction cycle with none to carry leaves the attribute
+  // uncontracted rather than stating an empty contract: absent means the cycle
+  // design has not decided yet, empty means it decided nothing must agree, and
+  // the second is refused on save.
+  const carried = comparisons(props.modelValue[index])
   replace(index, {
     evidence_kind: evidenceKind,
-    ...(evidenceKind === 'transaction_cycle'
-      ? { required_comparisons: comparisons(props.modelValue[index]) }
-      : { required_comparisons: undefined }),
+    required_comparisons:
+      evidenceKind === 'transaction_cycle' && carried.length ? carried : undefined,
   })
 }
 
@@ -147,10 +152,13 @@ function addComparison(attributeIndex: number) {
 }
 
 function removeComparison(attributeIndex: number, comparisonIndex: number) {
+  // Removing the last one returns the attribute to uncontracted, not to a
+  // contract requiring nothing.
+  const remaining = comparisons(props.modelValue[attributeIndex]).filter(
+    (_, index) => index !== comparisonIndex,
+  )
   replace(attributeIndex, {
-    required_comparisons: comparisons(props.modelValue[attributeIndex]).filter(
-      (_, index) => index !== comparisonIndex,
-    ),
+    required_comparisons: remaining.length ? remaining : undefined,
   })
 }
 
@@ -225,10 +233,11 @@ function remove(index: number) {
           <label class="wide">What these fields must show<InputText :modelValue="comparison.rationale ?? ''" @update:modelValue="replaceComparison(index, comparisonIndex, { rationale: String($event) })" /></label>
           <Button icon="pi pi-trash" label="Remove comparison" text severity="danger" size="small" @click="removeComparison(index, comparisonIndex)" />
         </article>
-        <small v-if="!comparisons(attribute).length && documentTypeOptions.length" class="warn">
-          A transaction-cycle requirement states at least one comparison. If none
-          of the fields these documents carry can answer it, choose Manual
-          inspection, Inquiry, or Mixed rather than leaving it unstated.
+        <small v-if="!comparisons(attribute).length && documentTypeOptions.length" class="note">
+          Which fields must agree is decided by the cycle design, against this
+          engagement's own documents. State them here to settle it yourself; leave
+          them unstated and the cycle design will, or will report that no field
+          these documents carry can answer the requirement.
         </small>
       </section>
 
@@ -245,7 +254,7 @@ function remove(index: number) {
 .comparison-heading { display:flex; justify-content:space-between; align-items:center; gap:.75rem }.comparison-heading>div { display:flex; flex-direction:column; gap:.15rem }.comparison-heading small { color:var(--aw-muted); font-weight:400 }
 .comparison { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.55rem; padding:.6rem; background:var(--aw-surface); border-radius:var(--aw-radius-control) }.comparison>.p-button { justify-self:start }
 label { display:flex; flex-direction:column; gap:.3rem; min-width:0; color:var(--aw-ink-soft); font-size:var(--aw-text-sm); font-weight:600 }.wide { grid-column:1/-1 }.attribute>.p-button { justify-self:start }
-.warn { color:var(--aw-warn); font-size:var(--aw-text-sm) }
+.note { color:var(--aw-muted); font-size:var(--aw-text-sm) }
 .type-option { display:flex; flex-direction:column; gap:.1rem; min-width:0; max-width:32rem }
 .type-option small { color:var(--aw-muted); font-weight:400; font-size:var(--aw-text-xs); white-space:normal }
 /* A type carrying one document cannot answer a population requirement. */

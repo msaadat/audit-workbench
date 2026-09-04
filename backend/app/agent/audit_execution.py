@@ -19,7 +19,6 @@ import re
 from collections.abc import Mapping
 
 from .. import (
-    cycle_linking,
     cycle_measurement,
     cycle_rulesets,
     cycle_vouching,
@@ -1261,20 +1260,6 @@ class AuditWorkflowExecution(ActionRunner):
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
-                    # The vocabulary a transaction-cycle attribute may address.
-                    # On the unit input rather than in the prompt because it is
-                    # per-workspace, and covered by the unit's own input hash so
-                    # a re-derived schema re-runs the matrix rather than leaving
-                    # a requirement pointing at a field that moved.
-                    #
-                    # It belongs to *this* unit: ``_with_evidence_contracts``
-                    # reads it, and it is the RCM worker that runs. Sent with
-                    # the APM instead, the evidence turn was handed an empty
-                    # vocabulary under a prompt promising it the engagement's
-                    # fields, and every transaction-cycle attribute came back
-                    # `unsupported` — correctly, and for a reason no reader of
-                    # the matrix could have guessed.
-                    "schema_catalog": cycle_linking.schema_catalog(self.ws),
                 },
                 activity={
                     "artifact_refs": ["planning:apm"],
@@ -1338,6 +1323,19 @@ class AuditWorkflowExecution(ActionRunner):
                     f"Cycle rules {ruleset_id} are proposed and await an "
                     "auditor's approval; until they are approved no cycle test "
                     "can be generated from them."
+                )
+            # A requirement the extracted schemas cannot express. The attribute
+            # kept its requirement and took the strongest evidence path still
+            # open to it, which is the honest outcome and not a silent one:
+            # the control is now answered from the population or from a
+            # document rather than from linked source records.
+            for item in output.get("downgraded") or []:
+                self.warn(
+                    f"Control attribute '{item.get('control_attribute')}' of RCM "
+                    f"row {item.get('rcm_id')} asked for transaction-cycle "
+                    "evidence that this engagement's document schemas cannot "
+                    f"express ({item.get('reason') or 'no reason given'}), so it "
+                    "was re-routed to the strongest path they do support."
                 )
 
         return BoundUnitPipeline(

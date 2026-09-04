@@ -1060,10 +1060,17 @@ export interface DocumentSchemaCatalogEntry {
   fields: Array<{ name: string; role: string; value_type: string; label: string }>
 }
 
-/** A cycle attribute answered by this engagement's own induced schemas. */
+/** A cycle attribute answered by this engagement's own induced schemas.
+ *
+ *  Optional, because the matrix commits without it. The row says a requirement
+ *  needs several source records read together; the cycle design, which is the
+ *  stage holding the induced schemas, decides which fields must then agree and
+ *  writes them back here. Between the two the attribute is *uncontracted* — a
+ *  legitimate state, and distinct from an empty array, which says a contract
+ *  was authored and requires nothing. */
 export interface RcmSchemaCycleAttribute {
   evidence_kind: 'transaction_cycle'
-  required_comparisons: RcmSchemaComparison[]
+  required_comparisons?: RcmSchemaComparison[]
 }
 
 export type RcmControlAttribute = RcmControlAttributeBase & (

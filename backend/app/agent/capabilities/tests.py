@@ -374,6 +374,11 @@ def _cycle_attributes(workspace: Workspace) -> list[dict]:
     linked evidence for, which is the question a proposal answers. The other
     asks whether that decision was made at all, and the two must not be the
     same reading or neither can check the other.
+
+    The strategy alone, not the contract. A matrix commits its cycle attributes
+    uncontracted and this stage is what contracts them, so requiring
+    ``schema_backed`` here would report the stage satisfied on exactly the
+    engagements that need it and propose for none of them.
     """
 
     found: list[dict] = []
@@ -381,7 +386,6 @@ def _cycle_attributes(workspace: Workspace) -> list[dict]:
         for attribute in row.get("control_attributes") or []:
             if (
                 isinstance(attribute, dict)
-                and cycle_linking.schema_backed(attribute)
                 and attribute.get("evidence_kind") == "transaction_cycle"
             ):
                 found.append(attribute)
@@ -445,7 +449,6 @@ def _ruleset_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
         for row in workspace.rcm or []
         if any(
             isinstance(attribute, dict)
-            and cycle_linking.schema_backed(attribute)
             and attribute.get("evidence_kind") == "transaction_cycle"
             for attribute in row.get("control_attributes") or []
         )

@@ -92,30 +92,28 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "analysis.summarized": analysis_workflow.dependencies("analysis.summarized"),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
-    # Classification and induction, not extraction. Both are cheap — page-one
-    # text and two samples a type — and both run over the whole document set
-    # rather than the planning-scoped subset, which is what puts voucher schemas
-    # in hand when the RCM is written. The expensive extraction pass keeps its
-    # scope and its position. Without these edges an RCM row can require a
-    # comparison over fields no schema states, and nothing would say so until a
-    # cycle test failed to generate.
+    # Classification, not extraction. Both are cheap — page-one text and the
+    # type of each document — and the matrix needs them: a row choosing an
+    # evidence strategy has to know which record kinds this engagement actually
+    # holds, or ``transaction_cycle`` is a guess about a corpus it never saw.
+    #
+    # The *schema* edge is gone. A matrix row now says a requirement needs
+    # linked source records and stops; which fields must then agree is decided
+    # by the cycle design, downstream, where the induced schemas are in hand.
+    # What that buys is a matrix no longer invalidated by a re-derived schema —
+    # the expensive extraction pass no longer sits between the memorandum and
+    # the matrix, and a schema that moves re-runs the cycle design rather than
+    # the whole RCM.
     "planning.rcm_ready": (
         "planning.apm_ready",
         "documents.categorized",
         "documents.types_classified",
-        # The expensive pass moves ahead of the RCM, and that is the plan's
-        # stated cost. An accumulating master is not final until every document
-        # of its type has been read, and that read *is* the extraction pass — so
-        # this edge now means "read the evidence first". What it buys is a matrix
-        # written against the complete vocabulary of its corpus rather than one
-        # guessed from three samples: the alternative is letting the RCM address
-        # a provisional master and name a field document 15 renames.
-        "documents.schemas_stamped",
     ),
-    # Rules are written against the matrix's comparisons and the induced
-    # vocabulary, so both must exist first. Proposing is still not approving —
-    # they are two capabilities, and the second one below is where the two run
-    # modes part.
+    # Rules are written against the matrix's requirements and the induced
+    # vocabulary, so both must exist first — and this is the only stage that
+    # sees both, which is why the evidence contract is authored here. Proposing
+    # is still not approving — they are two capabilities, and the second one
+    # below is where the two run modes part.
     "tests.cycle_ruleset_proposed": (
         "planning.rcm_ready",
         "documents.schemas_stamped",

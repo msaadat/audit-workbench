@@ -830,6 +830,76 @@ def test_llm_reasoning_can_be_switched_off_for_the_whole_request(monkeypatch):
         llm._reasoning_parameters()
 
 
+def test_a_worker_can_buy_less_deliberation_than_the_deployment_configured(
+    monkeypatch,
+):
+    """How long a turn is worth thinking about belongs to the prompt.
+
+    One global setting has to serve a memorandum written from a whole
+    engagement and a lookup against a closed list of four values, and it is
+    the wrong number for at least one of them.
+    """
+
+    monkeypatch.setenv("LLM_REASONING", "on")
+    assert llm._reasoning_parameters("low") == {
+        "reasoning": {"max_tokens": llm.REASONING_EFFORT_TOKENS["low"]}
+    }
+    assert llm._reasoning_parameters(4096) == {"reasoning": {"max_tokens": 4096}}
+    # Nothing asked for, nothing changed.
+    assert llm._reasoning_parameters() == {"include_reasoning": True}
+
+    # A configured effort is a default, and a caller that names its own budget
+    # beats it in both directions.
+    monkeypatch.setenv("LLM_REASONING", "high")
+    assert llm._reasoning_parameters("low") == {
+        "reasoning": {"max_tokens": llm.REASONING_EFFORT_TOKENS["low"]}
+    }
+
+    monkeypatch.setenv("LLM_REASONING", "quietly")
+    with pytest.raises(llm.LLMError, match="must be"):
+        llm._reasoning_parameters("low")
+
+
+def test_reasoning_switched_off_cannot_be_switched_back_on_by_a_caller(monkeypatch):
+    """Off is the operator's decision and the one setting an override loses to.
+
+    A budget sent anyway would spend tokens the deployment declined to spend,
+    on a model very possibly chosen for not spending them.
+    """
+
+    monkeypatch.setenv("LLM_REASONING", "off")
+    assert llm._reasoning_parameters("high") == {"reasoning": {"enabled": False}}
+
+
+def test_a_reasoning_override_reaches_the_request_body(monkeypatch):
+    sent: dict = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+            ).encode()
+
+    def _capture(request, timeout):
+        sent.update(json.loads(request.data.decode()))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", _capture)
+
+    llm.chat([{"role": "user", "content": "classify"}], reasoning="low")
+
+    assert sent["reasoning"] == {"max_tokens": 2048}
+    assert "include_reasoning" not in sent
+
+
 def test_streamed_reasoning_is_kept_for_the_record_and_out_of_the_answer():
     """It reaches the debug payload, and neither the text nor the reader."""
 

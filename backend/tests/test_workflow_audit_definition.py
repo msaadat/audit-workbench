@@ -47,7 +47,6 @@ EXPECTED_DEPENDENCIES = {
             "planning.apm_ready",
             "documents.categorized",
             "documents.types_classified",
-            "documents.schemas_stamped",
         ),
     "tests.cycle_ruleset_proposed": (
         "planning.rcm_ready",
@@ -103,9 +102,13 @@ def test_full_audit_closure_is_topological():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
+        # The matrix runs ahead of the extraction pass now that it authors no
+        # evidence contract: it needs to know which record kinds exist, not
+        # what fields they carry. Reading the evidence is the cycle design's
+        # prerequisite, and it is scheduled as one.
+        "planning.rcm_ready",
         "documents.evidence_read",
         "documents.schemas_stamped",
-        "planning.rcm_ready",
         "tests.cycle_ruleset_proposed",
         "tests.cycle_ruleset_approved",
         "tests.specified",

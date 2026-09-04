@@ -421,8 +421,8 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   answer.
 - A transaction_cycle attribute states evidence_kind and stops there. Do not
   write registry, required_record_kinds, required_comparisons, or
-  comparison_recipes: the evidence contract for those attributes is authored in
-  a separate step that is shown this engagement's own document schemas.
+  comparison_recipes: what must agree is decided later, against this
+  engagement's own documents.
 - criteria and control_owner are optional: cite or name only what the planning
   basis supplies, and leave the field empty otherwise rather than guessing.
 - Where criteria rests on a supplied document, also set criteria_refs, choosing
@@ -433,47 +433,6 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
 - Supplied table profiles are value-free shape statistics, not evidence. A null
   percentage is not an exception rate; a maximum is not a policy limit.
 - One risk and one control per row. {JSON_RULES} {LANGUAGE_RULES}"""
-
-
-#: The evidence pass: what must agree, for attributes already judged to need
-#: linked source records.
-#:
-#: The vocabulary is not in this prompt. It is per-workspace and travels on the
-#: unit input, so the prompt hash stays stable while the catalog varies, and a
-#: re-derived schema moves the unit's input hash instead.
-RCM_SCHEMA_EVIDENCE_SYSTEM = f"""[agent:rcm_schema_evidence]
-Say what must agree, for control attributes already judged to need linked source
-records. The risk, control, and requirement are settled: do not revise them, and
-do not add or remove attributes.
-
-You are shown this engagement's document types and the fields each one states.
-Those fields are the whole vocabulary. A comparison naming anything else cannot
-be evaluated and will be refused.
-
-Return an object with `contracts`, one entry per supplied attribute, each with
-row_index and attribute_key copied exactly from the request, plus:
-- required_comparisons: a non-empty array of objects, each with
-  - key: a short snake_case name for this comparison, unique within the attribute
-  - left: {{{{"document_type": "<type>", "field": "<field>"}}}}
-  - right: the same shape, omitted where the requirement is only that the field
-    be stated at all
-  - rationale: one sentence saying what these fields must show for the
-    requirement to hold
-
-Name the fields and say what they must show. Do not say how to compare them:
-whether two values agree is settled later, against the values themselves, by a
-reader that can see one document prints an amount with its currency and another
-without. You are writing the matrix and have seen neither document.
-
-State only what the requirement itself asks. A comparison that is merely nearby
-— the vendor names agreeing when the requirement is about amounts — proves
-something else, and a control covered by it reads as tested when it is not.
-
-If the requirement cannot be expressed over the fields shown, say so by
-returning `unsupported: true` with a one-line reason instead of the contract
-fields. The attribute's evidence strategy is then reconsidered, which is the
-honest outcome; inventing a comparison over a field that does not exist is not.
-{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
@@ -1441,95 +1400,6 @@ def _parsed_rows(response: str) -> list[dict]:
     return [_plain_json(row) for row in parsed["rows"]]
 
 
-def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
-    """Collect the attributes that still need an evidence contract."""
-
-    pending: list[dict] = []
-    for index, row in enumerate(rows, start=1):
-        attributes = row.get("control_attributes")
-        if not isinstance(attributes, list):
-            continue
-        for attribute in attributes:
-            if not isinstance(attribute, Mapping):
-                continue
-            if attribute.get("evidence_kind") != "transaction_cycle":
-                continue
-            if attribute.get("comparison_recipes") or attribute.get(
-                "required_comparisons"
-            ):
-                continue
-            pending.append(
-                {
-                    "row_index": index,
-                    "attribute_key": str(attribute.get("key") or ""),
-                    "process": str(row.get("process") or ""),
-                    "risk": str(row.get("risk") or ""),
-                    "control": str(row.get("control") or ""),
-                    "assertion": str(attribute.get("assertion") or ""),
-                    "requirement": str(attribute.get("requirement") or ""),
-                }
-            )
-    return pending
-
-
-def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
-    """Write returned contracts onto the attributes that asked for them.
-
-    A contract that names no attribute, names one twice, or reports the pack
-    cannot express the requirement is simply not written. The attribute then
-    fails the gate as an evidence strategy with no contract, which is the honest
-    outcome and one the bounded repair turn can act on — quietly inventing a
-    comparison here would answer a different question than the requirement asked.
-    """
-
-    contracts = _first_json_object(response).get("contracts")
-    if not isinstance(contracts, list):
-        raise WorkerResponseValidationError(
-            "the evidence-contract response must be a JSON object with a "
-            "`contracts` array"
-        )
-    by_target: dict[tuple[int, str], Mapping[str, Any]] = {}
-    for entry in contracts:
-        if not isinstance(entry, Mapping) or entry.get("unsupported"):
-            continue
-        try:
-            row_index = int(entry.get("row_index"))
-        except (TypeError, ValueError):
-            continue
-        by_target[(row_index, str(entry.get("attribute_key") or ""))] = entry
-    merged: list[dict] = []
-    for index, row in enumerate(rows, start=1):
-        attributes = row.get("control_attributes")
-        if not isinstance(attributes, list):
-            merged.append(row)
-            continue
-        updated = []
-        for attribute in attributes:
-            entry = (
-                by_target.get((index, str(attribute.get("key") or "")))
-                if isinstance(attribute, Mapping)
-                else None
-            )
-            if entry is None:
-                updated.append(attribute)
-                continue
-            if entry.get("required_comparisons") is None:
-                # No contract, so the attribute reaches the gate as a cycle
-                # strategy with nothing behind it — the honest failure, and one
-                # the bounded repair turn can act on.
-                updated.append(attribute)
-                continue
-            # The fields are named outright, so there is nothing to derive.
-            # Validation against the current schemas happens at the commit,
-            # which is the turn that holds the engagement.
-            contract = {
-                "required_comparisons": _plain_json(entry["required_comparisons"])
-            }
-            updated.append({**attribute, **contract})
-        merged.append({**row, "control_attributes": updated})
-    return merged
-
-
 def _stripped_fence(response: str) -> str:
     value = str(response or "").strip()
     fenced = re.fullmatch(
@@ -1636,12 +1506,11 @@ def run_rcm_worker(
 ) -> str:
     """Author one RCM revision from the supplied bundle.
 
-    Two passes, because the work is at two altitudes. The judgment pass decides
-    the risks, the controls, and each attribute's evidence strategy; it never
-    sees the cycle pack catalog. The evidence pass authors the comparison
-    contract for the attributes that asked for one, and it is the only call that
-    carries the DSL and the catalog. A repair is scoped to the rows that actually
-    failed and merged locally over the rows that did not.
+    One call. The matrix decides the risks, the controls, and each attribute's
+    evidence strategy, and stops there: what a transaction-cycle attribute must
+    show is settled downstream, by the stage that has this engagement's document
+    schemas in front of it. A repair is scoped to the rows that actually failed
+    and merged locally over the rows that did not.
     """
 
     user = _rcm_judgment_user(request)
@@ -1655,22 +1524,15 @@ def run_rcm_worker(
         _rcm_activity(request, "rcm"),
         attempt=attempt.number,
     )
-    return _contracted_document(request, gateway, attempt, response)
+    return _parsed_document(request, attempt, response)
 
 
-def _contracted_document(
+def _parsed_document(
     request: WorkerRequest,
-    gateway: ModelGateway,
     attempt: WorkerAttempt,
     response: str,
 ) -> str:
-    """Turn one judgment-pass response into the finished document.
-
-    Every path that produces a whole document goes through here — the initial
-    attempt and the whole-document re-ask alike. Returning a judgment response
-    directly, as the re-ask used to, skips the evidence pass and leaves every
-    transaction-cycle attribute without the contract it was told not to write.
-    """
+    """Turn one whole-matrix response into the finished document."""
 
     try:
         rows = _parsed_rows(response)
@@ -1680,11 +1542,7 @@ def _contracted_document(
         # loop entirely, so an unusable draft is handed back verbatim to be
         # rejected — and repaired — through the normal path.
         return response
-    return _rcm_document(
-        request,
-        attempt,
-        _with_evidence_contracts(request, gateway, attempt, rows),
-    )
+    return _rcm_document(request, attempt, rows)
 
 
 def _rcm_document(
@@ -1720,105 +1578,6 @@ def _rcm_document(
     )
 
 
-def _downgraded_uncontracted(
-    request: WorkerRequest,
-    rows: list[dict],
-) -> list[dict]:
-    """Re-route attributes the evidence pass could not contract for.
-
-    An attribute this engagement's documents cannot express is a limit of the
-    *documentary* path, not of the requirement. "The invoice amount agrees to
-    the purchase order total" is answerable from the imported populations
-    whether or not the extracted schemas carry those fields, and leaving the
-    attribute classified ``transaction_cycle`` with no contract does not
-    preserve rigour — it fails the row, discards its risk and its control along
-    with it, and tests nothing at all.
-
-    So the attribute keeps its requirement and takes the strongest path still
-    open to it: the population where the supplied tables bear on the row, the
-    documents otherwise. This became load-bearing the moment the matrix started
-    classifying attributes as ``transaction_cycle`` at all — before that, this
-    path never ran, and eight rows carrying real risks died on it in one run.
-    """
-    answers = _tabular_answers(request)
-    downgraded: list[dict] = []
-    for row in rows:
-        attributes = row.get("control_attributes")
-        if not isinstance(attributes, list):
-            downgraded.append(row)
-            continue
-        fallback = (
-            "tabular_population"
-            if _answering_table(row, answers)
-            else "document_content"
-        )
-        updated = []
-        for attribute in attributes:
-            if (
-                isinstance(attribute, Mapping)
-                and attribute.get("evidence_kind") == "transaction_cycle"
-                and not attribute.get("required_comparisons")
-            ):
-                # Comparisons go with the strategy that owned them: they name
-                # the fields a cycle links, and mean nothing once the attribute
-                # is answered another way. Leaving one behind trades one
-                # rejection for another on a row this path exists to save.
-                attribute = {
-                    key: value
-                    for key, value in attribute.items()
-                    if key != "required_comparisons"
-                }
-                attribute["evidence_kind"] = fallback
-            updated.append(attribute)
-        downgraded.append({**row, "control_attributes": updated})
-    return downgraded
-
-
-def _with_evidence_contracts(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-    rows: list[dict],
-) -> list[dict]:
-    """Run the evidence pass, but only when an attribute actually needs it."""
-
-    pending = _cycle_attribute_requests(rows)
-    if not pending:
-        return rows
-    response = gateway.complete(
-        RCM_SCHEMA_EVIDENCE_SYSTEM,
-        json.dumps(
-            {
-                "ATTRIBUTES NEEDING AN EVIDENCE CONTRACT": pending,
-                # Unwrapped: ``WorkerRequest`` hands back a recursively
-                # immutable input, so the catalog's entries arrive as
-                # ``MappingProxyType`` and ``json.dumps`` refuses them. It went
-                # unnoticed because the catalog was being sent with a different
-                # unit, and ``or []`` made an absent one a plain empty list —
-                # so the only shape ever serialized here was the empty one.
-                "DOCUMENT TYPES AND THE FIELDS THEY STATE": _plain_json(
-                    request.unit_input.get("schema_catalog") or []
-                ),
-                "INSTRUCTIONS": (
-                    "Return one contracts entry per supplied attribute, with "
-                    "row_index and attribute_key copied exactly."
-                ),
-            },
-            indent=1,
-            ensure_ascii=False,
-        ),
-        _rcm_activity(request, "rcm_evidence"),
-        attempt=attempt.number,
-    )
-    try:
-        return _downgraded_uncontracted(request, _merge_evidence_contracts(rows, response))
-    except WorkerResponseValidationError:
-        # Nothing to merge. The attributes stay without a contract and fail the
-        # gate as such, which is a bounded, repairable outcome — and a truthful
-        # one — where raising from inside the worker would not be.
-        return rows
-
-
 def _repaired_rcm(
     request: WorkerRequest,
     gateway: ModelGateway,
@@ -1832,12 +1591,9 @@ def _repaired_rcm(
     except WorkerResponseValidationError:
         # The prior draft was rejected by the schema rather than the quality
         # gate — a linked retry from a parent run can start here — so there are
-        # no rows to scope to and the whole document is re-asked. It is a
-        # judgment-pass response like any other, so it goes through the evidence
-        # pass on the way out.
-        return _contracted_document(
+        # no rows to scope to and the whole document is re-asked.
+        return _parsed_document(
             request,
-            gateway,
             attempt,
             gateway.complete(
                 RCM_SYSTEM,
@@ -1860,9 +1616,8 @@ def _repaired_rcm(
         # prompt forbids returning rows it did not list. Whole-document even
         # when individual rows also failed, because one repair attempt has to
         # answer everything that is wrong or the next gate is never reached.
-        return _contracted_document(
+        return _parsed_document(
             request,
-            gateway,
             attempt,
             gateway.complete(
                 RCM_SYSTEM,
@@ -1876,7 +1631,7 @@ def _repaired_rcm(
             ),
         )
     response = gateway.complete(
-        RCM_SYSTEM + "\n\n" + RCM_SCHEMA_EVIDENCE_SYSTEM,
+        RCM_SYSTEM,
         json.dumps(
             {
                 "ROWS TO CORRECT": [
@@ -1906,27 +1661,20 @@ def _repaired_rcm(
         repaired = _repair_scoped_rows(rows, failures, response)
     except WorkerResponseValidationError:
         return response
-    return _rcm_document(
-        request,
-        attempt,
-        _with_evidence_contracts(request, gateway, attempt, repaired),
-    )
+    return _rcm_document(request, attempt, repaired)
 
 
 RCM_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="planning.rcm.response",
     schema_hash=_sha256_text(
-        "rcm-response:v4:first-json-object-with-rows-array-control-attributes-"
-        "recipe-expanded-contracts-and-quarantine"
+        "rcm-response:v5:first-json-object-with-rows-array-uncontracted-"
+        "control-attributes-and-quarantine"
     ),
     validator=_rcm_response_schema,
 )
 RCM_WORKER = WorkerDefinition(
     worker_id=RCM_WORKER_ID,
-    # The implementation is now the two-pass sequence plus the local merges, so
-    # every part of it that decides what reaches the model is in the identity a
-    # persisted proposal is reused against.
-    prompt_hash=_sha256_text(RCM_SYSTEM + RCM_SCHEMA_EVIDENCE_SYSTEM),
+    prompt_hash=_sha256_text(RCM_SYSTEM),
     response_schema=RCM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=_RCM_MAX_REPAIR_ATTEMPTS,
@@ -2135,7 +1883,6 @@ __all__ = [
     "PLANNING_CONTEXT_SYSTEM",
     "PLANNING_CONTEXT_WORKER",
     "PLANNING_CONTEXT_WORKER_ID",
-    "RCM_SCHEMA_EVIDENCE_SYSTEM",
     "RCM_RESPONSE_SCHEMA",
     "RCM_SYSTEM",
     "RCM_WORKER",

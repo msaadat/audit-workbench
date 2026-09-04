@@ -169,6 +169,65 @@ def _ruleset_payload():
     }
 
 
+def _uncontracted_matrix(workspace):
+    """A matrix as it now commits: the strategy, and no contract."""
+
+    document_schemas.save_schema(workspace, "vendor_invoice", _INVOICE_FIELDS)
+    document_schemas.save_schema(workspace, "purchase_order", _ORDER_FIELDS)
+    workspace.add_rcm({
+        "process": "Procure to pay",
+        "risk": "An invoice is paid for more than was ordered.",
+        "control_attributes": [{
+            "key": "three_way_match",
+            "assertion": "Accuracy",
+            "requirement": "The invoice agrees to the order.",
+            "evidence_kind": "transaction_cycle",
+        }],
+    })
+    return workspaces.load_workspace(workspace.id)
+
+
+def test_the_stage_is_keyed_on_the_strategy_not_on_the_contract():
+    """What this stage exists to write is the very thing it used to require.
+
+    Keyed on ``schema_backed``, an uncontracted matrix reported the stage
+    satisfied and proposed for nobody — which is every matrix, now that the
+    contract is authored here.
+    """
+
+    workspace = _uncontracted_matrix(_workspace_with_a_voucher())
+
+    (attribute,) = test_capabilities._cycle_attributes(workspace)
+    assert attribute["key"] == "three_way_match"
+
+    readiness = test_capabilities._ruleset_ready(workspace, {})
+    assert readiness.state == "missing"
+
+    (unit,) = test_capabilities._ruleset_units(workspace, {})
+    assert unit.kind == "cycle_ruleset_proposal"
+    # The guarded parents are the rows the comparisons will land on.
+    (row,) = workspace.rcm
+    assert unit.parent_refs == (f"rcm:{row['id']}",)
+
+
+def test_a_committed_proposal_does_not_re_expand_after_the_rows_change():
+    """The write-back rewrites the rows this unit is guarded on.
+
+    ``invalidate_on=("rcm",)`` therefore fires on the stage's own commit, and
+    without the existing-ruleset check that would be a loop: propose, write
+    back, invalidate, propose again.
+    """
+
+    workspace = _uncontracted_matrix(_workspace_with_a_voucher())
+    assert test_capabilities._ruleset_units(workspace, {})
+
+    cycle_rulesets.save(workspace, _ruleset_payload())
+    workspace = workspaces.load_workspace(workspace.id)
+
+    assert test_capabilities._ruleset_units(workspace, {}) == []
+    assert test_capabilities._ruleset_ready(workspace, {}).state == "satisfied"
+
+
 def test_cause_is_the_matrix_when_no_attribute_asks_for_a_cycle():
     workspace = _workspace_with_a_voucher()
 

@@ -16,7 +16,13 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ... import cycle_rulesets, cycle_vouching, data_tests, doc_tests
+from ... import (
+    cycle_linking,
+    cycle_rulesets,
+    cycle_vouching,
+    data_tests,
+    doc_tests,
+)
 from ...workspace_transactions import (
     ParentConflict,
     canonical_sha1,
@@ -696,6 +702,7 @@ def _cycle_ruleset_result(
     *,
     revision_before: int,
     record: Mapping[str, object],
+    downgraded: list[dict] | None = None,
 ) -> ExecutorResult:
     ref = cycle_ruleset_ref(str(record.get("ruleset_id") or ""))
     return ExecutorResult(
@@ -723,8 +730,147 @@ def _cycle_ruleset_result(
             "roles": len(list(record.get("roles") or [])),
             "join_keys": len(list(record.get("join_keys") or [])),
             "assertions": len(list(record.get("assertions") or [])),
+            # Requirements no field these schemas carry could express. The
+            # attribute kept its requirement and took the strongest path still
+            # open to it, and an auditor is told which control that happened on.
+            "downgraded": list(downgraded or []),
         },
     )
+
+
+def _derived_comparison(
+    assertion: Mapping[str, object], roles: Mapping[str, Mapping[str, object]]
+) -> dict | None:
+    """One matrix comparison, read off the assertion that answers a requirement.
+
+    The matrix says what must be shown; the assertion says which fields show
+    it; this restates the second in the vocabulary the first is stored in. The
+    translation is the role: a rule names a *position* in the cycle, and a row
+    names the document type filling it.
+    """
+
+    def operand(side: object) -> dict | None:
+        if not isinstance(side, Mapping):
+            return None
+        role = roles.get(str(side.get("role") or ""))
+        document_type = str((role or {}).get("document_type") or "")
+        field = str(side.get("field") or "")
+        if not document_type or not field:
+            return None
+        return {"document_type": document_type, "field": field}
+
+    left = operand(assertion.get("left"))
+    if left is None:
+        return None
+    raw_right = assertion.get("right")
+    right = None
+    if raw_right is not None:
+        right = operand(raw_right)
+        if right is None:
+            return None
+    return {
+        "key": str(assertion.get("id") or ""),
+        "left": left,
+        "right": right,
+        # The requirement in the terms the control is written in, which is what
+        # an auditor reading the row needs and what the rule already carries.
+        "rationale": str(
+            assertion.get("requirement") or assertion.get("rationale") or ""
+        ),
+    }
+
+
+def _contract_matrix_rows(
+    fresh: Workspace, proposal: Mapping[str, object]
+) -> list[dict]:
+    """Write each answered requirement back onto the matrix row that asked it.
+
+    The row schema does not change and neither does anything reading it: the
+    matrix has always carried ``required_comparisons`` and downstream has
+    always read them there. Only the author moved — to the one turn that has
+    this engagement's induced schemas in front of it.
+
+    Returns the downgrades, which the run reports: a requirement no field these
+    schemas carry can express is a real limit and an auditor has to be told
+    which control it landed on.
+    """
+
+    coverage = [
+        entry for entry in proposal.get("coverage") or [] if isinstance(entry, Mapping)
+    ]
+    if not coverage:
+        return []
+    roles = {
+        str(role.get("name") or ""): role
+        for role in proposal.get("roles") or []
+        if isinstance(role, Mapping)
+    }
+    assertions = {
+        str(item.get("id") or ""): item
+        for item in proposal.get("assertions") or []
+        if isinstance(item, Mapping)
+    }
+    by_row: dict[str, list[Mapping[str, object]]] = {}
+    for entry in coverage:
+        by_row.setdefault(str(entry.get("rcm_id") or ""), []).append(entry)
+    rows = {str(row.get("id") or ""): row for row in fresh.rcm or []}
+    # Profiled once. The fallback asks which population bears on a row, and
+    # answering that per attribute would re-profile every table each time.
+    answers = cycle_linking.tabular_evidence_answers(fresh)
+    downgraded: list[dict] = []
+    for rcm_id, entries in by_row.items():
+        row = rows.get(rcm_id)
+        if row is None:
+            # The matrix moved under the proposal. Not this executor's to
+            # repair: the unit's guarded parents are these rows, so a rewritten
+            # one conflicts the commit rather than reaching here.
+            continue
+        working = dict(row)
+        for entry in entries:
+            attribute_key = str(entry.get("control_attribute") or "")
+            if entry.get("unsupported"):
+                working = cycle_linking.downgrade_uncontracted(
+                    fresh, working, attribute_key, answers=answers
+                )
+                downgraded.append({
+                    "rcm_id": rcm_id,
+                    "control_attribute": attribute_key,
+                    "reason": str(entry.get("reason") or ""),
+                })
+                continue
+            assertion = assertions.get(str(entry.get("assertion_id") or ""))
+            comparison = (
+                _derived_comparison(assertion, roles) if assertion is not None else None
+            )
+            if comparison is None:
+                continue
+            working = {
+                **working,
+                "control_attributes": [
+                    (
+                        {**attribute, "required_comparisons": [comparison]}
+                        if isinstance(attribute, Mapping)
+                        and str(attribute.get("key") or "") == attribute_key
+                        and cycle_linking.uncontracted(attribute)
+                        else attribute
+                    )
+                    for attribute in working.get("control_attributes") or []
+                ],
+            }
+        try:
+            # Exact, against this engagement's schemas. ``update_rcm`` validates
+            # shape alone — it has no workspace to check against — so a field a
+            # schema does not state would otherwise be persisted and surface
+            # three stages on as a cycle test that cannot be generated.
+            attributes = cycle_vouching.validate_control_attributes(
+                working.get("control_attributes"), workspace=fresh
+            )
+        except cycle_vouching.CycleSchemaError as error:
+            raise WorkspaceError(
+                f"RCM row '{rcm_id}': {error}"
+            ) from error
+        fresh.update_rcm(rcm_id, {"control_attributes": attributes}, agent=True)
+    return downgraded
 
 
 def execute_cycle_ruleset(
@@ -747,9 +893,15 @@ def execute_cycle_ruleset(
 
     def commit(fresh: Workspace) -> dict:
         state["revision_before"] = fresh.revision
-        return cycle_rulesets.save(
+        record = cycle_rulesets.save(
             fresh, _plain_json(proposal), proposed_by="agent"
         )
+        # Inside the same guarded callback as the save: the unit's parents are
+        # the matrix rows these comparisons land on, so a row rewritten since
+        # the proposal was authored conflicts the whole commit rather than
+        # being quietly overwritten with a contract answering the old wording.
+        state["downgraded"] = _contract_matrix_rows(fresh, proposal)
+        return record
 
     # Through the transaction even though the ruleset lands in a side store,
     # for the reason the schema freeze is: it takes the write lock, re-checks
@@ -766,6 +918,7 @@ def execute_cycle_ruleset(
         committed.workspace,
         revision_before=int(state["revision_before"]),
         record=dict(committed.value),
+        downgraded=list(state.get("downgraded") or []),
     )
 
 

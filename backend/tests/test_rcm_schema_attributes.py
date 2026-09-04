@@ -164,6 +164,52 @@ def test_every_unexpected_key_is_reported_not_just_the_first(engagement):
     assert any("unexpected key 'required_record_kinds'" in item for item in errors)
 
 
+def test_a_cycle_attribute_naming_no_comparison_is_uncontracted_not_invalid(
+    engagement,
+):
+    """The state every matrix row now commits its cycle attributes in.
+
+    The matrix decides that a requirement needs several source records read
+    together; the cycle design, which is the stage holding the induced schemas,
+    decides which fields must then agree. Between the two the attribute is
+    complete and answerable and names no comparison — and refusing that would
+    refuse every matrix this engagement writes.
+    """
+
+    raw = attribute()
+    raw.pop("required_comparisons")
+
+    assert errors_for(engagement, raw) == []
+
+    (validated,) = cycle_vouching.validate_control_attributes(
+        [raw], workspace=engagement
+    )
+    assert "required_comparisons" not in validated
+    assert cycle_linking.uncontracted(validated)
+    assert not cycle_linking.schema_backed(validated)
+
+
+def test_an_empty_contract_is_still_refused(engagement):
+    """Absent and empty are different statements.
+
+    Absent means the cycle design has not run. Empty means a contract was
+    authored and says nothing must agree, which describes no work at all.
+    """
+
+    errors = errors_for(engagement, attribute(required_comparisons=[]))
+
+    assert any("names no evidence contract" in item for item in errors)
+
+
+def test_a_contracted_attribute_is_not_uncontracted(engagement):
+    (validated,) = cycle_vouching.validate_control_attributes(
+        [attribute()], workspace=engagement
+    )
+
+    assert cycle_linking.schema_backed(validated)
+    assert not cycle_linking.uncontracted(validated)
+
+
 def test_only_a_transaction_cycle_attribute_requires_comparisons(engagement):
     errors = errors_for(engagement, attribute(evidence_kind="inquiry"))
 
@@ -353,9 +399,11 @@ def test_a_row_with_no_cycle_attribute_reports_nothing(engagement):
 
 
 # ------------------------------------------------------------------- ordering
-def test_the_rcm_waits_for_types_and_schemas():
-    """Both run over the whole document set rather than the planning-scoped
-    subset, which is what puts voucher schemas in hand when the RCM is written."""
+def test_the_rcm_waits_for_types_but_no_longer_for_schemas():
+    """The matrix needs to know which record kinds exist, not what fields they
+    carry: it says a requirement needs linked source records and stops, and the
+    cycle design names the fields once the schemas are induced. The dropped edge
+    is what stops a re-derived schema invalidating the whole matrix."""
 
     from app.agent.workflows import audit
 
@@ -363,6 +411,9 @@ def test_the_rcm_waits_for_types_and_schemas():
         "planning.apm_ready",
         "documents.categorized",
         "documents.types_classified",
+    )
+    assert audit.DEPENDENCIES["tests.cycle_ruleset_proposed"] == (
+        "planning.rcm_ready",
         "documents.schemas_stamped",
     )
 
@@ -424,85 +475,6 @@ def test_a_coined_types_discriminator_reaches_the_authoring_turn(engagement):
     )
     assert "no counterparty reference" in entry["discriminator"]
     assert entry["documents"] == 0  # coined, nothing classified onto it yet
-
-
-def test_the_schema_evidence_prompt_states_the_comparison_contract():
-    from app.agent.workers import planning as planning_worker
-
-    prompt = planning_worker.RCM_SCHEMA_EVIDENCE_SYSTEM
-
-    assert "required_comparisons" in prompt
-    assert "document_type" in prompt
-    # Nothing asks the author to choose a comparison operator any more.
-    assert "numeric_within" not in prompt
-    assert "equal_exact" not in prompt
-    # The vocabulary is per workspace, so it must not be baked into the prompt.
-    assert "vendor_invoice" not in prompt
-
-
-def test_the_contract_is_written_onto_the_attribute_that_asked_for_it():
-    import json
-
-    from app.agent.workers import planning as planning_worker
-
-    rows = [{
-        "process": "Procure to pay",
-        "control_attributes": [{
-            "key": "invoice_match",
-            "assertion": "Accuracy",
-            "requirement": "The invoice agrees to the order.",
-            "evidence_kind": "transaction_cycle",
-        }],
-    }]
-    response = json.dumps({"contracts": [{
-        "row_index": 1,
-        "attribute_key": "invoice_match",
-        "required_comparisons": [{
-            "key": "totals_agree",
-            "left": {"document_type": "vendor_invoice", "field": "total_amount"},
-            "right": {"document_type": "purchase_order", "field": "total_amount"},
-            "rationale": "The records must agree.",
-            "rationale": "The amount billed must be the amount ordered.",
-        }],
-    }]})
-
-    merged = planning_worker._merge_evidence_contracts(rows, response)
-    attribute = merged[0]["control_attributes"][0]
-
-    assert attribute["required_comparisons"][0]["key"] == "totals_agree"
-    assert "registry" not in attribute
-    assert "comparison_recipes" not in attribute
-
-
-def test_an_unsupported_requirement_is_left_uncontracted():
-    """Quietly inventing a comparison here would answer a different question
-    than the requirement asked."""
-
-    import json
-
-    from app.agent.workers import planning as planning_worker
-
-    rows = [{"control_attributes": [{
-        "key": "invoice_match", "assertion": "Accuracy",
-        "requirement": "The buyer visited the vendor's premises.",
-        "evidence_kind": "transaction_cycle",
-    }]}]
-    response = json.dumps({"contracts": [{
-        "row_index": 1, "attribute_key": "invoice_match",
-        "unsupported": True, "reason": "No document states a site visit.",
-    }]})
-
-    merged = planning_worker._merge_evidence_contracts(rows, response)
-
-    assert "required_comparisons" not in merged[0]["control_attributes"][0]
-
-
-def test_an_already_contracted_attribute_is_not_asked_again():
-    from app.agent.workers import planning as planning_worker
-
-    rows = [{"control_attributes": [attribute()]}]
-
-    assert planning_worker._cycle_attribute_requests(rows) == []
 
 
 # ------------------------------------------- a linkage requirement is a join

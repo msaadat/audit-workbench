@@ -160,37 +160,6 @@ def _cycle_attribute(**overrides):
     return attribute
 
 
-def _contract(**overrides):
-    """One evidence-pass contracts entry for the attribute above."""
-
-    contract = {
-        "row_index": 1,
-        "attribute_key": "three_way_match",
-        "required_comparisons": _three_way_comparisons(),
-    }
-    contract.update(overrides)
-    return contract
-
-
-def _three_way_comparisons():
-    """What the evidence pass now states: the fields that must agree."""
-
-    return [
-        {
-            "key": "totals_agree",
-            "left": {"document_type": "vendor_invoice", "field": "total_amount"},
-            "right": {"document_type": "purchase_order", "field": "total_amount"},
-            "rationale": "The amount billed must be the amount ordered.",
-        },
-        {
-            "key": "quantities_agree",
-            "left": {"document_type": "goods_receipt", "field": "quantity"},
-            "right": {"document_type": "purchase_order", "field": "quantity"},
-            "rationale": "Only what was received may be billed.",
-        },
-    ]
-
-
 def test_rcm_worker_uses_only_bundle_and_returns_validated_rows():
     gateway = _Gateway([json.dumps({"rows": [_row()]})])
 
@@ -781,14 +750,9 @@ def test_rcm_worker_preserves_untouched_rows_byte_for_byte_through_a_repair():
     assert accepted["risk"] == "Unapproved vendors are created"
 
 
-def test_rcm_worker_writes_the_evidence_contract_and_drops_non_durable_keys():
+def test_rcm_worker_drops_non_durable_keys_from_a_row():
     row = _row(control_attributes=[_cycle_attribute()])
-    gateway = _Gateway(
-        [
-            json.dumps({"rows": [row]}),
-            json.dumps({"contracts": [_contract()]}),
-        ]
-    )
+    gateway = _Gateway([json.dumps({"rows": [row]})])
 
     result = WORKERS.execute(_request(), gateway)
 
@@ -797,85 +761,59 @@ def test_rcm_worker_writes_the_evidence_contract_and_drops_non_durable_keys():
     # row; the workspace discards them anyway.
     assert "new_risk_reason" not in normalized
     assert "test_procedure" not in normalized
-    attribute = normalized["control_attributes"][0]
-    assert [item["key"] for item in attribute["required_comparisons"]] == [
-        "totals_agree",
-        "quantities_agree",
-    ]
-    # The fields are named outright, so there is no pack to reference.
-    assert "registry" not in attribute
-    assert "comparison_recipes" not in attribute
 
 
-def test_rcm_worker_runs_the_evidence_pass_only_for_cycle_attributes():
-    """The vocabulary is carried by the call that needs it, and no other.
+def test_a_cycle_attribute_naming_no_comparison_is_accepted():
+    """The state a matrix now commits its cycle attributes in.
 
-    The great majority of attributes never state a comparison, and paying for a
-    second turn on each of them buys nothing.
+    Deciding *that* a requirement needs several source records read together is
+    the matrix's judgment. Which fields must then agree is the cycle design's,
+    downstream, and this turn has read none of the documents it would need to
+    say. Refusing the row for not saying it would refuse every matrix.
     """
 
-    gateway = _Gateway([json.dumps({"rows": [_row()]})])
-
-    WORKERS.execute(_request(), gateway)
-
-    # One call only: no attribute asked for an evidence contract.
-    assert len(gateway.calls) == 1
-    assert gateway.calls[0]["system"] == planning.RCM_SYSTEM
-    # And the vocabulary is per workspace, so it is not in the prompt at all.
-    assert "vendor_invoice" not in planning.RCM_SCHEMA_EVIDENCE_SYSTEM
-
-
-def test_the_evidence_pass_writes_the_contract_the_judgment_pass_was_told_to_omit():
     gateway = _Gateway(
-        [
-            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
-            json.dumps({"contracts": [_contract()]}),
-        ]
+        [json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]})]
     )
 
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is False
-    assert result.proposal["rows"][0]["control_attributes"][0][
-        "required_comparisons"
-    ]
+    (attribute,) = result.proposal["rows"][0]["control_attributes"]
+    assert attribute["evidence_kind"] == "transaction_cycle"
+    assert "required_comparisons" not in attribute
+    # One call. The second existed only to author the contract.
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0]["system"] == planning.RCM_SYSTEM
 
 
-def test_an_attribute_the_evidence_pass_declined_takes_the_next_best_path():
-    """The pack's limit is not the requirement's limit.
+def test_a_cycle_attribute_stating_an_empty_contract_is_still_refused():
+    """Absent and empty are different statements.
 
-    A comparison the registry cannot express is still never substituted with a
-    different one — the attribute keeps its own requirement. What changed is
-    that it no longer keeps a classification nothing can act on: leaving it
-    ``transaction_cycle`` with no contract failed the row, discarding its risk
-    and control along with it, and tested nothing at all. It takes the
-    documents instead, and the auditor is told what was re-routed.
+    Absent means the cycle design has not run yet. Empty means a contract was
+    authored and says nothing must agree, which describes no work at all — and
+    it is what the matrix produced when it tried to write the contract itself.
     """
 
     gateway = _Gateway(
         [
-            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
             json.dumps(
                 {
-                    "contracts": [
-                        {
-                            "row_index": 1,
-                            "attribute_key": "three_way_match",
-                            "unsupported": True,
-                            "reason": "The pack states no delivery-note record.",
-                        }
+                    "rows": [
+                        _row(
+                            control_attributes=[
+                                {**_cycle_attribute(), "required_comparisons": []}
+                            ]
+                        )
                     ]
                 }
             ),
+            json.dumps({"rows": []}),
         ]
     )
 
-    result = WORKERS.execute(_request(), gateway)
-
-    (attribute,) = result.proposal["rows"][0]["control_attributes"]
-    assert attribute["evidence_kind"] == "document_content"
-    assert attribute["key"] == "three_way_match"
-    assert "registry" not in attribute
+    with pytest.raises(WorkerRunError, match="names no evidence contract"):
+        WORKERS.execute(_request(), gateway)
 
 
 def test_rcm_worker_aggregates_quality_errors_across_rows():
@@ -940,35 +878,30 @@ def test_rcm_worker_still_rejects_a_truncated_object():
         WORKERS.execute(_request(), gateway)
 
 
-def test_a_whole_document_re_ask_still_runs_the_evidence_pass():
-    """Run 20260809-140906-19a740, second half.
+def test_a_whole_document_re_ask_is_the_second_and_last_call():
+    """When the prior draft never parsed there are no rows to scope a repair to.
 
-    When the prior draft never parsed there are no rows to scope a repair to, so
-    the whole document is re-asked. That response is a judgment-pass response like
-    any other and must go through the evidence pass; returning it directly left
-    all 13 transaction-cycle attributes without the contract the judgment prompt
-    had just told the model not to write.
+    The whole document is re-asked, and that is the end of it. There used to be
+    a third call behind this one authoring the evidence contracts, and a path
+    that skipped it left thirteen transaction-cycle attributes carrying nothing
+    — the class of bug that stops existing once there is only one call.
     """
 
     gateway = _Gateway(
         [
             "{ truncated",
             json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
-            json.dumps({"contracts": [_contract()]}),
         ]
     )
 
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    # judgment, whole-document re-ask, then the evidence pass on its output.
-    assert len(gateway.calls) == 3
-    assert gateway.calls[2]["system"] == planning.RCM_SCHEMA_EVIDENCE_SYSTEM
-    attribute = result.proposal["rows"][0]["control_attributes"][0]
-    assert [item["key"] for item in attribute["required_comparisons"]] == [
-        "totals_agree",
-        "quantities_agree",
-    ]
+    assert len(gateway.calls) == 2
+    assert gateway.calls[1]["system"] == planning.RCM_SYSTEM
+    (attribute,) = result.proposal["rows"][0]["control_attributes"]
+    assert attribute["evidence_kind"] == "transaction_cycle"
+    assert "required_comparisons" not in attribute
 
 
 def test_rcm_worker_hands_unparseable_output_to_the_registry_to_repair():
@@ -988,50 +921,6 @@ def test_rcm_worker_hands_unparseable_output_to_the_registry_to_repair():
     assert [row["risk"] for row in result.proposal["rows"]] == [
         "Duplicate payments are processed"
     ]
-
-
-def test_rcm_worker_survives_an_unparseable_evidence_pass():
-    """A malformed second pass leaves the attributes without a contract.
-
-    Which the gate then reports, and the repair turn can act on — rather than the
-    worker raising past the loop that exists to fix it.
-    """
-
-    gateway = _Gateway(
-        [
-            json.dumps({"rows": [_row(control_attributes=[_cycle_attribute()])]}),
-            "```\nnot a contracts object\n```",
-            json.dumps(
-                {
-                    "rows": [
-                        {
-                            **_row(
-                                control_attributes=[
-                                    {
-                                        **_cycle_attribute(),
-                                        "required_comparisons": [
-                                            _three_way_comparisons()[0]
-                                        ],
-                                    }
-                                ]
-                            ),
-                            "row_index": 1,
-                        }
-                    ]
-                }
-            ),
-        ]
-    )
-
-    result = WORKERS.execute(_request(), gateway)
-
-    assert result.repaired is True
-    repair_request = json.loads(gateway.calls[2]["user"])
-    assert any(
-        "names no evidence contract" in error
-        for entry in repair_request["ROWS TO CORRECT"]
-        for error in entry["errors"]
-    ), repair_request["ROWS TO CORRECT"]
 
 
 def test_rcm_worker_re_asks_the_document_when_the_prior_draft_never_parsed():
@@ -1097,38 +986,21 @@ def test_rcm_worker_still_fails_when_no_row_survives():
         WORKERS.execute(_request(), gateway)
 
 
-def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
-    """An invalid comparison is corrected; the risk and control are not reopened."""
+def test_a_repair_over_a_cycle_row_re_asks_the_matrix_prompt_alone():
+    """One prompt, so a repair carries the matrix's rules and nothing else.
+
+    The scoped repair used to be sent both system prompts concatenated, because
+    a row it was correcting might carry an evidence contract. Nothing it writes
+    now does.
+    """
 
     attribute = _cycle_attribute()
-    row = _row(control_attributes=[attribute])
-    broken = _contract(required_comparisons=[{
-        "key": "totals_agree",
-        "left": {"document_type": "vendor_invoice", "field": "total_amount"},
-        "right": {"document_type": "purchase_order", "field": "total_amount"},
-    }])
+    broken = _row(risk_rating="severe", control_attributes=[attribute])
     gateway = _Gateway(
         [
-            json.dumps({"rows": [row]}),
-            json.dumps({"contracts": [broken]}),
+            json.dumps({"rows": [broken]}),
             json.dumps(
-                {
-                    "rows": [
-                        {
-                            **_row(
-                                control_attributes=[
-                                    {
-                                        **attribute,
-                                        "required_comparisons": [
-                                            _three_way_comparisons()[0]
-                                        ],
-                                    }
-                                ]
-                            ),
-                            "row_index": 1,
-                        }
-                    ]
-                }
+                {"rows": [{**_row(control_attributes=[attribute]), "row_index": 1}]}
             ),
         ]
     )
@@ -1136,13 +1008,12 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    repair_request = json.loads(gateway.calls[2]["user"])
-    errors = repair_request["ROWS TO CORRECT"][0]["errors"]
-    assert any("rationale is required" in error for error in errors)
-    # The repair turn is given the contract, not just the violation.
-    assert "required_comparisons" in gateway.calls[2]["system"]
-    assert "Do not say how to compare them" in gateway.calls[2]["system"]
-    assert result.proposal["rows"][0]["risk"] == "Duplicate payments are processed"
+    assert gateway.calls[1]["system"] == planning.RCM_SYSTEM
+    errors = json.loads(gateway.calls[1]["user"])["ROWS TO CORRECT"][0]["errors"]
+    assert any("unsupported risk rating" in error for error in errors)
+    (repaired,) = result.proposal["rows"]
+    assert repaired["risk"] == "Duplicate payments are processed"
+    assert "required_comparisons" not in repaired["control_attributes"][0]
 
 
 def test_rcm_worker_rejects_update_to_unknown_existing_row():

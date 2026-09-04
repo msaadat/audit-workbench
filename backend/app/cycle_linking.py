@@ -1708,6 +1708,23 @@ def schema_backed(attribute: Mapping[str, object]) -> bool:
     return attribute.get("required_comparisons") is not None
 
 
+def uncontracted(attribute: Mapping[str, object]) -> bool:
+    """Whether this attribute asks for linked evidence and has not been told what.
+
+    The legitimate state between the matrix and the cycle design. The matrix
+    decides that a requirement needs several source records read together; the
+    cycle design, which is the stage that has the engagement's own schemas in
+    front of it, decides which fields must then agree. Between the two the
+    attribute is complete and answerable and names no comparison, and nothing
+    should read that as a defect.
+    """
+
+    return (
+        attribute.get("evidence_kind") == "transaction_cycle"
+        and not schema_backed(attribute)
+    )
+
+
 def _comparison_operand(
     workspace, value: object, label: str, errors: list[str]
 ) -> dict:
@@ -1834,10 +1851,11 @@ def validate_control_attribute(
 ) -> dict:
     """Validate one control attribute of an asserted control.
 
-    Only a ``transaction_cycle`` attribute states comparisons, and it must:
-    that is the whole content of declaring linked source records. Every other
+    Only a ``transaction_cycle`` attribute states comparisons. Every other
     evidence strategy is answered somewhere the cycle engine never reaches, so
     a comparison on one would describe work nothing performs.
+
+    A transaction-cycle attribute *may* state none: see :func:`uncontracted`.
     """
 
     # Every unexpected key, not the first: a row carrying three of them is
@@ -1886,6 +1904,16 @@ def validate_control_attribute(
                 f"'{evidence_kind or 'unset'}'."
             )
         return attribute
+    if raw.get("required_comparisons") is None:
+        # Absent, not empty. The matrix writes the strategy and stops; the
+        # cycle design writes the contract back onto the row once it has seen
+        # the schemas. Between the two the attribute is uncontracted, and
+        # rejecting that would reject every row the matrix commits.
+        #
+        # An empty *list* is still refused below. It is a different statement —
+        # a contract was authored and it says nothing must agree — and it
+        # describes no work at all.
+        return attribute
     attribute["required_comparisons"] = validate_required_comparisons(
         workspace,
         raw.get("required_comparisons"),
@@ -1893,6 +1921,87 @@ def validate_control_attribute(
         errors=errors,
     )
     return attribute
+
+
+def _workspace_table_profiles(workspace) -> list[dict]:
+    """Bounded shape statistics for every table this engagement holds."""
+
+    from . import tooling
+    from .workspaces import WorkspaceError
+
+    profiles: list[dict] = []
+    for table in workspace.table_names():
+        try:
+            profiles.append(
+                tooling.table_profile(
+                    workspace, table, include_category_values=False
+                )
+            )
+        except (OSError, WorkspaceError):
+            continue
+    return profiles
+
+
+def tabular_evidence_answers(workspace) -> list:
+    """Each testable population of this engagement, as name and column tokens.
+
+    Computed once by a caller downgrading several attributes: every call would
+    otherwise re-profile every table.
+    """
+
+    from .agent.workers.planning import tabular_answers
+
+    return tabular_answers(_workspace_table_profiles(workspace))
+
+
+def downgrade_uncontracted(
+    workspace,
+    row: Mapping[str, object],
+    attribute_key: str,
+    *,
+    answers: list | None = None,
+) -> dict:
+    """Re-route one cycle attribute the engagement's documents cannot express.
+
+    A requirement this engagement's schemas cannot state is a limit of the
+    *documentary* path, not of the requirement. "The invoice is settled for the
+    amount the order committed" is answerable from the imported populations
+    whether or not the extracted schemas carry those fields, and leaving the
+    attribute classified ``transaction_cycle`` with nothing behind it does not
+    preserve rigour — it leaves a row whose requirement nothing will ever test
+    and nothing will ever say so.
+
+    So the attribute keeps its requirement and takes the strongest path still
+    open to it: the population where the supplied tables bear on the row, the
+    documents otherwise. Eight rows carrying real risks died for want of this
+    in one run, before it existed.
+
+    Returns the row with that one attribute rewritten; every other attribute,
+    and every other field, is returned unchanged.
+    """
+
+    from .agent.workers.planning import _answering_table
+
+    if answers is None:
+        answers = tabular_evidence_answers(workspace)
+    fallback = (
+        "tabular_population" if _answering_table(row, answers) else "document_content"
+    )
+    updated = []
+    for attribute in row.get("control_attributes") or []:
+        if (
+            not isinstance(attribute, Mapping)
+            or str(attribute.get("key") or "") != attribute_key
+            or not uncontracted(attribute)
+        ):
+            # A contracted attribute is left alone. Comparisons name the fields
+            # a cycle links and mean nothing under any other strategy, so
+            # re-routing one would have to discard a contract someone may
+            # already have approved rules against.
+            updated.append(attribute)
+            continue
+        updated.append({**attribute, "evidence_kind": fallback})
+    return {**dict(row), "control_attributes": updated}
 
 
 def required_comparisons_for(
@@ -2016,30 +2125,6 @@ def comparison_signature(comparison: Mapping[str, object]) -> tuple:
     return tuple(sorted([left, right]))
 
 
-def distinct_comparisons(
-    comparisons: Iterable[Mapping[str, object]]
-) -> list[dict]:
-    """One comparison per distinct operand signature, first occurrence kept.
-
-    A matrix routinely requires the same field pair from several control
-    attributes — an amount that ``deal_accuracy`` and ``match_terms`` both
-    depend on is one test, demanded twice. Counting those apart overstates the
-    work by more than half on a real engagement, and asking for an assertion
-    each yields duplicate rules that differ only by an id no coverage check
-    reads.
-    """
-
-    seen: set[tuple] = set()
-    distinct: list[dict] = []
-    for comparison in comparisons or []:
-        signature = comparison_signature(comparison)
-        if signature in seen:
-            continue
-        seen.add(signature)
-        distinct.append(dict(comparison))
-    return distinct
-
-
 def join_key_covers(
     join_key: Mapping[str, object],
     comparison: Mapping[str, object],
@@ -2141,26 +2226,38 @@ def unanswerable_cycle_requirements(workspace, rcm_row: Mapping[str, object]) ->
     reports the row as generated over it has reported success across a gap.
     """
 
-    attributes = [
+    cycle_attributes = [
         attribute
         for attribute in rcm_row.get("control_attributes") or []
         if isinstance(attribute, Mapping)
-        and schema_backed(attribute)
         and attribute.get("evidence_kind") == "transaction_cycle"
     ]
-    if not attributes:
-        return []
     rcm_id = str(rcm_row.get("id") or "")
+    # An attribute the cycle design never reached. It asks for linked source
+    # records and nothing has said which fields must agree, so there is nothing
+    # for a cycle test to run — the same silence as an unanswerable comparison,
+    # arriving one stage earlier and needing to be said just as plainly.
+    notes = [
+        f"{rcm_id} control attribute '{attribute.get('key')}' declares "
+        "transaction_cycle evidence and no cycle design has run for it, so no "
+        "cycle test could be generated for it and the requirement is untested."
+        for attribute in cycle_attributes
+        if uncontracted(attribute)
+    ]
+    attributes = [
+        attribute for attribute in cycle_attributes if schema_backed(attribute)
+    ]
+    if not attributes:
+        return notes
     ruleset = cycle_rulesets.effective(workspace)
     if ruleset is None:
-        return [
+        return notes + [
             f"{rcm_id} control attribute '{attribute.get('key')}' declares "
             "transaction_cycle evidence and this engagement has no approved "
             "cycle ruleset, so no cycle test could be generated for it and the "
             "requirement is untested."
             for attribute in attributes
         ]
-    notes: list[str] = []
     for attribute in attributes:
         comparisons = [
             {**dict(item), "attribute_key": str(attribute.get("key") or "")}

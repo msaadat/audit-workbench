@@ -63,7 +63,7 @@ class _Request:
         if requirements is not None:
             items.append(
                 _ContextItem(
-                    "cycle_requirements", {"required_comparisons": list(requirements)}
+                    "cycle_requirements", {"cycle_requirements": list(requirements)}
                 )
             )
         self.context = _Context(items)
@@ -74,18 +74,32 @@ def _request(requirements=None):
 
 
 def _requirement(**overrides) -> dict:
-    """One thing the matrix has decided this cycle must demonstrate."""
+    """One thing the matrix has decided this cycle must demonstrate.
+
+    In words. The matrix names no fields — it has read none of these documents,
+    and this worker is the one turn that has their schemas in front of it.
+    """
     item = {
         "rcm_id": "RCM-1",
         "control_attribute": "invoice_match",
+        "assertion": "Accuracy",
         "requirement": "The invoice agrees to the order it bills against.",
-        "comparison": "totals_agree",
-        "left": {"document_type": "vendor_invoice", "field": "total_amount"},
-        "right": {"document_type": "purchase_order", "field": "total_amount"},
-        "why": "The amount billed must be the amount ordered.",
+        "control": "Invoices are matched to their orders before payment.",
+        "risk": "Invoices are paid for amounts never ordered.",
+        "process": "Procure to pay",
     }
     item.update(overrides)
     return item
+
+
+def _covered(**overrides) -> dict:
+    entry = {
+        "rcm_id": "RCM-1",
+        "control_attribute": "invoice_match",
+        "assertion_id": "as_total",
+    }
+    entry.update(overrides)
+    return entry
 
 
 def _proposal(**overrides) -> dict:
@@ -122,6 +136,32 @@ def test_a_complete_proposal_parses():
     assert parsed["cycle_label"] == "Procure to pay"
     assert parsed["join_keys"][0]["match"] == "normalized_equal"
     assert parsed["assertions"][0]["requirement"] == "The records must agree."
+    # Absent where nothing was asked, which is the shape a proposal written from
+    # the vocabulary alone has always had.
+    assert parsed["coverage"] == []
+
+
+def test_coverage_parses_into_both_of_its_two_shapes():
+    parsed = _linkage_response_schema(
+        json.dumps(
+            _proposal(
+                coverage=[
+                    _covered(),
+                    {
+                        "rcm_id": "RCM-2",
+                        "control_attribute": "receipt_match",
+                        "unsupported": True,
+                        "reason": "No induced type states a delivery quantity.",
+                    },
+                ]
+            )
+        )
+    )
+
+    answered, unsupported = parsed["coverage"]
+    assert answered["assertion_id"] == "as_total"
+    assert "assertion_id" not in unsupported
+    assert unsupported["reason"] == "No induced type states a delivery quantity."
 
 
 def test_a_cycle_that_tests_nothing_is_refused():
@@ -543,94 +583,138 @@ def test_approving_rules_reopens_the_rows_that_settled_for_a_fallback():
 
 
 # ------------------------------------------------- answering what was asked
-def test_a_proposal_leaving_a_matrix_requirement_unanswered_is_refused():
+def test_a_requirement_with_no_coverage_entry_is_refused():
     """The check that used to fire three stages downstream fires here.
 
     It fired at ``tests.specified``, by which time the ruleset had been approved
     and an approved ruleset is immutable — so repairing a gap cost a successor
     proposal and a second signature, for a defect this worker's own bounded loop
-    could fix for one attempt. The proposal below binds the documents and
-    asserts nothing about the amounts the matrix asked it to compare.
+    could fix for one attempt. The proposal below asserts something real and
+    says nothing about the requirement it was handed.
     """
-
-    with pytest.raises(WorkerResponseValidationError, match="answers 0 of 1 required field pair"):
-        validate_linkage_proposal(
-            _proposal(assertions=[{
-                "id": "approval_present", "label": "Approval present",
-                "left": {"role": "invoice", "field": "approval"},
-                "right": None,
-                "requirement": "The invoice carries an approval.",
-            }]),
-            _request(requirements=[_requirement()]),
-        )
-
-
-def test_the_refusal_names_the_fields_the_assertion_has_to_read():
-    """A repair turn acts on operands, not on a count."""
 
     with pytest.raises(WorkerResponseValidationError) as raised:
         validate_linkage_proposal(
-            _proposal(assertions=[{
-                "id": "approval_present", "label": "Approval present",
-                "left": {"role": "invoice", "field": "approval"},
-                "right": None,
-                "requirement": "The invoice carries an approval.",
-            }]),
+            _proposal(),
             _request(requirements=[_requirement()]),
         )
 
     message = str(raised.value)
-    assert "vendor_invoice.total_amount agrees with purchase_order.total_amount" in message
+    assert "answers 0 of 1 supplied requirement" in message
+    # The requirement in its own words, so the repair turn knows what to answer.
+    assert "The invoice agrees to the order it bills against." in message
 
 
-def test_the_refusal_does_not_name_the_matrix_key():
-    """The message must not hand back an identifier the store would reject.
+def test_coverage_naming_an_assertion_that_does_not_exist_is_refused():
+    """The one gap that reads as coverage from every other angle.
 
-    It used to name each gap ``control_attribute.comparison``, and a proposer
-    reading "add an assertion for each of these" took those dotted strings for
-    the ids it was being asked to write. One treasury run wrote 54 of them,
-    passed coverage, and died at commit on the first dot — a whole run lost to
-    a format this message taught it.
+    The requirement is answered, the proposal validates, and the executor then
+    finds no assertion to derive a comparison from — so the row is committed
+    uncontracted and nothing says why.
     """
 
-    with pytest.raises(WorkerResponseValidationError) as raised:
+    with pytest.raises(WorkerResponseValidationError, match="does not contain"):
         validate_linkage_proposal(
-            _proposal(assertions=[{
-                "id": "approval_present", "label": "Approval present",
-                "left": {"role": "invoice", "field": "approval"},
-                "right": None,
-                "requirement": "The invoice carries an approval.",
+            _proposal(coverage=[_covered(assertion_id="as_invented")]),
+            _request(requirements=[_requirement()]),
+        )
+
+
+def test_an_answered_requirement_passes():
+    proposal = validate_linkage_proposal(
+        _proposal(coverage=[_covered()]),
+        _request(requirements=[_requirement()]),
+    )
+
+    assert proposal["coverage"] == [_covered()]
+
+
+def test_a_requirement_these_schemas_cannot_express_is_declared_not_guessed():
+    """Saying so is the honest outcome, and the row is re-routed on it.
+
+    Reaching for a nearby field instead — vendor names when the requirement is
+    about amounts — proves something else, and the control then reads as tested
+    when it is not.
+    """
+
+    proposal = validate_linkage_proposal(
+        _proposal(coverage=[{
+            "rcm_id": "RCM-1",
+            "control_attribute": "invoice_match",
+            "unsupported": True,
+            "reason": "No induced type states a delivery quantity.",
+        }]),
+        _request(requirements=[_requirement()]),
+    )
+
+    assert proposal["coverage"][0]["unsupported"] is True
+
+
+def test_an_unsupported_requirement_without_a_reason_is_refused():
+    """An auditor has to be told which field the schemas would have to carry."""
+
+    with pytest.raises(WorkerResponseValidationError, match="unsupported with no reason"):
+        validate_linkage_proposal(
+            _proposal(coverage=[{
+                "rcm_id": "RCM-1",
+                "control_attribute": "invoice_match",
+                "unsupported": True,
             }]),
             _request(requirements=[_requirement()]),
         )
 
-    assert "invoice_match.totals_agree" not in str(raised.value)
 
+def test_two_controls_wanting_the_same_evidence_name_one_assertion():
+    """A matrix demands the same test from every control that depends on it.
 
-def test_two_controls_wanting_the_same_pair_are_one_assertion():
-    """Coverage is by operands, so the same pair twice is one piece of work.
-
-    A matrix names the same comparison from every control that depends on it —
-    an amount wanted by both ``invoice_match`` and ``payment_terms`` is one
-    test, demanded twice. Counting them apart overstated the work by more than
-    half on a real engagement and asked for duplicate rules distinguishable
-    only by an id no coverage check reads.
+    An amount wanted by both ``invoice_match`` and ``payment_terms`` is one
+    assertion, named twice. Writing a second rule over the same fields answers
+    nothing the first did not and files a duplicate test.
     """
 
     proposal = validate_linkage_proposal(
-        _proposal(assertions=[{
-            "id": "totals", "label": "Totals agree",
-            "left": {"role": "invoice", "field": "total_amount"},
-            "right": {"role": "order", "field": "total_amount"},
-            "requirement": "The invoice agrees to the order.",
-        }]),
+        _proposal(coverage=[
+            _covered(),
+            _covered(control_attribute="payment_terms"),
+        ]),
         _request(requirements=[
             _requirement(),
-            _requirement(control_attribute="payment_terms", comparison="amount_agrees"),
+            _requirement(control_attribute="payment_terms"),
         ]),
     )
 
     assert len(proposal["assertions"]) == 1
+    assert len(proposal["coverage"]) == 2
+
+
+def test_one_requirement_answered_twice_is_refused():
+    """Two entries for one requirement is two answers, and one of them is wrong."""
+
+    with pytest.raises(WorkerResponseValidationError, match="two coverage entries"):
+        validate_linkage_proposal(
+            _proposal(coverage=[_covered(), _covered()]),
+            _request(requirements=[_requirement()]),
+        )
+
+
+def test_a_proposal_is_still_valid_where_the_matrix_asks_nothing():
+    """Rules may be proposed before a matrix asks anything of them."""
+
+    proposal = validate_linkage_proposal(_proposal(), _request())
+
+    assert proposal["assertions"]
+    assert not proposal.get("coverage")
+
+
+def test_the_prompt_tells_the_worker_what_the_requirements_are_for():
+    from app.agent.workers.tests import LINKAGE_SYSTEM
+
+    assert "Answer every one." in LINKAGE_SYSTEM
+    # The reason this worker names the fields and the matrix does not: it is
+    # the only turn that has seen what the documents actually carry.
+    assert "names no fields" in LINKAGE_SYSTEM
+    assert "unsupported" in LINKAGE_SYSTEM
+    assert "needs no assertion" in LINKAGE_SYSTEM
 
 
 def test_a_malformed_id_is_refused_where_a_repair_can_still_fix_it():
@@ -687,89 +771,3 @@ def test_every_id_is_reported_at_once():
     message = str(raised.value)
     assert "2 ids" in message
     assert "jk_order" in message and "invoice_match_totals_agree" in message
-
-
-def test_an_answered_requirement_passes():
-    """The assertion reads exactly the two fields the comparison names."""
-
-    proposal = validate_linkage_proposal(
-        _proposal(assertions=[{
-            "id": "totals", "label": "Totals agree",
-            "left": {"role": "invoice", "field": "total_amount"},
-            "right": {"role": "order", "field": "total_amount"},
-            "requirement": "The amount billed must be the amount ordered.",
-        }]),
-        _request(requirements=[_requirement()]),
-    )
-
-    assert proposal["assertions"][0]["id"] == "totals"
-
-
-def test_a_requirement_a_join_already_binds_needs_no_assertion():
-    """Repeating a join key files a check that cannot fail.
-
-    The pair exists only because those two fields matched, so an assertion over
-    them would read as coverage while being incapable of finding an exception —
-    and demanding one is how a gate turns into busywork.
-    """
-
-    proposal = validate_linkage_proposal(
-        _proposal(assertions=[{
-            "id": "totals", "label": "Totals agree",
-            "left": {"role": "invoice", "field": "total_amount"},
-            "right": {"role": "order", "field": "total_amount"},
-            "requirement": "The amount billed must be the amount ordered.",
-        }]),
-        _request(requirements=[
-            _requirement(),
-            _requirement(
-                comparison="links_to_order",
-                left={"document_type": "vendor_invoice", "field": "order_number"},
-                right={"document_type": "purchase_order", "field": "order_number"},
-            ),
-        ]),
-    )
-
-    assert proposal["assertions"][0]["id"] == "totals"
-
-
-def test_a_requirement_outside_this_cycle_is_not_this_proposal_to_answer():
-    """A comparison naming a document type the cycle does not carry."""
-
-    proposal = validate_linkage_proposal(
-        _proposal(assertions=[{
-            "id": "totals", "label": "Totals agree",
-            "left": {"role": "invoice", "field": "total_amount"},
-            "right": {"role": "order", "field": "total_amount"},
-            "requirement": "The amount billed must be the amount ordered.",
-        }]),
-        _request(requirements=[
-            _requirement(),
-            _requirement(
-                comparison="payroll_rate",
-                left={"document_type": "payslip", "field": "gross_pay"},
-                right={"document_type": "employment_contract", "field": "rate"},
-            ),
-        ]),
-    )
-
-    assert proposal["assertions"][0]["id"] == "totals"
-
-
-def test_a_proposal_is_still_valid_where_the_matrix_asks_nothing():
-    """Rules may be proposed before a matrix asks anything of them."""
-
-    proposal = validate_linkage_proposal(_proposal(), _request())
-
-    assert proposal["assertions"]
-
-
-def test_the_prompt_tells_the_worker_what_the_requirements_are_for():
-    from app.agent.workers.tests import LINKAGE_SYSTEM
-
-    assert "must answer every one" in LINKAGE_SYSTEM
-    # Answering an equivalent pair is what produced the live mismatch: the
-    # matrix wanted the receipt to name its order, the proposal bound the order
-    # naming its receipt, and neither turn had seen the other.
-    assert "in the matrix's own operands" in LINKAGE_SYSTEM
-    assert "needs no assertion" in LINKAGE_SYSTEM

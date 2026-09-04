@@ -210,8 +210,15 @@ REASONING_EFFORT_TOKENS = {
 REASONING_EFFORTS = tuple(REASONING_EFFORT_TOKENS)
 
 
-def _reasoning_parameters() -> dict:
-    """What to send about reasoning, per ``LLM_REASONING``.
+def _reasoning_parameters(override: str | int | None = None) -> dict:
+    """What to send about reasoning, per ``LLM_REASONING`` and the caller.
+
+    ``override`` is a per-call deliberation budget, named or numeric, and it
+    wins over a configured ``on`` or effort level: how much a turn is worth
+    thinking about is a property of the prompt, not of the deployment. The one
+    setting it cannot beat is ``off``. An operator who turned deliberation off
+    turned it off — a caller asking for a budget anyway would spend tokens the
+    operator declined to spend, on a model they chose for not spending them.
 
     Default ``on``: reasoning tokens are billed whether or not they are
     returned, so the only thing not asking for them buys is a blind spot.
@@ -234,21 +241,39 @@ def _reasoning_parameters() -> dict:
     to malformed JSON, not to anything the pipeline did.
     """
     configured = _env("LLM_REASONING").lower()
-    if not configured or configured in {"on", "1", "true", "yes"}:
-        return {"include_reasoning": True}
     if configured in {"off", "0", "false", "no"}:
         return {"reasoning": {"enabled": False}}
-    budget = REASONING_EFFORT_TOKENS.get(configured)
-    if budget is None and configured.isdigit():
-        budget = int(configured)
+    # Read even where an override will win it, so a misspelled setting is
+    # reported on every call rather than on whichever ones happen not to name
+    # a budget of their own.
+    budget = None
+    if configured and configured not in {"on", "1", "true", "yes"}:
+        budget = _reasoning_budget(configured)
+        if budget is None:
+            raise LLMError(
+                "LLM_REASONING must be 'on', 'off', a number of reasoning "
+                "tokens, or one of " + ", ".join(REASONING_EFFORTS) + "."
+            )
+    if override is not None:
+        budget = _reasoning_budget(str(override).lower())
+        if budget is None:
+            raise LLMError(
+                "A reasoning override must be a number of reasoning tokens or "
+                "one of " + ", ".join(REASONING_EFFORTS) + "."
+            )
     if budget:
         # A budget implies reasoning is on, so the trace comes back for the
         # debug record without asking for it a second way.
         return {"reasoning": {"max_tokens": budget}}
-    raise LLMError(
-        "LLM_REASONING must be 'on', 'off', a number of reasoning tokens, or "
-        "one of " + ", ".join(REASONING_EFFORTS) + "."
-    )
+    return {"include_reasoning": True}
+
+
+def _reasoning_budget(value: str) -> int | None:
+    """Resolve an effort name or a token count to a budget, or ``None``."""
+    budget = REASONING_EFFORT_TOKENS.get(value)
+    if budget is None and value.isdigit():
+        budget = int(value)
+    return budget or None
 
 
 def configured_temperature() -> float | None:
@@ -620,6 +645,7 @@ def chat(
     tool_choice: str | dict | None = None,
     on_delta: Callable[[str], None] | None = None,
     response_format: dict | None = None,
+    reasoning: str | int | None = None,
 ) -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
@@ -638,6 +664,9 @@ def chat(
     ``temperature`` left as ``None`` defers to the configured setting, and to
     the model's own default where nothing is configured — the parameter is then
     not sent at all. A caller passes a number only to override both.
+
+    ``reasoning`` is this call's deliberation budget — an effort name or a
+    token count — and overrides ``LLM_REASONING`` except where that is ``off``.
     """
     streaming = on_delta is not None and not tools
     call_started = time.monotonic()
@@ -666,7 +695,7 @@ def chat(
         "model": settings.model,
         "messages": messages,
         "max_tokens": _max_output_tokens(),
-        **_reasoning_parameters(),
+        **_reasoning_parameters(reasoning),
     }
     if temperature is not None:
         body["temperature"] = temperature

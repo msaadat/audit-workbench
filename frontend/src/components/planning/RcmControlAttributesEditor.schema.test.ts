@@ -161,10 +161,29 @@ describe('RcmControlAttributesEditor, against induced schemas', () => {
     expect(comparison.right).toBeNull()
   })
 
-  it('says what to do when no comparison is stated', () => {
+  it('says who decides when no comparison is stated', () => {
+    // No longer a warning. A matrix commits its cycle attributes uncontracted
+    // and the cycle design contracts them, so an auditor looking at an empty
+    // list is looking at work that has not happened yet rather than at a row
+    // they have to fix.
     const wrapper = render([cycleAttribute()])
 
-    expect(wrapper.text()).toContain('Manual inspection, Inquiry, or Mixed')
+    expect(wrapper.text()).toContain('decided by the cycle design')
+  })
+
+  it('leaves an attribute uncontracted rather than stating an empty contract', () => {
+    // Absent means the cycle design has not decided; empty means it decided
+    // nothing must agree, and the backend refuses the second.
+    const wrapper = render([cycleAttribute()])
+
+    ;(wrapper.vm as unknown as {
+      setEvidenceKind: (index: number, kind: string) => void
+    }).setEvidenceKind(0, 'transaction_cycle')
+
+    const attribute = emitted(wrapper)[0] as never as {
+      required_comparisons?: unknown
+    }
+    expect(attribute.required_comparisons).toBeUndefined()
   })
 
   it('shows how many documents carry a type, and what separates it from its neighbours', () => {

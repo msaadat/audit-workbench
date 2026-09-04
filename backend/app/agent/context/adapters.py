@@ -3105,8 +3105,15 @@ def _cycle_requirement_candidates(workspace: Workspace) -> tuple[ContextCandidat
     order naming its receipt, and nothing tested the inspection the matrix asked
     for. Neither turn was wrong on its own; they were never shown each other.
 
-    Carried as the comparisons themselves rather than the rows, so the worker
-    reads operands in the same vocabulary it writes assertions in.
+    Carried as the requirement in words, with the row's risk and control for
+    context, and no operands. Naming the fields is this worker's job and only
+    this worker's: it is the one turn that has the induced schemas in front of
+    it, and the matrix that used to name them had never seen a document of any
+    of these types. What the matrix contributes is the question.
+
+    Only *uncontracted* attributes. One already carrying comparisons was
+    answered by a previous proposal, and re-asking would invite a second
+    assertion over the same pair.
     """
 
     from ... import cycle_linking
@@ -3116,41 +3123,26 @@ def _cycle_requirement_candidates(workspace: Workspace) -> tuple[ContextCandidat
         for attribute in row.get("control_attributes") or []:
             if not isinstance(attribute, Mapping):
                 continue
-            if attribute.get("evidence_kind") != "transaction_cycle":
+            if not cycle_linking.uncontracted(attribute):
                 continue
-            for comparison in attribute.get("required_comparisons") or []:
-                if not isinstance(comparison, Mapping):
-                    continue
-                left = comparison.get("left") or {}
-                right = comparison.get("right")
-                required.append({
-                    "rcm_id": str(row.get("id") or ""),
-                    "control_attribute": str(attribute.get("key") or ""),
-                    "requirement": str(attribute.get("requirement") or ""),
-                    "comparison": str(comparison.get("key") or ""),
-                    "left": {
-                        "document_type": str(left.get("document_type") or ""),
-                        "field": str(left.get("field") or ""),
-                    },
-                    "right": (
-                        {
-                            "document_type": str((right or {}).get("document_type") or ""),
-                            "field": str((right or {}).get("field") or ""),
-                        }
-                        if isinstance(right, Mapping)
-                        else None
-                    ),
-                    "why": str(comparison.get("rationale") or ""),
-                })
+            required.append({
+                "rcm_id": str(row.get("id") or ""),
+                "control_attribute": str(attribute.get("key") or ""),
+                "assertion": str(attribute.get("assertion") or ""),
+                "requirement": str(attribute.get("requirement") or ""),
+                "control": str(row.get("control") or ""),
+                "risk": str(row.get("risk") or ""),
+                "process": str(row.get("process") or ""),
+            })
     if not required:
         return ()
-    content = {"required_comparisons": required}
+    content = {"cycle_requirements": required}
     return (
         ContextCandidate(
             source_ref="workspace:rcm",
             source=content,
             representations={"planning_context": content},
-            metadata={"comparisons": len(required)},
+            metadata={"requirements": len(required)},
         ),
     )
 

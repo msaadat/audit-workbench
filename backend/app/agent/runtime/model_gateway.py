@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from ... import debug_store, llm
+from . import reasoning as reasoning_policy
 
 
 _provider_semaphores: dict[str, threading.BoundedSemaphore] = {}
@@ -46,6 +47,13 @@ class ModelResponseUnusable(RuntimeError):
     sends the reader hunting a prompt defect that is not there, and a repair
     prompt quoting an error about a response the model never sent.
     """
+
+
+#: One retry of a completion carrying no output, and no more. Two tries is the
+#: whole of the bet: how long a model reasons varies between identical calls,
+#: so a second ask often lands, while a third is paying the same price for the
+#: same unchanged request.
+UNUSABLE_COMPLETION_RETRIES = 1
 
 
 def _unusable_completion_detail(
@@ -341,6 +349,61 @@ class DefaultModelGateway:
         conversation: list[dict[str, Any]] | None = None,
         return_message: bool = False,
     ) -> str | dict[str, Any]:
+        """Execute one model turn, asking again once for an empty completion.
+
+        Retried here and nowhere else, because there is nothing further down
+        that could repair it: the bounded repair loop corrects a response by
+        quoting it back, and an empty completion gives it nothing to quote. A
+        worker that raises out instead leaves the unit failed with no rejection
+        sidecar, so the next run cannot seed from it and pays for a whole fresh
+        attempt — which is what the first ask already was.
+
+        Narrow on purpose. ``Cancelled`` means stop, the limit error means the
+        budget is spent, and :class:`llm.LLMError` arrives having already
+        exhausted the transport's own attempts; none of the three get better by
+        being asked twice.
+
+        The second try is a turn like any other: reserved, metered and logged,
+        so a run's spend still adds up. It carries the worker's own ``attempt``
+        unchanged — the worker did not attempt anything twice, the provider
+        did — and says so with ``retry_reason``.
+        """
+        last = 1 + UNUSABLE_COMPLETION_RETRIES
+        for provider_try in range(1, last + 1):
+            try:
+                return self._complete_once(
+                    system,
+                    user,
+                    activity,
+                    attempt=attempt,
+                    media=media,
+                    required_capabilities=required_capabilities,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    conversation=conversation,
+                    return_message=return_message,
+                    retry_reason="unusable" if provider_try > 1 else None,
+                )
+            except ModelResponseUnusable:
+                if provider_try == last:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _complete_once(
+        self,
+        system: str,
+        user: str,
+        activity: dict[str, Any] | None = None,
+        *,
+        attempt: int = 1,
+        media: tuple[Mapping[str, Any], ...] | None = None,
+        required_capabilities: tuple[str, ...] = (),
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
+        return_message: bool = False,
+        retry_reason: str | None = None,
+    ) -> str | dict[str, Any]:
         """Execute and provenance-log one model turn."""
         self._checkpoint()
         handles = tuple(_media_handle(item) for item in (media or ()))
@@ -436,6 +499,11 @@ class DefaultModelGateway:
         if parent_refs:
             activity_fields.setdefault("parent_refs", list(parent_refs))
         activity_fields.setdefault("retry_number", attempt)
+        if retry_reason:
+            # Distinguishable from a repair in the debug console: a repair
+            # carries a higher ``retry_number`` and a corrected prompt, this
+            # carries the same number and the same prompt.
+            activity_fields.setdefault("retry_reason", retry_reason)
         current_activity = dict(self.run.get("activity") or {})
         call_started = time.monotonic()
         user_parts: str | list[dict[str, Any]] = user
@@ -492,6 +560,18 @@ class DefaultModelGateway:
                                 else "agent"
                             ),
                         }
+                        # What this kind of turn is worth deliberating over.
+                        # Read from the caller's own context metrics rather
+                        # than from the stage tag, because the tag is parsed
+                        # out of the prompt and several kinds share one. Which
+                        # kinds get what is not this module's to know.
+                        deliberation = reasoning_policy.budget_for(
+                            ((activity or {}).get("context_metrics") or {}).get(
+                                "worker_kind"
+                            )
+                        )
+                        if deliberation:
+                            chat_kwargs["reasoning"] = deliberation
                         if tools:
                             chat_kwargs["tools"] = tools
                             if tool_choice is not None:
@@ -779,5 +859,6 @@ __all__ = [
     "ModelGateway",
     "ModelResponseUnusable",
     "PreparedMediaError",
+    "UNUSABLE_COMPLETION_RETRIES",
     "VisionRequestRejected",
 ]
