@@ -879,6 +879,11 @@ def _stages(
             # Its place on the ledger, which is the plan's order where the plan
             # has one — see `_positions`.
             "order": order.get(capability),
+            # Which of the five audit phases the row is drawn under. The record
+            # asks `engagement` rather than keeping a second table, so the phase
+            # a stage sits in here and the phase the brief previews it in are
+            # the same answer.
+            "phase": engagement.phase_of_capability(capability),
             "held": holds is True,
             # Owed only where the record knows how to ask for it. Verification
             # commits nothing, so its absence is not something a reader could
@@ -972,6 +977,7 @@ def _stages(
             "id": f"stage:{capability}",
             "capability": capability,
             "order": None,
+            "phase": engagement.phase_of_capability(capability),
             "held": True,
             "runnable": False,
             "headline": "",
@@ -1165,8 +1171,19 @@ def record(workspace: Workspace) -> dict:
         settled = [stage["history"] for stage in stages if stage["history"]]
         measured = [item["elapsed_ms"] for item in settled if item["elapsed_ms"] is not None]
         timeline = sorted(str(item["at"] or "") for item in settled)
+        # The sections the view draws, in plan order, and only the ones this
+        # engagement actually has stages for. The frontend groups by this list
+        # rather than by a copy of the titles, so a phase renamed or reordered
+        # here moves on the screen without a second edit.
+        present = {stage["phase"] for stage in stages}
+        phases = [
+            {"id": phase["id"], "title": phase["title"], "summary": phase["summary"]}
+            for phase in engagement.PLAN_PHASES
+            if phase["id"] in present
+        ]
         return {
             "stages": stages,
+            "phases": phases,
             "open_points": points,
             "next": next_step,
             "counts": counts,

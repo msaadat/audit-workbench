@@ -267,6 +267,10 @@ const live = computed(() => {
     step: runStages.length > 1
       ? `step ${Math.min(settled + 1, runStages.length)} of ${runStages.length}`
       : '',
+    // How much of the run is behind it, as a fraction. null on a workflow of
+    // one stage, where a bar can only read empty or full and says nothing the
+    // spinner beside it has not already said.
+    progress: runStages.length > 1 ? settled / runStages.length : null,
     since: run.started || run.created,
   }
 })
@@ -304,19 +308,42 @@ function size(stage: EngagementStage): string {
 }
 
 /**
- * What the pill says: the bare number where the work product has a size, and
- * what state it is in otherwise. The unit belongs to the work product, not to
- * the count — `Analysis library · 24` is a unit, `Analysis library · 24
- * analyses` is a sentence — so the spelled form moves to the pill's title.
+ * The bare size of what the row holds, or '' where it holds nothing yet. The
+ * unit belongs to the work product, not to the count — `Analysis library 24`
+ * is a unit, `Analysis library 24 analyses` is a sentence — so the spelled
+ * form is the number's title rather than the number.
+ *
+ * A row that holds nothing states that with its dot and its muted label. It
+ * used to say `not yet` where the count goes, which put a word in the one
+ * position on the row a reader scans as a number.
  */
-function tally(stage: EngagementStage): string {
-  const live = liveState(stage.capability)
-  if (live === 'running') return 'being written'
-  if (live === 'queued') return 'queued'
-  // An empty register is what "not yet" means, and says it in the words the
-  // rest of the row is written in. A bare 0 reads as a measurement.
-  if (!stage.held) return 'not yet'
-  return stage.filed?.count == null ? '' : String(stage.filed.count)
+function count(stage: EngagementStage): string {
+  return stage.held && stage.filed?.count != null ? String(stage.filed.count) : ''
+}
+
+/**
+ * When the work settled and what it took, as one reading: `10:54 · 6m 54s`.
+ * A stage nothing timed keeps its dash rather than being given a zero.
+ */
+function stamp(stage: EngagementStage): string {
+  const past = stage.history
+  if (!past) return ''
+  const at = clock(past.at)
+  const took = duration(past.elapsed_ms)
+  return at ? `${at} · ${took}` : took
+}
+
+/**
+ * What an owed stage is waiting for, in the words the meta cell takes:
+ * `after the memorandum`. The server states it as a sentence — `Waits for the
+ * memorandum.` — which under a `not yet` pill read as the row's whole content,
+ * on nine rows at once. Beside the row it is one fact, so it is set as a
+ * phrase. A reason not written that way is carried through as it stands.
+ */
+function dependency(stage: EngagementStage): string {
+  const reason = stage.blocked_reason.trim()
+  const match = /^Waits for (.+?)\.?$/.exec(reason)
+  return match ? `after ${match[1]}` : reason
 }
 
 /**
@@ -428,6 +455,21 @@ function foldable(stage: EngagementStage): boolean {
 
 function isOpen(stage: EngagementStage): boolean {
   return density.value === 'full' || openRows.value.has(stage.id)
+}
+
+/**
+ * Whether anything is drawn under the row's own line. Most of it is the folded
+ * body, but a run in flight and a debt left behind are said whether the row is
+ * open or shut — they are news, not detail — so the block exists for those too.
+ */
+function hasBody(stage: EngagementStage): boolean {
+  const open = isOpen(stage)
+  return Boolean(
+    (open && (saying(stage) || remaining(stage) || stage.stats.length
+      || stage.highlights.length || attemptNote(stage)))
+    || liveState(stage.capability)
+    || stage.open_points.length,
+  )
 }
 
 function toggleRow(stage: EngagementStage) {
@@ -557,11 +599,15 @@ const leadStage = computed(
  * Three different numbers, each called what it is. This line read "13 runs
  * across 12 sessions" on an engagement with 14 runs, 13 attempts and 9 chats —
  * every noun shifted one place along, which hid a whole run.
+ *
+ * The strip above draws what the engagement holds; what it cost to get there
+ * is a footnote, and reads as one.
  */
 const totalLine = computed(() => {
   const value = totals.value
   if (!value) return ''
-  const parts = [plural(value.work_products, 'work product')]
+  const parts: string[] = []
+  if (value.elapsed_ms !== null) parts.push(`${duration(value.elapsed_ms)} of assistant time`)
   if (value.runs) parts.push(plural(value.runs, 'run'))
   if (value.attempts > value.work_products) {
     parts.push(`${plural(value.attempts, 'attempt')} at ${plural(value.runs_that_filed, 'stage')}`)
@@ -576,24 +622,184 @@ const quietRuns = computed(() => {
   return value ? Math.max(0, value.runs - value.runs_that_filed) : 0
 })
 
-/** The stages still owed, which is what the ledger's forward half amounts to. */
-const owedStages = computed(() => stages.value.filter(stage => !stage.held))
+/* --- the phases the record is drawn in ------------------------------------- */
 
 /**
- * Where the ledger crosses from what is held into what is owed. -1 on an
- * engagement that holds everything, which draws no divider at all rather than
- * one with nothing under it.
+ * How a phase is named *from* the phase after it — `4 stages · after planning`.
+ * The titles are imperatives, and "after Plan the engagement" is not English,
+ * so the short form is written here rather than derived from one. A phase this
+ * map has not heard of falls back to its id, which is the same word in every
+ * case the default plan produces.
  */
-const nowIndex = computed(() => stages.value.findIndex(stage => !stage.held))
+const PHASE_SHORT: Record<string, string> = {
+  sources: 'the sources',
+  documents: 'the documents',
+  planning: 'planning',
+  fieldwork: 'fieldwork',
+  writeup: 'the write-up',
+}
 
-const pendingNote = computed(() => {
-  const count = owedStages.value.length
-  if (!count) return ''
-  const underway = owedStages.value.filter(stage => liveState(stage.capability)).length
-  if (underway === count) return `${plural(count, 'stage')} under way`
-  if (underway) return `${underway} of ${count} under way`
-  return `${plural(count, 'stage')} ${count === 1 ? 'has' : 'have'} not run`
+type PhaseState = 'done' | 'current' | 'later'
+
+interface PhaseGroup {
+  id: string
+  title: string
+  stages: EngagementStage[]
+  state: PhaseState
+  held: number
+  total: number
+  /** Whether the lead stage is one of this phase's, which is what makes its
+      header able to say that nothing is blocking it. */
+  lead: boolean
+  /** The phase before this one, in the words `after …` takes. */
+  after: string
+}
+
+/**
+ * The ledger, cut into the five phases an auditor recognises.
+ *
+ * The sections come from the payload's `phases` rather than from a list of
+ * titles kept here, so a phase renamed or reordered on the server moves on the
+ * screen by itself. Row order inside a phase is the plan's order, untouched:
+ * the phase groups the ledger, it does not re-sort it.
+ */
+const groups = computed<PhaseGroup[]>(() => {
+  const phases = data.value?.phases ?? []
+  const byPhase = new Map<string, EngagementStage[]>()
+  for (const stage of stages.value) {
+    const rows = byPhase.get(stage.phase)
+    if (rows) rows.push(stage)
+    else byPhase.set(stage.phase, [stage])
+  }
+
+  // Exactly one phase is current, and which one is decided once over the whole
+  // list rather than per phase: work in flight names it, the first runnable
+  // stage names it otherwise, and an engagement with nothing left owed and
+  // nothing running has none. Deciding it per phase is how two of them end up
+  // wearing the NEXT badge.
+  const owns = (id: string, test: (stage: EngagementStage) => boolean) =>
+    (byPhase.get(id) ?? []).some(test)
+  const currentId =
+    phases.find(phase => owns(
+      phase.id,
+      stage => stage.capability === leadStage.value || Boolean(liveState(stage.capability)),
+    ))?.id
+    ?? phases.find(phase => owns(phase.id, stage => !stage.held))?.id
+    ?? ''
+
+  return phases.map((phase, index) => {
+    const rows = byPhase.get(phase.id) ?? []
+    const previous = phases[index - 1]
+    return {
+      id: phase.id,
+      title: phase.title,
+      stages: rows,
+      state: phase.id === currentId
+        ? 'current'
+        : rows.every(stage => stage.held) ? 'done' : 'later',
+      held: rows.filter(stage => stage.held).length,
+      total: rows.length,
+      lead: rows.some(stage => stage.capability === leadStage.value),
+      after: previous ? PHASE_SHORT[previous.id] ?? previous.id : '',
+    }
+  })
 })
+
+const currentPhase = computed(() => groups.value.find(group => group.state === 'current')?.id ?? '')
+
+/**
+ * Which phases are open: everything except the ones whose turn has not come.
+ *
+ * A phase that is done is worth reading — it is what the engagement holds, and
+ * what the reader came to check. A phase that cannot start yet has nothing to
+ * read: four rows of work not done was three quarters of the old screen, and
+ * its header already names the stages and what they wait for.
+ *
+ * Seeded when the record first arrives and reseeded when the current phase
+ * moves — finishing a phase should open the phase that follows it — but not on
+ * every load, so the toggles a reader makes survive the refresh that follows
+ * every commit. The choice is for the visit; nothing stores it.
+ */
+const openPhases = ref<Set<string>>(new Set())
+const phaseSeed = computed(
+  () => `${currentPhase.value}|${groups.value.map(group => group.id).join(',')}`,
+)
+watch(phaseSeed, () => {
+  openPhases.value = new Set(
+    groups.value.filter(group => group.state !== 'later').map(group => group.id),
+  )
+}, { immediate: true })
+
+function phaseOpen(group: PhaseGroup): boolean {
+  return openPhases.value.has(group.id)
+}
+
+function togglePhase(group: PhaseGroup) {
+  const next = new Set(openPhases.value)
+  if (next.has(group.id)) next.delete(group.id)
+  else next.add(group.id)
+  openPhases.value = next
+}
+
+/**
+ * What a phase amounts to, at the end of its header.
+ *
+ * A fraction, because the header is read down a column of five and `2 of 2
+ * filed` five times over is the same word four times too many. A phase of one
+ * stage says nothing at all: `1/1` is a fraction with nothing to compare, and
+ * the row under it already says whether it filed.
+ *
+ * A phase that has not started is counted in stages and named by what it waits
+ * for, because `0/4` on work that cannot begin yet reads as a failure rather
+ * than as a plan.
+ */
+function phaseTally(group: PhaseGroup): string {
+  if (group.state === 'later') {
+    return group.after
+      ? `${plural(group.total, 'stage')} · after ${group.after}`
+      : plural(group.total, 'stage')
+  }
+  return group.total > 1 ? `${group.held}/${group.total}` : ''
+}
+
+/* --- the whole plan, as one strip ------------------------------------------ */
+
+/**
+ * One segment per stage, grouped into the phases, in plan order.
+ *
+ * It is the only place the whole engagement is visible at once now that the
+ * phases fold: five headers say where the work is, and this says how much of
+ * it there is. Segment order inside a phase is the plan's, so a reader can
+ * count along the strip and land on the row they are looking at.
+ */
+type SegmentState = 'held' | 'live' | 'lead' | 'owed'
+
+const strip = computed(() => groups.value.map(group => ({
+  id: group.id,
+  title: group.title,
+  current: group.state === 'current',
+  segments: group.stages.map((stage): SegmentState => {
+    // Work under way outranks work filed: a stage being written again is
+    // news, and drawing it in the teal of settled work hides that.
+    if (liveState(stage.capability)) return 'live'
+    if (stage.held) return 'held'
+    return stage.capability === leadStage.value ? 'lead' : 'owed'
+  }),
+})))
+
+/**
+ * The phases share the strip's width in proportion to how many stages they
+ * hold, so a segment is the same width everywhere and the strip is a count
+ * rather than five bars that happen to sit side by side.
+ */
+const stripColumns = computed(
+  () => strip.value.map(phase => `${phase.segments.length}fr`).join(' '),
+)
+
+/** What a shut phase is standing in for, which is the work products it covers. */
+function phaseNames(group: PhaseGroup): string {
+  return group.stages.map(stage => stage.filed?.label || stage.capability).join(' · ')
+}
 </script>
 
 <template>
@@ -616,7 +822,16 @@ const pendingNote = computed(() => {
           @click="setDensity('full')"
         >Full</button>
       </div>
-      <Button label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" outlined :loading="loading" @click="load" />
+      <Button
+        class="refresh"
+        icon="pi pi-refresh"
+        size="small"
+        severity="secondary"
+        outlined
+        aria-label="Refresh the record"
+        :loading="loading"
+        @click="load"
+      />
       <!-- The one thing the record cannot draw as a row. Every other work
            product is a row here, because a row is something the engagement
            holds; the chain is a way of reading one risk across all of them,
@@ -641,10 +856,35 @@ const pendingNote = computed(() => {
     />
 
     <template v-else>
+      <!-- The whole plan at once, which is the one thing the phases cannot
+           show while four of the five are folded. -->
+      <section class="strip">
+        <div class="segs" :style="{ gridTemplateColumns: stripColumns }">
+          <div v-for="phase in strip" :key="phase.id" class="sphase">
+            <span
+              v-for="(segment, index) in phase.segments"
+              :key="index"
+              class="seg"
+              :data-state="segment"
+            ></span>
+          </div>
+        </div>
+        <div class="slabels" :style="{ gridTemplateColumns: stripColumns }">
+          <span v-for="phase in strip" :key="phase.id" :data-current="phase.current || null">
+            {{ phase.title }}
+          </span>
+        </div>
+      </section>
+
       <!-- While a run is in flight it, not the next step, is the news. The two
            never show together: proposing work that is under way is exactly the
            staleness this band exists to remove. -->
-      <section v-if="live" class="brief live" :data-wait="live.waiting ? '1' : null">
+      <section
+        v-if="live"
+        class="brief live"
+        :class="{ stepped: live.progress !== null }"
+        :data-wait="live.waiting ? '1' : null"
+      >
         <span class="mark">
           <i :class="live.waiting ? 'pi pi-question-circle' : 'pi pi-spin pi-spinner'" />
         </span>
@@ -655,6 +895,11 @@ const pendingNote = computed(() => {
             ><template v-if="liveElapsed"> · {{ liveElapsed }} so far</template>
           </span>
         </div>
+        <!-- How much of the run is behind it. A step count is a reading; the
+             bar is the same fact at a glance, and the two are the same number. -->
+        <span v-if="live.progress !== null" class="pbar">
+          <i :style="{ width: `${Math.round(live.progress * 100)}%` }" />
+        </span>
         <Button
           :label="live.waiting ? 'Respond' : 'Watch it'"
           :icon="live.waiting ? 'pi pi-reply' : 'pi pi-sparkles'"
@@ -665,274 +910,281 @@ const pendingNote = computed(() => {
         />
       </section>
 
-      <ol class="ledger">
-        <li class="head" aria-hidden="true">
-          <span>Time</span><span></span><span>Filed</span><span>What it did</span><span class="r">Took</span><span></span>
-        </li>
-
-        <template v-for="(stage, index) in stages" :key="stage.id">
-          <!-- The ledger crosses from what the engagement holds into what it
-               still owes exactly once, and says so where it happens. -->
-          <li v-if="index === nowIndex" class="nowline">
-            <span class="lab">Now</span>
-            <span class="hr" />
-            <span class="lab">{{ pendingNote }}</span>
-          </li>
-          <li
-            class="row"
-            :class="{ shut: !isOpen(stage), ghost: !stage.held, lead: stage.capability === leadStage }"
-            :data-status="stage.history?.status || null"
-            :data-live="liveState(stage.capability) || null"
-            @click="rowClick(stage, $event)"
+      <!-- One card per phase, in plan order. The three states are the whole
+           point: a phase that is done gets out of the way, the phase being
+           worked is open and says so, and the phases after it are drawn as
+           the plan they are rather than as nine rows of "not yet". -->
+      <div class="phases">
+        <section
+          v-for="(group, index) in groups"
+          :key="group.id"
+          class="phase"
+          :data-state="group.state"
+        >
+          <button
+            type="button"
+            class="phead"
+            :aria-expanded="phaseOpen(group)"
+            @click="togglePhase(group)"
           >
-            <span class="tm">{{ liveState(stage.capability) === 'running'
-              ? 'now'
-              : (stage.history ? clock(stage.history.at) : '—') }}</span>
-            <span class="gut"><i /></span>
+            <span class="pn">{{ index + 1 }}</span>
+            <span class="pt">{{ group.title }}</span>
+            <span v-if="group.state === 'current'" class="pnext">Next</span>
+            <!-- A shut phase says what is inside it, so folding one away never
+                 hides which work products it covers. -->
+            <template v-if="!phaseOpen(group) && group.total">
+              <span class="prule" aria-hidden="true"></span>
+              <span class="pnames">{{ phaseNames(group) }}</span>
+            </template>
+            <span class="grow"></span>
+            <span v-if="group.state === 'current' && group.lead" class="pel">
+              Nothing is blocking it.
+            </span>
+            <span v-if="phaseTally(group)" class="pst">{{ phaseTally(group) }}</span>
+            <i v-if="!phaseOpen(group)" class="pi pi-chevron-down pchev" aria-hidden="true" />
+          </button>
 
-            <span class="made">
-              <component
-                :is="destinationOf(stage) ? RouterLink : 'span'"
-                v-if="stage.filed"
-                :to="destinationOf(stage) ? nav.to(destinationOf(stage)!) : undefined"
-                class="card"
-                :class="{ linked: !!destinationOf(stage) }"
-                :title="size(stage) || null"
+          <ol v-if="phaseOpen(group)" class="ledger">
+            <template v-for="stage in group.stages" :key="stage.id">
+              <li
+                class="row"
+                :class="{ shut: !isOpen(stage), ghost: !stage.held, lead: stage.capability === leadStage }"
+                :data-status="stage.history?.status || null"
+                :data-live="liveState(stage.capability) || null"
+                @click="rowClick(stage, $event)"
               >
-                <i :class="icon(stage.filed.label)" aria-hidden="true" />
-                <span class="mt">
-                  <b>{{ stage.filed.label }}</b>
-                  <em v-if="tally(stage)">{{ tally(stage) }}</em>
+                <!-- What state the stage is in, said once, in the one column a
+                     reader scanning the phase is looking down. -->
+                <span class="dot" aria-hidden="true"></span>
+
+                <span class="name">
+                  <template v-if="stage.filed">
+                    <i :class="icon(stage.filed.label)" class="wpi" aria-hidden="true" />
+                    <!-- The work product is the link. It used to be a pill
+                         inside a row inside a card, three borders deep, and the
+                         pill said nothing the label did not. -->
+                    <component
+                      :is="destinationOf(stage) ? RouterLink : 'span'"
+                      :to="destinationOf(stage) ? nav.to(destinationOf(stage)!) : undefined"
+                      class="wp"
+                      :class="{ linked: !!destinationOf(stage) }"
+                    >{{ stage.filed.label }}</component>
+                    <b v-if="count(stage)" class="ct" :title="size(stage) || undefined">{{ count(stage) }}</b>
+                  </template>
+                  <span v-else class="none">&#8212;</span>
+
+                  <span v-if="title(stage)" class="sen">{{ title(stage) }}</span>
+
+                  <!-- Doors beside the label, for a stage that opens more than
+                       one thing. A tool is drawn differently from an artifact on
+                       purpose: nothing is filed by running a query, and a teal
+                       door here would have the record claim otherwise. -->
+                  <template v-if="stage.links.length">
+                    <span class="nrule" aria-hidden="true"></span>
+                    <component
+                      v-for="link in stage.links"
+                      :key="link.label"
+                      :is="destinationFor(link.destination) ? RouterLink : 'span'"
+                      :to="destinationFor(link.destination) ? nav.to(destinationFor(link.destination)!) : undefined"
+                      class="door"
+                      :data-kind="link.kind"
+                    >
+                      <i v-if="link.kind === 'tool'" class="pi pi-wrench" aria-hidden="true" />
+                      {{ link.label }}<b v-if="link.count !== null">{{ link.count }}</b>
+                    </component>
+                  </template>
                 </span>
-              </component>
-              <span v-else class="none">—</span>
 
-              <!-- Doors beside the card, for a stage that opens more than one
-                   thing. A tool is drawn differently from an artifact on
-                   purpose: nothing is filed by running a query, and a teal pill
-                   here would have the record claim the engagement holds one. -->
-              <span v-if="stage.links.length" class="doors">
-                <component
-                  v-for="link in stage.links"
-                  :key="link.label"
-                  :is="destinationFor(link.destination) ? RouterLink : 'span'"
-                  :to="destinationFor(link.destination) ? nav.to(destinationFor(link.destination)!) : undefined"
-                  class="door"
-                  :data-kind="link.kind"
-                >
-                  <i v-if="link.kind === 'tool'" class="pi pi-wrench" aria-hidden="true" />
-                  {{ link.label }}<b v-if="link.count !== null">{{ link.count }}</b>
-                </component>
-              </span>
-            </span>
+                <span class="meta">
+                  <!-- A stage that has not run is measured by what it waits for,
+                       which is the only thing it has to report. -->
+                  <em v-if="!stage.held && dependency(stage)" class="dep">{{ dependency(stage) }}</em>
+                  <template v-else>
+                    <!-- The folded body, counted. Colour survives the fold. -->
+                    <template v-if="!isOpen(stage)">
+                      <span
+                        v-for="chip in chips(stage)"
+                        :key="chip.label"
+                        class="sig"
+                        :data-severity="chip.severity || null"
+                      ><b>{{ chip.value }}</b>{{ chip.label }}</span>
+                    </template>
+                    <span v-if="stamp(stage)" class="stamp">{{ stamp(stage) }}</span>
+                  </template>
+                </span>
 
-            <span class="say">
-              <span class="saytop">
-                <b class="ttl">{{ title(stage) }}</b>
-                <!-- The folded body, counted. Colour survives the fold. -->
-                <template v-if="!isOpen(stage)">
-                  <span
-                    v-for="chip in chips(stage)"
-                    :key="chip.label"
-                    class="sig"
-                    :data-severity="chip.severity || null"
-                  ><b>{{ chip.value }}</b>{{ chip.label }}</span>
-                </template>
-              </span>
-              <span v-if="isOpen(stage) && saying(stage)" class="dsc">{{ saying(stage) }}</span>
-              <!-- A stage that is owed says what is holding it, open or shut:
-                   it is the whole content of the row. -->
-              <span v-else-if="!stage.held && stage.blocked_reason" class="dsc">
-                {{ stage.blocked_reason }}
-              </span>
+                <span class="act">
+                  <!-- Sources is the one stage the assistant cannot begin.
+                       Bringing in the audit file is the auditor's own act, so
+                       the row hands back the shell's dialog. -->
+                  <Button
+                    v-if="stage.action === 'import'"
+                    :label="stage.held ? 'Import more' : 'Import'"
+                    size="small"
+                    :severity="stage.capability === leadStage ? undefined : 'secondary'"
+                    :outlined="stage.capability !== leadStage"
+                    @click="start(stage)"
+                  />
+                  <!-- Only the lead stage is drawn as a call to action: a tail
+                       of six buttons is a menu, not a next step. A stage
+                       offering narrower runs draws them under the button, never
+                       beside it - the click stays the complete answer. -->
+                  <SplitButton
+                    v-else-if="stage.capability === leadStage && stage.start?.alternates.length"
+                    label="Run"
+                    size="small"
+                    :disabled="starting === stage.capability"
+                    :model="startOptions(stage)"
+                    @click="start(stage)"
+                  >
+                    <template #item="{ item, props }">
+                      <a class="alt" v-bind="props.action">
+                        <span>{{ item.label }}</span>
+                        <small v-if="item.note">{{ item.note }}</small>
+                      </a>
+                    </template>
+                  </SplitButton>
+                  <Button
+                    v-else-if="stage.capability === leadStage"
+                    label="Run"
+                    size="small"
+                    :loading="starting === stage.capability"
+                    @click="start(stage)"
+                  />
+                  <!-- The row is the hit target; this is what says so. Hidden
+                       under Full, where every row is open and nothing shuts. -->
+                  <button
+                    v-else-if="density === 'concise' && foldable(stage)"
+                    type="button"
+                    class="chev"
+                    :aria-expanded="isOpen(stage)"
+                    :aria-label="`${isOpen(stage) ? 'Collapse' : 'Expand'} ${stage.filed?.label || stage.capability}`"
+                    @click="toggleRow(stage)"
+                  >
+                    <i class="pi pi-chevron-right" aria-hidden="true" />
+                  </button>
+                </span>
 
-              <!-- What a stage that has already filed still owes. The count
-                   beside it is not contradicted: thirty findings are filed and
-                   two observations are undrafted, and both are true. -->
-              <span v-if="isOpen(stage) && remaining(stage)" class="left">
-                <i class="pi pi-hourglass" aria-hidden="true" />{{ remaining(stage) }}
-              </span>
+                <span v-if="hasBody(stage)" class="body">
+                  <span v-if="isOpen(stage) && saying(stage)" class="dsc">{{ saying(stage) }}</span>
 
-              <!-- Being produced right now, whether or not it was filed before. -->
-              <span v-if="liveState(stage.capability)" class="again" :data-live="liveState(stage.capability)">
-                <i :class="liveState(stage.capability) === 'running' ? 'pi pi-spin pi-spinner' : 'pi pi-clock'" aria-hidden="true" />
-                <template v-if="liveState(stage.capability) === 'running'">
-                  <!-- A stage that already filed is being produced *again*,
-                       which is a different thing from one being produced. -->
-                  {{ stage.held ? 'Running again' : 'The assistant is working on it now.'
-                  }}{{ liveSince(stage.capability) ? ` · ${liveSince(stage.capability)}` : '' }}<template
-                    v-if="soleRunning === stage.capability && activityLine"> · {{ activityLine }}</template>
-                </template>
-                <template v-else>
-                  {{ stage.held ? 'Queued to run again' : 'Scheduled by the run in progress.' }}
-                </template>
-              </span>
+                  <!-- What a stage that has already filed still owes. The count
+                       beside it is not contradicted: thirty findings are filed
+                       and two observations are undrafted, and both are true. -->
+                  <span v-if="isOpen(stage) && remaining(stage)" class="left">
+                    <i class="pi pi-hourglass" aria-hidden="true" />{{ remaining(stage) }}
+                  </span>
 
-              <!-- A stage whose result is a distribution states it as one. A
-                   matrix is read as "one critical, eight high" before any
-                   single row is, and a paragraph cannot say that at a glance. -->
-              <ul v-if="isOpen(stage) && stage.stats.length" class="tally">
-                <li
-                  v-for="stat in stage.stats"
-                  :key="stat.label"
-                  :data-severity="stat.severity"
-                  :data-zero="stat.value ? null : '1'"
-                >
-                  <b>{{ stat.value }}</b><span>{{ stat.label }}</span>
-                </li>
-              </ul>
+                  <!-- Being produced right now, whether or not it was filed before. -->
+                  <span v-if="liveState(stage.capability)" class="again" :data-live="liveState(stage.capability)">
+                    <i :class="liveState(stage.capability) === 'running' ? 'pi pi-spin pi-spinner' : 'pi pi-clock'" aria-hidden="true" />
+                    <template v-if="liveState(stage.capability) === 'running'">
+                      <!-- A stage that already filed is being produced *again*,
+                           which is a different thing from one being produced. -->
+                      {{ stage.held ? 'Running again' : 'The assistant is working on it now.'
+                      }}{{ liveSince(stage.capability) ? ` · ${liveSince(stage.capability)}` : '' }}<template
+                        v-if="soleRunning === stage.capability && activityLine"> · {{ activityLine }}</template>
+                    </template>
+                    <template v-else>
+                      {{ stage.held ? 'Queued to run again' : 'Scheduled by the run in progress.' }}
+                    </template>
+                  </span>
 
-              <ul v-if="isOpen(stage) && stage.highlights.length" class="hl">
-                <li v-for="item in stage.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
-                  <b>{{ item.label }}</b><span>{{ item.detail }}</span>
-                </li>
-              </ul>
+                  <!-- A stage whose result is a distribution states it as one. A
+                       matrix is read as "one critical, eight high" before any
+                       single row is, and a paragraph cannot say that at a glance. -->
+                  <ul v-if="isOpen(stage) && stage.stats.length" class="tally">
+                    <li
+                      v-for="stat in stage.stats"
+                      :key="stat.label"
+                      :data-severity="stat.severity"
+                      :data-zero="stat.value ? null : '1'"
+                    >
+                      <b>{{ stat.value }}</b><span>{{ stat.label }}</span>
+                    </li>
+                  </ul>
 
-              <!-- What this stage left open behind it. Every debt has a row to
-                   sit on now, because the stage that owes it is always drawn. -->
-              <button
-                v-for="point in stage.open_points"
-                :key="point.key"
-                type="button"
-                class="open"
-                @click="openPoint(point)"
-              >
-                <i class="pi pi-exclamation-triangle" aria-hidden="true" />
-                <span class="ot">{{ point.message }}</span>
-                <span class="oa">{{ point.action }}<i class="pi pi-arrow-right" aria-hidden="true" /></span>
-              </button>
+                  <ul v-if="isOpen(stage) && stage.highlights.length" class="hl">
+                    <li v-for="item in stage.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
+                      <b>{{ item.label }}</b><span>{{ item.detail }}</span>
+                    </li>
+                  </ul>
 
-              <button
-                v-if="isOpen(stage) && attemptNote(stage)"
-                type="button"
-                class="tries"
-                :aria-expanded="expanded.has(stage.id)"
-                @click="toggle(stage)"
-              >
-                <i :class="expanded.has(stage.id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" aria-hidden="true" />
-                {{ attemptNote(stage) }}
-              </button>
-              <ol v-if="isOpen(stage) && expanded.has(stage.id) && stage.history" class="attempts">
-                <li v-for="attempt in stage.history.attempts" :key="attempt.run_id">
-                  <span class="at">{{ when(attempt.at) }}</span>
-                  <span class="st" :data-status="attempt.run_status">{{ attempt.run_status.replaceAll('_', ' ') }}</span>
-                  <span class="el">{{ duration(attempt.elapsed_ms) }}</span>
-                </li>
-              </ol>
-            </span>
+                  <!-- What this stage left open behind it. Every debt has a row
+                       to sit on now, because the stage that owes it is always
+                       drawn. -->
+                  <button
+                    v-for="point in stage.open_points"
+                    :key="point.key"
+                    type="button"
+                    class="open"
+                    @click="openPoint(point)"
+                  >
+                    <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+                    <span class="ot">{{ point.message }}</span>
+                    <span class="oa">{{ point.action }}<i class="pi pi-arrow-right" aria-hidden="true" /></span>
+                  </button>
 
-            <span class="took">
-              <!-- A stage the run in flight already owns must not offer to be
-                   started a second time. -->
-              <span v-if="liveState(stage.capability) === 'running'" class="going">
-                <i class="pi pi-spin pi-spinner" aria-hidden="true" />{{ liveSince(stage.capability) }}
-              </span>
-              <span v-else-if="liveState(stage.capability) === 'queued'" class="waits">queued</span>
-              <!-- A stage offering narrower runs draws them under the button,
-                   never beside it: the click stays the complete answer. -->
-              <SplitButton
-                v-else-if="stage.runnable && stage.start?.alternates.length"
-                label="Run"
-                size="small"
-                :severity="stage.capability === leadStage ? undefined : 'secondary'"
-                :outlined="stage.capability !== leadStage"
-                :disabled="starting === stage.capability"
-                :model="startOptions(stage)"
-                @click="start(stage)"
-              >
-                <template #item="{ item, props }">
-                  <a class="alt" v-bind="props.action">
-                    <span>{{ item.label }}</span>
-                    <small v-if="item.note">{{ item.note }}</small>
-                  </a>
-                </template>
-              </SplitButton>
-              <Button
-                v-else-if="stage.runnable"
-                label="Run"
-                size="small"
-                :severity="stage.capability === leadStage ? undefined : 'secondary'"
-                :outlined="stage.capability !== leadStage"
-                :loading="starting === stage.capability"
-                @click="start(stage)"
-              />
-              <span v-else-if="!stage.held && stage.blocked_reason" class="waits">waits</span>
-              <template v-else-if="stage.history">{{ duration(stage.history.elapsed_ms) }}</template>
-            </span>
+                  <button
+                    v-if="isOpen(stage) && attemptNote(stage)"
+                    type="button"
+                    class="tries"
+                    :aria-expanded="expanded.has(stage.id)"
+                    @click="toggle(stage)"
+                  >
+                    <i :class="expanded.has(stage.id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" aria-hidden="true" />
+                    {{ attemptNote(stage) }}
+                  </button>
+                  <ol v-if="isOpen(stage) && expanded.has(stage.id) && stage.history" class="attempts">
+                    <li v-for="attempt in stage.history.attempts" :key="attempt.run_id">
+                      <span class="at">{{ when(attempt.at) }}</span>
+                      <span class="st" :data-status="attempt.run_status">{{ attempt.run_status.replaceAll('_', ' ') }}</span>
+                      <span class="el">{{ duration(attempt.elapsed_ms) }}</span>
+                    </li>
+                  </ol>
+                </span>
+              </li>
+            </template>
+          </ol>
+        </section>
+      </div>
 
-            <!-- The row is the hit target; this is what says so. Hidden under
-                 Full, where every row is open and nothing can be shut. -->
-            <button
-              v-if="density === 'concise' && foldable(stage)"
-              type="button"
-              class="chev"
-              :aria-expanded="isOpen(stage)"
-              :aria-label="`${isOpen(stage) ? 'Collapse' : 'Expand'} ${title(stage) || stage.filed?.label || stage.capability}`"
-              @click="toggleRow(stage)"
-            >
-              <i class="pi pi-chevron-right" aria-hidden="true" />
-            </button>
-            <span v-else></span>
-          </li>
-        </template>
-
-        <!-- Debts whose stage never filed have no row to sit on, and still
-             have to be said. -->
-      </ol>
-
-      <!-- The single most blocking thing, restated as a sentence. It sits under
-           the ledger rather than over it: the ledger is what the reader came
-           for, and every debt in this line is already drawn on the row that
-           owes it. A run in flight is not one of these — that is news, and it
-           stays at the top. -->
-      <section v-if="!live && next" class="brief" :data-kind="next.kind">
-        <span class="mark"><i :class="next.kind === 'open_point' ? 'pi pi-exclamation-circle' : 'pi pi-play'" /></span>
-        <div class="txt">
-          <strong>{{ next.kind === 'open_point' ? next.message : next.headline }}</strong>
-          <span v-if="next.kind === 'stage'">Nothing is blocking it.</span>
-        </div>
+      <!-- What the whole engagement cost, as a footnote to the ledger it is a
+           footnote to. It answered no question anyone arrives with, and it was
+           the first thing on the page. -->
+      <!-- A review debt sits under the record, because it is a note about what
+           is on the screen and a note above the thing it annotates is a banner.
+           It stands whether or not a run is in flight: only a person can read
+           what the assistant decided, and a run does not do it for them. The
+           `stage` next step has no band any more — the phase being worked says
+           it, on its own header. -->
+      <section v-if="next && next.kind === 'open_point'" class="brief" data-kind="open_point">
+        <span class="mark"><i class="pi pi-exclamation-circle" /></span>
+        <div class="txt"><strong>{{ next.message }}</strong></div>
         <Button
-          v-if="next.kind === 'open_point'"
           :label="next.action"
           size="small"
           severity="secondary"
           outlined
           @click="openPoint(next)"
         />
-        <Button
-          v-else
-          label="Start"
-          icon="pi pi-play"
-          size="small"
-          severity="secondary"
-          outlined
-          :loading="starting === next.capability"
-          @click="start(next)"
-        />
       </section>
 
-      <!-- What the whole engagement cost, as a footnote to the ledger it is a
-           footnote to. It answered no question anyone arrives with, and it was
-           the first thing on the page. -->
       <footer class="summary">
-        <span><b>{{ totals?.work_products ?? 0 }}</b> work products held</span>
-        <span><b>{{ duration(totals?.elapsed_ms ?? null) }}</b> of assistant time</span>
+        <span>{{ totalLine }}</span>
         <span class="grow"></span>
-        <span>
-          {{ totalLine }}<template v-if="quietRuns">
-            · <span class="quiet">{{ plural(quietRuns, 'run') }} filed nothing</span></template>
-        </span>
+        <span v-if="quietRuns" class="quiet">{{ plural(quietRuns, 'run') }} filed nothing</span>
       </footer>
     </template>
   </div>
 </template>
 
 <style scoped>
-.record { display: flex; flex-direction: column; gap: .55rem; min-height: 0; }
+.record { display: flex; flex-direction: column; gap: .75rem; min-height: 0; }
 .loading { display: grid; place-content: center; gap: .4rem; padding: 3rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
-/* --- the strip above the ledger ------------------------------------------ */
-.bar { display: flex; align-items: center; gap: .5rem; }
+/* --- the toolbar --------------------------------------------------------- */
+.bar { display: flex; align-items: center; gap: .875rem; }
 .bar h2 {
   margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
   letter-spacing: .1em; text-transform: uppercase;
@@ -951,6 +1203,11 @@ const pendingNote = computed(() => {
 .dens button[aria-pressed="true"] { background: var(--aw-panel); color: var(--aw-teal-strong); box-shadow: var(--aw-shadow-sm); }
 .dens button:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
 
+/* The word goes. Beside a toggle that says what the page is showing and a link
+   that says where it goes, a third label on the one control that changes
+   nothing about either is the noisiest thing in the bar. */
+.bar :deep(.refresh) { width: 30px; height: 30px; padding: 0; }
+
 /* --- the chain, which is a lens rather than a work product --------------- */
 /* Sized and weighted like the Refresh button beside it so the bar reads as one
    row of controls, but drawn as a link because it navigates. */
@@ -966,111 +1223,247 @@ const pendingNote = computed(() => {
 .chain:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
 .chain .pi { font-size: var(--aw-text-sm); }
 
-/* --- what is still owed, under the ledger -------------------------------- */
-/* Below the ledger it is a note, not a banner, so it is drawn as one: half the
-   padding it had, and its wording at the size of the rows it refers to. */
+/* --- the whole plan, as one strip ---------------------------------------- */
+/* Twelve stages, drawn once. It carried a sentence saying the same thing in
+   words, which is two readings of one fact and the taller of the two. */
+.strip {
+  display: flex; flex-direction: column; gap: .375rem;
+  padding: .625rem 1rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel);
+}
+
+/* A phase takes the width its stage count earns, so one segment is one stage
+   everywhere on the strip and the whole bar can be counted. */
+.segs, .slabels { display: grid; gap: 6px; }
+.sphase { display: flex; gap: 3px; }
+.seg { flex: 1; height: 8px; border-radius: 3px; background: var(--aw-border); }
+.seg[data-state='held'] { background: var(--aw-teal); }
+/* Work under way outranks work filed: teal is what the engagement has, blue is
+   what is happening, and a live stage drawn in teal reads as already settled. */
+.seg[data-state='live'] { background: var(--aw-info); }
+.seg[data-state='lead'] { background: var(--aw-teal-line); }
+
+.slabels { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+.slabels [data-current] { color: var(--aw-teal-strong); }
+
+/* --- the two things that are news ---------------------------------------- */
+/* A run under way, and a review debt. Both sit above the phases, both are
+   drawn at the size of the rows they refer to rather than as a banner: what
+   the reader came for is the record, and these are one line each about it. */
 .brief {
   display: flex;
   align-items: center;
-  gap: .6rem;
-  padding: .45rem .6rem;
+  gap: .75rem;
+  padding: .55rem .875rem;
   border: 1px solid var(--aw-warn-line);
   border-radius: var(--aw-radius-control);
   background: var(--aw-warn-soft);
 }
-.brief[data-kind='stage'] { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
 .brief .mark { flex: 0 0 auto; display: grid; place-items: center; color: var(--aw-warn-ink); font-size: var(--aw-text-sm); }
-.brief[data-kind='stage'] .mark { color: var(--aw-teal); }
 .brief .txt { flex: 1; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: .1rem .4rem; }
+/* The bar takes the width the words do not need, which is what makes it read
+   as the run's own length rather than as another chip on the line. */
+.brief.stepped .txt { flex: 0 1 auto; }
 .brief strong { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); font-weight: 600; line-height: 1.4; }
-.brief[data-kind='stage'] strong { color: var(--aw-teal-strong); }
-.brief span { color: var(--aw-ink-soft); font-size: var(--aw-text-xs); }
+.brief span { color: var(--aw-ink-soft); font-size: var(--aw-text-sm); }
 
-/* --- what the whole engagement cost, as a footnote ----------------------- */
+/* --- the run history, as a footnote -------------------------------------- */
+/* The strip at the top draws what the engagement holds. What is left down here
+   is how it got there, which is a footnote and reads as one. */
 .summary {
   display: flex; align-items: baseline; flex-wrap: wrap; gap: .2rem 1.2rem;
-  padding: 0 .2rem;
+  padding: 0 .25rem;
   color: var(--aw-muted); font-size: var(--aw-text-xs);
+  font-variant-numeric: tabular-nums;
 }
-.summary b { color: var(--aw-ink-soft); font-weight: 600; font-variant-numeric: tabular-nums; }
 .quiet { color: var(--aw-muted-strong); }
 
-/* --- the ledger ---------------------------------------------------------- */
-.ledger { margin: 0; padding: 0; list-style: none; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); overflow: hidden; }
+/* --- one card per phase --------------------------------------------------- */
+/* The card carries the state, and every part of the header reads it off the
+   section rather than being told twice: a done phase is a plain panel, the
+   phase being worked is ringed and tinted, and a phase whose turn has not come
+   is dashed and transparent — drawn as a plan rather than as work missing. */
+.phases { display: flex; flex-direction: column; gap: .75rem; }
+.phase {
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel); overflow: hidden;
+}
+.phase[data-state='current'] { border-color: var(--aw-teal-line); }
+.phase[data-state='later'] { border-style: dashed; border-color: var(--aw-border-strong); background: transparent; }
 
-.head, .row {
+.phead {
+  display: flex; align-items: center; gap: .75rem; width: 100%;
+  padding: .55rem 1rem;
+  border: 0; background: var(--aw-raised);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.phase[data-state='current'] .phead { background: var(--aw-teal-soft); }
+.phase[data-state='later'] .phead { background: transparent; }
+.phead:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
+
+/* The numeral says where in the audit this is without a word, which is what
+   lets the rest of the header be about this phase rather than about the five. */
+.pn {
+  flex: 0 0 auto; display: grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 50%; background: var(--aw-teal); color: var(--aw-on-accent);
+  font-size: var(--aw-text-xs); font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.phase[data-state='current'] .pn {
+  border: 2px solid var(--aw-teal); background: var(--aw-panel); color: var(--aw-teal);
+}
+.phase[data-state='later'] .pn {
+  border: 1.5px dashed var(--aw-border-strong); background: var(--aw-panel); color: var(--aw-muted);
+}
+
+.pt { flex: 0 0 auto; color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600; }
+.phase[data-state='later'] .pt { color: var(--aw-ink-soft); }
+
+.pnext {
+  flex: 0 0 auto; padding: 1px .5rem; border-radius: var(--aw-radius-pill);
+  background: var(--aw-teal); color: var(--aw-on-accent);
+  font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+}
+
+.pst {
+  flex: 0 0 auto; color: var(--aw-muted); font-size: var(--aw-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.phase[data-state='done'] .pst { color: var(--aw-teal-strong); font-weight: 600; }
+
+/* What a shut phase is standing in for. It is the one thing folding away a
+   phase could hide, so it is said on the header rather than behind it. */
+.prule { flex: 0 0 auto; width: 1px; height: 14px; background: var(--aw-border); }
+.pnames {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--aw-muted); font-size: var(--aw-text-sm);
+}
+.pel {
+  flex: 0 0 auto; color: var(--aw-muted); font-size: var(--aw-text-sm);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.pchev { flex: 0 0 auto; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+
+/* --- the ledger ---------------------------------------------------------- */
+/* The phase card is the surface now, so the list inside it is only a list. */
+.ledger { margin: 0; padding: 0; list-style: none; }
+
+/* One line per work product: what state it is in, what it is, what it amounts
+   to, and the one thing to do about it. The four columns are fixed so a reader
+   scans down them rather than across each row. */
+.row {
   display: grid;
-  grid-template-columns: 4rem 1rem 17.5rem minmax(0, 1fr) 5rem 1.2rem;
-  gap: 0 .6rem;
-  align-items: start;
+  grid-template-columns: 16px minmax(0, 1fr) auto 120px;
+  gap: 0 .875rem;
+  align-items: center;
   padding: .7rem 1rem;
+  /* Ruled off from what is above it, which is the phase header on the first. */
+  border-top: 1px solid var(--aw-border);
 }
-/* A shut row is one line, so its padding is the line's own breathing room
-   rather than the block of a row that runs to two hundred pixels. */
-.row.shut { padding-block: .42rem; cursor: pointer; }
+.row.shut { cursor: pointer; }
 .row.shut:hover { background: color-mix(in srgb, var(--aw-raised) 55%, transparent); }
-.head {
-  padding-block: .55rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-raised);
-  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
-  letter-spacing: .08em; text-transform: uppercase;
+
+/* The state of the stage, said once. It replaces a time column that read "—"
+   on nine rows of twelve and a spine whose dot said the same thing twice. */
+.dot {
+  box-sizing: border-box; width: 10px; height: 10px; margin: 0 auto;
+  border-radius: 50%; background: var(--aw-teal);
 }
-.head .r { text-align: right; }
-.row + .row { border-top: 1px solid var(--aw-border); }
+.row[data-status="completed_with_issues"] .dot,
+.row[data-status="needs_review"] .dot { background: var(--aw-warn); }
+.row.ghost .dot {
+  width: 9px; height: 9px;
+  border: 1.5px dashed var(--aw-border-strong); background: var(--aw-panel);
+}
+.row.ghost.lead .dot {
+  width: 10px; height: 10px;
+  border: 2px solid var(--aw-teal); background: var(--aw-panel);
+}
+.row[data-live] .dot {
+  width: 10px; height: 10px;
+  border: 2px solid var(--aw-info); background: var(--aw-panel);
+}
+/* The running row is the only one that moves. A queued row is scheduled, not
+   under way, and a tail of pulsing dots says nothing about which is which. */
+.row[data-live='running'] .dot {
+  border: 0; background: var(--aw-info); animation: aw-record-pulse 1.8s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .row[data-live='running'] .dot { animation: none; }
+}
+
+/* --- what the row is, on one line ---------------------------------------- */
+.name { display: flex; align-items: center; gap: .625rem; min-width: 0; }
+.wpi { flex: 0 0 auto; font-size: var(--aw-text-base); color: var(--aw-teal); }
+.row.ghost .wpi { color: var(--aw-muted); }
+/* The work product is the link. It used to be a pill inside a row inside a
+   card — three borders around a label that was already the whole answer. */
+.wp {
+  flex: 0 0 auto;
+  color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600;
+  text-decoration: none; white-space: nowrap;
+}
+a.wp:hover { color: var(--aw-teal-strong); text-decoration: underline; }
+a.wp:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; border-radius: 2px; }
+.row.ghost .wp { color: var(--aw-muted); }
+.ct {
+  flex: 0 0 auto;
+  color: var(--aw-teal); font-size: var(--aw-text-sm); font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+/* The row's own sentence, and the first thing to give way when the row is
+   narrow: the label and the count above it are the reading that must survive. */
+.sen {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--aw-ink-soft); font-size: var(--aw-text-sm);
+}
+.row.ghost .sen { color: var(--aw-muted); }
+/* The lead stage is the one being asked for, and a stage under way is being
+   answered, so neither is written in the grey the rows around them are. Their
+   dots carry the rest of the difference. */
+.row.ghost.lead .wp,
+.row[data-live] .wp { color: var(--aw-ink-strong); }
+.row.ghost.lead .wpi,
+.row[data-live] .wpi { color: var(--aw-teal); }
+.row.ghost.lead .sen,
+.row[data-live] .sen { color: var(--aw-ink-soft); }
+.nrule { flex: 0 0 auto; width: 1px; height: 14px; background: var(--aw-border); }
+.none { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+
+/* --- what the row amounts to --------------------------------------------- */
+.meta {
+  display: flex; align-items: center; justify-content: flex-end; gap: .5rem;
+  white-space: nowrap;
+}
+.stamp { color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; }
+/* A stage that has not run is measured by what it waits for. Set as a phrase,
+   because `Waits for the memorandum.` under a `not yet` pill was the whole
+   content of nine rows at once. */
+.dep { color: var(--aw-muted); font-size: var(--aw-text-sm); font-style: italic; }
+
+.act { display: flex; align-items: center; justify-content: flex-end; }
+
+/* Everything the row says under its own line: the folded body, and the two
+   things that are said whether it is folded or not. */
+.body { grid-column: 2 / -1; display: grid; gap: .2rem; min-width: 0; justify-items: start; margin-top: .35rem; }
 
 /* What a filed stage still owes. Amber like the debts it sits among, but a
    line rather than a button: there is nothing here to click, only something
    the next run will pick up. */
 .left {
   display: flex; gap: .4rem; align-items: baseline;
-  color: var(--aw-warn-ink, var(--aw-muted)); font-size: var(--aw-text-sm);
+  color: var(--aw-warn-ink); font-size: var(--aw-text-sm);
 }
 .left i { font-size: .7rem; }
 
-.tm { padding-top: .2rem; color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; }
-.took { padding-top: .2rem; text-align: right; color: var(--aw-muted); font-size: var(--aw-text-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
-
-/* the connecting spine. The gutter stretches or the line reaches 46px down a
-   row that can run to 200. */
-.gut { position: relative; align-self: stretch; display: flex; justify-content: center; padding-top: .35rem; }
-.gut i { z-index: 1; width: .5rem; height: .5rem; border-radius: 50%; background: var(--aw-teal); box-shadow: 0 0 0 2px var(--aw-panel); }
-.gut::before { content: ""; position: absolute; top: .8rem; bottom: -1.9rem; left: 50%; width: 1px; background: var(--aw-border-strong); transform: translateX(-.5px); }
-.row:last-child .gut::before { display: none; }
-.row[data-status="completed_with_issues"] .gut i,
-.row[data-status="needs_review"] .gut i { background: var(--aw-warn); }
-
-/* The work product is a pill: one unit, one line, the same object whether the
-   row is open or shut. Opening a row changes what the row says about the work,
-   never what was filed. */
-.made { min-width: 0; }
-.card {
-  display: inline-flex; align-items: center; gap: .45rem; max-width: 100%;
-  padding: .32rem .75rem .32rem .6rem;
-  border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-pill);
-  background: var(--aw-teal-soft); color: var(--aw-teal-strong);
-  text-decoration: none; white-space: nowrap;
-}
-.card.linked:hover { border-color: var(--aw-teal); background: var(--aw-panel); box-shadow: var(--aw-shadow-sm); }
-.card.linked:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
-.card > i { font-size: var(--aw-text-sm); }
-.mt { display: inline-flex; align-items: baseline; gap: .4rem; min-width: 0; }
-.mt b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--aw-text-base); font-weight: 600; line-height: 1.4; }
-/* The count belongs to the same unit, hung off a hairline rather than set
-   loose on a second line. */
-.mt em {
-  flex: 0 0 auto; padding-left: .4rem; border-left: 1px solid var(--aw-teal-line);
-  color: var(--aw-teal); font-size: var(--aw-text-sm); font-style: normal;
-  font-weight: 700; font-variant-numeric: tabular-nums;
-}
-.none { display: block; padding-top: .3rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-
-/* --- doors beside the card ----------------------------------------------- */
-/* An artifact door is a quieter relative of the card above it: same family,
+/* --- doors beside the label ---------------------------------------------- */
+/* An artifact door is a quieter relative of the label beside it: same family,
    less weight, because it opens a part of what the row filed rather than the
    row itself. A tool door is deliberately outside that family — neutral, with
    a wrench — because running one files nothing, and drawing it in the teal the
    record uses for held work would be a claim the engagement cannot support. */
-.doors { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .3rem; }
 .door {
+  flex: 0 0 auto;
   display: inline-flex; align-items: center; gap: .3rem;
   padding: .16rem .5rem;
   border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-control);
@@ -1086,10 +1479,6 @@ a.door:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
 a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-ink-soft); }
 .door .pi { font-size: var(--aw-text-xs); }
 
-.say { display: grid; gap: .2rem; min-width: 0; justify-items: start; }
-.saytop { display: flex; align-items: baseline; flex-wrap: wrap; gap: .3rem .5rem; min-width: 0; }
-.ttl { font-size: var(--aw-text-md); font-weight: 600; line-height: 1.3; color: var(--aw-ink-strong); }
-.row.shut .ttl { font-size: var(--aw-text-base); font-weight: 500; color: var(--aw-ink); }
 .dsc { max-width: 72ch; color: var(--aw-ink-soft); font-size: var(--aw-text-base); line-height: 1.55; }
 
 /* What the folded body is standing in for, counted. A row with nothing to say
@@ -1170,35 +1559,10 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
 .attempts .st[data-status="cancelled"], .attempts .st[data-status="failed"] { color: var(--aw-warn-ink); }
 .attempts .el { color: var(--aw-muted); }
 
-/* --- the now line and the phantom tail ---------------------------------- */
-.nowline {
-  display: flex; align-items: center; gap: .6rem;
-  padding: .4rem 1rem; border-top: 1px solid var(--aw-border); background: var(--aw-canvas);
-}
-.nowline .lab { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.nowline .hr { flex: 1; height: 1px; background: repeating-linear-gradient(90deg, var(--aw-border-strong) 0 4px, transparent 4px 8px); }
-
-.row.ghost { background: var(--aw-canvas); }
-.row.ghost .gut i { width: .55rem; height: .55rem; background: var(--aw-panel); border: 1.5px dashed var(--aw-border-strong); box-shadow: none; }
-.row.ghost .gut::before { background: repeating-linear-gradient(180deg, var(--aw-border-strong) 0 3px, transparent 3px 7px); }
-.row.ghost .card { border-style: dashed; border-color: var(--aw-border-strong); background: transparent; color: var(--aw-muted); }
-.row.ghost .mt em { color: var(--aw-muted); }
-.row.ghost .ttl { color: var(--aw-muted); }
-.row.ghost .took { padding-top: 0; }
-.waits { font-style: italic; }
-
 /* The note is the half that keeps "defer" from reading as "skip", so it is set
    as a second line rather than a tooltip. */
 .alt { display: grid; gap: .1rem; padding: .4rem .75rem; text-align: left; white-space: normal; }
 .alt small { color: var(--aw-muted); font-size: var(--aw-text-xs); max-width: 18rem; }
-
-/* Only the first runnable stage is drawn as a call to action: a tail of six
-   buttons is a menu, not a next step. */
-.row.ghost.lead { background: var(--aw-teal-soft); }
-.row.ghost.lead .gut i { border-style: solid; border-color: var(--aw-teal); }
-.row.ghost.lead .card { border-style: solid; border-color: var(--aw-teal); background: var(--aw-panel); color: var(--aw-teal-strong); }
-.row.ghost.lead .ttl { color: var(--aw-ink-strong); }
-
 
 /* --- the run in flight ---------------------------------------------------- */
 /* Blue, deliberately: teal is what the engagement has filed and amber is what
@@ -1206,8 +1570,15 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
    a live row read as already settled. */
 .brief.live { border-color: var(--aw-info-line); background: var(--aw-info-soft); }
 .brief.live .mark { color: var(--aw-info); }
+.brief.live strong { color: var(--aw-info); }
+.pbar {
+  flex: 1; min-width: 3rem; height: 4px; border-radius: 2px;
+  background: var(--aw-info-line); overflow: hidden;
+}
+.pbar i { display: block; height: 100%; background: var(--aw-info); }
 .brief.live[data-wait] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); }
-.brief.live[data-wait] .mark { color: var(--aw-warn-ink); }
+.brief.live[data-wait] .mark,
+.brief.live[data-wait] strong { color: var(--aw-warn-ink); }
 
 /* A work product that is already filed and is being produced again. */
 .again {
@@ -1219,25 +1590,6 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
 }
 .again i { font-size: var(--aw-text-xs); }
 
-.going {
-  display: inline-flex; align-items: center; gap: .3rem; justify-content: flex-end;
-  color: var(--aw-info); font-size: var(--aw-text-xs); font-weight: 600;
-}
-
-.row.ghost[data-live] { background: var(--aw-info-soft); }
-.row.ghost[data-live] .card { border-style: solid; border-color: var(--aw-info-line); background: var(--aw-panel); color: var(--aw-info); }
-.row.ghost[data-live] .mt em { color: var(--aw-info); }
-.row.ghost[data-live] .ttl { color: var(--aw-ink-strong); }
-.row.ghost[data-live] .dsc { color: var(--aw-ink-soft); }
-.row.ghost[data-live] .gut i { border-style: solid; border-color: var(--aw-info); background: var(--aw-info); }
-.row.ghost[data-live] .gut::before { background: var(--aw-info-line); }
-
-/* The running row is the only one that moves. A queued row is scheduled, not
-   under way, and a tail of pulsing dots says nothing about which is which. */
-.row.ghost[data-live='running'] .tm { color: var(--aw-info); font-weight: 700; }
-.row.ghost[data-live='running'] .gut i { animation: aw-record-pulse 1.8s ease-out infinite; }
-.row.ghost[data-live='queued'] .gut i { background: var(--aw-panel); border-color: var(--aw-info-line); }
-
 /* The ring is mixed from the token rather than written out, because the blue
    inverts between themes and a fixed rgba() would glow dark-on-dark. */
 @keyframes aw-record-pulse {
@@ -1245,22 +1597,19 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
   70% { box-shadow: 0 0 0 .4rem transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .row.ghost[data-live='running'] .gut i { animation: none; }
-}
-
+/* Narrow, what the row amounts to drops under what it is. The one thing that
+   stays on the first line is the thing to do about it: an action that scrolls
+   away from the row it belongs to is one nobody takes. */
 @container (max-width: 56rem) {
-  .head { display: none; }
-  .row { grid-template-columns: 4rem 1rem minmax(0, 1fr) 1.2rem; }
-  .row .took { grid-column: 3; text-align: left; }
-  .row .made { grid-column: 3; }
-  .row .say { grid-column: 3; }
+  /* A phase title is allowed to take two lines here. The segments under it are
+     not: the strip is a count, and a count that reflows is not one. */
+  .slabels { line-height: 1.25; }
 
-  /* A shut row stays one line here too: the pill shrink-wraps to its own text
-     and the headline takes what is left. */
-  .row.shut { grid-template-columns: 4rem 1rem auto minmax(5rem, 1fr) 4rem 1.2rem; }
-  .row.shut .made { grid-column: 3; }
-  .row.shut .say { grid-column: 4; }
-  .row.shut .took { grid-column: 5; text-align: right; }
+  .row { grid-template-columns: 16px minmax(0, 1fr) 120px; }
+  .row .dot { grid-column: 1; grid-row: 1; }
+  .row .name { grid-column: 2; grid-row: 1; }
+  .row .act { grid-column: 3; grid-row: 1; }
+  .row .meta { grid-column: 2; grid-row: 2; justify-content: flex-start; margin-top: .2rem; }
+  .row .body { grid-column: 2 / -1; grid-row: 3; }
 }
 </style>

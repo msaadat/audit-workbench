@@ -61,6 +61,7 @@ _PHASE_OF_DOMAIN = {
     "documents": "documents",
     "planning": "planning",
     "tests": "planning",
+    "doc_tests": "fieldwork",
     "fieldwork": "fieldwork",
     "results": "fieldwork",
     "findings": "fieldwork",
@@ -107,6 +108,17 @@ PLAN_PHASES: tuple[dict[str, str], ...] = (
 )
 
 
+def phase_of_capability(capability: str) -> str:
+    """The phase a capability belongs to, by the domain its id starts with.
+
+    The brief's preview and the engagement record both group by phase, and they
+    must group identically: a stage the record files under *Do the fieldwork*
+    and the brief lists under *Further steps* is one step described two ways.
+    """
+    domain = str(capability).split(".", 1)[0]
+    return _PHASE_OF_DOMAIN.get(domain, _UNGROUPED_PHASE)
+
+
 def plan_phases(template: str = DEFAULT_TEMPLATE) -> list[dict[str, Any]]:
     """`plan_outcomes` grouped into the phases an auditor recognises.
 
@@ -116,8 +128,7 @@ def plan_phases(template: str = DEFAULT_TEMPLATE) -> list[dict[str, Any]]:
     """
     grouped: dict[str, list[dict[str, str]]] = {}
     for outcome in plan_outcomes(template):
-        domain = str(outcome["capability"]).split(".", 1)[0]
-        phase = _PHASE_OF_DOMAIN.get(domain, _UNGROUPED_PHASE)
+        phase = phase_of_capability(outcome["capability"])
         grouped.setdefault(phase, []).append(outcome)
     return [
         {**phase, "steps": grouped[phase["id"]]}

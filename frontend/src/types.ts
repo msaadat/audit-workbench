@@ -2170,6 +2170,12 @@ export interface EngagementStage {
   capability: string
   /** null where the engagement plan does not contain this capability at all. */
   order: number | null
+  /**
+   * Which of the audit phases the row is drawn under — the id of an entry in
+   * the payload's `phases`. The server groups; the view never keeps a second
+   * table of which stage belongs where.
+   */
+  phase: string
   /** Whether the engagement holds the work product. */
   held: boolean
   runnable: boolean
@@ -2272,6 +2278,12 @@ export type EngagementNextStep =
 export interface EngagementRecordPayload {
   /** Every work product, in plan order. One list, not a filed half and an owed half. */
   stages: EngagementStage[]
+  /**
+   * The sections the record is drawn in, in plan order, and only the ones this
+   * engagement has stages for. The view maps this list to sections, so a phase
+   * renamed or reordered on the server moves on the screen by itself.
+   */
+  phases: Array<{ id: string; title: string; summary: string }>
   open_points: EngagementOpenPoint[]
   next: EngagementNextStep | null
   counts: Record<string, number>

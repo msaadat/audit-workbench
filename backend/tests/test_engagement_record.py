@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from app import engagement_record, rcm_execution
+from app import engagement, engagement_record, rcm_execution
 from app.agent import routing
 from app.agent.workflows import documents as documents_workflow
 from app.workspaces import TEST_STATUSES
@@ -209,6 +209,95 @@ def test_a_stage_outside_the_audit_plan_sits_beside_the_work_it_belongs_to(stub_
     assert rows["doc_tests.executed"]["filed"]["label"] == "Document test results"
     assert order.index("tests.specified") < order.index("doc_tests.executed")
     assert order.index("doc_tests.executed") < order.index("fieldwork.executed")
+
+
+# --------------------------------------------------------------------------- #
+# The phase each row is drawn under
+# --------------------------------------------------------------------------- #
+def test_every_stage_names_a_phase_the_payload_declares(stub_store):
+    """The view draws its sections from `phases` and files rows into them.
+
+    A row naming a phase the payload does not list would vanish from the
+    screen, so the two are checked against each other rather than assumed.
+    """
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00")]),
+    ])
+    result = engagement_record.record(_Workspace())
+    declared = {phase["id"] for phase in result["phases"]}
+
+    assert declared
+    for stage in result["stages"]:
+        assert stage["phase"] in declared, stage["capability"]
+
+
+def test_no_stage_on_the_default_spine_falls_into_the_catch_all(stub_store):
+    """`Further steps` is where an unmapped domain shows itself.
+
+    Document test results sat there because `_PHASE_OF_DOMAIN` had no entry for
+    `doc_tests` — a step of the fieldwork labelled as something left over.
+    """
+    stub_store([])
+    result = engagement_record.record(_Workspace())
+
+    unplaced = [
+        stage["capability"] for stage in result["stages"]
+        if stage["phase"] == engagement._UNGROUPED_PHASE
+    ]
+    assert not unplaced, f"unmapped capability domains: {unplaced}"
+    assert engagement._UNGROUPED_PHASE not in {phase["id"] for phase in result["phases"]}
+
+
+def test_the_default_spine_groups_into_the_five_audit_phases(stub_store):
+    stub_store([])
+    result = engagement_record.record(_Workspace())
+    grouped: dict[str, list[str]] = {}
+    for stage in result["stages"]:
+        grouped.setdefault(stage["phase"], []).append(stage["capability"])
+
+    assert grouped == {
+        "sources": ["sources.imported", "analysis.executed"],
+        "documents": ["documents.analysis_generated"],
+        "planning": ["planning.apm_ready", "planning.rcm_ready", "tests.specified"],
+        "fieldwork": [
+            "doc_tests.executed",
+            "fieldwork.executed",
+            "results.rolled_up",
+            "findings.drafted",
+        ],
+        "writeup": ["report.working_draft", "audit.verified"],
+    }
+
+
+def test_the_document_test_register_is_part_of_the_fieldwork(stub_store):
+    stub_store([])
+    rows = _rows(engagement_record.record(_Workspace()))
+
+    assert rows["doc_tests.executed"]["phase"] == "fieldwork"
+
+
+def test_phases_come_back_in_plan_order_and_only_where_stages_sit(stub_store):
+    stub_store([])
+    result = engagement_record.record(_Workspace())
+    order = [phase["id"] for phase in engagement.PLAN_PHASES]
+    listed = [phase["id"] for phase in result["phases"]]
+
+    assert listed == [item for item in order if item in set(listed)]
+    for phase in result["phases"]:
+        assert phase["title"] and phase["summary"]
+        assert any(stage["phase"] == phase["id"] for stage in result["stages"])
+
+
+def test_a_stage_outside_the_spine_is_still_given_its_phase(stub_store):
+    """Working papers are registered and have no spine row, and still belong."""
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00")]),
+    ])
+    rows = _rows(engagement_record.record(_Workspace()))
+
+    assert rows["working_papers.generated"]["phase"] == "writeup"
 
 
 # --------------------------------------------------------------------------- #
