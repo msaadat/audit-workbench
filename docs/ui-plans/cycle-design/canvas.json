@@ -1,0 +1,18 @@
+{
+  "pages": [
+    {"id": "page-simple", "name": "Simplified view"},
+    {"id": "page-explore", "name": "Earlier exploration"}
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Cycle, scrolling view", "x": 0, "y": 0, "w": 1440, "h": 760, "page": "page-simple" },
+    { "file": "CycleStrip.dc.html", "title": "The whole strip", "x": 0, "y": 900, "w": 1820, "h": 660, "page": "page-simple" },
+    { "file": "Pipeline.dc.html", "title": "Where the stage sits", "x": 0, "y": 0, "w": 1440, "h": 560, "page": "page-explore" },
+    { "file": "CycleShape.dc.html", "title": "Cycle, after the APM (earlier)", "x": 0, "y": 700, "w": 1440, "h": 1000, "page": "page-explore" },
+    { "file": "CycleBound.dc.html", "title": "Cycle, after the schemas (earlier)", "x": 0, "y": 1840, "w": 1440, "h": 940, "page": "page-explore" }
+  ],
+  "annotations": [
+    { "id": "note-simple", "x": 1500, "y": 0, "w": 300, "page": "page-simple", "text": "One strip, one column per step of the APM's process flow. The document sits above the population table that records it; a step without a table of its own says where its rows live. Arrows leave the right edge of a field and enter the left edge of the field they relate to. Neighbouring steps are joined directly; a relationship that skips a step rides the bus above the documents (or below the tables), one lane each, so nothing crosses a node. The page scrolls to the right; the second artboard shows the whole strip." },
+    { "id": "note-explore", "x": 1500, "y": 0, "w": 300, "page": "page-explore", "text": "The first pass, kept for reference: a side panel for the selected rule, status chips, a master-data lane and an editable step list. Judged too much for now." }
+  ],
+  "launch": { "view": "canvas", "page": "page-simple" }
+}
