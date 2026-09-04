@@ -72,6 +72,23 @@ def _analysis_calls(fake) -> list[dict]:
 def _analysis_tags(fake) -> list[str]:
     return [call["tag"] for call in _analysis_calls(fake)]
 
+
+def _narrative_markers(analysis: dict) -> set[str]:
+    """Every anchor the analysis's prose promises a reader it can open."""
+
+    return document_workers._citation_marker_ids(
+        "\n".join(
+            (
+                str(analysis.get("summary_markdown") or ""),
+                str(analysis.get("audit_notes_markdown") or ""),
+            )
+        )
+    )
+
+
+def _citation_ids(analysis: dict) -> set[str]:
+    return {str(item.get("id")) for item in analysis.get("citations") or []}
+
 # Long enough that ``ANALYSIS_CHUNK_CHARACTERS`` splits it into several chunks.
 LONG_PAGE = "\n\n".join(
     f"Clause {index}: purchases above the threshold require documented approval "
@@ -599,6 +616,104 @@ def test_text_chunk_accepts_the_legacy_exact_excerpt_alias_after_exact_validatio
     assert proposal["proposal"]["citations"][0]["excerpt"]
 
 
+def test_a_marker_whose_excerpt_did_not_survive_never_reaches_the_analysis(
+    monkeypatch,
+):
+    """The prose cites exactly the citations the generated analysis carries.
+
+    ``validate_citations`` drops an excerpt that is not verbatim in the chunk,
+    and the marker naming it used to stay in the prose regardless: nine of
+    sixteen markers in one expenses analysis named no record. Nothing reports
+    that — ``executors.planning._resolved_criteria_refs`` skips a citation id it
+    cannot resolve without a word — so an RCM row resting on one of those
+    markers lost its criterion silently at commit.
+    """
+
+    ws, document = _policy_workspace("Unbound marker")
+    documents.extract_document(ws, document["id"])
+
+    def paraphrasing(user: str) -> dict:
+        source = _source_of(user)
+        page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
+        return {
+            "summary_markdown": (
+                "## Summary\n\nApproval is required [C1], before a commitment "
+                "is made [C2]."
+            ),
+            "audit_notes_markdown": (
+                "## Notes\n\nObtain evidence of operation [C2]."
+            ),
+            "citations": [
+                {"id": "C1", "page": page, "excerpt": source[:20].strip()},
+                # A paraphrase of the same sentence: close enough to read as
+                # evidence, absent from the source, and dropped for being so.
+                {"id": "C2", "page": page, "excerpt": "approval is needed first"},
+            ],
+        }
+
+    fake = _fake_model(monkeypatch, {MAP_TAG: paraphrasing})
+    run = _document_run(ws, [document["id"]])
+
+    _drive(ws, run, "documents.analysis_chunks_ready")
+    _drive(ws, run, "documents.analysis_generated")
+
+    # The repair turn asked for the excerpt back; this model paraphrased again.
+    assert len([call for call in fake.calls if call["tag"] == MAP_TAG]) == 2
+
+    generated = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), document["id"]
+    )["generated"]
+    assert _narrative_markers(generated) == _citation_ids(generated) == {"C1"}
+    # The statement survives; only the anchor it could not honour is gone.
+    assert "[C2]" not in generated["summary_markdown"]
+    assert "before a commitment is made." in generated["summary_markdown"]
+
+
+def test_a_repaired_excerpt_keeps_its_citation_instead_of_losing_the_marker(
+    monkeypatch,
+):
+    """Stripping is the fallback. The repair turn is the answer that is tried."""
+
+    ws, document = _policy_workspace("Repaired excerpt")
+    documents.extract_document(ws, document["id"])
+    attempts = {"count": 0}
+
+    def paraphrase_then_copy(user: str) -> dict:
+        attempts["count"] += 1
+        source = _source_of(user)
+        page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
+        return {
+            "summary_markdown": (
+                "## Summary\n\nApproval is required [C1] before commitment [C2]."
+            ),
+            "audit_notes_markdown": "## Notes\n\nObtain evidence [C2].",
+            "citations": [
+                {"id": "C1", "page": page, "excerpt": source[:20].strip()},
+                {
+                    "id": "C2",
+                    "page": page,
+                    "excerpt": (
+                        source[-24:].strip()
+                        if attempts["count"] > 1
+                        else "approval is needed first"
+                    ),
+                },
+            ],
+        }
+
+    _fake_model(monkeypatch, {MAP_TAG: paraphrase_then_copy})
+    run = _document_run(ws, [document["id"]])
+
+    _drive(ws, run, "documents.analysis_chunks_ready")
+    _drive(ws, run, "documents.analysis_generated")
+
+    generated = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), document["id"]
+    )["generated"]
+    assert _narrative_markers(generated) == _citation_ids(generated) == {"C1", "C2"}
+    assert "[C2]" in generated["summary_markdown"]
+
+
 def test_one_failed_chunk_keeps_its_siblings_proposals(monkeypatch):
     ws, document = _policy_workspace("Chunk failure isolation", text=LONG_PAGE)
     documents.extract_document(ws, document["id"])
@@ -691,6 +806,46 @@ def test_reduction_consumes_only_chunk_proposals_and_carries_their_citations(
     # reduction, which saw no text to cite.
     assert analysis["generated"]["citations"]
     assert all(item["excerpt_hash"] for item in analysis["generated"]["citations"])
+    generated = analysis["generated"]
+    assert _narrative_markers(generated) <= _citation_ids(generated)
+
+
+def test_the_reduction_cannot_cite_an_id_its_chunk_analyses_never_bound(
+    monkeypatch,
+):
+    """A consolidation sees no source, so it can invent nothing to cite either.
+
+    It is told to preserve the markers it was given, and preserving them is
+    exactly where a renumbered or carried-over id appears — in prose that no
+    longer travels with the chunk whose citations would have anchored it.
+    """
+
+    ws, document = _policy_workspace("Reduction marker", text=LONG_PAGE)
+    documents.extract_document(ws, document["id"])
+
+    def inventive(_user: str) -> dict:
+        return {
+            "summary_markdown": (
+                "## Consolidated summary\n\nApproval is required [C1] for "
+                "every purchase [C9]."
+            ),
+            "audit_notes_markdown": "## Consolidated notes\n\nObtain evidence [C1].",
+        }
+
+    fake = _fake_model(monkeypatch, {REDUCE_TAG: inventive})
+    run = _document_run(ws, [document["id"]])
+
+    _drive(ws, run, "documents.analysis_chunks_ready")
+    _drive(ws, run, "documents.analysis_generated")
+
+    assert len([call for call in fake.calls if call["tag"] == REDUCE_TAG]) == 2
+
+    generated = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), document["id"]
+    )["generated"]
+    assert _narrative_markers(generated) == _citation_ids(generated) == {"C1"}
+    assert "[C9]" not in generated["summary_markdown"]
+    assert "for every purchase." in generated["summary_markdown"]
 
 
 def test_a_single_chunk_document_commits_without_a_reduction_turn(monkeypatch):
@@ -1084,26 +1239,84 @@ def _source_of(user: str) -> str:
     )[0].strip()
 
 
-def test_structured_narrative_rejects_markers_whose_excerpt_did_not_survive():
-    proposal = {
-        "summary_markdown": "## Summary\n\nApproval is required. [C1]",
+def test_a_narrative_rejects_markers_whose_excerpt_did_not_survive():
+    """A dropped excerpt is a repair, and the stripped prose is the fallback."""
+
+    result = {
+        "summary_markdown": "## Summary\n\nApproval is required [C1].",
         "audit_notes_markdown": "## Audit notes\n\nNo specific observations.",
-        "citations": [{"id": "C1", "page": 1, "excerpt": "not in source"}],
-        "_narrative_contract": "structured_blocks_v1",
-    }
-    validated = {
-        "summary_markdown": proposal["summary_markdown"],
-        "audit_notes_markdown": proposal["audit_notes_markdown"],
+        # What survived: nothing. `C1` was declared, so it is named as the
+        # excerpt problem it is rather than as an invented id.
         "citations": [],
     }
 
     with pytest.raises(
         document_workers.WorkerResponseValidationError,
         match="did not survive exact source validation",
-    ):
-        document_workers._validate_surviving_narrative_citations(
-            proposal, validated
+    ) as raised:
+        document_workers._narrative_bound_to_citations(
+            result, declared_ids=["C1"]
         )
+
+    # The allowance is finite. When it runs out the statement is committed
+    # without the anchor it could not honour, rather than the document failing.
+    assert raised.value.partial["summary_markdown"] == (
+        "## Summary\n\nApproval is required."
+    )
+
+
+def test_a_marker_naming_a_citation_no_one_declared_is_reported_as_invented():
+    with pytest.raises(
+        document_workers.WorkerResponseValidationError,
+        match=r"have no supplied citation: \[c9\]",
+    ):
+        document_workers._narrative_bound_to_citations(
+            {
+                "summary_markdown": "Approval is required [c1] on receipt [c9].",
+                "audit_notes_markdown": "Obtain the delegation matrix [c1].",
+                "citations": [{"id": "c1", "page": 1, "excerpt": "Approval"}],
+            },
+            declared_ids=["c1"],
+        )
+
+
+def test_stripping_a_marker_leaves_prose_rather_than_the_gap_it_sat_in():
+    strip = document_workers._strip_unbound_markers
+
+    # Spaced between two words, the marker owes one of the spaces back.
+    assert strip("Approval [c9] is required.", {"c1"}) == "Approval is required."
+    # Parked before the punctuation it was written for, it takes that spacing.
+    assert strip("Attach receipts [c9].", {"c1"}) == "Attach receipts."
+    assert strip("- [c9] Submit within 60 days.", {"c1"}) == (
+        "- Submit within 60 days."
+    )
+    # A sentence the source had already ended keeps one full stop, not two.
+    assert strip("It applies to Northstar (Pvt.) Ltd. [c9].", {"c1"}) == (
+        "It applies to Northstar (Pvt.) Ltd."
+    )
+    # A bound marker is left exactly as it was, spacing included.
+    assert strip("Approval is required [c1]. Receipts too [c9].", {"c1"}) == (
+        "Approval is required [c1]. Receipts too."
+    )
+
+
+def test_a_bound_narrative_folds_marker_case_and_leaves_markdown_links_alone():
+    bound = document_workers._narrative_bound_to_citations(
+        {
+            "summary_markdown": (
+                "Approval is required [C1]. File it in the "
+                "[Portal](https://example.test/portal)."
+            ),
+            "audit_notes_markdown": "Obtain the [approval list][ref] [c1].",
+            "citations": [{"id": "c1", "page": 1, "excerpt": "Approval"}],
+        }
+    )
+
+    # `[C1]` and `[c1]` name the same citation; a Markdown link names none.
+    assert "[c1]" in bound["summary_markdown"]
+    assert "[C1]" not in bound["summary_markdown"]
+    assert "[Portal](https://example.test/portal)" in bound["summary_markdown"]
+    assert "[approval list][ref]" in bound["audit_notes_markdown"]
 
 
 def _analysis_milestone(ws, document_ids: list[str]) -> dict:

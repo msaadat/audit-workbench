@@ -431,27 +431,36 @@ def _normalize_citation_markers(text: str, canonical: Mapping[str, str]) -> str:
     )
 
 
-#: One marker with the single space either side of it, so removing a marker
-#: leaves the words it sat between correctly spaced rather than a gap.
+#: One marker, the single space either side of it, and the punctuation it sat
+#: in front of — everything removing a marker has to reason about to leave
+#: prose behind rather than a gap and a stray comma.
 _MARKER_SPAN_RE = re.compile(
     r"(?P<before>[ \t]?)(?<!\])\[(?P<id>[A-Za-z][A-Za-z0-9_-]{0,63})\](?![(\[])"
-    r"(?P<after>[ \t]?)"
+    r"(?P<after>[ \t]?)(?P<punctuation>[.,;:!?]?)"
 )
 #: Whitespace a removed marker stranded in front of the punctuation it sat
-#: before, or of the marker that followed it.
+#: before, or in front of the marker that followed it.
 _STRANDED_SPACE_RE = re.compile(r"[ \t]+([.,;:!?)])")
 
 
 def _strip_unbound_markers(text: str, bound: Collection[str]) -> str:
     """Remove every marker naming no citation in ``bound``, and only those."""
 
-    def replace(match: "re.Match[str]") -> str:
+    def replace(match: re.Match[str]) -> str:
         if match.group("id") in bound:
             return match.group(0)
         # Spaced on both sides, the marker sat between two words that still
         # need separating. Otherwise it opened or closed its phrase and takes
         # its own spacing with it.
-        return match.group("after") if match.group("before") else ""
+        separator = match.group("after") if match.group("before") else ""
+        punctuation = match.group("punctuation")
+        preceding = match.string[: match.start()].rstrip()
+        if punctuation and preceding.endswith(punctuation):
+            # `Ltd. [c4].` — the marker was parked between a sentence that had
+            # already ended and the full stop written for it. Keeping both
+            # leaves `Ltd..`, which reads as a typo the source never made.
+            punctuation = ""
+        return separator + punctuation
 
     stripped = _MARKER_SPAN_RE.sub(replace, text)
     return "\n".join(
@@ -614,11 +623,11 @@ def _narrative_bound_to_citations(
     find, and the RCM consumer skips an id it cannot resolve without a word, so
     an unbound marker stays invisible until criteria go missing at commit.
 
-    This ran only for the structured narrative shape, which the standard
-    document workers never emit — their prompt asks for freeform Markdown and
-    calls no tool — so in practice nothing checked the analyses that carry
-    these markers. It now runs on every narrative, whatever shape it arrived
-    in.
+    The check this replaces ran only for the structured narrative shape,
+    which the standard document workers never emit — their prompt asks for
+    freeform Markdown and calls no tool — so nothing ever checked the analyses
+    that actually carry these markers. This runs on every narrative, whatever
+    shape it arrived in.
 
     Rejecting spends the repair turn where it can help: the model re-copies the
     excerpt and the citation survives. When the allowance is spent, the
@@ -1056,22 +1065,28 @@ def validate_visual_proposal(
             "citations contained no validated visual anchor"
         )
     page = int(handles[0]["page"])
-    return {
-        "chunk_id": str(
-            request.unit_input.get("chunk_id") or f"VISUAL-{page:04d}"
-        ),
-        "document_id": str(document.get("document_id") or ""),
-        "pages": [page],
-        "modality": "image",
-        "transcription_markdown": transcription,
-        "derived_text_markdown": transcription,
-        "summary_markdown": text["summary_markdown"],
-        "audit_notes_markdown": text["audit_notes_markdown"],
-        "citations": citations,
-        "prepared_media_set_hash": str(
-            handles[0].get("prepared_set_hash") or ""
-        ),
-    }
+    # An unusable visual citation is rejected above rather than dropped, so
+    # nothing is declared here: every id the narrative may name is in the list
+    # this proposal carries. The transcription is deliberately not bound — it
+    # reproduces the page, and a form's `[Signature]` box is not a marker.
+    return _narrative_bound_to_citations(
+        {
+            "chunk_id": str(
+                request.unit_input.get("chunk_id") or f"VISUAL-{page:04d}"
+            ),
+            "document_id": str(document.get("document_id") or ""),
+            "pages": [page],
+            "modality": "image",
+            "transcription_markdown": transcription,
+            "derived_text_markdown": transcription,
+            "summary_markdown": text["summary_markdown"],
+            "audit_notes_markdown": text["audit_notes_markdown"],
+            "citations": citations,
+            "prepared_media_set_hash": str(
+                handles[0].get("prepared_set_hash") or ""
+            ),
+        }
+    )
 
 
 def run_visual_worker(
