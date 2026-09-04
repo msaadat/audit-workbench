@@ -1209,6 +1209,12 @@ class AuditWorkflowExecution(ActionRunner):
                 self.record_artifact(
                     "rcm", str(row["id"]), str(row["semantic_id"]), action, task
                 )
+            # Judgements the gate declined to enforce, because each is right
+            # about as often as it is wrong and a regex cannot tell which.
+            for flag in (outcome.receipt.output.get("flags") or []) if outcome.receipt else []:
+                self.warn(
+                    f"Check RCM row {flag.get('row_index')}: {flag.get('message')}"
+                )
             # A theme no row mentions at all. Enforced once, and it rejected
             # matrices over the memo's markdown rather than over their coverage
             # — see :func:`unowned_themes`. Reported first because it is the

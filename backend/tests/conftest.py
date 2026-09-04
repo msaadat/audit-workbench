@@ -309,6 +309,32 @@ def _scripted_user_view(messages: list[dict]) -> str:
     )
 
 
+def _rcm_controls_response(user: str) -> dict:
+    """One control per supplied risk, named from the risk it answers.
+
+    Every RCM run makes this call, so every agent-run fixture needs an answer
+    for it, and a fixed one would name row indices the test does not have.
+    ``preventive`` because it is the safe half of the two-value enum for a
+    control the fixture never described; tests about the control override this.
+    """
+
+    payload = json.loads(user.split("\nRepair the prior response")[0])
+    rows = payload.get("RISKS") or payload.get("CONTROLS TO CORRECT") or []
+    return {
+        "controls": [
+            {
+                "row_index": row["row_index"],
+                "control": (
+                    f"Management asserts a control over "
+                    f"{(row.get('risk') or 'this risk').rstrip('.').lower()}."
+                ),
+                "control_type": "preventive",
+            }
+            for row in rows
+        ]
+    }
+
+
 def _rcm_attributes_response(user: str) -> dict:
     """One attribute per supplied row, derived from the row it belongs to.
 
@@ -378,9 +404,10 @@ class FakeAgentLLM:
             "reason": "The procedure describes the population rather than a control.",
         },
         "agent:fix_code": {"code": "result = transactions.head(0)"},
-        # The matrix's second call. Scripted by default because it runs in
-        # every RCM run and its answer is a function of the rows the first call
-        # returned, which vary per fixture.
+        # The matrix's second and third calls. Scripted by default because both
+        # run in every RCM run and their answers are functions of the rows the
+        # call before returned, which vary per fixture.
+        "agent:rcm_controls": _rcm_controls_response,
         "agent:rcm_attributes": _rcm_attributes_response,
         "agent:document_analysis_map": _document_analysis_response,
         # Every document run classifies before it maps. ``other`` is the one

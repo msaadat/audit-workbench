@@ -1696,7 +1696,7 @@ _RCM_RESPONSE = {
                 }
             ],
             "control": "Duplicate invoice validation",
-            "control_type": "Automated preventive",
+            "control_type": "preventive",
             "test_procedure": "Test invoice and amount duplicates.",
         }
     ]
@@ -1789,7 +1789,7 @@ def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
             command._run_stage(stage)
 
     run_root = store.run_dir(ws, command.run["id"])
-    drafted = ["agent:rcm", "agent:rcm_attributes"]
+    drafted = ["agent:rcm", "agent:rcm_controls", "agent:rcm_attributes"]
     assert [call["tag"] for call in fake.calls] == drafted
     assert (run_root / unit["proposal_sidecar"]["path"]).is_file()
     assert not (run_root / "receipts" / "rcm.json").exists()
@@ -2300,7 +2300,7 @@ def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):
                         "risk": "Duplicate payments are processed",
                         "risk_rating": "high",
                         "control": "Duplicate invoice validation",
-                        "control_type": "Automated preventive",
+                        "control_type": "preventive",
                         "control_attributes": [
                             {
                                 "key": "duplicate_payment_prevention",
@@ -2592,7 +2592,7 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
                                 }
                             ],
                             "control": "Duplicate invoice validation",
-                            "control_type": "Automated preventive",
+                            "control_type": "preventive",
                         }
                 ]
             },
@@ -2680,7 +2680,7 @@ _RCM_CYCLE_RESPONSE = {
             "risk": "An invoice is paid for more than the order authorised.",
             "risk_rating": "high",
             "control": "Finance matches the invoice to the purchase order before payment.",
-            "control_type": "Manual preventive",
+            "control_type": "preventive",
             "test_procedure": "Compare invoice and order totals.",
         }
     ]
@@ -2706,12 +2706,13 @@ _RCM_CYCLE_ATTRIBUTES = {
 def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
     monkeypatch,
 ):
-    """Two calls, and a row that commits uncontracted.
+    """Three calls, and a row that commits uncontracted.
 
-    The rows call writes the risk and the control; the attributes call
-    classifies where the evidence lives; and what a transaction-cycle attribute
-    must *show* is settled further downstream still, by the cycle design, which
-    writes it back onto this row. So the row commits with a transaction-cycle
+    The risks call writes the risk; the controls call describes what management
+    asserts against it; the attributes call classifies where the evidence
+    lives; and what a transaction-cycle attribute must *show* is settled
+    further downstream still, by the cycle design, which writes it back onto
+    this row. So the row commits with a transaction-cycle
     attribute and no ``required_comparisons``, and nothing about the RCM depends
     on a schema having been induced.
     """
@@ -2745,4 +2746,6 @@ def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
     (attribute,) = row["control_attributes"]
     assert attribute["evidence_kind"] == "transaction_cycle"
     assert "required_comparisons" not in attribute
-    assert [call["tag"] for call in fake.calls] == ["agent:rcm", "agent:rcm_attributes"]
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:rcm", "agent:rcm_controls", "agent:rcm_attributes"
+    ]

@@ -241,7 +241,7 @@ def _rcm_row(**overrides):
             }
         ],
         "control": "Duplicate invoice validation",
-        "control_type": "Automated preventive",
+        "control_type": "preventive",
         "test_procedure": "Test invoice and amount duplicates.",
     }
     row.update(overrides)

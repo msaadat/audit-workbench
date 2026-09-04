@@ -1447,17 +1447,24 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
             "context": {"scope": "Procurement approvals", "entity": "Example Bank"},
         },
         "agent:apm": draft_apm,
+        # The risks call writes the risk; the control is the controls call's.
         "agent:rcm": {"rows": [{
             "operation": "create",
             "process": "Procurement", "risk": risk, "risk_rating": "high",
+        }]},
+        "agent:rcm_controls": {"controls": [{
+            "row_index": 1,
+            "control": "Approval before commitment",
+            "control_type": "preventive",
+        }]},
+        "agent:rcm_attributes": {"attributes": [{
+            "row_index": 1,
             "control_attributes": [{
                 "key": "approval_before_commitment",
                 "assertion": "Authorization",
                 "requirement": "Purchases are approved before commitment.",
                 "evidence_kind": "document_content",
             }],
-            "control": "Approval before commitment",
-            "control_type": "Manual preventive",
         }]},
         "agent:test_generate": {"tests": [{
             "source": "document",

@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -151,6 +151,8 @@ citations. Distinguish documented requirements from evidence that a control
 operated, and omit unsupported claims. Keep each excerpt focused on the source
 text that supports the point: at most {CITATION_EXCERPT_CHARACTERS} characters
 and {CITATION_EXCERPT_LINES} lines. Never join separate source lines with spaces.
+An excerpt that is not character-for-character from this chunk is dropped, and
+every marker naming it is removed with it: copy the source rather than retype it.
 {JSON_RULES} {LANGUAGE_RULES}"""
 
 
@@ -162,8 +164,10 @@ key requirements, and explicit `not stated` qualifications. Remove duplication
 and do not introduce new document facts. Do not convert the result into audit
 objective/scope, engagement background, an audit plan, or a control-operation
 claim. Audit notes must retain concrete observations, why they matter, and
-follow-up evidence; they cannot be blank. Return exactly derived_text_markdown,
-summary_markdown, and audit_notes_markdown.
+follow-up evidence; they cannot be blank. Every marker you keep must be an id
+one of the supplied chunk analyses declares: never renumber a marker or write a
+new one, and drop the marker rather than cite an id no chunk carries. Return
+exactly derived_text_markdown, summary_markdown, and audit_notes_markdown.
 {JSON_RULES} {LANGUAGE_RULES}"""
 
 
@@ -358,7 +362,13 @@ def _narrative_array(value: object, label: str) -> list[str]:
     ]
 
 
-_CITATION_MARKER_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]")
+#: A citation marker: a bracketed id that is not one half of a Markdown link.
+#: The narrative is Markdown, so `[Portal](https://…)` and `[label][ref]` are
+#: prose. Reading either as a marker would reject a legitimate link — and, now
+#: that an unbound marker is stripped rather than merely reported, mangle it.
+_CITATION_MARKER_RE = re.compile(
+    r"(?<!\])\[([A-Za-z][A-Za-z0-9_-]{0,63})\](?![(\[])"
+)
 
 #: How many supplied markers a repair message names before it summarizes. Long
 #: enough to list a typical chunk's citations in full, short enough that the
@@ -418,6 +428,34 @@ def _normalize_citation_markers(text: str, canonical: Mapping[str, str]) -> str:
     return _CITATION_MARKER_RE.sub(
         lambda match: f"[{canonical.get(match.group(1).casefold(), match.group(1))}]",
         text,
+    )
+
+
+#: One marker with the single space either side of it, so removing a marker
+#: leaves the words it sat between correctly spaced rather than a gap.
+_MARKER_SPAN_RE = re.compile(
+    r"(?P<before>[ \t]?)(?<!\])\[(?P<id>[A-Za-z][A-Za-z0-9_-]{0,63})\](?![(\[])"
+    r"(?P<after>[ \t]?)"
+)
+#: Whitespace a removed marker stranded in front of the punctuation it sat
+#: before, or of the marker that followed it.
+_STRANDED_SPACE_RE = re.compile(r"[ \t]+([.,;:!?)])")
+
+
+def _strip_unbound_markers(text: str, bound: Collection[str]) -> str:
+    """Remove every marker naming no citation in ``bound``, and only those."""
+
+    def replace(match: "re.Match[str]") -> str:
+        if match.group("id") in bound:
+            return match.group(0)
+        # Spaced on both sides, the marker sat between two words that still
+        # need separating. Otherwise it opened or closed its phrase and takes
+        # its own spacing with it.
+        return match.group("after") if match.group("before") else ""
+
+    stripped = _MARKER_SPAN_RE.sub(replace, text)
+    return "\n".join(
+        _STRANDED_SPACE_RE.sub(r"\1", line) for line in stripped.split("\n")
     )
 
 
@@ -561,28 +599,80 @@ def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
     return summary, audit_notes, "structured_blocks_v1"
 
 
-def _validate_surviving_narrative_citations(
-    proposal: Mapping[str, Any], validated: Mapping[str, Any]
-) -> None:
-    """Reject markers whose source excerpts were removed by exact validation."""
+def _narrative_bound_to_citations(
+    result: Mapping[str, Any],
+    *,
+    declared_ids: Sequence[str] = (),
+) -> Mapping[str, Any]:
+    """Return ``result`` with every narrative marker naming a citation it carries.
 
-    if proposal.get("_narrative_contract") != "structured_blocks_v1":
-        return
-    text = "\n".join(
-        (
-            str(validated.get("summary_markdown") or ""),
-            str(validated.get("audit_notes_markdown") or ""),
-        )
+    A marker is a promise that the sentence rests on an anchor a reader — and
+    ``executors.planning._resolved_criteria_refs`` — can open. Two things break
+    that promise: an id the response never declared, and one whose excerpt
+    ``document_analysis.validate_citations`` dropped for not appearing verbatim
+    in the supplied source. Either leaves prose citing a record no consumer can
+    find, and the RCM consumer skips an id it cannot resolve without a word, so
+    an unbound marker stays invisible until criteria go missing at commit.
+
+    This ran only for the structured narrative shape, which the standard
+    document workers never emit — their prompt asks for freeform Markdown and
+    calls no tool — so in practice nothing checked the analyses that carry
+    these markers. It now runs on every narrative, whatever shape it arrived
+    in.
+
+    Rejecting spends the repair turn where it can help: the model re-copies the
+    excerpt and the citation survives. When the allowance is spent, the
+    stripped narrative is the partial — the statement stays and only the anchor
+    it could not honour goes, which is what the analysis already was, minus the
+    promise it could not keep.
+    """
+
+    bound = _supplied_citation_ids({"citations": result.get("citations") or []})
+    canonical = _citation_case_map(bound)
+    summary = _normalize_citation_markers(
+        str(result.get("summary_markdown") or ""), canonical
     )
-    markers = _citation_marker_ids(text)
-    surviving = _supplied_citation_ids(validated)
-    missing = sorted(markers - set(surviving))
-    if missing:
-        raise WorkerResponseValidationError(
-            "narrative citation marker(s) did not survive exact source validation: "
-            + ", ".join(f"[{value}]" for value in missing)
-            + f" — {_marker_guidance(surviving)}"
+    audit_notes = _normalize_citation_markers(
+        str(result.get("audit_notes_markdown") or ""), canonical
+    )
+    normalized = {
+        **result,
+        "summary_markdown": summary,
+        "audit_notes_markdown": audit_notes,
+    }
+    unbound = sorted(
+        (_citation_marker_ids(summary) | _citation_marker_ids(audit_notes))
+        - set(bound)
+    )
+    if not unbound:
+        return normalized
+
+    declared = set(declared_ids)
+    guidance = _marker_guidance(bound)
+    errors: list[str] = []
+    dropped = [value for value in unbound if value in declared]
+    if dropped:
+        errors.append(
+            "narrative citation marker(s) did not survive exact source "
+            "validation: "
+            + ", ".join(f"[{value}]" for value in dropped)
+            + f" — {guidance}"
         )
+    invented = [value for value in unbound if value not in declared]
+    if invented:
+        errors.append(
+            "narrative citation marker(s) have no supplied citation: "
+            + ", ".join(f"[{value}]" for value in invented)
+            + f" — {guidance}"
+        )
+    raise WorkerResponseValidationError(
+        errors,
+        partial={
+            **normalized,
+            "summary_markdown": _strip_unbound_markers(summary, set(bound)),
+            "audit_notes_markdown": _strip_unbound_markers(audit_notes, set(bound)),
+        },
+    )
 
 
 def _citation_submission_tool(
@@ -755,7 +845,8 @@ def validate_chunk_proposal(
     The excerpt check is the same ``validate_analysis_map`` contract the former
     runner enforced, applied against the one chunk this worker was supplied — so
     a citation cannot be carried over from another chunk's text or invented from
-    metadata.
+    metadata. That check drops an inexact excerpt silently, so the narrative is
+    bound to what survived it before the proposal leaves here.
     """
     chunk = _supplied_chunk(request)
     document = _resolved_item(request, DOCUMENT_METADATA_SOURCE_ID)
@@ -768,18 +859,23 @@ def validate_chunk_proposal(
         )
     except ValueError as error:
         raise WorkerResponseValidationError(str(error)) from error
-    _validate_surviving_narrative_citations(proposal, validated)
-    return {
-        "chunk_id": str(chunk.get("id") or ""),
-        "document_id": str(document.get("document_id") or ""),
-        "pages": [int(page) for page in chunk.get("pages") or []],
-        "modality": "text",
-        "analysis_profile": "standard",
-        "derived_text_markdown": "",
-        "summary_markdown": validated["summary_markdown"],
-        "audit_notes_markdown": validated["audit_notes_markdown"],
-        "citations": validated["citations"],
-    }
+    return _narrative_bound_to_citations(
+        {
+            "chunk_id": str(chunk.get("id") or ""),
+            "document_id": str(document.get("document_id") or ""),
+            "pages": [int(page) for page in chunk.get("pages") or []],
+            "modality": "text",
+            "analysis_profile": "standard",
+            "derived_text_markdown": "",
+            "summary_markdown": validated["summary_markdown"],
+            "audit_notes_markdown": validated["audit_notes_markdown"],
+            "citations": validated["citations"],
+        },
+        # What the response declared, so a marker naming a citation the exact
+        # check dropped is repaired as the bad excerpt it is, rather than as an
+        # id invented out of nothing.
+        declared_ids=_supplied_citation_ids(proposal),
+    )
 
 
 def run_chunk_worker(
@@ -1076,7 +1172,8 @@ def validate_reduction_proposal(
     Citations are not re-derived here: the reduction sees no raw source, so the
     only citations it may carry are exactly the ones the map worker already bound
     to a supplied chunk. Anything else would be a claim about text this worker
-    never saw.
+    never saw — including a marker in its own prose naming an id no chunk
+    carries.
     """
     analyses = _supplied_chunk_analyses(request)
     try:
@@ -1095,13 +1192,21 @@ def validate_reduction_proposal(
             for analysis in analyses
             if str(analysis.get("derived_text_markdown") or "").strip()
         )
-    return {
-        "derived_text_markdown": derived,
-        "summary_markdown": validated["summary_markdown"],
-        "audit_notes_markdown": validated["audit_notes_markdown"],
-        "citations": citations,
-        "chunk_ids": [str(analysis.get("chunk_id") or "") for analysis in analyses],
-    }
+    # The reduction is asked to preserve the markers it was given, and a
+    # consolidation that renumbers or carries over one the chunks never bound
+    # writes exactly the same broken promise the map worker is held to. Every
+    # id it may use is in the citations above, so nothing is declared here.
+    return _narrative_bound_to_citations(
+        {
+            "derived_text_markdown": derived,
+            "summary_markdown": validated["summary_markdown"],
+            "audit_notes_markdown": validated["audit_notes_markdown"],
+            "citations": citations,
+            "chunk_ids": [
+                str(analysis.get("chunk_id") or "") for analysis in analyses
+            ],
+        }
+    )
 
 
 def run_reduction_worker(

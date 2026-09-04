@@ -1,10 +1,12 @@
 # Risk and Control Matrix Guidance
 
-<!-- The control attributes of a row are governed by `rcm_attributes.md`, and
-are written by a separate pass shown that file and these rows. A workspace
-override of this file that still carries the attribute rules is harmless: this
-pass is not asked for attributes and ignores guidance about fields it does not
-write. -->
+<!-- This file governs the risk half of a row: which risks the matrix carries,
+how they are worded, which process each belongs to and how each is rated. The
+control is governed by `rcm_controls.md` and the control attributes by
+`rcm_attributes.md`, each written by its own pass shown its own file. A
+workspace override of this file that still carries the control or attribute
+rules is harmless: this pass is not asked for those fields and ignores guidance
+about fields it does not write. -->
 
 ## What a row is
 
@@ -79,86 +81,29 @@ Rules:
 - Exception rates, quantified conditions, and deficiencies belong to tests and
   findings, not to this matrix.
 
-## Writing the control
-
-Record the control management asserts is in place, as it currently operates.
-
-- Where the planning basis shows no control for a risk, write "No control
-  identified" and rate the risk accordingly. Never phrase a recommendation as
-  though it were an operating control ("A formal exception procedure defines
-  ..."): a control that does not exist cannot be tested, and the design gap is
-  a finding, not a row.
-- Describe the control's mechanics — who performs it, over what population, how
-  often, and what happens when it detects an error. Do not describe how it will
-  be tested.
-
-**Never assert a system behaviour the planning basis does not state.** Do not
-write that a system enforces, prevents, blocks, validates, restricts, or makes
-something impossible unless the planning basis says so in terms. A field
-existing in a table is evidence that a value is *recorded*, never evidence that
-it is *controlled*, *validated*, or *required* — those are different claims and
-a schema cannot support them. Where the basis names a control but not its
-mechanism, describe what it is asserted to do and add "mechanism not confirmed
-in the planning basis". An unconfirmed mechanism is a testable question; an
-invented one leads the engagement to place reliance on a control that may not
-exist.
-
-    Write: "The SOP requires the requisitioning department to verify a
-            requisition before approval; the requisition record captures a
-            verifier and an approver. Whether the system prevents the same
-            person from performing both is not confirmed in the planning basis."
-    Not:   "ERP workflow requires separate VERIFIED_BY_ID and APPROVED_BY_ID
-            fields; system prevents the same user ID from populating both."
-
-**The wording rules for risks apply to the control field too.** No percentages,
-null rates, counts, column names, or table names. Do not append a deficiency
-clause ("...; but GRN links are missing in 18.64% of invoices", "...; the null
-rate suggests gaps"). Whether the control operates is what fieldwork
-establishes — a quantified condition in this field pre-concludes it, and a
-statistic read from a profile is not a fact about the population. Describe the
-control; leave the exceptions to the tests.
-
 ## Fields
 
-- **process** — the process step as named in the planning basis. Keep the
-  wording stable across runs so revisions reconcile.
+- **process** — the process step this row belongs to, as named in the planning
+  basis. It groups the rows; it is not a label for one of them. A cycle has a
+  handful of steps and each carries several risks, so the same process name
+  recurs across every row belonging to it, spelled identically — and a matrix
+  naming a different process on every row has grouped nothing. Where the basis
+  describes the flow without naming its steps, name a few covering the whole
+  flow and reuse those. Keep the wording stable across runs so revisions
+  reconcile.
 - **risk_rating** — `critical` only where a single failure permits material loss
   or fraud with no compensating control; `high` where the exposure is material
   but partly mitigated; `medium` and `low` below that. Two rows describing the
   same underlying failure must not carry different ratings.
-- **control_type** — `preventive` where the control stops the error before it
-  occurs, `detective` where it identifies the error afterwards. Validation,
-  mandatory-field, and blocking rules are preventive *where the planning basis
-  establishes that they operate*; reconciliations, exception reports, and
-  after-the-fact reviews are detective. Judge the control's own mechanics, not
-  the severity of the risk. Classifying a control as preventive is not a licence
-  to assert a system mechanism the basis does not state.
-- **criteria** — the specific clause, policy section, matrix, or standard the
-  control is measured against. Cite only a criterion that appears in the
-  planning basis. If none does, leave the field empty.
-- **control_owner** — the role accountable for operating the control. **Name a
-  role only if that role appears verbatim in the planning basis. If the basis
-  names no owner for this control, leave the field empty.** An empty owner is a
-  question to put to the client; an invented one is a false attribution that
-  survives into the working paper. Never infer an owner from the nature of the
-  control — a system-enforced control does not imply an IT or systems
-  administration owner unless the basis names one.
 
-`criteria` and `control_owner` are both optional. Leaving either empty is the
-correct answer whenever the planning basis does not supply it, and is never a
-reason to guess.
-
-## Reading supplied table profiles
-
-Table profiles are value-free shape statistics: row counts, distinct counts,
-null percentages, minima, and maxima. They do not show what the table contains.
-
-- A null percentage is not an exception rate. Nulls routinely reflect legitimate
-  workflow states — a record not yet at that stage, a field that does not apply,
-  or a deliberate "no limit" marker.
-- A maximum is the largest value present, not a policy ceiling.
-- Never state a fact about the population, and never conclude that a control has
-  failed, from a profile statistic. Profiles show which processes exist and
-  which fields carry them; they are not evidence.
-
+  Rate against the band, not against the row beside it. A matrix that rates
+  almost everything `high` has stopped distinguishing, and the rating is the
+  first thing a reviewer uses to direct effort — so a set of risks with no
+  `medium` in it is a set that has not been rated. The rating is a property of
+  the exposure alone: you have not yet been told what control the entity
+  operates, and a risk is not lower because one exists.
+- **business_cycle** — the cycle this row belongs to, in the engagement's own
+  words: "Treasury dealing and settlement", "Procure to pay". It is the label
+  the matrix chooses; nothing derives it, so a row that omits it carries none.
+  One engagement is normally one cycle, and every row names it identically.
 <!-- section: One risk per row, non-duplicative. Use stable process and risk wording so reruns reconcile. Do not claim that a control exists unless the planning basis supports it. -->

@@ -53,7 +53,7 @@ PLANNING_RESPONSES = {
                     }
                 ],
                 "control": "Duplicate invoice validation",
-                "control_type": "Automated preventive",
+                "control_type": "preventive",
                 "test_refs": [],
             }
         ]
@@ -117,6 +117,33 @@ def test_templates_default_override_and_reset():
     assert override == {"name": "apm", "markdown": "# Firm APM\n{{scope}}", "source": "workspace"}
     reset = templates_store.put_template(ws, "apm", None, reset=True)
     assert reset["source"] == "default"
+
+
+def test_each_matrix_pass_carries_only_the_rules_for_the_fields_it_writes():
+    """Three templates, because the matrix turn is three calls.
+
+    A risks pass told how to choose an evidence_kind it is not asked for spends
+    prompt on rules it cannot follow, and — the reason that matters — a pass
+    shown the control rules is a pass that may decide it should write one.
+    """
+
+    ws = workspaces.create_workspace("Matrix templates")
+    risks = templates_store.get_template(ws, "rcm")["markdown"]
+    controls = templates_store.get_template(ws, "rcm_controls")["markdown"]
+    attributes = templates_store.get_template(ws, "rcm_attributes")["markdown"]
+
+    assert "risk_rating" in risks
+    assert "control_type" not in risks and "control_owner" not in risks
+    assert "control_type" in controls and "control_owner" in controls
+    assert "risk_rating" not in controls
+    assert "evidence_kind" in attributes
+    assert "control_owner" not in attributes
+
+    # And a firm can override exactly one of the three.
+    override = templates_store.put_template(ws, "rcm_controls", "# Firm control rules\n")
+    assert override["source"] == "workspace"
+    assert templates_store.get_template(ws, "rcm")["source"] == "default"
+    assert templates_store.get_template(ws, "rcm_attributes")["source"] == "default"
 
 
 def test_the_attribute_rules_are_their_own_overridable_template():
@@ -253,7 +280,10 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
         return {"apm_markdown": PLANNING_RESPONSES["agent:apm"]["apm_markdown"] + "\n\nRevised."}
 
     def revised_rcm(user):
-        assert "CURRENT RCM TO REVISE" in user and row_id in user
+        # The risks call is shown the risk half of the existing rows, under its
+        # own envelope: it revises risks, and a control it was handed would only
+        # invite it to restate one it does not own.
+        assert "EXISTING RISKS" in user and row_id in user
         return {
             "rows": [{
                 "operation": "update", "rcm_id": row_id,
@@ -269,7 +299,7 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
                         "evidence_kind": "manual_inspection",
                     }
                 ],
-                "control": "Duplicate invoice validation", "control_type": "Automated preventive",
+                "control": "Duplicate invoice validation", "control_type": "preventive",
             }]
         }
 
@@ -901,7 +931,7 @@ def test_rcm_export_import_round_trip():
     content = _rcm_import_csv([{
         "id": row["id"], "process": "Cash", "risk": "Cash is misstated",
         "risk_rating": "high", "assertion": "Existence",
-        "control": "Bank reconciliation", "control_type": "Manual detective",
+        "control": "Bank reconciliation", "control_type": "detective",
         "control_owner": "Controller", "review_status": "reviewed",
     }])
     imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})

@@ -793,6 +793,17 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=16_000),
                 ),
                 ContextSource(
+                    id="rcm_controls_template",
+                    source_type="templates",
+                    # Required like the others: a pass told to describe controls
+                    # without the rules against inventing a system mechanism is
+                    # the pass that invents one.
+                    required=True,
+                    selector=ContextSelector(selector_id="templates.current"),
+                    representations=(ContextRepresentation("artifact_template"),),
+                    budget=ContextBudget(max_items=1, max_characters=12_000),
+                ),
+                ContextSource(
                     id="rcm_attributes_template",
                     source_type="templates",
                     # The attribute rules alone, for the second call. Required
@@ -897,7 +908,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=253, max_characters=124_000),
+            budget=ContextBudget(max_items=254, max_characters=136_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_template_text=True,

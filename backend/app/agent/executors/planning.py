@@ -584,6 +584,12 @@ def _rcm_result(
     )
     quarantined = _quarantined_rows(request)
     output: dict[str, object] = {"status": "updated", "rows": outcomes}
+    # Carried from the proposal so the run can report them. Judgements the gate
+    # declined to enforce: a control asserting a system mechanism, two rows
+    # stating one risk, a criterion quote that matched no supplied sentence.
+    flags = request.proposal.get("flags")
+    if isinstance(flags, (list, tuple)) and flags:
+        output["flags"] = [_plain_json(item) for item in flags]
     if quarantined:
         output["quarantined"] = quarantined
     return ExecutorResult(

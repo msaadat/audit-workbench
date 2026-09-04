@@ -134,6 +134,28 @@ def _context_without_sources(
     return context
 
 
+def _context_from_sources(
+    request: WorkerRequest,
+    *source_ids: str,
+) -> dict[str, Any]:
+    """Serialize only the named sources of the resolved bundle.
+
+    The bundle is resolved once, for the unit, and each call is handed the part
+    of it that bears on its own job — so the risks call is not shown the
+    documents it would otherwise write its risk set out of, and the controls
+    call is not shown a memorandum it might re-rate a risk from. What is
+    withheld is withheld from the message, not from the manifest: the unit's
+    context identity is unchanged and every item is still recorded as supplied
+    to the unit.
+    """
+    context = request.context.to_dict()
+    wanted = set(source_ids)
+    context["items"] = [
+        item for item in context["items"] if item.get("source_id") in wanted
+    ]
+    return context
+
+
 def _fill_unavailable_placeholders(markdown: str) -> str:
     def replace(match: re.Match[str]) -> str:
         label = match.group(1).replace("_", " ").strip()
@@ -344,20 +366,25 @@ WORKERS.register(APM_WORKER)
 # planning.rcm worker (P7C)
 # --------------------------------------------------------------------------- #
 RCM_WORKER_ID = "planning.rcm"
-RCM_ROWS_SYSTEM = f"""[agent:rcm]
-Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
-row containing operation (update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), control, control_type,
-and business_cycle,
-plus criteria and control_owner where the planning basis supports them.
+RCM_RISKS_SYSTEM = f"""[agent:rcm]
+Revise the risk set of the current risk and control matrix, using durable RCM
+ids. Return an object with `rows`, each row containing operation
+(update|create), rcm_id for updates, process, risk,
+risk_rating (low|medium|high|critical), and business_cycle. Nothing else: the
+control, its type, its owner, its criteria and the control attributes are each
+decided by a later pass, and a field you write here that they own is discarded.
+
 All ids and narrative fields are strings. business_cycle names the cycle this
 row belongs to, in the engagement's own words — "Treasury dealing and
 settlement", "Procure to pay". It is the label the matrix chooses; nothing
 derives it, so a row that omits it carries none.
-Describe the risk and the control. Test populations are decided later.
-Do not invent control operation as fact when evidence is absent.
 
-Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
+You are shown the memorandum and the methodology, and no engagement documents,
+tables or profiles. That is deliberate. A risk is what could go wrong in this
+cycle whether or not this engagement's data happens to show it, and a risk set
+assembled from the supplied evidence is a description of the evidence.
+
+Follow the ACTIVE RISK TEMPLATE for methodology. Its non-negotiable rules:
 - Cover the standard risks a competent auditor would consider for every in-scope
   process, drawn from your own knowledge of the cycle. Supplied observations
   refine the risk set; they never define it. Never emit a row whose only content
@@ -372,23 +399,75 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
 - Write risks in generic, condition-independent auditor wording. Never quote
   percentages, counts, null rates, column names, or file names in a risk, never
   embed the cause, and never pre-conclude that a deficiency exists.
+- process groups the rows; it does not label them. A cycle has a handful of
+  process steps and each carries several risks, so reuse a process name across
+  every row belonging to that step, spelled exactly the same way. Take the
+  names from the memorandum's process description. Where it describes the flow
+  without naming its steps, name them yourself — a few of them, covering the
+  whole flow — and then reuse those. A matrix whose every row names a different
+  process has not grouped anything, and two names differing by a word are one
+  process spelled twice. Naming fewer processes never means covering fewer of
+  them: every step of the flow keeps its risks, under whichever name you gave
+  it.
+- Rate against the band the template describes, not against the row beside it.
+  A set of risks with no medium in it has not been rated, and the rating is the
+  first thing a reviewer uses to direct effort.
+- One risk per row, and two rows describing the same underlying failure are one
+  row. Say it once, in the wording that covers both.
+{JSON_RULES} {LANGUAGE_RULES}"""
+
+
+#: The control pass: what management asserts it does about each settled risk.
+#:
+#: The one call that reads the engagement's own material. Risk enumeration is
+#: recall and needs none of it; classification is a lookup and is given names
+#: only; describing a control is grounded reading, and this is the turn that
+#: does it.
+RCM_CONTROLS_SYSTEM = f"""[agent:rcm_controls]
+Describe the control management asserts is in place against risks that are
+already written.
+
+Return an object with `controls`, one entry per supplied row, each with
+row_index copied exactly from the request, plus control, control_type, and —
+where the supplied basis states them — control_owner, criteria and
+criteria_hint.
+
+The risks are settled. Do not revise, restate or re-rate one, and do not return
+any field of a row other than its row_index and the control fields above.
+
+Follow the ACTIVE CONTROL TEMPLATE. Its non-negotiable rules:
 - The control field records a control management asserts is in place. Where none
   exists, write "No control identified" rather than describing the control that
-  ought to exist. Never assert that a system enforces, prevents, blocks, or
-  validates something unless the planning basis states it: a field existing in a
-  table shows a value is recorded, never that it is controlled.
+  ought to exist. Read the basis for one before concluding it is absent: a
+  control the basis plainly describes and this matrix reports as missing
+  understates the entity's control environment and sends fieldwork the wrong
+  way.
+- Never assert that a system enforces, prevents, blocks, or validates something
+  unless the planning basis states it: a field existing in a table shows a value
+  is recorded, never that it is controlled. Where the basis names a control but
+  not its mechanism, describe what it is asserted to do and say the mechanism is
+  not confirmed in the planning basis.
 - The risk wording rules apply to the control field too. No percentages, null
   rates, counts, or column names, and no appended deficiency clause.
-- criteria and control_owner are optional: cite or name only what the planning
-  basis supplies, and leave the field empty otherwise rather than guessing.
-- Where criteria rests on a supplied document, also set criteria_refs, choosing
-  from CITABLE DOCUMENTS: one entry per document, `document` its `ref` number
-  and `citations` the `[C...]` ids you are relying on. Cite only ids listed for
-  that ref. Never write a document id. Omit criteria_refs where the criterion
-  does not rest on a supplied document.
+- control_type is exactly preventive or detective — preventive where the control
+  stops the error before it occurs, detective where it identifies the error
+  afterwards. A row whose control is "No control identified" leaves it empty:
+  there is no control to classify, and naming a kind for one that does not exist
+  asserts mechanics the basis never described.
+- control_owner names a role only where that role appears verbatim in the
+  supplied basis. Copy it as the basis spells it. Where the basis names no owner
+  for this control, leave the field empty: an empty owner is a question to put
+  to the client, an invented one is a false attribution that survives into the
+  working paper.
+- criteria is the clause the control is measured against, quoted verbatim from
+  the supplied basis, at most about 300 characters. Copy the sentence; do not
+  paraphrase it and do not name the document it came from — the quote is matched
+  back to its source locally. Where a `[C...]` marker sits beside the sentence
+  you quoted, you may give it as criteria_hint; it is a hint and nothing more.
+  Where no supplied clause states a criterion, leave criteria empty.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
   percentage is not an exception rate; a maximum is not a policy limit.
-- One risk and one control per row. {JSON_RULES} {LANGUAGE_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}"""
 
 
 #: The attribute pass: the closed-vocabulary half of a matrix row.
@@ -513,9 +592,18 @@ _RCM_REQUIRED_FIELDS = (
     "risk_rating",
     "control_attributes",
     "control",
-    "control_type",
 )
 _RCM_RISK_RATINGS = {"low", "medium", "high", "critical"}
+#: What a control does about the error: stops it, or finds it afterwards.
+#: There is no third kind, and the field was free text until a procurement run
+#: put the literal string "None" on seven rows — accepted, because the only
+#: check was that it was not empty, and useless to everything that reads it.
+_RCM_CONTROL_TYPES = {"preventive", "detective"}
+#: The one control statement that classifies nothing. A row saying management
+#: asserts no control has no control to be preventive or detective *about*, and
+#: the honest field is empty. Requiring a value there is how the earlier runs
+#: got a classification of a control that does not exist.
+_NO_CONTROL = "no control identified"
 
 
 def rcm_citation_sheet(request: WorkerRequest) -> list[dict[str, Any]]:
@@ -554,76 +642,193 @@ def rcm_citation_sheet(request: WorkerRequest) -> list[dict[str, Any]]:
     return sheet
 
 
-def _validated_criteria_refs(
-    row: Mapping[str, Any], index: int, sheet: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Resolve a row's cited refs, rejecting anything the sheet cannot support.
+#: Sentence ends, and line breaks. A document summary is markdown — a heading,
+#: then a bullet per clause — and most of its lines carry no full stop at all,
+#: so splitting on terminators alone swallowed the file name and the heading
+#: into the first clause and no quote of that clause matched it.
+_SENTENCE_END = re.compile(r"\n+|(?<=[.!?])[ \t]+")
+#: A marker at the very start of a piece belongs to the piece before it: an
+#: anchor follows its sentence's full stop ("… the requisition. [C4]"), and the
+#: split above cuts exactly there. Left uncorrected, every sentence lands in one
+#: piece and every marker in the next, and no sentence carries the anchor it was
+#: written for.
+_LEADING_MARKER = re.compile(r"^\s*(\[[Cc]\d+\])")
+#: A quote must overlap a sentence this much to be accepted as that sentence
+#: when nothing matched outright. Below it the two are about different things,
+#: and attaching the wrong citation is worse than attaching none.
+_CRITERIA_FUZZY_FLOOR = 0.6
+_CRITERIA_QUOTE_LIMIT = 400
 
-    An out-of-range ref is not a mistake to tolerate: a criterion that points at
-    the wrong document is worse than one that points nowhere, so it is raised
-    into the worker's own repair loop rather than dropped.
+
+def _normalized_quote(value: object) -> str:
+    """Casefold, collapse whitespace, strip surrounding punctuation and quotes.
+
+    Citation markers are removed: an anchor is not part of the clause, and a
+    quote copied without it would otherwise score as a different sentence.
     """
-    value = row.get("criteria_refs")
-    if value in (None, "", []):
-        return []
-    if not isinstance(value, list):
-        raise WorkerResponseValidationError(
-            f"RCM row {index} criteria_refs must be an array"
-        )
-    by_ref = {entry["ref"]: entry for entry in sheet}
-    resolved: list[dict[str, Any]] = []
-    for entry in value:
-        if not isinstance(entry, Mapping):
-            raise WorkerResponseValidationError(
-                f"RCM row {index} criteria_refs entries must be objects"
-            )
-        try:
-            ref = int(entry.get("document"))
-        except (TypeError, ValueError):
-            raise WorkerResponseValidationError(
-                f"RCM row {index} criteria_refs entry needs a numeric document ref"
-            ) from None
-        supplied = by_ref.get(ref)
-        if supplied is None:
-            raise WorkerResponseValidationError(
-                f"RCM row {index} cites document ref {ref}, which was not supplied; "
-                f"available refs are {sorted(by_ref) or 'none'}"
-            )
-        citations = entry.get("citations")
-        if not isinstance(citations, list) or not citations:
-            raise WorkerResponseValidationError(
-                f"RCM row {index} criteria_refs entry for ref {ref} needs citations"
-            )
-        # Folded onto the register's own spelling, for the same reason the
-        # recognizer above accepts both: a row that answers `[C4]` to a sheet
-        # listing `c4` has cited the right sentence, and spending the repair
-        # allowance on the difference corrects nothing an auditor would read.
-        allowed = {
-            str(value).casefold(): str(value) for value in supplied["citations"]
-        }
-        for citation in citations:
-            supplied_id = str(citation or "").strip()
-            identifier = allowed.get(supplied_id.casefold())
-            if identifier is None:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} cites {supplied_id} in "
-                    f"'{supplied['document']}', which does not carry it"
-                )
-            resolved.append({
-                "document_id": supplied["document_id"],
-                "document": supplied["document"],
-                "citation_id": identifier,
+
+    text = _CITATION_MARKER.sub(" ", str(value or ""))
+    text = " ".join(text.split()).casefold()
+    return text.strip(" \t\"'“”‘’`.,;:—-*#")
+
+
+def _quote_tokens(normalized: str) -> set[str]:
+    """The words of a quote, each stripped of the punctuation attached to it.
+
+    ``requisition.`` and ``requisition`` are the same word, and a quote that
+    stops one clause early otherwise loses the overlap on its own last word.
+    """
+
+    words = (word.strip("\"'“”‘’`.,;:!?()[]—-*") for word in normalized.split())
+    return {word for word in words if word}
+
+
+def rcm_sentence_index(request: WorkerRequest) -> list[dict[str, Any]]:
+    """Every citable sentence of every supplied document, with its marker.
+
+    The register the criteria resolver matches a quote against. A worker quotes
+    the clause; local code finds which document it came from and which anchor
+    sits beside it. That is the whole of the change: an identifier the model
+    used to have to copy correctly is now one that local code looks up, and a
+    quote it gets slightly wrong costs a citation rather than failing a row.
+    """
+
+    index: list[dict[str, Any]] = []
+    for entry in _citable_documents(request):
+        for sentence in _sentences_with_their_markers(entry["text"]):
+            markers = _CITATION_MARKER.findall(sentence)
+            if not markers:
+                continue
+            normalized = _normalized_quote(sentence)
+            if not normalized:
+                continue
+            index.append({
+                "ref": entry["ref"],
+                "document_id": entry["document_id"],
+                "document": entry["document"],
+                "citation": markers[-1],
+                "sentence": normalized,
+                "tokens": _quote_tokens(normalized),
             })
-    # One row citing the same anchor twice is a duplicate, not two sources.
-    seen: set[tuple[str, str]] = set()
-    unique: list[dict[str, Any]] = []
-    for item in resolved:
-        key = (item["document_id"], item["citation_id"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
+    return index
+
+
+def _sentences_with_their_markers(text: str) -> list[str]:
+    """Split into sentences, each keeping the citation anchor written for it."""
+
+    pieces = _SENTENCE_END.split(text)
+    sentences: list[str] = []
+    for piece in pieces:
+        leading = _LEADING_MARKER.match(piece)
+        if leading and sentences:
+            sentences[-1] += " " + leading.group(1)
+            piece = piece[leading.end():]
+        sentences.append(piece)
+    return sentences
+
+
+def _citable_documents(request: WorkerRequest) -> list[dict[str, Any]]:
+    """Supplied engagement documents, numbered in bundle order."""
+
+    found: list[dict[str, Any]] = []
+    for number, item in enumerate(
+        (
+            entry
+            for entry in request.context.items
+            if entry.source_id == RCM_DOCUMENT_SOURCE_ID
+            and str(entry.source_ref or "").startswith("document:")
+        ),
+        start=1,
+    ):
+        text = str(item.content or "")
+        document_id = item.source_ref.split(":", 1)[1]
+        found.append({
+            "ref": number,
+            "document_id": document_id,
+            "document": prompts.summary_document_name(text) or document_id,
+            "text": text,
+        })
+    return found
+
+
+def resolve_criteria(
+    quote: object, hint: object, index: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str]:
+    """Find the sentence a quoted criterion came from. Never an error.
+
+    Five outcomes, in order of how much they are trusted:
+
+    1. the quote is a supplied sentence, or sits inside one — that ref;
+    2. several sentences match and the hint names one of them — that one;
+       several and no usable hint — the first in bundle order, flagged
+       ``criteria_ambiguous``;
+    3. nothing matched outright but one sentence overlaps it enough — that one;
+    4. nothing matched and the hint is a marker the documents carry — that
+       sentence's ref, flagged ``criteria_unverified``;
+    5. nothing at all — no refs, flagged ``criteria_unresolved``. The quote is
+       kept either way: a criterion an auditor can read is worth having without
+       a pointer, and a pointer is never invented to make one look sourced.
+    """
+
+    wanted = _normalized_quote(quote)
+    if not wanted or not index:
+        return [], ("" if not wanted else "criteria_unresolved")
+    folded_hint = str(hint or "").strip().casefold()
+
+    exact = [
+        entry for entry in index
+        if wanted in entry["sentence"] or entry["sentence"] in wanted
+    ]
+    if exact:
+        return _resolved_refs(_preferred(exact, folded_hint)), (
+            "" if len(exact) == 1 or _hinted(exact, folded_hint) else "criteria_ambiguous"
+        )
+
+    tokens = _quote_tokens(wanted)
+    scored = [
+        (len(tokens & entry["tokens"]) / max(1, len(tokens | entry["tokens"])), entry)
+        for entry in index
+    ]
+    best = max(scored, key=lambda pair: pair[0], default=(0.0, None))
+    if best[1] is not None and best[0] >= _CRITERIA_FUZZY_FLOOR:
+        close = [entry for score, entry in scored if score >= _CRITERIA_FUZZY_FLOOR]
+        return _resolved_refs(_preferred(close, folded_hint)), ""
+
+    hinted = _hinted(index, folded_hint)
+    if hinted is not None:
+        return _resolved_refs(hinted), "criteria_unverified"
+    return [], "criteria_unresolved"
+
+
+def _hinted(entries: list[dict[str, Any]], folded_hint: str):
+    """The entry whose marker the hint names, folding case as the sheet does."""
+
+    if not folded_hint:
+        return None
+    for entry in entries:
+        if str(entry["citation"]).casefold() == folded_hint:
+            return entry
+    return None
+
+
+def _preferred(entries: list[dict[str, Any]], folded_hint: str) -> dict[str, Any]:
+    return _hinted(entries, folded_hint) or entries[0]
+
+
+def _resolved_refs(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """The anchor shape the executor freezes into a typed evidence reference.
+
+    ``document_id`` and ``citation_id``, not a bundle-order ``ref``: the number
+    is an artefact of how this turn was assembled and means nothing outside it,
+    which is exactly why the model no longer writes one. Local code holds the
+    number and hands on the identifier.
+    """
+
+    return [{
+        "document_id": entry["document_id"],
+        "document": entry["document"],
+        "citation_id": entry["citation"],
+    }]
 
 
 def _current_rcm_rows(request: WorkerRequest) -> list[object]:
@@ -804,7 +1009,7 @@ def _partition_rcm_rows(
     rows: object,
     request: WorkerRequest,
 ) -> tuple[list[dict], list[dict]]:
-    """Split proposed rows into normalized-valid and failed-with-reasons.
+    """Split proposed rows into normalized-valid, failed-with-reasons, and flags.
 
     Rows are independent artifacts: the executor matches and commits them one at
     a time. Validating them as a single document meant one unsupported operator
@@ -818,9 +1023,11 @@ def _partition_rcm_rows(
         if isinstance(row, Mapping) and row.get("id")
     }
     answers = _tabular_answers(request)
-    sheet = rcm_citation_sheet(request)
+    sentences = rcm_sentence_index(request)
+    supplied_text = _supplied_basis_text(request)
     normalized: list[dict] = []
     failures: list[dict] = []
+    flags: list[dict] = []
     for index, row in enumerate(rows or (), start=1):
         # Both callers reach here with different containers: the registered
         # response schema freezes its proposal before the semantic validator
@@ -834,7 +1041,9 @@ def _partition_rcm_rows(
         row = _plain_json(row)
         try:
             normalized.append(
-                _normalized_rcm_row(row, index, existing_ids, answers, sheet)
+                _normalized_rcm_row(
+                    row, index, existing_ids, answers, sentences, supplied_text, flags
+                )
             )
         except WorkerResponseValidationError as error:
             errors = list(error.errors)
@@ -846,28 +1055,284 @@ def _partition_rcm_rows(
                     "stage": _failure_stage(index, errors),
                 }
             )
-    return normalized, failures
+    flags.extend(_near_duplicate_flags(rows))
+    return normalized, failures, flags
 
 
 #: A row error the attributes call is answerable for. Two shapes, because the
 #: row gate reports a wholly absent attribute list as a missing required field
 #: and a malformed one through the attribute validator's own paths.
+#: Which call owns each error, by the wording the gate reports it in. Read in
+#: order, and a row goes back to the *earliest* call any of its errors belongs
+#: to: correcting a risk changes the control written against it, so a row that
+#: failed on both starts again at the risk.
+_STAGE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "risks",
+        (
+            "is missing process",
+            "is missing risk",
+            "is missing risk_rating",
+            "field process",
+            "field risk",
+            "field risk_rating",
+            "unsupported risk rating",
+            "unsupported operation",
+            "invalid rcm_id",
+            "does not identify an existing RCM row",
+            "risk quotes a percentage",
+            "risk names the column",
+            "is not an object",
+        ),
+    ),
+    (
+        "controls",
+        (
+            "is missing control",
+            "field control",
+            "unsupported control_type",
+            "missing control_type",
+            "control_owner",
+            "control says what ought to happen",
+            "control quotes a percentage",
+            "control names the column",
+        ),
+    ),
+    (
+        "attributes",
+        ("control_attributes",),
+    ),
+)
+
+
 def _failure_stage(index: int, errors: list[str]) -> str:
     """Which call is answerable for this row's errors.
 
-    ``attributes`` only when *every* error is one: a row that also names a bad
-    rating or an rcm_id that does not exist has to go back to the call that
-    wrote those, and the attributes call is not shown enough of the engagement
-    to fix them if it wanted to.
+    The earliest owner of any of them. A row that failed on its rating *and* on
+    its attributes goes back to the risks call, because the control and the
+    attributes are written against a risk that is about to change — repairing
+    the attributes of a risk that no longer says the same thing corrects
+    nothing.
+
+    An error no marker claims routes to ``risks``, which is where the sequence
+    starts: an unrecognised failure re-asks everything rather than being
+    quietly handed to a call that cannot fix it.
     """
 
-    prefixes = (
-        f"RCM row {index}: control_attributes",
-        f"RCM row {index} is missing control_attributes",
-    )
-    if errors and all(error.startswith(prefixes) for error in errors):
-        return "attributes"
-    return "rows"
+    for stage, markers in _STAGE_MARKERS:
+        if any(marker in error for error in errors for marker in markers):
+            return stage
+    return "risks"
+
+
+#: The wording rules the template states, as checks rather than as prose. Each
+#: was a live defect: a risk quoting "18.64%", a control naming ``GRN_ID_LINK``,
+#: a control describing what management ought to do rather than what it does.
+_PERCENT = re.compile(r"\d+(\.\d+)?\s*%")
+_COLUMN_TOKEN = re.compile(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b")
+#: Recommendations wearing the grammar of a control. Refused on the control
+#: field, because a control that does not exist cannot be tested and the design
+#: gap is a finding rather than a row.
+_ASPIRATIONAL = re.compile(
+    r"\b(should|shall|must be (?:established|implemented|introduced|put in place)"
+    r"|needs? to be|ought to)\b",
+    re.I,
+)
+#: A system mechanism the basis may not state. Flagged, never refused: the
+#: phrasing is sometimes exactly right, and refusing it cost correct rows.
+_SYSTEM_ENFORCEMENT = re.compile(
+    r"\b(?:system|portal|erp|workflow|application)\b[^.]{0,60}"
+    r"\b(?:prevents?|blocks?|enforces?|validates?|restricts?|prohibits?)\b"
+    r"|\bonly\b[^.]{0,40}\bselectable\b",
+    re.I,
+)
+_CRITERIA_FLAG_MESSAGES = {
+    "criteria_ambiguous": (
+        "the quoted criterion appears in more than one supplied document and no "
+        "marker distinguished them; the first was cited (\u201c{quote}\u201d)"
+    ),
+    "criteria_unverified": (
+        "the quoted criterion matched no supplied sentence and was cited from "
+        "its marker alone (\u201c{quote}\u201d)"
+    ),
+    "criteria_unresolved": (
+        "the quoted criterion matched no supplied sentence, so it carries no "
+        "citation (\u201c{quote}\u201d)"
+    ),
+}
+#: Two risks whose normalized words overlap this much are one risk twice. Set
+#: high on purpose: near-duplicates are worth merging, and distinct risks in one
+#: cycle share a great deal of vocabulary.
+_DUPLICATE_OVERLAP = 0.8
+
+
+def _refuse_forbidden_wording(row: Mapping[str, Any], index: int) -> None:
+    """The template's wording rules, checked rather than asked for.
+
+    Prompt-only until now, and recommendation 7 of the quality doc had no
+    deterministic check behind it. A percentage in a risk statement
+    pre-concludes what fieldwork establishes; a column name ties an
+    engagement-independent risk to one corpus's schema.
+    """
+
+    problems: list[str] = []
+    for field in ("risk", "control"):
+        value = str(row.get(field) or "")
+        if not value:
+            continue
+        if _PERCENT.search(value):
+            problems.append(
+                f"RCM row {index} {field} quotes a percentage; a statistic read "
+                "from a profile is not a fact about the population, and a "
+                "quantified condition belongs to a test or a finding"
+            )
+        found = _COLUMN_TOKEN.search(value)
+        if found:
+            problems.append(
+                f"RCM row {index} {field} names the column '{found.group(0)}'; "
+                "state it in auditor wording that does not depend on this "
+                "corpus's schema"
+            )
+    control = str(row.get("control") or "")
+    if control and _NO_CONTROL not in control.casefold():
+        opener = _ASPIRATIONAL.search(control)
+        if opener:
+            problems.append(
+                f"RCM row {index} control says what ought to happen "
+                f"('{opener.group(0)}'), not what management asserts is in "
+                "place. Describe the control as it operates, or write \"No "
+                "control identified\" — a control that does not exist cannot be "
+                "tested, and the design gap is a finding rather than a row"
+            )
+    if problems:
+        raise WorkerResponseValidationError(problems)
+
+
+def _validated_control_owner(
+    row: Mapping[str, Any], index: int, supplied_text: str
+) -> str:
+    """The owner must occur in the basis the turn was shown.
+
+    Exact and cheap, and it is the D4 defect class: a role inferred from the
+    nature of the control — an IT owner because the control sounded automated —
+    is a false attribution that survives into the working paper. An empty owner
+    is a question to put to the client; an invented one is an answer nobody gave.
+    """
+
+    stated = str(row.get("control_owner") or "").strip()
+    if not stated:
+        return ""
+    if not supplied_text:
+        # Nothing to check against. The response validator runs where no bundle
+        # is in hand, and refusing every owner there would reject correct rows.
+        return stated
+    if " ".join(stated.split()).casefold() not in supplied_text:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} names control_owner '{stated}', which does not "
+            "appear in the planning basis. Leave the field empty rather than "
+            "naming a role the basis does not."
+        )
+    return stated
+
+
+def _control_flags(row: Mapping[str, Any], index: int) -> list[dict]:
+    """Reported to the auditor, never refused.
+
+    System-enforcement phrasing is right about as often as it is wrong — the
+    basis sometimes does say the portal blocks it — and enforcing the rule
+    rejected correct rows. The auditor is told and decides.
+    """
+
+    control = str(row.get("control") or "")
+    match = _SYSTEM_ENFORCEMENT.search(control)
+    if not match:
+        return []
+    return [{
+        "row_index": index,
+        "kind": "asserted_system_enforcement",
+        "message": (
+            f"states that a system enforces something (\u201c{match.group(0)}\u201d); "
+            "confirm the planning basis says so, rather than that a field exists"
+        ),
+    }]
+
+
+def _near_duplicate_flags(rows: object) -> list[dict]:
+    """Two rows stating one risk. Reported with both indices so either can go."""
+
+    tokens: list[tuple[int, set[str]]] = []
+    for index, row in enumerate(rows or (), start=1):
+        if not isinstance(row, Mapping):
+            continue
+        words = set(_normalized_quote(row.get("risk")).split())
+        if words:
+            tokens.append((index, words))
+    flags: list[dict] = []
+    for position, (left_index, left) in enumerate(tokens):
+        for right_index, right in tokens[position + 1:]:
+            overlap = len(left & right) / max(1, len(left | right))
+            if overlap >= _DUPLICATE_OVERLAP:
+                flags.append({
+                    "row_index": left_index,
+                    "kind": "near_duplicate_risk",
+                    "message": (
+                        f"states nearly the same risk as row {right_index} "
+                        f"({overlap:.0%} of the same words); two rows describing "
+                        "one underlying failure are one row"
+                    ),
+                })
+    return flags
+
+
+def _supplied_basis_text(request: WorkerRequest) -> str:
+    """Everything the turn was shown, normalized once for substring checks."""
+
+    parts: list[str] = []
+    for item in request.context.items:
+        content = item.content
+        if isinstance(content, str):
+            parts.append(content)
+    return " ".join(" ".join(" ".join(parts).split()).casefold().split())
+
+
+def _validated_control_type(row: Mapping[str, Any], index: int) -> str:
+    """What the asserted control does about the error, or nothing where none is.
+
+    Free text until a procurement regeneration wrote the literal "None" on the
+    seven rows that had identified no control. It passed — the only check was
+    that the field was not empty — and reached the matrix as a control type
+    nothing can read. The earlier behaviour was no better: those rows were
+    classified ``preventive`` or ``detective``, which states the mechanics of a
+    control the row says does not exist.
+    """
+
+    stated = str(row.get("control_type") or "").strip()
+    asserts_control = _NO_CONTROL not in str(row.get("control") or "").casefold()
+    if not asserts_control:
+        # A placeholder for the absence is the absence. "None", "N/A" and an
+        # empty field are the same answer, and the field is cleared rather than
+        # the row refused: the model got the substance right.
+        return "" if stated.casefold() in {"", "none", "n/a", "not applicable"} else (
+            _control_type_or_refuse(stated, index)
+        )
+    if not stated:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} is missing control_type; a row asserting a control "
+            f"states whether it is {' or '.join(sorted(_RCM_CONTROL_TYPES))}"
+        )
+    return _control_type_or_refuse(stated, index)
+
+
+def _control_type_or_refuse(stated: str, index: int) -> str:
+    value = stated.casefold()
+    if value not in _RCM_CONTROL_TYPES:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} has an unsupported control_type '{stated}'; it must "
+            f"be exactly one of {', '.join(sorted(_RCM_CONTROL_TYPES))}. Where the "
+            "row identifies no control, leave it empty rather than naming a kind "
+            "of control that does not exist."
+        )
+    return value
 
 
 def _normalized_rcm_row(
@@ -875,12 +1340,15 @@ def _normalized_rcm_row(
     index: int,
     existing_ids: set[str],
     tabular_answers: list[tuple[str, set[str]]] | None = None,
-    citation_sheet: list[dict[str, Any]] | None = None,
+    sentences: list[dict[str, Any]] | None = None,
+    supplied_text: str = "",
+    flags: list[dict] | None = None,
 ) -> dict:
     """Validate and normalize exactly one proposed RCM row."""
 
     if not isinstance(row, Mapping):
         raise WorkerResponseValidationError(f"RCM row {index} is not an object")
+    _refuse_forbidden_wording(row, index)
     missing = [key for key in _RCM_REQUIRED_FIELDS if not row.get(key)]
     if missing:
         raise WorkerResponseValidationError(
@@ -899,6 +1367,21 @@ def _normalized_rcm_row(
             f"RCM row {index} has an unsupported risk rating; it must be exactly "
             f"one of {', '.join(sorted(_RCM_RISK_RATINGS))}"
         )
+    control_type = _validated_control_type(row, index)
+    control_owner = _validated_control_owner(row, index, supplied_text)
+    if flags is not None:
+        flags.extend(_control_flags(row, index))
+    criteria_refs, criteria_flag = resolve_criteria(
+        row.get("criteria"), row.get("criteria_hint"), list(sentences or [])
+    )
+    if criteria_flag and flags is not None:
+        flags.append({
+            "row_index": index,
+            "kind": criteria_flag,
+            "message": _CRITERIA_FLAG_MESSAGES[criteria_flag].format(
+                quote=str(row.get("criteria") or "")[:120]
+            ),
+        })
     try:
         attributes = cycle_vouching.validate_control_attributes(
             _plain_json(row.get("control_attributes"))
@@ -937,13 +1420,12 @@ def _normalized_rcm_row(
         },
         "operation": operation,
         "business_cycle": expected_cycle,
+        "control_type": control_type,
+        "control_owner": control_owner,
         "control_attributes": attributes,
-        # Resolved from refs the row chose out of the supplied register, so the
-        # criterion carries a pointer to the sentence it rests on rather than
-        # only prose naming a document.
-        "criteria_refs": _validated_criteria_refs(
-            row, index, list(citation_sheet or [])
-        ),
+        # Resolved locally from the quote, so the criterion carries a pointer to
+        # the sentence it rests on and the model never writes an identifier.
+        "criteria_refs": criteria_refs,
     }
 
 
@@ -1378,7 +1860,7 @@ def validate_rcm_proposal(
     rows = proposal.get("rows")
     if not isinstance(rows, (list, tuple)) or not rows:
         raise WorkerResponseValidationError("no RCM rows were proposed")
-    normalized, failures = _partition_rcm_rows(rows, request)
+    normalized, failures, flags = _partition_rcm_rows(rows, request)
     proposed = [row for row in rows if isinstance(row, Mapping)]
     problems = [
         message for failure in failures for message in failure["errors"]
@@ -1389,6 +1871,12 @@ def validate_rcm_proposal(
     quarantined = proposal.get("quarantined")
     if isinstance(quarantined, (list, tuple)) and quarantined:
         accepted["quarantined"] = [_plain_json(item) for item in quarantined]
+    if flags:
+        # Reported, never enforced. Each is a judgement an auditor makes better
+        # than a regex: whether the basis really does say the portal blocks it,
+        # whether two similar risks are one. ``_validated_rcm`` in the executor
+        # reads ``rows`` alone, so nothing downstream changes shape.
+        accepted["flags"] = flags
     return accepted
 
 
@@ -1406,34 +1894,43 @@ def _rcm_activity(request: WorkerRequest, worker_kind: str) -> dict:
     return activity
 
 
-def _rcm_judgment_user(request: WorkerRequest) -> str:
-    """Build the judgment pass's message from the declared bundle alone."""
+def _rcm_risks_user(request: WorkerRequest) -> str:
+    """The risks call's message: the memorandum, the methodology, and no more.
+
+    Documents, table profiles, small-table rows and table metadata are in the
+    bundle and are withheld from here. A risk is what could go wrong in this
+    cycle whether or not this engagement's data happens to show it, and a turn
+    shown the evidence writes the evidence back as risks.
+
+    ``EXISTING RISKS`` is the risk half of the current rows and nothing else:
+    the call revises risks, so the controls and attributes already on those rows
+    would only invite it to restate them.
+    """
 
     template = str(_resolved_item(request, "rcm_template") or "")
     current_apm = str(_resolved_item(request, "current_apm") or "")
     return json.dumps(
         {
-            "ACTIVE RCM TEMPLATE (verbatim)": template,
+            "ACTIVE RISK TEMPLATE (verbatim)": template,
             "REVISED APM": current_apm,
-            "CURRENT RCM TO REVISE": _current_rcm_rows(request),
-            # The register a criterion cites from. Promoted out of the bundle
-            # so the row never has to name a document from its own contents,
-            # and never has to copy an id to point at one.
-            "CITABLE DOCUMENTS": [
-                {key: entry[key] for key in ("ref", "document", "citations")}
-                for entry in rcm_citation_sheet(request)
+            "EXISTING RISKS": [
+                {
+                    "rcm_id": str(row.get("id") or ""),
+                    "process": str(row.get("process") or ""),
+                    "risk": str(row.get("risk") or ""),
+                    "risk_rating": str(row.get("risk_rating") or ""),
+                }
+                for row in _current_rcm_rows(request)
+                if isinstance(row, Mapping)
             ],
-            "RESOLVED CONTEXT": _context_without_sources(
-                request,
-                "rcm_template",
-                "current_apm",
-                RCM_CURRENT_ROWS_SOURCE_ID,
+            "RESOLVED CONTEXT": _context_from_sources(
+                request, "planning_context", "methodology"
             ),
             "INSTRUCTIONS": (
-                "Return the full set of proposed revisions. Work in two passes: "
+                "Return the full set of proposed risks. Work in two passes: "
                 "first enumerate the standard risks of every in-scope process from "
-                "your own knowledge of the cycle, then tailor wording, rating, and "
-                "control to this engagement using the supplied basis. Do not stop at "
+                "your own knowledge of the cycle, then tailor wording, rating and "
+                "process to this engagement using the memorandum. Do not stop at "
                 "the risks the supplied material happens to comment on. For an "
                 "existing risk, include operation='update' and its exact rcm_id. Use "
                 "operation='create' only for a genuinely uncovered risk. Omission "
@@ -1443,6 +1940,123 @@ def _rcm_judgment_user(request: WorkerRequest) -> str:
         indent=1,
         ensure_ascii=False,
     )
+
+
+def _controls_user(request: WorkerRequest, rows: list[dict]) -> str:
+    """The controls call's message: the settled risks, and the basis to read.
+
+    The one call given the engagement's own material, because describing what
+    management asserts is grounded reading. No citation register: a criterion
+    is quoted and matched back to its sentence locally, so nothing here is an
+    identifier the model has to copy.
+
+    The memorandum is deliberately not here, and it was tried. Adding it moved
+    every criterion onto it: nine of nine on one treasury regeneration were
+    quoted verbatim from the memo, and the memo is generated planning prose
+    carrying no ``[C...]`` anchors, so that engagement went from ten of ten
+    criteria carrying a citation to none. A criterion should rest on the policy
+    the entity issued, not on this memorandum's paraphrase of it.
+
+    Nothing else about that change survived inspection. It appeared to improve
+    control identification and attribute enumeration, but ``risk_rating`` — a
+    field this call does not write, produced by a turn identical across both
+    variants — moved by up to 34 points between the same two runs. One run per
+    variant cannot separate an effect that size from the noise, and only the
+    citation displacement was verified directly, by reading where the quotes
+    came from.
+    """
+
+    return json.dumps(
+        {
+            "ACTIVE CONTROL TEMPLATE (verbatim)": str(
+                _resolved_item(request, "rcm_controls_template") or ""
+            ),
+            "RISKS": [
+                {
+                    "row_index": index,
+                    "process": str(row.get("process") or ""),
+                    "risk": str(row.get("risk") or ""),
+                    "risk_rating": str(row.get("risk_rating") or ""),
+                }
+                for index, row in enumerate(rows, start=1)
+            ],
+            "RESOLVED CONTEXT": _context_from_sources(
+                request,
+                RCM_DOCUMENT_SOURCE_ID,
+                "small_table_rows",
+                "table_profiles",
+                "table_metadata",
+            ),
+            "INSTRUCTIONS": (
+                "Return one controls entry per supplied row, each carrying its "
+                "exact row_index. Describe the control management asserts is in "
+                "place against that row's risk, or write \"No control "
+                "identified\". Every row gets an entry: a row you omit reaches "
+                "the gate with no control and fails there."
+            ),
+        },
+        indent=1,
+        ensure_ascii=False,
+    )
+
+
+def _with_controls(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    rows: list[dict],
+) -> list[dict]:
+    """Ask for the controls of these risks and splice them on."""
+
+    if not rows:
+        return rows
+    response = gateway.complete(
+        RCM_CONTROLS_SYSTEM,
+        _controls_user(request, rows),
+        _rcm_activity(request, "rcm_controls"),
+        attempt=attempt.number,
+    )
+    try:
+        return _merged_controls(rows, response)
+    except WorkerResponseValidationError:
+        # Nothing to splice. The rows reach the gate without a control and fail
+        # there as such, which is bounded and repairable.
+        return rows
+
+
+#: What the controls call owns. A field outside this set arriving in its
+#: response is discarded rather than spliced: the risks are settled, and a
+#: control turn quietly re-rating one is the failure this split exists to stop.
+_RCM_CONTROL_FIELDS = frozenset(
+    {"control", "control_type", "control_owner", "criteria", "criteria_hint"}
+)
+
+
+def _merged_controls(rows: list[dict], response: str) -> list[dict]:
+    """Write returned controls onto the risks that asked for them, by index."""
+
+    entries = _first_json_object(response).get("controls")
+    if not isinstance(entries, list):
+        raise WorkerResponseValidationError(
+            "the controls response must be a JSON object with a `controls` array"
+        )
+    by_index: dict[int, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            index = int(entry.get("row_index"))
+        except (TypeError, ValueError):
+            continue
+        by_index[index] = {
+            key: _plain_json(value)
+            for key, value in entry.items()
+            if key in _RCM_CONTROL_FIELDS
+        }
+    return [
+        {**row, **by_index[index]} if index in by_index else row
+        for index, row in enumerate(rows, start=1)
+    ]
 
 
 def _parsed_rows(response: str) -> list[dict]:
@@ -1558,29 +2172,32 @@ def run_rcm_worker(
 ) -> str:
     """Author one RCM revision from the supplied bundle.
 
-    Two calls at two altitudes. The rows call enumerates the risks of every
-    in-scope process and describes the control management asserts against each:
-    domain recall, then grounded reading. The attributes call states each
-    control's distinct requirements and classifies where the evidence for them
-    lives: closed-vocabulary choices from lists it is handed. Fused, a wrong
-    assertion name cost the whole matrix — the largest completion in the system
-    — and every repair of it re-asked all of it.
+    Three calls at three altitudes, because they are three different jobs.
+
+    Risks is domain recall: what could go wrong in this cycle, from knowledge of
+    the cycle, and it is shown the memorandum and no engagement material at all
+    — a risk set assembled from the supplied evidence is a description of the
+    evidence. Controls is grounded reading: what management asserts it does,
+    which needs the documents and the profiles and is the only call given them.
+    Attributes is classification from supplied lists.
+
+    Fused, a defect in any one cost the whole output, and the whole output was
+    the largest completion in the system. Split, a repair is scoped to the rows
+    that failed and routed to the call whose job it was.
 
     What a transaction-cycle attribute must *show* is settled further
     downstream still, by the stage that has this engagement's document schemas
-    in front of it. A repair is scoped to the rows that failed, and routed to
-    the call whose job it was.
+    in front of it.
     """
 
-    user = _rcm_judgment_user(request)
     if attempt.is_repair:
         if attempt.previous_response is None:
             raise WorkerContractError("An RCM repair requires the previous response.")
-        return _repaired_rcm(request, gateway, attempt, user)
+        return _repaired_rcm(request, gateway, attempt, _rcm_risks_user(request))
     response = gateway.complete(
-        RCM_ROWS_SYSTEM,
-        user,
-        _rcm_activity(request, "rcm_rows"),
+        RCM_RISKS_SYSTEM,
+        _rcm_risks_user(request),
+        _rcm_activity(request, "rcm_risks"),
         attempt=attempt.number,
     )
     try:
@@ -1589,9 +2206,10 @@ def run_rcm_worker(
         # A worker returns response text; the registry owns rejection and the
         # bounded repair that follows it. Raising from here would escape that
         # loop entirely, so an unusable draft is handed back verbatim to be
-        # rejected — and repaired — through the normal path. Nothing is spent
-        # on an attributes call over rows that do not parse.
+        # rejected — and repaired — through the normal path. Nothing is spent on
+        # the later calls over rows that do not parse.
         return response
+    rows = _with_controls(request, gateway, attempt, rows)
     return _rcm_document(
         request, attempt, _with_attributes(request, gateway, attempt, rows)
     )
@@ -1734,7 +2352,7 @@ def _rcm_document(
 
     if attempt.number < 1 + _RCM_MAX_REPAIR_ATTEMPTS:
         return json.dumps({"rows": rows}, ensure_ascii=False)
-    accepted, still_failing = _partition_rcm_rows(rows, request)
+    accepted, still_failing, _flags = _partition_rcm_rows(rows, request)
     if not accepted or not still_failing:
         return json.dumps({"rows": rows}, ensure_ascii=False)
     dropped = {failure["index"] for failure in still_failing}
@@ -1757,33 +2375,31 @@ def _repaired_rcm(
     attempt: WorkerAttempt,
     user: str,
 ) -> str:
-    """Correct only the rows that failed, and quarantine what will not repair."""
+    """Correct only the rows that failed, at the call whose job each was.
+
+    A row flows forward from wherever it re-enters: repaired at the risks call
+    it then goes through controls and attributes again, because both were
+    written against a risk that has changed. Repaired at controls it goes
+    through attributes. Repaired at attributes it stops there.
+    """
 
     try:
         rows = _parsed_rows(str(attempt.previous_response))
     except WorkerResponseValidationError:
         # The prior draft was rejected by the schema rather than the quality
         # gate — a linked retry from a parent run can start here — so there are
-        # no rows to scope to and the whole document is re-asked. It is a rows
-        # response like any other and goes through the attributes call on the
-        # way out.
-        response = gateway.complete(
-            RCM_ROWS_SYSTEM,
+        # no rows to scope to and the whole risk set is re-asked. It is a risks
+        # response like any other and flows through the later calls.
+        return _redrafted_matrix(
+            request,
+            gateway,
+            attempt,
             user
             + "\n\nThe previous response could not be parsed: "
             + "; ".join(attempt.validation_errors)
             + ". Return the complete JSON object.",
-            _rcm_activity(request, "rcm_rows_repair"),
-            attempt=attempt.number,
         )
-        try:
-            reparsed = _parsed_rows(response)
-        except WorkerResponseValidationError:
-            return response
-        return _rcm_document(
-            request, attempt, _with_attributes(request, gateway, attempt, reparsed)
-        )
-    _, failures = _partition_rcm_rows(rows, request)
+    _, failures, _flags = _partition_rcm_rows(rows, request)
     document_errors = document_level_errors(
         request, [row for row in rows if isinstance(row, Mapping)]
     )
@@ -1791,76 +2407,85 @@ def _repaired_rcm(
         # Nothing reproduced. The gate rejected the draft and this pass cannot
         # see why, so the whole matrix is asked again rather than a repair
         # scoped to nothing.
-        response = gateway.complete(
-            RCM_ROWS_SYSTEM,
+        return _redrafted_matrix(
+            request,
+            gateway,
+            attempt,
             user
             + "\n\nThe previous matrix failed the engagement quality gate: "
             + "; ".join(attempt.validation_errors)
             + ". Return the complete matrix again, correcting every listed "
             "error and preserving every other row unchanged.",
-            _rcm_activity(request, "rcm_rows_repair"),
-            attempt=attempt.number,
         )
-        try:
-            reparsed = _parsed_rows(response)
-        except WorkerResponseValidationError:
-            return response
-        return _rcm_document(
-            request, attempt, _with_attributes(request, gateway, attempt, reparsed)
-        )
-    row_failures = [item for item in failures if item["stage"] == "rows"]
-    attribute_failures = [item for item in failures if item["stage"] == "attributes"]
-    repaired = rows
-    if row_failures:
-        response = gateway.complete(
-            RCM_ROWS_SYSTEM,
-            json.dumps(
-                {
-                    "ROWS TO CORRECT": [
-                        {
-                            "row_index": failure["index"],
-                            "row": _row_without_attributes(failure["row"]),
-                            "errors": failure["errors"],
-                        }
-                        for failure in row_failures
-                    ],
-                    "INSTRUCTIONS": (
-                        "Each supplied row failed the engagement quality gate "
-                        "for the listed reasons. Return an object with `rows` "
-                        "containing one corrected row per supplied row, each "
-                        "carrying its exact row_index. Correct every listed "
-                        "error and change nothing else. Rows not supplied here "
-                        "are already accepted and must not be returned: they "
-                        "are preserved unchanged."
-                    ),
-                },
-                indent=1,
-                ensure_ascii=False,
-            ),
-            _rcm_activity(request, "rcm_rows_repair"),
-            attempt=attempt.number,
-        )
-        try:
-            repaired = _repair_scoped_rows(rows, row_failures, response)
-        except WorkerResponseValidationError:
-            return response
-    # A row the rows call rewrote needs its attributes stated against the new
-    # wording; a row that failed only on its attributes needs them corrected.
-    # Both are one call, scoped to exactly those rows.
-    scoped = {
-        failure["index"]: list(failure["errors"])
-        for failure in (*row_failures, *attribute_failures)
+    by_stage = {
+        stage: [item for item in failures if item["stage"] == stage]
+        for stage, _markers in _STAGE_MARKERS
     }
+    repaired = rows
+
+    if by_stage["risks"]:
+        response = gateway.complete(
+            RCM_RISKS_SYSTEM,
+            _scoped_repair_user(
+                "RISKS TO CORRECT",
+                by_stage["risks"],
+                "Each supplied row failed the engagement quality gate for the "
+                "listed reasons. Return an object with `rows` containing one "
+                "corrected row per supplied row, each carrying its exact "
+                "row_index. Correct every listed error and change nothing "
+                "else. Rows not supplied here are already accepted and must "
+                "not be returned: they are preserved unchanged.",
+                keep=_RCM_RISK_FIELDS,
+            ),
+            _rcm_activity(request, "rcm_risks_repair"),
+            attempt=attempt.number,
+        )
+        try:
+            repaired = _repair_scoped_rows(rows, by_stage["risks"], response)
+        except WorkerResponseValidationError:
+            return response
+
+    # A row whose risk was rewritten needs its control written against the new
+    # wording, and a row that failed at the control needs it corrected. One
+    # call, scoped to exactly those rows.
+    control_scope = _merged_scope(by_stage["risks"], by_stage["controls"])
+    if control_scope:
+        repaired = _repaired_stage(
+            request,
+            gateway,
+            attempt,
+            repaired,
+            control_scope,
+            system=RCM_CONTROLS_SYSTEM,
+            envelope="CONTROLS TO CORRECT",
+            worker_kind="rcm_controls_repair",
+            merge=_merged_controls,
+            instructions=(
+                "Return an object with `controls` containing one entry per "
+                "supplied row, each carrying its exact row_index and its "
+                "corrected control fields. Correct every listed error. Rows "
+                "not supplied here are already accepted and must not be "
+                "returned."
+            ),
+            extra=lambda index, row: {
+                "risk": str(row.get("risk") or ""),
+                "current_control": str(row.get("control") or ""),
+            },
+        )
+
+    attribute_scope = _merged_scope(
+        by_stage["risks"], by_stage["controls"], by_stage["attributes"]
+    )
     if document_errors:
         # The matrix is wrong as a whole: no control requirement asserts that
         # recorded values agree. That gate reads attribute requirement text, so
         # the correction is the attributes call's — and it needs every row in
         # view, because the fix is to *add* a requirement and the scoped
-        # envelope forbids returning a row it was not given. The rows call is
-        # never re-asked for a document-level error again; where a row also
-        # failed on its own terms it was re-asked above, for that.
+        # envelope forbids returning a row it was not given. The earlier calls
+        # are never re-asked for a document-level error; where a row also failed
+        # on its own terms it was re-asked above, for that.
         for index in range(1, len(repaired) + 1):
-            scoped.setdefault(index, []).extend(document_errors)
+            attribute_scope.setdefault(index, []).extend(document_errors)
     pending = [
         {
             "row_index": index,
@@ -1870,13 +2495,136 @@ def _repaired_rcm(
             ),
             "errors": errors,
         }
-        for index, errors in sorted(scoped.items())
+        for index, errors in sorted(attribute_scope.items())
         if index <= len(repaired)
     ]
     return _rcm_document(
         request,
         attempt,
         _repaired_attributes(request, gateway, attempt, repaired, pending),
+    )
+
+
+#: What the risks call owns, and all a scoped risk repair is shown of a row.
+_RCM_RISK_FIELDS = ("operation", "rcm_id", "process", "risk", "risk_rating",
+                    "business_cycle")
+
+
+def _merged_scope(*failure_groups: list[dict]) -> dict[int, list[str]]:
+    """Row indices to re-ask, with every reason gathered under each."""
+
+    scope: dict[int, list[str]] = {}
+    for group in failure_groups:
+        for failure in group:
+            scope.setdefault(failure["index"], []).extend(failure["errors"])
+    return scope
+
+
+def _scoped_repair_user(
+    envelope: str,
+    failures: list[dict],
+    instructions: str,
+    *,
+    keep: tuple[str, ...] | None = None,
+) -> str:
+    """The scoped repair message: the failing rows, projected, and their errors."""
+
+    return json.dumps(
+        {
+            envelope: [
+                {
+                    "row_index": failure["index"],
+                    "row": _projected_row(failure["row"], keep),
+                    "errors": failure["errors"],
+                }
+                for failure in failures
+            ],
+            "INSTRUCTIONS": instructions,
+        },
+        indent=1,
+        ensure_ascii=False,
+    )
+
+
+def _projected_row(row: object, keep: tuple[str, ...] | None) -> dict:
+    if not isinstance(row, Mapping):
+        return {}
+    if keep is None:
+        return _row_without_attributes(row)
+    return {key: _plain_json(row[key]) for key in keep if key in row}
+
+
+def _repaired_stage(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    rows: list[dict],
+    scope: dict[int, list[str]],
+    *,
+    system: str,
+    envelope: str,
+    worker_kind: str,
+    merge,
+    instructions: str,
+    extra,
+) -> list[dict]:
+    """Re-ask one call for exactly the rows that need it, and splice the answer."""
+
+    pending = [
+        {
+            "row_index": index,
+            **extra(index, rows[index - 1]),
+            "errors": errors,
+        }
+        for index, errors in sorted(scope.items())
+        if index <= len(rows)
+    ]
+    if not pending:
+        return rows
+    response = gateway.complete(
+        system,
+        json.dumps(
+            {envelope: pending, "INSTRUCTIONS": instructions},
+            indent=1,
+            ensure_ascii=False,
+        ),
+        _rcm_activity(request, worker_kind),
+        attempt=attempt.number,
+    )
+    try:
+        merged = merge(rows, response)
+    except WorkerResponseValidationError:
+        # The rows keep what they had; the gate reports them again and the
+        # quarantine sets aside what will not repair.
+        return rows
+    asked = set(scope)
+    return [
+        merged[index - 1] if index in asked else row
+        for index, row in enumerate(rows, start=1)
+    ]
+
+
+def _redrafted_matrix(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    user: str,
+) -> str:
+    """Re-ask the whole risk set, then flow it through the later two calls."""
+
+    response = gateway.complete(
+        RCM_RISKS_SYSTEM,
+        user,
+        _rcm_activity(request, "rcm_risks_repair"),
+        attempt=attempt.number,
+    )
+    try:
+        rows = _parsed_rows(response)
+    except WorkerResponseValidationError:
+        return response
+    rows = _with_controls(request, gateway, attempt, rows)
+    return _rcm_document(
+        request, attempt, _with_attributes(request, gateway, attempt, rows)
     )
 
 
@@ -1947,8 +2695,8 @@ def _repaired_attributes(
 RCM_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="planning.rcm.response",
     schema_hash=_sha256_text(
-        "rcm-response:v6:first-json-object-with-rows-array-spliced-"
-        "uncontracted-control-attributes-and-quarantine"
+        "rcm-response:v7:first-json-object-with-rows-array-spliced-controls-"
+        "resolved-criteria-uncontracted-attributes-quarantine-and-flags"
     ),
     validator=_rcm_response_schema,
 )
@@ -1956,7 +2704,9 @@ RCM_WORKER = WorkerDefinition(
     worker_id=RCM_WORKER_ID,
     # Both prompts: the sequence is what decides what reaches the model, so
     # both halves belong in the identity a persisted proposal is reused against.
-    prompt_hash=_sha256_text(RCM_ROWS_SYSTEM + RCM_ATTRIBUTES_SYSTEM),
+    prompt_hash=_sha256_text(
+        RCM_RISKS_SYSTEM + RCM_CONTROLS_SYSTEM + RCM_ATTRIBUTES_SYSTEM
+    ),
     response_schema=RCM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=_RCM_MAX_REPAIR_ATTEMPTS,
@@ -2167,7 +2917,8 @@ __all__ = [
     "PLANNING_CONTEXT_WORKER_ID",
     "RCM_RESPONSE_SCHEMA",
     "RCM_ATTRIBUTES_SYSTEM",
-    "RCM_ROWS_SYSTEM",
+    "RCM_CONTROLS_SYSTEM",
+    "RCM_RISKS_SYSTEM",
     "RCM_WORKER",
     "RCM_WORKER_ID",
     "run_apm_worker",

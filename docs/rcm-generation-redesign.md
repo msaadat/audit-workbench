@@ -1,11 +1,14 @@
 # RCM generation redesign: a staged pipeline, delivered in small steps
 
-**Status:** steps 0, 1 and 2 are implemented (4 September 2026); steps 3 and 4
-are still design. This is the handoff for splitting the single RCM judgment
-turn into a per-process, per-job pipeline, and for moving the cycle-vouching
-evidence contract out of planning. Each step lands on its own, leaves
-`rcm_only` regenerating a matrix end to end, and is measured against the
-previous step before the next one starts.
+**Status:** steps 0 to 3 are implemented (4-5 September 2026); step 4 is still
+design. **Step 5, the cycle design after the APM, was agreed on 5 September
+2026 and is the next step to build**; it depends on step 1 only, comes before
+step 4, and supersedes 4a and 4b. This is the handoff for splitting the
+single RCM judgment turn into a per-process, per-job pipeline, for moving the
+cycle-vouching evidence contract out of planning, and for giving the cycle a
+place of its own between the memorandum and the matrix. Each step lands on
+its own, leaves `rcm_only` regenerating a matrix end to end, and is measured
+against the previous step before the next one starts.
 
 Where the implementation departed from what is written below, the step says so
 in a **Landed as** note. Nothing in steps 2 to 4 has been revised against those
@@ -120,23 +123,26 @@ The governing rule: **the model names things; local code finds things.**
 Nothing the model outputs is an identifier into something else.
 
 ```
-APM ──► stage 0: scope map ──► one unit per bucket, in parallel ──► executor
-          (buckets, themes)       1  risks     (no engagement material)
-                                  2  controls  (bucket-scoped basis)
+APM ──► cycle shape ─────────► one unit per step, in parallel ──► executor
+          (steps, roles,          1  risks     (no engagement material)
+           populations, themes)   2  controls  (step-scoped basis)
                                   3  attributes (closed vocabularies)
                                             │
                                             └─► cross-cutting unit per cycle, last
 
-rows with evidence_kind = transaction_cycle ──► cycle design (after schemas_stamped)
-                                                  roles, join keys, assertions, and the
-                                                  comparison that answers each attribute,
-                                                  written back onto the row
+cycle shape + schemas_stamped ──► cycle bindings (fields only: anchor field,
+                                  join keys, assertions, and the comparison that
+                                  answers each transaction_cycle attribute,
+                                  written back onto the row)
 ```
 
-- **Stage 0, the scope map.** One small structured call over the APM alone.
-  Returns cycles, process buckets with a one-line description, one
-  cross-cutting bucket per cycle, and each planned theme assigned to a bucket.
-  Stored in planning; auditor-editable; cached against the APM hash.
+- **The cycle shape, after the APM.** One small structured call over the APM,
+  the classified document types and the imported tables. Returns the cycle's
+  steps in order, the document roles and the population table of each step,
+  one cross-cutting bucket, and each planned theme assigned to a step. Stored
+  in planning; auditor-editable; cached against the APM hash; drawn as a
+  strip on its own page (step 5). It is what step 4 called the scope map,
+  with the roles and populations on it.
 - **Per bucket, small calls.** Risks first with no documents or profiles in
   view. Then controls against a locally selected slice of the basis. Then
   attributes. Each call carries only the template rules for the fields it
@@ -152,13 +158,21 @@ rows with evidence_kind = transaction_cycle ──► cycle design (after schema
 - **Cycle vouching leaves the RCM.** `evidence_kind` stays on the row. The
   comparisons are authored once, downstream, and written back onto the rows so
   everything that reads `required_comparisons` today keeps reading it.
+- **The cycle is one artifact in two layers.** Its shape (steps, roles,
+  populations) is authored after the APM and needs nothing extracted; its
+  bindings (fields) are authored after the schemas, by the ruleset stage that
+  exists today, which no longer invents roles. The matrix sits between the
+  two and depends only on the shape.
 
 ## The steps
 
 Each step has an *invariant* (what must still work when it lands), a *measure*
 (what to compare against the previous step on a treasuryfull and a procurement
 regeneration), and a *rollback*. Steps 0 and 1 are independent of each other
-and of the rest. Steps 2, 3 and 4 are sequential.
+and of the rest. Steps 2, 3 and 4 are sequential. Step 5 depends on step 1
+only, is built next now that step 3 has landed, and replaces the first two
+parts of step 4; step 4's per-bucket units are then built on step 5's
+artifact.
 
 ---
 
@@ -603,6 +617,51 @@ and after are the same shape.
   default derived from the supplied rows, and the RCM worker suite's `_Gateway`
   answers the attributes call by echoing whatever the scripted rows carry. Both
   exist so a test that is not about attributes need not script them.
+- **A rule left the rows prompt that belonged to it.** "Do not split one
+  risk/control into extra rows merely because it has several attributes" lived
+  *inside* the `control_attributes` bullet, and went out with the block — as did
+  the template's "Keep all attributes of one risk/control on the same RCM row".
+  Both are row-count rules. The first expenses run after the split named a
+  different `process` on all twelve of its rows. Restored to `RCM_ROWS_SYSTEM`,
+  together with a rule that `process` groups rows rather than labelling them,
+  and the same in `rcm.md`'s `process` entry: 22 rows over 6 processes on the
+  re-run, against 12 over 12 before it. Anything moved out of a fused prompt
+  needs reading for rules that belong to the half being left behind.
+
+### Measured on `expenses`, 4 September 2026
+
+Same memorandum, same workspace, three runs. The first predates step 2 and had
+`LLM_REASONING` unset; the second and third ran with `medium`, so the split is
+not the only thing that changed between the first and the rest.
+
+| | 1 call | 2 calls | 2 calls + prompt fix |
+|---|---|---|---|
+| rows | 15 | 12 | 22 |
+| distinct processes | 10 | 12 | **6** |
+| rows per process | 1.5 | 1.0 | **3.7** |
+| control attributes | 35 | 18 | 29 |
+| attributes per row | 2.33 | 1.50 | 1.32 |
+| control_type | 7 prev / 8 det | 12 prev / 0 det | 14 prev / 8 det |
+| "No control identified" | 47% | 58% | 41% |
+| coverage warnings | — | 4 | **0** |
+| output tokens | 35,594 | 21,357 | 19,382 |
+| largest single call | 35,594 | 14,680 | 12,382 |
+| cost | $0.0176 | $0.0071 | $0.0079 |
+
+Output tokens fell 46% while the matrix grew by seven rows, and the largest
+single completion by two thirds. Attributes per row is lower and is not
+straightforwardly worse: the row set is finer, so each row states a narrower
+requirement, and most single-attribute rows are genuinely single-requirement
+controls ("receipts for every item of PKR 1,000 or more"). Worth watching on a
+cycle whose controls are compound.
+
+**`reasoning.max_tokens` is advisory, not a cap.** The attributes call spent
+10,343 reasoning tokens against the 2,048 its `REASONING_BY_WORKER_KIND` entry
+asked for; the rows call spent 12,916 against 8,192 in one run and 3,558 in
+another. So step 0b's table shapes deliberation without bounding it, and no
+conclusion about a call's quality should be drawn from its budget — the first
+reading of the thin attribute enumeration above, that the `low` entry had
+starved it, is disproved by these numbers.
 
 ---
 
@@ -738,6 +797,96 @@ resolution outcomes by branch; flags per run; coverage against the quality
 doc's nine checks.
 **Rollback:** revert the worker and template split.
 
+**Landed as:**
+
+- **3d's stated output shape was wrong, and it fails silently.** The step says
+  the resolver emits `[{document: ref, citations: [id]}]`, "the shape the
+  executor's `_resolved_criteria_refs` already consumes". It does not: the
+  executor reads `{document_id, citation_id}` per anchor, and the bundle-order
+  `ref` means nothing outside the turn that assembled it — which is exactly why
+  the model stopped writing one. Emitted in the documented shape, the executor
+  skipped every reference and the first `expenses` run of this step committed
+  eight criteria and **zero** citations, with no error anywhere. The sentence
+  index now carries `document_id` and the document name alongside the ref.
+- **The sentence splitter had to change.** 3d reuses `document_analysis`'s
+  `_SENTENCE_END`, which splits on `(?<=[.!?])\s+`. A citation marker follows
+  its sentence's full stop ("… the requisition. [C4]"), so that split puts every
+  sentence in one piece and every marker in the next, and no sentence carries
+  the anchor written for it. It also splits on terminators alone, and a document
+  summary is markdown whose lines mostly have none — so the file name and the
+  heading were swallowed into the first clause and no quote of that clause
+  matched. The index now splits on line breaks as well, and re-attaches a
+  leading marker to the piece before it.
+- Matching normalizes harder than the step says: markers are stripped from both
+  quote and sentence, and each token is stripped of attached punctuation.
+  Without it `requisition.` and `requisition` were different words and a quote
+  copied a clause short fell under the 0.6 floor.
+- `control_type` is validated against `{preventive, detective}` — 3c asks for
+  the enum, and a procurement run had written the literal `"None"` on seven
+  rows. An empty value is *correct* on a "No control identified" row and
+  `"None"`/`"N/A"` are cleared to empty rather than refused: naming a kind for a
+  control the row says does not exist asserts mechanics the basis never
+  described, which is what every earlier run did.
+- Repair routing (3f) takes the *earliest* stage any of a row's errors belongs
+  to, and the row then flows forward through the calls after it. A row repaired
+  at risks has its control and attributes restated, because both were written
+  against a risk that has changed; repairing them against the old wording
+  corrects nothing.
+- `_STAGE_MARKERS` routes on error text rather than on a path prefix, because
+  the gate reports in sentences. An error no marker claims routes to `risks` —
+  the start of the sequence — so an unrecognised failure re-asks everything
+  rather than reaching a call that cannot fix it.
+- The risks call is given `planning_context` and `methodology` only, through a
+  new `_context_from_sources`. What is withheld is withheld from the *message*,
+  not from the manifest: the unit's context identity is unchanged and every
+  resolved item is still recorded as supplied.
+- **The controls call is not shown the memorandum, and that was tested.** 3c
+  lists its context as the resolved sources only, so whether the APM belongs
+  there is a question the step leaves open. Adding it looked right — the memo's
+  process description is where a control environment is written down — and it
+  moved every criterion onto the memo: nine of nine on one treasury
+  regeneration were quoted verbatim from it, and the memo is generated planning
+  prose carrying no `[C...]` anchors, so that engagement fell from ten of ten
+  criteria citing a source to none. A criterion should rest on the policy the
+  entity issued, not on this memorandum's paraphrase of it. Reverted.
+
+### One run per variant cannot measure a prompt change
+
+The memo variant also appeared to improve control identification and attribute
+enumeration, and those readings do not survive. `risk_rating` is written by the
+risks call, which was byte-identical across both variants — same prompt, same
+context, same inputs — and the share of rows rated high or critical still moved
+**-34, -14 and +9 points** between the two runs.
+
+| | no memo | + memo | delta |
+|---|---|---|---|
+| expenses | 47% | 56% | +9 |
+| treasury | 74% | 40% | **-34** |
+| procurement | 68% | 54% | -14 |
+
+That is the noise floor of a single regeneration, and it is wider than almost
+every difference these comparisons were being read for. Only two kinds of claim
+survive it: an effect verified by *inspection* rather than by a count — the
+citation displacement was, by reading where each quote came from — and a
+property a gate enforces on every row, which cannot vary. Step 3's deterministic
+results are of the second kind and hold: five typos to none on procurement,
+seven `"None"` control types to seven correct empties, and zero percentages,
+column tokens and aspirational controls across all three engagements. Every
+softer reading in this section needs repeated runs before it means anything, and
+the measure in each step above should be read the same way.
+- **Citations are capped upstream, not here.** On `expenses` only one of eight
+  quoted criteria kept a citation. The resolver was right every time it was
+  tested against the text the run was actually given; the *executor* drops the
+  anchor, because `document_analysis` writes `[c…]` markers into its prose that
+  it never registers as citation records — nine of sixteen unregistered in one
+  document, six of fifteen in another — and `_resolved_criteria_refs` looks each
+  one up in that register. `treasury`, whose analyses register what they write,
+  resolved ten of ten. Worth noting which direction the error runs: the earlier
+  path had the model pick an id out of a list and it tended to pick low-numbered
+  ones, which happen to be the registered ones, so it *scored* better while
+  citing sentences nothing had checked. This resolver picks the marker beside
+  the quoted sentence and is more often right and more often dropped.
+
 ---
 
 ### Step 4. Stage 0 and parallelism
@@ -745,6 +894,14 @@ doc's nine checks.
 The structural change. Everything before it has already shrunk each call; this
 makes the calls per-process and concurrent, and closes the `process`
 vocabulary.
+
+**4a and 4b are superseded by step 5.** The artifact 4a describes is step 5's
+cycle shape with the roles and populations left off, and the capability 4b
+adds is step 5's `planning.cycle_ready`. Read `planning["scope_map"]` as
+`planning["cycle"]`, `planning:scope` as `planning:cycle`, `planning.scope_ready`
+as `planning.cycle_ready` and *bucket* as *step* throughout 4c to 4g; the
+closed `process` vocabulary 4e describes lands with step 5d, ahead of the
+per-step units. 4a and 4b are kept below as written, for the reasoning.
 
 #### 4a. The scope map artifact
 
@@ -929,6 +1086,330 @@ downstream reads the map.
 
 ---
 
+### Step 5. Cycle design after the APM
+
+Agreed on 5 September 2026 against the mockups in
+[`ui-plans/cycle-design-evaluation.md`](ui-plans/cycle-design-evaluation.md);
+the design canvas linked there is the reference for the page, and the
+*Simplified view* page of it is what is built. Depends on step 1 only. Next in
+build order, after step 3 and ahead of step 4.
+
+After step 1 a matrix row says a requirement needs linked source records and
+stops. The cycle those records form is then authored at
+`tests.cycle_ruleset_proposed`, after the matrix and after the schemas, in one
+turn that invents the roles and chooses the fields together. Two things are
+wrong with that. The turn that names the roles is the one that knows least
+about the process: the steps of the cycle are stated in the memorandum's
+*Process flow and understanding* section, in order, and on `procurement` the
+matrix's four `process` values are those four step names — the structure
+exists and nothing in planning holds it. And the matrix has no vocabulary for
+`process` at all; the prompt rule step 2 restored (*process groups the rows*)
+is exhortation doing what an artifact should do by construction.
+
+The constraint that shapes the step: the field half of a cycle needs the
+induced schemas, the schemas need the evidence read, and step 1 took that
+wait out from in front of the matrix on purpose. So the cycle is **one
+artifact in two layers**. The *shape* — steps, the document roles each step
+holds, the population table each step reads, the themes each step owns — is
+authored after the APM from nothing extracted, and the matrix depends on it.
+The *bindings* — the anchor field, the join keys, the assertions — stay where
+they are authored today, after the schemas, but the roles are no longer the
+model's to invent. One page draws both, and fills in as the engagement moves.
+
+#### 5a. The artifact
+
+`workspace.planning["cycle"]`:
+
+```json
+{
+  "name": "Procure-to-pay",
+  "steps": [
+    {"name": "Requisition initiation and approval",
+     "roles": [{"name": "requisition", "document_type": "purchase_requisition"}],
+     "populations": [{"table": "requisitions"}],
+     "themes": ["Authorisation against limits", "Segregation of duties"]},
+    {"name": "Purchase order",
+     "roles": [{"name": "order", "document_type": "purchase_order"}],
+     "populations": [{"table": "po_data", "anchor": true}],
+     "themes": ["..."]},
+    {"name": "Goods receipt and inspection",
+     "roles": [{"name": "receipt", "document_type": "goods_receipt"}],
+     "populations": [{"table": "po_data", "columns": ["GRN_ID", "GRN_DATE", "GRN_STATUS"]}],
+     "themes": ["..."]},
+    {"name": "Invoice processing and payment",
+     "roles": [{"name": "invoice", "document_type": "vendor_invoice"},
+               {"name": "voucher", "document_type": "payment_voucher"}],
+     "populations": [{"table": "invoice_data"}],
+     "themes": ["..."]}
+  ],
+  "cross_cutting": {"name": "Procurement operations", "themes": ["Fraud risks considered"]},
+  "created_by": "agent", "agent_run_id": "…", "apm_sha1": "…", "updated": "…"
+}
+```
+
+- `workspaces.update_planning` gains `cycle` in its `allowed` set, with the
+  same provenance rule as the APM: `agent_run_id` and `created_by` are the
+  workbench's to write, and an auditor's edit of the cycle sets
+  `created_by: "user"`. `apm_sha1` is kept across an auditor edit, so edits
+  survive until the memorandum changes (as 4b specified). There is no
+  separate confirmation state: an agent draft is `created_by: "agent"`, an
+  auditor's edit is the confirmation, and readiness never waits on it — a
+  permission-mode run must not block the matrix on a review the auditor may
+  never make.
+- `workspaces.validate_cycle`: a name; at least one step and at most 12;
+  step names unique after casefold and at most 60 characters; every role name
+  unique across the cycle and a `cycle_rulesets.valid_rule_id`; every role's
+  `document_type` in `document_schemas.effective_type_ids` and not `other`;
+  every population `table` in `workspace.table_names()` and a base table, not
+  a join; at most one population in the cycle flagged `anchor`; every theme
+  assigned to exactly one step or to `cross_cutting`. The validator runs on
+  every `update_planning` and on every load of the page, the way
+  `_normalize_rcm_row` does for rows.
+- `workspace_transactions.artifact_projection` gains `planning:cycle`: the
+  material projection of `name`, `steps` (name, roles, populations, themes)
+  and `cross_cutting`, not the provenance fields. It is a guarded parent of
+  the matrix and of the ruleset proposal (5d, 5e).
+- Route: the existing `PATCH /planning` carries it, as 4a intended. A page
+  edit is a PATCH of the whole `cycle` object.
+
+#### 5b. The worker
+
+Worker `planning.cycle` in `agent/workers/planning.py`, preset
+`planning.cycle` in `agent/context/presets.py`, adapter `cycle_scope` in
+`adapters.py`.
+
+- Input, all on the unit input and none of it extracted: the APM;
+  `planned_risk_themes(apm)`; `document_classification.evidence_type_counts`
+  (names and counts, the same helper step 2 added for the attributes call);
+  the base tables with their column names, from
+  `workspace.get_frame(name).columns`, under `allow_table_metadata` — names
+  only, no profile and no rows; `workspace.joins` as `(left, right, left_on,
+  right_on)`; and, for reuse verbatim, the existing cycle's step names and the
+  distinct `process` values of existing rows.
+- System prompt of a few hundred characters: name the steps of the process
+  as the memorandum names them, in the order it gives them; for each step,
+  the document types that record it, chosen from the supplied list; the table
+  whose rows are that step's population, chosen from the supplied list, or
+  none, with the columns that hold it where the population lives on another
+  step's table (the GRN case); flag the one population a cycle test would
+  start from; name one cross-cutting bucket; assign every supplied theme to
+  exactly one step or to the cross-cutting bucket. Output is the artifact
+  minus provenance.
+- Gate: `validate_cycle`, plus: a document type or table not in the supplied
+  lists is an error naming the allowed values; a theme the model left out is
+  assigned to the cross-cutting bucket locally rather than refused (as 4b
+  said); a theme assigned twice is an error. One repair.
+- Worker kind: the `rcm_scope` entry step 0b declared ahead of time is this
+  call. Rename it `planning_cycle` in `REASONING_BY_WORKER_KIND`; reasoning
+  `low`. Register `agent:planning_cycle` in `base.MODEL_WAIT_LABELS` as step 2
+  did for the attributes call.
+- Privacy: `allow_planning_context` and `allow_table_metadata`. No document
+  text, no profiles, no small-table rows.
+
+#### 5c. Capability, binder, executor
+
+- `planning.cycle_ready` in `agent/capabilities/planning.py`, between
+  `planning.apm_ready` and `planning.rcm_ready` in `CAPABILITY_IDS` and
+  `_BUILDERS`. Readiness: `satisfied` when a valid cycle exists whose
+  `apm_sha1` equals the current APM hash; `missing` otherwise; one unit via
+  `_single("cycle", "Design the cycle", "planning:apm")`;
+  `invalidate_on=("planning:apm",)`; `context="planning.cycle"`.
+- `agent/workflows/audit.py`: `"planning.cycle_ready": ("planning.apm_ready",
+  "documents.types_classified")`, and `planning.rcm_ready` gains the edge
+  `planning.cycle_ready` (keeping `documents.categorized` and
+  `documents.types_classified`, which the cycle now also implies; the comment
+  above it is rewritten). `tests.cycle_ruleset_proposed` gains the same edge.
+  `documents.types_classified` was already in front of the matrix, so the
+  closure's order does not move; `TEMPLATE_OUTCOMES` is unchanged because
+  every template that reaches the matrix pulls the cycle in.
+  `test_workflow_audit_definition.py` asserts the edge set; update it.
+- `engagement.phase_of_capability` files it under *Plan the engagement* by
+  its `planning.` prefix with no change. `CAPABILITY_LABELS` in
+  `frontend/src/components/agent/capabilityLabels.ts` gains
+  `'planning.cycle_ready': 'Cycle design'`, and
+  `test_plan_spine_capability_labels.py` holds the two in step.
+- Binder `_bind_cycle` in `agent/audit_execution.py` beside `_bind_apm`, in
+  the binder table. Executor `execute_cycle` and `reconcile_cycle` in
+  `agent/executors/planning.py`, after `execute_apm`: commit is
+  `fresh.update_planning({"cycle": ..., "created_by": "agent", "agent_run_id":
+  ...}, agent=True)` under `expected_parents={"planning:apm": …}`; the same
+  auditor-edit-preserved rule as the APM (`created_by == "user"` refuses an
+  agent overwrite in permission mode, and `allow_auditor_overwrite` lifts it
+  in auto mode); reconciliation compares the stored cycle's material
+  projection to the proposal's. `on_committed` records
+  `planning:cycle` as an artifact and counts it in `planning_changes`.
+
+#### 5d. What the matrix takes from it
+
+- `_bind_rcm` puts the cycle's step names and the cross-cutting name on the
+  unit input as `PROCESS NAMES`, and the cycle's name as the row's
+  `business_cycle`. Both are hashed into `unit_input_hash`, so a changed shape
+  invalidates a persisted proposal — correct, because the vocabulary moved.
+  `planning:cycle` joins `planning:apm` in the unit's `parent_refs`, and
+  `_validated_rcm`'s parent-set check widens to `{"planning:apm",
+  "planning:cycle"}` (4c widens it again).
+- `RCM_RISKS_SYSTEM` (the call that writes `process` since step 3): the
+  `process` rule step 2 restored becomes *choose `process` from PROCESS
+  NAMES, spelled exactly*; the sentence about naming steps yourself where
+  the basis does not goes, because the cycle already did. Same in
+  `templates/rcm.md`'s `process` entry.
+- `_validate_risk_rows`: a `process` outside the supplied names is a
+  **flag** when this lands — `{row_index, kind: "process_outside_cycle",
+  message}` in the proposal's `flags`, which step 3g already carries to the
+  receipt and `_bind_rcm.on_committed` already emits as a run warning; it
+  becomes a row error, routed to the risks stage and repaired in that scoped
+  call, once one treasuryfull and one procurement regeneration have been
+  read. The theme ownership gate is unchanged: the step's themes are shown as
+  they are today, and 4e's per-step own-or-decline replaces it later.
+- Nothing else in the matrix changes. Rows, attributes, the executor and the
+  reconciliation are untouched.
+
+#### 5e. The ruleset stage takes the roles
+
+The stage keeps its place and both of its edges. What changes is that the
+roles, the anchor's table and column, and the order of the cycle are inputs,
+not outputs.
+
+- `_bind_cycle_ruleset`: the cycle on the unit input, and `planning:cycle` in
+  the unit's `parent_refs` beside the schema refs, so a reshaped cycle
+  conflicts a stale proposal the way a re-derived schema does.
+- `run_linkage_worker`: the payload gains `cycle: {steps: [{name, roles:
+  [{name, document_type}], population: {table, anchor}}]}`. The schemas,
+  tables and requirements travel as they do now.
+- `LINKAGE_SYSTEM`: the paragraph that has the worker name the roles is
+  replaced by one saying the roles are given, in the order the cycle runs,
+  and are used as named; the anchor's role is given and the worker supplies
+  the identifier field on it; join keys and assertions as today. The anchor
+  in the response is `{role, field}` only — `table` and `column` are filled
+  in by the executor from the shape before `cycle_rulesets.save`, which is
+  the governing rule of this document applied: the model names things, local
+  code finds things.
+- `validate_linkage_proposal`: every role in the response is one the cycle
+  declares, with the cycle's `document_type`; a role the cycle declares that
+  the response omits is an error, unless it is listed under `unreachable:
+  [{role, reason}]`, which the worker returns for a role whose document type
+  induced no identifier field (the `purchase_requisition` case on
+  `procurement`: fourteen fields, none of role `identifier`, so no join key
+  can reach it and `cycle_rulesets.validate` would refuse the whole ruleset).
+  `execute_cycle_ruleset` drops an unreachable role from the stored ruleset,
+  reports it in the receipt output as `unreachable`, and
+  `_bind_cycle_ruleset.on_committed` emits one warning per entry next to the
+  downgrade warnings step 1e added. The shape keeps the role: it is still a
+  step in the process, and the page draws it greyed with the reason.
+- `cycle_rulesets.validate` records `cycle_sha1`, the hash of the shape's
+  material projection, on the record beside `schema_refs`. It is not part of
+  `ruleset_hash`, for the reason `measured` is not: an approved ruleset is
+  what was approved.
+
+#### 5f. The page
+
+The *Simplified view* page of the design canvas is the specification; the
+exact markup is `ui-plans/cycle-design/Main.dc.html` and
+`CycleStrip.dc.html`, drawn from the `procurement` workspace.
+
+- **Route.** A planning section `cycle` in
+  `frontend/src/composables/useWorkspaceNavigation.ts`, between `apm` and
+  `coverage`, answered in `views/AuditFileView.vue` by a new
+  `components/planning/CycleTab.vue`. Breadcrumb *Engagement record /
+  Planning / Cycle*.
+- **Endpoint.** `GET /planning/cycle/graph` in `routes/planning_routes.py`,
+  read-only, no model call:
+  `{steps: [{name, documents: [{document_type, label, count, fields:
+  [{name, role}]}], population: {table, rows, columns: [...], anchor,
+  note}}], edges: [{kind, from: {step, node, field}, to: {step, node, field},
+  rule_id}]}`. Assembled from the cycle, `evidence_type_counts`,
+  `document_schemas.list_schemas`, `workspace.joins` between base tables, and
+  `cycle_rulesets.effective` or else the latest proposed ruleset. `kind` is
+  one of `join` (a join key), `assert` (an assertion with two operands),
+  `anchor` (population column to role field), `table_join`. One-operand
+  assertions are not edges; they are a `stated` mark on the field. Fields
+  are listed only where they take part in an edge, in the order the edges
+  leave or enter the node — the page shows the vocabulary of the rules, not
+  the schema. Cached through `projection_cache` on the workspace root, the
+  way the document-test listing is.
+- **Layout.** One strip that scrolls to the right. One column per step, in
+  order, with the step's name as a band across the top; a step with two
+  roles spans two columns. The document node sits above the population node.
+  A step without a population of its own shows a dashed placeholder naming
+  the table and columns that hold its rows (from `populations[].columns`).
+  Before the schemas exist, document nodes carry no fields and the strip
+  shows the flow between steps, the populations with their columns and the
+  table joins; the field edges appear when a ruleset does.
+- **Arrows.** Orthogonal. An arrow leaves the right edge of its source field
+  and enters the left edge of its target field. Between neighbouring columns
+  it takes a vertical track in the gutter; an arrow that skips a column rides
+  a horizontal bus above the documents (or below the populations), one lane
+  per arrow, so it never crosses a node. Tracks and lanes are assigned to
+  minimise crossings: start from list order and swap pairs while a swap
+  reduces the count of segment intersections, riders swapped wholesale
+  (both tracks and the lane) as well as singly. With rows ordered to follow
+  the arrows the procurement strip routes with no crossing but the shared
+  stub of a field that feeds two arrows. The layout is a pure module,
+  `components/planning/cycleLayout.ts`, unit-tested on the procurement
+  fixture for zero crossings; `CycleStrip.vue` renders HTML nodes over one
+  SVG edge layer.
+- **Chrome.** Header: the cycle's name, a count line (steps, document types,
+  populations, and the ruleset's status), *Edit steps* and *Review rules*.
+  No side panel, no status chips. *Edit steps* opens a `UiDefinitionDrawer`
+  with the step list: reorder, rename, change a role's document type, assign
+  a population, flag the anchor; save is one `PATCH /planning`. *Review
+  rules* opens the existing `CycleRulesetReview` dialog; the document tests
+  tab's *Cycle rules* action points at the same dialog and is left alone.
+  Four kinds in the legend, and the line *only fields that take part in a
+  relationship are shown*.
+- **`PlanningPayload`** gains `cycle`; `types.ts` gains the graph shape.
+
+#### 5g. Tests
+
+- `test_planning.py`: `validate_cycle` positive and each negative; an
+  auditor edit keeps `apm_sha1` and sets `created_by`; `planning:cycle`
+  projection excludes provenance.
+- New `test_agent_planning_cycle_worker.py`: a scripted response validates;
+  a table or type outside the supplied lists is refused with the allowed
+  values named; a missing theme lands in cross-cutting; a duplicated theme is
+  refused; one repair.
+- `test_agent_planning_executor.py`: commit under the APM parent; conflict
+  when the APM moved; auditor edit preserved in permission mode and
+  overwritten in auto mode; reconcile `already_applied`.
+- `test_workflow_audit_definition.py`: the new edges.
+  `test_plan_spine_capability_labels.py`: the new label.
+- `test_agent_planning_rcm_worker.py`: a `process` outside PROCESS NAMES is
+  flagged and the flag reaches the receipt (then, once promoted, refused and
+  repaired in the risks call).
+- `test_cycle_linkage_worker.py`: a role not in the cycle is refused; a
+  declared role omitted without an `unreachable` entry is refused; the anchor
+  table and column are filled from the shape. `test_cycle_ruleset_write_back.py`
+  (or a sibling): an unreachable role is dropped from the stored ruleset and
+  reported. `test_cycle_rulesets.py`: `cycle_sha1` stored and outside
+  `ruleset_hash`.
+- `test_cycle_linking_routes.py` or a new `test_planning_cycle_routes.py`:
+  the graph endpoint on the treasury fixture — node and edge counts, only
+  rule-bearing fields, `stated` marks, the pre-schema shape.
+- Frontend: `cycleLayout.test.ts` asserts zero crossings on the procurement
+  fixture and that a rider never enters a node's column between its
+  vertical extent; `CycleTab.test.ts` renders the two states.
+- `test_rcm_central_e2e.py`: the planning template on the treasury fixture
+  still produces the same cycle tests, now with the cycle stage in the
+  closure.
+
+**Invariant:** `rcm_only` and the planning template regenerate treasuryfull
+and procurement end to end with one more stage in the closure and no new
+model call after the shape; the row schema, the ruleset schema (plus one
+recorded hash) and the approval are unchanged; a workspace with no cycle
+still generates document-question tests.
+**Measure:** distinct `process` values per regeneration against the shape's
+step count (expect equal); rows whose `process` is outside the shape (expect
+0 once promoted to an error); roles the ruleset stage drops as unreachable,
+with reason; ruleset proposals refused for a role the shape does not declare
+(expect 0 after one repair); the cycle call's tokens and latency (expect it to
+be the smallest call in the run).
+**Rollback:** the capability can stay while `_bind_rcm` stops supplying
+PROCESS NAMES and the linkage worker goes back to naming its roles; nothing
+downstream reads the shape except through those two inputs. The page reads a
+missing cycle as its empty state.
+
+---
+
 ## What each step buys
 
 | After step | Calls per cold run | Largest output | What a rejection costs | Schema dependency |
@@ -937,7 +1418,8 @@ downstream reads the map.
 | 1 | 1 | unchanged | the matrix | none on the RCM |
 | 2 | 2 | roughly two thirds | rows or attributes, not both | none |
 | 3 | 3 | roughly half | one job's rows | none |
-| 4 | 1 + 3 per bucket + 3 per cycle, parallel | a bucket's rows | one job of one bucket | none |
+| 5 | 4 (one small shape call) | unchanged | the shape alone, or one job's rows | none; the cycle's field half stays after the schemas |
+| 4 | 1 + 3 per step + 3 per cycle, parallel | a step's rows | one job of one step | none |
 
 ## What is deliberately not changed
 

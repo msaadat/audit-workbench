@@ -25,10 +25,12 @@ _SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 TEMPLATE_NAMES = (
     "apm",
     "rcm",
-    # The attribute rules, split out of ``rcm`` when the matrix turn split into
-    # a rows pass and an attributes pass. Its own name so a firm that
-    # customised those rules can still override exactly them, and so the pass
-    # that writes attributes carries only the guidance for the fields it writes.
+    # The control and attribute rules, split out of ``rcm`` as the matrix turn
+    # split into a risks pass, a controls pass and an attributes pass. Each has
+    # its own name so a firm that customised those rules can still override
+    # exactly them, and so each pass carries only the guidance for the fields it
+    # writes.
+    "rcm_controls",
     "rcm_attributes",
     "interview",
     "workpaper",

@@ -34,16 +34,18 @@ from app.agent.workers import planning
 class _Gateway:
     """Scripted rows calls, with the attributes call answered by agreement.
 
-    ``responses`` is the rows call's script, in order — what every test in this
-    file was written against. The attributes call is a second real call in
-    every run, and answering it by hand in each test would say nothing about
-    the test, so by default it returns exactly the attributes the scripted rows
-    already carry. A test about the attributes call passes ``attributes``, in
-    which case ``None`` at a position means "answer by agreement here".
+    ``responses`` is the risks call's script, in order — what every test in this
+    file was written against. The controls and attributes calls are real calls
+    in every run, and answering them by hand in each test would say nothing
+    about the test, so by default each returns exactly what the scripted rows
+    already carry. A test about one of them passes ``controls`` or
+    ``attributes``, in which case ``None`` at a position means "answer by
+    agreement here".
     """
 
-    def __init__(self, responses, attributes=None):
+    def __init__(self, responses, controls=None, attributes=None):
         self.responses = list(responses)
+        self.controls = None if controls is None else list(controls)
         self.attributes = None if attributes is None else list(attributes)
         self.rows_seen: list[dict] = []
         self.calls = []
@@ -60,6 +62,11 @@ class _Gateway:
                 "conversation": conversation,
             }
         )
+        if system == planning.RCM_CONTROLS_SYSTEM:
+            scripted = self.controls.pop(0) if self.controls else None
+            if scripted is not None:
+                return scripted
+            return json.dumps({"controls": self._agreed_controls(user)})
         if system == planning.RCM_ATTRIBUTES_SYSTEM:
             scripted = self.attributes.pop(0) if self.attributes else None
             # ``None`` in the script means "answer by agreement here", so a
@@ -78,6 +85,24 @@ class _Gateway:
                 row for row in parsed["rows"] if isinstance(row, dict)
             ]
         return response
+
+    def _agreed_controls(self, user: str) -> list[dict]:
+        """Echo whatever the scripted rows said their control fields are."""
+
+        payload = json.loads(user)
+        rows = payload.get("RISKS") or payload.get("CONTROLS TO CORRECT") or []
+        answers = []
+        for row in rows:
+            index = int(row["row_index"])
+            scripted = (
+                self.rows_seen[index - 1] if index <= len(self.rows_seen) else {}
+            )
+            entry = {"row_index": index}
+            for key in planning._RCM_CONTROL_FIELDS:
+                if key in scripted:
+                    entry[key] = scripted[key]
+            answers.append(entry)
+        return answers
 
     def _agreed(self, user: str) -> list[dict]:
         """Echo whatever the scripted rows said their attributes are."""
@@ -114,6 +139,12 @@ def _bundle(*, current_rows=None, profiles=(), metadata=(), apm=None):
             "template:rcm",
             ContextRepresentation("artifact_template"),
             "# Risk and control matrix\n",
+        ),
+        (
+            "rcm_controls_template",
+            "template:rcm_controls",
+            ContextRepresentation("artifact_template"),
+            "# Control guidance\n",
         ),
         (
             "rcm_attributes_template",
@@ -206,7 +237,7 @@ def _row(**overrides):
             }
         ],
         "control": "Duplicate invoice validation",
-        "control_type": "Automated preventive",
+        "control_type": "preventive",
         "test_procedure": "Test invoice and amount duplicates.",
         "new_risk_reason": "No existing RCM row covers duplicate payments.",
     }
@@ -239,17 +270,15 @@ def test_rcm_worker_uses_only_bundle_and_returns_validated_rows():
     assert [row["risk"] for row in result.proposal["rows"]] == [
         "Duplicate payments are processed"
     ]
-    assert gateway.calls[0]["system"] == planning.RCM_ROWS_SYSTEM
+    assert gateway.calls[0]["system"] == planning.RCM_RISKS_SYSTEM
     assert gateway.calls[0]["attempt"] == 1
     assert (
-        gateway.calls[0]["activity"]["context_metrics"]["worker_kind"] == "rcm_rows"
+        gateway.calls[0]["activity"]["context_metrics"]["worker_kind"] == "rcm_risks"
     )
-    # And a second call, for the attributes alone.
-    assert gateway.calls[1]["system"] == planning.RCM_ATTRIBUTES_SYSTEM
-    assert (
-        gateway.calls[1]["activity"]["context_metrics"]["worker_kind"]
-        == "rcm_attributes"
-    )
+    # Then the control, then the attributes, each its own call.
+    assert [call["activity"]["context_metrics"]["worker_kind"] for call in gateway.calls] == [
+        "rcm_risks", "rcm_controls", "rcm_attributes",
+    ]
     # The APM narrative and template reach the model.
     assert "Assess procurement approvals" in gateway.calls[0]["user"]
     assert "Risk and control matrix" in gateway.calls[0]["user"]
@@ -679,14 +708,15 @@ def test_a_document_level_failure_re_asks_the_attributes_of_every_row():
     )
 
     assert result.repaired is True
-    # Rows call once, attributes call twice. The largest completion in the
-    # system is not re-asked to add one requirement.
+    # Risks and controls once each; the attributes call twice. Neither of the
+    # calls before it is re-asked to add one requirement.
     assert [call["system"] for call in gateway.calls] == [
-        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_CONTROLS_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
     ]
-    repair = gateway.calls[2]
+    repair = gateway.calls[3]
     assert "ROWS TO CORRECT" not in repair["user"]
     assert "recorded values agree" in repair["user"]
     # Every row, because the fix is to add something and the scoped envelope
@@ -752,9 +782,10 @@ def test_row_and_document_failures_are_reported_in_one_pass():
     # turn — and each went to the call whose job it is. The rating is the rows
     # call's; the missing agreement requirement is an attribute, so it is the
     # attributes call's.
-    rows_repair, attributes_repair = gateway.calls[2], gateway.calls[3]
-    assert rows_repair["system"] == planning.RCM_ROWS_SYSTEM
-    assert "unsupported risk rating" in rows_repair["user"]
+    risks_repair = gateway.calls[3]
+    attributes_repair = gateway.calls[-1]
+    assert risks_repair["system"] == planning.RCM_RISKS_SYSTEM
+    assert "unsupported risk rating" in risks_repair["user"]
     assert attributes_repair["system"] == planning.RCM_ATTRIBUTES_SYSTEM
     assert "recorded values agree" in attributes_repair["user"]
 
@@ -801,27 +832,33 @@ def test_rcm_worker_repairs_only_the_failing_row_and_preserves_the_rest():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    # Draft and its attributes on attempt 1; the scoped row repair and the
-    # attributes of what it rewrote on attempt 2.
-    assert [call["attempt"] for call in gateway.calls] == [1, 1, 2, 2]
+    # The three calls on attempt 1; on attempt 2 the row re-enters at the risks
+    # call and flows forward through the two after it.
+    assert [call["attempt"] for call in gateway.calls] == [1, 1, 1, 2, 2, 2]
     assert [call["system"] for call in gateway.calls] == [
-        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_CONTROLS_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
-        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_CONTROLS_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
     ]
-    repair_request = json.loads(gateway.calls[2]["user"])
+    repair_request = json.loads(gateway.calls[3]["user"])
     # Only the failing row travels, carrying its index and its own reasons.
-    assert [entry["row_index"] for entry in repair_request["ROWS TO CORRECT"]] == [2]
-    assert repair_request["ROWS TO CORRECT"][0]["errors"] == [
+    assert [entry["row_index"] for entry in repair_request["RISKS TO CORRECT"]] == [2]
+    assert repair_request["RISKS TO CORRECT"][0]["errors"] == [
         "RCM row 2 has an unsupported risk rating; it must be exactly one of "
         "critical, high, low, medium"
     ]
-    # The rewritten row's attributes are stated against its new wording; the
-    # row that never failed is not re-asked at all.
+    # Its control and its attributes are restated against the new wording; the
+    # row that never failed is not re-asked at either.
     assert [
         entry["row_index"]
-        for entry in json.loads(gateway.calls[3]["user"])["ATTRIBUTES TO CORRECT"]
+        for entry in json.loads(gateway.calls[4]["user"])["CONTROLS TO CORRECT"]
+    ] == [2]
+    assert [
+        entry["row_index"]
+        for entry in json.loads(gateway.calls[5]["user"])["ATTRIBUTES TO CORRECT"]
     ] == [2]
     rows = result.proposal["rows"]
     assert [row["risk"] for row in rows] == [
@@ -900,7 +937,8 @@ def test_a_cycle_attribute_naming_no_comparison_is_accepted():
     # Two calls, and neither of them is an evidence pass: the rows, then their
     # attributes. What a cycle attribute must show is settled downstream.
     assert [call["system"] for call in gateway.calls] == [
-        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_CONTROLS_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
     ]
 
@@ -1018,8 +1056,9 @@ def test_a_whole_document_re_ask_is_the_second_and_last_call():
     # The rows call twice — the draft, then the re-ask — with the attributes
     # call following each of them over whatever parsed.
     assert [call["system"] for call in gateway.calls] == [
-        planning.RCM_ROWS_SYSTEM,
-        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_CONTROLS_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
     ]
     (attribute,) = result.proposal["rows"][0]["control_attributes"]
@@ -1131,19 +1170,296 @@ def test_a_repair_carries_only_the_prompt_of_the_call_it_is_correcting():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    rows_repair = gateway.calls[2]
-    assert rows_repair["system"] == planning.RCM_ROWS_SYSTEM
-    # The rules of the other call are not in it.
-    assert "evidence_kind" not in rows_repair["system"]
-    errors = json.loads(rows_repair["user"])["ROWS TO CORRECT"][0]["errors"]
+    risks_repair = gateway.calls[3]
+    assert risks_repair["system"] == planning.RCM_RISKS_SYSTEM
+    # The rules of the other calls are not in it.
+    assert "evidence_kind" not in risks_repair["system"]
+    assert "control_owner" not in risks_repair["system"]
+    errors = json.loads(risks_repair["user"])["RISKS TO CORRECT"][0]["errors"]
     assert any("unsupported risk rating" in error for error in errors)
-    # And the row travels without the attributes the other call owns.
-    assert "control_attributes" not in json.loads(rows_repair["user"])[
-        "ROWS TO CORRECT"
-    ][0]["row"]
+    # And the row travels as the risk half alone: the fields the other calls
+    # own are not shown to the call that does not write them.
+    sent = json.loads(risks_repair["user"])["RISKS TO CORRECT"][0]["row"]
+    assert set(sent) <= set(planning._RCM_RISK_FIELDS)
     (repaired,) = result.proposal["rows"]
     assert repaired["risk"] == "Duplicate payments are processed"
     assert "required_comparisons" not in repaired["control_attributes"][0]
+
+
+def test_a_control_type_outside_the_two_kinds_is_refused():
+    """A procurement regeneration wrote the literal "None" on seven rows.
+
+    It passed, because the only check was that the field was not empty, and it
+    reached the matrix as a control type nothing can read.
+    """
+
+    gateway = _Gateway([json.dumps({"rows": [_row(control_type="Automated")]})] * 2)
+
+    with pytest.raises(WorkerRunError, match="unsupported control_type 'Automated'"):
+        WORKERS.execute(_request(), gateway)
+
+
+def test_a_row_identifying_no_control_leaves_the_kind_empty():
+    """There is nothing there to be preventive or detective about.
+
+    Naming a kind for a control the row says does not exist states mechanics
+    the planning basis never described — which is what the runs before this
+    did, classifying every uncontrolled row anyway.
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row(control="No control identified", control_type="")]})]
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.proposal["rows"][0]["control_type"] == ""
+
+
+def test_a_placeholder_for_the_absence_is_read_as_the_absence():
+    """"None", "N/A" and an empty field are one answer, and the row is right.
+
+    Refusing it would spend the bounded repair turn on a row whose substance is
+    correct, so the field is cleared instead.
+    """
+
+    for stated in ("None", "n/a", "Not applicable"):
+        gateway = _Gateway(
+            [
+                json.dumps(
+                    {
+                        "rows": [
+                            _row(control="No control identified", control_type=stated)
+                        ]
+                    }
+                )
+            ]
+        )
+
+        result = WORKERS.execute(_request(), gateway)
+
+        assert result.proposal["rows"][0]["control_type"] == "", stated
+
+
+def test_a_row_asserting_a_control_must_still_say_which_kind():
+    gateway = _Gateway([json.dumps({"rows": [_row(control_type="")]})] * 2)
+
+    with pytest.raises(WorkerRunError, match="missing control_type"):
+        WORKERS.execute(_request(), gateway)
+
+
+def test_the_kind_is_normalized_rather_than_refused_for_its_case():
+    gateway = _Gateway([json.dumps({"rows": [_row(control_type="Detective")]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.proposal["rows"][0]["control_type"] == "detective"
+
+
+# --------------------------------------------- the wording rules, as checks
+def test_a_percentage_in_a_risk_is_refused_rather_than_asked_against():
+    """Recommendation 7 of the quality doc, with a check behind it at last.
+
+    A statistic read from a profile is not a fact about the population, and a
+    quantified condition in a risk pre-concludes what fieldwork establishes.
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row(risk="GRN links are missing in 18.64% of invoices")]})] * 2
+    )
+
+    with pytest.raises(WorkerRunError, match="quotes a percentage"):
+        WORKERS.execute(_request(), gateway)
+
+
+def test_a_column_name_in_a_control_is_refused():
+    """A risk written against one corpus's schema is not an audit risk."""
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row()]})],
+        controls=[
+            json.dumps({"controls": [{
+                "row_index": 1,
+                "control": "The ERP requires GRN_ID_LINK before payment.",
+                "control_type": "preventive",
+            }]}),
+            json.dumps({"controls": [{
+                "row_index": 1,
+                "control": "The ERP requires a goods receipt reference before payment.",
+                "control_type": "preventive",
+            }]}),
+        ],
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    errors = json.loads(gateway.calls[3]["user"])["CONTROLS TO CORRECT"][0]["errors"]
+    assert any("names the column 'GRN_ID_LINK'" in error for error in errors)
+
+
+def test_a_recommendation_wearing_the_grammar_of_a_control_is_refused():
+    """A control that does not exist cannot be tested.
+
+    The design gap is a finding; the honest row says "No control identified".
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row()]})] ,
+        controls=[
+            json.dumps({"controls": [{
+                "row_index": 1,
+                "control": "A formal exception procedure should define thresholds.",
+                "control_type": "preventive",
+            }]}),
+            json.dumps({"controls": [{
+                "row_index": 1, "control": "No control identified", "control_type": "",
+            }]}),
+        ],
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    assert result.proposal["rows"][0]["control"] == "No control identified"
+
+
+def test_no_control_identified_is_not_read_as_a_recommendation():
+    gateway = _Gateway([json.dumps({"rows": [_row(control="No control identified",
+                                                  control_type="")]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.proposal["rows"][0]["control"] == "No control identified"
+
+
+def test_an_owner_the_basis_never_names_is_refused():
+    """The D4 defect class: a role inferred from the nature of the control.
+
+    An empty owner is a question to put to the client; an invented one is a
+    false attribution that survives into the working paper.
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row()]})],
+        controls=[
+            json.dumps({"controls": [{
+                "row_index": 1, "control": "Duplicate invoice validation",
+                "control_type": "preventive",
+                "control_owner": "Chief Information Security Officer",
+            }]}),
+            json.dumps({"controls": [{
+                "row_index": 1, "control": "Duplicate invoice validation",
+                "control_type": "preventive", "control_owner": "",
+            }]}),
+        ],
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    errors = json.loads(gateway.calls[3]["user"])["CONTROLS TO CORRECT"][0]["errors"]
+    assert any("does not appear in the planning basis" in error for error in errors)
+    assert result.proposal["rows"][0]["control_owner"] == ""
+
+
+def test_an_owner_the_basis_does_name_is_kept_verbatim():
+    apm = "# APM\n\nThe Head of Finance approves every claim above the limit."
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row()]})],
+        controls=[
+            json.dumps({"controls": [{
+                "row_index": 1, "control": "Approval against the delegation matrix",
+                "control_type": "preventive", "control_owner": "Head of Finance",
+            }]})
+        ],
+    )
+
+    result = WORKERS.execute(_request(_bundle(apm=apm)), gateway)
+
+    assert result.proposal["rows"][0]["control_owner"] == "Head of Finance"
+
+
+# ------------------------------------------------------- flags, not refusals
+def test_asserted_system_enforcement_is_flagged_and_the_row_still_commits():
+    """Right about as often as wrong, so the auditor is told and decides.
+
+    Enforced, it rejected correct rows: the basis sometimes does say the portal
+    blocks it.
+    """
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row()]})],
+        controls=[
+            json.dumps({"controls": [{
+                "row_index": 1,
+                "control": "The ERP workflow prevents payment before approval.",
+                "control_type": "preventive",
+            }]})
+        ],
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    (flag,) = [f for f in result.proposal["flags"]
+               if f["kind"] == "asserted_system_enforcement"]
+    assert flag["row_index"] == 1
+    assert "confirm the planning basis says so" in flag["message"]
+    # And the row is committed, not refused.
+    assert result.proposal["rows"][0]["control"].startswith("The ERP workflow")
+
+
+def test_two_rows_stating_one_risk_are_flagged_with_both_indices():
+    risk = "Invoices may be paid without the required verification and approval"
+    gateway = _Gateway(
+        [json.dumps({"rows": [
+            _row(risk=risk),
+            _row(process="Payments", risk=risk + " recorded"),
+        ]})]
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    (flag,) = [f for f in result.proposal["flags"] if f["kind"] == "near_duplicate_risk"]
+    assert flag["row_index"] == 1
+    assert "row 2" in flag["message"]
+
+
+def test_distinct_risks_of_one_cycle_are_not_flagged_for_sharing_vocabulary():
+    """The threshold is high on purpose: one cycle's risks share a great deal."""
+
+    gateway = _Gateway(
+        [json.dumps({"rows": [
+            _row(risk="Invoices may be paid without the required approval"),
+            _row(process="Payments", risk="Payments may be released before goods are received"),
+        ]})]
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert not [f for f in result.proposal.get("flags") or []
+                if f["kind"] == "near_duplicate_risk"]
+
+
+def test_a_criterion_that_resolves_to_no_sentence_is_flagged_not_refused():
+    gateway = _Gateway(
+        [json.dumps({"rows": [_row()]})],
+        controls=[
+            json.dumps({"controls": [{
+                "row_index": 1, "control": "Duplicate invoice validation",
+                "control_type": "preventive",
+                "criteria": "A clause no supplied document states.",
+            }]})
+        ],
+    )
+
+    result = WORKERS.execute(_request(), gateway)
+
+    (flag,) = [f for f in result.proposal["flags"] if f["kind"] == "criteria_unresolved"]
+    assert flag["row_index"] == 1
+    # The quote is kept; only the pointer is missing.
+    assert result.proposal["rows"][0]["criteria"] == "A clause no supplied document states."
+    assert not result.proposal["rows"][0]["criteria_refs"]
 
 
 # ------------------------------------------------ the two calls of one matrix
@@ -1180,14 +1496,31 @@ def test_the_rows_call_is_not_asked_for_attributes_and_the_second_supplies_them(
 
     result = WORKERS.execute(_request(_bundle(profiles=[_INVOICES])), gateway)
 
-    rows_call, attributes_call = gateway.calls
-    # The rows prompt no longer asks for attributes, and its request carries no
-    # vocabulary for them.
-    assert "control_attributes" not in rows_call["system"].split("Keys:")[0]
-    assert "evidence_kind" not in rows_call["system"]
+    risks_call, controls_call, attributes_call = gateway.calls
+    # The risks prompt asks for neither the control nor the attributes, and
+    # carries no vocabulary for either.
+    assert "control_attributes" not in risks_call["system"]
+    assert "evidence_kind" not in risks_call["system"]
+    assert "control_owner" not in risks_call["system"]
+    assert "control_owner" in controls_call["system"]
     assert "evidence_kind" in attributes_call["system"]
-    # And the attributes call sees the rows and where an answer could live —
-    # not the memorandum it would need to second-guess one.
+    # The risks call is shown the memorandum and no engagement material.
+    assert "Assess procurement approvals" in risks_call["user"]
+    # The controls call is shown the settled risks and the engagement's own
+    # documents to read them against — and not the memorandum, which it would
+    # quote its criteria out of: the memo carries no citation anchors, so a
+    # criterion quoted from it can never be traced to the policy it rests on.
+    assert "Assess procurement approvals" not in controls_call["user"]
+    # The attributes call sees the rows and where an answer could live, and is
+    # not shown the memorandum it could second-guess a risk from.
+    assert json.loads(controls_call["user"])["RISKS"] == [
+        {
+            "row_index": 1,
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "risk_rating": "high",
+        }
+    ]
     sent = json.loads(attributes_call["user"])
     assert sent["ROWS"] == [
         {
@@ -1195,7 +1528,7 @@ def test_the_rows_call_is_not_asked_for_attributes_and_the_second_supplies_them(
             "process": "Accounts payable",
             "risk": "Duplicate payments are processed",
             "control": "Duplicate invoice validation",
-            "control_type": "Automated preventive",
+            "control_type": "preventive",
         }
     ]
     assert "Assess procurement approvals" not in attributes_call["user"]
@@ -1218,14 +1551,14 @@ def test_the_attributes_call_is_shown_tables_by_name_and_never_by_statistic():
         _request(_bundle(profiles=[_INVOICES], metadata=[_INVOICES])), gateway
     )
 
-    sent = json.loads(gateway.calls[1]["user"])
+    sent = json.loads(gateway.calls[2]["user"])
     assert sent["TABLES"] == [
         {
             "table": "invoice_data",
             "columns": ["INVOICE_ID", "VENDOR_INVOICE_NUMBER", "INVOICE_AMOUNT"],
         }
     ]
-    assert "null_percent" not in gateway.calls[1]["user"]
+    assert "null_percent" not in gateway.calls[2]["user"]
 
 
 def test_the_attributes_call_is_told_which_record_kinds_the_engagement_holds():
@@ -1256,12 +1589,12 @@ def test_the_attributes_call_is_told_which_record_kinds_the_engagement_holds():
 
     WORKERS.execute(request, gateway)
 
-    sent = json.loads(gateway.calls[1]["user"])
+    sent = json.loads(gateway.calls[2]["user"])
     assert sent["DOCUMENT TYPES HELD"] == [
         {"document_type": "vendor_invoice", "documents": 18},
         {"document_type": "purchase_order", "documents": 12},
     ]
-    assert "fields" not in gateway.calls[1]["user"]
+    assert "fields" not in gateway.calls[2]["user"]
 
 
 def test_a_row_the_attributes_call_omits_fails_on_its_own():
@@ -1327,13 +1660,15 @@ def test_an_attribute_only_failure_repairs_at_the_attributes_call_alone():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    # Rows once; attributes twice. No second rows call.
+    # The three calls once; then the attributes call again, alone. Neither the
+    # risks nor the controls call is re-asked for something neither wrote.
     assert [call["system"] for call in gateway.calls] == [
-        planning.RCM_ROWS_SYSTEM,
+        planning.RCM_RISKS_SYSTEM,
+        planning.RCM_CONTROLS_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
         planning.RCM_ATTRIBUTES_SYSTEM,
     ]
-    correcting = json.loads(gateway.calls[2]["user"])["ATTRIBUTES TO CORRECT"][0]
+    correcting = json.loads(gateway.calls[3]["user"])["ATTRIBUTES TO CORRECT"][0]
     assert correcting["row_index"] == 1
     # The repair is given the attributes it wrote, not only the violation.
     assert correcting["current_attributes"][0]["assertion"] == "Sufficiency"
@@ -1358,7 +1693,7 @@ def test_a_row_that_never_failed_is_not_re_asked_at_either_call():
 
     assert [
         entry["row_index"]
-        for entry in json.loads(gateway.calls[3]["user"])["ATTRIBUTES TO CORRECT"]
+        for entry in json.loads(gateway.calls[-1]["user"])["ATTRIBUTES TO CORRECT"]
     ] == [2]
 
 
@@ -1509,21 +1844,6 @@ def test_the_citation_sheet_recognises_either_marker_case():
     ]
 
 
-def test_a_row_may_cite_a_marker_in_the_other_case():
-    """Folded onto the register's spelling, never spent on a repair turn."""
-
-    sheet = planning.rcm_citation_sheet(
-        _request(_document_bundle(("d_doa", LOWER_CASE_SUMMARY)))
-    )
-
-    resolved = planning._validated_criteria_refs(
-        {"criteria_refs": [{"document": 1, "citations": ["C3", "c9"]}]}, 1, sheet
-    )
-
-    assert [item["citation_id"] for item in resolved] == ["c3", "c9"]
-    assert all(item["document_id"] == "d_doa" for item in resolved)
-
-
 def test_citation_sheet_skips_a_document_with_nothing_to_cite():
     sheet = planning.rcm_citation_sheet(
         _request(_document_bundle(("d_plain", "DOCUMENT SUMMARY — Notes.docx\nNo anchors.")))
@@ -1532,61 +1852,125 @@ def test_citation_sheet_skips_a_document_with_nothing_to_cite():
     assert sheet == []
 
 
-def test_a_row_resolves_the_refs_it_chose_into_document_anchors():
-    resolved = planning._validated_criteria_refs(
-        {"criteria_refs": [{"document": 1, "citations": ["C7"]}]}, 1, _sheet()
+# --------------------------------------------------------------------------- #
+# Resolving a quoted criterion back to the sentence it came from
+# --------------------------------------------------------------------------- #
+def _index():
+    return planning.rcm_sentence_index(
+        _request(_document_bundle(("d_sop", SOP_SUMMARY), ("d_matrix", MATRIX_SUMMARY)))
     )
 
-    assert resolved == [
-        {
-            "document_id": "d_sop",
-            "document": "Procurement SOP Extracts.docx",
-            "citation_id": "C7",
-        }
+
+def test_the_sentence_index_carries_every_citable_sentence_with_its_marker():
+    index = _index()
+
+    assert [(entry["ref"], entry["citation"]) for entry in index] == [
+        (1, "C4"), (1, "C7"), (2, "C2"),
     ]
+    assert "financial authorities review the requisition" in index[0]["sentence"]
 
 
-def test_a_row_citing_an_unsupplied_document_is_repaired_not_accepted():
-    with pytest.raises(WorkerResponseValidationError) as error:
-        planning._validated_criteria_refs(
-            {"criteria_refs": [{"document": 9, "citations": ["C7"]}]}, 3, _sheet()
-        )
+def test_a_quoted_clause_resolves_to_the_document_it_came_from():
+    """The governing rule: the model names things, local code finds things.
 
-    assert "document ref 9" in str(error.value)
-    assert "[1, 2]" in str(error.value)
+    A row used to choose a `ref` number and a citation id out of a register and
+    copy both correctly. Now it quotes the sentence, and this looks up where
+    the sentence is.
+    """
 
-
-def test_a_row_citing_an_anchor_the_document_does_not_carry_is_rejected():
-    # C7 is real, but it belongs to the SOP, not to the approval matrix. A
-    # criterion pointing at the wrong document is worse than one pointing
-    # nowhere.
-    with pytest.raises(WorkerResponseValidationError) as error:
-        planning._validated_criteria_refs(
-            {"criteria_refs": [{"document": 2, "citations": ["C7"]}]}, 4, _sheet()
-        )
-
-    assert "C7" in str(error.value)
-    assert "Financial Approval Matrix.docx" in str(error.value)
-
-
-def test_repeated_anchors_are_one_source_not_two():
-    resolved = planning._validated_criteria_refs(
-        {
-            "criteria_refs": [
-                {"document": 1, "citations": ["C7", "C7"]},
-                {"document": 1, "citations": ["C7"]},
-            ]
-        },
-        1,
-        _sheet(),
+    refs, flag = planning.resolve_criteria(
+        "Financial Authorities review the requisition.", "", _index()
     )
 
-    assert len(resolved) == 1
+    assert refs == [{"document_id": "d_sop", "document": "Procurement SOP Extracts.docx", "citation_id": "C4"}]
+    assert flag == ""
 
 
-def test_a_row_that_cites_nothing_carries_no_refs():
-    assert planning._validated_criteria_refs({}, 1, _sheet()) == []
-    assert planning._validated_criteria_refs({"criteria_refs": []}, 1, _sheet()) == []
+def test_a_quote_is_matched_through_case_punctuation_and_surrounding_quotes():
+    refs, flag = planning.resolve_criteria(
+        '  "CFO approves to PKR 10,000,000."  ', "", _index()
+    )
+
+    assert refs == [{"document_id": "d_matrix", "document": "Financial Approval Matrix.docx", "citation_id": "C2"}]
+    assert flag == ""
+
+
+def test_a_fragment_of_a_supplied_sentence_still_resolves():
+    refs, _flag = planning.resolve_criteria(
+        "matches the invoice with the PO and GRN", "", _index()
+    )
+
+    assert refs == [{"document_id": "d_sop", "document": "Procurement SOP Extracts.docx", "citation_id": "C7"}]
+
+
+def test_a_lightly_paraphrased_quote_resolves_on_overlap_and_is_not_refused():
+    """A quote is a copy the model makes, and copies drift.
+
+    Below the floor it stops resolving rather than attaching a citation to the
+    wrong sentence, which is worse than attaching none.
+    """
+
+    refs, flag = planning.resolve_criteria(
+        "The Financial Authorities review the requisition", "", _index()
+    )
+    assert refs == [{"document_id": "d_sop", "document": "Procurement SOP Extracts.docx", "citation_id": "C4"}]
+
+    refs, flag = planning.resolve_criteria(
+        "Vendors are paid within thirty days of invoice receipt.", "", _index()
+    )
+    assert refs == []
+    assert flag == "criteria_unresolved"
+
+
+def test_the_same_sentence_in_two_documents_is_broken_by_the_hint():
+    duplicated = (
+        "DOCUMENT SUMMARY — Second Copy.docx\n"
+        "- Financial Authorities review the requisition. [C9]\n"
+    )
+    index = planning.rcm_sentence_index(
+        _request(_document_bundle(("d_sop", SOP_SUMMARY), ("d_copy", duplicated)))
+    )
+
+    hinted, flag = planning.resolve_criteria(
+        "Financial Authorities review the requisition.", "c9", index
+    )
+    assert hinted == [{"document_id": "d_copy", "document": "Second Copy.docx", "citation_id": "C9"}]
+    assert flag == ""
+
+    # No usable hint: the first in bundle order, and the auditor is told.
+    ambiguous, flag = planning.resolve_criteria(
+        "Financial Authorities review the requisition.", "", index
+    )
+    assert ambiguous == [{"document_id": "d_sop", "document": "Procurement SOP Extracts.docx", "citation_id": "C4"}]
+    assert flag == "criteria_ambiguous"
+
+
+def test_a_quote_that_matches_nothing_falls_back_to_its_marker_and_says_so():
+    refs, flag = planning.resolve_criteria(
+        "Payment terms are net thirty days from receipt of a valid invoice.",
+        "C7",
+        _index(),
+    )
+
+    assert refs == [{"document_id": "d_sop", "document": "Procurement SOP Extracts.docx", "citation_id": "C7"}]
+    assert flag == "criteria_unverified"
+
+
+def test_a_criterion_that_resolves_to_nothing_keeps_its_quote_and_carries_no_ref():
+    """A criterion an auditor can read is worth having without a pointer.
+
+    What is never done is inventing a pointer to make one look sourced.
+    """
+
+    refs, flag = planning.resolve_criteria("Some clause nobody supplied.", "", _index())
+
+    assert refs == []
+    assert flag == "criteria_unresolved"
+
+
+def test_an_empty_criterion_resolves_to_nothing_and_is_not_flagged():
+    assert planning.resolve_criteria("", "", _index()) == ([], "")
+    assert planning.resolve_criteria(None, "c4", _index()) == ([], "")
 
 
 # The shipped template's risk section names each lens in full under the first
