@@ -3,6 +3,8 @@ import * as PrimeVueConfirm from 'primevue/useconfirm'
 import * as PrimeVueToast from 'primevue/usetoast'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import PrimeVue from 'primevue/config'
+
 import { api } from '../api'
 import type { DocTest, DocTestSummaryPayload, WorkspaceSummary } from '../types'
 import DocTestsTab from './DocTestsTab.vue'
@@ -50,6 +52,35 @@ vi.mock('../composables/useAssistantChat', () => ({
     send: assistantSend,
   }),
 }))
+
+globalThis.ResizeObserver ??= class {
+  observe() {} unobserve() {} disconnect() {}
+} as unknown as typeof ResizeObserver
+
+// PrimeVue's TieredMenu (behind SplitButton) binds a media-query listener on
+// mount, and jsdom has neither.
+globalThis.matchMedia ??= ((query: string) => ({
+  matches: false, media: query, onchange: null,
+  addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false,
+  addListener() {}, removeListener() {},
+})) as unknown as typeof globalThis.matchMedia
+
+/** A Popover that renders inline, so the pressed chip's vocabulary is reachable. */
+vi.mock('primevue/popover', () => ({
+  default: {
+    name: 'Popover',
+    template: '<div class="popover"><slot /></div>',
+    methods: { toggle() {}, hide() {} },
+  },
+}))
+
+/** A kebab that renders its items, so what the menu offers can be asserted. */
+const OverflowMenuStub = {
+  props: ['items', 'tooltip'],
+  template: '<div class="overflow"><button v-for="item in items" :key="item.label"'
+    + ' :disabled="item.disabled || undefined" @click="item.command && item.command()">'
+    + '{{ item.label }}</button></div>',
+}
 
 vi.mock('./doc-tests/DocTestItemDetail.vue', () => ({
   default: {
@@ -165,10 +196,11 @@ describe('DocTestsTab Cycle vouch navigation', () => {
           [PrimeVueToastSymbol as symbol]: { add: vi.fn() },
           [PrimeVueConfirmSymbol as symbol]: { require: vi.fn() },
         },
+        plugins: [PrimeVue],
         directives: { tooltip: () => undefined },
         stubs: {
-          DocTestCreateDialog: true,
           EvidenceAnchorDialog: true,
+          UiOverflowMenu: OverflowMenuStub,
         },
       },
     })
@@ -251,10 +283,11 @@ describe('DocTestsTab Cycle vouch navigation', () => {
           [PrimeVueToastSymbol as symbol]: { add: vi.fn() },
           [PrimeVueConfirmSymbol as symbol]: { require: vi.fn() },
         },
+        plugins: [PrimeVue],
         directives: { tooltip: () => undefined },
         stubs: {
-          DocTestCreateDialog: true,
           EvidenceAnchorDialog: true,
+          UiOverflowMenu: OverflowMenuStub,
           InputText: {
             props: ['modelValue'],
             emits: ['update:modelValue'],
@@ -329,62 +362,73 @@ describe('DocTestsTab filtering', () => {
           [PrimeVueToastSymbol as symbol]: { add: vi.fn() },
           [PrimeVueConfirmSymbol as symbol]: { require: vi.fn() },
         },
+        plugins: [PrimeVue],
         directives: { tooltip: () => undefined },
-        stubs: { DocTestCreateDialog: true, EvidenceAnchorDialog: true },
+        stubs: {
+          EvidenceAnchorDialog: true,
+          UiOverflowMenu: OverflowMenuStub,
+        },
       },
     })
   }
 
-  /** The chips live in the status card, which rests closed. */
-  async function expand(wrapper: ReturnType<typeof mountTab>) {
-    await wrapper.find('.expander').trigger('click')
-    return wrapper
-  }
+  /** The chips stand permanently: they are the page's filter row. */
   function chip(wrapper: ReturnType<typeof mountTab>, label: string) {
-    return wrapper.findAll('.chip').find(item => item.text().endsWith(label))
+    return wrapper.findAll('.review-bar .chip').find(item => item.text().endsWith(label))
+  }
+  function menuRow(wrapper: ReturnType<typeof mountTab>, label: string) {
+    return wrapper.findAll('.review-bar .menu .row').find(item => item.text().includes(label))
   }
   function titles(wrapper: ReturnType<typeof mountTab>) {
-    return wrapper.findAll('.row-title').map(item => item.text())
+    return wrapper.findAll('.item-list .title').map(item => item.text())
   }
+
+  it('draws at most six chips, none of them empty, one of them pressed', async () => {
+    const wrapper = mountTab()
+    await flushPromises()
+    const chips = wrapper.findAll('.review-bar .chip')
+
+    expect(chips.length).toBeLessThanOrEqual(6)
+    expect(chips.map(item => item.text()))
+      .toEqual(['3All items', '2Exception', '1Confirmed'])
+    expect(wrapper.findAll('.review-bar .chip[aria-pressed="true"]').map(item => item.text()))
+      .toEqual(['3All items'])
+  })
 
   it('narrows the worklist to exceptions nobody has concluded on', async () => {
     const wrapper = mountTab()
     await flushPromises()
-    await expand(wrapper)
     expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED', 'Item CLEAN'])
 
-    // Execution and conclusion are separate axes, so the two narrowings hold
-    // at once rather than replacing each other.
-    await chip(wrapper, 'exceptions')!.trigger('click')
+    await chip(wrapper, 'Exception')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED'])
 
-    await chip(wrapper, 'no conclusion')!.trigger('click')
+    // Execution and conclusion are separate axes, so the two narrowings hold
+    // at once rather than replacing each other. The rest of the vocabulary is
+    // behind the pressed chip.
+    await menuRow(wrapper, 'Not concluded')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item OPEN'])
-    // Two narrowings are only worth a count on the control that carries them.
-    expect(wrapper.find('.ui-filter-menu button').text()).toContain('2 filters')
   })
 
   it('replaces a narrowing with another from the same axis', async () => {
     const wrapper = mountTab()
     await flushPromises()
-    await expand(wrapper)
 
-    await chip(wrapper, 'exceptions')!.trigger('click')
+    await chip(wrapper, 'Exception')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED'])
 
     // An item is not both an exception and confirmed, so the second wins
     // rather than leaving an empty worklist.
-    await chip(wrapper, 'confirmed')!.trigger('click')
+    await chip(wrapper, 'Confirmed')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item CLEAN'])
   })
 
-  it('drops a narrowing when its own chip is pressed again', async () => {
+  it('goes back to the whole worklist from the All chip', async () => {
     const wrapper = mountTab()
     await flushPromises()
-    await expand(wrapper)
 
-    await chip(wrapper, 'exceptions')!.trigger('click')
-    await chip(wrapper, 'exceptions')!.trigger('click')
+    await chip(wrapper, 'Exception')!.trigger('click')
+    await chip(wrapper, 'All items')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item OPEN', 'Item SIGNED', 'Item CLEAN'])
   })
 })
@@ -407,8 +451,12 @@ describe('DocTestsTab finding generation', () => {
           [PrimeVueToastSymbol as symbol]: { add: vi.fn() },
           [PrimeVueConfirmSymbol as symbol]: { require: vi.fn() },
         },
+        plugins: [PrimeVue],
         directives: { tooltip: () => undefined },
-        stubs: { DocTestCreateDialog: true, EvidenceAnchorDialog: true },
+        stubs: {
+          EvidenceAnchorDialog: true,
+          UiOverflowMenu: OverflowMenuStub,
+        },
       },
     })
   }
@@ -417,11 +465,12 @@ describe('DocTestsTab finding generation', () => {
     const wrapper = mountTab([])
     await flushPromises()
 
-    // The findings lane still counts the gap; the button it asks for renders
-    // in the page header, where the page's other actions are.
-    const button = wrapper.findAll('.ui-page-header__actions button')
-      .find(item => item.text().includes('Draft findings'))
-    expect(button?.text()).toContain('Draft findings (1)')
+    // The write-up is offered on each test's own footer row, where the
+    // exception is read. The batch is the shortcut, so it sits in the kebab
+    // rather than taking the header's one primary slot from Prepare.
+    const button = wrapper.findAll('.overflow button')
+      .find(item => item.text().includes('Draft'))
+    expect(button?.text()).toBe('Draft 1 finding')
 
     await button!.trigger('click')
     await flushPromises()
@@ -432,12 +481,13 @@ describe('DocTestsTab finding generation', () => {
     })
   })
 
-  it('rests the findings lane once every exception test has a finding', async () => {
+  it('offers nothing to draft once every exception test has a finding', async () => {
     const wrapper = mountTab([{ id: 'F-1', test_refs: ['DT-CYCLE'], rcm_refs: ['RCM-1'] }])
     await flushPromises()
 
-    expect(wrapper.findAll('button').some(item => item.text().includes('Draft findings'))).toBe(false)
-    await wrapper.find('.expander').trigger('click')
-    expect(wrapper.text()).toContain('Every exception is written up')
+    expect(wrapper.findAll('button').some(item => item.text().includes('Draft'))).toBe(false)
+    // The meter still reports it, without a sentence claiming credit for it.
+    expect(wrapper.findAll('.review-bar .meter-label').map(item => item.text()))
+      .toContain('Findings 1/1')
   })
 })

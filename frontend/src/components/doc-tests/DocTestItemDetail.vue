@@ -18,6 +18,7 @@ import type {
 import ProvenanceRail from '../agent/ProvenanceRail.vue'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
+import UiVerdictBar from '../ui/UiVerdictBar.vue'
 import { plural, pluralWord, verb } from '../../format'
 
 const props = defineProps<{
@@ -61,8 +62,8 @@ const kindLabel: Record<string, string> = {
   qa: 'Cited Q&A',
   cycle_vouch: 'Cycle vouch',
 }
-// Short labels: the field is already called "Control conclusion", so repeating
-// "Control" in every option only spent width the rail does not have.
+// Short labels: the field is already called "Conclusion", so repeating
+// "Control" in every option only spent width the footer row does not have.
 const controlConclusions = [
   { label: 'Not concluded', value: 'no_conclusion' },
   { label: 'Effective', value: 'effective' },
@@ -80,7 +81,7 @@ const machineNotePrefixes = [
   'Cited LLM assessment generated from the attached pages',
 ]
 // The runner stamps `Model assessment outcome: <state>.` onto every LLM item —
-// the same fact the status chip already carries, in the runner's vocabulary
+// the same fact the verdict bar already carries, in the runner's vocabulary
 // rather than the auditor's. Matching the prefixes the runner itself writes
 // leaves a genuine note — a manual fallback, an OCR gap — untouched.
 const runnerNote = computed(() => {
@@ -102,8 +103,8 @@ const evidenceRequests = computed(() =>
   (props.test.evidence_requests ?? []).filter(request => request.item_id === props.item.id),
 )
 const isCanonicalCycle = computed(() => props.test.kind === 'cycle_vouch')
-// The two readings the rail keeps apart: what the run found, and what the
-// auditor decided about it. Only the second is ever editable here.
+// The two readings the verdict bar keeps apart: what the run found, and what
+// the auditor decided about it. Only the second is ever editable here.
 const evaluation = computed(() => (props.item.evaluation ?? {}) as Partial<DocTestEvaluation>)
 const disposition = computed(() => (props.item.disposition ?? {}) as Partial<DocTestDisposition>)
 const evaluationState = computed(() => String(evaluation.value.state ?? 'not_run'))
@@ -113,13 +114,54 @@ const dispositionState = computed<DocTestDispositionState>(
 const isStale = computed(() => Boolean(disposition.value.stale))
 const hasRun = computed(() => !['not_run', 'stale'].includes(evaluationState.value))
 
+/* ---- The verdict bar ---------------------------------------------------- */
+
+/** What the run found, in its own voice: a fact about the evidence. */
+const RUN_LEAD: Record<string, string> = {
+  passed: 'The run found no exception',
+  failed: 'The run found an exception',
+  inconclusive: 'The run could not settle this',
+  agent_checked: 'The run has not finished settling this',
+  incomplete: 'The run could not complete this',
+  needs_review: 'The run left this for review',
+  not_run: 'This item has not been run',
+  stale: 'The run behind this item is out of date',
+}
+const runLead = computed(() => RUN_LEAD[evaluationState.value]
+  ?? `The run recorded ${evaluationState.value.replaceAll('_', ' ')}`)
+const verdictTone = computed<'ok' | 'warn' | 'bad' | 'neutral'>(() => ({
+  passed: 'ok' as const,
+  failed: 'bad' as const,
+  inconclusive: 'warn' as const,
+  agent_checked: 'warn' as const,
+  incomplete: 'warn' as const,
+  needs_review: 'warn' as const,
+}[evaluationState.value] ?? 'neutral'))
+const ranAt = computed(() => (evaluation.value.ran_at
+  ? new Date(evaluation.value.ran_at).toLocaleString()
+  : null))
+/** Only a live call counts. A stale one stands on the record, not as current. */
+const settled = computed(() => dispositionState.value !== 'pending' && !isStale.value)
+const CALL_PHRASE: Record<string, string> = {
+  confirmed: 'You confirmed this',
+  exception: 'You recorded an exception',
+  needs_review: 'You left this for review',
+}
+const calledOn = computed(() => (disposition.value.at
+  ? new Date(disposition.value.at).toLocaleDateString()
+  : null))
+const staleSentence = computed(() => (isStale.value
+  ? 'The evidence or procedure changed after your sign-off, so it no longer counts '
+    + 'as current. Run the item again, then record your call.'
+  : undefined))
+
 // Every call stays available at all times. Gating them on the runner's verdict
 // was what made a model-marked exception unchangeable: the buttons that would
 // have overturned it were the ones hidden because it had a verdict at all.
 const dispositionChoices = computed(() => {
   const choices: Array<{ value: DocTestDispositionState; label: string; icon: string; tone: string }> = [
-    { value: 'confirmed', label: 'Confirm', icon: 'pi pi-check', tone: 'success' },
-    { value: 'exception', label: 'Exception', icon: 'pi pi-exclamation-triangle', tone: 'danger' },
+    { value: 'confirmed', label: 'Confirm', icon: 'pi pi-check', tone: 'ok' },
+    { value: 'exception', label: 'Exception', icon: 'pi pi-exclamation-triangle', tone: 'bad' },
   ]
   // Parking is an item-first affordance; a cycle disposition stays binary.
   if (!isCanonicalCycle.value) {
@@ -145,13 +187,11 @@ const departsFromRun = computed(() =>
   Boolean(machineEquivalent.value)
   && dispositionState.value !== 'pending'
   && dispositionState.value !== machineEquivalent.value
-  && !isStale.value,
-)
+  && !isStale.value)
 // Offered only against a current call: re-recording one re-affirms it against
 // today's evidence, which writing a note is not. A stale sign-off is re-made,
 // not annotated.
 const canNote = computed(() => dispositionState.value !== 'pending' && !isStale.value)
-const canClearSignOff = computed(() => dispositionState.value !== 'pending')
 // A finding drafted from a test nobody resolved is a finding about nothing. The
 // backend now leaves such a test in `review_required` rather than `completed`,
 // and this reads that rather than the old prefix check.
@@ -188,11 +228,6 @@ function saveNote() {
   // Re-records the same call carrying the note; the state itself is unchanged.
   emit('setState', dispositionState.value, noteDraft.value.trim() || undefined)
   cancelNote()
-}
-function signedOffLine(value: Partial<DocTestDisposition>) {
-  const parts = [value.actor || 'auditor']
-  if (value.at) parts.push(new Date(value.at).toLocaleString())
-  return parts.join(' · ')
 }
 const cycleResults = computed(() => Object.entries(props.item.result_by_assertion ?? {}))
 
@@ -247,23 +282,24 @@ const openItems = computed(() => {
     return !['confirmed', 'exception'].includes(state) || Boolean(disposition?.stale)
   })
 })
-const concludedOverOpenItems = computed(() =>
-  Boolean((props.test as { conclusion_override?: unknown }).conclusion_override))
-// "Settled" is a live auditor call. A stale one is not settled — it falls back
-// to the run, so the run leads again.
-const settled = computed(() => dispositionState.value !== 'pending' && !isStale.value)
-// The run's verdict as a past-tense clause, so the demoted line reads as a note
-// about what happened rather than as a second live status.
-const runVerdictPhrase = computed(() => ({
-  passed: 'found no exception',
-  failed: 'flagged an exception',
-  inconclusive: 'could not settle this',
-  agent_checked: 'had not finished settling this',
-  not_run: 'has not been run',
-  incomplete: 'could not complete',
-  needs_review: 'left this for review',
-  stale: 'is out of date',
-}[evaluationState.value] ?? `recorded ${evaluationState.value}`))
+
+/* ---- The footer row ----------------------------------------------------- */
+
+/**
+ * The conclusion is per test and the page carries one test at a time, so Save
+ * appears only once the select has actually moved. A permanent Save beside an
+ * untouched select is a control that does nothing, and this row has room for
+ * exactly one thing that does.
+ */
+const savedConclusion = ref(props.test.control_conclusion)
+// A new revision from the server — a save, or a reload — is by definition what
+// is on the file. A change *without* one is the auditor moving the select, and
+// that is the only thing Save exists for.
+watch([() => props.test.id, () => props.test.sha1], () => {
+  savedConclusion.value = props.test.control_conclusion
+})
+const conclusionChanged = computed(() => props.test.control_conclusion !== savedConclusion.value)
+const provenanceOpen = ref(false)
 
 function edgeLabel(edge: Record<string, unknown>) {
   return `${String(edge.identifier_kind ?? 'identifier')} = ${String(edge.normalized_value ?? '—')}`
@@ -304,15 +340,15 @@ onMounted(() => { void focusAssertion() })
 
 <template>
   <div ref="detailRoot" class="detail">
-    <!-- Identity only. The status, the run action, and everything the auditor
-         records all live together in the rail. -->
+    <!-- Identity, and the two things done to the item rather than recorded
+         about it. Everything the auditor records is on the verdict bar. -->
     <header class="detail-head">
-      <!-- The test title is the readable name of this work; the item label is
-           a slug, so it identifies the specific check rather than heading it. -->
       <div class="head-copy">
-        <p class="eyebrow">{{ kindLabel[test.kind ?? ''] ?? 'Document work' }} · {{ item.id }}</p>
-        <h3>{{ test.title || item.label || item.id }}</h3>
-        <p v-if="item.label && item.label !== test.title" class="context">{{ item.label }}</p>
+        <p class="eyebrow">
+          {{ kindLabel[test.kind ?? ''] ?? 'Document work' }} · <span class="item-id">{{ item.id }}</span>
+        </p>
+        <h2>{{ item.label || test.title || item.id }}</h2>
+        <p v-if="test.title && test.title !== item.label" class="context">Test: {{ test.title }}</p>
       </div>
       <Button
         v-if="test.rcm_id"
@@ -324,7 +360,95 @@ onMounted(() => { void focusAssertion() })
         @click="emit('openRcm', test.rcm_id)"
       />
       <p v-else class="unlinked">Not linked to an RCM row — this work does not count as coverage.</p>
+      <Button
+        label="Run test"
+        icon="pi pi-play"
+        size="small"
+        outlined
+        severity="secondary"
+        :loading="running"
+        :disabled="busy"
+        @click="emit('run')"
+      />
     </header>
+
+    <!-- Replaced wholesale while a bulk selection is live: one call across
+         many items is the same decision, made somewhere else. -->
+    <slot name="verdict">
+      <UiVerdictBar :tone="verdictTone" :stale="staleSentence">
+        <template #found>
+          <span>{{ runLead }}</span>
+          <span class="run-meta aw-figure">
+            <template v-if="test.open_exception_count">· {{ test.open_exception_count }} open </template>
+            <template v-if="ranAt">· run {{ ranAt }}</template>
+          </span>
+        </template>
+
+        <template #recorded>
+          <template v-if="!settled">
+            Your call is not recorded.
+            <template v-if="!isStale && hasRun"> Agree with the run, or record a different one.</template>
+          </template>
+          <template v-else>
+            {{ CALL_PHRASE[dispositionState] ?? 'You recorded a call' }}<template v-if="calledOn"> on {{ calledOn }}</template>.
+            <span v-if="disposition.note" class="quoted">“{{ disposition.note }}”</span>
+          </template>
+        </template>
+
+        <template #actions>
+          <div class="call">
+            <!-- One control with three positions, not three buttons: the
+                 calls are mutually exclusive and a row of equal buttons never
+                 said which one was in force. -->
+            <span class="dispositions" role="group" aria-label="Record your call">
+              <button
+                v-for="choice in dispositionChoices"
+                :key="choice.value"
+                type="button"
+                :data-tone="choice.tone"
+                :aria-pressed="dispositionState === choice.value && !isStale"
+                :disabled="busy"
+                @click="choose(choice.value)"
+              >
+                <i :class="choice.icon" aria-hidden="true" />{{ choice.label }}
+              </button>
+            </span>
+            <p v-if="canNote" class="call-links">
+              <button type="button" class="link" :disabled="busy" @click="beginNote">
+                {{ disposition.note ? 'Edit reason' : 'Add a reason' }}
+              </button>
+              <button type="button" class="link" :disabled="busy" @click="emit('setState', 'pending')">
+                Clear my call
+              </button>
+            </p>
+          </div>
+        </template>
+      </UiVerdictBar>
+    </slot>
+
+    <!-- The reason is prompted where it is missed, and written whenever the
+         auditor gets to it — never as a toll on recording the call. -->
+    <p v-if="departsFromRun && !disposition.note && !editingNote" class="departs">
+      <i class="pi pi-pencil" />This departs from the run. A written reason is worth having on the file.
+      <button type="button" class="link" @click="beginNote">Add one</button>
+    </p>
+    <form v-if="editingNote" ref="reasonBox" class="reason-form" @submit.prevent="saveNote">
+      <label>
+        {{ departsFromRun ? 'Why you disagree with the run' : 'Note' }} (optional)
+        <Textarea
+          v-model="noteDraft"
+          rows="2"
+          autoResize
+          :placeholder="departsFromRun
+            ? 'The run says otherwise — record what you saw that it did not.'
+            : 'Anything worth leaving on the file.'"
+        />
+      </label>
+      <span class="reason-actions">
+        <Button label="Save reason" icon="pi pi-save" size="small" :disabled="busy" @click="saveNote" />
+        <Button label="Cancel" size="small" text severity="secondary" :disabled="busy" @click="cancelNote" />
+      </span>
+    </form>
 
     <!-- The record: what the procedure was and what the run found. -->
     <div class="detail-main">
@@ -332,19 +456,14 @@ onMounted(() => { void focusAssertion() })
 
     <!-- `instruction` and `question` are one planned step written twice: the
          runner emits an imperative and an interrogative form of the same
-         sentence. The old `question !== instruction` guard never fired — the
-         two strings are never byte-identical, so every item rendered both.
-         Nor does a similarity threshold separate them: the pair that reads
-         most obviously as duplicated shares only 52% of its words, and the
-         pair sharing 33% still asks the same thing, so any threshold low
-         enough to suppress the first fires on all of them. State the
-         procedure once; keep the question one disclosure away. -->
+         sentence. State the procedure once; keep the question one disclosure
+         away. -->
     <section class="block">
-      <h4>Procedure</h4>
+      <p class="aw-label">Procedure</p>
       <p class="instruction">{{ item.instruction || 'No instruction was recorded for this item.' }}</p>
       <UiAdvancedSection
         v-if="item.question"
-        title="Question put to the model"
+        title="Question as put to the model"
         description="The instruction as the runner phrased it"
       >
         <p class="question">{{ item.question }}</p>
@@ -352,25 +471,37 @@ onMounted(() => { void focusAssertion() })
     </section>
 
     <section v-if="showAssessment" class="block" :data-empty="!hasAssessment">
-      <h4>Assessment</h4>
+      <p class="aw-label">Assessment</p>
+      <!-- Coverage is what makes a cycle conclusion honest: how much of the
+           population was actually reached, stated where the assessment is
+           read rather than in a Result block of its own. -->
+      <p v-if="cycleCoverage" class="coverage">
+        Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
+        <strong>{{ cycleCoverage.population_rows }}</strong> {{ pluralWord(cycleCoverage.population_rows, 'population row') }} from
+        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.column }}</code>.
+        <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
+        <span v-if="cycleCoverage.rows_with_evidence !== null">
+          {{ plural(cycleCoverage.rows_with_evidence, 'row') }} {{ verb(cycleCoverage.rows_with_evidence, 'has', 'have') }} linked evidence and {{ plural(cycleCoverage.complete_cycles, 'complete cycle') }} {{ verb(cycleCoverage.complete_cycles, 'was', 'were') }} identified.
+        </span>
+      </p>
       <template v-if="perDocumentAnswers.length">
-        <article v-for="[documentId, answer] in perDocumentAnswers" :key="documentId" class="answer">
+        <article v-for="[documentId, answer] in perDocumentAnswers" :key="documentId" class="answer" :data-outcome="answer.outcome">
           <div class="answer-head">
+            <i class="pi pi-file" aria-hidden="true" />
             <strong>{{ documentTitle(documentId) }}</strong>
+            <span class="citations">
+              <Button
+                v-for="citation in answer.citations ?? []"
+                :key="citation.id"
+                :label="`Page ${citation.page || '—'}`"
+                size="small"
+                text
+                @click="emit('anchor', citation)"
+              />
+            </span>
             <UiTestStatus :status="answer.outcome" showLabel />
           </div>
           <p>{{ answer.answer }}</p>
-          <div v-if="answer.citations?.length" class="citations">
-            <Button
-              v-for="citation in answer.citations"
-              :key="citation.id"
-              :label="`Page ${citation.page || '—'}`"
-              icon="pi pi-link"
-              size="small"
-              text
-              @click="emit('anchor', citation)"
-            />
-          </div>
         </article>
       </template>
       <template v-else-if="item.response">
@@ -391,9 +522,9 @@ onMounted(() => { void focusAssertion() })
       <blockquote v-if="item.excerpt">{{ item.excerpt }}</blockquote>
     </section>
 
-    <!-- 2a. The transaction cycle: which documents stood in for which role. -->
+    <!-- The transaction cycle: which documents stood in for which role. -->
     <section v-if="cycleDocuments.length" class="block">
-      <h4>Transaction cycle</h4>
+      <p class="aw-label">Transaction cycle</p>
       <p v-if="missingRoles.length" class="missing-roles">
         No attached document fills the required role{{ missingRoles.length > 1 ? 's' : '' }}
         <strong>{{ missingRoles.join(', ') }}</strong>, so this item cannot be concluded.
@@ -419,7 +550,7 @@ onMounted(() => { void focusAssertion() })
     </section>
 
     <section v-if="cycleResults.length" class="block">
-      <h4>Assertion results</h4>
+      <p class="aw-label">Assertion results</p>
       <article
         v-for="[key, result] in cycleResults"
         :key="key"
@@ -464,9 +595,9 @@ onMounted(() => { void focusAssertion() })
       </article>
     </section>
 
-    <!-- 2b. Comparison detail, for the vouching branch only. -->
+    <!-- Comparison detail, for the vouching branch only. -->
     <section v-if="item.checks?.length" class="block">
-      <h4>Comparisons</h4>
+      <p class="aw-label">Comparisons</p>
       <article v-for="check in item.checks" :key="check.field" class="check">
         <div class="check-head">
           <strong>{{ check.field }}</strong>
@@ -508,7 +639,7 @@ onMounted(() => { void focusAssertion() })
     </section>
 
     <section v-if="item.attributes?.length" class="block">
-      <h4>Attributes</h4>
+      <p class="aw-label">Attributes</p>
       <article v-for="attribute in item.attributes" :key="attribute.name" class="attribute">
         <strong>{{ attribute.name }}</strong>
         <UiTestStatus :status="attribute.verdict" showLabel />
@@ -517,42 +648,12 @@ onMounted(() => { void focusAssertion() })
       <Button label="Save attribute notes" icon="pi pi-save" size="small" outlined @click="emit('saveAttributes')" />
     </section>
 
-    <!-- 3. What the run produced. The auditor's own conclusion is in the rail.
-         This sits above Evidence because it is what the reader came for: the
-         attachment list is the basis for the result, not the finish of it. -->
-    <section class="block outcome">
-      <h4>Result</h4>
-      <p v-if="test.result_summary" class="summary">{{ test.result_summary }}</p>
-      <!-- Coverage is what makes a cycle conclusion honest: how much of the
-           population was actually reached, stated beside the result. -->
-      <p v-if="cycleCoverage" class="coverage">
-        Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
-        <strong>{{ cycleCoverage.population_rows }}</strong> {{ pluralWord(cycleCoverage.population_rows, 'population row') }} from
-        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.column }}</code>.
-        <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
-        <span v-if="cycleCoverage.rows_with_evidence !== null">
-          {{ plural(cycleCoverage.rows_with_evidence, 'row') }} {{ verb(cycleCoverage.rows_with_evidence, 'has', 'have') }} linked evidence and {{ plural(cycleCoverage.complete_cycles, 'complete cycle') }} {{ verb(cycleCoverage.complete_cycles, 'was', 'were') }} identified.
-        </span>
-      </p>
-      <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
-        <template v-if="test.next_action">
-          <dt>Next action</dt><dd>{{ test.next_action }}</dd>
-        </template>
-        <template v-if="test.scope_limitations">
-          <dt>Limitation</dt><dd>{{ test.scope_limitations }}</dd>
-        </template>
-        <template v-if="test.exception_count || test.open_exception_count">
-          <dt>Exceptions</dt><dd>{{ test.exception_count }} recorded · {{ test.open_exception_count }} open</dd>
-        </template>
-      </dl>
-      <p v-if="!test.result_summary && !cycleCoverage" class="muted">
-        No test-level result has been recorded yet.
-      </p>
-    </section>
-
-    <!-- 4. Evidence: what is attached and what is still missing. -->
+    <!-- Evidence: what is attached and what is still missing. -->
     <section class="block">
-      <h4>Evidence</h4>
+      <div class="block-head">
+        <p class="aw-label">Evidence</p>
+        <span class="grow" />
+      </div>
       <div v-if="item.document_ids.length" class="attached">
         <span v-for="documentId in item.document_ids" :key="documentId" class="doc-chip">
           <i class="pi pi-file" />{{ documentTitle(documentId) }}
@@ -617,7 +718,7 @@ onMounted(() => { void focusAssertion() })
           optionLabel="label"
           optionValue="value"
           filter
-          placeholder="Attach another document"
+          placeholder="Attach a document"
         />
         <Button label="Attach" icon="pi pi-paperclip" outlined :disabled="!attachId" @click="attach" />
       </div>
@@ -625,393 +726,258 @@ onMounted(() => { void focusAssertion() })
 
     </div>
 
-    <!-- The rail: everything the auditor decides, in one column that stays put
-         while the record beside it scrolls. -->
-    <aside class="detail-rail" aria-label="Your assessment">
-      <!-- Both readings stay on the record, but they are not equals. Until a
-           call is made the run's verdict *is* the status and leads; once the
-           auditor has settled it, theirs leads and the run demotes to the
-           historical note it has become. Two identical chips read as two
-           competing live statuses, which is what made a signed-off item still
-           look unresolved. -->
-      <div class="rail-group rail-status">
-        <dl v-if="settled" class="readings readings--settled">
-          <div class="reading">
-            <dt>Your call</dt>
-            <dd><UiTestStatus :status="isStale ? 'stale' : dispositionState" showLabel /></dd>
-          </div>
-          <div class="reading reading--muted">
-            <dd>The run {{ runVerdictPhrase }}.</dd>
-          </div>
-        </dl>
-        <dl v-else class="readings">
-          <div class="reading">
-            <dt>Run result</dt>
-            <dd><UiTestStatus :status="evaluationState" showLabel /></dd>
-          </div>
-          <div class="reading">
-            <dt>Your call</dt>
-            <dd><span class="reading-empty">Not recorded</span></dd>
-          </div>
-        </dl>
-        <Button
-          label="Run test"
-          icon="pi pi-play"
+    <!-- The two records the test carries once its items are answered for. -->
+    <div class="footer-row">
+      <div class="footer-cell">
+        <p class="aw-label">Conclusion</p>
+        <Select
+          v-model="test.control_conclusion"
+          :options="controlConclusions"
+          optionLabel="label"
+          optionValue="value"
           size="small"
-          :loading="running"
-          :disabled="busy"
-          @click="emit('run')"
+          class="conclusion-select"
         />
-      </div>
-
-      <!-- The auditor's call is always available, whatever the runner found.
-           Disagreeing with a verdict is a normal audit act; it records the
-           disagreement rather than rewriting the run. -->
-      <div class="rail-group">
-        <h4>Your call</h4>
-
-        <p v-if="isStale" class="rail-note rail-stale">
-          <i class="pi pi-history" />
-          The evidence or procedure changed after this sign-off, so it no longer
-          counts as current. Re-run the item, then record your call again.
-        </p>
-        <p v-else-if="dispositionState !== 'pending'" class="rail-note rail-provenance">
-          <i class="pi pi-user" />
-          {{ signedOffLine(disposition) }}
-        </p>
-        <p v-else-if="!hasRun" class="rail-note">
-          This item has not been run yet. You can still record a call, but there
-          is no result behind it.
-        </p>
-        <p v-else class="rail-note">
-          {{ machineEquivalent
-            ? 'The run reached a verdict. Agree with it, or record a different call.'
-            : 'The run could not settle this item — it is yours to decide.' }}
-        </p>
-
-        <p v-if="disposition.note" class="rail-note rail-reason">“{{ disposition.note }}”</p>
-
-        <div class="dispositions">
-          <Button
-            v-for="choice in dispositionChoices"
-            :key="choice.value"
-            :label="choice.label"
-            :icon="choice.icon"
-            size="small"
-            :severity="choice.tone"
-            :outlined="dispositionState !== choice.value || isStale"
-            :disabled="busy"
-            :class="{ 'is-current': dispositionState === choice.value && !isStale }"
-            :aria-pressed="dispositionState === choice.value && !isStale"
-            @click="choose(choice.value)"
-          />
-        </div>
-
-        <!-- The reason is prompted where it is missed, and written whenever the
-             auditor gets to it — never as a toll on recording the call. -->
-        <p v-if="departsFromRun && !disposition.note" class="rail-note rail-prompt">
-          <i class="pi pi-pencil" />
-          This departs from the run. A written reason is worth having on the file.
-        </p>
-
-        <template v-if="editingNote">
-          <label ref="reasonBox" class="reason-label">
-            {{ departsFromRun ? 'Why you disagree with the run' : 'Note' }} (optional)
-            <Textarea
-              v-model="noteDraft"
-              rows="2"
-              autoResize
-              :placeholder="departsFromRun
-                ? 'The run says otherwise — record what you saw that it did not.'
-                : 'Anything worth leaving on the file.'"
-            />
-          </label>
-          <div class="dispositions">
-            <Button label="Save reason" icon="pi pi-save" size="small" :disabled="busy" @click="saveNote" />
-            <Button label="Cancel" size="small" text :disabled="busy" @click="cancelNote" />
-          </div>
-        </template>
         <Button
-          v-else-if="canNote"
-          :label="disposition.note ? 'Edit reason' : 'Add a reason'"
-          icon="pi pi-pencil"
-          size="small"
-          text
-          :disabled="busy"
-          @click="beginNote"
-        />
-
-        <Button
-          label="Clear my call"
-          icon="pi pi-refresh"
-          size="small"
-          text
-          :disabled="busy || !canClearSignOff"
-          @click="emit('setState', 'pending')"
-        />
-        <p class="rail-note rail-footnote">
-          Clearing your call leaves the run's own verdict standing; it does not
-          discard the result.
-        </p>
-      </div>
-
-      <div class="rail-group">
-        <h4>Your conclusion</h4>
-        <label>
-          Control conclusion
-          <Select
-            v-model="test.control_conclusion"
-            :options="controlConclusions"
-            optionLabel="label"
-            optionValue="value"
-            class="control-conclusion-select"
-          />
-        </label>
-        <p v-if="controlConclusionReason" class="rail-note assurance-restriction">
-          {{ controlConclusionReason }}
-        </p>
-        <!-- A warning, not a block. Saving over open items is allowed; the
-             backend appends what was open to this test's scope limitations. -->
-        <div v-if="openItems.length" class="rail-note open-items">
-          <p>
-            <i class="pi pi-exclamation-circle" />
-            {{ openItems.length }} of {{ test.items.length }}
-            {{ test.items.length === 1 ? 'item is' : 'items are' }} unresolved.
-            You can still conclude — it will be recorded as a scope limitation.
-          </p>
-          <ul>
-            <li v-for="item in openItems" :key="item.id">{{ item.label || item.id }}</li>
-          </ul>
-        </div>
-        <p v-else-if="concludedOverOpenItems" class="rail-note open-items-cleared">
-          <i class="pi pi-check" />
-          Every item is resolved. Save the conclusion again to clear the recorded
-          scope limitation.
-        </p>
-        <label>
-          Conclusion
-          <Textarea
-            v-model="test.conclusion"
-            rows="3"
-            autoResize
-            placeholder="What this result means for the control, in your own words."
-          />
-        </label>
-        <Button
-          label="Save conclusion"
+          v-if="conclusionChanged"
+          label="Save"
           icon="pi pi-check"
           size="small"
-          outlined
           :disabled="busy"
           @click="emit('saveConclusion')"
         />
+        <span v-else-if="!settled" class="footer-note">Record your call first.</span>
       </div>
 
-      <div class="rail-group">
-        <h4>Finding{{ findings.length > 1 ? 's' : '' }}</h4>
+      <div class="footer-cell">
+        <p class="aw-label">Finding</p>
         <template v-if="findings.length">
-          <Button
+          <button
             v-for="finding in findings"
             :key="finding.id"
-            :label="`Open ${finding.id}`"
-            icon="pi pi-arrow-up-right"
-            size="small"
-            outlined
+            type="button"
+            class="finding-chip"
             @click="emit('openFinding', finding.id)"
+          >
+            <span class="finding-id">{{ finding.id }}</span>{{ finding.severity }}
+          </button>
+          <Button
+            label="Regenerate"
+            size="small"
+            text
+            severity="secondary"
+            :disabled="busy || !test.rcm_id || !canGenerateFinding"
+            @click="emit('generateFinding', true)"
           />
-          <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="busy || !test.rcm_id || !canGenerateFinding" @click="emit('generateFinding', true)" />
         </template>
         <template v-else>
-          <p class="rail-note">
-            {{ findingBlockedReason || 'Generate a draft from this test’s exception observations.' }}
-          </p>
-          <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="busy || !test.rcm_id || !canGenerateFinding" @click="emit('generateFinding', false)" />
+          <span class="footer-note">{{ findingBlockedReason || 'None yet.' }}</span>
+          <Button
+            label="Generate finding"
+            icon="pi pi-sparkles"
+            size="small"
+            text
+            severity="secondary"
+            :disabled="busy || !test.rcm_id || !canGenerateFinding"
+            @click="emit('generateFinding', false)"
+          />
         </template>
       </div>
 
+      <!-- A warning, not a block. Saving over open items is allowed; the
+           backend appends what was open to this test's scope limitations. -->
+      <p v-if="controlConclusionReason" class="footer-warn">{{ controlConclusionReason }}</p>
+      <p v-else-if="openItems.length" class="footer-warn">
+        {{ openItems.length }} of {{ test.items.length }}
+        {{ test.items.length === 1 ? 'item is' : 'items are' }} unresolved. You can still
+        conclude — it will be recorded as a scope limitation.
+      </p>
+
+      <p v-if="workspaceId" class="footer-provenance">
+        <button
+          type="button"
+          class="disclosure-link"
+          :aria-expanded="provenanceOpen"
+          @click="provenanceOpen = !provenanceOpen"
+        >
+          <i class="pi" :class="provenanceOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />Where this came from
+        </button>
+      </p>
       <!-- Provenance belongs to the test definition, not to the item: the
            agent wrote the test once and every item inherits it. -->
       <ProvenanceRail
-        v-if="workspaceId"
+        v-if="provenanceOpen && workspaceId"
         :key="test.id"
         :workspaceId="workspaceId"
         :artifactRef="`doctest:${test.id}`"
+        class="provenance"
       />
-    </aside>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* The detail column is one panel, not a stack of them. Sections inside it are
-   separated by a rule and whitespace; only the repeated records inside a
-   section (an answer, a check, an evidence request) still take a fill. That
-   keeps the nesting to one level instead of the three it had. */
-/* `align-content: start` is load-bearing: `min-height: 100%` makes this grid
-   taller than its rows, and the default stretch would pour that slack into the
-   header row instead of leaving it at the bottom. */
-.detail { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--aw-space-4); min-width: 0; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
-.detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--aw-space-4); min-width: 0; }
-.head-copy { min-width: 0; }
+/* One column, not a record beside a rail. The rail held the run result, the
+   call, the conclusion, the finding and provenance — five things, one of which
+   the reader needed at a time, in a 13rem column with its own scrollbar. */
+.detail {
+  display: flex; flex-direction: column; gap: 1rem;
+  min-width: 0; min-height: 100%;
+  padding: 1.125rem 1.375rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel);
+}
+.detail-head { display: flex; align-items: flex-start; gap: 1rem; min-width: 0; }
+.head-copy { display: flex; flex-direction: column; gap: .25rem; flex: 1; min-width: 0; }
 .eyebrow { margin: 0; }
-.detail-head h3 { margin: 0.15rem 0 0.25rem; font-size: var(--aw-text-lg); line-height: 1.3; }
-.context { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); font-family: var(--aw-font-mono); }
-.rcm-link { flex: 0 0 auto; }
-.unlinked { flex: 0 1 16rem; margin: 0; color: var(--aw-warn); font-size: var(--aw-text-sm); text-align: right; }
+.item-id { font-family: var(--aw-font-mono); letter-spacing: 0; }
+.detail-head h2 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-lg); font-weight: 600; letter-spacing: -0.01em; line-height: 1.3; }
+.context { margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-base); }
+.rcm-link { flex: 0 0 auto; border-color: var(--aw-teal-line); color: var(--aw-teal); white-space: nowrap; }
+.unlinked { flex: 0 1 16rem; margin: 0; color: var(--aw-warn-ink); font-size: var(--aw-text-sm); text-align: right; }
+
+.run-meta { color: var(--aw-muted); font-size: var(--aw-text-sm); font-weight: 500; }
+.quoted { color: var(--aw-ink); font-style: italic; }
+
+.call { display: flex; flex-direction: column; align-items: flex-end; gap: .3rem; }
+.dispositions { display: inline-flex; overflow: hidden; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
+.dispositions button {
+  display: inline-flex; align-items: center; gap: .375rem;
+  padding: .4rem .75rem; border: 0; background: none;
+  font: inherit; font-size: var(--aw-text-sm); font-weight: 600; white-space: nowrap; cursor: pointer;
+}
+.dispositions button + button { border-left: 1px solid var(--aw-border-strong); }
+.dispositions button[data-tone='ok'] { color: var(--aw-ok); }
+.dispositions button[data-tone='bad'] { color: var(--aw-danger); }
+.dispositions button[data-tone='warn'] { color: var(--aw-warn-ink); }
+.dispositions button:hover:not(:disabled) { background: var(--aw-raised); }
+.dispositions button:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
+.dispositions button:disabled { opacity: .5; cursor: not-allowed; }
+.dispositions button[aria-pressed='true'][data-tone='ok'] { background: var(--aw-ok-soft); }
+.dispositions button[aria-pressed='true'][data-tone='bad'] { background: var(--aw-danger-soft); }
+.dispositions button[aria-pressed='true'][data-tone='warn'] { background: var(--aw-warn-soft); }
+.dispositions .pi { font-size: var(--aw-text-xs); }
+.call-links { display: flex; gap: .75rem; margin: 0; }
+
+.link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-decoration: underline; cursor: pointer; }
+.link[disabled] { color: var(--aw-muted); cursor: default; text-decoration: none; }
+
+.departs { display: flex; align-items: baseline; gap: .4rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.reason-form { display: flex; flex-direction: column; gap: .4rem; }
+.reason-form label { display: flex; flex-direction: column; gap: .25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+.reason-actions { display: flex; gap: .5rem; }
 
 /* The record column is its own container: the panels inside it size against
-   the space they actually have, which is now roughly a rail narrower than
-   the detail column itself. */
-.detail-main { min-width: 0; container: detail-main / inline-size; }
+   the space they actually have. */
+.detail-main { display: flex; flex-direction: column; min-width: 0; container: detail-main / inline-size; }
 
-/* Tinted so "what I decided" separates from "what the run found" without
-   another border. Below the three-column breakpoint it simply stacks under
-   the record, still as one group. */
-.detail-rail { display: flex; flex-direction: column; gap: 0.9rem; min-width: 0; padding: 0.9rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
-.rail-group { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
-.rail-group + .rail-group { padding-top: 0.9rem; border-top: 1px solid var(--aw-border-strong); }
-.rail-group h4 { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
-.rail-status { align-items: flex-start; }
-.rail-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.4; }
-.detail-rail :deep(.p-button) { width: 100%; justify-content: center; }
-.dispositions { display: flex; flex-direction: column; gap: 0.4rem; }
-
-/* Run result above your call, each with its own label: the pair is the whole
-   point of the rail, so neither reading is allowed to stand for the other. */
-.readings { display: flex; flex-direction: column; gap: 0.45rem; width: 100%; margin: 0; }
-.reading { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-.reading dt { color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
-.reading dd { margin: 0; min-width: 0; }
-.reading-empty { color: var(--aw-muted); font-size: var(--aw-text-sm); font-style: italic; }
-/* The demoted run verdict: prose, not a chip, so it cannot be mistaken for the
-   item's current status. */
-.readings--settled { gap: 0.2rem; }
-.reading--muted dd { color: var(--aw-muted); font-size: var(--aw-text-xs); }
-
-.rail-note.rail-stale,
-.rail-note.rail-provenance,
-.rail-note.rail-prompt,
-.rail-note.rail-reason { display: flex; align-items: baseline; gap: 0.35rem; }
-.rail-note.rail-stale { color: var(--aw-warn); }
-.rail-note.rail-prompt { color: var(--aw-muted); }
-.rail-note.rail-reason { color: var(--aw-ink); font-style: italic; }
-.rail-note.rail-footnote { font-size: var(--aw-text-xs); }
-
-/* Warn-toned, not danger-toned: this is a disclosure the auditor is entitled to
-   make, not an error they have to clear. */
-.open-items { color: var(--aw-warn); }
-.open-items p { display: flex; align-items: baseline; gap: 0.35rem; margin: 0; }
-.open-items ul { margin: 0.3rem 0 0; padding-left: 1.6rem; color: var(--aw-ink); font-size: var(--aw-text-xs); }
-.open-items-cleared { display: flex; align-items: baseline; gap: 0.35rem; color: var(--aw-ok); }
-.reason-label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
-
-/* The call already on the file reads as filled rather than outlined, so the
-   current decision is visible without opening the note. */
-.dispositions :deep(.p-button.is-current) { box-shadow: inset 0 0 0 2px currentColor; }
-
-/* 42rem, measured: at a 1440 window with the assistant docked the detail
-   column is ~44rem, so a higher threshold never engaged where it matters. */
-@container master-detail-content (min-width: 42rem) {
-  .detail { grid-template-columns: minmax(0, 1fr) 13rem; }
-  .detail-head { grid-column: 1 / -1; }
-  /* Sticky against the surface panel, so the conclusion and the sign-off stay
-     reachable however long the comparison list runs. */
-  .detail-rail { position: sticky; top: 0; align-self: start; }
-}
-
-/* A muted 0.72rem heading sitting directly on body copy of the same weight did
-   not read as a section break. The heading now takes ink colour and the body
-   size, and the rule gets room to breathe on both sides. */
-/* Measured: at `--aw-text-base` the heading was 14px/700 against body copy at
-   14px/400 in a near-identical ink, so weight alone had to carry the section
-   break. `--aw-text-md` is the one step between body and the panel title, which
-   gives the heading its own tier without introducing a size the scale does not
-   already define. */
-.block { display: flex; flex-direction: column; gap: 0.55rem; min-width: 0; padding: 1.15rem 0 0.35rem; border-top: 1px solid var(--aw-border); }
-.block h4 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-md); font-weight: 700; letter-spacing: -0.01em; }
+.block { display: flex; flex-direction: column; gap: .55rem; min-width: 0; padding: 1.15rem 0 .35rem; border-top: 1px solid var(--aw-border); }
+.block:first-child { padding-top: 0; border-top: 0; }
+.block-head { display: flex; align-items: center; gap: .5rem; }
+.grow { flex: 1; }
 .instruction { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 .question { margin: 0; color: var(--aw-ink); font-size: var(--aw-text-base); line-height: 1.5; }
 .response { margin: 0; font-size: var(--aw-text-base); line-height: 1.55; }
 .muted { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
-.answer { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.6rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
-.answer-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+/* One card per document, ruled in its own verdict's tone: which document said
+   what is the whole answer on a multi-document item. */
+.answer { display: flex; flex-direction: column; gap: .4rem; padding: .7rem .8rem; border: 1px solid var(--aw-border); border-left: 3px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); }
+.answer[data-outcome='exception'], .answer[data-outcome='failed'] { border-left-color: var(--aw-danger); }
+.answer[data-outcome='confirmed'], .answer[data-outcome='passed'] { border-left-color: var(--aw-ok); }
+.answer[data-outcome='needs_review'], .answer[data-outcome='inconclusive'] { border-left-color: var(--aw-warn); }
+.answer-head { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.answer-head strong { min-width: 0; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-base); text-overflow: ellipsis; white-space: nowrap; }
+.answer-head > .pi { flex: none; color: var(--aw-teal); }
+.answer-head .citations { margin-left: auto; }
 .answer p { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
-.citations { display: flex; flex-wrap: wrap; gap: 0.2rem; }
-blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-teal); background: var(--aw-raised); font-size: var(--aw-text-sm); line-height: 1.5; }
-.runner-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0 0 0.15rem; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
+.citations { display: flex; flex-wrap: wrap; gap: .2rem; }
+blockquote { margin: 0; padding: .7rem .8rem; border-left: 3px solid var(--aw-teal); background: var(--aw-raised); font-size: var(--aw-text-sm); line-height: 1.5; }
+.runner-note { display: flex; align-items: flex-start; gap: .4rem; margin: 0 0 .15rem; padding: .55rem .7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
 
-.check { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.65rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.check { display: flex; flex-direction: column; gap: .4rem; padding: .65rem .7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 .check.focused-assertion { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
-.check-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 0.5rem; align-items: center; padding: 0.4rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
+.check-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; padding: .4rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
 .comparison-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.comparison-settings { display: grid; grid-template-columns: minmax(0, 1fr) 11rem 8rem; gap: 0.5rem; align-items: center; }
+.comparison-settings { display: grid; grid-template-columns: minmax(0, 1fr) 11rem 8rem; gap: .5rem; align-items: center; }
 /* The path is the audit trail for a cycle comparison: it says exactly which
    field of which record produced the value beside it. */
-.path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--aw-muted); font-family: var(--aw-mono, monospace); font-size: var(--aw-text-xs); }
-.unresolved { color: var(--aw-warn); }
-.check-note { margin: 0.2rem 0 0; color: var(--aw-warn); font-size: var(--aw-text-sm); }
-.role-row { display: grid; grid-template-columns: 10rem minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; padding: 0.3rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
+.path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }
+.check-note { margin: .2rem 0 0; color: var(--aw-warn); font-size: var(--aw-text-sm); }
+.role-row { display: grid; grid-template-columns: 10rem minmax(0, 1fr) auto; gap: .5rem; align-items: center; padding: .3rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
 .matched-chain { grid-column: 2 / -1; color: var(--aw-muted); overflow-wrap: anywhere; }
-.cycle-result-comparison { grid-template-columns: minmax(9rem, 0.8fr) minmax(7rem, 0.6fr) minmax(0, 1fr) auto; }
+.cycle-result-comparison { grid-template-columns: minmax(9rem, .8fr) minmax(7rem, .6fr) minmax(0, 1fr) auto; }
 .role-name { font-weight: 700; }
 .role-doc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.role-type { color: var(--aw-muted); font-size: var(--aw-text-xs); }
-.missing-roles { margin: 0 0 0.4rem; color: var(--aw-warn); font-size: var(--aw-text-sm); }
-.coverage { margin: 0 0 0.5rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.frozen { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; font-size: var(--aw-text-sm); color: var(--aw-muted); }
+.missing-roles { margin: 0 0 .4rem; color: var(--aw-warn); font-size: var(--aw-text-sm); }
+.coverage { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.5; }
+.frozen { display: flex; flex-wrap: wrap; gap: .5rem 1rem; font-size: var(--aw-text-sm); color: var(--aw-muted); }
 code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-wrap: anywhere; }
-.attribute { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr); gap: 0.5rem; align-items: center; padding: 0.5rem 0.6rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.attribute { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr); gap: .5rem; align-items: center; padding: .5rem .6rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 
-.attached { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-.doc-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.5rem; border-radius: var(--aw-radius-pill); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: var(--aw-text-xs); font-weight: 600; }
-.gap, .conflict { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.7rem; border-radius: var(--aw-radius-control); font-size: var(--aw-text-sm); }
+.attached { display: flex; flex-wrap: wrap; gap: .35rem; }
+.doc-chip { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .5rem; border-radius: var(--aw-radius-pill); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: var(--aw-text-xs); font-weight: 600; }
+.gap, .conflict { display: flex; flex-direction: column; gap: .2rem; padding: .6rem .7rem; border-radius: var(--aw-radius-control); font-size: var(--aw-text-sm); }
 .gap { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 .conflict { background: var(--aw-danger-soft); color: var(--aw-danger); }
-.gap strong, .conflict strong { display: flex; align-items: center; gap: 0.35rem; }
-.evidence-requests { display: grid; gap: 0.45rem; margin-top: 0.05rem; }
-.evidence-request { display: grid; gap: 0.25rem; padding: 0.55rem 0.65rem; border-left: 3px solid var(--aw-warn); border-radius: 0 var(--aw-radius-control) var(--aw-radius-control) 0; background: var(--aw-raised); }
-.evidence-request[data-status='received'], .evidence-request[data-status='cancelled'] { border-left-color: var(--aw-ok); opacity: 0.8; }
-.evidence-request-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.gap strong, .conflict strong { display: flex; align-items: center; gap: .35rem; }
+.evidence-requests { display: grid; gap: .45rem; margin-top: .05rem; }
+.evidence-request { display: grid; gap: .25rem; padding: .55rem .65rem; border-left: 3px solid var(--aw-warn); border-radius: 0 var(--aw-radius-control) var(--aw-radius-control) 0; background: var(--aw-raised); }
+.evidence-request[data-status='received'], .evidence-request[data-status='cancelled'] { border-left-color: var(--aw-ok); opacity: .8; }
+.evidence-request-head { display: flex; justify-content: space-between; gap: .5rem; }
 .evidence-request-head small { color: var(--aw-muted); font-family: var(--aw-font-mono); }
 .evidence-request p { margin: 0; font-size: var(--aw-text-sm); line-height: 1.35; }
-.evidence-request-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.2rem; }
-.attach { display: flex; align-items: center; gap: 0.5rem; }
+.evidence-request-actions { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
+.attach { display: flex; align-items: center; gap: .5rem; }
 .attach :deep(.p-select) { flex: 1; min-width: 0; }
 
-.outcome .summary { margin: 0; font-size: var(--aw-text-base); font-weight: 600; }
-.outcome p { margin: 0; font-size: var(--aw-text-sm); line-height: 1.5; }
-.outcome dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.25rem 0.7rem; margin: 0; font-size: var(--aw-text-sm); }
-.outcome dt { color: var(--aw-muted); font-weight: 600; }
-.outcome dd { margin: 0; }
-
-label { display: flex; flex-direction: column; gap: 0.3rem; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
-label :deep(.p-select), label :deep(.p-textarea) { width: 100%; }
+/* Two records on one rule: what the test concluded, and what was written up. */
+.footer-row {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .625rem .875rem;
+  margin-top: auto; padding-top: .875rem; border-top: 1px solid var(--aw-border);
+}
+.footer-cell { display: flex; align-items: center; gap: .625rem; min-width: 0; }
+.footer-cell .aw-label { flex: none; }
+.footer-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.footer-warn, .footer-provenance { grid-column: 1 / -1; margin: 0; }
+.footer-warn { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); line-height: 1.45; }
+.conclusion-select { min-width: 10rem; }
+.finding-chip {
+  display: inline-flex; align-items: center; gap: .35rem;
+  padding: .125rem .5rem;
+  border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control);
+  background: var(--aw-warn-soft); color: var(--aw-warn-ink);
+  font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer;
+}
+.finding-chip .finding-id { font-family: var(--aw-font-mono); }
+.disclosure-link {
+  display: inline-flex; align-items: center; gap: .375rem;
+  padding: 0; border: 0; background: none; color: var(--aw-muted);
+  font: inherit; font-size: var(--aw-text-sm); font-weight: 600; cursor: pointer;
+}
+.disclosure-link:hover { color: var(--aw-teal); }
+.disclosure-link .pi { font-size: var(--aw-text-2xs); }
+.provenance { grid-column: 1 / -1; }
 
 /* PrimeVue leaves its control text at the browser default, so any control
-   without an explicit `size` rendered at 16px — which made the "Attach another
-   document" placeholder the largest text in the Evidence block, larger than the
-   heading above it and larger than the document it attaches to. Binding the
-   controls to the panel's body size removes that tier from the panel entirely
-   rather than leaving a sixth size that belongs to no one. */
-/* The rule has to name the control as well as its label: a button with no
-   `size` prop keeps 16px on the host element even once the label span is
-   bound, which is what left "Attach" a size larger than everything near it. */
+   without an explicit `size` rendered at 16px — larger than the heading above
+   it. Binding the controls to the panel's body size removes that tier. */
 .detail :deep(.p-button),
 .detail :deep(.p-button-label),
 .detail :deep(.p-select),
 .detail :deep(.p-select-label),
 .detail :deep(.p-inputtext),
 .detail :deep(.p-textarea) { font-size: var(--aw-text-base); }
-/* `<small>` in the disclosure summary is unsized globally, so it resolved to
-   0.8em of whatever it inherited — an eighth size that belongs to no tier. */
 .detail :deep(.ui-advanced > summary small) { font-size: var(--aw-text-xs); }
 
-/* Sized against the record column, not the whole detail column: the rail
-   takes width out of it, so a query keyed to the outer column fired late. */
 @container detail-main (max-width: 30rem) {
   .comparison, .comparison-settings, .attribute { grid-template-columns: minmax(0, 1fr); }
-  .outcome dl { grid-template-columns: minmax(0, 1fr); }
-  .outcome dt { margin-top: 0.3rem; }
+}
+@container master-detail-content (max-width: 34rem) {
+  .detail-head { flex-wrap: wrap; }
+  .footer-row { grid-template-columns: minmax(0, 1fr); }
+  .call { align-items: flex-start; }
 }
 </style>

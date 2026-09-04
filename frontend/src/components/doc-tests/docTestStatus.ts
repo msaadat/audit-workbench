@@ -1,7 +1,7 @@
 import { plural, pluralWord } from '../../format'
 import { portion } from '../ui/statusLanes'
 import type {
-  StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
+  ReviewChip, StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
 import type { AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload } from '../../types'
 
@@ -23,11 +23,25 @@ import type { AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload } from '.
 
 export type DocTestFilter =
   | 'not_run' | 'awaiting_evidence' | 'needs_review' | 'exceptions' | 'confirmed'
+  | 'no_call'
   | 'no_conclusion' | 'stale_conclusion' | 'agent_concluded' | 'auditor_concluded'
   | 'missing_finding' | 'has_finding'
   | 'evidence_request'
 
 export type DocTestActionKey = 'run_tests' | 'draft_findings'
+
+/**
+ * An item the runner has read and nobody has answered for.
+ *
+ * Distinct from `not_run`, which is work that has not happened, and from
+ * `needs_review`, which is a decision to defer — this is the silent middle,
+ * and it is the commonest state on a page of results an agent produced.
+ * A stale call counts here too: it stands on the record but not as current.
+ */
+function noCall(entry: DocTestSummaryEntry): boolean {
+  if (entry.entry_type === 'cycle_test') return (entry.disposition_counts.pending ?? 0) > 0
+  return entry.disposition.state === 'pending' || entry.disposition.stale
+}
 
 interface Counts {
   entries: number
@@ -38,6 +52,7 @@ interface Counts {
   needsReview: number
   exceptions: number
   confirmed: number
+  noCall: number
   evidenceRequests: number
   tests: number
   concluded: number
@@ -56,7 +71,7 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
   const counts: Counts = {
     entries: entries.length, executed: 0,
     notRunTests: [], notRunEntries: 0, awaitingEvidence: 0, needsReview: 0,
-    exceptions: 0, confirmed: 0, evidenceRequests: 0,
+    exceptions: 0, confirmed: 0, noCall: 0, evidenceRequests: 0,
     tests: 0, concluded: 0, noConclusion: 0, staleConclusion: 0,
     agentConcluded: 0, auditorConcluded: 0,
     exceptionTests: 0, exceptionTestsCovered: 0, undrafted: [],
@@ -75,6 +90,7 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
     if (entry.classification === 'needs_review') counts.needsReview += 1
     if (entry.classification === 'exception') counts.exceptions += 1
     if (entry.classification === 'confirmed') counts.confirmed += 1
+    if (noCall(entry)) counts.noCall += 1
     if (entry.entry_type === 'item' && entry.evidence_request_count) counts.evidenceRequests += 1
     if (!byTest.has(entry.test_id)) byTest.set(entry.test_id, entry)
   }
@@ -242,6 +258,13 @@ function filtersFor(counts: Counts): StatusFilterGroup[] {
       ],
     },
     {
+      key: 'call',
+      label: 'Your call',
+      options: [
+        { key: 'no_call', label: 'Not recorded', value: counts.noCall, tone: 'neutral' },
+      ],
+    },
+    {
       key: 'conclusion',
       label: 'Control conclusion',
       options: [
@@ -310,12 +333,45 @@ export function docTestStatus(
   }
 }
 
+/**
+ * The six narrowings worth a permanent chip on this page, in reading order.
+ *
+ * `no_call` is the one the old bar could not state: a worklist of items the
+ * runner settled and nobody answered for looks finished in every other count
+ * on this page.
+ */
+export const DOC_TEST_CHIPS: ReviewChip[] = [
+  { filter: 'exceptions', tone: 'bad', label: 'Exception' },
+  { filter: 'confirmed', tone: 'ok', label: 'Confirmed' },
+  { filter: 'agent_concluded', tone: 'agent', label: 'Agent-set, unread' },
+  { filter: 'no_call', tone: 'neutral', label: 'Call not recorded' },
+  { filter: 'needs_review', tone: 'warn', label: 'Needs review' },
+]
+
+/**
+ * The count sentence beside the page title. Counted in worklist entries,
+ * because that is what the list below it shows — the conclusion lane counts
+ * tests, and mixing the two is how a status bar contradicts its own list.
+ */
+export function docTestHeadline(payload: DocTestSummaryPayload | null): string {
+  const counts = tally(payload, [])
+  if (!counts.entries) return 'no items yet'
+  return [
+    plural(counts.entries, 'item'),
+    counts.executed === counts.entries ? 'all run' : `${counts.executed} of ${counts.entries} run`,
+    counts.exceptions
+      ? `${counts.exceptions} exception${counts.exceptions === 1 ? '' : 's'} open`
+      : 'no exceptions open',
+  ].join(' · ')
+}
+
 export const DOC_TEST_FILTER_LABELS: Record<DocTestFilter, string> = {
   not_run: 'items not run',
   awaiting_evidence: 'items awaiting evidence',
   needs_review: 'items needing review',
   exceptions: 'items concluded as exceptions',
   confirmed: 'items confirmed',
+  no_call: 'items no auditor has answered for',
   no_conclusion: 'items whose test has no conclusion',
   stale_conclusion: 'items whose conclusion was reached against evidence that moved',
   agent_concluded: 'items whose conclusion the agent set',
@@ -341,6 +397,7 @@ export function filterDocTestEntries(
       case 'needs_review': return entry.classification === 'needs_review'
       case 'exceptions': return entry.classification === 'exception'
       case 'confirmed': return entry.classification === 'confirmed'
+      case 'no_call': return noCall(entry)
       case 'no_conclusion': return entry.conclusion_state === 'none'
       case 'stale_conclusion': return entry.conclusion_state === 'stale'
       case 'agent_concluded': return entry.conclusion_state === 'agent'

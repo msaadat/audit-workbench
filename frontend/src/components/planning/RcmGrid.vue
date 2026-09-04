@@ -1,170 +1,286 @@
 <script setup lang="ts">
-import Button from 'primevue/button'
-import Column from 'primevue/column'
-import DataTable from 'primevue/datatable'
-import Select from 'primevue/select'
-import Textarea from 'primevue/textarea'
-import Tag from 'primevue/tag'
+import { computed, ref } from 'vue'
 
-import type { DataTest, DocTest, FindingRollups, RcmRow } from '../../types'
-import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
+import type { FindingRollups, FindingSummary, RcmRow } from '../../types'
 import { plural } from '../../format'
+
+/**
+ * The matrix as a matrix: what each risk is, what covers it, and what was
+ * concluded.
+ *
+ * It used to be twelve columns of inline editors — textareas with resize
+ * handles, a rating select, a review select, reorder arrows — inside a
+ * horizontally scrolling `DataTable` with two frozen columns. The six that
+ * carried the verdicts sat past the right edge at 1440px, so a reader saw risk
+ * text and attribute text and none of the conclusions. Reading and editing are
+ * different acts: this reads, and the drawer beside it edits.
+ *
+ * Rows group by process because that is how an engagement is walked and how a
+ * gap reads — "two of the five requisition risks have no control" is a
+ * sentence about a stage of the business, not about a matrix.
+ */
 
 const props = defineProps<{
   rows: RcmRow[]
-  dataTests?: DataTest[]
-  documentTests?: Array<Pick<DocTest, 'id' | 'title' | 'status' | 'rcm_id' | 'rcm_refs'>>
   findingRollups?: FindingRollups
-  generating?: boolean
-  canGenerate?: boolean
+  /** The row the drawer beside the grid has open. */
+  selectedId?: string | null
 }>()
-const emit = defineEmits<{
-  add: []
-  remove: [string]
-  update: [string, Partial<RcmRow>]
-  open: [RcmRow]
-  paper: [RcmRow]
-  generate: [string[]]
-}>()
+const emit = defineEmits<{ open: [RcmRow] }>()
 
-const ratings = ['low', 'medium', 'high', 'critical']
-// The backend's REVIEW_STATUSES, in the order a row travels through them.
-const reviewStatuses = ['draft', 'reviewed']
-function reviewLabel(status?: string) { return String(status || 'draft').replaceAll('_', ' ') }
-const nav = useWorkspaceNav()
-function openFinding(id: string) { void nav.replace('findings', { finding: id }) }
-function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_refs.length }
-function testTitles(row: RcmRow) { return (row.execution_rollup.test_rollups ?? []).map(item => item.title).join('; ') || 'Add a test' }
-function exceptionsLabel(row: RcmRow) { return (row.execution_rollup.completed ?? 0) ? String(row.execution_rollup.exceptions ?? 0) : 'Not assessed' }
-function attributeSummary(row: RcmRow) { return row.control_attributes.map(item => `${item.assertion} · ${item.requirement}`).join('; ') }
-/** What the row asks to be vouched across documents. Comparisons live two
- *  levels down — row, attribute, then only for the transaction-cycle strategy —
- *  so a matrix's whole cycle contract is invisible without opening every row in
- *  turn. This is the count that says which rows are worth opening. */
-function cycleComparisons(row: RcmRow) {
-  return row.control_attributes
-    .filter(item => item.evidence_kind === 'transaction_cycle')
-    .reduce((total, item) => total + (item.required_comparisons?.length ?? 0), 0)
+const CONCLUSIONS: Record<string, { label: string; tone: string }> = {
+  effective: { label: 'Effective', tone: 'ok' },
+  partially_effective: { label: 'Partially effective', tone: 'warn' },
+  ineffective: { label: 'Ineffective', tone: 'bad' },
+  not_applicable: { label: 'Not applicable', tone: 'neutral' },
 }
-function statusSeverity(status?: string) { return status?.includes('exception') || status === 'blocked' ? 'danger' : status === 'completed_no_exception' ? 'success' : status === 'review_required' ? 'warn' : 'secondary' }
+
+const collapsed = ref<Set<string>>(new Set())
+function toggle(process: string) {
+  const next = new Set(collapsed.value)
+  if (next.has(process)) next.delete(process)
+  else next.add(process)
+  collapsed.value = next
+}
+
+/**
+ * Groups in first-seen order, so the grid keeps whatever order the matrix is
+ * stored in rather than imposing an alphabet on a process sequence.
+ */
+const groups = computed(() => {
+  const byProcess = new Map<string, RcmRow[]>()
+  for (const row of props.rows) {
+    const key = String(row.process ?? '').trim() || 'Unassigned'
+    const bucket = byProcess.get(key)
+    if (bucket) bucket.push(row)
+    else byProcess.set(key, [row])
+  }
+  return [...byProcess].map(([process, rows]) => ({
+    process,
+    rows,
+    // The sentence the group header carries: how much, and what is wrong with
+    // it. Clauses that count nothing are dropped rather than printed as zero.
+    summary: [
+      plural(rows.length, 'risk'),
+      countOf(rows, row => conclusion(row) === 'ineffective', 'ineffective'),
+      countOf(rows, row => !controlOf(row), 'without a control'),
+      countOf(rows, row => findingsFor(row).length > 0, 'with a finding'),
+    ].filter(Boolean).join(' · '),
+  }))
+})
+
+function countOf(rows: RcmRow[], predicate: (row: RcmRow) => boolean, suffix: string) {
+  const total = rows.filter(predicate).length
+  return total ? `${total} ${suffix}` : ''
+}
+function controlOf(row: RcmRow) { return String(row.control ?? '').trim() }
+function conclusion(row: RcmRow) {
+  return String(row.execution_rollup.control_conclusion ?? '') || 'no_conclusion'
+}
+function conclusionMeta(row: RcmRow) {
+  return CONCLUSIONS[conclusion(row)] ?? { label: 'No conclusion', tone: 'neutral' }
+}
+function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_refs.length }
+function exceptions(row: RcmRow) { return row.execution_rollup.exceptions ?? 0 }
+function findingsFor(row: RcmRow): FindingSummary[] {
+  return props.findingRollups?.by_rcm[row.id] ?? []
+}
+/** The `RCM-` prefix is on every row, so it identifies nothing. */
+function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 </script>
 
 <template>
   <div class="rcm-grid">
-    <div class="grid-head">
-      <div><strong>Risk and control matrix</strong></div>
-      <Button label="Add risk" icon="pi pi-plus" size="small" outlined @click="emit('add')" />
+    <div class="head" role="row">
+      <span>Risk</span><span>Statement</span><span>Control</span><span>Tests</span>
+      <span>Conclusion</span><span>Finding</span><span>Review</span><span />
     </div>
-    <DataTable :value="rows" scrollable scrollHeight="60vh" size="small" stripedRows>
-      <!-- Process rides under the id rather than taking a column of its own:
-           it is a short label, and the width it was costing is width the risk
-           and control statements need. -->
-      <Column field="id" header="Risk" frozen style="min-width: 10rem"><template #body="{ data }">
-        <div class="row-identity">
-          <strong class="row-id">{{ data.id }}</strong>
-          <Textarea v-model="data.process" rows="1" class="row-process" @change="emit('update', data.id, { process: data.process })" />
-        </div>
-      </template></Column>
-      <Column header="Risk statement" style="min-width: 18rem"><template #body="{ data }"><Textarea v-model="data.risk" rows="2" @change="emit('update', data.id, { risk: data.risk })" /></template></Column>
-      <Column header="Rating" style="min-width: 8rem"><template #body="{ data }">
-        <Select v-model="data.risk_rating" :options="ratings" @change="emit('update', data.id, { risk_rating: data.risk_rating })">
-          <template #value="{ value }"><span v-if="value" class="rating"><span class="dot" :data-rating="value" />{{ value }}</span></template>
-          <template #option="{ option }"><span class="rating"><span class="dot" :data-rating="option" />{{ option }}</span></template>
-        </Select>
-      </template></Column>
-      <Column header="Control" style="min-width: 20rem"><template #body="{ data }"><Textarea v-model="data.control" rows="2" @change="emit('update', data.id, { control: data.control })" /></template></Column>
-      <Column header="Control attributes" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ plural(data.control_attributes.length, 'attribute') }}<Tag v-if="cycleComparisons(data)" class="cycle-tag" severity="info" :value="`${plural(cycleComparisons(data), 'comparison')} to vouch`" /></strong><span>{{ attributeSummary(data) }}</span></button></template></Column>
-      <Column header="Test summary" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ plural(testCount(data), 'test') }}</strong><span>{{ testTitles(data) }}</span></button></template></Column>
-      <Column header="Execution status" style="min-width: 14rem"><template #body="{ data }"><div class="rollup"><Tag :value="testCount(data) ? `${data.execution_rollup.completed ?? 0}/${testCount(data)} complete` : 'not ready'" :severity="data.execution_rollup.blocked ? 'danger' : data.execution_rollup.review_required ? 'warn' : data.execution_rollup.completed === testCount(data) && testCount(data) ? 'success' : 'secondary'"/><small>{{ plural(data.execution_rollup.tested_items ?? 0, 'item') }} tested · {{ data.execution_rollup.failed_items ?? 0 }} failed · {{ plural(data.execution_rollup.assertion_mismatches ?? 0, 'assertion mismatch', 'assertion mismatches') }}</small></div></template></Column>
-      <Column header="Exceptions" style="min-width: 8rem"><template #body="{ data }"><Tag :value="exceptionsLabel(data)" :severity="(data.execution_rollup.completed ?? 0) && (data.execution_rollup.exceptions ?? 0) ? 'danger' : 'secondary'"/></template></Column>
-      <Column header="Conclusion" style="min-width: 10rem"><template #body="{ data }"><Tag :value="data.execution_rollup.control_conclusion ?? 'no conclusion'" :severity="statusSeverity(data.execution_rollup.control_conclusion)"/></template></Column>
-      <Column header="Findings" style="min-width: 9rem"><template #body="{ data }"><span class="refs"><button v-for="finding in findingRollups?.by_rcm[data.id] ?? []" :key="finding.id" type="button" class="finding" @click="openFinding(finding.id)">{{ finding.id }} · {{ finding.severity }}</button><span v-if="!(findingRollups?.by_rcm[data.id]?.length)" class="muted">None</span></span></template></Column>
-      <!-- Sign-off is an auditor decision, so it is set where it is read. It
-           was a read-only tag while every other column the auditor owns edited
-           in place, which left the detail dialog as the only way to move a row
-           off draft. -->
-      <Column header="Review" style="min-width: 10rem"><template #body="{ data }">
-        <Select v-model="data.review_status" :options="reviewStatuses" @change="emit('update', data.id, { review_status: data.review_status })">
-          <template #value="{ value }"><span class="review"><span class="dot" :data-review="value" />{{ reviewLabel(value) }}</span></template>
-          <template #option="{ option }"><span class="review"><span class="dot" :data-review="option" />{{ reviewLabel(option) }}</span></template>
-        </Select>
-      </template></Column>
-      <Column frozen alignFrozen="right" style="min-width: 14rem"><template #body="{ data }"><div class="row-actions"><Button v-if="!testCount(data)" label="Generate test" icon="pi pi-sparkles" text size="small" :loading="props.generating" :disabled="!props.canGenerate" @click="emit('generate', [data.id])"/><Button icon="pi pi-eye" text size="small" aria-label="Open RCM detail" v-tooltip.top="'RCM detail'" @click="emit('open', data)"/><!-- The working paper is what a reviewer asks for by row, so it opens from the row rather than from two clicks inside the detail dialog. --><Button icon="pi pi-file" text size="small" aria-label="Open the RCM working paper" v-tooltip.top="'Working paper'" @click="emit('paper', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" aria-label="Remove RCM row" v-tooltip.top="'Remove row'" @click="emit('remove', data.id)" /></div></template></Column>
-    </DataTable>
+
+    <template v-for="group in groups" :key="group.process">
+      <button
+        type="button"
+        class="group"
+        :aria-expanded="!collapsed.has(group.process)"
+        @click="toggle(group.process)"
+      >
+        <i class="pi" :class="collapsed.has(group.process) ? 'pi-chevron-right' : 'pi-chevron-down'" />
+        <span class="group-name">{{ group.process }}</span>
+        <span class="group-summary aw-figure">{{ group.summary }}</span>
+      </button>
+
+      <template v-if="!collapsed.has(group.process)">
+        <button
+          v-for="row in group.rows"
+          :key="row.id"
+          type="button"
+          class="row"
+          :class="{ selected: row.id === selectedId }"
+          @click="emit('open', row)"
+        >
+          <span class="identity">
+            <span class="row-id">{{ shortId(row) }}</span>
+            <span class="rating" :data-rating="row.risk_rating">
+              <span class="rating-dot" />{{ row.risk_rating }}
+            </span>
+          </span>
+
+          <span class="statement">{{ row.risk }}</span>
+
+          <span v-if="controlOf(row)" class="control">{{ controlOf(row) }}</span>
+          <span v-else class="no-control">
+            <i class="pi pi-info-circle" />No control identified
+          </span>
+
+          <span class="tests aw-figure">
+            {{ plural(testCount(row), 'test') }} ·
+            <b v-if="exceptions(row)" class="exceptions">{{ exceptions(row) }} exc</b>
+            <template v-else>0 exc</template>
+          </span>
+
+          <span>
+            <span class="pill" :data-tone="conclusionMeta(row).tone">{{ conclusionMeta(row).label }}</span>
+          </span>
+
+          <span class="findings">
+            <template v-if="findingsFor(row).length">
+              <!-- A span, not a nested button: the row itself is the control,
+                   and the finding opens from the drawer or the row page. -->
+              <span class="finding-chip">
+                <span class="finding-id">{{ findingsFor(row)[0].id }}</span>{{ findingsFor(row)[0].severity }}
+              </span>
+              <span v-if="findingsFor(row).length > 1" class="more">+{{ findingsFor(row).length - 1 }}</span>
+            </template>
+            <span v-else class="none">—</span>
+          </span>
+
+          <span class="review" :data-reviewed="row.review_status === 'reviewed'">
+            <i v-if="row.review_status === 'reviewed'" class="pi pi-check-circle" />
+            <span v-else class="draft-ring" />
+            {{ row.review_status === 'reviewed' ? 'Reviewed' : 'Draft' }}
+          </span>
+
+          <i class="pi pi-chevron-right go" />
+        </button>
+      </template>
+    </template>
+
+    <p v-if="!rows.length" class="empty">No row matches this filter.</p>
   </div>
 </template>
 
 <style scoped>
-.rcm-grid { min-width: 0; }
-.grid-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
-.grid-head > div { display: flex; align-items: baseline; gap: 0.6rem; }
-.grid-head small, .muted { color: var(--aw-muted); }
-.refs { display:flex; flex-wrap:wrap; gap:.25rem }.refs button { border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); background:var(--aw-teal-soft); color:var(--aw-teal); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); padding:.2rem .45rem; cursor:pointer }
-.refs button.exception { background:var(--aw-danger-soft); color:var(--aw-danger) }.refs button.complete { background:var(--aw-ok-soft); color:var(--aw-ok) }
-.refs button.finding { background:var(--aw-warn-soft); color:var(--aw-warn-ink) }
-.summary-link { display:flex; flex-direction:column; gap:.2rem; width:100%; padding:.25rem; border:0; background:transparent; text-align:left; color:inherit; cursor:pointer }
-/* Clamped for the same reason the editable cells are bounded: one row with six
-   control attributes must not set the height of every row in the table. The
-   whole list is behind the click this button already performs. */
-.summary-link span { display:-webkit-box; overflow:hidden; color:var(--aw-muted); font-size:var(--aw-text-xs); line-height:1.35; -webkit-box-orient:vertical; -webkit-line-clamp:2 }
-.summary-link:hover strong { color:var(--aw-teal) }
-.summary-link strong { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap }
-/* The row's cycle contract, which otherwise reads only two levels down. */
-.cycle-tag { font-size:var(--aw-text-2xs); font-weight:600 }
-.rollup { display:flex; flex-direction:column; align-items:flex-start; gap:.3rem }
-.rollup small { display:-webkit-box; overflow:hidden; color:var(--aw-muted); -webkit-box-orient:vertical; -webkit-line-clamp:2 }
-.row-actions { display:flex }
+.rcm-grid {
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel);
+}
 
-/* Prose grid, not a ledger: sans face at one size everywhere except the ID. */
-.rcm-grid :deep(.p-datatable-tbody > tr > td) { font-family: var(--aw-font-sans); font-size: var(--aw-text-sm); vertical-align: top; padding: .45rem .55rem; }
-.row-identity { display: flex; flex-direction: column; gap: .1rem; }
-.row-id { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); letter-spacing: -0.01em; }
-.row-identity :deep(.row-process) { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+/* One template, shared by the header and every row, so the columns line up
+   without a table and without the frozen-column shadows the old grid needed. */
+.head, .row {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1.2fr) minmax(0, 1.2fr) 7.5rem 8.125rem 8rem 5.25rem 1.75rem;
+  gap: 0 .875rem;
+  align-items: center;
+  min-width: 0;
+}
+.head {
+  padding: .5rem 1rem;
+  background: var(--aw-raised);
+  color: var(--aw-muted);
+  font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+}
 
-/* `autoResize` sized every row to its longest cell, so rows ran 130–190px and
-   three and a half of nineteen fitted on screen. A fixed two-row box scrolls
-   its own overflow, keeps the cell editable, and makes row height uniform.
-   The full text is one click away in the RCM detail dialog. */
-:deep(td .p-textarea) { resize: vertical; overflow-y: auto; }
+.group {
+  display: flex; align-items: center; gap: .625rem;
+  width: 100%; padding: .4375rem 1rem;
+  border: 0; border-top: 1px solid var(--aw-border);
+  background: var(--aw-canvas); color: inherit; font: inherit;
+  text-align: left; cursor: pointer;
+}
+.group:hover { background: var(--aw-raised); }
+.group:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
+.group .pi { flex: none; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.group-name { color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600; }
+.group-summary { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 
-/* The right-hand action column floats over the cells that scroll beneath it, so
-   it needs an opaque ground and an edge — without them the Control text ran
-   under the buttons and simply stopped mid-word. */
-:deep(.p-datatable-tbody > tr > td.p-datatable-frozen-column),
-:deep(.p-datatable-thead > tr > th.p-datatable-frozen-column) { background: var(--aw-panel); }
-:deep(.p-datatable-tbody > tr:nth-child(even) > td.p-datatable-frozen-column) { background: var(--aw-canvas); }
-/* Both frozen columns carry the same class, so the edge is picked by position:
-   the first casts its shadow rightwards, the last leftwards, which is what
-   tells the reader the middle columns scroll under them. */
-:deep(.p-datatable-frozen-column:first-child) { box-shadow: 6px 0 6px -6px rgb(13 35 64 / 18%); }
-:deep(.p-datatable-frozen-column:last-child) { box-shadow: -6px 0 6px -6px rgb(13 35 64 / 18%); }
-:deep(.p-datatable-thead > tr > th) { background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.row {
+  width: 100%; padding: .625rem 1rem;
+  border: 0; border-top: 1px solid var(--aw-border);
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.row:hover:not(.selected) { background: var(--aw-raised); }
+.row:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
+.row.selected { background: var(--aw-teal-soft); }
 
-/* Ghost controls: read as table text, reveal editability on hover/focus. */
-:deep(.p-inputtext), :deep(.p-textarea), :deep(.p-select) { width: 100%; font-family: var(--aw-font-sans); font-size: var(--aw-text-sm); line-height: 1.45; }
-:deep(td .p-inputtext), :deep(td .p-textarea), :deep(td .p-select) { background: transparent; border-color: transparent; box-shadow: none; transition: border-color .12s, background .12s; }
-:deep(td .p-inputtext), :deep(td .p-textarea) { padding: .3rem .45rem; }
-:deep(td .p-select .p-select-label) { padding: .3rem .45rem; }
-:deep(td .p-select .p-select-dropdown) { width: 1.75rem; color: transparent; }
-:deep(.p-datatable-tbody > tr:hover td .p-inputtext),
-:deep(.p-datatable-tbody > tr:hover td .p-textarea),
-:deep(.p-datatable-tbody > tr:hover td .p-select) { border-color: var(--aw-border); }
-:deep(.p-datatable-tbody > tr:hover td .p-select .p-select-dropdown) { color: var(--aw-muted); }
-:deep(.p-datatable-tbody > tr td .p-inputtext:focus),
-:deep(.p-datatable-tbody > tr td .p-textarea:focus),
-:deep(.p-datatable-tbody > tr td .p-select.p-focus) { background: var(--aw-panel); border-color: var(--aw-border-strong); }
+.identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.row-id { color: var(--aw-ink-strong); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 600; }
+.rating { display: inline-flex; align-items: center; gap: .3125rem; font-size: var(--aw-text-xs); font-weight: 600; text-transform: capitalize; }
+.rating-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--aw-muted); }
+.rating[data-rating='critical'] { color: var(--aw-danger-ink); }
+.rating[data-rating='critical'] .rating-dot { background: var(--aw-danger-ink); }
+.rating[data-rating='high'] { color: var(--aw-danger); }
+.rating[data-rating='high'] .rating-dot { background: var(--aw-danger); }
+.rating[data-rating='medium'] { color: var(--aw-warn-ink); }
+.rating[data-rating='medium'] .rating-dot { background: var(--aw-warn); }
+.rating[data-rating='low'] { color: var(--aw-low-ink); }
+.rating[data-rating='low'] .rating-dot { background: var(--aw-low); }
 
-/* Rating severity dot */
-.rating { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--aw-text-sm); text-transform: capitalize; }
-.dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--aw-muted); flex: none; }
-.dot[data-rating='low'] { background: var(--aw-low); }
-.dot[data-rating='medium'] { background: var(--aw-warn); }
-.dot[data-rating='high'] { background: var(--aw-danger); }
-.dot[data-rating='critical'] { background: var(--aw-danger-ink); }
+/* Two lines, clamped: one row with a six-line risk statement must not set the
+   height of every row in the matrix. The whole text is in the drawer. */
+.statement, .control {
+  display: -webkit-box; overflow: hidden;
+  font-size: var(--aw-text-base); line-height: 1.4;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.statement { color: var(--aw-ink); }
+.control { color: var(--aw-ink-soft); }
+.no-control { display: inline-flex; align-items: center; gap: .375rem; color: var(--aw-warn-ink); font-size: var(--aw-text-base); font-style: italic; }
+.no-control .pi { font-size: var(--aw-text-xs); }
 
-/* Same shape as the rating cell so the two auditor-owned selects read as one
-   kind of control. Only a signed row goes green; draft keeps the neutral dot,
-   because unsigned is the starting state rather than a warning. */
-.review { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--aw-text-sm); text-transform: capitalize; }
-.dot[data-review='reviewed'] { background: var(--aw-ok); }
+/* One line: "2 tests · 0 exc" wrapping made a row half a line taller than the
+   ones around it, which is the raggedness the fixed clamps above exist to
+   prevent. */
+.tests { color: var(--aw-ink-soft); font-size: var(--aw-text-sm); white-space: nowrap; }
+.exceptions { color: var(--aw-danger); font-weight: 600; }
+
+.pill {
+  display: inline-flex; padding: .125rem .5625rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill);
+  background: var(--aw-panel); color: var(--aw-ink-soft);
+  font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap;
+}
+.pill[data-tone='ok'] { border-color: var(--aw-ok-line); background: var(--aw-ok-soft); color: var(--aw-ok); }
+.pill[data-tone='warn'] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.pill[data-tone='bad'] { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
+
+.findings { display: flex; align-items: center; gap: .375rem; min-width: 0; }
+.finding-chip {
+  display: inline-flex; align-items: center; gap: .3125rem;
+  padding: .125rem .5rem;
+  border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control);
+  background: var(--aw-warn-soft); color: var(--aw-warn-ink);
+  font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap;
+}
+.finding-chip .finding-id { font-family: var(--aw-font-mono); }
+.findings .more { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+.findings .none { color: var(--aw-border-strong); font-size: var(--aw-text-sm); }
+
+.review { display: inline-flex; align-items: center; gap: .3125rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.review[data-reviewed='true'] { color: var(--aw-ok); }
+.review .pi { font-size: var(--aw-text-sm); }
+.draft-ring { width: 12px; height: 12px; border: 1.5px dashed var(--aw-border-strong); border-radius: 50%; }
+
+.go { color: var(--aw-border-strong); font-size: var(--aw-text-sm); }
+.row.selected .go { color: var(--aw-teal); }
+
+.empty { margin: 0; padding: 1.5rem 1rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
+
+/* Below this the verdict columns are what survive: the two prose columns are
+   the ones a reader can open the row for. */
+@container workspace-panel (max-width: 66rem) {
+  .head, .row { grid-template-columns: 6rem minmax(0, 1.4fr) 6.875rem 8.125rem 5.25rem 1.75rem; }
+  .head > :nth-child(3), .row > :nth-child(3) { display: none; }
+  .head > :nth-child(6), .row > :nth-child(6) { display: none; }
+}
 </style>

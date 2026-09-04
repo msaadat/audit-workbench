@@ -20,6 +20,8 @@ function test(overrides: Partial<DataTest> = {}): DataTest {
     control_conclusion_stale: false,
     result_stale: false,
     semantic_review: null,
+    next_action: '',
+    scope_limitations: '',
     evaluation: {
       state: 'failed',
       note: '4 exception rows.',
@@ -37,6 +39,7 @@ function result(overrides: Partial<DataTestResult> = {}): DataTestResult {
   return {
     exception_frame: { columns: ['invoice_no', '_reason'], dtypes: ['Int64', 'String'], rows: [] },
     exception_profile: null,
+    summary_frame: null,
     statistics: [],
     step_results: [],
     semantic_issues: [],
@@ -47,28 +50,37 @@ function result(overrides: Partial<DataTestResult> = {}): DataTestResult {
   } as unknown as DataTestResult
 }
 
-function mountPanel(t: DataTest, r: DataTestResult | null) {
+function mountPanel(t: DataTest, r: DataTestResult | null, props: Record<string, unknown> = {}) {
   return mount(DataTestResultPanel, {
-    props: { test: t, result: r },
-    global: { stubs: { FrameTable: true, UiTestStatus: true, Message: { template: '<div><slot /></div>' } } },
+    props: { test: t, result: r, ...props },
+    global: {
+      stubs: {
+        FrameTable: true,
+        UiTestStatus: true,
+        ProvenanceRail: { template: '<div class="rail" />' },
+      },
+    },
   })
 }
 
 describe('DataTestResultPanel', () => {
-  it('states what the run found separately from what still stands', () => {
+  it('states the run’s outcome nowhere, because the verdict bar states it once', () => {
     const wrapper = mountPanel(test(), result())
 
-    expect(wrapper.find('.two-readings').text()).toContain('The run found exceptions: 4 exception rows')
-    expect(wrapper.find('.two-readings').text()).toContain('4 still open')
+    // The status chip, the headline, the two-readings line and the statistics
+    // tiles were four renderings of one fact. The panel now carries only the
+    // evidence behind it.
+    expect(wrapper.text()).not.toContain('4 exception rows.')
+    expect(wrapper.text()).not.toContain('The run found exceptions')
+    expect(wrapper.find('.reason-card').exists()).toBe(true)
   })
 
-  it('keeps the run’s count when every group has been accepted', () => {
-    const wrapper = mountPanel(test({ open_exception_count: 0 }), result())
+  it('leaves staleness to the verdict bar rather than banner-ing it again', () => {
+    const wrapper = mountPanel(
+      test({ result_stale: true, control_conclusion_stale: true }), result(),
+    )
 
-    // The run found four. That does not stop being true because they were
-    // accepted, so both numbers stay on the page.
-    expect(wrapper.find('.two-readings').text()).toContain('4 exception rows')
-    expect(wrapper.find('.two-readings').text()).toContain('none stand against the control')
+    expect(wrapper.text()).not.toContain('out of date')
   })
 
   it('only offers rulings on groups the backend holds', () => {
@@ -93,17 +105,7 @@ describe('DataTestResultPanel', () => {
       }),
     )
 
-    const labels = wrapper.findAll('.reason-label').map(node => node.text())
-    expect(labels).toEqual(['Pending approval'])
-    // The richer profile still enriches what it legitimately describes.
-    expect(wrapper.text()).toContain('of 10')
-  })
-
-  it('warns when the result no longer describes the current basis', () => {
-    const wrapper = mountPanel(test({ result_stale: true }), result())
-
-    expect(wrapper.text()).toContain('This result is out of date')
-    expect(wrapper.find('.two-readings').attributes('data-stale')).toBe('true')
+    expect(wrapper.findAll('.reason-label').map(node => node.text())).toEqual(['Pending approval'])
   })
 
   it('shows what the runner could not vouch for without holding the test back', () => {
@@ -114,7 +116,7 @@ describe('DataTestResultPanel', () => {
 
     expect(wrapper.text()).toContain('cannot match the rows it describes')
     // The warning qualifies the result; nothing is being asked of the reader,
-    // and the conclusion below is theirs to reach either way.
+    // and the conclusion above is theirs to reach either way.
     expect(wrapper.text()).not.toContain('produced no usable evidence')
     expect(wrapper.find('.review').exists()).toBe(false)
   })
@@ -130,5 +132,39 @@ describe('DataTestResultPanel', () => {
 
     expect(wrapper.text()).toContain('This run produced no usable evidence')
     expect(wrapper.text()).toContain('I have reviewed this and it does not invalidate the result')
+  })
+})
+
+describe('DataTestResultPanel disclosures', () => {
+  it('folds the machinery into one row of links and opens each in place', async () => {
+    const wrapper = mountPanel(
+      test(),
+      result({
+        step_results: [{
+          step_id: 'S1', step_label: 'Approval present', status: 'completed_with_exception',
+          exception_count: 4, error: null,
+        }],
+        summary_frame: { columns: ['n'], dtypes: ['Int64'], rows: [[4]] },
+      }),
+      { workspaceId: 'WS-1' },
+    )
+    const links = wrapper.findAll('.disclosure-link')
+
+    expect(links.map(node => node.text()))
+      .toEqual(['Checks that ran · 1', 'Summary output', 'Where this came from'])
+    expect(wrapper.find('.steps').exists()).toBe(false)
+
+    await links[0].trigger('click')
+    expect(wrapper.find('.steps').text()).toContain('Approval present')
+
+    await links[2].trigger('click')
+    // Provenance is a question asked once per engagement, not a permanent rail.
+    expect(wrapper.find('.rail').exists()).toBe(true)
+  })
+
+  it('offers no link to a block that has nothing behind it', () => {
+    const wrapper = mountPanel(test(), result())
+
+    expect(wrapper.findAll('.disclosure-link')).toHaveLength(0)
   })
 })

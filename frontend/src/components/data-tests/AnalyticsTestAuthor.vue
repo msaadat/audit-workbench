@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import InputNumber from 'primevue/inputnumber'
-import Message from 'primevue/message'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 
@@ -135,11 +134,17 @@ void loadTests()
 
       <div class="parameters">
         <p class="parameters-head">Parameters</p>
-        <Message v-if="!table" severity="warn" :closable="false">
-          Pick a table before setting parameters — the column pickers read its schema.
-        </Message>
-        <div v-else-if="selected.params.length" class="parameter-grid">
-          <label v-for="param in selected.params" :key="param.name">
+        <div class="parameter-grid">
+          <!-- The table is a parameter of the run like any other, and the one
+               every analytic takes, so it leads the grid rather than sitting
+               in a scope block of its own. It is slotted because it is not the
+               analytic's own metadata: it is the frame the analytic reads. -->
+          <slot name="lead" />
+          <label
+            v-for="param in (table ? selected.params : [])"
+            :key="param.name"
+            :data-missing="missingParams.includes(param.label)"
+          >
             {{ param.label }}<small v-if="param.optional">Optional</small>
             <Select
               v-if="param.kind === 'column'"
@@ -171,10 +176,10 @@ void loadTests()
             />
           </label>
         </div>
-        <p v-else class="muted">This analytic takes no parameters.</p>
-        <p v-if="table && missingParams.length" class="missing">
-          Still needed: {{ missingParams.join(', ') }}
+        <p v-if="!table" class="missing">
+          Pick a table — the column pickers read its schema.
         </p>
+        <p v-else-if="!selected.params.length" class="muted">This analytic takes no parameters.</p>
       </div>
     </template>
   </section>
@@ -182,16 +187,24 @@ void loadTests()
 
 <style scoped>
 .author { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
-.selected { display: flex; align-items: center; gap: 0.7rem; padding: 0.65rem 0.75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
+/* The chosen analytic reads as chosen: teal, once, at the top of the section
+   it names. It used to be a neutral card indistinguishable from the parameter
+   panel under it. */
+.selected { display: flex; align-items: center; gap: 0.7rem; padding: 0.65rem 0.75rem; border: 1px solid var(--aw-teal-line); border-radius: var(--aw-radius-control); background: var(--aw-teal-soft); }
 .selected > i { color: var(--aw-teal); font-size: var(--aw-text-lg); }
 .selected div { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 0.1rem; }
 .selected span, .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .selected button { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-size: var(--aw-text-sm); font-weight: 600; }
-.parameters { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
-.parameters-head { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.parameters { display: flex; flex-direction: column; gap: 0.55rem; }
+.parameters-head { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .parameter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.7rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label small { color: var(--aw-muted); font-weight: 400; }
+/* A missing required value is outlined where the value goes, so the reader
+   does not have to carry a list from the footer back up to the controls. */
+label[data-missing='true'] :deep(.p-select),
+label[data-missing='true'] :deep(.p-multiselect),
+label[data-missing='true'] :deep(.p-inputnumber .p-inputtext) { border-color: var(--aw-warn-line); }
 label :deep(.p-select), label :deep(.p-multiselect), label :deep(.p-inputnumber), label :deep(.p-inputtext) { width: 100%; min-width: 0; }
 .missing { margin: 0; color: var(--aw-warn); font-size: var(--aw-text-sm); }
 </style>

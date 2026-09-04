@@ -3,6 +3,8 @@ import * as PrimeVueConfirm from 'primevue/useconfirm'
 import * as PrimeVueToast from 'primevue/usetoast'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import PrimeVue from 'primevue/config'
+
 import { api } from '../api'
 import type { PlanningPayload, RcmRow, WorkspaceSummary } from '../types'
 import PlanningTab from './PlanningTab.vue'
@@ -14,17 +16,24 @@ const PrimeVueToastSymbol = (
   PrimeVueToast as unknown as { PrimeVueToastSymbol: symbol }
 ).PrimeVueToastSymbol
 
-const { routeState } = vi.hoisted(() => ({
+const { routeState, routerReplace, navTo, navPush } = vi.hoisted(() => ({
   routeState: { query: {} as Record<string, string>, params: { id: 'WS-1' } },
+  routerReplace: vi.fn(),
+  navTo: vi.fn((destination: string, state?: Record<string, unknown>) => ({ destination, state })),
+  navPush: vi.fn(),
 }))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
-  return { ...actual, useRoute: () => routeState }
+  return {
+    ...actual,
+    useRoute: () => routeState,
+    useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
+  }
 })
 
 vi.mock('../composables/useWorkspaceNavigation', () => ({
-  useWorkspaceNav: () => ({ replace: vi.fn() }),
+  useWorkspaceNav: () => ({ replace: vi.fn(), push: navPush, to: navTo }),
 }))
 
 vi.mock('../composables/useAgentRun', async () => {
@@ -51,9 +60,30 @@ vi.mock('./MarkdownEditor.vue', () => ({ default: { template: '<div class="markd
 vi.mock('./agent/ProvenanceRail.vue', () => ({ default: { template: '<div class="rail" />' } }))
 vi.mock('./planning/RcmGrid.vue', () => ({
   default: {
-    props: ['rows', 'dataTests', 'documentTests', 'findingRollups', 'generating', 'canGenerate'],
-    emits: ['add', 'remove', 'update', 'open', 'paper', 'generate'],
+    props: ['rows', 'findingRollups', 'selectedId'],
+    emits: ['open'],
     template: '<div class="rcm-grid-stub">{{ rows.length }}</div>',
+  },
+}))
+
+globalThis.ResizeObserver ??= class {
+  observe() {} unobserve() {} disconnect() {}
+} as unknown as typeof ResizeObserver
+
+// PrimeVue's TieredMenu (behind SplitButton) binds a media-query listener on
+// mount, and jsdom has neither.
+globalThis.matchMedia ??= ((query: string) => ({
+  matches: false, media: query, onchange: null,
+  addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false,
+  addListener() {}, removeListener() {},
+})) as unknown as typeof globalThis.matchMedia
+
+/** A Popover that renders inline, so the pressed chip's vocabulary is reachable. */
+vi.mock('primevue/popover', () => ({
+  default: {
+    name: 'Popover',
+    template: '<div class="popover"><slot /></div>',
+    methods: { toggle() {}, hide() {} },
   },
 }))
 
@@ -112,7 +142,14 @@ function mountTab(rows: RcmRow[], query: Record<string, string> = {}) {
         [PrimeVueConfirmSymbol as symbol]: { require: confirmRequire, close: vi.fn() },
         [PrimeVueToastSymbol as symbol]: { add: toastAdd, remove: vi.fn(), removeAllGroups: vi.fn() },
       },
-      stubs: { Dialog: true, teleport: true },
+      plugins: [PrimeVue],
+      directives: { tooltip: () => undefined },
+      stubs: {
+        Dialog: true,
+        // The drawer's contents are the row detail; a bare stub renders none.
+        Drawer: { props: ['visible'], template: '<div class="drawer-host"><slot /></div>' },
+        teleport: true,
+      },
     },
   })
 }
@@ -126,8 +163,9 @@ describe('PlanningTab sign-off', () => {
     const wrapper = mountTab([row('R1', 'reviewed'), row('R2', 'draft'), row('R3', 'draft')])
     await flushPromises()
 
-    const settle = wrapper.find('.disclosure .settle')
-    expect(settle.text()).toBe('Mark 2 rows reviewed')
+    // The settle action sits beside the chip that counts what it settles.
+    const settle = wrapper.find('.review-bar .settle')
+    expect(settle.text()).toBe('Mark 2 reviewed')
     await settle.trigger('click')
     await flushPromises()
 
@@ -151,7 +189,7 @@ describe('PlanningTab sign-off', () => {
     const wrapper = mountTab([row('R2', 'draft'), row('R3', 'draft')])
     await flushPromises()
 
-    await wrapper.find('.disclosure .settle').trigger('click')
+    await wrapper.find('.review-bar .settle').trigger('click')
     await flushPromises()
 
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
@@ -165,42 +203,48 @@ describe('PlanningTab sign-off', () => {
     const wrapper = mountTab([row('R1', 'reviewed')])
     await flushPromises()
 
-    expect(wrapper.find('.disclosure').text()).toContain('1 of 1 row reviewed')
-    expect(wrapper.find('.disclosure .settle').exists()).toBe(false)
+    // Nothing left to sign, so neither the chip nor the button is drawn.
+    expect(wrapper.find('.review-bar .settle').exists()).toBe(false)
+    expect(wrapper.findAll('.review-bar .chip').map(node => node.text()))
+      .toEqual(['1All rows', '1No control'])
   })
 })
 
 describe('PlanningTab working paper', () => {
-  beforeEach(() => { vi.restoreAllMocks(); toastAdd.mockClear() })
+  beforeEach(() => {
+    vi.restoreAllMocks(); toastAdd.mockClear()
+    routerReplace.mockClear(); navTo.mockClear(); navPush.mockClear()
+  })
   afterEach(() => { vi.restoreAllMocks(); routeState.query = {} })
 
-  it('renders the paper a row asks for without going through the detail dialog', async () => {
+  it('sends the row drawer to the paper tab of the row it belongs to', async () => {
     const wrapper = mountTab([row('R1', 'draft'), row('R2', 'draft')])
     await flushPromises()
 
-    wrapper.findComponent({ name: 'RcmGrid' }).vm.$emit('paper', row('R2', 'draft'))
+    // The paper is a tab on the row page now, not a second modal over a first.
+    wrapper.findComponent({ name: 'RcmGrid' }).vm.$emit('open', row('R2', 'draft'))
+    await flushPromises()
+    wrapper.findComponent({ name: 'RcmRowDrawer' }).vm.$emit('paper')
     await flushPromises()
 
-    expect(vi.mocked(api.get).mock.calls.map(call => call[0]))
-      .toContain('/api/workspaces/WS-1/rcm/R2/working-paper')
+    expect(navPush).toHaveBeenCalledWith('rcm-row', { rcm: 'R2', tab: 'paper' })
   })
 
   // The link an agent milestone hands over has to land on the paper itself,
   // not on the matrix with the paper still two clicks away.
-  it('opens the paper a deep link names', async () => {
+  it('redirects the deep link the milestones still hand over', async () => {
     mountTab([row('R1', 'draft'), row('R2', 'draft')], { paper: 'R2' })
     await flushPromises()
 
-    expect(vi.mocked(api.get).mock.calls.map(call => call[0]))
-      .toContain('/api/workspaces/WS-1/rcm/R2/working-paper')
+    expect(navTo).toHaveBeenCalledWith('rcm-row', { rcm: 'R2', tab: 'paper' })
+    expect(routerReplace).toHaveBeenCalled()
   })
 
   it('ignores a paper link naming a row the matrix no longer holds', async () => {
     mountTab([row('R1', 'draft')], { paper: 'R9' })
     await flushPromises()
 
-    expect(vi.mocked(api.get).mock.calls.map(call => call[0]))
-      .not.toContain('/api/workspaces/WS-1/rcm/R9/working-paper')
+    expect(routerReplace).not.toHaveBeenCalled()
     expect(toastAdd).not.toHaveBeenCalled()
   })
 })

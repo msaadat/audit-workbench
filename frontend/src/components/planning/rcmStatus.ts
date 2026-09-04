@@ -2,7 +2,8 @@ import { plural, pluralWord } from '../../format'
 import type { FindingRollups, RcmCompletion, RcmRow, TestRollup } from '../../types'
 import { portion } from '../ui/statusLanes'
 import type {
-  LaneState, StatusAction, StatusChip, StatusDisclosure, StatusLane, StatusModel,
+  LaneState, ReviewChip, StatusAction, StatusChip, StatusDisclosure,
+  StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
 
 /**
@@ -30,6 +31,7 @@ export type LaneKey = 'execution' | 'conclusion' | 'findings'
  */
 export type RcmFilter =
   | 'no_test' | 'not_run' | 'blocked' | 'awaiting_review' | 'passed' | 'with_exceptions'
+  | 'no_control'
   | 'effective' | 'partially_effective' | 'ineffective' | 'not_applicable' | 'no_conclusion'
   | 'missing_finding' | 'has_finding'
   | 'agent_concluded' | 'evidence_limit' | 'unreviewed_row'
@@ -41,6 +43,8 @@ export type RcmActionKey =
 
 interface Counts {
   rows: number
+  /** Risks nothing is written against. A gap in the matrix, not in the work. */
+  rowsWithoutControl: number
   rowsWithoutTests: string[]
   severeWithoutTests: number
   tests: number
@@ -90,6 +94,19 @@ function isPending(item: TestRollup): boolean {
   return !hasRun(item) && item.status !== 'blocked' && item.status !== 'review_required'
 }
 
+/**
+ * A risk with something written against it.
+ *
+ * The matrix can hold a risk nobody has named a control for, and the old grid
+ * showed that as an empty cell among eleven other cells — indistinguishable
+ * from a cell that had simply scrolled out of view. It is a gap in the matrix
+ * itself rather than in the work done against it, which is why it is a filter
+ * here and not a lane.
+ */
+function hasControl(row: RcmRow): boolean {
+  return Boolean(String(row.control ?? '').trim())
+}
+
 function conclusionOf(row: RcmRow): string {
   return String(row.execution_rollup.control_conclusion ?? '') || 'no_conclusion'
 }
@@ -111,6 +128,7 @@ function tally(
   const seenFindings = new Map<string, string>()
   const counts: Counts = {
     rows: rows.length,
+    rowsWithoutControl: 0,
     rowsWithoutTests: [], severeWithoutTests: 0,
     tests: 0, completed: 0, awaitingReview: 0, blocked: 0,
     pendingData: [], pendingDocument: [],
@@ -128,6 +146,7 @@ function tally(
 
   for (const row of rows) {
     const rollup = row.execution_rollup
+    if (!hasControl(row)) counts.rowsWithoutControl += 1
     const total = testCount(row)
     counts.tests += total
     if (!total) {
@@ -430,6 +449,101 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
   return items
 }
 
+/**
+ * The whole filter vocabulary, grouped by the axis each narrowing belongs to.
+ *
+ * The matrix never had one: its narrowings arrived as lane chips inside an
+ * expander, so half of them were unreachable without opening a card first, and
+ * the three disclosure strips each carried their own `Show rows` link to a
+ * filter the menu did not know about. Declaring them all here is what lets the
+ * review bar promote six and keep the rest one click away.
+ *
+ * Every count is a count of *rows*, because every predicate in `filterRows`
+ * selects rows. The agent disclosure counts test conclusions, which is a
+ * different population and deliberately not what the chip beside it reports:
+ * a chip whose number cannot match the list it produces is the defect the
+ * shared model exists to prevent.
+ */
+function filtersFor(counts: Counts): StatusFilterGroup[] {
+  return [
+    {
+      key: 'execution',
+      label: 'Execution',
+      options: [
+        { key: 'no_test', label: 'No test', value: counts.rowsWithoutTests.length, tone: 'bad' },
+        { key: 'not_run', label: 'Not run', value: counts.pendingData.length + counts.pendingDocument.length, tone: 'warn' },
+        { key: 'blocked', label: 'Blocked', value: counts.blocked, tone: 'bad' },
+        { key: 'awaiting_review', label: 'Awaiting review', value: counts.awaitingReview, tone: 'warn' },
+        { key: 'with_exceptions', label: 'With exceptions', value: counts.exceptionRows, tone: 'bad' },
+        { key: 'passed', label: 'No exception', value: counts.passedRows, tone: 'ok' },
+      ],
+    },
+    {
+      key: 'matrix',
+      label: 'The matrix itself',
+      options: [
+        { key: 'no_control', label: 'No control identified', value: counts.rowsWithoutControl, tone: 'warn' },
+        { key: 'evidence_limit', label: 'Evidence limit', value: counts.ceilingRows, tone: 'warn' },
+      ],
+    },
+    {
+      key: 'conclusion',
+      label: 'Control conclusion',
+      options: [
+        { key: 'effective', label: 'Effective', value: counts.effective, tone: 'ok' },
+        { key: 'partially_effective', label: 'Partially effective', value: counts.partiallyEffective, tone: 'warn' },
+        { key: 'ineffective', label: 'Ineffective', value: counts.ineffective, tone: 'bad' },
+        { key: 'not_applicable', label: 'Not applicable', value: counts.notApplicable, tone: 'neutral' },
+        { key: 'no_conclusion', label: 'Not concluded', value: counts.noConclusion, tone: 'warn' },
+      ],
+    },
+    {
+      key: 'findings',
+      label: 'Findings',
+      options: [
+        { key: 'missing_finding', label: 'No finding written', value: counts.adverse - counts.adverseCovered, tone: 'bad' },
+        { key: 'has_finding', label: 'Written up', value: counts.adverseCovered, tone: 'neutral' },
+      ],
+    },
+    {
+      key: 'signoff',
+      label: 'Sign-off',
+      options: [
+        { key: 'agent_concluded', label: 'Agent-set, unread', value: counts.agentRows, tone: 'warn' },
+        { key: 'unreviewed_row', label: 'Not reviewed', value: counts.unreviewedRows.length, tone: 'neutral' },
+      ],
+    },
+  ]
+}
+
+/**
+ * The six narrowings worth a permanent chip on the matrix, in reading order:
+ * what failed, what is owed a write-up, what the evidence cannot carry, what
+ * has no control at all, what nobody has read, and what nobody has signed.
+ */
+export const RCM_CHIPS: ReviewChip[] = [
+  { filter: 'ineffective', tone: 'bad', label: 'Ineffective' },
+  { filter: 'missing_finding', tone: 'bad', label: 'Findings to draft' },
+  { filter: 'evidence_limit', tone: 'warn', label: 'Evidence limits' },
+  { filter: 'no_control', tone: 'warn', label: 'No control' },
+  { filter: 'agent_concluded', tone: 'agent', label: 'Agent-set, unread' },
+  { filter: 'unreviewed_row', tone: 'neutral', label: 'Unreviewed' },
+]
+
+/**
+ * The count sentence beside the page title. What the matrix holds, rather than
+ * what state it is in — the chips beside it answer that.
+ */
+export function rcmHeadline(rows: RcmRow[]): string {
+  if (!rows.length) return 'no risks recorded yet'
+  const counts = tally(rows)
+  return [
+    plural(rows.length, 'risk'),
+    plural(rows.length - counts.rowsWithoutControl, 'control'),
+    plural(counts.tests, 'test'),
+  ].join(' · ')
+}
+
 export function rcmStatus(
   rows: RcmRow[],
   findingRollups?: FindingRollups,
@@ -439,6 +553,7 @@ export function rcmStatus(
   return {
     lanes: [executionLane(counts), conclusionLane(counts), findingsLane(counts)],
     disclosures: disclosuresFor(counts),
+    filters: filtersFor(counts),
   }
 }
 
@@ -449,6 +564,7 @@ export const FILTER_LABELS: Record<RcmFilter, string> = {
   awaiting_review: 'tests awaiting review',
   passed: 'controls with no exception',
   with_exceptions: 'controls with exceptions',
+  no_control: 'risks with no control identified',
   effective: 'effective',
   partially_effective: 'partially effective',
   ineffective: 'ineffective',
@@ -486,6 +602,7 @@ export function filterRows(
       case 'awaiting_review': return items.some(item => item.status === 'review_required')
       case 'passed': return Boolean((rollup.completed ?? 0) && !rollup.exceptions)
       case 'with_exceptions': return Boolean((rollup.completed ?? 0) && rollup.exceptions)
+      case 'no_control': return !hasControl(row)
       case 'effective': return conclusion === 'effective'
       case 'partially_effective': return conclusion === 'partially_effective'
       case 'ineffective': return conclusion === 'ineffective'

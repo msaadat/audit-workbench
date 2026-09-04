@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AuditFinding, DataTest } from '../../types'
-import { dataTestStatus, filterDataTests } from './dataTestStatus'
+import {
+  DATA_TEST_CHIPS, dataTestHeadline, dataTestStatus, filterDataTests,
+} from './dataTestStatus'
 
 function test(id: string, overrides: Partial<DataTest> = {}): DataTest {
   return {
@@ -179,5 +181,30 @@ describe('data test filters', () => {
     expect(ids('exploratory')).toEqual(['DAT-4'])
     expect(ids('has_finding')).toEqual(['DAT-2'])
     expect(ids('missing_finding')).toEqual([])
+  })
+})
+
+describe('data test review bar vocabulary', () => {
+  it('names a chip for a filter the page actually counts', () => {
+    const groups = dataTestStatus([test('DAT-1')]).filters ?? []
+    const known = new Set(groups.flatMap(group => group.options.map(option => option.key)))
+
+    // A chip resolves its count from the filter vocabulary, so one naming a key
+    // the vocabulary does not hold would draw a count of nothing forever.
+    for (const chip of DATA_TEST_CHIPS) expect(known.has(chip.filter)).toBe(true)
+    // Five, plus the `All` chip the bar draws itself, is the six-chip cap.
+    expect(DATA_TEST_CHIPS).toHaveLength(5)
+  })
+})
+
+describe('dataTestHeadline', () => {
+  it('answers how much there is, how much ran, and how much is open', () => {
+    expect(dataTestHeadline([])).toBe('no tests yet')
+    expect(dataTestHeadline([test('DAT-1'), test('DAT-2')]))
+      .toBe('2 tests · all run · no open exceptions')
+    expect(dataTestHeadline([
+      test('DAT-1', { status: 'completed_with_exception', open_exception_count: 2 }),
+      test('DAT-2', { last_run: null, status: 'ready' }),
+    ])).toBe('2 tests · 1 of 2 run · 1 with open exceptions')
   })
 })

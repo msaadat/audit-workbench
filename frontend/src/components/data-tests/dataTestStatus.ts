@@ -1,7 +1,7 @@
 import { plural, pluralWord } from '../../format'
 import { portion } from '../ui/statusLanes'
 import type {
-  StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
+  ReviewChip, StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
 import type { AuditFinding, DataTest } from '../../types'
 
@@ -387,6 +387,39 @@ export function dataTestStatus(tests: DataTest[], findings: AuditFinding[] = [])
     disclosures: disclosuresFor(counts),
     filters: filtersFor(counts),
   }
+}
+
+/**
+ * The six narrowings worth a permanent chip on this page, in reading order.
+ *
+ * They are the questions asked on arrival: what is still failing, what is owed
+ * a write-up, what cannot be relied on, what nobody has read, and what came
+ * back clean. Everything else in `filtersFor` stays one click behind the
+ * pressed chip — the review bar's popover — rather than spending a row on a
+ * distinction most engagements never need.
+ */
+export const DATA_TEST_CHIPS: ReviewChip[] = [
+  { filter: 'with_exceptions', tone: 'bad', label: 'Exceptions open' },
+  { filter: 'missing_finding', tone: 'bad', label: 'Findings to draft' },
+  { filter: 'semantic_warning', tone: 'warn', label: 'Measurement warnings' },
+  { filter: 'agent_concluded', tone: 'agent', label: 'Agent-set, unread' },
+  { filter: 'passed', tone: 'ok', label: 'No exception' },
+]
+
+/**
+ * The count sentence beside the page title: how much there is, how much has
+ * run, and how much of it is still open. Three clauses, because a page that
+ * says only "30 tests" answers none of the questions a reader arrives with.
+ */
+export function dataTestHeadline(tests: DataTest[]): string {
+  if (!tests.length) return 'no tests yet'
+  const run = tests.filter(hasRun).length
+  const open = tests.filter(test => test.open_exception_count > 0).length
+  return [
+    plural(tests.length, 'test'),
+    run === tests.length ? 'all run' : `${run} of ${tests.length} run`,
+    open ? `${open} with open exceptions` : 'no open exceptions',
+  ].join(' · ')
 }
 
 export const DATA_TEST_FILTER_LABELS: Record<DataTestFilter, string> = {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { FindingRollups, RcmCompletion, RcmExecutionRollup, RcmRow, TestRollup } from '../../types'
-import { filterRows, rcmStatus } from './rcmStatus'
+import { RCM_CHIPS, filterRows, rcmHeadline, rcmStatus } from './rcmStatus'
 
 function test(overrides: Partial<TestRollup> & Pick<TestRollup, 'test_id'>): TestRollup {
   return {
@@ -289,5 +289,61 @@ describe('row filters', () => {
   it('treats an effective row without a finding as covered, not missing one', () => {
     expect(ids('has_finding')).toEqual(['R2'])
     expect(ids('missing_finding')).toEqual([])
+  })
+})
+
+describe('the risk with no control', () => {
+  const rows = [
+    row('R1', {}, { control: 'The approver checks the limit.' }),
+    row('R2', {}),
+    row('R3', {}, { control: '   ' }),
+  ]
+
+  it('counts and selects the rows nothing is written against', () => {
+    const options = rcmStatus(rows).filters
+      ?.find(group => group.key === 'matrix')?.options ?? []
+
+    // An empty control cell in a twelve-column grid was indistinguishable from
+    // one that had scrolled out of view, so it was never a narrowing before.
+    expect(options[0]).toMatchObject({ key: 'no_control', value: 2 })
+    expect(filterRows(rows, 'no_control').map(item => item.id)).toEqual(['R2', 'R3'])
+  })
+})
+
+describe('the review bar vocabulary', () => {
+  it('names a chip for a filter the matrix actually counts', () => {
+    const groups = rcmStatus([row('R1', {})]).filters ?? []
+    const known = new Set(groups.flatMap(group => group.options.map(option => option.key)))
+
+    for (const chip of RCM_CHIPS) expect(known.has(chip.filter)).toBe(true)
+    expect(RCM_CHIPS).toHaveLength(6)
+  })
+
+  it('counts rows, because every predicate beside it selects rows', () => {
+    // The agent disclosure counts test conclusions, which is a different
+    // population: a chip whose number cannot match the list it produces is the
+    // defect the shared model exists to prevent.
+    const rows = [row('R1', {}), row('R2', {})]
+    const completion = {
+      unreviewed_agent_conclusions: [
+        { rcm_id: 'R1', test_id: 'T-1' },
+        { rcm_id: 'R1', test_id: 'T-2' },
+      ],
+    } as unknown as RcmCompletion
+    const options = rcmStatus(rows, undefined, completion).filters
+      ?.find(group => group.key === 'signoff')?.options ?? []
+
+    expect(options[0]).toMatchObject({ key: 'agent_concluded', value: 1 })
+    expect(filterRows(rows, 'agent_concluded', undefined, completion)).toHaveLength(1)
+  })
+})
+
+describe('rcmHeadline', () => {
+  it('says what the matrix holds, not what state it is in', () => {
+    expect(rcmHeadline([])).toBe('no risks recorded yet')
+    expect(rcmHeadline([
+      row('R1', { test_rollups: [test({ test_id: 'T-1' })] }, { control: 'A control.' }),
+      row('R2', { test_rollups: [test({ test_id: 'T-2' }), test({ test_id: 'T-3' })] }),
+    ])).toBe('2 risks · 1 control · 3 tests')
   })
 })

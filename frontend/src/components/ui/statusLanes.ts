@@ -98,6 +98,33 @@ export interface StatusFilterGroup {
   options: StatusFilterOption[]
 }
 
+/**
+ * A chip in the review bar.
+ *
+ * The bar is the page's filter row, so a chip names a filter rather than
+ * inventing a count of its own: the label and the number both come from the
+ * matching `StatusFilterOption`, which is derived beside the lanes from one
+ * tally. A view supplies only which filters to promote, in what order, and in
+ * what tone — the six questions worth a permanent row on that page.
+ *
+ * `agent` is a tone the lane model has no use for: a lane is a proportion of
+ * work and the agent is not a stage of it. It exists here because "the agent
+ * decided this and nobody has read it" is the one narrowing every fieldwork
+ * page offers, and it is neither good news nor bad.
+ */
+export type ChipTone = Tone | 'agent'
+
+export interface ReviewChip {
+  filter: string
+  tone: ChipTone
+  /**
+   * What the chip calls the subset, where the bar should not read as the menu.
+   * The menu names an axis member ("With exceptions"); the bar states a fact
+   * about the page ("Exceptions open"). Omitted, the option's own label serves.
+   */
+  label?: string
+}
+
 export interface StatusModel {
   lanes: StatusLane[]
   disclosures: StatusDisclosure[]

@@ -19,7 +19,7 @@ vi.mock('primevue/button', () => ({
   default: { name: 'Button', template: '<button />' },
 }))
 
-// shallowMount auto-stubs child components, so the disposition controls need
+// shallowMount auto-stubs child components, so the controls under test need
 // real DOM to be clicked. These explicit stubs override the auto-stub.
 const CLICKABLE_BUTTON = {
   props: ['label', 'disabled'],
@@ -115,6 +115,9 @@ function mount(props: { test: DocTest; item: DocTestItem }) {
         Select: true,
         UiAdvancedSection: true,
         UiTestStatus: true,
+        // The calls live in the verdict bar's slot, which is what is under
+        // test here; a stubbed bar renders no slot at all.
+        UiVerdictBar: false,
       },
     },
   })
@@ -176,16 +179,18 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
     // Narrow selection is a fact the coverage line reports, not a restriction:
     // whether it can carry a conclusion is the auditor's judgment to make.
     expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
-    expect(wrapper.find('.assurance-restriction').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Targeted evidence — not a sample')
+    expect(wrapper.find('.footer-warn').exists()).toBe(false)
+    // Coverage now reads beside the assessment it qualifies, not in a Result
+    // block that restated the outcome a fourth time.
+    expect(wrapper.find('.coverage').text()).toContain('Targeted evidence — not a sample')
   })
 
   it('enables an auditor conclusion for a current signed sample', () => {
     const wrapper = render('sample')
 
     expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
-    expect(wrapper.find('.assurance-restriction').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Sampled population')
+    expect(wrapper.find('.footer-warn').exists()).toBe(false)
+    expect(wrapper.find('.coverage').text()).toContain('Sampled population')
   })
 
   it('discloses an unsettled cycle rather than withholding the conclusion', () => {
@@ -201,8 +206,41 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
     const wrapper = mount({ test: { ...test, items: [unrun] } as DocTest, item: unrun })
 
     expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
-    expect(wrapper.find('.assurance-restriction').text())
-      .toContain('You can still conclude')
+    expect(wrapper.find('.footer-warn').text()).toContain('You can still conclude')
+  })
+})
+
+describe('DocTestItemDetail verdict bar', () => {
+  it('keeps what the run found apart from what is recorded, and says each once', () => {
+    const wrapper = mount(itemFirst('failed'))
+
+    expect(wrapper.find('.verdict-bar .found').text()).toContain('The run found an exception')
+    expect(wrapper.find('.verdict-bar .recorded').text().replace(/\s+/g, ' '))
+      .toContain('Your call is not recorded. Agree with the run, or record a different one.')
+    // The Result block, the rail's two readings and the status chip were three
+    // more renderings of the same two facts.
+    expect(wrapper.findAll('.verdict-bar')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('Run result')
+  })
+
+  it('names the call and when it was made once one is on the file', () => {
+    const wrapper = mount(itemFirst('inconclusive', {
+      state: 'confirmed', at: '2026-08-09T09:00:00Z', actor: 'auditor',
+    }))
+
+    expect(wrapper.find('.verdict-bar .recorded').text()).toContain('You confirmed this on')
+    // The run stays on the record as the fact about the evidence it is.
+    expect(wrapper.find('.verdict-bar .found').text()).toContain('The run could not settle this')
+  })
+
+  it('warns that a sign-off went stale rather than hiding it', () => {
+    const wrapper = mount(itemFirst('not_run', {
+      state: 'confirmed', stale: true, note: 'Agreed.', at: '2026-08-09T09:00:00Z',
+    }))
+
+    expect(wrapper.find('.verdict-bar .stale').text()).toContain('no longer counts as current')
+    // A stale call is not a current one, so the bar asks for it again.
+    expect(wrapper.find('.verdict-bar .recorded').text()).toContain('Your call is not recorded')
   })
 })
 
@@ -221,33 +259,21 @@ describe('DocTestItemDetail auditor disposition', () => {
     const wrapper = mount(itemFirst('not_run'))
 
     expect(dispositionButtons(wrapper)).toEqual(['Confirm', 'Exception', 'Needs review'])
-    expect(wrapper.text()).toContain('has not been run yet')
+    expect(wrapper.find('.verdict-bar .found').text()).toContain('has not been run')
   })
 
-  it('leads with the run while no call has been made', () => {
-    const wrapper = mount(itemFirst('failed'))
+  it('marks the call in force, so a settled item cannot read as unresolved', () => {
+    const wrapper = mount(itemFirst('failed', { state: 'confirmed', at: '2026-08-09T09:00:00Z' }))
 
-    const readings = wrapper.findAll('.reading dt').map(node => node.text())
-    expect(readings).toEqual(['Run result', 'Your call'])
-    expect(wrapper.text()).toContain('Not recorded')
-  })
-
-  it('demotes the run to a past-tense note once the auditor has settled it', () => {
-    const wrapper = mount(itemFirst('inconclusive', {
-      state: 'confirmed', at: '2026-08-09T09:00:00Z', actor: 'auditor',
-    }))
-
-    // Your call leads and is the only chip; the run stays on the record as
-    // prose so a settled item cannot still read as unresolved.
-    expect(wrapper.findAll('.reading dt').map(node => node.text())).toEqual(['Your call'])
-    expect(wrapper.find('.reading--muted').text()).toBe('The run could not settle this.')
-    expect(wrapper.find('.rail-provenance').text()).toContain('auditor')
+    expect(wrapper.findAll('.dispositions button[aria-pressed="true"]').map(node => node.text()))
+      .toEqual(['Confirm'])
   })
 
   it('lets the run lead again when the call went stale', () => {
     const wrapper = mount(itemFirst('failed', { state: 'confirmed', stale: true }))
 
-    expect(wrapper.findAll('.reading dt').map(node => node.text())).toEqual(['Run result', 'Your call'])
+    // Nothing is pressed: a stale call stands on the record but not as current.
+    expect(wrapper.findAll('.dispositions button[aria-pressed="true"]')).toHaveLength(0)
   })
 
   it('records a call that contradicts the run on the first click, then asks for a reason', async () => {
@@ -258,17 +284,17 @@ describe('DocTestItemDetail auditor disposition', () => {
     // Deciding and writing up are separate acts: the call lands immediately and
     // carries no note, rather than being held back until prose exists.
     expect(wrapper.emitted('setState')?.[0]).toEqual(['confirmed'])
-    expect(wrapper.find('.reason-label').exists()).toBe(false)
+    expect(wrapper.find('.reason-form').exists()).toBe(false)
   })
 
   it('prompts for a reason on a departure already on the file, without blocking', async () => {
     const wrapper = mount(itemFirst('failed', { state: 'confirmed', at: '2026-08-09T09:00:00Z' }))
 
-    expect(wrapper.find('.rail-prompt').text()).toContain('departs from the run')
+    expect(wrapper.find('.departs').text()).toContain('departs from the run')
 
     const addReason = wrapper.findAll('button').find(node => node.text() === 'Add a reason')
     await addReason?.trigger('click')
-    await wrapper.find('.reason-label textarea').setValue('Vendor reissued the invoice.')
+    await wrapper.find('.reason-form textarea').setValue('Vendor reissued the invoice.')
     const save = wrapper.findAll('button').find(node => node.text() === 'Save reason')
     await save?.trigger('click')
 
@@ -283,8 +309,8 @@ describe('DocTestItemDetail auditor disposition', () => {
       state: 'confirmed', at: '2026-08-09T09:00:00Z', note: 'Vendor reissued the invoice.',
     }))
 
-    expect(wrapper.find('.rail-prompt').exists()).toBe(false)
-    expect(wrapper.find('.rail-reason').text()).toContain('Vendor reissued')
+    expect(wrapper.find('.departs').exists()).toBe(false)
+    expect(wrapper.find('.quoted').text()).toContain('Vendor reissued')
     expect(wrapper.findAll('button').some(node => node.text() === 'Edit reason')).toBe(true)
   })
 
@@ -305,7 +331,7 @@ describe('DocTestItemDetail auditor disposition', () => {
     // No second step to hunt for: agreeing needs no justification, so the
     // click that used to only arm the control now records it.
     expect(wrapper.emitted('setState')?.[0]).toEqual(['exception'])
-    expect(wrapper.find('.reason-label').exists()).toBe(false)
+    expect(wrapper.find('.reason-form').exists()).toBe(false)
   })
 
   it('records a call on an item the run could not settle on the first click', async () => {
@@ -314,22 +340,35 @@ describe('DocTestItemDetail auditor disposition', () => {
     await wrapper.findAll('.dispositions button')[0].trigger('click')
 
     expect(wrapper.emitted('setState')?.[0]).toEqual(['confirmed'])
-    expect(wrapper.find('.reason-label').exists()).toBe(false)
-  })
-
-  it('warns that a sign-off went stale rather than hiding it', () => {
-    const wrapper = mount(itemFirst('not_run', {
-      state: 'confirmed', stale: true, note: 'Agreed.', at: '2026-08-09T09:00:00Z',
-    }))
-
-    expect(wrapper.find('.rail-stale').text()).toContain('no longer counts as current')
-    // The decision itself is still on the record.
-    expect(wrapper.find('.rail-reason').text()).toContain('Agreed.')
+    expect(wrapper.find('.reason-form').exists()).toBe(false)
   })
 
   it('omits parking from a cycle item, whose disposition stays binary', () => {
     const wrapper = render('sample')
 
     expect(dispositionButtons(wrapper)).toEqual(['Confirm', 'Exception'])
+  })
+})
+
+describe('DocTestItemDetail footer row', () => {
+  it('asks for the call before the conclusion, and offers Save only once it moves', async () => {
+    const { test, item } = itemFirst('failed')
+    const wrapper = mount({ test, item })
+
+    expect(wrapper.find('.footer-note').text()).toBe('Record your call first.')
+    expect(wrapper.findAll('button').some(node => node.text() === 'Save')).toBe(false)
+
+    // The select writes through to the test, which is what the tab saves.
+    await wrapper.setProps({ test: { ...test, control_conclusion: 'ineffective' } as DocTest })
+    expect(wrapper.findAll('button').some(node => node.text() === 'Save')).toBe(true)
+  })
+
+  it('puts provenance behind a link rather than a permanent rail', async () => {
+    const wrapper = mount({ ...itemFirst('failed'), })
+    await wrapper.setProps({ workspaceId: 'WS-1' })
+
+    expect(wrapper.find('.provenance').exists()).toBe(false)
+    await wrapper.find('.disclosure-link').trigger('click')
+    expect(wrapper.findComponent({ name: 'ProvenanceRail' }).exists()).toBe(true)
   })
 })

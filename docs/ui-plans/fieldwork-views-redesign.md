@@ -1,10 +1,12 @@
 # Fieldwork views redesign: RCM, document tests, data tests
 
-**Status:** design agreed on 4 September 2026, not yet implemented. This is the
-handoff for rebuilding the three fieldwork views and their satellite surfaces
-(the RCM row detail, the working paper, and the test definition editor) on one
-shared system. Every claim about what the code does today was read from the
-code at commit `0e56e15`.
+**Status:** design agreed on 4 September 2026; built. This is the handoff for
+rebuilding the three fieldwork views and their satellite surfaces (the RCM row
+detail, the working paper, and the test definition editor) on one shared
+system. Every claim about what the code *did* was read from the code at commit
+`0e56e15`; the sections below are kept in the present tense they were written
+in, and describe what now exists. Where the build departed from the design,
+"What was built differently" at the end says how and why.
 
 It follows the same shape as [`engagement-record-redesign.md`](engagement-record-redesign.md),
 and the two share a vocabulary: tokens, the slim header, one primary action.
@@ -460,3 +462,48 @@ Same as the record plan, plus:
 
 Icons are inline SVG stand-ins for the PrimeIcons the tabs already use; keep
 the PrimeIcons.
+
+## What was built differently
+
+Six departures, each forced by something the design could not see from the
+mockups.
+
+1. **`UiStatusLanes` and `UiFilterMenu` survive.** The findings register uses
+   them too, and it is not one of the three views this plan covers. Deleting
+   them would either break it or drag a fourth redesign in behind this one, so
+   they stay until the register moves. `statusActions()` stays with them.
+
+2. **The RCM keeps `?rcm=` for the drawer.** The plan asks for the query to be
+   replaced by the row-page param, and separately says the drawer opens on
+   `?rcm=`. Both hold: `?rcm=` opens the drawer over the matrix, which is a
+   state of the matrix, and `/coverage/:rowId` is the row's own page. Every
+   existing link — the data and document tests' RCM chips, agent milestones —
+   therefore still lands where it always did. `?paper=` redirects to the row
+   page's Working paper tab rather than opening a dialog.
+
+3. **The RCM chip counts rows, not test conclusions.** The mockup's
+   "31 Agent-set, unread" is a count of test conclusions against 24 rows, and
+   `agent_concluded` filters rows. A chip whose number cannot match the list it
+   produces is the defect the shared model exists to prevent, so the chip
+   counts the rows and the disclosure sentence keeps the test-grain figure.
+
+4. **`Export PDF` is the browser's print pipeline.** There is no PDF endpoint
+   and the plan says nothing new is needed on the backend, so the working paper
+   tab prints itself against a print stylesheet that strips the shell.
+
+5. **The data test list leads with the outcome where there is no table.** A
+   generated Polars test names its tables inside its step code rather than in
+   `table_refs`, so most of an agent-written programme has none, and "no table"
+   as the first word of thirty rows is the least useful line the list could
+   carry. `invoice_data · 2 failed · 2 open` where a table is named, `2 failed ·
+   2 open` where none is.
+
+6. **Document tests keep a batch finding draft, in the kebab.** The header
+   table has no slot for it and dropping it would lose the only way to draft
+   across tests. Per the plan's own rule — anything else the header offers goes
+   into the kebab — that is where it went.
+
+The RCM row page and the document tests' `no_call` filter also needed one
+addition each that the plan implies but does not name: `nav`'s `rcm-row`
+destination, whose state key becomes a path segment, and `App.vue`'s list of
+routes that suppress the global header.

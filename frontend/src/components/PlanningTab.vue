@@ -1,35 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
-import InputText from 'primevue/inputtext'
-import Select from 'primevue/select'
+import Drawer from 'primevue/drawer'
 import SplitButton from 'primevue/splitbutton'
-import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditDocument, AuditObservation, CriterionRef, CycleVouchMetadata, DocumentSchemaCatalogEntry, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
-import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
+import type { CycleVouchMetadata, DocumentSchemaCatalogEntry, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
-import UiStatusLanes from './ui/UiStatusLanes.vue'
-import { statusActions } from './ui/statusLanes'
-import type { StatusAction } from './ui/statusLanes'
-import { FILTER_LABELS, filterRows, rcmStatus } from './planning/rcmStatus'
-import type { RcmActionKey, RcmFilter } from './planning/rcmStatus'
+import UiReviewBar from './ui/UiReviewBar.vue'
+import { RCM_CHIPS, filterRows, rcmHeadline, rcmStatus } from './planning/rcmStatus'
+import type { RcmFilter } from './planning/rcmStatus'
 import RcmGrid from './planning/RcmGrid.vue'
-import RcmControlAttributesEditor from './planning/RcmControlAttributesEditor.vue'
+import RcmRowDrawer from './planning/RcmRowDrawer.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
-import UiTestStatus from './ui/UiTestStatus.vue'
 import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary; section: 'apm' | 'rcm' }>()
@@ -37,6 +31,7 @@ const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const confirm = useConfirm()
 const route = useRoute()
+const router = useRouter()
 const nav = useWorkspaceNav()
 const agent = useAgentRun(props.workspace.id)
 const assistantChat = useAssistantChat(props.workspace.id)
@@ -63,37 +58,31 @@ const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
 const markingReviewed = ref(false)
 const detailOpen = ref(false)
-const paperOpen = ref(false)
 // The completion gates the status bar reports. Fetched beside the planning
 // payload rather than derived here: the backend already owns what counts as an
 // unreviewed conclusion or a capped one, and two definitions would drift.
 const completion = ref<RcmCompletion | null>(null)
-// Which subset of the matrix the bar has asked the grid to show. A view over
-// one array, so the counts above and the rows below can never disagree.
-const rcmFilter = ref<RcmFilter | null>(null)
+// Which subset of the matrix the bar has asked the grid to show, at most one
+// per axis. A view over one array, so the counts above and the rows below can
+// never disagree.
+const rcmFilter = ref<RcmFilter[]>([])
 // Open by default. What the memorandum was drafted from is the first thing a
 // reviewer asks about it, and a panel behind a button is a panel nobody opens.
 const apmProvenanceOpen = ref(true)
-const workingPaper = ref<WorkingPaper | null>(null)
-// Which row the open paper belongs to. Not `selectedRcmId`: the grid opens a
-// paper without opening the detail, so the two are only sometimes the same.
-const paperRowId = ref<string | null>(null)
-// Criterion anchors name a document by id. The catalogue resolves it to the
-// file the auditor recognises; failing to load it costs the name and nothing
-// else, so it never blocks the matrix.
-const documents = ref<AuditDocument[]>([])
-const criterionOpen = ref(false)
-const criterion = ref<CriterionRef | null>(null)
-const reviewStatuses = ['draft', 'reviewed']
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
-const visibleRcm = computed(() => filterRows(
-  data.value?.rcm ?? [], rcmFilter.value, data.value?.finding_rollups, completion.value,
+// Folded rather than combined: each narrowing runs the same predicate over
+// what the last one left, so the filters compose without a second code path.
+const visibleRcm = computed(() => rcmFilter.value.reduce(
+  (rows, key) => filterRows(rows, key, data.value?.finding_rollups, completion.value),
+  data.value?.rcm ?? [],
 ))
 const rcmStatusModel = computed(() => rcmStatus(
   data.value?.rcm ?? [], data.value?.finding_rollups, completion.value,
 ))
-const rcmFilterLabel = computed(() => (rcmFilter.value ? FILTER_LABELS[rcmFilter.value] : ''))
-const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
+const rcmCount = computed(() => rcmHeadline(data.value?.rcm ?? []))
+const selectedFindings = computed(
+  () => data.value?.finding_rollups.by_rcm[selectedRcmId.value ?? ''] ?? [],
+)
 const rowsWithoutTests = computed(() => (data.value?.rcm ?? []).filter(row => (row.execution_rollup.tests ?? row.test_refs.length) === 0))
 const linkedDataTestCount = computed(() => (data.value?.data_tests ?? []).filter(test => test.rcm_id).length)
 const linkedDocumentTestIds = computed(() => (data.value?.document_tests ?? [])
@@ -137,23 +126,12 @@ async function reload() {
   // the same URL asked for one. Closing it drops the key, so a reload driven by
   // an agent commit cannot reopen a paper the auditor has already put down.
   const paperRow = requestedPaper ? data.value.rcm.find(item => item.id === requestedPaper) : undefined
-  if (paperRow && !paperOpen.value) void openWorkingPaper(paperRow)
+  if (paperRow) openWorkingPaper(paperRow.id)
 }
 onMounted(() => {
   void reload().catch(error => fail('Could not load planning', error))
-  void api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)
-    .then(result => { documents.value = result.items })
-    .catch(() => { documents.value = [] })
 })
 
-function documentName(id: string) {
-  const found = documents.value.find(item => item.id === id)
-  return found?.source || found?.title || id
-}
-function openCriterion(ref_: CriterionRef) {
-  criterion.value = ref_
-  criterionOpen.value = true
-}
 const unsubscribe = agent.onWorkspaceInvalidated(() => {
   void reload().catch(error => fail('Could not refresh planning', error))
 })
@@ -222,7 +200,7 @@ async function addRcm() {
     })
     // A new row rarely matches the filter that was on, and a risk that is added
     // and immediately invisible reads as a failure to add it.
-    rcmFilter.value = null
+    rcmFilter.value = []
     await reload(); openRcm(row); emit('changed')
   } catch (error) { fail('Could not add the risk', error) }
 }
@@ -260,72 +238,42 @@ async function importRcm(event: Event) {
   } catch (error) { fail('Could not import the RCM', error) }
   finally { rcmImporting.value = false }
 }
-async function saveRcmDetail() {
-  if (!selectedRcm.value) return
-  try {
-    await updateRcm(selectedRcm.value.id, {
-      process: selectedRcm.value.process, risk: selectedRcm.value.risk,
-      risk_rating: selectedRcm.value.risk_rating,
-      // business_cycle is a projection of the attributes; the backend derives it.
-      control_attributes: selectedRcm.value.control_attributes,
-      control: selectedRcm.value.control, control_type: selectedRcm.value.control_type,
-      control_owner: selectedRcm.value.control_owner, criteria: selectedRcm.value.criteria,
-      review_status: selectedRcm.value.review_status,
-    })
-    await reload()
-    toast.add({ severity: 'success', summary: 'RCM row saved', life: 1800 })
-  } catch (error) { fail('Could not save the RCM row', error) }
-}
-function removeRcm(id: string) {
-  const row = data.value?.rcm.find(item => item.id === id)
-  const label = row?.process?.trim() || id
-  const testCount = row?.test_refs?.length ?? 0
-  const testNote = testCount
-    ? ` Its ${testCount} linked test${testCount === 1 ? '' : 's'} will be unlinked, not deleted; findings will be unlinked too.`
-    : ' Any linked findings will be unlinked.'
-  confirm.require({
-    header: 'Remove RCM row',
-    message: `Remove "${label}"?${testNote}`,
-    icon: 'pi pi-exclamation-triangle',
-    acceptProps: { label: 'Remove', severity: 'danger' },
-    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
-    accept: async () => {
-      try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${id}`); detailOpen.value = false; await reload(); emit('changed') }
-      catch (error) { fail('Could not remove the risk', error) }
-    },
-  })
-}
 function openRcm(row: RcmRow) {
   const current = data.value?.rcm.find(item => item.id === row.id) ?? row
   selectedRcmId.value = current.id
   detailOpen.value = true
   void nav.replace('rcm', { rcm: current.id })
 }
-function linkedTests(row: RcmRow): TestRollup[] {
-  return row.execution_rollup.test_rollups ?? []
+function closeRcm() {
+  detailOpen.value = false
+  selectedRcmId.value = null
+  void nav.replace('rcm')
 }
-async function promoteObservation(item: AuditObservation) {
-  try {
-    await assistantChat.createChat()
-    await assistantChat.send(
-      `Draft a finding from observation ${item.id}.`,
-      'act', launchMode.value, {
-        command: 'draft_findings', source: 'tab_button',
-        runContext: { observation_id: item.id },
-      },
-    )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
-    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: launchMode.value === 'permission'
-      ? 'Review the proposed finding in the assistant before it is saved.'
-      : 'Follow the finding draft in the assistant.', life: 3200 })
-  } catch (error) { fail('Could not start the finding-draft workflow', error) }
+/** The row's own page, for everything the drawer does not hold. */
+function openRcmRow(tab?: string) {
+  if (!selectedRcmId.value) return
+  void nav.push('rcm-row', { rcm: selectedRcmId.value, tab })
 }
 function openTest(rollup: TestRollup) {
-  void nav.replace(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id })
+  void nav.push(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id })
 }
-function createTest(kind: 'data' | 'document') {
-  if (!selectedRcm.value) return
-  void nav.replace(kind === 'data' ? 'data-tests' : 'doc-tests', { create: '1', rcm: selectedRcm.value.id })
+function addTestTo(kind: 'data' | 'document' | 'generate') {
+  const id = selectedRcmId.value
+  if (!id) return
+  if (kind === 'generate') return void generatePlannedTests([id])
+  void nav.push(kind === 'data' ? 'data-tests' : 'doc-tests', { create: '1', rcm: id })
+}
+/** The drawer edits a copy; this is what it hands back. */
+async function saveRcmRow(changes: Partial<RcmRow>) {
+  const id = selectedRcmId.value
+  if (!id) return
+  saving.value = true
+  try {
+    await updateRcm(id, changes)
+    await reload()
+    detailOpen.value = false
+    toast.add({ severity: 'success', summary: 'RCM row saved', life: 1800 })
+  } finally { saving.value = false }
 }
 async function refreshRollup() {
   try {
@@ -418,23 +366,6 @@ async function runAllDocumentTests(only?: string[]) {
   finally { runningAllDocumentTests.value = false }
 }
 /**
- * The status bar names what it wants done; the tab still owns how. Each key
- * routes to the handler that already existed for it, scoped to the rows or
- * tests the lane counted rather than to the whole matrix.
- */
-function runStatusAction(action: StatusAction) {
-  switch (action.key as RcmActionKey) {
-    case 'generate_tests':
-      return void generatePlannedTests(action.ids?.length ? action.ids : undefined)
-    case 'run_data_tests': return void runAllDataTests(action.ids)
-    case 'run_document_tests': return void runAllDocumentTests(action.ids)
-    case 'refresh_rollup': return void refreshRollup()
-    case 'draft_findings': return void generateAllFindings()
-    case 'mark_reviewed': return markRowsReviewed(action.ids ?? [])
-  }
-}
-
-/**
  * Sign off a set of rows in one pass.
  *
  * Blanket sign-off is a real audit act, not a tidy-up, so it asks first and
@@ -478,37 +409,14 @@ function markRowsReviewed(ids: string[]) {
 }
 
 /**
- * Render one row's working paper. The row is passed in so the grid can open it
- * directly: the paper is a per-row work product, and reaching it only through
- * the detail dialog put the engagement's most reviewable artifact two clicks
- * and a scroll away from the matrix it belongs to.
+ * The paper is a tab on the row's own page, so this is a redirect rather than
+ * a render. It stays because `?paper=` is what an agent milestone hands over,
+ * and a link that used to open the engagement's most reviewable artifact must
+ * not start landing on the matrix instead.
  */
-async function openWorkingPaper(row?: RcmRow) {
-  const target = row ?? selectedRcm.value
-  if (!target) return
-  try {
-    workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${target.id}/working-paper`)
-    paperRowId.value = target.id
-    paperOpen.value = true
-    // The detail dialog underneath keeps its own key, so closing the paper
-    // leaves the row it was opened from still addressed by the URL.
-    void nav.replace('rcm', { rcm: detailOpen.value ? selectedRcmId.value : '', paper: target.id })
-  } catch (error) { fail('Could not render the RCM working paper', error) }
+function openWorkingPaper(rowId: string) {
+  void router.replace(nav.to('rcm-row', { rcm: rowId, tab: 'paper' }))
 }
-/** Drop the deep link when the paper closes; a stale `paper` reopens on reload. */
-function closeWorkingPaper() {
-  paperRowId.value = null
-  void nav.replace('rcm', { rcm: detailOpen.value ? selectedRcmId.value : '' })
-}
-async function copyPaper(kind: 'markdown' | 'html') {
-  if (!workingPaper.value) return
-  await navigator.clipboard.writeText(workingPaper.value[kind])
-  toast.add({ severity: 'success', summary: `${kind === 'markdown' ? 'Markdown' : 'HTML'} copied`, life: 1600 })
-}
-const copyOptions = [
-  { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copyPaper('markdown') },
-  { label: 'Copy HTML', icon: 'pi pi-code', command: () => void copyPaper('html') },
-]
 
 // Everything the RCM bar used to spell out as its own button. Only generating
 // the missing tests is frequent enough to earn a place in the header; the rest
@@ -521,9 +429,44 @@ const rcmBusy = computed(() => isActive.value
   || generatingTests.value || generatingFindings.value
   || runningAllDataTests.value || runningAllDocumentTests.value
   || markingReviewed.value)
-// The lanes name the gaps; the header renders them, so the answer to "what
-// now" sits with the other buttons rather than at the foot of the status card.
-const rcmHeaderActions = computed(() => statusActions(rcmStatusModel.value))
+/**
+ * The rows the file still owes a finding.
+ *
+ * The header carries one primary, and this is what claims it whenever there is
+ * one: an adverse conclusion nobody has written up is the only thing on this
+ * page that is both outstanding and closable from here. With none, the page's
+ * ordinary next act — adding a risk — takes the slot.
+ */
+const findingsPending = computed(() => (data.value?.rcm ?? []).filter(row => {
+  const conclusion = String(row.execution_rollup.control_conclusion ?? '')
+  return (conclusion === 'ineffective' || conclusion === 'partially_effective')
+    && !(data.value?.finding_rollups.by_rcm[row.id]?.length)
+}))
+const unreviewedRows = computed(
+  () => (data.value?.rcm ?? []).filter(row => row.review_status !== 'reviewed').map(row => row.id),
+)
+/** Running is one act with three scopes, so it is one split button. */
+const runOptions = computed(() => [
+  {
+    label: `Run ${plural(linkedDataTestCount.value, 'Data Test')}`,
+    icon: 'pi pi-chart-bar',
+    disabled: !linkedDataTestCount.value || isActive.value || runningAllDataTests.value,
+    command: () => void runAllDataTests(),
+  },
+  {
+    label: `Run ${plural(linkedDocumentTestIds.value.length, 'Document Test')}`,
+    icon: 'pi pi-file-check',
+    disabled: !linkedDocumentTestIds.value.length || isActive.value || runningAllDocumentTests.value,
+    command: () => void runAllDocumentTests(),
+  },
+  { separator: true },
+  {
+    label: 'Run everything linked',
+    icon: 'pi pi-play',
+    disabled: isActive.value || runningAllDataTests.value || runningAllDocumentTests.value,
+    command: async () => { await runAllDataTests(); await runAllDocumentTests() },
+  },
+])
 // An untouched memorandum gets an empty state rather than a blank editor: there
 // is nothing to attribute, nothing to save, and no reason to show a formatting
 // toolbar above nothing.
@@ -532,6 +475,9 @@ const apmHasContent = computed(() => Boolean(data.value?.planning.apm_markdown?.
 function startApm() {
   if (data.value) data.value.planning.apm_markdown = '# Audit planning memorandum\n\n'
 }
+// Everything the header used to spell out as its own button. None of these is
+// frequent enough to stand permanently beside the one that says what is
+// outstanding, so they live behind one menu instead of seven controls.
 const rcmActions = computed(() => [
   {
     label: 'Generate planning drafts',
@@ -545,19 +491,13 @@ const rcmActions = computed(() => [
     disabled: agentBusy.value || generatingFindings.value,
     command: () => void generateAllFindings(),
   },
+  {
+    label: `Generate tests for ${plural(rowsWithoutTests.value.length, 'uncovered risk')}`,
+    icon: 'pi pi-bolt',
+    disabled: agentBusy.value || !rowsWithoutTests.value.length || generatingTests.value,
+    command: () => void generatePlannedTests(),
+  },
   { separator: true },
-  {
-    label: 'Run all Data Tests',
-    icon: 'pi pi-play',
-    disabled: !linkedDataTestCount.value || isActive.value || runningAllDataTests.value,
-    command: () => void runAllDataTests(),
-  },
-  {
-    label: 'Run all Document Tests',
-    icon: 'pi pi-play',
-    disabled: !linkedDocumentTestIds.value.length || isActive.value || runningAllDocumentTests.value,
-    command: () => void runAllDocumentTests(),
-  },
   {
     label: 'Refresh roll-up',
     icon: 'pi pi-refresh',
@@ -581,32 +521,46 @@ const rcmActions = computed(() => [
 
 <template>
   <div v-if="data" class="planning-tab">
-    <UiPageHeader :title="section === 'apm' ? 'APM' : 'RCM'">
+    <UiPageHeader v-if="section === 'apm'" title="APM">
       <Button
-        v-if="section === 'apm'"
         label="Generate planning drafts"
         icon="pi pi-sparkles"
         size="small"
         :disabled="agentBusy"
         @click="generate"
       />
-      <!-- The status bar names every gap that depends on where the file
-           stands; those buttons render here, and the occasional actions stay
-           behind one menu rather than seven controls. -->
-      <template v-else>
-        <Button
-          v-for="action in rcmHeaderActions"
-          :key="action.key"
-          :label="action.label"
-          size="small"
-          :outlined="action.tone === 'ghost'"
-          :severity="action.tone === 'warn' ? 'warn' : undefined"
-          :disabled="rcmBusy || (action.needsAgent && agentBusy)"
-          @click="runStatusAction(action)"
-        />
-        <UiOverflowMenu :items="rcmActions" tooltip="More RCM actions" />
-      </template>
     </UiPageHeader>
+
+    <!-- One title, not two: the matrix used to carry `RCM` here and `Risk and
+         control matrix` again over the grid. One count sentence, and at most
+         one primary — the write-up the file owes, or adding a risk. -->
+    <header v-else class="page-head">
+      <h1>Risk and control matrix</h1>
+      <p class="headline aw-figure">{{ rcmCount }}</p>
+      <span class="grow" />
+      <Button label="Add risk" icon="pi pi-plus" size="small" outlined severity="secondary" @click="addRcm" />
+      <SplitButton
+        label="Run tests"
+        icon="pi pi-play"
+        size="small"
+        outlined
+        severity="secondary"
+        :model="runOptions"
+        :loading="runningAllDataTests || runningAllDocumentTests"
+        :disabled="isActive"
+        @click="runAllDataTests()"
+      />
+      <Button
+        v-if="findingsPending.length"
+        :label="`Draft ${plural(findingsPending.length, 'finding')}`"
+        icon="pi pi-flag"
+        size="small"
+        severity="warn"
+        :disabled="rcmBusy || agentBusy"
+        @click="generateAllFindings"
+      />
+      <UiOverflowMenu :items="rcmActions" tooltip="More RCM actions" />
+    </header>
     <section v-if="section === 'apm'" class="apm-view">
       <!-- Provenance describes a document that exists. On an untouched
            engagement the old unconditional label read "Auditor edited" over a
@@ -631,65 +585,67 @@ const rcmActions = computed(() => [
     </section>
     <section v-else class="rcm-view">
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
-      <UiStatusLanes
+      <UiReviewBar
         :lanes="rcmStatusModel.lanes"
-        :disclosures="rcmStatusModel.disclosures"
-        :filter="rcmFilter ? [rcmFilter] : []"
-        :filterLabel="rcmFilterLabel"
-        :busy="rcmBusy"
-        :canRunAgent="!isActive && Boolean(agent.state.status?.configured)"
-        @filter="rcmFilter = (($event[0] ?? null) as RcmFilter | null)"
-        @action="runStatusAction"
+        :chips="RCM_CHIPS"
+        :filters="rcmStatusModel.filters"
+        allLabel="All rows"
+        :total="data.rcm.length"
+        :filter="rcmFilter"
+        @filter="rcmFilter = ($event as RcmFilter[])"
+      >
+        <!-- Blanket sign-off writes to the file, so it stays a button beside
+             the chip that counts what it settles rather than becoming one. -->
+        <template v-if="unreviewedRows.length" #settle>
+          <button
+            type="button"
+            class="settle"
+            :disabled="rcmBusy"
+            @click="markRowsReviewed(unreviewedRows)"
+          >
+            Mark {{ unreviewedRows.length }} reviewed
+          </button>
+        </template>
+      </UiReviewBar>
+
+      <RcmGrid
+        :rows="visibleRcm"
+        :findingRollups="data.finding_rollups"
+        :selectedId="detailOpen ? selectedRcmId : null"
+        @open="openRcm"
       />
-      <RcmGrid :rows="visibleRcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @paper="openWorkingPaper" @generate="generatePlannedTests"/>
       <!-- A filter that hides every row would otherwise read as an empty RCM. -->
       <p v-if="data.rcm.length && !visibleRcm.length" class="empty">
         No row matches this filter. It was counted against the whole matrix, which may have moved since.
       </p>
     </section>
 
-    <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
-      <div v-if="selectedRcm" class="rcm-detail">
-        <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/>
-          <!-- The sentence the criterion rests on, not a restatement of it.
-               Frozen when the row was written, so opening one shows what the
-               document said then and the hash reveals any drift since. -->
-          <span v-if="selectedRcm.criteria_refs?.length" class="criterion-refs">
-            <button
-              v-for="ref in selectedRcm.criteria_refs"
-              :key="ref.id"
-              type="button"
-              :title="ref.excerpt"
-              @click="openCriterion(ref)"
-            >
-              <i class="pi pi-link" />
-              <span>{{ documentName(ref.source_id) }}</span>
-              <code v-if="ref.citation_id">{{ ref.citation_id }}</code>
-              <small v-if="ref.page">p.{{ ref.page }}</small>
-            </button>
-          </span></label></div>
-        <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" :schemas="documentSchemas" />
-        <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper()"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
-        <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
-          <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ plural(item.exception_count, 'exception') }} · {{ item.open_exception_count }} open</span></div>
-          <p class="planned-title">{{ item.title }}</p>
-          <p class="muted">{{ item.result_summary || 'Not executed yet.' }}</p>
-          <p v-if="item.assurance_scope" class="muted">
-            <strong>{{ item.assurance_label }}</strong> · {{ plural(item.tested_items ?? 0, 'tested item') }} ·
-            {{ item.failed_items ?? 0 }} failed · {{ item.incomplete_items ?? 0 }} incomplete ·
-            {{ item.assertion_mismatches ?? 0 }} diagnostic assertion mismatch(es) ·
-            {{ item.conclusion_eligible ? 'population conclusion eligible' : 'no population conclusion' }}
-          </p>
-          <p v-if="item.scope_limitations" class="muted">Limitation: {{ item.scope_limitations }}</p>
-          <div class="card-actions"><Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined @click="openTest(item)"/></div>
-        </article><p v-if="!linkedTests(selectedRcm).length" class="empty">This RCM row has no linked test and cannot pass coverage.</p></section>
-        <ProvenanceRail v-if="selectedRcm" :key="selectedRcm.id" :workspaceId="workspace.id" :artifactRef="`rcm:${selectedRcm.id}`" class="detail-provenance"/>
-        <section v-if="selectedObservations.length" class="observations"><strong>Exception observations</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.outcome" :severity="item.outcome === 'exception' ? 'danger' : 'warn'"/><span>{{ item.summary }}</span><small>{{ item.classification.replaceAll('_', ' ') }}</small><span class="observation-actions"><Button label="Draft finding" icon="pi pi-sparkles" size="small" severity="secondary" :disabled="item.outcome !== 'exception'" @click="promoteObservation(item)"/></span></div></section>
-      </div>
-    </Dialog>
-    <EvidenceAnchorDialog v-model="criterionOpen" :anchor="criterion" :documents="documents" />
+    <!-- Quick edits open beside the matrix rather than over it. What the
+         drawer does not hold — the criteria and their citations, the cycle
+         comparison editor, provenance, the observations — is on the row's own
+         page, which the id in its header links to. -->
+    <Drawer
+      v-model:visible="detailOpen"
+      position="right"
+      class="aw-drawer--bare"
+      :style="{ width: 'min(27.5rem, 96vw)' }"
+      @hide="closeRcm"
+    >
+      <RcmRowDrawer
+        v-if="selectedRcm"
+        :key="selectedRcm.id"
+        :row="selectedRcm"
+        :findings="selectedFindings"
+        :saving="saving"
+        @save="saveRcmRow"
+        @close="closeRcm"
+        @paper="openRcmRow('paper')"
+        @openRow="openRcmRow"
+        @openTest="openTest"
+        @addTest="addTestTo"
+      />
+    </Drawer>
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>
-    <Dialog v-model:visible="paperOpen" modal :header="paperRowId ? `${paperRowId} · RCM working paper` : 'RCM working paper'" :style="{ width: 'min(980px, 95vw)' }" @hide="closeWorkingPaper"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><SplitButton label="Copy" icon="pi pi-copy" :model="copyOptions" @click="copyPaper('markdown')"/></template></Dialog>
   </div>
 </template>
 
@@ -697,13 +653,28 @@ const rcmActions = computed(() => [
 .apm-body { display:grid; grid-template-columns:minmax(0,1fr); gap:1rem; align-items:start }
 .apm-body.with-rail { grid-template-columns:minmax(0,1fr) 20rem }
 @container workspace-panel (max-width: 60rem) { .apm-body.with-rail { grid-template-columns:minmax(0,1fr) } }
-.detail-provenance { max-width:34rem }
-.criterion-refs { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem }
-.criterion-refs button { display:inline-flex; align-items:center; gap:.3rem; padding:.2rem .45rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); background:var(--aw-panel); color:var(--aw-teal); font-size:var(--aw-text-xs); font-weight:600; cursor:pointer }
-.criterion-refs button:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft) }
-.criterion-refs button:focus-visible { outline:2px solid var(--aw-teal); outline-offset:1px }
-.criterion-refs code { color:var(--aw-muted); font-family:var(--aw-font-mono); font-size:var(--aw-text-2xs) }
-.criterion-refs small { color:var(--aw-muted); font-size:var(--aw-text-2xs); font-weight:400 }
-.rcm-view { display:flex; flex-direction:column; gap:.85rem }
-.planning-tab { display:flex; flex-direction:column; gap: var(--aw-section-gap); min-height:100% }.muted { color:var(--aw-muted); font-size:var(--aw-text-sm) }.section-toolbar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span { flex:1 }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:var(--aw-text-sm) }.rcm-detail { display:flex; flex-direction:column; gap: var(--aw-section-gap) }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:var(--aw-ink-soft); font-size:var(--aw-text-sm); font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel) }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:var(--aw-text-sm) }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:var(--aw-panel); border-radius:var(--aw-radius-pill); padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control) }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
+.rcm-view { display:flex; flex-direction:column; gap:.75rem }
+
+/* One 36px row: the title, what the matrix holds, and at most one primary. */
+.page-head { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-height:2.25rem }
+.page-head h1 { margin:0; color:var(--aw-ink-strong); font-size:var(--aw-text-xl); font-weight:700; letter-spacing:-0.01em }
+.headline { margin:0; color:var(--aw-muted); font-size:var(--aw-text-sm) }
+.grow { flex:1 }
+.settle {
+  padding:.25rem .625rem; border:1px solid var(--aw-border-strong); border-radius:var(--aw-radius-control);
+  background:var(--aw-panel); color:var(--aw-ink-soft);
+  font:inherit; font-size:var(--aw-text-xs); font-weight:600; white-space:nowrap; cursor:pointer;
+}
+.settle:hover:not(:disabled) { border-color:var(--aw-teal); color:var(--aw-teal) }
+.settle:focus-visible { outline:2px solid var(--aw-teal); outline-offset:1px }
+.settle:disabled { opacity:.5; cursor:not-allowed }
+.planning-tab { display:flex; flex-direction:column; gap: var(--aw-section-gap); min-height:100% }
+.muted { color:var(--aw-muted); font-size:var(--aw-text-sm) }
+.section-toolbar { display:flex; align-items:center; gap:.55rem }
+.section-toolbar>div { display:flex; flex-direction:column }
+.section-toolbar>span { flex:1 }
+.apm-editor { min-height:34rem }
+.apm-editor>:deep(.markdown-editor) { min-height:34rem }
+.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:var(--aw-text-sm) }
+.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control) }
 </style>

@@ -33,6 +33,7 @@ const accountActions = computed(() => [
 // deliberately keeps the global one.
 const WORKSPACE_ROUTES = [
   'workspace', 'workspace-console', 'workspace-file', 'workspace-bench',
+  'workspace-rcm-row',
 ]
 const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?? '')))
 </script>

@@ -30,6 +30,14 @@ const PROFILE: DataTestExceptionProfile = {
   ],
 }
 
+/** A FrameTable that keeps the props under test, so the Ruling column shows. */
+const FrameTableStub = {
+  props: ['frame', 'visibleColumns', 'columnLabels', 'hiddenColumns', 'expandable', 'scrollHeight'],
+  template: '<div class="frame"'
+    + ' :data-columns="visibleColumns.join(\',\')"'
+    + ' :data-rows="JSON.stringify(frame.rows)" />',
+}
+
 function ruling(overrides: Partial<DataTestExceptionDisposition> = {}): DataTestExceptionDisposition {
   return {
     scope: 'reason',
@@ -50,24 +58,30 @@ function ruling(overrides: Partial<DataTestExceptionDisposition> = {}): DataTest
 function mountExplorer(dispositions: DataTestExceptionDisposition[] = []) {
   return mount(ExceptionExplorer, {
     props: { profile: PROFILE, frame: FRAME, dispositions },
-    global: { stubs: { FrameTable: true } },
+    global: { stubs: { FrameTable: FrameTableStub } },
   })
 }
 
+function rulings(wrapper: ReturnType<typeof mountExplorer>, index: number) {
+  return wrapper.findAll('.reason-card')[index].findAll('.rulings button')
+}
+
 describe('ExceptionExplorer rulings', () => {
-  it('offers a ruling on every exception group', () => {
+  it('offers one ruling control per exception group', () => {
     const wrapper = mountExplorer()
 
-    expect(wrapper.findAll('.reason-row')).toHaveLength(2)
-    expect(wrapper.text()).toContain('2 still open')
-    expect(wrapper.findAll('.verdict').every(node => node.text() === 'Not ruled on')).toBe(true)
+    expect(wrapper.findAll('.reason-card')).toHaveLength(2)
+    expect(wrapper.find('.tally').text()).toContain('2 rows still open')
+    expect(wrapper.findAll('.ruling-line').every(node => node.text().startsWith('Not ruled on'))).toBe(true)
+    // Three positions of one control, not three separate offers.
+    expect(rulings(wrapper, 0).map(node => node.text()))
+      .toEqual(['Accept', 'Confirm exception', 'Needs review'])
   })
 
   it('confirming an exception needs no reason and emits immediately', async () => {
     const wrapper = mountExplorer()
 
-    const buttons = wrapper.findAll('.reason-row')[0].findAll('button')
-    await buttons.find(node => node.text() === 'Confirm exception')!.trigger('click')
+    await rulings(wrapper, 0)[1].trigger('click')
 
     expect(wrapper.emitted('rule')?.[0]).toEqual([
       { key: 'amount over 500', state: 'exception', note: '' },
@@ -76,38 +90,76 @@ describe('ExceptionExplorer rulings', () => {
 
   it('accepting a group withholds the emit until a reason is written', async () => {
     const wrapper = mountExplorer()
-    const row = wrapper.findAll('.reason-row')[0]
 
-    await row.findAll('button').find(node => node.text() === 'Accept')!.trigger('click')
+    await rulings(wrapper, 0)[0].trigger('click')
     // The form is open but empty: retiring exceptions is the ruling that moves
     // the control conclusion, so it cannot be a bare click.
-    expect(row.find('form.accept').exists()).toBe(true)
+    const card = wrapper.findAll('.reason-card')[0]
+    expect(card.find('form.accept').exists()).toBe(true)
     expect(wrapper.emitted('rule')).toBeUndefined()
 
-    await row.find('form.accept textarea').setValue('Rounding is immaterial.')
-    await row.find('form.accept').trigger('submit')
+    await card.find('form.accept textarea').setValue('Rounding is immaterial.')
+    await card.find('form.accept').trigger('submit')
 
     expect(wrapper.emitted('rule')?.[0]).toEqual([
       { key: 'amount over 500', state: 'accepted', note: 'Rounding is immaterial.' },
     ])
   })
 
-  it('counts an accepted group as settled and a stale one as open again', async () => {
+  it('marks the ruling in force and offers Clear only once there is one', async () => {
+    const wrapper = mountExplorer([ruling()])
+    const pressed = rulings(wrapper, 0).filter(node => node.attributes('aria-pressed') === 'true')
+
+    expect(pressed.map(node => node.text())).toEqual(['Accept'])
+    expect(wrapper.findAll('.reason-card')[1].find('.link').exists()).toBe(false)
+
+    await wrapper.findAll('.reason-card')[0].find('.link').trigger('click')
+    expect(wrapper.emitted('rule')?.[0]).toEqual([
+      { key: 'amount over 500', state: 'pending', note: 'Pre-approved emergency purchases.' },
+    ])
+  })
+
+  it('counts an accepted group as settled and a stale one as open again', () => {
     const settled = mountExplorer([ruling()])
-    expect(settled.text()).toContain('1 still open')
-    expect(settled.findAll('.verdict')[0].text()).toBe('Accepted')
+    expect(settled.find('.tally').text()).toContain('1 row still open')
+    expect(settled.findAll('.ruling-line')[0].text()).toContain('Accepted')
 
     const stale = mountExplorer([ruling({ stale: true })])
     // A ruling made against evidence that has since moved stands on the record
     // but stops counting, so the group is open again.
-    expect(stale.text()).toContain('2 still open')
-    expect(stale.findAll('.verdict')[0].text()).toBe('Not ruled on')
+    expect(stale.find('.tally').text()).toContain('2 rows still open')
+    expect(stale.findAll('.ruling-line')[0].text()).toContain('Not ruled on')
     expect(stale.text()).toContain('evidence that has since changed')
   })
 
   it('says when a ruling came from an unattended run rather than a person', () => {
     const wrapper = mountExplorer([ruling({ state: 'exception', source: 'agent', actor: 'agent' })])
 
-    expect(wrapper.text()).toContain('Recorded by an unattended run')
+    expect(wrapper.find('.by-agent').text()).toContain('unattended run')
+  })
+})
+
+describe('ExceptionExplorer table', () => {
+  it('carries each row’s ruling as its last column', () => {
+    const wrapper = mountExplorer([ruling()])
+    const frame = wrapper.get('.frame')
+
+    // The rulings are per reason group; without this column a reader had to go
+    // back up to the groups to work out which rows one had covered.
+    expect(frame.attributes('data-columns')?.split(',').at(-1)).toBe('_ruling')
+    expect(JSON.parse(frame.attributes('data-rows') ?? '[]')).toEqual([
+      [1001, 900, 'amount over 500', 'Accepted'],
+      [1002, 12, 'rounding under 1.00', 'Open'],
+    ])
+  })
+
+  it('narrows the table to the reason that was picked', async () => {
+    const wrapper = mountExplorer()
+
+    await wrapper.findAll('.reason-name')[1].trigger('click')
+
+    expect(JSON.parse(wrapper.get('.frame').attributes('data-rows') ?? '[]'))
+      .toEqual([[1002, 12, 'rounding under 1.00', 'Open']])
+    expect(wrapper.find('.filtered').text()).toContain('rounding under 1.00')
   })
 })

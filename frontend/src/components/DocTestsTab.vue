@@ -7,6 +7,7 @@ import Button from 'primevue/button'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
+import SplitButton from 'primevue/splitbutton'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -30,21 +31,21 @@ import type {
   CycleRulesetDefinition, CycleVouchMetadata,
 } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
-import DocTestCreateDialog from './doc-tests/DocTestCreateDialog.vue'
+import DocTestDefinitionForm from './doc-tests/DocTestDefinitionForm.vue'
+import type { DocTestDraft } from './doc-tests/DocTestDefinitionForm.vue'
 import CycleVouchGrid from './doc-tests/CycleVouchGrid.vue'
 import CycleRulesetReview from './doc-tests/CycleRulesetReview.vue'
 import DocTestItemDetail from './doc-tests/DocTestItemDetail.vue'
 import DocTestItemList from './doc-tests/DocTestItemList.vue'
+import UiDefinitionDrawer from './ui/UiDefinitionDrawer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
-import UiMasterDetail from './ui/UiMasterDetail.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiStatusLanes from './ui/UiStatusLanes.vue'
-import { statusActions } from './ui/statusLanes'
-import type { StatusAction } from './ui/statusLanes'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiReviewBar from './ui/UiReviewBar.vue'
 import {
-  DOC_TEST_FILTER_LABELS, docTestStatus, filterDocTestEntries,
+  DOC_TEST_CHIPS, docTestHeadline, docTestStatus, filterDocTestEntries,
 } from './doc-tests/docTestStatus'
-import type { DocTestActionKey, DocTestFilter } from './doc-tests/docTestStatus'
+import type { DocTestFilter } from './doc-tests/docTestStatus'
+import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -82,6 +83,10 @@ const requestedRcmId = String(route.query.rcm || '')
 const statusFilter = ref<DocTestFilter[]>([])
 const search = ref('')
 const createOpen = ref(false)
+const createShape = ref('vouching')
+const createDraft = ref<DocTestDraft>(emptyDocDraft())
+const createReady = ref(false)
+const createForm = ref<{ payload: () => Parameters<typeof createTest>[0] } | null>(null)
 const creating = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
@@ -94,17 +99,14 @@ const anchor = ref<EvidenceRef | null>(null)
 const selectedIds = ref<string[]>([])
 const bulkBusy = ref(false)
 
-// The lanes count every entry, not the filtered worklist: a count that shrank
+// The bar counts every entry, not the filtered worklist: a count that shrank
 // as you filtered by it could never be clicked back out of.
 const status = computed(() => docTestStatus(summary.value, planning.value?.findings ?? []))
-const statusFilterLabel = computed(() =>
-  statusFilter.value.map(key => DOC_TEST_FILTER_LABELS[key]).join(' · '))
-// What the lanes want done, rendered in the page header beside the other
-// buttons. A gap the status found is the most urgent control on the page, and
-// it was reading last while it sat at the bottom of the card.
-const headerActions = computed(() => statusActions(status.value))
+const headline = computed(() => docTestHeadline(summary.value))
 const statusBusy = computed(() =>
   runningAll.value || runningOutstanding.value || generatingFindings.value)
+/** The list header's `Select` toggle. Checkboxes appear only once asked for. */
+const selecting = ref(false)
 // Folded rather than combined: each narrowing runs the same predicate over
 // what the last one left, so the filters compose without a second code path.
 const statusScope = computed(() => statusFilter.value.reduce(
@@ -331,13 +333,36 @@ function pickStatusFilter(value: DocTestFilter[]) {
     focusedAssertionKey.value = null
   }
 }
-function runStatusAction(action: StatusAction) {
-  switch (action.key as DocTestActionKey) {
-    case 'run_tests':
-      return void runTestIds(action.ids ?? [], runningOutstanding, 'Could not start the document tests')
-    case 'draft_findings': return void draftPendingFindings(action.ids)
+function toggleSelecting() {
+  selecting.value = !selecting.value
+  if (!selecting.value) selectedIds.value = []
+}
+function emptyDocDraft(): DocTestDraft {
+  return {
+    title: '', rcmId: requestedRcmId, table: '', size: 10, seed: 42,
+    frozenFields: [], identifierFields: [], requiredDocumentTypes: [],
+    evidenceAware: true, attributes: [], documentId: '', pages: '', questions: '',
+    procedureKey: 'cycle-vouch', selectionMode: 'evidence_linked',
+    sampleMethod: 'random', stratifyBy: '',
   }
 }
+function openCreate() {
+  createShape.value = 'vouching'
+  createDraft.value = emptyDocDraft()
+  createOpen.value = true
+}
+/**
+ * The drawer's primary runs the test it just wrote; `Save only` leaves it
+ * ready. Running a document test is an assistant run rather than a request, so
+ * "run" here means starting one.
+ */
+async function saveDefinition(thenRun: boolean) {
+  const payload = createForm.value?.payload()
+  if (!payload) return
+  const created = await createTest(payload)
+  if (created && thenRun) await runTestIds([created.id], runningAll, 'Could not start the document test')
+}
+
 async function createTest({ kind, direction, draft }: {
   kind: DocTestKind
   direction: string
@@ -417,8 +442,10 @@ async function createTest({ kind, direction, draft }: {
     statusFilter.value = []
     await loadSummary()
     emit('changed')
+    return created
   } catch (error) { fail('Could not create the document test', error) }
   finally { creating.value = false }
+  return null
 }
 
 async function attachDocument(documentId: string) {
@@ -653,6 +680,52 @@ function showAnchor(value: EvidenceRef) {
   anchorOpen.value = true
 }
 
+/**
+ * Running is one act with two scopes, so it is one split button rather than
+ * two. `Run outstanding` was a second full-width button for the narrower case
+ * of the same thing, and the header had six of these.
+ */
+const runOptions = computed(() => [
+  {
+    label: `Run all ${allTestIds.value.length}`,
+    icon: 'pi pi-play',
+    disabled: assistantUnavailable.value || !allTestIds.value.length,
+    command: () => void runAllTests(),
+  },
+  {
+    label: `Run ${plural(outstandingTestIds.value.length, 'outstanding test')}`,
+    icon: 'pi pi-forward',
+    disabled: assistantUnavailable.value || !outstandingTestIds.value.length,
+    command: () => void runOutstandingTests(),
+  },
+])
+// The occasional actions, behind one menu. Cycle rules is read once per
+// engagement; deleting is rarer still and destructive. Drafting the findings
+// the file still owes is here rather than in the header because the write-up
+// is offered on each test's own footer row, where the exception is read — the
+// batch is the shortcut, not the route.
+const menuItems = computed(() => [
+  ...(findingsPending.value.size
+    ? [{
+        label: `Draft ${plural(findingsPending.value.size, 'finding')}`,
+        icon: 'pi pi-flag',
+        disabled: statusBusy.value || assistantUnavailable.value,
+        command: () => void draftPendingFindings(),
+      }]
+    : []),
+  {
+    label: 'Cycle rules',
+    icon: 'pi pi-sitemap',
+    command: () => { rulesetReviewOpen.value = true },
+  },
+  {
+    label: 'Delete this test',
+    icon: 'pi pi-trash',
+    disabled: !currentTest.value && !selectedCycleEntry.value,
+    command: () => deleteTest(),
+  },
+])
+
 // A filter change can hide the selected item; move to the first visible one.
 watch(visibleItems, items => {
   if (!items.length || items.some(item => entryId(item) === selectedEntryId.value)) return
@@ -660,7 +733,7 @@ watch(visibleItems, items => {
 })
 
 onMounted(() => {
-  if (createRequested) createOpen.value = true
+  if (createRequested) openCreate()
   void Promise.all([loadSummary(), loadDocuments(), loadPlanning(), loadMeta()])
     .catch(error => fail('Could not load document tests', error))
 })
@@ -691,25 +764,25 @@ function onRulesetApproved(): void {
 
 <template>
   <div class="doc-tests">
-    <UiPageHeader title="Document tests">
-      <!-- The gaps the status found lead the row: they are the only buttons
-           here that exist because something is outstanding. -->
-      <Button
-        v-for="action in headerActions"
-        :key="action.key"
-        :label="action.label"
+    <!-- One title, one count sentence, at most one primary. The six buttons
+         and a delete icon this row used to carry are a split button, a
+         secondary and a kebab. -->
+    <header class="page-head">
+      <h1>Document tests</h1>
+      <p class="headline aw-figure">{{ headline }}</p>
+      <span class="grow" />
+      <Button label="New test" icon="pi pi-plus" size="small" outlined severity="secondary" @click="openCreate" />
+      <SplitButton
+        v-if="hasTests"
+        label="Run"
+        icon="pi pi-play"
         size="small"
-        :outlined="action.tone === 'ghost'"
-        :severity="action.tone === 'warn' ? 'warn' : undefined"
-        :disabled="statusBusy || (action.needsAgent && assistantUnavailable)"
-        @click="runStatusAction(action)"
-      />
-      <Button
-        label="Cycle rules"
-        icon="pi pi-sitemap"
-        severity="secondary"
         outlined
-        @click="rulesetReviewOpen = true"
+        severity="secondary"
+        :model="runOptions"
+        :loading="runningAll || runningOutstanding"
+        :disabled="assistantUnavailable || !allTestIds.length"
+        @click="runAllTests"
       />
       <Button
         v-if="hasTests"
@@ -719,113 +792,21 @@ function onRulesetApproved(): void {
         :disabled="assistantUnavailable"
         @click="prepareTests"
       />
-      <Button
-        v-if="hasTests"
-        label="Run all"
-        icon="pi pi-play"
-        size="small"
-        outlined
-        :loading="runningAll"
-        :disabled="assistantUnavailable || !allTestIds.length"
-        @click="runAllTests"
-      />
-      <Button
-        v-if="hasTests"
-        label="Run outstanding"
-        icon="pi pi-forward"
-        size="small"
-        outlined
-        :loading="runningOutstanding"
-        :disabled="assistantUnavailable || !outstandingTestIds.length"
-        @click="runOutstandingTests"
-      />
-      <Button label="New test" icon="pi pi-plus" size="small" outlined @click="createOpen = true" />
-      <Button
-        v-if="currentTest || selectedCycleEntry"
-        icon="pi pi-trash"
-        severity="danger"
-        outlined
-        rounded
-        size="small"
-        aria-label="Delete document test"
-        @click="deleteTest"
-      />
-    </UiPageHeader>
+      <UiOverflowMenu :items="menuItems" tooltip="More document test actions" />
+    </header>
 
-    <UiStatusLanes
+    <UiReviewBar
       v-if="hasTests"
       :lanes="status.lanes"
-      :disclosures="status.disclosures"
+      :chips="DOC_TEST_CHIPS"
       :filters="status.filters"
+      allLabel="All items"
+      :total="summary?.entries.length ?? 0"
       :filter="statusFilter"
-      :filterLabel="statusFilterLabel"
-      :busy="statusBusy"
-      :canRunAgent="!assistantUnavailable"
       @filter="pickStatusFilter($event as DocTestFilter[])"
-      @action="runStatusAction"
     />
 
     <template v-if="hasTests">
-      <div v-if="!selectedCycleTestId" class="toolbar">
-        <IconField>
-          <InputIcon class="pi pi-search" />
-          <InputText v-model="search" size="small" placeholder="Search items, tests, and answers" />
-        </IconField>
-        <span class="muted">
-          {{ visibleItems.length }} of {{ summary?.entries.length ?? 0 }} items
-        </span>
-        <Button
-          v-if="selectableItems.length"
-          :label="allSelected ? 'Clear selection' : `Select all ${selectableItems.length}`"
-          size="small"
-          text
-          @click="toggleSelectAll"
-        />
-      </div>
-
-      <!-- One call across a selection. It appears only when rows are ticked, so
-           the ordinary single-item path is unchanged. -->
-      <div v-if="!selectedCycleTestId && selectedItems.length" class="bulk-bar" role="group" aria-label="Bulk sign-off">
-        <span class="bulk-count">
-          {{ selectedItems.length }} item{{ selectedItems.length > 1 ? 's' : '' }} selected
-        </span>
-        <Button
-          label="Confirm"
-          icon="pi pi-check"
-          size="small"
-          severity="success"
-          outlined
-          :disabled="bulkBusy || agent.isActive.value"
-          @click="setSelectedStates('confirmed')"
-        />
-        <Button
-          label="Exception"
-          icon="pi pi-exclamation-triangle"
-          size="small"
-          severity="danger"
-          outlined
-          :disabled="bulkBusy || agent.isActive.value"
-          @click="setSelectedStates('exception')"
-        />
-        <Button
-          label="Needs review"
-          icon="pi pi-eye"
-          size="small"
-          severity="warn"
-          outlined
-          :disabled="bulkBusy || agent.isActive.value"
-          @click="setSelectedStates('needs_review')"
-        />
-        <Button
-          label="Clear calls"
-          icon="pi pi-refresh"
-          size="small"
-          text
-          :disabled="bulkBusy || agent.isActive.value"
-          @click="setSelectedStates('pending')"
-        />
-      </div>
-
       <div v-if="selectedCycleTestId" class="cycle-review">
         <CycleVouchGrid
           v-show="!currentItem"
@@ -872,18 +853,37 @@ function onRulesetApproved(): void {
         </template>
       </div>
 
-      <!-- 16rem, not 20: the worklist row is a title and two short lines, and
-           the width it gives back is what makes room for the action rail. -->
-      <UiMasterDetail v-else railWidth="20rem" class="layout">
-        <template #rail>
-          <DocTestItemList
-            :items="visibleItems"
-            :selectedId="selectedEntryId"
-            :checkedIds="selectedIds"
-            @select="select"
-            @toggle="toggleSelected"
-          />
-        </template>
+      <div v-else class="layout">
+        <section class="list-panel">
+          <div class="list-head">
+            <IconField>
+              <InputIcon class="pi pi-search" />
+              <InputText v-model="search" size="small" placeholder="Search items and answers" />
+            </IconField>
+            <button type="button" class="select-toggle" :aria-pressed="selecting" @click="toggleSelecting">
+              {{ selecting ? 'Done' : 'Select' }}
+            </button>
+          </div>
+          <div class="list-body">
+            <DocTestItemList
+              :items="visibleItems"
+              :selectedId="selectedEntryId"
+              :checkedIds="selectedIds"
+              :selecting="selecting"
+              @select="select"
+              @toggle="toggleSelected"
+            />
+          </div>
+          <button
+            v-if="selecting && selectableItems.length"
+            type="button"
+            class="select-all"
+            @click="toggleSelectAll"
+          >
+            {{ allSelected ? 'Clear selection' : `Select all ${selectableItems.length}` }}
+          </button>
+        </section>
+
         <DocTestItemDetail
           v-if="currentTest && currentItem"
           :key="currentItem.id"
@@ -905,7 +905,53 @@ function onRulesetApproved(): void {
           @updateEvidenceRequest="updateEvidenceRequest"
           @run="runTest"
           @openRcm="openRcm"
-        />
+        >
+          <!-- One call across a selection is the same decision as one call on
+               one item, so it stands where that decision is made rather than
+               as a second bar above the list. -->
+          <template v-if="selectedItems.length" #verdict>
+            <div class="bulk-bar" role="group" aria-label="Bulk sign-off">
+              <span class="bulk-count">
+                {{ selectedItems.length }} item{{ selectedItems.length > 1 ? 's' : '' }} selected
+              </span>
+              <Button
+                label="Confirm"
+                icon="pi pi-check"
+                size="small"
+                severity="success"
+                outlined
+                :disabled="bulkBusy || agent.isActive.value"
+                @click="setSelectedStates('confirmed')"
+              />
+              <Button
+                label="Exception"
+                icon="pi pi-exclamation-triangle"
+                size="small"
+                severity="danger"
+                outlined
+                :disabled="bulkBusy || agent.isActive.value"
+                @click="setSelectedStates('exception')"
+              />
+              <Button
+                label="Needs review"
+                icon="pi pi-eye"
+                size="small"
+                severity="warn"
+                outlined
+                :disabled="bulkBusy || agent.isActive.value"
+                @click="setSelectedStates('needs_review')"
+              />
+              <Button
+                label="Clear calls"
+                icon="pi pi-refresh"
+                size="small"
+                text
+                :disabled="bulkBusy || agent.isActive.value"
+                @click="setSelectedStates('pending')"
+              />
+            </div>
+          </template>
+        </DocTestItemDetail>
         <UiEmptyState
           v-else-if="!visibleItems.length"
           icon="pi pi-check-circle"
@@ -913,7 +959,7 @@ function onRulesetApproved(): void {
           description="Pick All items above to review every worklist item."
         />
         <UiEmptyState v-else icon="pi pi-verified" title="Loading item" description="Opening the selected worklist item." />
-      </UiMasterDetail>
+      </div>
     </template>
 
     <UiEmptyState
@@ -923,21 +969,34 @@ function onRulesetApproved(): void {
       description="Create document tests for the RCM rows they cover, prioritising transactions that already have imported evidence."
     >
       <Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests" />
-      <Button label="New test" icon="pi pi-plus" severity="secondary" outlined @click="createOpen = true" />
+      <Button label="New test" icon="pi pi-plus" severity="secondary" outlined @click="openCreate" />
     </UiEmptyState>
 
-    <DocTestCreateDialog
+    <!-- The same drawer the data tests author in, with the shape picker as
+         its first section: the two-step stepper chose the shape on a screen
+         that could not show the scope fields the shape decides. -->
+    <UiDefinitionDrawer
       v-model="createOpen"
-      :workspace="workspace"
-      :documents="documents"
-      :planning="planning"
-      :documentTypes="documentTypes"
-      :cycleMetadata="cycleMetadata"
-      :initialRcmId="requestedRcmId"
-      :creating="creating"
-      @create="createTest"
-      @error="fail"
-    />
+      eyebrow="New test"
+      :title="createDraft.title || 'Untitled document test'"
+      :ready="createReady"
+      :saving="creating"
+      :running="runningAll"
+      @save="saveDefinition"
+    >
+      <DocTestDefinitionForm
+        ref="createForm"
+        v-model="createDraft"
+        v-model:shape="createShape"
+        :workspace="workspace"
+        :documents="documents"
+        :planning="planning"
+        :documentTypes="documentTypes"
+        :cycleMetadata="cycleMetadata"
+        @valid="createReady = $event"
+        @error="fail"
+      />
+    </UiDefinitionDrawer>
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" :documents="documents" />
     <CycleRulesetReview
       v-model="rulesetReviewOpen"
@@ -950,35 +1009,49 @@ function onRulesetApproved(): void {
 </template>
 
 <style scoped>
-.doc-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; min-height: 0; height: 100%; }
-/* The stack's own `gap` spaces this; the global rule's margin would double it. */
-.toolbar { margin-bottom: 0; display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
-.toolbar :deep(.p-iconfield) { flex: 1 1 16rem; min-width: 0; max-width: 26rem; }
-.toolbar :deep(.p-inputtext) { width: 100%; }
+.doc-tests { display: flex; flex-direction: column; gap: .75rem; min-width: 0; min-height: 0; height: 100%; }
+
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
+.page-head h1 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; }
+.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.grow { flex: 1; }
+
+.layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
+
+.list-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
+.list-head { display: flex; align-items: center; gap: .5rem; padding: .625rem .75rem; border-bottom: 1px solid var(--aw-border); }
+.list-head :deep(.p-iconfield) { flex: 1; min-width: 0; }
+.list-head :deep(.p-inputtext) { width: 100%; }
+.select-toggle, .select-all {
+  flex: none; padding: .25rem .4rem; border: 0; border-radius: var(--aw-radius-control);
+  background: none; color: var(--aw-ink-soft);
+  font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer;
+}
+.select-toggle:hover, .select-all:hover { color: var(--aw-teal); background: var(--aw-teal-soft); }
+.select-toggle[aria-pressed='true'] { color: var(--aw-teal); }
+.select-all { padding: .5rem .75rem; border-top: 1px solid var(--aw-border); border-radius: 0; text-align: left; }
+.list-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+
+/* The detail column is its own container so the panels inside it size against
+   the space they have, not against the window. */
+.layout > :deep(.detail) { container: master-detail-content / inline-size; overflow-y: auto; }
+
+/* Where the verdict bar would be, in the same box, so a bulk selection reads
+   as the same decision at a different scope. */
 .bulk-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--aw-teal);
-  border-radius: var(--aw-radius-control);
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+  min-width: 0; padding: .625rem .875rem;
+  border: 1px solid var(--aw-teal); border-radius: var(--aw-radius-surface);
   background: var(--aw-teal-soft);
 }
 .bulk-count { margin-right: auto; font-size: var(--aw-text-sm); font-weight: 600; }
-.muted { color: var(--aw-muted); font-size: var(--aw-text-sm); white-space: nowrap; }
-/* Keep the worklist within the space left by this page's status and bulk
-   controls; the shared rail supplies its own vertical scrollbar. */
-.layout { flex: 1; min-height: 12rem; }
+
 .cycle-review { min-width: 0; }
 .detail-return { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-bottom: .55rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .detail-return code { font-family: var(--aw-font-mono); }
 
-/* Sized against the tab's own box, so the assistant drawer taking width
-   collapses the two panes at the right moment. */
 @container workspace-panel (max-width: 60rem) {
-  .toolbar { flex-wrap: wrap; }
-  .toolbar :deep(.p-iconfield) { max-width: none; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .list-body { max-height: 18rem; }
 }
 </style>

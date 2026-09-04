@@ -107,3 +107,28 @@ describe('server-supplied targets', () => {
     })
   })
 })
+
+describe('a row as a place of its own', () => {
+  it('puts the row id in the path, and the rest in the query', () => {
+    expect(workspaceRoute('procurement', 'rcm-row', { rcm: 'RCM-FBB3A7', tab: 'paper' })).toEqual({
+      path: '/workspace/procurement/coverage/RCM-FBB3A7', query: { tab: 'paper' },
+    })
+  })
+
+  it('falls back to the matrix when no row is named', () => {
+    // A link to "some row" is a link to the matrix.
+    expect(workspaceRoute('procurement', 'rcm-row')).toEqual({
+      path: '/workspace/procurement/coverage', query: {},
+    })
+  })
+
+  it('leaves the matrix itself addressed by query, since the drawer is a state of it', () => {
+    expect(workspaceRoute('procurement', 'rcm', { rcm: 'RCM-FBB3A7' })).toEqual({
+      path: '/workspace/procurement/coverage', query: { rcm: 'RCM-FBB3A7' },
+    })
+  })
+
+  it('resolves the coverage section to the matrix, not to one of its rows', () => {
+    expect(destinationForSection('file', 'coverage')).toBe('rcm')
+  })
+})

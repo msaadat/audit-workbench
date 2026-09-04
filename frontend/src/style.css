@@ -95,6 +95,10 @@ body {
      query builder's zone strip, where four were already spoken for. */
   --aw-accent: #7c3aed;
   --aw-accent-soft: #f5f0ff;
+  /* The accent's own hairline, so an "the agent set this" chip can take a
+     border in its own hue rather than borrowing the neutral one. Mixed rather
+     than authored so it tracks the accent through both themes. */
+  --aw-accent-line: color-mix(in srgb, var(--aw-accent) 28%, var(--aw-panel));
 
   /* 4.58 on its own soft fill; #16855b measured 4.13 there. */
   --aw-ok: #147d55;
@@ -711,10 +715,35 @@ button, input, textarea, select { font: inherit; }
    columns stay in the sans face so a table reads as a table, not as code. */
 .p-datatable .p-datatable-tbody > tr > td.aw-figure { font-family: var(--aw-font-mono); }
 
+/* A drawer whose own head is part of its content.
+   The surfaces that edit a record — an RCM row, a test definition — carry
+   their own header row, with the record's id and the controls that belong to
+   it. PrimeVue's header would sit above that as a second, emptier one, so it
+   is removed and the content runs full-bleed. `showHeader` is a Dialog prop,
+   not a Drawer one, which is why this is a rule rather than a binding. */
+.p-drawer.aw-drawer--bare > .p-drawer-header { display: none; }
+.p-drawer.aw-drawer--bare > .p-drawer-content { height: 100%; padding: 0; overflow: hidden; }
+
 /* Dialogs share a stable header/body/footer hierarchy. */
 .p-dialog .p-dialog-header { padding: .9rem var(--aw-space-4); border-bottom: 1px solid var(--aw-border); }
 .p-dialog .p-dialog-content { padding: var(--aw-space-4); }
 .p-dialog .p-dialog-footer { position: sticky; bottom: 0; z-index: 1; padding: var(--aw-space-3) var(--aw-space-4); border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
+
+/* =========================================================================
+   Print.
+
+   The only thing anybody prints from this app is a work product — a working
+   paper, a report. The shell around it is navigation, and navigation on a
+   filed paper is noise a reviewer has to look past. Surfaces that can be
+   printed hide their own chrome in their own scoped block; this hides the
+   shell they all sit inside, which no scoped block can reach.
+   ========================================================================= */
+@media print {
+  .workspace-header { display: none !important; }
+  #app, .workspace-page { height: auto; display: block; }
+  .ui-surface, .ui-surface__panel { display: block; overflow: visible; height: auto; }
+  body { background: #ffffff; }
+}
 
 /* Keyed to the tab's own width: the nav rail and the assistant drawer both
    take width out of the viewport, so a viewport query fired far too late. */

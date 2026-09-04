@@ -1,127 +1,132 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import type { RcmRow } from '../../types'
+import type { FindingRollups, RcmRow } from '../../types'
 import RcmGrid from './RcmGrid.vue'
-
-vi.mock('../../composables/useWorkspaceNavigation', () => ({
-  useWorkspaceNav: () => ({ replace: vi.fn() }),
-}))
-
-/** A Select that keeps its options and reports a change, as PrimeVue's does. */
-const SelectStub = {
-  props: ['modelValue', 'options'],
-  emits: ['update:modelValue', 'change'],
-  template: '<select :data-options="options.join(\',\')" :value="modelValue"'
-    + ' @change="$emit(\'update:modelValue\', $event.target.value);'
-    + ' $emit(\'change\', { value: $event.target.value })">'
-    + '<option v-for="option in options" :key="option" :value="option">{{ option }}</option>'
-    + '</select>',
-}
-
-// The virtualised DataTable does not survive jsdom, and the cells are what is
-// under test. The stub hands the rows to each Column rather than laying out a
-// table: a column renders its own body slot per row, which is all a cell test
-// needs and keeps the columns in template order.
-const DataTableStub = {
-  props: ['value'],
-  provide() { return { gridRows: (this as unknown as { value: RcmRow[] }).value } },
-  template: '<div class="table"><slot /></div>',
-}
-/** A Button that renders as one, so a row action can actually be clicked. */
-const ButtonStub = {
-  props: ['icon', 'label'],
-  template: '<button :data-icon="icon">{{ label }}</button>',
-}
-const ColumnStub = {
-  inject: ['gridRows'],
-  template: '<div class="col"><span v-for="data in gridRows" :key="data.id" class="cell">'
-    + '<slot name="body" :data="data" /></span></div>',
-}
 
 function row(overrides: Partial<RcmRow> = {}): RcmRow {
   return {
-    id: 'R1', semantic_id: 'R1', created_by: 'agent', agent_run_id: null,
-    process: '', risk: '', risk_rating: 'high', business_cycle: '',
-    control_attributes: [], control: '', control_type: '', control_owner: '',
-    criteria: '', criteria_refs: [], test_refs: [],
-    execution_rollup: { tests: 0, completed: 0, exceptions: 0, test_rollups: [] },
+    id: 'RCM-R1', semantic_id: 'R1', created_by: 'agent', agent_run_id: null,
+    process: 'Requisition initiation', risk: 'A risk statement.', risk_rating: 'high',
+    business_cycle: '', control_attributes: [], control: 'A control statement.',
+    control_type: '', control_owner: '', criteria: '', criteria_refs: [], test_refs: [],
+    execution_rollup: { tests: 1, completed: 1, exceptions: 0, test_rollups: [] },
     finding_refs: [], evidence_refs: [], prepared_by: null,
     review_status: 'draft', updated: '',
     ...overrides,
   } as unknown as RcmRow
 }
 
-function mountGrid(rows: RcmRow[]) {
-  return mount(RcmGrid, {
-    props: { rows },
-    global: {
-      stubs: {
-        DataTable: DataTableStub, Column: ColumnStub, Select: SelectStub,
-        Textarea: true, Tag: true, Button: ButtonStub,
-      },
-      directives: { tooltip: () => undefined },
-    },
-  })
+function mountGrid(rows: RcmRow[], props: Record<string, unknown> = {}) {
+  return mount(RcmGrid, { props: { rows, ...props } })
 }
 
-describe('RcmGrid review column', () => {
-  it('offers every review status the backend accepts, in order', () => {
-    const wrapper = mountGrid([row()])
-    const review = wrapper.findAll('select').at(-1)
+function cells(wrapper: ReturnType<typeof mountGrid>, index: number) {
+  return wrapper.findAll('.row')[index].element.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+}
 
-    // Sign-off is binary. The retired middle states counted as neither signed
-    // nor outstanding, so a row parked in one fell out of both tallies.
-    expect(review?.attributes('data-options')).toBe('draft,reviewed')
-    expect((review?.element as HTMLSelectElement).value).toBe('draft')
+describe('RcmGrid', () => {
+  it('reads rather than edits: no cell is a form control', () => {
+    const wrapper = mountGrid([row()])
+
+    // Twelve columns of textareas and selects made the matrix read as a form.
+    // Editing is the drawer's job; the row is one control, which opens it.
+    expect(wrapper.findAll('textarea')).toHaveLength(0)
+    expect(wrapper.findAll('select')).toHaveLength(0)
+    expect(wrapper.findAll('input')).toHaveLength(0)
   })
 
-  it('writes the row back on change, so sign-off does not need the dialog', async () => {
+  it('opens the row it was clicked on', async () => {
     const wrapper = mountGrid([row()])
-    const review = wrapper.findAll('select').at(-1)!
 
-    await review.setValue('reviewed')
+    await wrapper.find('.row').trigger('click')
 
-    expect(wrapper.emitted('update')?.[0]).toEqual(['R1', { review_status: 'reviewed' }])
+    expect(wrapper.emitted('open')?.[0]).toEqual([expect.objectContaining({ id: 'RCM-R1' })])
+  })
+
+  it('carries the verdicts that used to sit past the right edge', () => {
+    const wrapper = mountGrid([row({
+      execution_rollup: {
+        tests: 2, completed: 2, exceptions: 3, control_conclusion: 'ineffective', test_rollups: [],
+      },
+      review_status: 'reviewed',
+    })], {
+      findingRollups: {
+        by_rcm: { 'RCM-R1': [{ id: 'F-1', severity: 'critical' }] },
+      } as unknown as FindingRollups,
+    })
+
+    const text = cells(wrapper, 0)
+    // The conclusion, the exception count, the finding and the sign-off all
+    // read without a horizontal scroll.
+    expect(text).toContain('2 tests · 3 exc')
+    expect(text).toContain('Ineffective')
+    expect(text).toContain('F-1critical')
+    expect(text).toContain('Reviewed')
+    // The `RCM-` prefix is on every row, so it identifies nothing.
+    expect(wrapper.find('.row-id').text()).toBe('R1')
+  })
+
+  it('names a risk with nothing written against it', () => {
+    const wrapper = mountGrid([row({ control: '   ' })])
+
+    // An empty control cell was indistinguishable from one that had scrolled
+    // out of view.
+    expect(wrapper.find('.no-control').text()).toBe('No control identified')
+  })
+
+  it('says how many findings a row carries without listing them', () => {
+    const wrapper = mountGrid([row()], {
+      findingRollups: {
+        by_rcm: {
+          'RCM-R1': [
+            { id: 'F-1', severity: 'high' },
+            { id: 'F-2', severity: 'medium' },
+          ],
+        },
+      } as unknown as FindingRollups,
+    })
+
+    expect(wrapper.find('.finding-chip').text()).toBe('F-1high')
+    expect(wrapper.find('.findings .more').text()).toBe('+1')
   })
 })
 
-describe('RcmGrid row actions', () => {
-  // The working paper is the row's reviewable output. Reaching it only through
-  // the detail dialog meant the matrix could list 27 rows and offer a way into
-  // none of their papers.
-  it('opens a row working paper from the row itself', async () => {
-    const wrapper = mountGrid([row()])
+describe('RcmGrid groups', () => {
+  const rows = [
+    row({ id: 'RCM-A', execution_rollup: { control_conclusion: 'ineffective', tests: 1, completed: 1, test_rollups: [] } }),
+    row({ id: 'RCM-B', control: '' }),
+    row({ id: 'RCM-C', process: 'Purchase order' }),
+  ]
 
-    await wrapper.find('button[data-icon="pi pi-file"]').trigger('click')
+  it('groups by process, in the order the matrix stores them', () => {
+    const wrapper = mountGrid(rows)
 
-    expect(wrapper.emitted('paper')?.[0]).toEqual([expect.objectContaining({ id: 'R1' })])
+    expect(wrapper.findAll('.group-name').map(node => node.text()))
+      .toEqual(['Requisition initiation', 'Purchase order'])
   })
 
-  it('keeps the paper action distinct from opening the detail', async () => {
-    const wrapper = mountGrid([row()])
+  it('says what is wrong with each group, and drops the clauses counting nothing', () => {
+    const wrapper = mountGrid(rows)
+    const summaries = wrapper.findAll('.group-summary').map(node => node.text())
 
-    await wrapper.find('button[data-icon="pi pi-eye"]').trigger('click')
-
-    expect(wrapper.emitted('open')?.[0]).toEqual([expect.objectContaining({ id: 'R1' })])
-    expect(wrapper.emitted('paper')).toBeUndefined()
+    expect(summaries[0]).toBe('2 risks · 1 ineffective · 1 without a control')
+    expect(summaries[1]).toBe('1 risk')
   })
 
-  it('marks the rows carrying a cycle contract, which otherwise reads two levels down', () => {
-    // Comparisons live under an attribute, and only under the transaction-cycle
-    // strategy, so a matrix's whole cycle coverage is invisible without opening
-    // every row in turn.
-    const wrapper = mountGrid([row()])
-    const count = (wrapper.vm as never as {
-      cycleComparisons: (row: unknown) => number
-    }).cycleComparisons
+  it('collapses a group without losing the ones beside it', async () => {
+    const wrapper = mountGrid(rows)
+    expect(wrapper.findAll('.row')).toHaveLength(3)
 
-    expect(count({ control_attributes: [
-      { evidence_kind: 'transaction_cycle', required_comparisons: [{ key: 'c1' }, { key: 'c2' }] },
-      { evidence_kind: 'tabular_population' },
-    ] })).toBe(2)
-    // An inquiry attribute states no comparison, so the row carries no contract.
-    expect(count({ control_attributes: [{ evidence_kind: 'inquiry' }] })).toBe(0)
-    expect(count({ control_attributes: [] })).toBe(0)
+    await wrapper.findAll('.group')[0].trigger('click')
+
+    expect(wrapper.findAll('.row')).toHaveLength(1)
+    expect(wrapper.findAll('.group')).toHaveLength(2)
+  })
+
+  it('files a row with no process under one heading rather than none', () => {
+    const wrapper = mountGrid([row({ process: '  ' })])
+
+    expect(wrapper.find('.group-name').text()).toBe('Unassigned')
   })
 })

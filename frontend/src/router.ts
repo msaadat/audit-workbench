@@ -5,6 +5,7 @@ import WorkspaceView from './views/WorkspaceView.vue'
 import ConsoleView from './views/ConsoleView.vue'
 import EngagementRecordView from './views/EngagementRecordView.vue'
 import AuditFileView from './views/AuditFileView.vue'
+import RcmRowView from './views/RcmRowView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import DebugView from './views/DebugView.vue'
 import { loadIdentity, useSession } from './composables/useSession'
@@ -33,6 +34,16 @@ const router = createRouter({
         { path: 'console', name: 'workspace-console', component: ConsoleView, props: true },
         { path: 'bench/:section', name: 'workspace-bench', component: WorkbenchView, props: true },
         { path: 'bench', redirect: to => `/workspace/${to.params.id}/bench/documents` },
+        // One RCM row as a page. It sits under the matrix's own section rather
+        // than beside it, so the path reads as what it is; the matrix keeps
+        // `?rcm=` for the drawer, which is a state of the matrix rather than a
+        // place of its own.
+        {
+          path: 'coverage/:rowId',
+          name: 'workspace-rcm-row',
+          component: RcmRowView,
+          props: true,
+        },
         // Work products sit directly under the workspace. They were grouped
         // under `file/` while the audit file was a surface with its own rail;
         // the record is the index now, so the grouping named nothing a reader

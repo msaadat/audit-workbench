@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 import type {
   AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload,
 } from '../../types'
-import { docTestStatus, filterDocTestEntries } from './docTestStatus'
+import {
+  DOC_TEST_CHIPS, docTestHeadline, docTestStatus, filterDocTestEntries,
+} from './docTestStatus'
 
 function item(
   testId: string, itemId: string, overrides: Partial<DocTestSummaryEntry> = {},
@@ -183,5 +185,45 @@ describe('document test filters', () => {
       item('DT-8', 'I-C'),
     ]
     expect(filterDocTestEntries(many, 'agent_concluded')).toHaveLength(2)
+  })
+})
+
+describe('the call nobody has recorded', () => {
+  const entries = [
+    item('DT-1', 'I-1', { disposition: { state: 'confirmed', stale: false } } as never),
+    item('DT-2', 'I-2', { disposition: { state: 'pending', stale: false } } as never),
+    // A call made against evidence that has since moved stands on the record
+    // but not as a current one, so it is owed again.
+    item('DT-3', 'I-3', { disposition: { state: 'confirmed', stale: true } } as never),
+  ]
+
+  it('counts and selects the items no auditor has answered for', () => {
+    const options = docTestStatus(payload(entries)).filters
+      ?.find(group => group.key === 'call')?.options ?? []
+
+    expect(options[0]).toMatchObject({ key: 'no_call', value: 2 })
+    expect(filterDocTestEntries(entries, 'no_call').map(entry =>
+      (entry.entry_type === 'item' ? entry.item_id : entry.test_id))).toEqual(['I-2', 'I-3'])
+  })
+
+  it('names a chip for a filter the page actually counts', () => {
+    const groups = docTestStatus(payload(entries)).filters ?? []
+    const known = new Set(groups.flatMap(group => group.options.map(option => option.key)))
+
+    for (const chip of DOC_TEST_CHIPS) expect(known.has(chip.filter)).toBe(true)
+    // Five, plus the `All` chip the bar draws itself, is the six-chip cap.
+    expect(DOC_TEST_CHIPS).toHaveLength(5)
+  })
+})
+
+describe('docTestHeadline', () => {
+  it('answers how much there is, how much ran, and how much is open', () => {
+    expect(docTestHeadline(null)).toBe('no items yet')
+    expect(docTestHeadline(payload([item('DT-1', 'I-1'), item('DT-1', 'I-2')])))
+      .toBe('2 items · all run · no exceptions open')
+    expect(docTestHeadline(payload([
+      item('DT-1', 'I-1', { classification: 'exception' }),
+      item('DT-2', 'I-2', { classification: 'not_run' }),
+    ]))).toBe('2 items · 1 of 2 run · 1 exception open')
   })
 })

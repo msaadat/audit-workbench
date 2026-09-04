@@ -30,6 +30,7 @@ export type WorkspaceDestination =
   | 'record'
   | 'apm'
   | 'rcm'
+  | 'rcm-row'
   | 'chain'
   | 'doc-tests'
   | 'data-tests'
@@ -46,6 +47,16 @@ interface DestinationSpec {
   section: string
   /** Query keys this destination owns, so deep links can be normalized. */
   keys: readonly string[]
+  /**
+   * The state key that becomes a path segment rather than a query parameter.
+   *
+   * One work product per route is the rule everywhere else here; a single RCM
+   * row is the first thing that is *inside* a work product and still deserves
+   * its own address, because it is what a reviewer is sent. Without the key's
+   * value the destination collapses to its section, which is the matrix — a
+   * link to "some row" is a link to the matrix.
+   */
+  param?: string
 }
 
 const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
@@ -57,6 +68,10 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   // `paper` names the row whose working paper is open, so a rendered paper is
   // a link someone can send rather than a dialog only they can see.
   rcm: { surface: 'file', section: 'coverage', keys: ['rcm', 'observation', 'paper'] },
+  // One row as a page: `?rcm=` opens the drawer over the matrix, this opens
+  // the row itself. `tab` picks which of its tabs — definition, attributes,
+  // tests, the working paper, or where the row came from.
+  'rcm-row': { surface: 'file', section: 'coverage', keys: ['rcm', 'tab'], param: 'rcm' },
   // The derivation spine for one risk, source through to finding.
   chain: { surface: 'file', section: 'chain', keys: ['rcm'] },
   'doc-tests': { surface: 'file', section: 'doc-tests', keys: ['test', 'item', 'create', 'rcm'] },
@@ -105,10 +120,12 @@ export function surfacePath(workspaceId: string, surface: WorkspaceSurface, sect
 function ownedQuery(
   destination: WorkspaceDestination,
   state: Record<string, QueryValue>,
+  skip?: string,
 ): LocationQueryRaw {
   const query: LocationQueryRaw = {}
   for (const [key, value] of Object.entries(state)) {
     if (value === undefined || value === null || value === '') continue
+    if (key === skip) continue
     if (!DESTINATIONS[destination].keys.includes(key)) continue
     query[key] = value
   }
@@ -122,7 +139,12 @@ export function workspaceRoute(
   state: Record<string, QueryValue> = {},
 ): RouteLocationRaw {
   const spec = DESTINATIONS[destination]
-  return { path: surfacePath(workspaceId, spec.surface, spec.section), query: ownedQuery(destination, state) }
+  const param = spec.param ? String(state[spec.param] ?? '') : ''
+  const base = surfacePath(workspaceId, spec.surface, spec.section)
+  return {
+    path: param ? `${base}/${encodeURIComponent(param)}` : base,
+    query: ownedQuery(destination, state, param ? spec.param : undefined),
+  }
 }
 
 /**
