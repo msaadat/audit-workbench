@@ -1,0 +1,238 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; color: #0d2340; -webkit-font-smoothing: antialiased; }
+    a { color: #0f766e; text-decoration: none; } a:hover { color: #0b625c; }
+    svg { flex: 0 0 auto; }
+    .num { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+<div style="width: 1440px; min-height: 960px; background: #f6f8fb; display: flex; flex-direction: column;">
+  <div style="display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 24px; background: linear-gradient(180deg, #0d2340 0%, #07162b 100%); color: #ffffff;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #5eead4 0%, #2dd4bf 100%); color: #07162b;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></div>
+      <strong style="font-size: 15.2px; font-weight: 700; letter-spacing: -0.01em;">Audit Workbench</strong>
+    </div>
+    <div style="width: 1px; height: 28px; background: rgba(255,255,255,0.14);"></div>
+    <div style="display: flex; flex-direction: column; line-height: 1.2;">
+      <span style="font-size: 11.5px; font-weight: 600; color: #8fa6c2;">Engagement</span>
+      <span style="font-size: 15.2px; font-weight: 700;">Procurement</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,0.10);">
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: #ffffff; color: #0d2340; font-size: 13px; font-weight: 600;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Record</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; color: #c3d2e4; font-size: 13px; font-weight: 600;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path></svg>Assistant</span>
+    </div>
+    <span style="flex: 1;"></span>
+    <span style="display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border: 1px solid rgba(255,255,255,0.22); border-radius: 8px; font-size: 13px; font-weight: 600;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"></path><path d="m6 10 6-6 6 6"></path><path d="M4 20h16"></path></svg>Import</span>
+    <div style="display: flex; align-items: center; gap: 18px; color: #e6edf6; margin-left: 6px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"></path><path d="m16 8 4 4-4 4"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><path d="M12 8h.01"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"></rect><rect x="13" y="3" width="8" height="8" rx="1"></rect><rect x="3" y="13" width="8" height="8" rx="1"></rect><rect x="13" y="13" width="8" height="8" rx="1"></rect></svg>
+    </div>
+  </div>
+  <div style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 24px; border-bottom: 1px solid #dce5ee; background: #ffffff;">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"></path><path d="m11 18-6-6 6-6"></path></svg>
+    <a href="#" style="color: #0f766e; font-size: 14px; font-weight: 500;">Engagement record</a>
+    <span style="color: #c5d2e0;">/</span>
+    <span style="color: #07162b; font-size: 14px; font-weight: 600;">Risk and control matrix</span>
+  </div>
+  <div style="position: relative; display: flex; flex-direction: column; gap: 12px; padding: 16px 24px 24px; flex: 1;">
+
+    <div style="display: flex; align-items: center; gap: 12px; height: 36px;">
+      <div style="display: flex; align-items: baseline; gap: 12px;">
+        <h1 style="margin: 0; color: #07162b; font-size: 21.6px; font-weight: 700; letter-spacing: -0.01em;">Risk and control matrix</h1>
+        <span class="num" style="color: #5a6a81; font-size: 12.8px;">24 risks · 22 controls · 37 tests</span>
+      </div>
+      <span style="flex: 1;"></span>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>Add risk</a>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px; font-weight: 600;"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4v16l14-8z"></path></svg>Run tests<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></a>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; background: #b45309; color: #ffffff; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"></path><path d="M5 4h12l-2 4 2 4H5"></path></svg>Draft 1 finding</a>
+      <span style="display: inline-grid; place-items: center; width: 30px; height: 30px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; background: #ffffff;"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg></span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid #dce5ee; border-radius: 12px; background: #ffffff;">
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #0f766e; border-radius: 999px; background: #e7f7f4; color: #0b625c; font-size: 12.8px; font-weight: 600;"><b class="num">24</b>All rows</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 12.8px; font-weight: 600;"><b class="num">7</b>Ineffective</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 12.8px; font-weight: 600;"><b class="num">1</b>Finding to draft</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #f0cf9f; border-radius: 999px; background: #fdf1e3; color: #8a4308; font-size: 12.8px; font-weight: 600;"><b class="num">6</b>Evidence limits</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #f0cf9f; border-radius: 999px; background: #fdf1e3; color: #8a4308; font-size: 12.8px; font-weight: 600;"><b class="num">2</b>No control</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #d9ccf5; border-radius: 999px; background: #f5f0ff; color: #7c3aed; font-size: 12.8px; font-weight: 600;"><b class="num">31</b>Agent-set, unread</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #dce5ee; border-radius: 999px; background: #ffffff; color: #46576d; font-size: 12.8px; font-weight: 600;"><b class="num" style="color: #07162b;">24</b>Unreviewed</span>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12px; font-weight: 600; margin-left: 4px;">Mark 24 reviewed</a>
+      <span style="flex: 1;"></span>
+      <div style="display: flex; align-items: center; gap: 18px;">
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span class="num" style="color: #5a6a81; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">Run <b style="color: #07162b;">37/37</b></span><span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: #147d55;"></span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span class="num" style="color: #5a6a81; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">Concluded <b style="color: #07162b;">24/24</b></span><span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: #147d55;"></span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span class="num" style="color: #5a6a81; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">Findings <b style="color: #07162b;">12/13</b></span><span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #b42318 0 92%, #dce5ee 92%);"></span></div>
+      </div>
+    </div>
+
+    <div style="border: 1px solid #dce5ee; border-radius: 12px; background: #ffffff; overflow: hidden;">
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 8px 16px; background: #eef2f7; color: #5a6a81; font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">
+        <span>Risk</span><span>Statement</span><span>Control</span><span>Tests</span><span>Conclusion</span><span>Finding</span><span>Review</span><span></span>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 10px; padding: 7px 16px; border-top: 1px solid #dce5ee; background: #f6f8fb;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
+        <span style="color: #07162b; font-size: 13px; font-weight: 600;">Requisition initiation</span>
+        <span class="num" style="color: #5a6a81; font-size: 12px;">5 risks · 2 ineffective · 2 without a control</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee; background: #e7f7f4;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">FBB3A7</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b42318;"></span>High</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Requisitions may be approved by an authority whose approval limit is below the committed value.</span>
+        <span style="color: #46576d; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">The designated Financial Authority approves the committed value against the Financial Approval Matrix.</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">1 test · <b style="color: #b42318; font-weight: 600;">2 exc</b></span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 11.5px; font-weight: 600;">Ineffective</span></span>
+        <a href="#" style="display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid #f0cf9f; border-radius: 8px; background: #fdf1e3; color: #8a4308; font-size: 11.5px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace;">F-0571DE<span style="font-family: 'Inter', system-ui, sans-serif;">critical</span></a>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">4F33DE</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #8a4308; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b45309;"></span>Medium</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Requisitions may be approved by the requester or the verifier themselves.</span>
+        <span style="color: #46576d; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">The procurement approver must be a person other than the requester and other than the verifier.</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">1 test · 0 exc</span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #9fd9be; border-radius: 999px; background: #e5f6ee; color: #147d55; font-size: 11.5px; font-weight: 600;">Effective</span></span>
+        <span style="color: #c5d2e0; font-size: 12.8px;">—</span>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">D886B7</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #8a4308; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b45309;"></span>Medium</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Requisitions may be recorded without complete or accurate information.</span>
+        <span style="color: #46576d; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">The Procurement Team reviews the requisition for completeness and records its verification.</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">2 tests · 0 exc</span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #f0cf9f; border-radius: 999px; background: #fdf1e3; color: #8a4308; font-size: 11.5px; font-weight: 600;">Partially effective</span></span>
+        <span style="color: #c5d2e0; font-size: 12.8px;">—</span>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">4F39CF</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b42318;"></span>High</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Requisitions may be approved after the related goods or services have been received.</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; color: #8a4308; font-size: 13px; font-style: italic;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16h.01"></path></svg>No control identified</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">1 test · 0 exc</span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #9fd9be; border-radius: 999px; background: #e5f6ee; color: #147d55; font-size: 11.5px; font-weight: 600;">Effective</span></span>
+        <span style="color: #c5d2e0; font-size: 12.8px;">—</span>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">B40264</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b42318;"></span>High</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Commitments may be split into multiple transactions to circumvent the approval threshold.</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; color: #8a4308; font-size: 13px; font-style: italic;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16h.01"></path></svg>No control identified</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">1 test · <b style="color: #b42318; font-weight: 600;">2 exc</b></span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 11.5px; font-weight: 600;">Ineffective</span></span>
+        <a href="#" style="display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid #f0cf9f; border-radius: 8px; background: #fdf1e3; color: #8a4308; font-size: 11.5px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace;">F-0CAEA9<span style="font-family: 'Inter', system-ui, sans-serif;">medium</span></a>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 10px; padding: 7px 16px; border-top: 1px solid #dce5ee; background: #f6f8fb;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
+        <span style="color: #07162b; font-size: 13px; font-weight: 600;">Purchase order</span>
+        <span class="num" style="color: #5a6a81; font-size: 12px;">5 risks · 2 ineffective</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">BE7CD1</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b42318;"></span>High</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Purchase orders may be raised without an approved requisition.</span>
+        <span style="color: #46576d; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">A Purchase Order is raised only where an approved requisition exists.</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">1 test · 0 exc</span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #9fd9be; border-radius: 999px; background: #e5f6ee; color: #147d55; font-size: 11.5px; font-weight: 600;">Effective</span></span>
+        <span style="color: #c5d2e0; font-size: 12.8px;">—</span>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">BAA185</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b42318;"></span>High</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Purchase orders may be placed with vendors that are not active in the vendor master.</span>
+        <span style="color: #46576d; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">The vendor on the purchase order is recorded in the vendor master with Active status.</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">4 tests · <b style="color: #b42318; font-weight: 600;">5 exc</b></span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 11.5px; font-weight: 600;">Ineffective</span></span>
+        <a href="#" style="display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid #f0cf9f; border-radius: 8px; background: #fdf1e3; color: #8a4308; font-size: 11.5px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace;">F-F0C84A<span style="font-family: 'Inter', system-ui, sans-serif;">high</span></a>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 96px minmax(0, 1.2fr) minmax(0, 1.2fr) 110px 130px 128px 84px 28px; gap: 0 14px; align-items: center; padding: 10px 16px; border-top: 1px solid #dce5ee;">
+        <div style="display: flex; flex-direction: column; gap: 3px;"><span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #07162b; font-size: 12px; font-weight: 600;">E277D8</span><span style="display: inline-flex; align-items: center; gap: 5px; color: #8a4308; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b45309;"></span>Medium</span></div>
+        <span style="color: #0d2340; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Approved requisitions may be neither converted to a purchase order nor withdrawn.</span>
+        <span style="color: #46576d; font-size: 13px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Each approved requisition is either linked to a purchase order or recorded as withdrawn.</span>
+        <span class="num" style="color: #46576d; font-size: 12.8px;">1 test · <b style="color: #b42318; font-weight: 600;">3 exc</b></span>
+        <span><span style="display: inline-flex; padding: 2px 9px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 11.5px; font-weight: 600;">Ineffective</span></span>
+        <a href="#" style="display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid #f0cf9f; border-radius: 8px; background: #fdf1e3; color: #8a4308; font-size: 11.5px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace;">F-BD5944<span style="font-family: 'Inter', system-ui, sans-serif;">medium</span></a>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #5a6a81; font-size: 12px;"><span style="width: 12px; height: 12px; border: 1.5px dashed #c5d2e0; border-radius: 50%;"></span>Draft</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c5d2e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 10px; padding: 7px 16px; border-top: 1px solid #dce5ee; background: #f6f8fb;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+        <span style="color: #07162b; font-size: 13px; font-weight: 600;">Goods receipt</span>
+        <span class="num" style="color: #5a6a81; font-size: 12px;">3 risks · all effective</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 7px 16px; border-top: 1px solid #dce5ee; background: #f6f8fb;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>
+        <span style="color: #07162b; font-size: 13px; font-weight: 600;">Invoice and payment</span>
+        <span class="num" style="color: #5a6a81; font-size: 12px;">11 risks · 3 ineffective · 7 findings</span>
+      </div>
+    </div>
+
+    <div style="position: absolute; top: 64px; right: 24px; bottom: 24px; width: 440px; display: flex; flex-direction: column; border: 1px solid #dce5ee; border-radius: 12px; background: #ffffff; box-shadow: 0 8px 20px rgba(7,22,43,0.12), 0 24px 60px rgba(7,22,43,0.10); overflow: hidden;">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #dce5ee;">
+        <span style="font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; color: #5a6a81; font-size: 12px; font-weight: 600;">RCM-FBB3A7</span>
+        <span style="display: inline-flex; align-items: center; gap: 5px; color: #b42318; font-size: 11.5px; font-weight: 600;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #b42318;"></span>High</span>
+        <span style="flex: 1;"></span>
+        <a href="#" style="color: #46576d; font-size: 12.8px; font-weight: 600;">Working paper</a>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 14px; padding: 14px 16px; overflow: hidden;">
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;">
+          <div style="display: flex; flex-direction: column; gap: 4px;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Process</span><span style="padding: 6px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #0d2340; font-size: 13px;">Requisition initiation</span></div>
+          <div style="display: flex; flex-direction: column; gap: 4px;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Rating</span><span style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #0d2340; font-size: 13px;">High<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Risk</span><span style="padding: 8px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #0d2340; font-size: 13px; line-height: 1.45;">Requisitions may be approved by an authority whose approval limit is below the committed value.</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Control</span><span style="padding: 8px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #0d2340; font-size: 13px; line-height: 1.45;">The designated Financial Authority approves the committed value against the Financial Approval Matrix.</span></div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Attributes · 1</span><span style="flex: 1;"></span><a href="#" style="color: #0f766e; font-size: 12px; font-weight: 600;">Add attribute</a></div>
+          <div style="display: flex; gap: 8px; padding: 8px 10px; border: 1px solid #dce5ee; border-radius: 8px; background: #f6f8fb;"><span style="padding: 1px 7px; border-radius: 999px; background: #eef2f7; color: #46576d; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; align-self: flex-start;">Authorization</span><span style="color: #46576d; font-size: 12.8px; line-height: 1.4;">The financial approver's delegation limit is at least the requisition value.</span></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;">Tests · 1</span><span style="flex: 1;"></span><a href="#" style="color: #0f766e; font-size: 12px; font-weight: 600;">Add test</a></div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #dce5ee; border-radius: 8px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #b42318;"></span><a href="#" style="flex: 1; color: #07162b; font-size: 12.8px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Financial Approval Matrix limits are sufficient for all requisitions</a><span style="color: #b42318; font-size: 11.5px; font-weight: 600;">2 open</span></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid #f2b8b2; border-radius: 8px; background: #fdecea;">
+          <div style="display: flex; align-items: center; gap: 8px;"><span style="color: #7f1d1d; font-size: 13px; font-weight: 600;">Conclusion: Ineffective</span><span style="flex: 1;"></span><a href="#" style="color: #7f1d1d; font-size: 12px; font-weight: 600;">Change</a></div>
+          <span style="color: #7c3aed; font-size: 12px;">Set by the agent on 3 Sep. No one has read it yet.</span>
+          <span style="color: #8a4308; font-size: 12px;">Finding F-0571DE (critical) is drafted from it.</span>
+        </div>
+      </div>
+      <span style="flex: 1;"></span>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid #dce5ee; background: #f6f8fb;">
+        <span style="display: inline-flex; align-items: center; gap: 8px; color: #46576d; font-size: 12.8px;"><span style="width: 30px; height: 16px; border-radius: 999px; background: #c5d2e0; position: relative;"><span style="position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff;"></span></span>Mark reviewed</span>
+        <span style="flex: 1;"></span>
+        <a href="#" style="padding: 6px 12px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px; font-weight: 600;">Cancel</a>
+        <a href="#" style="padding: 6px 14px; border-radius: 8px; background: #0f766e; color: #ffffff; font-size: 12.8px; font-weight: 600;">Save row</a>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

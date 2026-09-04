@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; color: #0d2340; -webkit-font-smoothing: antialiased; }
+    a { color: #0f766e; text-decoration: none; } a:hover { color: #0b625c; }
+    svg { flex: 0 0 auto; }
+    .num { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+<div style="width: 1440px; min-height: 960px; background: #f6f8fb; display: flex; flex-direction: column;">
+  <div style="display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 24px; background: linear-gradient(180deg, #0d2340 0%, #07162b 100%); color: #ffffff;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #5eead4 0%, #2dd4bf 100%); color: #07162b;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></div>
+      <strong style="font-size: 15.2px; font-weight: 700; letter-spacing: -0.01em;">Audit Workbench</strong>
+    </div>
+    <div style="width: 1px; height: 28px; background: rgba(255,255,255,0.14);"></div>
+    <div style="display: flex; flex-direction: column; line-height: 1.2;">
+      <span style="font-size: 11.5px; font-weight: 600; color: #8fa6c2;">Engagement</span>
+      <span style="font-size: 15.2px; font-weight: 700;">Procurement</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,0.10);">
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: #ffffff; color: #0d2340; font-size: 13px; font-weight: 600;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Record</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; color: #c3d2e4; font-size: 13px; font-weight: 600;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path></svg>Assistant</span>
+    </div>
+    <span style="flex: 1;"></span>
+    <span style="display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border: 1px solid rgba(255,255,255,0.22); border-radius: 8px; font-size: 13px; font-weight: 600;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"></path><path d="m6 10 6-6 6 6"></path><path d="M4 20h16"></path></svg>Import</span>
+    <div style="display: flex; align-items: center; gap: 18px; color: #e6edf6; margin-left: 6px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"></path><path d="m16 8 4 4-4 4"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><path d="M12 8h.01"></path></svg>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"></rect><rect x="13" y="3" width="8" height="8" rx="1"></rect><rect x="3" y="13" width="8" height="8" rx="1"></rect><rect x="13" y="13" width="8" height="8" rx="1"></rect></svg>
+    </div>
+  </div>
+  <div style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 24px; border-bottom: 1px solid #dce5ee; background: #ffffff;">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"></path><path d="m11 18-6-6 6-6"></path></svg>
+    <a href="#" style="color: #0f766e; font-size: 14px; font-weight: 500;">Engagement record</a>
+    <span style="color: #c5d2e0;">/</span>
+    <span style="color: #07162b; font-size: 14px; font-weight: 600;">Document test results</span>
+  </div>
+  <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 24px 24px; flex: 1;">
+
+    <div style="display: flex; align-items: center; gap: 12px; height: 36px;">
+      <div style="display: flex; align-items: baseline; gap: 12px;">
+        <h1 style="margin: 0; color: #07162b; font-size: 21.6px; font-weight: 700; letter-spacing: -0.01em;">Document tests</h1>
+        <span class="num" style="color: #5a6a81; font-size: 12.8px;">7 items · all run · 1 exception open</span>
+      </div>
+      <span style="flex: 1;"></span>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>New test</a>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px; font-weight: 600;"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4v16l14-8z"></path></svg>Run<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></a>
+      <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; background: #0f766e; color: #ffffff; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path></svg>Prepare with assistant</a>
+      <span style="display: inline-grid; place-items: center; width: 30px; height: 30px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; background: #ffffff;"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg></span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid #dce5ee; border-radius: 12px; background: #ffffff;">
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #0f766e; border-radius: 999px; background: #e7f7f4; color: #0b625c; font-size: 12.8px; font-weight: 600;"><b class="num">7</b>All items</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 12.8px; font-weight: 600;"><b class="num">1</b>Exception</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #9fd9be; border-radius: 999px; background: #e5f6ee; color: #147d55; font-size: 12.8px; font-weight: 600;"><b class="num">6</b>Confirmed</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #d9ccf5; border-radius: 999px; background: #f5f0ff; color: #7c3aed; font-size: 12.8px; font-weight: 600;"><b class="num">2</b>Agent-set, unread</span>
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid #dce5ee; border-radius: 999px; background: #ffffff; color: #46576d; font-size: 12.8px; font-weight: 600;"><b class="num" style="color: #07162b;">7</b>Call not recorded</span>
+      <span style="flex: 1;"></span>
+      <div style="display: flex; align-items: center; gap: 18px;">
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span class="num" style="color: #5a6a81; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">Run <b style="color: #07162b;">7/7</b></span><span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: #147d55;"></span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span class="num" style="color: #5a6a81; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">Concluded <b style="color: #07162b;">7/7</b></span><span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #147d55 0 71%, #b45309 71%);"></span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span class="num" style="color: #5a6a81; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">Findings <b style="color: #07162b;">1/1</b></span><span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: #147d55;"></span></div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; flex: 1; min-height: 0;">
+
+      <div style="display: flex; flex-direction: column; border: 1px solid #dce5ee; border-radius: 12px; background: #ffffff; overflow: hidden;">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #dce5ee;">
+          <span style="display: flex; align-items: center; gap: 8px; flex: 1; padding: 6px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #5a6a81; font-size: 12.8px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search items and answers</span>
+          <a href="#" style="color: #46576d; font-size: 12px; font-weight: 600;">Select</a>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #e7f7f4; border-left: 3px solid #0f766e;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #b42318;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #07162b; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Systematic review evidence</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Cited Q&amp;A · exception · call not recorded</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid #dce5ee; border-left: 3px solid transparent;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #147d55;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #0d2340; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Inspect vendor details in invoice and receipt</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Vouching · confirmed</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid #dce5ee; border-left: 3px solid transparent;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #147d55;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #0d2340; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Review policy documents for vendor master change</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Document review · confirmed · <span style="color: #7c3aed;">agent-set</span></span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid #dce5ee; border-left: 3px solid transparent;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #147d55;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #0d2340; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Confirm referral requirement in SOP</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Cited Q&amp;A · confirmed</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid #dce5ee; border-left: 3px solid transparent;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #147d55;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #0d2340; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Confirm GRN signer identity</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Attribute test · confirmed · <span style="color: #7c3aed;">agent-set</span></span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid #dce5ee; border-left: 3px solid transparent;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #147d55;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #0d2340; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Goods receipt note signing party</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Attribute test · confirmed</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid #dce5ee; border-left: 3px solid transparent;">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #147d55;"></span>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="color: #0d2340; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Check PO2024004 against REQ2024009</span>
+            <span style="color: #5a6a81; font-size: 11.5px;">Vouching · confirmed</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 16px; padding: 18px 22px; border: 1px solid #dce5ee; border-radius: 12px; background: #ffffff;">
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+          <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1;">
+            <span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Cited Q&amp;A · <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0;">ITEM-B2A1D367</span></span>
+            <h2 style="margin: 0; color: #07162b; font-size: 17.6px; font-weight: 600; letter-spacing: -0.01em;">Exceptions and overrides review in procure-to-pay</h2>
+            <span style="color: #46576d; font-size: 13px;">Test: Systematic review evidence</span>
+          </div>
+          <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid #a7ded8; border-radius: 8px; color: #0f766e; font-size: 12.8px; font-weight: 600; white-space: nowrap;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"></path><path d="M9 4v14"></path><path d="M15 6v14"></path></svg>RCM-26A17B</a>
+          <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px; font-weight: 600; white-space: nowrap;"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4v16l14-8z"></path></svg>Run test</a>
+        </div>
+
+        <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 16px; border: 1px solid #dce5ee; border-radius: 12px; background: #f6f8fb;">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <span style="display: inline-flex; align-items: center; gap: 8px; color: #07162b; font-size: 14px; font-weight: 600;"><span style="width: 9px; height: 9px; border-radius: 50%; background: #b42318;"></span>The run found an exception<span class="num" style="color: #5a6a81; font-size: 12.8px; font-weight: 500;">· 1 open · run 4 Sep 09:12</span></span>
+            <span style="color: #46576d; font-size: 12.8px;">Your call is not recorded. Agree with the run, or record a different one.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="display: inline-flex; border: 1px solid #c5d2e0; border-radius: 8px; overflow: hidden; background: #ffffff;">
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; color: #147d55; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>Confirm</span>
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-left: 1px solid #c5d2e0; color: #b42318; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path></svg>Exception</span>
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-left: 1px solid #c5d2e0; color: #8a4308; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>Needs review</span>
+            </span>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Procedure</span>
+          <p style="margin: 0; color: #0d2340; font-size: 14px; line-height: 1.5;">Did the department carry out a systematic review of exceptions and overrides in procurement transactions?</p>
+          <a href="#" style="display: inline-flex; align-items: center; gap: 6px; color: #5a6a81; font-size: 12.8px; font-weight: 600;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg>Question as put to the model</a>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Assessment</span>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid #dce5ee; border-left: 3px solid #b42318; border-radius: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0f766e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><path d="M14 3v6h6"></path></svg>
+              <a href="#" style="color: #07162b; font-size: 13px; font-weight: 600;">minutes_of_meeting_procurement_planning</a>
+              <a href="#" style="color: #0f766e; font-size: 12.8px; font-weight: 600;">Page 1</a>
+              <span style="flex: 1;"></span>
+              <span style="display: inline-flex; padding: 2px 9px; border: 1px solid #f2b8b2; border-radius: 999px; background: #fdecea; color: #7f1d1d; font-size: 11.5px; font-weight: 600;">Exception</span>
+            </div>
+            <p style="margin: 0; color: #0d2340; font-size: 13.5px; line-height: 1.5;">No, the department has not carried out a systematic review of exceptions and overrides in procurement transactions.</p>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; align-items: center;"><span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Evidence</span><span style="flex: 1;"></span><a href="#" style="color: #0f766e; font-size: 12.8px; font-weight: 600;">Attach a document</a></div>
+          <div style="display: flex; gap: 8px;">
+            <a href="#" style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #a7ded8; border-radius: 999px; background: #e7f7f4; color: #0b625c; font-size: 12.8px; font-weight: 600;">minutes_of_meeting_procurement_planning.pdf</a>
+          </div>
+        </div>
+
+        <span style="flex: 1;"></span>
+
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding-top: 14px; border-top: 1px solid #dce5ee;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Conclusion</span>
+            <span style="display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid #c5d2e0; border-radius: 8px; color: #46576d; font-size: 12.8px;">Not concluded<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5a6a81" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></span>
+            <span style="color: #5a6a81; font-size: 12px;">Record your call first.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="color: #5a6a81; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Finding</span>
+            <a href="#" style="display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid #f0cf9f; border-radius: 8px; background: #fdf1e3; color: #8a4308; font-size: 11.5px; font-weight: 600; font-family: 'JetBrains Mono', ui-monospace, monospace;">F-2C91A0<span style="font-family: 'Inter', system-ui, sans-serif;">high</span></a>
+            <a href="#" style="color: #46576d; font-size: 12.8px; font-weight: 600;">Regenerate</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
