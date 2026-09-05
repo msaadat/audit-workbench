@@ -63,7 +63,8 @@ treats both as provisional.
 
 ## Pass structure
 
-> **Superseded by `docs/agentic-vouching-plan.md` phase 4b.1, which is built.**
+> **Superseded by phase 4b.1, which is built — see *Phase 4a notes* and *Phase
+> 4b.1 notes* below.**
 > The three passes below are two: sampling and induction are gone, and every
 > evidence document is read once in type order against an accumulating master
 > (`DocumentMasters/<type>.json`), with the schema written at the end of a type
@@ -968,8 +969,9 @@ Dependency-ordered. Each phase leaves the tree working.
 | 8 ✅ | RCM control attributes addressed by schema field; the two graph edges; coverage gate; authoring turn and editor re-pointed | Selector-exact coverage restored |
 | 9 ✅ | `cycle_registry/` deleted, with the voucher profile, the recipes, and every branch that routed to them | Registry module removed |
 | 10 ✅ | The six operators and per-assertion tolerance deleted; agreement judged by `fieldwork.cycle_vouch` on raw values; assertions carry a `requirement` instead | A presentation difference is no longer reported as an exception |
-| 4b.1 ✅ | `documents.evidence_read` and `documents.schemas_stamped` replace sampling and induction; `DocumentMasters/` accumulates a type's vocabulary as it is read. See `docs/agentic-vouching-plan.md`, *What 4b.1 shipped* | One name per fact across a type; no field the corpus never stated |
 | 11 ✅ | `tests.cycle_ruleset_approved` built as a real capability; auto mode approves, permission mode gates; `approved_by_kind` and the working-paper disclosure; `_unvouched_cause` names the actual repair | An auto run vouches a cycle end to end; a permission run still waits for its auditor |
+| 4a ✅ | Category domain collapsed to four values read from page one instead of guessed from filename; `documents.categorized`; `corpus_scope` runs text/categorization/classification over every document. See *Phase 4a notes* | Planning/evidence partition holds; an audit run classifies its own evidence instead of relying on a standalone document pass |
+| 4b.1 ✅ | `documents.evidence_read` and `documents.schemas_stamped` replace sampling and induction; `DocumentMasters/` accumulates a type's vocabulary as it is read; `refresh` and `revise_vocabulary` split. See *Phase 4b.1 notes* | One name per fact across a type; no field the corpus never stated; a one-document refresh does not silently re-read the whole type |
 
 Phases 1-4 are independent of 5-6 and can proceed in parallel with the ruleset
 work once the contracts are fixed. Phase 9 must be last: the packs remain the
@@ -1584,6 +1586,149 @@ report `evaluable_records: 2, silent: false` — a green light for rules that
 cannot run. `concerns()` catches the join key and not its assertions. Making the
 assertion measurement reachability-aware is the repair, and it is not in this
 phase.
+
+## Phase 4a notes
+
+Built, with the suite and one live engagement behind it. Full detail (the live
+run's output, the retired intake tests) is in git history for
+`docs/agentic-vouching-plan.md`; what's recorded here is what the build decided
+and what it corrected, because neither is recoverable from a diff.
+
+**Storage settles the barrier.** The category could not live only on the
+document entry — capability readiness runs against a workspace handle that is
+routinely several revisions behind, which is why type assignments moved to
+`Documents/.types` sidecars. It could not live only in the sidecar either:
+fifteen call sites read `document.get("category")`, and most hold a document
+dict with no workspace to reach a sidecar with. So the commit writes both
+inside one `mutate()` — sidecar authoritative for readiness and the evidence
+gate, entry mirrored for the readers that hold a dict.
+
+**That mirror is why the capability is sequential.** The entry write lands on
+the shared `documents` collection, which is exactly what `all_settled_parallel`
+asserts cannot happen. Page-one categorization is independent per document and
+still cannot run in parallel: independence of inputs is not independence of
+commits. Making it parallel later is a storage change, not a barrier change —
+it needs the fifteen readers off the entry first.
+
+`category()` reads the sidecar and falls back to the entry, so an upload that
+names a category outright stands without waiting for a model to agree with it.
+
+**A forced regeneration does not re-ask the category.** Every other document
+stage widens under `force`. This one must not: re-categorizing moves a
+document across the planning/evidence partition mid-run, taking its type, its
+schema and its extraction with it. That holds for both of 4b.1's actions
+below: neither `refresh` nor `revise_vocabulary` re-asks the category.
+
+**Two axes, two labels, one screen.** The documents tab had the same confusion
+the import dialog did — a control labelled *Type* that set the category. The
+header now carries both: **Held as** is what the engagement does with the
+document and is the auditor's, editable, and their answer stands against any
+rerun; **Read as** is what the document is, shown only for evidence.
+
+**The defect this repaired.** Measured before the change: with
+`document_scope_mode = planning`, `resolve_document_scope` selected only
+`_planning_relevant` documents — disjoint from the evidence category by
+construction — so text extraction and classification were both bounded by it,
+and `documents.schemas_induced` reported *satisfied having induced nothing*.
+Both edges into `planning.rcm_ready` were satisfied by an empty vocabulary and
+the RCM was written against fields no document stated. The end-to-end
+induction tests ran the *documents* workflow, whose scope is `all`, so the
+audit path was untested; it worked only where an auditor had run a standalone
+document pass first. `corpus_scope` now runs text, categorization and
+classification over every document — what a document *is* is not a planning
+question.
+
+**Still open.** Reading a document now commits a revision, which re-opens the
+planning chain — correct, since the corpus changed, but a workspace carrying
+only evidence has no planning material to re-synthesize from, and its context
+capability fails rather than keeping what it had. Unresolved, and belongs to
+the planning capability rather than to intake.
+
+## Phase 4b.1 notes
+
+Built, with the suite behind it and no live engagement yet. Same caveat as
+above: the code is the authority on shape, this records what the build
+decided and corrected.
+
+**The failed-read guarantee belongs to the type, not the stage.** Corrected
+twice. The guarantee is right — a master built from eight of eighteen
+documents is not the type's vocabulary, and stamping it writes a
+`schema_version` claiming otherwise — but expressing it as a *stage* edge made
+it a claim about the whole corpus. Measured on the treasury engagement: one
+bank statement failed on a dangling citation reference, and every stamp in the
+run was blocked, including two types whose documents had all read cleanly and
+agreed with each other field for field. `_types_awaiting_stamp` now asks it
+per type: a type with an unread document is not offered for stamping and is
+reported in `types_with_unread_documents`; a type that read cleanly is stamped
+whatever happened to its neighbours. `schemas_stamped ← evidence_read` is the
+one blocking edge in the document graph — every other edge is declared
+partial, by the module's own `_PARTIAL_DEPENDENCIES` rule, and this one is the
+tested exception to it.
+
+**A near-empty reading commits, and nothing notices.** The emptiness checks
+fire at *zero* — no values, or values-with-citations. One field passes.
+Measured: a dealing ticket carrying fourteen plainly labelled `label\nvalue`
+pairs in 932 characters was supplied whole and returned a single field,
+`deal_reference`. It committed, the type's entire vocabulary became that one
+field, and the second ticket then agreed with it — indistinguishable from a
+corroborated vocabulary. The same model returned nineteen fields for the same
+document on an earlier run, so this is model variance rather than anything the
+document or the contract did. `GET /documents/vocabulary` and the tab panel
+are the surface this needed: a vocabulary is thin when it cannot carry a cycle
+rule — no second document to corroborate it, no field stated twice, no
+`identifier` to join on, or nothing that is *not* an identifier to assert
+about once joined. `READ_REPAIR_ATTEMPTS = 2` (every other document worker
+takes one) pays for precise, recoverable refusals — *you returned 18 citations
+and not one field value* — against a worker whose lost read costs not one
+document but its type's whole vocabulary.
+
+**The category edge is what the schema edge became, not something removed.**
+`analysis_chunks_ready` loses its dependency on the vocabulary and gains one
+on `documents.categorized`: the prose pass now excludes transaction evidence
+*by category*, and a document whose category has not been read would be
+chunked as prose and then read again as evidence under a second vocabulary.
+
+**The vocabulary mode has three states, not two.** The original design named
+`refresh` (frozen) and `revise_vocabulary` (rebuild) and left the ordinary
+pass unstated. Building it with two made a first run frozen, refusing every
+field the corpus stated and stamping an empty vocabulary. `accumulate` is the
+default and the mechanism; the other two are the halves `force` split into.
+
+**A reading records the type it was read under.** `master_ref` is a content
+hash and names no type, so a retyped document looked already-read: its
+reading is present and its hash is whatever it was. The artifact carries
+`master_type` and the read's skip predicate compares it.
+
+**What the closure order now says.** Prose analysis and the evidence read are
+no longer one contiguous run: `planning.context_ready` consumes prose, which
+needs no vocabulary, so document work straddles planning rather than
+preceding it — `text_ready → categorized → chunks → generated → context → apm
+→ types_classified → evidence_read → schemas_stamped → rcm`. An APM-only run
+no longer drags the whole evidence read behind it.
+
+**Deleted with the sample pass.** `sample_for_induction`, `induction_text` and
+the induction window constants; `union_fields`, `induce`, `SchemaConflict` and
+`CONFLICTING_ATTRIBUTES`; `escape_rate` and its threshold; the
+`documents.schema_sample` and `documents.schema_reconcile` workers; and the
+`documents.schema` freeze executor, which the stamp replaced rather than
+reused.
+
+**Still open**, and none of it blocks the tree:
+
+- The read's visual/character caps (`EVIDENCE_READ_VISUAL_MEDIA = 6`,
+  `EVIDENCE_READ_CHARACTERS = 48_000`) are guesses sized off one corpus and
+  should come from measuring an engagement's evidence, not this one.
+- Whether the first document of a type should be seeded by a stratified pick
+  rather than read in arrival order — worth measuring (process a type in two
+  orders, diff the masters) before deciding it's needed.
+- Whether a document imported after its type is stamped should append to the
+  master and re-stamp, or re-open the type outright.
+- When the read pass needs concurrency back. Serialized, the treasury corpus
+  is 84 reads where the old chunked extraction overlapped; total model calls
+  went *down* (the sample pass and its reconciles are gone), so what's spent
+  is wall-clock. A `grouped_sequential` barrier (type-lane concurrency, 18
+  steps against 84) and batching several documents into one call are both
+  live options; neither is built.
 
 ## Still unspecified
 
