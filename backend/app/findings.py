@@ -558,6 +558,43 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
     return item
 
 
+def reaffirm_evidence(
+    workspace: Workspace, finding_id: str, evidence_id: str | None = None
+) -> dict:
+    """Re-pin a finding's evidence anchors to what their sources hash to now.
+
+    A stale anchor is not a defect to be cleared away: it says the run the
+    narrative was drafted against has moved. The auditor settles it by reading
+    the condition against the current run and saying so, and saying so *is*
+    rewriting the hash the finding was drafted from — the same act
+    ``validate_evidence`` records when evidence is first attached. Doing it
+    here rather than in the client keeps the hash and its definition in one
+    place; the browser has no way to compute an evidentiary projection.
+    """
+    item = _record(workspace, finding_id)
+    anchors = item.get("evidence_refs") or []
+    targets = [
+        anchor
+        for anchor in anchors
+        if not evidence_id or str(anchor.get("id")) == evidence_id
+    ]
+    if evidence_id and not targets:
+        raise WorkspaceError(f"Evidence anchor '{evidence_id}' is not on finding '{finding_id}'.")
+    for anchor in targets:
+        resolved = artifact(
+            workspace, str(anchor.get("source_kind")), str(anchor.get("source_id"))
+        )
+        if resolved is None:
+            raise WorkspaceError(
+                f"Evidence source '{anchor.get('source_kind')}:{anchor.get('source_id')}'"
+                " no longer exists, so it cannot be re-affirmed."
+            )
+        anchor["source_sha1"] = resolved["sha1"]
+    item["updated"] = _now(workspace)
+    workspace.save()
+    return item
+
+
 def remove(workspace: Workspace, finding_id: str) -> None:
     workspace.findings.remove(_record(workspace, finding_id))
     workspace.save()

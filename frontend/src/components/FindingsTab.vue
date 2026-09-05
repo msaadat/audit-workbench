@@ -4,29 +4,33 @@ import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
-import Dialog from 'primevue/dialog'
+import Drawer from 'primevue/drawer'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
-import MultiSelect from 'primevue/multiselect'
+import Listbox from 'primevue/listbox'
+import Popover from 'primevue/popover'
 import Select from 'primevue/select'
-import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditFinding, EvidenceRef, FindingsPayload, FindingSeverity, WorkspaceSummary } from '../types'
+import type { AuditFinding, EvidenceRef, FindingsPayload, WorkspaceSummary } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
-import UiAdvancedSection from './ui/UiAdvancedSection.vue'
+import FindingNarrative from './findings/FindingNarrative.vue'
+import FindingsList from './findings/FindingsList.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiStatusLanes from './ui/UiStatusLanes.vue'
-import { statusActions } from './ui/statusLanes'
-import type { StatusAction } from './ui/statusLanes'
-import { FINDINGS_FILTER_LABELS, filterFindings, findingsStatus } from './findings/findingsStatus'
-import type { FindingsActionKey, FindingsFilter } from './findings/findingsStatus'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiReviewBar from './ui/UiReviewBar.vue'
+import UiVerdictBar from './ui/UiVerdictBar.vue'
+import {
+  FINDING_CHIPS, SEVERITY_ORDER, filterFindings, findingsHeadline, findingsStatus, openItems,
+} from './findings/findingsStatus'
+import type { FindingsFilter } from './findings/findingsStatus'
 import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -44,47 +48,68 @@ const selectedId = ref<string | null>(String(route.query.finding || '') || null)
 const saving = ref(false)
 const confirmingAll = ref(false)
 const generatingFindings = ref(false)
+const reaffirming = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
 const search = ref('')
-const severityFilter = ref<string>('all')
-// What the status bar has asked the rail to show. A view over the same list the
-// lanes counted, so the counts above and the rail below cannot disagree.
-const statusFilter = ref<FindingsFilter | null>(null)
+const statusFilter = ref<FindingsFilter[]>([])
 const template = ref<{ markdown: string; source: string } | null>(null)
 const templateOpen = ref(false)
+/** The narrative is a document until somebody says otherwise. */
+const editingNarrative = ref(false)
+/** Management's own words are recorded, not drafted, so the box opens on ask. */
+const editingResponse = ref(false)
+const riskPicker = ref<InstanceType<typeof Popover> | null>(null)
+const testPicker = ref<InstanceType<typeof Popover> | null>(null)
+const evidencePicker = ref<InstanceType<typeof Popover> | null>(null)
 
-const severities: FindingSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
-const severityOptions = ['all', ...severities]
 const selected = computed(() => data.value?.items.find(item => item.id === selectedId.value) ?? null)
-const filtered = computed(() => filterFindings(data.value?.items ?? [], statusFilter.value).filter(item => {
-  const matchesSeverity = severityFilter.value === 'all' || item.severity === severityFilter.value
-  const needle = search.value.trim().toLowerCase()
-  return matchesSeverity && (!needle || `${item.id} ${item.title} ${item.narrative}`.toLowerCase().includes(needle))
-}))
-// The lanes count the whole file, not the filtered rail: a count that shrank as
-// you filtered by it could never be clicked back out of.
-const status = computed(() => findingsStatus(data.value?.items ?? []))
-// The lanes name the gaps; the page header renders them beside its own buttons.
-const headerActions = computed(() => statusActions(status.value))
+const items = computed(() => data.value?.items ?? [])
+// The bar counts the whole register, not the filtered list: a count that shrank
+// as you filtered by it could never be clicked back out of.
+const status = computed(() => findingsStatus(items.value))
+const headline = computed(() => findingsHeadline(items.value))
 const statusBusy = computed(() => generatingFindings.value || confirmingAll.value)
-const statusFilterLabel = computed(() => (statusFilter.value ? FINDINGS_FILTER_LABELS[statusFilter.value] : ''))
+const scoped = computed(() => statusFilter.value.reduce<AuditFinding[]>(
+  (rows, key) => filterFindings(rows, key), items.value,
+))
+const filtered = computed(() => {
+  const needle = search.value.trim().toLowerCase()
+  if (!needle) return scoped.value
+  return scoped.value.filter(
+    item => `${item.id} ${item.title} ${item.narrative}`.toLowerCase().includes(needle),
+  )
+})
 const rcmOptions = computed(() => (data.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
 const testOptions = computed(() => [
   ...(data.value?.data_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: item.id })),
   ...(data.value?.document_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: item.id })),
 ])
-const executionOptions = computed(() => [
-  ...(data.value?.data_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: `datatest:${item.id}${item.last_run ? `:${item.last_run.id}` : ''}` })),
-  ...(data.value?.document_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: `doctest:${item.id}` })),
-])
 const availableEvidence = computed(() => (data.value?.evidence_options ?? []).filter(
   option => !selected.value?.evidence_refs.some(item => item.id === option.anchor.id),
 ))
-const unconfirmed = computed(() => (data.value?.items ?? []).filter(item => !item.auditor_confirmed))
+const unconfirmed = computed(() => items.value.filter(item => !item.auditor_confirmed))
 const agentBusy = computed(() => isActive.value || !agent.state.status?.configured)
 
-const severityTone: Record<string, string> = { critical: 'danger', high: 'danger', medium: 'warn', low: 'info', info: 'secondary' }
+/** The risks a finding names, resolved against the matrix this payload carries. */
+const riskLinks = computed(() => (selected.value?.rcm_refs ?? []).map(id => ({
+  id, risk: (data.value?.rcm ?? []).find(row => row.id === id)?.risk ?? '',
+})))
+const owed = computed(() => (selected.value ? openItems(selected.value) : []))
+const authorship = computed(() => {
+  const item = selected.value
+  if (!item) return ''
+  if (item.source === 'agent') return 'drafted by the assistant'
+  return item.source === 'promoted' ? 'promoted from an observation' : 'added by an auditor'
+})
+
+function when(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.valueOf())
+    ? ''
+    : date.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
 
 function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
@@ -107,7 +132,17 @@ watch(() => route.query.finding, value => {
   if (id && data.value?.items.some(item => item.id === id)) selectedId.value = id
 })
 watch(selectedId, id => {
+  // A different finding is a different document; neither editor stays open
+  // across the change, or the next finding opens in a mode nobody chose.
+  editingNarrative.value = false
+  editingResponse.value = false
   if (id && route.query.finding !== id) void nav.replace('findings', { finding: id })
+})
+// A finding filtered out from under the selection leaves the detail showing a
+// row the list no longer has.
+watch(filtered, rows => {
+  if (!rows.length || rows.some(item => item.id === selectedId.value)) return
+  selectedId.value = rows[0].id
 })
 
 async function addManual() {
@@ -120,7 +155,7 @@ async function addManual() {
   } catch (error) { fail('Could not add the finding', error) }
 }
 
-async function save() {
+async function save(changes?: Partial<AuditFinding>) {
   if (!selected.value) return
   saving.value = true
   try {
@@ -132,6 +167,7 @@ async function save() {
       execution_refs: item.execution_refs, cause_pending: item.cause_pending,
       auditor_confirmed: item.auditor_confirmed,
       evidence_refs: item.evidence_refs,
+      ...changes,
     })
     await reload(item.id)
     emit('changed')
@@ -142,6 +178,17 @@ async function save() {
     }
   } catch (error) { fail('Could not save the finding', error) }
   finally { saving.value = false }
+}
+
+/**
+ * Confirmation is a decision about the file, not a field on a form: it is
+ * written as soon as it is made rather than waiting for whatever else the
+ * detail happens to be holding.
+ */
+async function setConfirmed(value: boolean) {
+  if (!selected.value) return
+  selected.value.auditor_confirmed = value
+  await save({ auditor_confirmed: value })
 }
 
 function remove() {
@@ -166,15 +213,21 @@ function remove() {
 }
 
 /**
- * The bar names what it wants done; the tab still owns how. Both actions
- * already existed as header buttons — the lane that counts the gap is simply a
- * better place to offer them than a row that is there whether or not it applies.
+ * Re-read the evidence against the run it has moved to. The hash the finding
+ * was drafted from is recomputed on the server, which is the only place that
+ * knows what an evidentiary projection covers.
  */
-function runStatusAction(action: StatusAction) {
-  switch (action.key as FindingsActionKey) {
-    case 'generate_findings': return void generateAllFindings()
-    case 'confirm_all': return confirmAll()
-  }
+async function reaffirmEvidence() {
+  const item = selected.value
+  if (!item) return
+  reaffirming.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/findings/${item.id}/evidence/reaffirm`)
+    await reload(item.id)
+    emit('changed')
+    toast.add({ severity: 'success', summary: 'Evidence re-affirmed against the current run', life: 2500 })
+  } catch (error) { fail('Could not re-affirm the evidence', error) }
+  finally { reaffirming.value = false }
 }
 
 function confirmAll() {
@@ -210,7 +263,7 @@ function confirmAll() {
   })
 }
 
-async function generateAllFindings() {
+async function draftFromRcm() {
   generatingFindings.value = true
   try {
     await assistantChat.createChat()
@@ -243,12 +296,59 @@ async function saveTemplate(reset = false) {
   } catch (error) { fail('Could not save the finding template', error) }
 }
 
-function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
-function addEvidence(value: EvidenceRef) {
-  if (selected.value && !selected.value.evidence_refs.some(item => item.id === value.id)) selected.value.evidence_refs.push(value)
+function copyMarkdown() {
+  const item = selected.value
+  if (!item) return
+  void navigator.clipboard?.writeText(`# ${item.title}\n\n${item.narrative}`)
+    .then(() => toast.add({ severity: 'success', summary: 'Finding copied as Markdown', life: 1800 }))
+    .catch(error => fail('Could not copy the finding', error))
 }
-function removeEvidence(id: string) {
-  if (selected.value) selected.value.evidence_refs = selected.value.evidence_refs.filter(item => item.id !== id)
+
+const menuItems = computed(() => [
+  {
+    label: 'Generate all findings',
+    icon: 'pi pi-sparkles',
+    disabled: statusBusy.value || agentBusy.value,
+    command: () => void draftFromRcm(),
+  },
+  { label: 'Finding template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
+  {
+    label: 'Copy Markdown',
+    icon: 'pi pi-copy',
+    disabled: !selected.value,
+    command: copyMarkdown,
+  },
+  {
+    label: 'Remove finding',
+    icon: 'pi pi-trash',
+    disabled: !selected.value,
+    command: remove,
+  },
+])
+
+/** The cause is recorded in the narrative, so recording it opens the editor. */
+function recordCause() { editingNarrative.value = true }
+
+async function doneEditingNarrative() {
+  editingNarrative.value = false
+  await save()
+}
+async function doneEditingResponse() {
+  editingResponse.value = false
+  await save()
+}
+
+function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
+async function addEvidence(value: EvidenceRef) {
+  if (!selected.value || selected.value.evidence_refs.some(item => item.id === value.id)) return
+  selected.value.evidence_refs.push(value)
+  evidencePicker.value?.hide()
+  await save()
+}
+async function removeEvidence(id: string) {
+  if (!selected.value) return
+  selected.value.evidence_refs = selected.value.evidence_refs.filter(item => item.id !== id)
+  await save()
 }
 function openPlanning(rcmId: string) {
   void nav.replace('rcm', { rcm: rcmId })
@@ -258,12 +358,17 @@ function openPlanning(rcmId: string) {
  * prefixes (`DAT-` for data tests, `DT-` for document tests) are too close to
  * parse by hand, so membership decides which surface answers for the id.
  */
-type TestLink = { id: string; destination: 'data-tests' | 'doc-tests'; title: string; icon: string }
+type TestLink = { id: string; destination: 'data-tests' | 'doc-tests'; title: string; icon: string; exceptions: number }
 function resolveTest(id: string): TestLink | null {
   const dataTest = (data.value?.data_tests ?? []).find(item => item.id === id)
-  if (dataTest) return { id, destination: 'data-tests', title: dataTest.title, icon: 'pi pi-chart-bar' }
+  if (dataTest) {
+    return {
+      id, destination: 'data-tests', title: dataTest.title, icon: 'pi pi-chart-bar',
+      exceptions: dataTest.open_exception_count || dataTest.evaluation?.exception_count || 0,
+    }
+  }
   const docTest = (data.value?.document_tests ?? []).find(item => item.id === id)
-  if (docTest) return { id, destination: 'doc-tests', title: docTest.title, icon: 'pi pi-file-check' }
+  if (docTest) return { id, destination: 'doc-tests', title: docTest.title, icon: 'pi pi-file-check', exceptions: 0 }
   return null
 }
 const testLinks = computed(() => (selected.value?.test_refs ?? [])
@@ -283,113 +388,541 @@ function openEvidence(value: EvidenceRef) {
     void nav.replace('data-tests')
   } else showAnchor(value)
 }
+/** Whether one anchor is the one the finding's warning is about. */
+function anchorMoved(value: EvidenceRef): boolean {
+  return (selected.value?.evidence_warnings ?? []).some(
+    warning => warning.includes(`${value.source_kind}:${value.source_id}`),
+  )
+}
+/**
+ * The stale strip's sentence, naming the source that moved rather than
+ * restating the server's warning list. It is the only place the page says the
+ * evidence has drifted.
+ */
+const staleSentence = computed(() => {
+  const item = selected.value
+  if (!item?.evidence_warnings?.length) return undefined
+  const moved = item.evidence_refs.filter(anchorMoved)
+  const names = moved.map(value => value.source_id).join(', ')
+  return `${names ? `The evidence this finding cites (${names})` : 'The evidence this finding cites'} has changed since the narrative was drafted. Re-read the condition against the source, then re-affirm the evidence.`
+})
 </script>
 
 <template>
-  <div class="findings-tab">
-    <UiPageHeader title="Findings">
-      <!-- The gaps the status found lead the row. They used to sit at the
-           bottom of the status card, last in the reading order. -->
+  <div class="findings">
+    <!-- One title, one count sentence, at most one primary. What is
+         outstanding takes the primary slot when anything is. -->
+    <header class="page-head">
+      <h1>Findings</h1>
+      <p class="headline aw-figure">{{ headline }}</p>
+      <span class="grow" />
       <Button
-        v-for="action in headerActions"
-        :key="action.key"
-        :label="action.label"
+        label="Draft from the RCM"
+        icon="pi pi-sparkles"
         size="small"
-        :outlined="action.tone === 'ghost'"
-        :severity="action.tone === 'warn' ? 'warn' : undefined"
-        :disabled="statusBusy || (action.needsAgent && agentBusy)"
-        @click="runStatusAction(action)"
+        outlined
+        severity="secondary"
+        :disabled="statusBusy || agentBusy"
+        @click="draftFromRcm"
       />
-      <Button label="Finding template" icon="pi pi-file-edit" severity="secondary" outlined size="small" @click="openTemplate" />
-      <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
-    </UiPageHeader>
-    <UiStatusLanes
-      v-if="data"
-      :lanes="status.lanes"
-      :disclosures="status.disclosures"
-      :filter="statusFilter ? [statusFilter] : []"
-      :filterLabel="statusFilterLabel"
-      :busy="statusBusy"
-      :canRunAgent="!agentBusy"
-      @filter="statusFilter = (($event[0] ?? null) as FindingsFilter | null)"
-      @action="runStatusAction"
-    />
-    <div v-if="data?.items.length" class="findings-layout">
-      <aside class="finding-rail card">
-        <div class="rail-filters"><InputText v-model="search" placeholder="Search findings" /><Select v-model="severityFilter" :options="severityOptions" /></div>
-        <button v-for="item in filtered" :key="item.id" :class="{ active: item.id === selectedId }" @click="selectedId = item.id">
-          <span class="rail-title"><strong>{{ item.id }}</strong><Tag :value="item.severity" :severity="severityTone[item.severity]" /></span>
-          <span>{{ item.title }}</span><small>{{ item.source }}</small>
-        </button>
-        <p v-if="!filtered.length" class="empty">No findings match this view.</p>
-      </aside>
+      <Button
+        v-if="unconfirmed.length"
+        label="Add finding"
+        icon="pi pi-plus"
+        size="small"
+        outlined
+        severity="secondary"
+        @click="addManual"
+      />
+      <Button
+        v-if="unconfirmed.length"
+        :label="`Confirm ${unconfirmed.length}`"
+        icon="pi pi-check"
+        size="small"
+        severity="warn"
+        :loading="confirmingAll"
+        :disabled="statusBusy"
+        @click="confirmAll"
+      />
+      <Button v-else label="Add finding" icon="pi pi-plus" size="small" @click="addManual" />
+      <UiOverflowMenu :items="menuItems" tooltip="More findings actions" />
+    </header>
 
-      <section v-if="selected" class="finding-detail card">
-        <div class="detail-toolbar">
-          <div class="provenance"><strong>{{ selected.id }}</strong><Tag :value="selected.source" severity="secondary"/><button v-for="link in testLinks" :key="`head:${link.id}`" type="button" class="source-test" :title="link.title" @click="openTest(link.id)"><i :class="link.icon"/>{{ link.id }}</button><span v-if="selected.agent_run_id" class="muted">Run {{ selected.agent_run_id }}</span></div>
-          <span class="grow"/><Button label="Remove" icon="pi pi-trash" severity="danger" outlined size="small" @click="remove"/><Button label="Save finding" icon="pi pi-save" size="small" :loading="saving" @click="save"/>
+    <UiReviewBar
+      v-if="items.length"
+      :lanes="status.lanes"
+      :chips="FINDING_CHIPS"
+      :filters="status.filters"
+      allLabel="All findings"
+      :total="items.length"
+      :filter="statusFilter"
+      @filter="statusFilter = ($event as FindingsFilter[])"
+    />
+
+    <div v-if="items.length" class="layout">
+      <section class="list-panel">
+        <div class="list-head">
+          <IconField>
+            <InputIcon class="pi pi-search" />
+            <InputText v-model="search" size="small" placeholder="Search findings" />
+          </IconField>
         </div>
-        <h3 class="form-section-title">Finding</h3>
-        <div class="top-fields"><label>Title<InputText v-model="selected.title" /></label><label>Severity<Select v-model="selected.severity" :options="severities" /></label></div>
-        <p class="narrative-hint">This narrative is copied into the report unchanged, so write it as final report text. Its sections come from the <button type="button" class="linkish" @click="openTemplate">finding template</button>.</p>
-        <div class="narrative-editor"><MarkdownEditor v-model="selected.narrative" /></div>
-        <div class="narrative-flags"><label><input v-model="selected.cause_pending" type="checkbox"/> Root cause pending auditor follow-up</label><label><input v-model="selected.auditor_confirmed" type="checkbox"/> Auditor confirmed for formal reporting</label></div>
-        <h3 class="form-section-title">Management response</h3>
-        <Textarea v-model="selected.management_response" rows="4" autoResize class="response-editor" placeholder="Management's own response, recorded as received." />
-        <div class="link-grid">
-          <label>RCM links<MultiSelect v-model="selected.rcm_refs" :options="rcmOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select risks and controls" /></label>
-          <label>Test links<MultiSelect v-model="selected.test_refs" :options="testOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select tests" /></label>
-          <label class="wide">Execution sources<MultiSelect v-model="selected.execution_refs" :options="executionOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select durable execution results" /></label>
+        <div class="list-body">
+          <FindingsList :findings="filtered" :selectedId="selectedId" @select="selectedId = $event.id" />
         </div>
-        <UiAdvancedSection title="Evidence and traceability" :description="`${plural(selected.evidence_refs.length, 'evidence link')}`" :open="!selected.evidence_refs.length">
-        <div class="source-links">
-          <h3>Traceability and evidence</h3>
-          <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.test_refs" :key="`test:${id}`" @click="openTest(id)"><i class="pi pi-list-check"/> {{ id }}</button></div>
-          <p v-if="!selected.evidence_refs.length" class="warning"><i class="pi pi-exclamation-triangle"/> No typed evidence is linked. Add evidence through a promoted agent observation or an evidence-enabled workflow.</p>
-          <p v-for="warning in selected.evidence_warnings" :key="warning" class="warning"><i class="pi pi-exclamation-triangle"/> {{ warning }}</p>
-          <div v-if="selected.evidence_refs.length" class="evidence-list"><div v-for="value in selected.evidence_refs" :key="value.id"><button @click="openEvidence(value)"><i class="pi pi-link"/><span>{{ value.source_kind }}:{{ value.source_id }}<small v-if="value.page">page {{ value.page }}</small></span><code>{{ value.source_sha1?.slice(0, 10) }}</code></button><Button icon="pi pi-times" text rounded severity="danger" size="small" aria-label="Remove evidence link" @click="removeEvidence(value.id)"/></div></div>
-          <details v-if="availableEvidence.length" class="evidence-picker"><summary>Add evidence already captured in fieldwork</summary><button v-for="option in availableEvidence" :key="option.anchor.id" @click="addEvidence(option.anchor)"><i class="pi pi-plus"/>{{ option.label }}</button></details>
-        </div>
-        </UiAdvancedSection>
-        <UiAdvancedSection title="Sources and provenance" description="What this draft was written from, and what was left out">
-          <div class="admin-row"><span>Source: {{ selected.source }}</span><span v-if="selected.agent_run_id">Agent run: {{ selected.agent_run_id }}</span></div>
-          <ProvenanceRail :key="selected.id" :workspaceId="workspace.id" :artifactRef="`finding:${selected.id}`" class="detail-provenance" />
-        </UiAdvancedSection>
       </section>
-      <UiEmptyState v-else icon="pi pi-flag" title="No finding selected" description="Select a finding or add a manual finding." />
+
+      <section v-if="selected" class="detail">
+        <header class="detail-head">
+          <div class="detail-copy">
+            <p class="eyebrow aw-figure">
+              <span class="id">{{ selected.id }}</span>
+              · <span class="authorship" :data-agent="selected.source === 'agent'">{{ authorship }}</span>
+              <template v-if="when(selected.created)"> · {{ when(selected.created) }}</template>
+            </p>
+            <InputText v-model="selected.title" class="title-field" unstyled aria-label="Finding title" />
+            <p class="lede">
+              {{ selected.source === 'agent'
+                ? 'Drafted by the assistant. The narrative is copied into the report unchanged.'
+                : 'The narrative is copied into the report unchanged.' }}
+            </p>
+          </div>
+          <Select
+            v-model="selected.severity"
+            :options="SEVERITY_ORDER"
+            size="small"
+            class="severity-select"
+            :data-tone="selected.severity"
+            aria-label="Severity"
+          />
+          <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save()" />
+        </header>
+
+        <!-- What is recorded, and what the report can do with it. The two
+             checkboxes under the old editor said neither. -->
+        <UiVerdictBar :tone="selected.auditor_confirmed ? 'ok' : 'neutral'" :stale="staleSentence">
+          <template #found>
+            <template v-if="selected.auditor_confirmed">
+              <span>Confirmed for reporting</span>
+              <span class="meta aw-figure">· {{ when(selected.updated) }}</span>
+            </template>
+            <span v-else>Not confirmed for reporting</span>
+          </template>
+
+          <template #recorded>
+            <template v-if="!owed.length">In the report.</template>
+            <template v-else>
+              Left out of the report until it is supported:
+              <template v-for="(item, index) in owed" :key="item.key">
+                <span v-if="index" aria-hidden="true"> · </span>
+                <span :data-tone="item.tone">{{ item.label }}</span>
+              </template>
+            </template>
+          </template>
+
+          <template #actions>
+            <Button
+              v-if="selected.evidence_warnings?.length"
+              label="Re-affirm"
+              icon="pi pi-verified"
+              size="small"
+              severity="warn"
+              :loading="reaffirming"
+              @click="reaffirmEvidence"
+            />
+            <Button
+              v-if="!selected.rcm_refs.length"
+              label="Link to a risk"
+              icon="pi pi-map"
+              iconPos="left"
+              size="small"
+              @click="riskPicker?.toggle($event)"
+            />
+            <Button
+              v-if="selected.auditor_confirmed"
+              label="Withdraw confirmation"
+              size="small"
+              text
+              severity="secondary"
+              :loading="saving"
+              @click="setConfirmed(false)"
+            />
+            <Button
+              v-else
+              label="Confirm for reporting"
+              icon="pi pi-check"
+              size="small"
+              :loading="saving"
+              @click="setConfirmed(true)"
+            />
+          </template>
+        </UiVerdictBar>
+
+        <div class="body">
+          <div class="main">
+            <section>
+              <div class="section-head">
+                <h3 class="aw-label">Narrative</h3>
+                <Button
+                  :label="editingNarrative ? 'Done' : 'Edit'"
+                  :icon="editingNarrative ? 'pi pi-check' : 'pi pi-pencil'"
+                  size="small"
+                  text
+                  severity="secondary"
+                  :loading="saving"
+                  @click="editingNarrative ? doneEditingNarrative() : (editingNarrative = true)"
+                />
+              </div>
+              <div v-if="editingNarrative" class="narrative-editor">
+                <MarkdownEditor v-model="selected.narrative" />
+                <label class="cause-flag">
+                  <input v-model="selected.cause_pending" type="checkbox" />
+                  The root cause is still pending auditor follow-up
+                </label>
+              </div>
+              <FindingNarrative
+                v-else
+                :markdown="selected.narrative"
+                :causePending="selected.cause_pending"
+                @recordCause="recordCause"
+              />
+            </section>
+
+            <section>
+              <div class="section-head">
+                <h3 class="aw-label">Management response</h3>
+                <Button
+                  v-if="!editingResponse"
+                  label="Record as received"
+                  icon="pi pi-pencil"
+                  size="small"
+                  text
+                  severity="secondary"
+                  @click="editingResponse = true"
+                />
+                <Button
+                  v-else
+                  label="Done"
+                  icon="pi pi-check"
+                  size="small"
+                  text
+                  severity="secondary"
+                  :loading="saving"
+                  @click="doneEditingResponse"
+                />
+              </div>
+              <Textarea
+                v-if="editingResponse"
+                v-model="selected.management_response"
+                rows="4"
+                autoResize
+                class="response-editor"
+                placeholder="Management's own response, recorded as received."
+              />
+              <p v-else class="response" :class="{ none: !selected.management_response.trim() }">
+                {{ selected.management_response.trim() || 'None received.' }}
+              </p>
+            </section>
+          </div>
+
+          <aside class="rail">
+            <section>
+              <div class="section-head">
+                <h3 class="aw-label">Risk</h3>
+                <Button
+                  v-if="riskLinks.length"
+                  label="Change"
+                  size="small"
+                  text
+                  severity="secondary"
+                  @click="riskPicker?.toggle($event)"
+                />
+              </div>
+              <template v-if="riskLinks.length">
+                <button
+                  v-for="link in riskLinks"
+                  :key="link.id"
+                  type="button"
+                  class="card"
+                  @click="openPlanning(link.id)"
+                >
+                  <span class="card-id">{{ link.id }}</span>
+                  <span class="clamp">{{ link.risk }}</span>
+                </button>
+              </template>
+              <!-- The one gap the report cannot write around, said where the
+                   link is made rather than as a lane count. -->
+              <div v-else class="missing">
+                <p>Not linked to a risk. The report cannot place this finding in a process until it names the row it answers.</p>
+                <Button label="Choose a row" size="small" @click="riskPicker?.toggle($event)" />
+              </div>
+            </section>
+
+            <section>
+              <div class="section-head">
+                <h3 class="aw-label">Tests</h3>
+                <Button label="Add" icon="pi pi-plus" size="small" text severity="secondary" @click="testPicker?.toggle($event)" />
+              </div>
+              <button
+                v-for="link in testLinks"
+                :key="link.id"
+                type="button"
+                class="card"
+                @click="openTest(link.id)"
+              >
+                <span class="card-top">
+                  <span class="card-id"><i :class="link.icon" aria-hidden="true" />{{ link.id }}</span>
+                  <span v-if="link.exceptions" class="pill warn aw-figure">{{ plural(link.exceptions, 'exception') }}</span>
+                </span>
+                <span class="clamp">{{ link.title }}</span>
+              </button>
+              <p v-if="!testLinks.length" class="none">No test linked.</p>
+            </section>
+
+            <section>
+              <div class="section-head">
+                <h3 class="aw-label">Evidence</h3>
+                <Button
+                  label="Add"
+                  icon="pi pi-plus"
+                  size="small"
+                  text
+                  severity="secondary"
+                  :disabled="!availableEvidence.length"
+                  @click="evidencePicker?.toggle($event)"
+                />
+              </div>
+              <div v-for="value in selected.evidence_refs" :key="value.id" class="card-row">
+                <button type="button" class="card" @click="openEvidence(value)">
+                  <span class="card-top">
+                    <span class="card-id">{{ value.id }}</span>
+                    <span v-if="anchorMoved(value)" class="pill warn">changed</span>
+                  </span>
+                  <span class="clamp">{{ value.source_kind }} · {{ value.source_id }}</span>
+                  <span v-if="value.source_sha1" class="drafted aw-figure">
+                    Drafted against {{ value.source_sha1.slice(0, 8) }}
+                  </span>
+                </button>
+                <Button
+                  icon="pi pi-times"
+                  text
+                  rounded
+                  severity="danger"
+                  size="small"
+                  aria-label="Remove evidence link"
+                  @click="removeEvidence(value.id)"
+                />
+              </div>
+              <p v-if="!selected.evidence_refs.length" class="none">No evidence anchored.</p>
+            </section>
+
+            <section class="provenance">
+              <details>
+                <summary>Where this came from</summary>
+                <ProvenanceRail :key="selected.id" :workspaceId="workspace.id" :artifactRef="`finding:${selected.id}`" />
+              </details>
+              <p v-if="selected.agent_run_id" class="run-id aw-figure">Run {{ selected.agent_run_id }}</p>
+            </section>
+          </aside>
+        </div>
+      </section>
+      <UiEmptyState v-else icon="pi pi-flag" title="No finding selected" description="Select a finding or add one." />
     </div>
     <UiEmptyState v-else icon="pi pi-flag" title="Start the findings register" description="Add a finding when fieldwork identifies a reportable issue.">
-      <Button label="Add manual finding" icon="pi pi-plus" @click="addManual" />
+      <Button label="Add finding" icon="pi pi-plus" @click="addManual" />
     </UiEmptyState>
+
+    <!-- The three multiselects the detail used to carry, moved to where the
+         card they fill is read. -->
+    <template v-if="selected">
+      <Popover ref="riskPicker">
+        <Listbox
+          v-model="selected.rcm_refs"
+          :options="rcmOptions"
+          optionLabel="label"
+          optionValue="value"
+          multiple
+          checkmark
+          filter
+          filterPlaceholder="Search risks"
+          class="picker"
+          @change="save()"
+        />
+      </Popover>
+      <Popover ref="testPicker">
+        <Listbox
+          v-model="selected.test_refs"
+          :options="testOptions"
+          optionLabel="label"
+          optionValue="value"
+          multiple
+          checkmark
+          filter
+          filterPlaceholder="Search tests"
+          class="picker"
+          @change="save()"
+        />
+      </Popover>
+      <Popover ref="evidencePicker">
+        <div class="picker evidence-picker">
+          <button v-for="option in availableEvidence" :key="option.anchor.id" type="button" @click="addEvidence(option.anchor)">
+            <i class="pi pi-plus" aria-hidden="true" />{{ option.label }}
+          </button>
+          <p v-if="!availableEvidence.length" class="none">Nothing further has been captured in fieldwork.</p>
+        </div>
+      </Popover>
+    </template>
+
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" />
-    <Dialog v-model:visible="templateOpen" modal header="Finding template" :style="{width:'min(900px,94vw)'}">
-      <p class="muted">The <code>##</code> headings below are the sections every finding must complete before it can be confirmed for formal reporting. Comments are guidance for the auditor and the agent, and never appear in a finding or the report.</p>
-      <Textarea v-if="template" v-model="template.markdown" rows="22" spellcheck="false" class="template-editor"/>
-      <template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template>
-    </Dialog>
+    <Drawer
+      v-model:visible="templateOpen"
+      position="right"
+      header="Finding template"
+      :style="{ width: 'min(45rem, 96vw)' }"
+    >
+      <p class="template-note">
+        The <code>##</code> headings below are the sections every finding must complete before it can
+        be confirmed for formal reporting. Comments are guidance for the auditor and the agent, and
+        never appear in a finding or the report.
+      </p>
+      <Textarea v-if="template" v-model="template.markdown" rows="24" spellcheck="false" class="template-editor" />
+      <div class="template-foot">
+        <Button label="Restore default" severity="secondary" text size="small" @click="saveTemplate(true)" />
+        <Button label="Save override" icon="pi pi-save" size="small" @click="saveTemplate(false)" />
+      </div>
+    </Drawer>
   </div>
 </template>
 
 <style scoped>
-.findings-tab { display:flex; flex-direction:column; gap:var(--aw-section-gap); min-width:0 }.findings-head,.detail-toolbar,.provenance,.rail-title { display:flex; align-items:center }.findings-head { justify-content:space-between; gap:1rem; margin-bottom:1rem }.findings-head h2 { margin:.1rem 0 }.findings-layout { display:grid; grid-template-columns:18rem minmax(0,1fr); gap: var(--aw-section-gap) }.finding-rail { padding:.55rem; align-self:start; max-height:42rem; overflow:auto }.rail-filters { display:grid; grid-template-columns:1fr 6.5rem; gap:.4rem; padding:.2rem .15rem .6rem }.rail-filters :deep(.p-inputtext),.rail-filters :deep(.p-select) { width:100%; font-size:var(--aw-text-sm) }.finding-rail > button { width:100%; display:flex; flex-direction:column; gap:.3rem; text-align:left; border:0; border-radius:var(--aw-radius-control); background:transparent; padding:.7rem; color:var(--aw-ink); cursor:pointer }.finding-rail > button:hover,.finding-rail > button.active { background:var(--aw-teal-soft) }.rail-title { width:100%; justify-content:space-between }.finding-rail small { color:var(--aw-muted); text-transform:capitalize }.finding-detail { padding:1rem; min-width:0 }.detail-toolbar { gap:.45rem; padding-bottom:.8rem; border-bottom:1px solid var(--aw-border) }.provenance { gap:.45rem; flex-wrap:wrap }.grow { flex:1 }.top-fields { display:grid; grid-template-columns:minmax(0,1fr) 9rem 8rem; gap:.75rem; margin:1rem 0 }.link-grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }.link-grid .wide { grid-column:1/-1 } label { display:flex; flex-direction:column; gap:.35rem; font-size:var(--aw-text-sm); font-weight:700; color:var(--aw-muted) } label :deep(.p-inputtext),label :deep(.p-textarea),label :deep(.p-select),label :deep(.p-multiselect) { width:100%; font-size:var(--aw-text-sm); color:var(--aw-ink); font-weight:400 }.link-grid { margin-top:.9rem }.source-links { margin-top:1rem; padding-top:.8rem; border-top:1px solid var(--aw-border) }.source-links h3 { margin:0 0 .6rem; font-size:var(--aw-text-base) }.chips,.evidence-list { display:flex; flex-wrap:wrap; gap:.4rem }.chips button,.evidence-list button { border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.3rem .6rem; cursor:pointer }.evidence-list { flex-direction:column }.evidence-list > div { display:flex; align-items:center; gap:.3rem }.evidence-list > div > button:first-child { flex:1; display:flex; align-items:center; text-align:left; border-radius:var(--aw-radius-control); gap:.55rem }.evidence-list button span { display:flex; flex-direction:column; flex:1 }.evidence-list small,.evidence-list code { color:var(--aw-muted) }.evidence-picker { margin-top:.6rem; padding:.6rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.evidence-picker summary { cursor:pointer; color:var(--aw-teal); font-weight:700; font-size:var(--aw-text-sm) }.evidence-picker > button { display:block; width:100%; margin-top:.35rem; padding:.45rem; border:0; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); text-align:left; cursor:pointer }.warning { padding:.7rem; background:var(--aw-warn-soft); color:var(--aw-warn-ink); border-radius:var(--aw-radius-control) }.empty,.empty-detail { color:var(--aw-muted); text-align:center }.empty-detail { min-height:20rem; display:grid; place-content:center }.empty-detail i { font-size:var(--aw-text-3xl) }.muted { color:var(--aw-muted) }
-.findings-layout { grid-template-columns:17rem minmax(0,1fr) }
-.finding-rail { max-height:42rem }
-.detail-toolbar { position:sticky; top:-1rem; z-index:3; margin:-1rem -1rem .8rem; padding:.65rem 1rem; background:var(--aw-panel) }
-.top-fields { margin:.5rem 0 .8rem }
-.source-links { margin:0; padding:0; border:0 }
-.form-section-title { margin:.7rem 0 .5rem; color:var(--aw-muted); font-size:var(--aw-text-xs);}
-.narrative-hint { margin:.2rem 0 .6rem; color:var(--aw-muted); font-size:var(--aw-text-sm) }
-.linkish { border:0; background:none; padding:0; color:var(--aw-teal); font:inherit; text-decoration:underline; cursor:pointer }
-.source-test { display:inline-flex; align-items:center; gap:.35rem; border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.15rem .55rem; font:inherit; font-size:var(--aw-text-sm); font-weight:700; cursor:pointer }
-.source-test:hover { background:var(--aw-teal-soft) }
-.narrative-editor { min-height:26rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }
-.narrative-editor :deep(.markdown-editor) { min-height:26rem }
-.narrative-flags { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.7rem 0 .2rem }
-.narrative-flags label { flex-direction:row; align-items:center; gap:.4rem; font-weight:400; color:var(--aw-ink); font-size:var(--aw-text-sm) }
-.response-editor { width:100%; font-size:var(--aw-text-sm) }
-.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }
-.admin-row { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; color:var(--aw-muted); font-size:var(--aw-text-sm) }.admin-row .p-button { margin-left:auto }
-.detail-provenance { max-width:34rem; margin-top:.75rem }
-@media (max-width:1050px) { .findings-layout { grid-template-columns:1fr }.finding-rail { max-height:16rem }.link-grid { grid-template-columns:1fr }.link-grid .wide { grid-column:auto } }
-@media (max-width:700px) { .top-fields { grid-template-columns:1fr }.findings-head { align-items:flex-start; flex-direction:column }.detail-toolbar { flex-wrap:wrap } }
+.findings { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
+
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
+.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
+.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.grow { flex: 1; }
+
+.layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
+
+.list-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
+.list-head { display: flex; flex-direction: column; gap: .5rem; padding: .625rem .75rem; border-bottom: 1px solid var(--aw-border); }
+.list-head :deep(.p-iconfield), .list-head :deep(.p-inputtext) { width: 100%; }
+.list-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+
+.detail {
+  display: flex; flex-direction: column; gap: 1rem;
+  min-width: 0; max-width: 100%; min-height: 100%;
+  padding: 1.125rem 1.375rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel);
+  container: master-detail-content / inline-size;
+  overflow-y: auto;
+}
+/* The column scrolls; nothing in it is squeezed to fit the viewport. Without
+   this the verdict bar — a flex child with no intrinsic minimum — collapsed to
+   a 2px line under a long narrative. */
+.detail > * { flex: none; }
+.detail-head { display: flex; align-items: flex-start; gap: .75rem; min-width: 0; }
+.detail-copy { display: flex; flex-direction: column; gap: .25rem; flex: 1; min-width: 0; }
+.eyebrow { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.eyebrow .id { font-family: var(--aw-font-mono); font-weight: 600; }
+.eyebrow .authorship[data-agent='true'] { color: var(--aw-accent); }
+/* The title edits where it is read: a `Title` field in a form above the
+   document restated the heading the document already has. */
+.title-field {
+  width: 100%; padding: .1rem .25rem; margin-left: -.25rem;
+  border: 1px solid transparent; border-radius: var(--aw-radius-control);
+  background: none; color: var(--aw-ink-strong);
+  font: inherit; font-size: var(--aw-text-lg); font-weight: 600; letter-spacing: -0.01em;
+}
+.title-field:hover { border-color: var(--aw-border); }
+.title-field:focus { outline: 0; border-color: var(--aw-teal); background: var(--aw-canvas); }
+.lede { margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.45; }
+
+.severity-select :deep(.p-select-label) { font-weight: 600; text-transform: capitalize; }
+.severity-select[data-tone='critical'] { border-color: var(--aw-danger-line); color: var(--aw-danger-ink); }
+.severity-select[data-tone='high'] { border-color: var(--aw-danger-line); color: var(--aw-danger); }
+.severity-select[data-tone='medium'] { border-color: var(--aw-warn-line); color: var(--aw-warn-ink); }
+.severity-select[data-tone='low'] { border-color: var(--aw-low); color: var(--aw-low-ink); }
+
+.meta { color: var(--aw-muted); font-size: var(--aw-text-sm); font-weight: 500; }
+[data-tone='bad'] { color: var(--aw-danger); }
+[data-tone='warn'] { color: var(--aw-warn-ink); }
+
+.body { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: 1.375rem; min-width: 0; }
+.main { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 1.75rem; }
+.section-head h3 { margin: 0; }
+
+.narrative-editor { display: flex; flex-direction: column; gap: .6rem; }
+.narrative-editor :deep(.markdown-editor) { min-height: 24rem; }
+.cause-flag { display: flex; align-items: center; gap: .4rem; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); }
+.response-editor { width: 100%; font-size: var(--aw-text-sm); }
+.response {
+  margin: 0; padding: .625rem .75rem;
+  border-radius: var(--aw-radius-control); background: var(--aw-raised);
+  color: var(--aw-ink); font-size: var(--aw-text-sm); line-height: 1.5; white-space: pre-wrap;
+}
+.response.none, .none { color: var(--aw-muted); }
+.none { margin: 0; font-size: var(--aw-text-sm); }
+
+.rail { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+.rail section { display: flex; flex-direction: column; gap: .4rem; min-width: 0; }
+.card {
+  display: flex; flex-direction: column; gap: .2rem;
+  width: 100%; min-width: 0;
+  padding: .5rem .625rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control);
+  background: var(--aw-panel); color: var(--aw-ink);
+  font: inherit; font-size: var(--aw-text-sm); text-align: left; cursor: pointer;
+}
+.card:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
+.card:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+.card-top { display: flex; align-items: center; justify-content: space-between; gap: .4rem; }
+.card-id { display: inline-flex; align-items: center; gap: .3rem; color: var(--aw-teal); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 700; }
+.card-row { display: flex; align-items: flex-start; gap: .2rem; }
+.card-row .card { flex: 1; }
+.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; color: var(--aw-ink-soft); line-height: 1.4; }
+.drafted { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.pill {
+  flex: none; padding: 0 .375rem;
+  border-radius: var(--aw-radius-pill);
+  font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+}
+.pill.warn { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+
+.missing {
+  display: flex; flex-direction: column; align-items: flex-start; gap: .5rem;
+  padding: .625rem .75rem;
+  border: 1px dashed var(--aw-danger-line); border-radius: var(--aw-radius-control);
+  background: var(--aw-danger-soft);
+}
+.missing p { margin: 0; color: var(--aw-danger-ink); font-size: var(--aw-text-sm); line-height: 1.45; }
+
+.provenance summary { color: var(--aw-teal); font-size: var(--aw-text-sm); font-weight: 600; cursor: pointer; }
+.provenance :deep(.provenance-rail) { margin-top: .5rem; }
+.run-id { margin: .4rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-family: var(--aw-font-mono); }
+
+.picker { width: min(26rem, 80vw); }
+.picker :deep(.p-listbox-list-container) { max-height: 18rem; }
+.evidence-picker { display: flex; flex-direction: column; gap: .2rem; max-height: 20rem; overflow-y: auto; }
+.evidence-picker button {
+  display: flex; align-items: center; gap: .4rem;
+  padding: .4rem .5rem; border: 0; border-radius: var(--aw-radius-control);
+  background: none; color: var(--aw-ink); font: inherit; font-size: var(--aw-text-sm);
+  text-align: left; cursor: pointer;
+}
+.evidence-picker button:hover { background: var(--aw-raised); }
+
+.template-note { margin: 0 0 .6rem; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.5; }
+.template-editor { width: 100%; font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); }
+.template-foot { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .75rem; }
+
+@container workspace-panel (max-width: 60rem) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .list-body { max-height: 18rem; }
+}
+@container master-detail-content (max-width: 46rem) {
+  .body { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

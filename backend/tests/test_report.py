@@ -104,6 +104,79 @@ def test_finding_crud_validates_typed_sources_and_rolls_up(workspace_with_data):
     assert ws.findings == []
 
 
+def test_reaffirming_evidence_repins_the_anchor_to_what_the_source_says_now(
+    workspace_with_data,
+):
+    """Re-affirming is the auditor saying they have re-read the moved source.
+
+    Nothing else about the finding changes: the narrative they re-read is
+    still the narrative, and the anchor still names the same source. What
+    moves is the hash the finding is drafted against, which is the only record
+    of *which* version was weighed.
+    """
+
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(
+        workspace_with_data
+    )
+    current = anchor["source_sha1"]
+    moved = {**anchor, "source_sha1": "0" * 40}
+    item = findings.add(
+        ws,
+        {
+            **complete_finding_payload(rcm, procedure, execution, moved),
+            "evidence_refs": [moved],
+        },
+    )
+    assert findings.evidence_warnings(ws, item)
+
+    settled = findings.reaffirm_evidence(ws, item["id"])
+
+    assert settled["evidence_refs"][0]["source_sha1"] == current
+    assert findings.evidence_warnings(ws, settled) == []
+    assert settled["narrative"] == item["narrative"]
+    # And it survives the round trip to disk.
+    reloaded = workspaces.load_workspace(ws.id)
+    assert findings.evidence_warnings(reloaded, reloaded.findings[0]) == []
+
+
+def test_the_reaffirm_route_settles_the_warning_it_is_called_about(workspace_with_data):
+    """The register's `Re-affirm` reaches a route, and the route answers with
+    the finding the page then redraws from."""
+
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(
+        workspace_with_data
+    )
+    moved = {**anchor, "source_sha1": "0" * 40}
+    item = findings.add(
+        ws,
+        {
+            **complete_finding_payload(rcm, procedure, execution, moved),
+            "evidence_refs": [moved],
+        },
+    )
+    client = TestClient(create_app())
+
+    listed = client.get(f"/api/workspaces/{ws.id}/findings").json()
+    assert listed["items"][0]["evidence_warnings"]
+
+    response = client.post(
+        f"/api/workspaces/{ws.id}/findings/{item['id']}/evidence/reaffirm"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["evidence_warnings"] == []
+
+
+def test_reaffirming_names_an_anchor_it_cannot_settle(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(
+        workspace_with_data
+    )
+    item = findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+
+    with pytest.raises(workspaces.WorkspaceError, match="EV-NOPE"):
+        findings.reaffirm_evidence(ws, item["id"], "EV-NOPE")
+
+
 def test_a_finding_may_be_drafted_against_evidence_that_has_since_changed(
     workspace_with_data,
 ):

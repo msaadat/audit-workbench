@@ -1,9 +1,12 @@
 import { plural, pluralWord } from '../../format'
 import { portion } from '../ui/statusLanes'
 import type {
-  StatusChip, StatusDisclosure, StatusLane, StatusModel,
+  ReviewChip, StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
-import type { AuditFinding } from '../../types'
+import type { AuditFinding, FindingSeverity } from '../../types'
+
+/** Worst first, which is the order the register is read in. */
+export const SEVERITY_ORDER: FindingSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
 /**
  * Whether the findings are ready to report, in three answers.
@@ -39,6 +42,7 @@ interface Counts {
   responseMissing: number
   settled: number
   agentAuthored: number
+  reportable: number
 }
 
 function hasText(value: unknown): boolean {
@@ -53,6 +57,17 @@ function unsupported(item: AuditFinding): boolean {
     || Boolean(item.evidence_warnings?.length)
 }
 
+/**
+ * What the report can actually carry: agreed by an auditor, and traceable.
+ *
+ * Confirmation and support are separate answers — the file's live shape is
+ * eighteen confirmed findings none of which names a risk — so neither alone
+ * says whether a finding reaches the report.
+ */
+function reportable(item: AuditFinding): boolean {
+  return item.auditor_confirmed && !unsupported(item)
+}
+
 /** Nothing further is owed on it: the cause is settled and the response is in. */
 function settled(item: AuditFinding): boolean {
   return !item.cause_pending && hasText(item.management_response)
@@ -64,7 +79,7 @@ function tally(items: AuditFinding[]): Counts {
     confirmed: 0, unconfirmed: [],
     noEvidence: 0, noRcmLink: 0, noTestLink: 0, evidenceWarnings: 0, unsupported: 0,
     causePending: 0, responseMissing: 0, settled: 0,
-    agentAuthored: 0,
+    agentAuthored: 0, reportable: 0,
   }
   for (const item of items) {
     if (item.auditor_confirmed) counts.confirmed += 1
@@ -78,6 +93,7 @@ function tally(items: AuditFinding[]): Counts {
     if (!hasText(item.management_response)) counts.responseMissing += 1
     if (settled(item)) counts.settled += 1
     if (item.source === 'agent') counts.agentAuthored += 1
+    if (reportable(item)) counts.reportable += 1
   }
   return counts
 }
@@ -137,7 +153,7 @@ function supportLane(counts: Counts): StatusLane {
 
   if (!counts.total) {
     return {
-      key: 'support', label: 'Support', state: 'idle',
+      key: 'support', label: 'Supported', state: 'idle',
       value: '0', caption: 'findings traced to the file',
       segments: [], chips: [], actions: [],
       rest: 'Support follows a drafted finding',
@@ -145,7 +161,7 @@ function supportLane(counts: Counts): StatusLane {
   }
   const supported = counts.total - counts.unsupported
   return {
-    key: 'support', label: 'Support', state: counts.unsupported ? 'alarm' : 'done',
+    key: 'support', label: 'Supported', state: counts.unsupported ? 'alarm' : 'done',
     value: String(supported),
     total: String(counts.total),
     caption: `of ${counts.total} traced to evidence, a risk and a test`,
@@ -167,7 +183,7 @@ function supportLane(counts: Counts): StatusLane {
 function followUpLane(counts: Counts): StatusLane {
   if (!counts.total) {
     return {
-      key: 'follow_up', label: 'Follow-up', state: 'idle',
+      key: 'follow_up', label: 'Settled', state: 'idle',
       value: '0', caption: 'findings settled',
       segments: [], chips: [], actions: [],
       rest: 'Follow-up follows a drafted finding',
@@ -182,7 +198,7 @@ function followUpLane(counts: Counts): StatusLane {
   }
   const outstanding = counts.total - counts.settled
   return {
-    key: 'follow_up', label: 'Follow-up', state: outstanding ? 'alarm' : 'done',
+    key: 'follow_up', label: 'Settled', state: outstanding ? 'alarm' : 'done',
     value: String(counts.settled),
     total: String(counts.total),
     caption: `of ${counts.total} have a settled cause and a response`,
@@ -224,12 +240,145 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
   return items
 }
 
+/**
+ * Every narrowing the register offers, grouped by the question it answers.
+ *
+ * Four axes, because they compose: a finding can be unconfirmed *and* missing
+ * a risk *and* awaiting a response, and each is a different piece of work by a
+ * different person. Within an axis they cannot — the review bar holds at most
+ * one per group.
+ */
+function filtersFor(counts: Counts): StatusFilterGroup[] {
+  return [
+    {
+      key: 'reporting',
+      label: 'Reporting',
+      options: [
+        { key: 'unconfirmed', label: 'Not confirmed', value: counts.unconfirmed.length, tone: 'warn' },
+        { key: 'confirmed', label: 'Confirmed', value: counts.confirmed, tone: 'ok' },
+      ],
+    },
+    {
+      key: 'support',
+      label: 'Support',
+      options: [
+        { key: 'no_rcm_link', label: 'Not linked to a risk', value: counts.noRcmLink, tone: 'bad' },
+        { key: 'no_evidence', label: 'No evidence', value: counts.noEvidence, tone: 'bad' },
+        { key: 'evidence_warning', label: 'Evidence moved', value: counts.evidenceWarnings, tone: 'bad' },
+        { key: 'no_test_link', label: 'Not linked to a test', value: counts.noTestLink, tone: 'warn' },
+      ],
+    },
+    {
+      key: 'follow_up',
+      label: 'Follow-up',
+      options: [
+        { key: 'cause_pending', label: 'Root cause pending', value: counts.causePending, tone: 'warn' },
+        { key: 'no_response', label: 'No management response', value: counts.responseMissing, tone: 'warn' },
+      ],
+    },
+    {
+      key: 'authorship',
+      label: 'Authorship',
+      options: [
+        { key: 'agent_authored', label: 'Drafted by the assistant', value: counts.agentAuthored, tone: 'neutral' },
+      ],
+    },
+  ]
+}
+
 export function findingsStatus(items: AuditFinding[]): StatusModel {
   const counts = tally(items)
   return {
     lanes: [confirmedLane(counts), supportLane(counts), followUpLane(counts)],
     disclosures: disclosuresFor(counts),
+    filters: filtersFor(counts),
   }
+}
+
+/**
+ * The seven narrowings worth naming on the register, in reading order.
+ *
+ * Seven names for six slots: `Unconfirmed` leads the row when anything is
+ * unconfirmed, and drops out of it entirely when nothing is — which is how a
+ * file whose whole register is agreed still shows what that register is
+ * missing. The bar draws only the chips that count something, so the rest of
+ * the vocabulary stays behind the pressed chip.
+ */
+export const FINDING_CHIPS: ReviewChip[] = [
+  { filter: 'unconfirmed', tone: 'warn', label: 'Unconfirmed' },
+  { filter: 'no_rcm_link', tone: 'bad', label: 'Not linked to a risk' },
+  { filter: 'no_evidence', tone: 'bad', label: 'No evidence' },
+  { filter: 'evidence_warning', tone: 'bad', label: 'Evidence moved' },
+  { filter: 'cause_pending', tone: 'warn', label: 'Root cause pending' },
+  { filter: 'no_response', tone: 'warn', label: 'No management response' },
+  { filter: 'agent_authored', tone: 'agent', label: 'Drafted by the assistant' },
+]
+
+/**
+ * The count sentence beside the page title: how many findings there are, how
+ * severe they are, and how many of them the report can actually carry.
+ *
+ * The last clause is the one the old header never answered. A register of
+ * eighteen confirmed findings reads as finished until something says none of
+ * them is placed in a process the report can write about.
+ */
+export function findingsHeadline(items: AuditFinding[]): string {
+  if (!items.length) return 'no findings yet'
+  const bySeverity = SEVERITY_ORDER
+    .map(severity => ({ severity, count: items.filter(item => item.severity === severity).length }))
+    .filter(entry => entry.count > 0)
+    .map(entry => `${entry.count} ${entry.severity}`)
+  const inReport = items.filter(reportable).length
+  return [
+    plural(items.length, 'finding'),
+    ...bySeverity,
+    inReport === 0
+      ? 'none in the report'
+      : inReport === items.length ? 'all in the report' : `${inReport} in the report`,
+  ].join(' · ')
+}
+
+/**
+ * What one finding still owes, in the order it is owed.
+ *
+ * The list row carries the short words and the verdict bar the full ones, from
+ * one derivation: a row that says `no risk` and a bar that says the finding is
+ * ready would be the same contradiction the old page shipped, where a green
+ * status chip sat above an unlinked draft.
+ */
+export interface FindingOpenItem {
+  key: FindingsFilter
+  /** For the list's meta line, where the row has one line to spend. */
+  short: string
+  /** For the verdict bar, which is a sentence. */
+  label: string
+  tone: 'bad' | 'warn'
+}
+
+export function openItems(item: AuditFinding): FindingOpenItem[] {
+  const items: FindingOpenItem[] = []
+  if (!item.rcm_refs.length) {
+    items.push({ key: 'no_rcm_link', short: 'no risk', label: 'not linked to a risk', tone: 'bad' })
+  }
+  if (!item.evidence_refs.length) {
+    items.push({ key: 'no_evidence', short: 'no evidence', label: 'no evidence anchor', tone: 'bad' })
+  }
+  if (item.evidence_warnings?.length) {
+    items.push({
+      key: 'evidence_warning', short: 'evidence moved',
+      label: 'evidence changed since drafting', tone: 'bad',
+    })
+  }
+  if (!item.test_refs.length) {
+    items.push({ key: 'no_test_link', short: 'no test', label: 'not linked to a test', tone: 'warn' })
+  }
+  if (item.cause_pending) {
+    items.push({ key: 'cause_pending', short: 'cause pending', label: 'root cause pending', tone: 'warn' })
+  }
+  if (!hasText(item.management_response)) {
+    items.push({ key: 'no_response', short: 'no response', label: 'no management response', tone: 'warn' })
+  }
+  return items
 }
 
 export const FINDINGS_FILTER_LABELS: Record<FindingsFilter, string> = {

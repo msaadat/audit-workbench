@@ -1,6 +1,7 @@
 # Sources, planning and reporting views redesign: documents, tables, APM, findings, report
 
-**Status:** design proposed on 5 September 2026, not yet built. This is the
+**Status:** design proposed on 5 September 2026. **Findings is built** (see
+"Order of work" below); the other four pages are not. This is the
 handoff for rebuilding the five pages that bracket fieldwork — the two source
 pages the engagement starts from (Documents, Source tables), the memorandum it
 plans with (APM), and the two work products it ends on (Findings, Report) — on
@@ -490,8 +491,12 @@ retired. The template opens in a drawer.
   `cycle.apm_sha1`; compute it on the server and return it as
   `planning.apm_sha1` so the page compares two strings.
 - **Report issue placement** is frontend-only: the code-to-heading map above.
-- **Findings** need nothing new. `Re-affirm` uses the existing evidence
-  confirmation on save.
+- **Findings** need one small route, contrary to the first draft of this plan.
+  `Re-affirm` re-pins an anchor's `source_sha1` to what its source hashes to
+  now, and that hash is `findings.artifact`'s evidentiary projection — not
+  anything the browser can compute, and not the `result_sha1` the payload's
+  `evidence_options` carry. `POST /findings/{id}/evidence/reaffirm` does it
+  server-side and answers with the finding plus its recomputed warnings.
 
 ## Frontend work, by file
 
@@ -526,8 +531,20 @@ mapped headings, and the issues rail shows one row per finding.
 
 ## Order of work
 
-1. Findings. The register is the page the fieldwork build could not finish
-   without (it kept `UiStatusLanes` alive), and it needs no backend change.
+1. **Findings — done.** `FindingsTab.vue` is rebuilt on the review bar and the
+   verdict bar, with `findings/FindingsList.vue` (severity groups, dot and meta
+   line) and `findings/FindingNarrative.vue` (the narrative as a document, the
+   deferred root cause stated on its own section). `findingsStatus.ts` gained
+   `filtersFor`, `FINDING_CHIPS`, `findingsHeadline` and `openItems` — the last
+   is the single derivation the row's meta line and the verdict bar's second
+   line both read, so they cannot disagree. `UiStatusLanes.vue` and
+   `UiFilterMenu.vue` are deleted.
+
+   One departure from "needs no backend change": `Re-affirm` rewrites the
+   evidence anchor's `source_sha1` to what the source hashes to *now*, and only
+   the server knows what an evidentiary projection covers
+   (`findings.artifact`), so it is a route —
+   `POST /findings/{id}/evidence/reaffirm` — rather than a client-side edit.
 2. Report, then APM, on the shared document layout.
 3. Source tables, with the coverage route.
 4. Documents, the largest file and the one with the most dialogs to retire.

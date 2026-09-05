@@ -85,6 +85,15 @@ def patch_finding(workspace_id: str, finding_id: str, payload: dict = Body(...))
     return {**item, "evidence_warnings": findings.evidence_warnings(ws, item)}
 
 
+@router.post("/findings/{finding_id}/evidence/reaffirm")
+def reaffirm_finding_evidence(workspace_id: str, finding_id: str, payload: dict = Body(default={})):
+    ws = _ws(workspace_id)
+    item = findings.reaffirm_evidence(
+        ws, finding_id, str(payload.get("evidence_id") or "") or None
+    )
+    return {**item, "evidence_warnings": findings.evidence_warnings(ws, item)}
+
+
 @router.delete("/findings/{finding_id}")
 def delete_finding(workspace_id: str, finding_id: str):
     ws = _ws(workspace_id)

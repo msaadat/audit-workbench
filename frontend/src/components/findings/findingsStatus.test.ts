@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AuditFinding } from '../../types'
-import { filterFindings, findingsStatus } from './findingsStatus'
+import {
+  FINDING_CHIPS, filterFindings, findingsHeadline, findingsStatus, openItems,
+} from './findingsStatus'
 
 function finding(id: string, overrides: Partial<AuditFinding> = {}): AuditFinding {
   return {
@@ -121,5 +123,76 @@ describe('findings filters', () => {
   it('treats a whitespace-only management response as no response', () => {
     expect(filterFindings([finding('F-9', { management_response: '  \n ' })], 'no_response'))
       .toHaveLength(1)
+  })
+})
+
+describe('findings headline', () => {
+  it('says nothing about a register that does not exist yet', () => {
+    expect(findingsHeadline([])).toBe('no findings yet')
+  })
+
+  it('names the severities present and how many the report can carry', () => {
+    // The live shape of the file: every finding agreed, none of them linked to
+    // a risk, so the report carries none of them.
+    expect(findingsHeadline([
+      finding('F-1', { severity: 'critical', rcm_refs: [] }),
+      finding('F-2', { severity: 'high', rcm_refs: [] }),
+      finding('F-3', { severity: 'high', rcm_refs: [] }),
+    ])).toBe('3 findings · 1 critical · 2 high · none in the report')
+  })
+
+  it('counts a finding into the report only when it is both confirmed and supported', () => {
+    expect(findingsHeadline([finding('F-1')])).toBe('1 finding · 1 high · all in the report')
+    expect(findingsHeadline([finding('F-1'), finding('F-2', { auditor_confirmed: false })]))
+      .toBe('2 findings · 2 high · 1 in the report')
+  })
+})
+
+describe('findings chips', () => {
+  it('promotes only filters the page actually derives', () => {
+    const known = new Set(
+      (findingsStatus([]).filters ?? []).flatMap(group => group.options.map(option => option.key)),
+    )
+    for (const chip of FINDING_CHIPS) expect(known.has(chip.filter)).toBe(true)
+    // Seven named for six slots: `Unconfirmed` leads the row when it counts
+    // anything, and the bar drops the chips that count nothing.
+    expect(FINDING_CHIPS).toHaveLength(7)
+    expect(FINDING_CHIPS[0].filter).toBe('unconfirmed')
+  })
+
+  it('counts each narrowing beside the lane that reports on it', () => {
+    const filters = findingsStatus([
+      finding('F-1', { rcm_refs: [] }),
+      finding('F-2', { cause_pending: true }),
+    ]).filters ?? []
+    const options = Object.fromEntries(
+      filters.flatMap(group => group.options).map(option => [option.key, option.value]),
+    )
+
+    expect(options.no_rcm_link).toBe(1)
+    expect(options.cause_pending).toBe(1)
+    expect(options.confirmed).toBe(2)
+    expect(options.agent_authored).toBe(2)
+  })
+})
+
+describe('what one finding still owes', () => {
+  it('owes nothing when it is linked, evidenced, caused and answered', () => {
+    expect(openItems(finding('F-1'))).toEqual([])
+  })
+
+  it('names each gap once, for the row and for the verdict bar', () => {
+    const items = openItems(finding('F-1', {
+      rcm_refs: [], evidence_warnings: ['Source hash moved.'],
+      cause_pending: true, management_response: '',
+    }))
+
+    expect(items.map(item => item.short))
+      .toEqual(['no risk', 'evidence moved', 'cause pending', 'no response'])
+    expect(items.map(item => item.label)).toEqual([
+      'not linked to a risk', 'evidence changed since drafting',
+      'root cause pending', 'no management response',
+    ])
+    expect(items.map(item => item.tone)).toEqual(['bad', 'bad', 'warn', 'warn'])
   })
 })
