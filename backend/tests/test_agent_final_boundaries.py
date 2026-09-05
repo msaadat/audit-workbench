@@ -222,7 +222,7 @@ def test_the_process_layer_dispatches_to_engines_and_owns_no_scheduling():
         for name in imported
         if name.startswith(("app.agent.capabilities", "app.agent.workflows", "app.agent.workers", "app.agent.executors"))
     }
-    assert store.RUN_ENGINES == frozenset({"workflow", "action", "intake"})
+    assert store.RUN_ENGINES == frozenset({"workflow", "action", "agent", "intake"})
 
 
 # --------------------------------------------------------------------------- #

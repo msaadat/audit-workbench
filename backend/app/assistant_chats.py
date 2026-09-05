@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import assistant, debug_store, doc_tests, engagement_progress, llm
 from .agent import commands, narration, routing, runner, store
+from .agent import workflow as agent_workflow
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 CHATS_DIRNAME = "AssistantChats"
@@ -742,6 +743,7 @@ def _launch_command(
     workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
     *, goal_template: str | None = None, run_context: dict | None = None,
     requested_outcomes: list[str] | None = None, text: str | None = None,
+    source: str | None = None,
 ) -> dict:
     """Start or queue one command run, and report where it landed.
 
@@ -825,7 +827,10 @@ def _launch_command(
         else None
     )
     command = {
-        "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),
+        "source": source or (
+            "goal_template" if goal_template
+            else ("tab_button" if user.get("source") != "composer" else "chat")
+        ),
         "text": request, "goal_template": goal_template,
         "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
         "target_refs": target_refs,
@@ -844,6 +849,11 @@ def _launch_command(
             requested_outcomes=requested_outcomes,
             generation_mode=generation_mode,
         )
+        # A live steering loop takes the message as a course correction rather
+        # than a queued command, and says so: "queued behind" would describe
+        # the opposite of what happened.
+        if response.get("handled") == "steering":
+            return {"kind": "steering_delivered", "run_id": active["id"]}
         queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
         pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
         return {"kind": "command_queued", "run_id": active["id"], "command_id": (queued or {}).get("id"), "position": max(1, pending_count)}
@@ -908,6 +918,26 @@ def _commander(
             workspace, chat_id, user, record, mode, text=request,
         )
 
+    def launch_loop(brief: str) -> dict:
+        return _launch_command(
+            workspace, chat_id, user, record, mode, text=brief,
+            source=store.LOOP_COMMAND_SOURCE,
+            run_context={
+                "conversation_seed": _conversation_seed(record, user),
+                # Whether the whole workspace may be regenerated is decided
+                # here, from what the auditor actually wrote, and never by the
+                # loop reading its own brief: the brief is the coordinator's
+                # paraphrase, and a paraphrase is not permission.
+                **(
+                    {"force_confirmed": True}
+                    if agent_workflow.command_generation_mode(
+                        {"text": user.get("content")}
+                    ) == "force"
+                    else {}
+                ),
+            },
+        )
+
     return assistant.Commander(
         catalog=tuple(
             {"id": item.id, "label": item.label, "description": item.description}
@@ -916,7 +946,35 @@ def _commander(
         ),
         launch_command=launch_command,
         launch_action=launch_action,
+        launch_loop=launch_loop,
     )
+
+
+#: How much of the conversation the loop is seeded with. Enough for the request
+#: to make sense on its own, not so much that the loop re-answers the chat.
+SEED_TURNS = 6
+SEED_TURN_CHARS = 1_200
+
+
+def _conversation_seed(record: dict, user: dict) -> list[dict]:
+    """The coordinator's turns so far, bounded, as the loop's opening context.
+
+    The loop is carrying out something the auditor said in a conversation, and
+    the sentence the coordinator hands over is rarely the whole of it — "redraft
+    it" means what the turn before said. Text turns only, and the current
+    message is left out: the command text is that message.
+    """
+
+    seed: list[dict] = []
+    for message in (record.get("messages") or [])[-(SEED_TURNS * 2) :]:
+        if message.get("id") == user.get("id") or message.get("kind") != "text":
+            continue
+        role = str(message.get("role") or "")
+        content = str(message.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        seed.append({"role": role, "content": content[:SEED_TURN_CHARS]})
+    return seed[-SEED_TURNS:]
 
 
 def _process_message(
@@ -1312,6 +1370,11 @@ def _run_projection(run: dict) -> dict:
         "narration": list(run.get("narration") or [])[-12:],
         "blockers": open_items,
         "summary_line": _summary_line(run),
+        # A steering loop's own runs. The transcript nests their cards under
+        # the loop's, so the auditor reads one request rather than a pile of
+        # unexplained runs that appeared at the same time.
+        "children": list(run.get("children") or []),
+        "suggestions": list(run.get("suggestions") or []),
     })
     return summary
 

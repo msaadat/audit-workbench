@@ -47,7 +47,13 @@ ACTION_ENGINE = "action"
 INTAKE_ENGINE = "intake"
 INTAKE_RUN_KIND = "intake"
 
-COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE})
+# The steering loop. A durable, budgeted tool loop that decides what to run and
+# what to do about the result, and changes the workspace only through child
+# command runs of the two engines above. It is a third scheduler, not a third
+# way to commit: every artifact it produces is committed by a unit pipeline.
+AGENT_ENGINE = "agent"
+
+COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE, AGENT_ENGINE})
 # The final supported engine set (P11.1, narrowed by P12.2). Dispatch accepts
 # exactly these values; a record whose engine is missing or outside this set
 # fails closed.
@@ -58,6 +64,23 @@ RUN_ENGINES = frozenset({*COMMAND_ENGINES, INTAKE_ENGINE})
 PROTOCOL_ENGINE_BY_RUN_KIND = {INTAKE_RUN_KIND: INTAKE_ENGINE}
 PROTOCOL_RUN_KINDS = frozenset(PROTOCOL_ENGINE_BY_RUN_KIND)
 COMMAND_RUN_KIND = "audit"
+# Where a command came from. ``loop`` is the coordinator handing a request to
+# the steering loop, and is the one source that selects an engine on its own:
+# a request the loop is asked to carry out is never re-classified by phrase.
+COMMAND_SOURCES = ("chat", "goal_template", "tab_button", "follow_up", "loop")
+LOOP_COMMAND_SOURCE = "loop"
+# The steering loop's own budgets, durable on the run so a resumed loop is
+# bounded by what it was started with rather than by the current defaults.
+# ``max_model_turns`` is the gateway's charge for the loop's own turns and sits
+# above ``max_loop_turns`` because a turn retried for an unusable completion is
+# charged twice while the loop counts it once.
+LOOP_LIMITS = {
+    "max_loop_turns": 24,
+    "max_child_runs": 6,
+    "max_tool_calls": 60,
+    "max_auditor_questions": 3,
+    "max_model_turns": 30,
+}
 
 
 def is_command_run(run: dict) -> bool:
@@ -265,7 +288,7 @@ def new_command_run(
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
     source = str(command.get("source") or "chat")
-    if source not in ("chat", "goal_template", "tab_button", "follow_up"):
+    if source not in COMMAND_SOURCES:
         raise WorkspaceError("Unknown command source.")
     text = str(command.get("text") or "").strip()
     template = str(command.get("goal_template") or "").strip() or None
@@ -315,6 +338,9 @@ def new_command_run(
         },
         "goal": {"objective": text, "constraints": [], "completion_criteria": []},
         "graph_revision": 0,
+        # Child command runs this run drove in process, newest last. Only the
+        # steering loop writes here; every other engine leaves it empty.
+        "children": [],
         "actions": [],
         "rejected_proposals": [],
         "target_adjustments": [],
@@ -327,6 +353,7 @@ def new_command_run(
         "limits": {
             "max_actions": 60, "max_waves": 8, "max_depth": 10,
             "max_model_turns": 40, "max_execution_attempts": 2,
+            **(LOOP_LIMITS if source == LOOP_COMMAND_SOURCE else {}),
             **dict(limits or {}),
         },
         # Shared drawer projections written by whichever engine runs the record.
@@ -406,6 +433,7 @@ def _hydrate_run(run: dict) -> None:
         run.setdefault("planning_basis_run_id", None)
         run.setdefault("cancellation", None)
         run.setdefault("actions", [])
+        run.setdefault("children", [])
         run.setdefault("interactions", [])
         run.setdefault("pending_commands", [])
         run.setdefault("graph_revision", 0)
@@ -507,6 +535,7 @@ def run_summary(run: dict) -> dict:
         "id": run["id"],
         "workspace_id": run["workspace_id"],
         "parent_run_id": run.get("parent_run_id"),
+        "children": list(run.get("children") or []),
         "planning_basis_run_id": run.get("planning_basis_run_id"),
         "chat_id": run.get("chat_id"),
         "source_message_id": run.get("source_message_id"),

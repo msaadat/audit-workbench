@@ -388,15 +388,17 @@ frontend/src/
 
 ### Engines
 
-One durable run store, two scheduling engines, and one retained protocol
-runner. `store.RUN_ENGINES` is final at `{workflow, action, intake}`; a record
-whose engine is absent or outside that set fails closed.
+One durable run store, three scheduling engines, and one retained protocol
+runner. `store.RUN_ENGINES` is `{workflow, action, agent, intake}` and will be
+`{workflow, agent, intake}` once the action engine retires; a record whose
+engine is absent or outside that set fails closed.
 
 ```text
 BaseRunner                  shared run projections (plan/tasks, artifacts,
 |                           approvals, proposal items, model provenance)
 |- IntakeRunner             one staged import batch (retained protocol runner)
 |- ActionRunner             action graph
+|- AgentLoop                the steering loop: model turns over gated tools
 |- AuditWorkflowExecution   audit execution bindings and projections
 |- AnalysisWorkflowExecution analysis execution bindings and projections
 |- DocumentWorkflowExecution document execution bindings and projections
@@ -407,6 +409,18 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
                            nothing
 ```
 
+- `AgentLoop` (`agent/agent_loop.py`) is the steering loop, and the engine a
+  request reaches when the coordinator hands it over with `take_action`. It
+  reads the workspace, plans an outcome set, runs it as an ordinary *child*
+  command run through `runner.run_child_run` on its own thread, reads what
+  happened, reruns a failed unit once with an instruction, asks the auditor when
+  the answer changes what it would do, and finishes with a summary. It commits
+  nothing itself: every artifact is committed by a child run's unit pipeline,
+  and every effect it can have is a tool in `agent/loop_tools.py` whose guards —
+  the child-run budget, the whole-workspace force refusal, the one-rerun-per-unit
+  cap, the question cap — are code, not prompt. Its conversation with the model
+  is persisted beside the run as `conversation.json`, so a crash resumes the
+  request at its next turn.
 - `ActionRunner` is still used for isolated mutations and repairable action
   graphs. `IntakeRunner` is the one retained protocol runner: folder intake is a
   single-unit protocol over a staged batch whose authoritative state lives under
@@ -434,7 +448,10 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   completion projection.
 - `routing.classify_command(...)` is the deterministic pass and it is pure: it
   reads the command dict only, and never loads a workspace, executes an action,
-  or mutates state. It applies one precedence order — explicit outcomes, a
+  or mutates state. A command whose `source` is `loop` is an `agent` route
+  before anything else is read: the coordinator has already decided that one,
+  and every rule below reads the request's words. Otherwise it applies one
+  precedence order — explicit outcomes, a
   registered goal template, a lifecycle-wide phrase, workflow-owned
   generation/refresh, a target-specific operation, scope-wide execution, then a
   weak isolated-operation marker. If it matches nothing, a bounded router worker
@@ -454,8 +471,12 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `route.status == "pending"`; `routing.resolve_pending_route(...)` then spends
   one bounded router turn — the only routing path that calls the provider — and
   it never repeats the deterministic pass.
-- `runner._execute` calls `routing.dispatch_engine(...)` and then dispatches on
-  the explicit `run["engine"]`. Nothing infers an engine from `kind`,
+- `runner._run_engine` calls `routing.dispatch_engine(...)` and then dispatches
+  on the explicit `run["engine"]`. It is the one engine switch in the process: a
+  top-level run reaches it on its own thread through `_execute`, and a child run
+  of the steering loop reaches it inline through `run_child_run`, on the loop's
+  thread — so the workspace still has exactly one worker thread and the
+  one-live-run rule holds by construction. Nothing infers an engine from `kind`,
   `schema_version`, or record contents; a missing or unsupported engine fails
   closed. `_execute` guarantees the run reaches a terminal status even on a
   crash, and in its `finally` starts the next `pending_commands` entry. Control
@@ -823,8 +844,12 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   text. With no memo the source supplies nothing and the section says so; the
   edge is deliberately *not* a graph dependency, so an APM-only request stays
   independent of data analysis.
-- The assistant and agent do not use arbitrary tool loops inside `agent/`.
-  Worker calls are single-turn, bounded, and budgeted through `BaseRunner`.
+- The agent loop is the one tool loop under `agent/`. It is bounded by
+  `max_loop_turns`, `max_child_runs`, `max_tool_calls`, `max_auditor_questions`
+  and the run deadline, calls the provider only through `ModelGateway`, and
+  changes the workspace only through child runs and registered actions. Every
+  other call in `agent/` — every worker, the router, the action interpreter — is
+  single-turn, bounded, and budgeted through `BaseRunner`.
 - Existing uncommitted workspace or code changes may be user-owned. Do not
   revert them unless explicitly asked.
 

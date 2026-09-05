@@ -34,7 +34,9 @@ package is required before the first release.
 ```text
 Request
   -> Router
-  -> WorkflowRunner or ActionRunner
+  -> AgentLoop, WorkflowRunner or ActionRunner
+       AgentLoop plans, then runs a child command run of one of the other two,
+       reads the result, and repairs or asks; every effect below is the child's
   -> ContextResolver
   -> Worker
   -> proposal sidecar / approval
@@ -50,6 +52,7 @@ Request
 | `RunRuntime` | Persistence, events, budgets, checkpoints, pause/cancel, deadlines, approvals, and provider accounting |
 | `WorkflowRunner` | Materialize and schedule declared capability dependency graphs |
 | `ActionRunner` | Execute small model-generated DAGs of registered isolated actions |
+| `AgentLoop` | Steer one request: plan, run child command runs, read results, repair once, ask, and close — bounded by durable budgets and gated tools |
 | `Capability` | Specify an outcome: dependencies, readiness, units, context, worker, executor, and approval |
 | `ContextResolver` | Build bounded context strictly from a capability's `ContextSpec` |
 | `Worker` | Build prompts from the supplied context bundle and validate model output |
@@ -476,6 +479,12 @@ Neither scheduler classifies, and neither calls the other.
 | Complete the audit | `WorkflowRunner` requesting `audit.verified` |
 | Attach this file to that test | `ActionRunner` |
 | Pin this analysis | `ActionRunner` |
+| Anything the coordinator hands over with `take_action` | `AgentLoop` |
+
+A command whose `source` is `loop` routes to the agent engine before any phrase
+is read. That is not a classification of the request's words — it is reading
+back a decision the coordinator already made, which is why it sits first and
+why nothing else can produce that route.
 
 The routing rule is:
 
@@ -573,16 +582,26 @@ capability unless its size independently justifies it.
 
 ## Migration Direction
 
-The target is reached. There are two scheduling engines — `WorkflowRunner` and
-`ActionRunner` — plus one protocol runner, `IntakeRunner`, retained by the
+There are three scheduling engines — `WorkflowRunner`, `ActionRunner` and
+`AgentLoop` — plus one protocol runner, `IntakeRunner`, retained by the
 recorded decision in
 [agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
 `DocumentAnalysisRunner` and `DocTestRunner` migrated into capabilities,
 workers, and executors and were deleted; Phase 12 deleted the fixed-stage v1
 analysis runner outright, and an exploratory-analysis request is now the
-declared `analysis_workflow_v1` graph. `store.RUN_ENGINES` is final at
-`{workflow, action, intake}`, and a record whose engine is absent or outside
-that set fails closed. Duplicate execution logic is not retained.
+declared `analysis_workflow_v1` graph. `store.RUN_ENGINES` is
+`{workflow, action, agent, intake}` and becomes `{workflow, agent, intake}`
+when the action engine retires
+([agent-loop-redesign.md](agent-loop-redesign.md) step 8); a record whose engine
+is absent or outside that set fails closed. Duplicate execution logic is not
+retained.
+
+`AgentLoop` is a third *scheduler*, not a third way to commit. It is composed
+with `RunRuntime` and `ModelGateway` like the other two, and it reaches the
+workspace only by starting child command runs of them — same materialization,
+same unit pipeline, same approvals, same receipts. What it may decide is gated
+by the tools in `agent/loop_tools.py`; what it may spend is four durable budgets
+and the run deadline.
 
 One shared base class survives: `BaseRunner`. It is no longer the migration's
 delegation facade for runtime state — that behavior belongs to

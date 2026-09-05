@@ -67,6 +67,25 @@ function isMilestone(item: TranscriptItem): item is AssistantMilestoneProjection
 function isContext(item: TranscriptItem): item is AssistantContextProjection { return item.type === 'context' }
 
 /**
+ * A run the steering loop started for itself.
+ *
+ * The loop's own card is the request; the runs it drove are how it carried the
+ * request out. Nesting them says so — otherwise a chat that asked one question
+ * shows three unexplained runs that all appeared at once.
+ */
+const loopChildIds = computed(() => {
+  const ids = new Set<string>()
+  for (const item of props.chat.transcript) {
+    if (item.type !== 'run') continue
+    for (const child of item.children ?? []) ids.add(child)
+  }
+  return ids
+})
+function isLoopChild(item: AssistantRunProjection): boolean {
+  return loopChildIds.value.has(item.run_id)
+}
+
+/**
  * A milestone that found nothing is a sentence, not a card.
  *
  * `Fieldwork complete — Completed all 0 scheduled tests` appeared five times
@@ -210,7 +229,9 @@ function messageTime(value: string) {
              run went on to do rather than being dragged down beside the
              finished receipt. A run owned by another chat is context, not
              this conversation's work: it stays a compact receipt here. -->
-        <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
+        <div :class="{ 'loop-child': isLoopChild(item) }">
+          <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
+        </div>
       </template>
       <AgentContextCard v-else-if="isContext(item)" :context="item.context" />
       <template v-else-if="isMilestone(item)">
@@ -283,5 +304,7 @@ function messageTime(value: string) {
 .next-steps-label{font-size:var(--aw-text-xs);font-weight:700;color:var(--aw-muted)}
 .next-steps .suggestions{max-width:100%}
 .next-steps .shortcuts{justify-content:flex-start}
+/* A run the loop drove for itself, shown as part of the request above it. */
+.loop-child{padding-left:.9rem;border-left:2px solid var(--aw-border)}
 .intent{align-self:flex-end;opacity:.65;font-size:var(--aw-text-2xs)}.trace{margin:.3rem 0;font-size:var(--aw-text-xs);color:var(--aw-muted)}.trace summary{cursor:pointer}.trace div{padding:.1rem .3rem}.citations{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.warning{margin-top:.35rem;padding:.4rem;border-radius:var(--aw-radius-control);background:var(--aw-warn-soft);color:var(--aw-warn-ink);font-size:var(--aw-text-xs)}
 </style>

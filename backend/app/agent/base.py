@@ -39,6 +39,7 @@ MODEL_WAIT_LABELS = {
     # back to "Waiting for the model", which tells the auditor nothing about
     # what is actually being worked out.
     "agent:workflow_router": "Working out which workflow this needs",
+    "agent:loop": "Working out what to do next",
     "agent:report": "Drafting the audit report",
     "agent:report_editorial": "Editing the audit report",
     "agent:command_interpreter": "Preparing the action plan",

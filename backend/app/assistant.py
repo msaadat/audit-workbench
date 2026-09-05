@@ -397,11 +397,16 @@ class Commander:
     catalog: tuple[dict, ...]
     launch_command: Callable[[str], dict]
     launch_action: Callable[[str], dict]
+    # The hand-off to the steering loop. Optional so a caller that has not
+    # opted into it — and every existing test — gets exactly the two mutating
+    # tools it had before, schemas included.
+    launch_loop: Callable[[str], dict] | None = None
 
 
 _COMMAND_TOOL_HANDLERS = {
     "start_command": "start_command",
     "start_action": "start_action",
+    "take_action": "take_action",
 }
 
 
@@ -465,6 +470,42 @@ def _command_schemas(commander: Commander | None) -> list[dict]:
                 },
             },
         },
+        *(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "take_action",
+                        "description": (
+                            "Hand this conversation to the durable agent to "
+                            "carry work out. Use it when the request needs the "
+                            "workspace changed and no single registered command "
+                            "covers it — several steps, a named row or test to "
+                            "redo, work that has to be checked and corrected "
+                            "after it runs. Prefer start_command whenever one "
+                            "registered command covers the whole request."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "brief": {
+                                    "type": "string",
+                                    "description": (
+                                        "What the agent should carry out, in "
+                                        "the auditor's own terms, naming any "
+                                        "row, test, finding or document the "
+                                        "request named."
+                                    ),
+                                },
+                            },
+                            "required": ["brief"],
+                        },
+                    },
+                }
+            ]
+            if commander.launch_loop is not None
+            else []
+        ),
     ]
 
 
@@ -952,6 +993,16 @@ class _Session:
         self.started_run = self.commander.launch_action(request)
         return dict(self.started_run), None
 
+    def take_action(self, args: dict):
+        self._guard_single_run()
+        if self.commander.launch_loop is None:
+            raise WorkspaceError("This conversation cannot hand work to the agent.")
+        brief = str(args.get("brief") or "").strip()
+        if not brief:
+            raise WorkspaceError("Say what the agent should carry out.")
+        self.started_run = self.commander.launch_loop(brief)
+        return dict(self.started_run), None
+
     def dispatch(self, name: str, args: dict):
         definition = READ_TOOL_REGISTRY.get(name)
         if definition is not None:
@@ -1014,11 +1065,14 @@ Workspace manifest:
 # mutating tool at all, so these rules would describe capabilities that are
 # absent.
 COMMAND_RULES = """
-You can also carry work out, not only describe it. Two tools start durable
-background runs: start_command for a registered audit workflow, and
-start_action for an isolated operation on one existing artifact.
+You can also carry work out, not only describe it. Three tools start durable
+background runs: start_command for a registered audit workflow, start_action
+for an isolated operation on one existing artifact, and take_action to hand the
+request to the durable agent, which plans it, runs it, checks the result and
+corrects what it can.
 
 Rules for starting work:
+- Choose between them by what the request needs. One registered command that covers the whole request: start_command. One operation on one artifact: start_action. Anything else that changes the workspace — several steps, a named row or test to redo, work whose result has to be read and corrected — take_action, with a brief in the auditor's own terms.
 - Start a run only when the auditor is asking for the work to be carried out. \
 A question about what something is, what it would involve, what state it is \
 in, or whether it is worth doing is answered with the read tools — never by \

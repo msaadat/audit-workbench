@@ -52,6 +52,26 @@ class RunHandle:
         self.interaction_responses: dict[str, dict] = {}
         self.lock = threading.Lock()
 
+    @classmethod
+    def child_of(cls, parent: "RunHandle", run_id: str) -> "RunHandle":
+        """Control state for a child run driven on its parent's thread.
+
+        The two halves are split on who the control is *for*. Stopping is for
+        the request as a whole — cancelling or pausing the loop must stop the
+        child it is waiting on — so those objects are shared. Answering is for
+        one run — an approval or a clarification belongs to the child that
+        asked, and a steering message belongs to the loop — so each handle owns
+        its own inbox, queue, decisions and responses.
+        """
+
+        child = cls(parent.workspace_id, run_id, owner_id=parent.owner_id)
+        child.thread = parent.thread
+        child.cancel = parent.cancel
+        child.cancel_context = parent.cancel_context
+        child.pause_requested = parent.pause_requested
+        child.resume = parent.resume
+        return child
+
 
 _HANDLES: dict[str, RunHandle] = {}
 _HANDLES_LOCK = threading.Lock()
@@ -96,8 +116,25 @@ def _admission_error(live: list["RunHandle"], owner_id: str) -> str | None:
 
 
 def live_handles() -> list[RunHandle]:
+    """One handle per live worker thread.
+
+    A child run driven in process by the steering loop registers its own handle
+    on the loop's thread, so that it can be approved and answered by run id.
+    Admission counts *threads*, though: the workspace still has one run in
+    flight, and counting the child again would make the loop look like two.
+    """
+
     with _HANDLES_LOCK:
-        return [h for h in _HANDLES.values() if h.thread and h.thread.is_alive()]
+        live = [h for h in _HANDLES.values() if h.thread and h.thread.is_alive()]
+    seen: set[int] = set()
+    distinct = []
+    for handle in live:
+        key = id(handle.thread)
+        if key in seen:
+            continue
+        seen.add(key)
+        distinct.append(handle)
+    return distinct
 
 
 def get_handle(run_id: str) -> RunHandle | None:
@@ -271,6 +308,32 @@ def retry_run(
     # it already committed, so retrying reattempts only the unsettled work.
     if previous.get("status") not in ("failed", "completed_with_failures"):
         raise WorkspaceError("Only a failed run can be retried.")
+    command, context = linked_retry_command(
+        previous, target_refs=target_refs, instruction=instruction
+    )
+    return start_command_run(
+        workspace,
+        previous["mode"],
+        command,
+        parent_run_id=previous["id"],
+        context=context,
+    )
+
+
+def linked_retry_command(
+    previous: dict,
+    *,
+    target_refs: list[str] | None = None,
+    instruction: str | None = None,
+) -> tuple[dict, dict]:
+    """The command and context a linked second attempt at ``previous`` carries.
+
+    Shared by the auditor's Retry and by the loop's ``rerun_units``, which
+    differ only in who decides the narrowing and who runs the result: one
+    starts a top-level run, the other a child of the loop. What "the same
+    request, again" means is written here, once.
+    """
+
     # Command-ness, not engine: a run that failed while its route was still
     # pending has no engine yet and is still retryable as the same command.
     if not store.is_command_run(previous):
@@ -302,13 +365,7 @@ def retry_run(
         # A retry with nothing new to say does not inherit what the last attempt
         # was told: the instruction belongs to the ask that carried it.
         context.pop("instruction", None)
-    return start_command_run(
-        workspace,
-        previous["mode"],
-        command,
-        parent_run_id=previous["id"],
-        context=context,
-    )
+    return command, context
 
 
 def continue_audit(workspace: Workspace, run_id: str) -> dict:
@@ -578,6 +635,27 @@ def steer(
         )
         return {"handled": "follow_up_run", "run": follow_up}
 
+    # A live steering loop is the one command run a message can change course
+    # rather than queue behind. It reads its inbox at the top of every turn, so
+    # "skip that row" or "do this one again" reaches the thing that decides what
+    # runs next instead of waiting for it to finish deciding.
+    if (
+        store.is_command_run(run)
+        and run.get("engine") == store.AGENT_ENGINE
+        and run["status"] not in store.TERMINAL_STATUSES
+        and get_handle(run_id) is not None
+    ):
+        handle = get_handle(run_id)
+        with handle.lock:
+            handle.inbox.append(content)
+        store.append_event(
+            workspace,
+            run_id,
+            "message",
+            {"message": {"role": "user", "content": content, "at": store.utcnow()}},
+        )
+        return {"handled": "steering", "run": run}
+
     if store.is_command_run(run):
         command = {
             "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
@@ -648,6 +726,151 @@ def steer(
     return {"handled": "queued", "run": run}
 
 
+def _run_engine(workspace: Workspace, run: dict, handle: RunHandle) -> None:
+    """Dispatch one loaded run to exactly one engine and drive it to a stop.
+
+    The one engine switch in the process. A top-level run reaches it on its own
+    thread through :func:`_execute`; a child run of the steering loop reaches it
+    inline through :func:`run_child_run`, on the loop's thread. Both paths get
+    the same engines, the same routing, and the same fail-closed rule for a
+    record whose engine is missing or unsupported.
+    """
+
+    from .routing import dispatch_engine
+
+    # One classification per run: `dispatch_engine` only finalizes a pending
+    # route or finishes a run whose route selects no engine. It never infers an
+    # engine from `kind`, `schema_version`, or the presence of a workflow
+    # record.
+    engine = dispatch_engine(workspace, run, handle)
+    if engine is None:
+        return  # the route selected no engine; the run is finished
+    if engine == store.INTAKE_ENGINE:
+        from .intake_runner import IntakeRunner
+
+        IntakeRunner(workspace, run, handle).execute()
+    elif engine == store.WORKFLOW_ENGINE:
+        from .workflow_dispatch import build_workflow_runner
+
+        build_workflow_runner(workspace, run, handle).execute()
+    elif engine == store.ACTION_ENGINE:
+        from .action_runner import ActionRunner
+
+        ActionRunner(workspace, run, handle).execute()
+    elif engine == store.AGENT_ENGINE:
+        from .agent_loop import AgentLoop
+
+        AgentLoop(workspace, run, handle).execute()
+    else:
+        raise WorkspaceError(f"Agent run engine is {engine!r} or unsupported.")
+
+
+def run_child_run(
+    workspace: Workspace,
+    parent_run: dict,
+    command: dict,
+    context: dict | None = None,
+) -> dict:
+    """Create, route, execute inline, and return one child command run.
+
+    No thread is started and ``start_command_run`` is not called, so the
+    one-live-run rule holds by construction: the workspace still has exactly one
+    worker thread, and it is the parent's. Everything else about the child is an
+    ordinary command run — its own record, its own route, its own sidecars, its
+    own receipts — which is what makes the loop's work indistinguishable from
+    the same work asked for directly.
+    """
+
+    parent_handle = get_handle(parent_run["id"])
+    if parent_handle is None:
+        raise WorkspaceError("A child run needs a live parent run.")
+    child_command = {
+        **dict(command),
+        "chat_id": parent_run.get("chat_id"),
+        "source_message_id": parent_run.get("source_message_id"),
+        "parent_command_id": (parent_run.get("command") or {}).get("id"),
+    }
+    child_context = dict(context or {})
+    basis = str(parent_run.get("planning_basis_run_id") or "").strip()
+    if basis and not child_context.get("planning_basis_run_id"):
+        child_context["planning_basis_run_id"] = basis
+    child = store.new_command_run(
+        workspace,
+        parent_run["mode"],
+        child_command,
+        parent_run_id=parent_run["id"],
+        context=child_context,
+    )
+    # A child is part of the parent's request and must reach the provider with
+    # the identities the request was admitted under, not whatever local settings
+    # say now.
+    child["model_profiles"] = parent_run.get("model_profiles") or llm.model_profile_snapshot()
+    child["model_profiles_snapshotted"] = True
+    store.save_run(workspace, child)
+    from .routing import resolve_route
+
+    try:
+        resolve_route(workspace, child)
+    except Exception as error:
+        # A child that cannot be routed is a finished child, not a record left
+        # queued forever: the loop is handed the refusal and the ledger says
+        # what happened to the run it asked for.
+        child["status"] = "failed"
+        child["error"] = str(error)
+        child["finished"] = store.utcnow()
+        store.save_run(workspace, child)
+        store.append_event(
+            workspace, child["id"], "run_status",
+            {"status": "failed", "error": str(error)},
+        )
+        parent_children = parent_run.setdefault("children", [])
+        if child["id"] not in parent_children:
+            parent_children.append(child["id"])
+            store.save_run(workspace, parent_run)
+        raise
+    store.append_event(workspace, child["id"], "run_status", {"status": "queued"})
+    children = parent_run.setdefault("children", [])
+    if child["id"] not in children:
+        children.append(child["id"])
+        store.save_run(workspace, parent_run)
+    return _drive_child(workspace, child, parent_handle)
+
+
+def run_child_run_resume(
+    workspace: Workspace, parent_run: dict, child: dict
+) -> dict:
+    """Drive a child run left non-terminal by a crash to its own stop.
+
+    The loop resumes its children before it decides anything else, so a request
+    that was interrupted mid-stage continues that stage rather than planning
+    around a run whose record is still open.
+    """
+
+    parent_handle = get_handle(parent_run["id"])
+    if parent_handle is None:
+        raise WorkspaceError("A child run needs a live parent run.")
+    if child.get("status") in store.TERMINAL_STATUSES:
+        return child
+    return _drive_child(workspace, child, parent_handle)
+
+
+def _drive_child(
+    workspace: Workspace, child: dict, parent_handle: RunHandle
+) -> dict:
+    """Run one child record on its parent's thread, under its own handle."""
+
+    handle = RunHandle.child_of(parent_handle, child["id"])
+    with _HANDLES_LOCK:
+        _HANDLES[child["id"]] = handle
+    try:
+        _run_engine(workspace, child, handle)
+    finally:
+        with _HANDLES_LOCK:
+            if _HANDLES.get(child["id"]) is handle:
+                _HANDLES.pop(child["id"], None)
+    return store.load_run(workspace, child["id"])
+
+
 def _launch(workspace: Workspace, run_id: str) -> None:
     """Start the run thread, handing it the workspace rather than an ID.
 
@@ -678,31 +901,7 @@ def _execute(seed: Workspace, run_id: str, handle: RunHandle) -> None:
         ):
             debug_store.capture_structural_state(workspace, trigger="run_start", run_id=run_id)
             try:
-                from .routing import dispatch_engine
-
-                # One classification per run: `dispatch_engine` only finalizes a
-                # pending route or finishes a run whose route selects no engine.
-                # It never infers an engine from `kind`, `schema_version`, or
-                # the presence of a workflow record.
-                engine = dispatch_engine(workspace, run, handle)
-                if engine is None:
-                    return  # the route selected no engine; the run is finished
-                if engine == store.INTAKE_ENGINE:
-                    from .intake_runner import IntakeRunner
-
-                    IntakeRunner(workspace, run, handle).execute()
-                elif engine == store.WORKFLOW_ENGINE:
-                    from .workflow_dispatch import build_workflow_runner
-
-                    build_workflow_runner(workspace, run, handle).execute()
-                elif engine == store.ACTION_ENGINE:
-                    from .action_runner import ActionRunner
-
-                    ActionRunner(workspace, run, handle).execute()
-                else:
-                    raise WorkspaceError(
-                        f"Agent run engine is {engine!r} or unsupported."
-                    )
+                _run_engine(workspace, run, handle)
             finally:
                 debug_store.capture_structural_state(workspace, trigger="run_completion", run_id=run_id)
     except Exception as error:  # last-resort: never leave a run stuck 'active'

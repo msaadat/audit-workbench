@@ -2511,6 +2511,18 @@ export interface AssistantRunProjection extends AgentRunSummary {
   blockers: AgentBlocker[]
   /** Injected client-side for an active run owned by another chat. */
   foreign?: boolean
+  /** Child run ids, for a steering-loop run: the runs it drove itself. */
+  children?: string[]
+  /** Next steps the loop offered when it finished. */
+  suggestions?: AssistantRunSuggestion[]
+}
+
+/** One clickable next step a finished steering loop offered. */
+export interface AssistantRunSuggestion {
+  label: string
+  requested_outcomes?: string[]
+  target_refs?: string[]
+  message?: string
 }
 
 export interface AssistantInteractionProjection {
@@ -2811,8 +2823,8 @@ export interface AgentWorkflow {
 // record carries a resolved route and, for workflow/action, a selected engine.
 export interface AgentRoute {
   status: 'pending' | 'resolved'
-  route: 'workflow' | 'action' | 'clarification' | 'unsupported' | null
-  engine: 'workflow' | 'action' | null
+  route: 'workflow' | 'action' | 'agent' | 'clarification' | 'unsupported' | null
+  engine: 'workflow' | 'action' | 'agent' | null
   decided_by: string | null
   workflow_definition: string | null
   requested_outcomes: string[]
@@ -2906,7 +2918,7 @@ export interface AgentRun {
   schema_version?: number
   // Null only while a command run's route is still pending; dispatch requires a
   // supported value and fails closed without one.
-  engine: 'workflow' | 'action' | 'intake' | null
+  engine: 'workflow' | 'action' | 'agent' | 'intake' | null
   route?: AgentRoute | null
   id: string
   workspace_id: string

@@ -375,7 +375,9 @@ def test_a_deterministic_route_never_spends_a_router_turn(
 # P11.5 — dispatch by explicit engine only
 # --------------------------------------------------------------------------- #
 def test_dispatch_reads_only_the_explicit_engine(workspace_with_data):
-    source = inspect.getsource(runner._execute)
+    # The switch itself, which a top-level run reaches through ``_execute`` and
+    # a child run of the steering loop reaches inline.
+    source = inspect.getsource(runner._run_engine)
 
     assert 'run.get("kind")' not in source
     assert 'run["kind"]' not in source
@@ -409,11 +411,11 @@ def test_a_record_without_a_supported_engine_fails_closed(workspace_with_data, r
 
 
 def test_supported_engine_set_matches_the_phase_10_decision_record():
-    # Phase 12 retired the legacy ``analysis`` pipeline, so the decision
-    # record's table is now exactly two schedulers plus the one justified
+    # Phase 12 retired the legacy ``analysis`` pipeline, and the agent-loop
+    # step added the steering loop: three schedulers plus the one justified
     # protocol engine.
-    assert store.RUN_ENGINES == frozenset({"workflow", "action", "intake"})
-    assert store.COMMAND_ENGINES == frozenset({"workflow", "action"})
+    assert store.RUN_ENGINES == frozenset({"workflow", "action", "agent", "intake"})
+    assert store.COMMAND_ENGINES == frozenset({"workflow", "action", "agent"})
     assert set(store.PROTOCOL_ENGINE_BY_RUN_KIND) == {"intake"}
 
 

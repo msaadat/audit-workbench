@@ -62,17 +62,30 @@ WORKFLOW_MODULES = {
     doc_tests_workflow.WORKFLOW_ID: doc_tests_workflow,
 }
 
-# The four normalized routing results. ``workflow`` and ``action`` select an
-# engine; ``clarification`` and ``unsupported`` finish the run without one.
+# The five normalized routing results. ``workflow``, ``action`` and ``agent``
+# select an engine; ``clarification`` and ``unsupported`` finish the run without
+# one.
 ROUTE_WORKFLOW = "workflow"
 ROUTE_ACTION = "action"
+# The steering loop. Unlike the other two engine routes this one is never
+# inferred from what a request says: the coordinator asks for it explicitly by
+# handing the request over as a ``loop`` command, and the classification below
+# only reads that back.
+ROUTE_AGENT = "agent"
 ROUTE_CLARIFICATION = "clarification"
 ROUTE_UNSUPPORTED = "unsupported"
-ROUTES = (ROUTE_WORKFLOW, ROUTE_ACTION, ROUTE_CLARIFICATION, ROUTE_UNSUPPORTED)
+ROUTES = (
+    ROUTE_WORKFLOW,
+    ROUTE_ACTION,
+    ROUTE_AGENT,
+    ROUTE_CLARIFICATION,
+    ROUTE_UNSUPPORTED,
+)
 TERMINAL_ROUTES = frozenset({ROUTE_CLARIFICATION, ROUTE_UNSUPPORTED})
 ENGINE_BY_ROUTE = {
     ROUTE_WORKFLOW: store.WORKFLOW_ENGINE,
     ROUTE_ACTION: store.ACTION_ENGINE,
+    ROUTE_AGENT: store.AGENT_ENGINE,
     ROUTE_CLARIFICATION: None,
     ROUTE_UNSUPPORTED: None,
 }
@@ -535,6 +548,8 @@ def normalize_route(
         outcomes = []
     if route == ROUTE_ACTION:
         intent = validate_action_intent(action_intent)
+    if route == ROUTE_AGENT and action_intent:
+        raise WorkspaceError("An agent route carries no action intent.")
     text = str(clarification or "").strip() or None
     if route == ROUTE_CLARIFICATION and not text:
         raise WorkspaceError("A clarification route needs a clarification question.")
@@ -663,6 +678,19 @@ def classify_command(command: dict) -> dict | None:
     action, or mutates state.
     """
 
+    # The coordinator has already decided this one needs the loop. It is read
+    # first because everything below reads the request's *words*, and the words
+    # of a request handed to the loop are exactly the ones no phrase table could
+    # classify.
+    if str(command.get("source") or "") == store.LOOP_COMMAND_SOURCE:
+        return normalize_route(
+            ROUTE_AGENT,
+            decided_by="loop_source",
+            objective=str(command.get("text") or ""),
+            target_refs=_target_refs(command),
+            generation_mode=workflow.command_generation_mode(command),
+            constraints=list(command.get("constraints") or []),
+        )
     direct = command.get("requested_outcomes")
     if isinstance(direct, list) and direct:
         return _workflow_route(
@@ -958,8 +986,17 @@ def _analysis_model_turns(workspace: Workspace, scope: dict) -> int:
     return 10 + 2 * max(1, len(table_scope.targets))
 
 
-def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> None:
-    """Materialize a validated workflow route on the durable run."""
+def resolution_scope(
+    workspace: Workspace, run: dict, resolution: dict
+) -> tuple[str, dict]:
+    """The workflow definition and the scope a resolution would materialize.
+
+    Split out of :func:`install_resolution` so that a caller who wants to know
+    what a request *would* schedule — the steering loop's ``plan_outcomes`` —
+    reads the same scope the run would execute under. A preview built from its
+    own idea of scope would be a second answer to a question that already has
+    one, and would drift the first time a capability learned a new narrowing.
+    """
 
     definition_id = str(
         resolution.get("workflow_definition")
@@ -967,8 +1004,6 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     )
     if definition_id not in WORKFLOW_MODULES:
         raise WorkspaceError(f"Unsupported workflow definition '{definition_id}'.")
-    definition = WORKFLOW_MODULES[definition_id]
-    registry = audit_capabilities.REGISTRY_BY_WORKFLOW[definition_id]
     analysis_route = definition_id == analysis_workflow.WORKFLOW_ID
     document_route = definition_id == documents_workflow.WORKFLOW_ID
     doc_test_route = definition_id == doc_tests_workflow.WORKFLOW_ID
@@ -1057,6 +1092,20 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         # Explicitly named tables normally arrive as ``table:<name>`` target
         # refs, which the scope resolver reads directly.
         scope["tables"] = [str(value) for value in resolution.get("tables") or []]
+    return definition_id, scope
+
+
+def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> None:
+    """Materialize a validated workflow route on the durable run."""
+
+    definition_id, scope = resolution_scope(workspace, run, resolution)
+    definition = WORKFLOW_MODULES[definition_id]
+    registry = audit_capabilities.REGISTRY_BY_WORKFLOW[definition_id]
+    analysis_route = definition_id == analysis_workflow.WORKFLOW_ID
+    document_route = definition_id == documents_workflow.WORKFLOW_ID
+    doc_test_route = definition_id == doc_tests_workflow.WORKFLOW_ID
+    document_scope_route = document_route or definition_id == audit_workflow.WORKFLOW_ID
+    generation_mode = scope["generation_mode"]
     requested = list(resolution.get("requested_outcomes") or [])
     resolved, stages, reused = workflow.materialize(
         registry,
@@ -1367,6 +1416,7 @@ def dispatch_engine(workspace: Workspace, run: dict, handle: object) -> str | No
 __all__ = [
     "CommandRouter",
     "GOAL_TEMPLATES",
+    "ROUTE_AGENT",
     "ROUTES",
     "TEMPLATE_RUN_CONTEXT_KEYS",
     "classify_command",
@@ -1374,6 +1424,7 @@ __all__ = [
     "install_resolution",
     "normalize_route",
     "pending_route",
+    "resolution_scope",
     "resolve_pending_route",
     "resolve_route",
     "template_outcomes",

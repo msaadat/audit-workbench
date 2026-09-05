@@ -1,11 +1,25 @@
 # Agent loop redesign: a steering model over gated capabilities, in small steps
 
-**Status:** design, not yet implemented. This is the handoff for replacing the
-fixed request-to-closure pipeline in front of the workflow engine with a
-budgeted model loop that plans, runs capability units, reads what happened,
-repairs what it can, and asks when it cannot. Each step lands on its own,
-leaves every existing tab button and slash command working, and is measured
-against the previous step before the next one starts.
+**Status:** steps 0 to 3 landed at commit `0fffce7` (5 September 2026); step 4,
+the agent engine, is built and under test (6 September 2026), and with it the
+whole of step 5's prompt and guards; steps 6 to 9 are still design. This is the
+handoff for replacing the fixed request-to-closure pipeline in front of the
+workflow engine with a budgeted model loop that plans, runs capability units,
+reads what happened, repairs what it can, and asks when it cannot. Each step
+lands on its own, leaves every existing tab button and slash command working,
+and is measured against the previous step before the next one starts.
+
+What landed in 0 to 3, against what this document specifies: the gateway
+retries one unusable completion; a finding unit whose supporting test is
+incomplete is no longer expanded; heartbeats, repair notes, and context reads
+are said once; `TargetScope` parses `datatest:`, `doctest:`, `finding:`, and
+`document:` alongside `rcm:` and `observation:`; one named test or finding is
+regenerated in place through the real worker; and the auditor's instruction is
+a declared, bounded, hash-recorded context source on the five presets that
+accept steering. Two deviations, both deliberate: the row's existing tests
+reach the generation turn through the `rcm_row` candidate's `existing_tests`
+projection rather than a separate `current_tests` source, and the replacement
+marker a regenerated test carries is `revises`, not `replaces`.
 
 The governing rule: **the model steers; the registry gates.** The model
 decides what to run, in what order, with what scope and instruction, and what
@@ -527,6 +541,42 @@ text" succeeds on the first worker attempt.
 The core. Builds on 0 (so the loop is not the first thing to meet an empty
 completion) and 3 (so a rerun can carry an instruction). Everything in this
 step is additive; no route that exists today changes.
+
+**Landed**, 6 September 2026, as specified below except where this paragraph
+says otherwise. `agent/agent_loop.py` is the engine, `agent/loop_tools.py` its
+tools, `app/assistant_tools.py` the read surface it shares with the
+coordinator, and `tests/test_agent_loop.py` the gate. Four deviations, each
+deliberate:
+
+1. **The read tools were not physically moved out of `assistant.py`.**
+   `assistant_tools.py` is the shared surface — one schema list, one dispatch,
+   one set of bounds — and composes the existing `_Session` handlers plus the
+   action planner's artifact reads. Moving 450 lines of handler bodies is churn
+   this step does not need, and the seam that mattered (two callers, one
+   registry) exists.
+2. **The loop is given the state-reading subset only.** `get_audit_progress`,
+   `inspect_audit_artifacts`, `get_latest_run`, `search_documents`, the four
+   table-metadata reads, and `list_artifacts`/`get_artifact`. Not `query_table`,
+   `run_analytics` or `run_python`: they preview real rows and produce chat
+   artifacts, and a loop turn has nowhere to put either. A loop that needs data
+   analysed runs the analysis capability, which commits its answer.
+3. **`run_outcomes` has no `review_each_stage` yet.** The per-stage checkpoint
+   is step 6c; the parameter arrives with it rather than being accepted and
+   ignored now.
+4. **Step 5 came with it.** The operating rules are in `prompts.LOOP_SYSTEM` and
+   every guard step 5 names is in code — the per-unit rerun cap, `max_child_runs`,
+   the force refusal, `max_auditor_questions`, and a `finish` with a live child.
+   What is left of step 5 is its measurement, on a real engagement.
+
+Two things the plan did not say, both needed:
+
+- **The conversation sidecar carries a delivered-message watermark.** Without it
+  a resumed loop cannot tell a steering message it has already answered from one
+  that arrived while it was down, and would either repeat the first or lose the
+  second.
+- **`routing.resolution_scope` was split out of `install_resolution`.** So that
+  `plan_outcomes` previews the scope the run would actually execute under rather
+  than a second, drifting idea of it.
 
 #### 4a. The engine
 
