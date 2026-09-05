@@ -36,8 +36,9 @@ vi.mock('../composables/useAgentRun', async () => {
     useAgentRun: () => ({
       isActive: ref(false),
       launchMode: ref('auto'),
-      state: { drawerOpen: false, status: { configured: true } },
-      toggleDrawer: vi.fn(),
+      state: { panelMode: 'closed', status: { configured: true } },
+      openPanel: vi.fn(),
+      togglePanel: vi.fn(),
       onWorkspaceInvalidated: () => () => undefined,
     }),
   }
@@ -115,16 +116,6 @@ async function mountTab(items: AuditFinding[]) {
 }
 
 describe('FindingsTab', () => {
-  it('leads with what the register holds and what the report can carry', async () => {
-    const wrapper = await mountTab([
-      finding('F-1', { severity: 'critical', rcm_refs: [] }),
-      finding('F-2'),
-    ])
-
-    expect(wrapper.find('.headline').text())
-      .toBe('2 findings · 1 critical · 1 high · 1 in the report')
-  })
-
   it('groups the list by severity and says what each finding still owes', async () => {
     const wrapper = await mountTab([
       finding('F-1', { severity: 'critical', rcm_refs: [], cause_pending: true }),
@@ -134,9 +125,8 @@ describe('FindingsTab', () => {
     expect(wrapper.findAll('.group .severity').map(node => node.text()))
       .toEqual(['critical', 'high'])
     const rows = wrapper.findAll('.row .meta')
-    expect(rows[0].text()).toContain('F-1')
-    expect(rows[0].text()).toContain('no risk')
-    expect(rows[0].text()).toContain('cause pending')
+    // The id and the first thing owed — not all four, on all eighteen rows.
+    expect(rows[0].text().replace(/\s+/g, ' ').trim()).toBe('F-1 · no risk')
     // A finding owing nothing says only its id.
     expect(rows[1].text().replace(/\s+/g, ' ').trim()).toBe('F-2')
   })

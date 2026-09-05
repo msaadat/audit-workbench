@@ -4,7 +4,7 @@ import type {
   AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload,
 } from '../../types'
 import {
-  DOC_TEST_CHIPS, docTestHeadline, docTestStatus, filterDocTestEntries,
+  DOC_TEST_CHIPS, docTestStatus, filterDocTestEntries,
 } from './docTestStatus'
 
 function item(
@@ -216,14 +216,3 @@ describe('the call nobody has recorded', () => {
   })
 })
 
-describe('docTestHeadline', () => {
-  it('answers how much there is, how much ran, and how much is open', () => {
-    expect(docTestHeadline(null)).toBe('no items yet')
-    expect(docTestHeadline(payload([item('DT-1', 'I-1'), item('DT-1', 'I-2')])))
-      .toBe('2 items · all run · no exceptions open')
-    expect(docTestHeadline(payload([
-      item('DT-1', 'I-1', { classification: 'exception' }),
-      item('DT-2', 'I-2', { classification: 'not_run' }),
-    ]))).toBe('2 items · 1 of 2 run · 1 exception open')
-  })
-})

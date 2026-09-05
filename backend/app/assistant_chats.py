@@ -196,10 +196,39 @@ def _pending_expired(message: dict) -> bool:
     return age > PENDING_RECOVERY_GRACE_SECONDS
 
 
-def _summary(record: dict) -> dict:
+def _summary(record: dict, runs: dict[str, list[dict]] | None = None) -> dict:
+    """One chat, as a row in a list of chats.
+
+    The list is read to choose between conversations, so it carries what
+    distinguishes them: how the last run of each ended, and how many of its
+    runs failed. Both are on the run records already; the summary simply did
+    not report them, so every row looked alike whatever had happened in it.
+    """
+    chat_runs = (runs or {}).get(str(record.get("id")), [])
+    failed = sum(
+        1 for item in chat_runs
+        if item.get("status") in {"failed", "completed_with_failures"}
+    )
     return {key: record.get(key) for key in (
         "id", "workspace_id", "title", "title_source", "created_at", "updated_at"
-    )} | {"message_count": len(record.get("messages") or [])}
+    )} | {
+        "message_count": len(record.get("messages") or []),
+        "last_run_status": str(chat_runs[0].get("status")) if chat_runs else None,
+        "failed_run_count": failed,
+        "run_count": len(chat_runs),
+    }
+
+
+def _runs_by_chat(workspace: Workspace) -> dict[str, list[dict]]:
+    """Every run this workspace holds, newest first, grouped by the chat that
+    started it. Read once for the whole page rather than once per row."""
+    grouped: dict[str, list[dict]] = {}
+    for summary in store.list_runs(workspace):
+        chat_id = str(summary.get("chat_id") or "")
+        if not chat_id:
+            continue
+        grouped.setdefault(chat_id, []).append(summary)
+    return grouped
 
 
 def list_chats(workspace: Workspace, *, limit: int = 50, cursor: int = 0) -> dict:
@@ -218,7 +247,8 @@ def list_chats(workspace: Workspace, *, limit: int = 50, cursor: int = 0) -> dic
     records.sort(key=lambda item: (str(item.get("updated_at") or ""), item["id"]), reverse=True)
     page = records[cursor:cursor + limit]
     next_cursor = cursor + limit if cursor + limit < len(records) else None
-    return {"chats": [_summary(item) for item in page], "next_cursor": next_cursor}
+    runs = _runs_by_chat(workspace)
+    return {"chats": [_summary(item, runs) for item in page], "next_cursor": next_cursor}
 
 
 def _clean_title(content: str) -> str:

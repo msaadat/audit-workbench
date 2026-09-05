@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from './views/HomeView.vue'
 import LoginView from './views/LoginView.vue'
 import WorkspaceView from './views/WorkspaceView.vue'
-import ConsoleView from './views/ConsoleView.vue'
 import EngagementRecordView from './views/EngagementRecordView.vue'
 import AuditFileView from './views/AuditFileView.vue'
 import RcmRowView from './views/RcmRowView.vue'
@@ -31,7 +30,16 @@ const router = createRouter({
         // The engagement record is the landing surface; the chat has its own
         // path. Both keep the shell, so the assistant drawer rides along.
         { path: '', name: 'workspace', component: EngagementRecordView, props: true },
-        { path: 'console', name: 'workspace-console', component: ConsoleView, props: true },
+        // The assistant is no longer a place: `/console` lands on the record
+        // with the panel expanded, so every existing link still arrives at the
+        // same thing — the thread at full width, over a page it can go back to.
+        {
+          path: 'console',
+          redirect: to => ({
+            path: `/workspace/${to.params.id}`,
+            query: { ...to.query, assistant: 'full' },
+          }),
+        },
         { path: 'bench/:section', name: 'workspace-bench', component: WorkbenchView, props: true },
         { path: 'bench', redirect: to => `/workspace/${to.params.id}/bench/documents` },
         // One RCM row as a page. It sits under the matrix's own section rather

@@ -315,30 +315,6 @@ export const FINDING_CHIPS: ReviewChip[] = [
 ]
 
 /**
- * The count sentence beside the page title: how many findings there are, how
- * severe they are, and how many of them the report can actually carry.
- *
- * The last clause is the one the old header never answered. A register of
- * eighteen confirmed findings reads as finished until something says none of
- * them is placed in a process the report can write about.
- */
-export function findingsHeadline(items: AuditFinding[]): string {
-  if (!items.length) return 'no findings yet'
-  const bySeverity = SEVERITY_ORDER
-    .map(severity => ({ severity, count: items.filter(item => item.severity === severity).length }))
-    .filter(entry => entry.count > 0)
-    .map(entry => `${entry.count} ${entry.severity}`)
-  const inReport = items.filter(reportable).length
-  return [
-    plural(items.length, 'finding'),
-    ...bySeverity,
-    inReport === 0
-      ? 'none in the report'
-      : inReport === items.length ? 'all in the report' : `${inReport} in the report`,
-  ].join(' · ')
-}
-
-/**
  * What one finding still owes, in the order it is owed.
  *
  * The list row carries the short words and the verdict bar the full ones, from

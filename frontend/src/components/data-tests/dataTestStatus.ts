@@ -406,21 +406,6 @@ export const DATA_TEST_CHIPS: ReviewChip[] = [
   { filter: 'passed', tone: 'ok', label: 'No exception' },
 ]
 
-/**
- * The count sentence beside the page title: how much there is, how much has
- * run, and how much of it is still open. Three clauses, because a page that
- * says only "30 tests" answers none of the questions a reader arrives with.
- */
-export function dataTestHeadline(tests: DataTest[]): string {
-  if (!tests.length) return 'no tests yet'
-  const run = tests.filter(hasRun).length
-  const open = tests.filter(test => test.open_exception_count > 0).length
-  return [
-    plural(tests.length, 'test'),
-    run === tests.length ? 'all run' : `${run} of ${tests.length} run`,
-    open ? `${open} with open exceptions` : 'no open exceptions',
-  ].join(' · ')
-}
 
 export const DATA_TEST_FILTER_LABELS: Record<DataTestFilter, string> = {
   not_run: 'tests not run',

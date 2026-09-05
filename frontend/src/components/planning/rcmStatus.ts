@@ -530,19 +530,6 @@ export const RCM_CHIPS: ReviewChip[] = [
   { filter: 'unreviewed_row', tone: 'neutral', label: 'Unreviewed' },
 ]
 
-/**
- * The count sentence beside the page title. What the matrix holds, rather than
- * what state it is in — the chips beside it answer that.
- */
-export function rcmHeadline(rows: RcmRow[]): string {
-  if (!rows.length) return 'no risks recorded yet'
-  const counts = tally(rows)
-  return [
-    plural(rows.length, 'risk'),
-    plural(rows.length - counts.rowsWithoutControl, 'control'),
-    plural(counts.tests, 'test'),
-  ].join(' · ')
-}
 
 export function rcmStatus(
   rows: RcmRow[],

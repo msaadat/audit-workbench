@@ -3,7 +3,6 @@ import { computed, ref } from 'vue'
 
 import type { AuditFinding, FindingSeverity } from '../../types'
 import { SEVERITY_ORDER, openItems } from './findingsStatus'
-import { pluralWord } from '../../format'
 
 /**
  * The register in severity order, one line of title and one of fact per row.
@@ -55,7 +54,7 @@ const groups = computed(() => SEVERITY_ORDER
       >
         <i class="pi" :class="collapsed.has(group.severity) ? 'pi-chevron-right' : 'pi-chevron-down'" aria-hidden="true" />
         <span class="severity" :data-tone="TONES[group.severity]">{{ group.severity }}</span>
-        <span class="count aw-figure">{{ group.items.length }} {{ pluralWord(group.items.length, 'finding') }}</span>
+        <span class="count aw-figure">{{ group.items.length }}</span>
       </button>
       <template v-if="!collapsed.has(group.severity)">
         <button
@@ -69,12 +68,16 @@ const groups = computed(() => SEVERITY_ORDER
           <span class="dot" :data-tone="TONES[item.severity]" aria-hidden="true" />
           <span class="copy">
             <span class="title">{{ item.title }}</span>
+            <!-- The id, and the first thing the finding owes. Listing all of
+                 them put the same four words on all eighteen rows; the verdict
+                 bar states them in full for the one finding being read, and
+                 the chips above count each of them across the register. -->
             <span class="meta aw-figure">
               <span class="id">{{ item.id }}</span>
-              <template v-for="owed in openItems(item)" :key="owed.key">
-                · <span :data-tone="owed.tone">{{ owed.short }}</span>
-              </template>
               <template v-if="!item.auditor_confirmed"> · <span class="draft">draft</span></template>
+              <template v-else-if="openItems(item)[0]">
+                · <span :data-tone="openItems(item)[0].tone">{{ openItems(item)[0].short }}</span>
+              </template>
             </span>
           </span>
         </button>

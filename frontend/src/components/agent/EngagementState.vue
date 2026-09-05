@@ -20,6 +20,14 @@ const props = defineProps<{
   phases: EngagementPhase[]
   sections?: Record<string, EngagementSection>
   busy?: boolean
+  /**
+   * The arc, one sentence and a way to the record — and nothing else.
+   *
+   * The assistant panel is not the engagement record; the record is one click
+   * away on the same header, and a second copy of its phase chips, disclosures
+   * and actions in a 320px column was the tab's rail restating the index.
+   */
+  compact?: boolean
 }>()
 
 const emit = defineEmits<{ action: [PhaseAction] }>()
@@ -50,6 +58,22 @@ const stateLabel: Record<EngagementPhase['state'], string> = {
   attention: 'Needs attention',
 }
 
+/**
+ * What the whole engagement is doing, in one sentence: where it stands, and
+ * what the phases that are not resting are waiting on.
+ */
+const standing = computed(() => {
+  const open = status.value.rows.filter(row => row.state === 'attention' || row.issues.length)
+  const first = open[0]
+  const rest = open.slice(1).map(row => row.label)
+  const clauses = [
+    status.value.position,
+    first?.issues[0] ?? '',
+    rest.length ? `${rest.join(' and ')} ${rest.length === 1 ? 'needs' : 'need'} attention.` : '',
+  ].filter(Boolean)
+  return clauses.join(' · ')
+})
+
 /** The whole issue list, not its first entry — the rest are why it is open. */
 function summary(row: PhaseRow) {
   return `${row.label}: ${stateLabel[row.state]}${
@@ -58,7 +82,22 @@ function summary(row: PhaseRow) {
 </script>
 
 <template>
-  <div class="engagement-state">
+  <!-- The whole of `EngagementState` the panel keeps: the arc, the sentence,
+       and the way to the page that owns the rest. -->
+  <section v-if="compact" class="standing">
+    <header>
+      <h3 class="aw-label">Where the engagement stands</h3>
+      <span v-if="status.position" class="count aw-figure">{{ status.position }}</span>
+    </header>
+    <div v-if="status.arc.length" class="arc" aria-hidden="true">
+      <span v-for="(state, index) in status.arc" :key="index" :data-state="state" />
+    </div>
+    <!-- No link out: the record is the page underneath, and closing the panel
+         is how you get to it. -->
+    <p class="sentence">{{ standing || 'Status is unavailable.' }}</p>
+  </section>
+
+  <div v-else class="engagement-state">
     <div class="head">
       <p class="rail-label">Progress</p>
       <span v-if="status.position" class="position">{{ status.position }}</span>
@@ -146,6 +185,10 @@ function summary(row: PhaseRow) {
 </template>
 
 <style scoped>
+.standing { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.standing .sentence { margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); line-height: 1.45; }
+.standing .arc { margin: .15rem 0; }
+
 .engagement-state { display: flex; flex-direction: column; }
 .head {
   display: flex;

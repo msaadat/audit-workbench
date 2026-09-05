@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AuditFinding } from '../../types'
-import {
-  FINDING_CHIPS, filterFindings, findingsHeadline, findingsStatus, openItems,
-} from './findingsStatus'
+import { FINDING_CHIPS, filterFindings, findingsStatus, openItems } from './findingsStatus'
 
 function finding(id: string, overrides: Partial<AuditFinding> = {}): AuditFinding {
   return {
@@ -123,28 +121,6 @@ describe('findings filters', () => {
   it('treats a whitespace-only management response as no response', () => {
     expect(filterFindings([finding('F-9', { management_response: '  \n ' })], 'no_response'))
       .toHaveLength(1)
-  })
-})
-
-describe('findings headline', () => {
-  it('says nothing about a register that does not exist yet', () => {
-    expect(findingsHeadline([])).toBe('no findings yet')
-  })
-
-  it('names the severities present and how many the report can carry', () => {
-    // The live shape of the file: every finding agreed, none of them linked to
-    // a risk, so the report carries none of them.
-    expect(findingsHeadline([
-      finding('F-1', { severity: 'critical', rcm_refs: [] }),
-      finding('F-2', { severity: 'high', rcm_refs: [] }),
-      finding('F-3', { severity: 'high', rcm_refs: [] }),
-    ])).toBe('3 findings · 1 critical · 2 high · none in the report')
-  })
-
-  it('counts a finding into the report only when it is both confirmed and supported', () => {
-    expect(findingsHeadline([finding('F-1')])).toBe('1 finding · 1 high · all in the report')
-    expect(findingsHeadline([finding('F-1'), finding('F-2', { auditor_confirmed: false })]))
-      .toBe('2 findings · 2 high · 1 in the report')
   })
 })
 

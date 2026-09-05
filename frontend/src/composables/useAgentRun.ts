@@ -25,8 +25,15 @@ interface AgentState {
   status: AssistantStatus | null
   run: AgentRun | null
   runs: AgentRunSummary[]
-  drawerOpen: boolean
-  drawerAutoOpened: boolean
+  /**
+   * Where the assistant is: nowhere, beside the page, or over it.
+   *
+   * It was a boolean, because the assistant was a sidecar and the console was
+   * a route. One panel in three widths replaces both, so "open" is no longer
+   * one answer — and the width is the property the console existed to provide.
+   */
+  panelMode: PanelMode
+  panelAutoOpened: boolean
   connected: boolean
   starting: boolean
   lastChange: (WorkspaceChange & { at: number }) | null
@@ -57,15 +64,45 @@ const STREAM_TAIL_CHARS = 480
 type ChangeListener = (change: WorkspaceChange) => void
 type InvalidationListener = () => void
 export type AgentMode = 'auto' | 'permission'
+export type PanelMode = 'closed' | 'docked' | 'expanded'
+
+/**
+ * Below this, a docked panel would leave the page less than it needs, so a
+ * request to dock is answered by expanding instead. `440 + 880`: the panel's
+ * default width plus a surface rail and a two-pane detail that still reads.
+ */
+export const EXPAND_BELOW = 1320
+
+/** What the window can actually accommodate, whatever was asked for. */
+export function affordableMode(mode: PanelMode): PanelMode {
+  if (mode !== 'docked') return mode
+  const width = typeof window === 'undefined' ? EXPAND_BELOW : window.innerWidth
+  return width < EXPAND_BELOW ? 'expanded' : 'docked'
+}
 
 const MODE_STORAGE_KEY = 'audit-workbench:agent-mode'
 const PANEL_STORAGE_PREFIX = 'audit-workbench:agent-panel-open:'
 
-function savedPanelState(workspaceId: string): boolean {
+/**
+ * The mode this workspace was last left in, so reopening restores the width
+ * that was being worked in rather than always the narrow one.
+ */
+function savedPanelState(workspaceId: string): PanelMode {
   try {
-    return window.localStorage.getItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`) === 'true'
+    const value = window.localStorage.getItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`)
+    if (value === 'expanded') return 'expanded'
+    // `true` is what the drawer's boolean wrote; it means docked.
+    return value === 'docked' || value === 'true' ? 'docked' : 'closed'
   } catch {
-    return false
+    return 'closed'
+  }
+}
+
+function rememberPanelState(workspaceId: string, mode: PanelMode) {
+  try {
+    window.localStorage.setItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`, mode)
+  } catch {
+    /* Storage can be unavailable in hardened/private browser contexts. */
   }
 }
 
@@ -134,10 +171,10 @@ function state(workspaceId: string): AgentState {
       status: null,
       run: null,
       runs: [],
-      // The assistant is a contextual sidecar. It starts compact unless the
-      // user explicitly left it open or a run requires their attention.
-      drawerOpen: savedPanelState(workspaceId),
-      drawerAutoOpened: false,
+      // The assistant starts out of the way unless the user explicitly left it
+      // open or a run requires their attention.
+      panelMode: affordableMode(savedPanelState(workspaceId)),
+      panelAutoOpened: false,
       connected: false,
       starting: false,
       lastChange: null,
@@ -147,6 +184,17 @@ function state(workspaceId: string): AgentState {
     stores.set(workspaceId, existing)
   }
   return existing
+}
+
+/**
+ * Show the panel without touching the saved preference. A run started from
+ * another surface has to be watchable there and then, and the panel closes
+ * again when the run settles rather than becoming the new default — that is
+ * what `panelAutoOpened` means. An already-expanded panel stays expanded.
+ */
+function showPanel(store: AgentState) {
+  if (store.panelMode === 'closed') store.panelMode = affordableMode('docked')
+  store.panelAutoOpened = true
 }
 
 function emitChange(workspaceId: string, change: WorkspaceChange) {
@@ -198,14 +246,13 @@ function scheduleRefetch(workspaceId: string, runId: string) {
             run.status === 'awaiting_input' ||
             run.status === 'failed'
           ) {
-            store.drawerOpen = true
-            store.drawerAutoOpened = true
+            showPanel(store)
           } else if (
-            store.drawerAutoOpened &&
+            store.panelAutoOpened &&
             [...COMPLETED_STATUSES, 'cancelled'].includes(run.status)
           ) {
-            store.drawerOpen = savedPanelState(workspaceId)
-            store.drawerAutoOpened = false
+            store.panelMode = affordableMode(savedPanelState(workspaceId))
+            store.panelAutoOpened = false
           }
         }
       } catch {
@@ -392,8 +439,7 @@ export function useAgentRun(workspaceId: string) {
       const latest = active ?? runs[0]
       if (latest) await openRun(latest.id)
       if (active && ['awaiting_approval', 'awaiting_input'].includes(active.status)) {
-        store.drawerOpen = true
-        store.drawerAutoOpened = true
+        showPanel(store)
       }
     } catch {
       /* agent endpoints unavailable — the drawer shows the launch panel */
@@ -409,8 +455,7 @@ export function useAgentRun(workspaceId: string) {
       store.run.status === 'awaiting_input' ||
       store.run.status === 'failed'
     ) {
-      store.drawerOpen = true
-      store.drawerAutoOpened = true
+      showPanel(store)
     }
     if (ACTIVE_STATUSES.has(store.run.status)) connect(workspaceId, runId)
     else disconnect(workspaceId)
@@ -429,8 +474,7 @@ export function useAgentRun(workspaceId: string) {
         { mode, command: { source, text: text.trim(), goal_template: goalTemplate || null } },
       )
       store.run = run
-      store.drawerOpen = true
-      store.drawerAutoOpened = true
+      showPanel(store)
       connect(workspaceId, run.id)
       void loadRuns(workspaceId)
       return run
@@ -548,19 +592,20 @@ export function useAgentRun(workspaceId: string) {
      * closes again when the run settles rather than becoming the new default —
      * that is what `drawerAutoOpened` means.
      */
-    openDrawer: () => {
-      if (store.drawerOpen) return
-      store.drawerOpen = true
-      store.drawerAutoOpened = true
+    openPanel: () => { showPanel(store) },
+    /** Closed ⇄ the last open mode; the width is a preference, not a default. */
+    togglePanel: () => {
+      const next: PanelMode = store.panelMode === 'closed'
+        ? affordableMode(savedPanelState(workspaceId) === 'expanded' ? 'expanded' : 'docked')
+        : 'closed'
+      store.panelMode = next
+      store.panelAutoOpened = false
+      rememberPanelState(workspaceId, next)
     },
-    toggleDrawer: () => {
-      store.drawerOpen = !store.drawerOpen
-      store.drawerAutoOpened = false
-      try {
-        window.localStorage.setItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`, String(store.drawerOpen))
-      } catch {
-        /* Storage can be unavailable in hardened/private browser contexts. */
-      }
+    setPanelMode: (mode: PanelMode) => {
+      store.panelMode = affordableMode(mode)
+      store.panelAutoOpened = false
+      rememberPanelState(workspaceId, store.panelMode)
     },
   }
 }

@@ -44,6 +44,18 @@ def put_template(workspace_id: str, name: str, payload: dict = Body(...)):
     )
 
 
+def _planning(ws) -> dict:
+    """The planning record, plus the identity of the memorandum in it.
+
+    The cycle and the matrix each record the ``apm_sha1`` they were derived
+    from, and the APM page has to say whether they are still derived from what
+    the memorandum says now. That is a string comparison the page can make, but
+    only if it is given both strings — the hash is computed here rather than in
+    the browser because ``planning_apm_sha1`` decides what the identity covers.
+    """
+    return {**ws.planning, "apm_sha1": workspaces.planning_apm_sha1(ws)}
+
+
 @router.get("/planning")
 def get_planning(workspace_id: str):
     ws = _ws(workspace_id)
@@ -58,7 +70,7 @@ def get_planning(workspace_id: str):
             # Present current derived statuses without mutating workspace.json.
             rcm_execution.rollup(ws, persist=False)
             return {
-                "planning": ws.planning, "rcm": ws.rcm, "procedures": ws.work_program,
+                "planning": _planning(ws), "rcm": ws.rcm, "procedures": ws.work_program,
                 "data_tests": ws.data_tests, "observations": ws.observations,
                 "document_tests": doc_tests.list_tests(ws),
                 "findings": ws.findings,
@@ -72,7 +84,9 @@ def get_planning(workspace_id: str):
 
 @router.patch("/planning")
 def patch_planning(workspace_id: str, payload: dict = Body(...)):
-    return _ws(workspace_id).update_planning(payload)
+    ws = _ws(workspace_id)
+    ws.update_planning(payload)
+    return _planning(ws)
 
 
 @router.get("/planning/cycle/graph")

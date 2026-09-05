@@ -21,12 +21,6 @@ describe('surfacePath', () => {
     expect(surfacePath('procurement', 'home')).toBe('/workspace/procurement')
   })
 
-  it('gives the assistant its own path rather than the root', () => {
-    // The root used to be the chat. Every bookmark and every "open the
-    // workspace" link lands on the record now.
-    expect(surfacePath('procurement', 'console')).toBe('/workspace/procurement/console')
-  })
-
   it('names a work product directly under the workspace', () => {
     // The audit file is a host, not a surface, so it contributes no segment:
     // a reader sees the work product they asked for and nothing else.
@@ -47,9 +41,15 @@ describe('workspaceRoute', () => {
     })
   })
 
-  it('routes the console destination to its own path', () => {
+  it('routes the console destination to the record the panel opens over', () => {
     expect(workspaceRoute('procurement', 'console')).toEqual({
-      path: '/workspace/procurement/console', query: {},
+      path: '/workspace/procurement', query: {},
+    })
+  })
+
+  it('lets any destination carry the panel and the chat it should open', () => {
+    expect(workspaceRoute('procurement', 'console', { assistant: 'full', chat: 'c1' })).toEqual({
+      path: '/workspace/procurement', query: { assistant: 'full', chat: 'c1' },
     })
   })
 
@@ -103,7 +103,7 @@ describe('server-supplied targets', () => {
 
   it('sends an unknown target to the assistant rather than nowhere', () => {
     expect(routeForTarget('procurement', { tab: 'not-a-destination' })).toEqual({
-      path: '/workspace/procurement/console', query: {},
+      path: '/workspace/procurement', query: {},
     })
   })
 })

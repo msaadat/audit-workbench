@@ -2,13 +2,21 @@
 import { computed, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
-import Dialog from 'primevue/dialog'
+import Drawer from 'primevue/drawer'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 
-import { api, ApiError } from '../api'
-import type { ColumnSchema, WorkspaceSummary } from '../types'
-import UiAdvancedSection from './ui/UiAdvancedSection.vue'
+import { api, ApiError } from '../../api'
+import type { ColumnSchema, WorkspaceSummary } from '../../types'
+import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
+
+/**
+ * Building a join, in the drawer every other definition on this page uses.
+ *
+ * It was a 36rem modal over a page whose whole job is the tables it is joining;
+ * a drawer leaves the list visible, which is where the two names being joined
+ * are read from.
+ */
 
 const props = defineProps<{ workspace: WorkspaceSummary; visible: boolean }>()
 const emit = defineEmits<{ 'update:visible': [value: boolean]; saved: [] }>()
@@ -98,11 +106,11 @@ async function save() {
 </script>
 
 <template>
-  <Dialog
+  <Drawer
     :visible="visible"
-    modal
+    position="right"
     header="Add join"
-    :style="{ width: '36rem' }"
+    :style="{ width: 'min(37.5rem, 96vw)' }"
     @update:visible="emit('update:visible', $event)"
   >
     <div class="field">
@@ -136,11 +144,11 @@ async function save() {
       <div class="field advanced-field"><label>Join type</label><Select v-model="how" :options="howOptions" optionLabel="label" optionValue="value" /></div>
     </UiAdvancedSection>
 
-    <template #footer>
-      <Button label="Cancel" severity="secondary" text @click="emit('update:visible', false)" />
-      <Button label="Create join" icon="pi pi-link" :disabled="!valid" :loading="saving" @click="save" />
-    </template>
-  </Dialog>
+    <div class="foot">
+      <Button label="Cancel" size="small" outlined severity="secondary" @click="emit('update:visible', false)" />
+      <Button label="Create join" icon="pi pi-link" size="small" :disabled="!valid" :loading="saving" @click="save" />
+    </div>
+  </Drawer>
 </template>
 
 <style scoped>
@@ -163,4 +171,5 @@ async function save() {
   margin-bottom: 0.5rem;
 }
 .advanced-field { margin: 0; }
+.foot { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; padding-top: .875rem; border-top: 1px solid var(--aw-border); }
 </style>

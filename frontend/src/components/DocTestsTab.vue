@@ -42,7 +42,7 @@ import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiReviewBar from './ui/UiReviewBar.vue'
 import {
-  DOC_TEST_CHIPS, docTestHeadline, docTestStatus, filterDocTestEntries,
+  DOC_TEST_CHIPS, docTestStatus, filterDocTestEntries,
 } from './doc-tests/docTestStatus'
 import type { DocTestFilter } from './doc-tests/docTestStatus'
 import { plural } from '../format'
@@ -103,7 +103,6 @@ const bulkBusy = ref(false)
 // The bar counts every entry, not the filtered worklist: a count that shrank
 // as you filtered by it could never be clicked back out of.
 const status = computed(() => docTestStatus(summary.value, planning.value?.findings ?? []))
-const headline = computed(() => docTestHeadline(summary.value))
 const statusBusy = computed(() =>
   runningAll.value || runningOutstanding.value || generatingFindings.value)
 /** The list header's `Select` toggle. Checkboxes appear only once asked for. */
@@ -554,7 +553,7 @@ async function runTest() {
       'act', launchMode.value,
       { command: 'run_document_tests', source: 'tab_button', runContext: { test_id: testId } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start the document test', error) }
   finally { running.value = false }
@@ -569,7 +568,7 @@ async function runTestIds(testIds: string[], busy: typeof runningAll, failSummar
       'act', launchMode.value,
       { command: 'run_document_tests', source: 'tab_button', runContext: { test_ids: testIds } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'info',
       summary: `Running ${testIds.length} Document Test${testIds.length === 1 ? '' : 's'}`,
@@ -595,7 +594,7 @@ async function generateFinding(regenerate: boolean) {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: test.rcm_id } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
@@ -614,7 +613,7 @@ async function draftPendingFindings(testIds?: string[]) {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_ids: rcmIds } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'success',
       summary: `Generating findings for ${count} test${count === 1 ? '' : 's'}`,
@@ -650,7 +649,7 @@ async function redraftTest() {
         },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'success',
       summary: 'Redraft started',
@@ -702,7 +701,7 @@ async function prepareTests() {
       'Write the executable specification for each drafted Document Test, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.',
       'act', launchMode.value, { command: 'prepare_document_tests', source: 'tab_button' },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start document test preparation', error) }
 }
@@ -811,7 +810,6 @@ function onRulesetApproved(): void {
          secondary and a kebab. -->
     <header class="page-head">
       <h1>Document tests</h1>
-      <p class="headline aw-figure">{{ headline }}</p>
       <span class="grow" />
       <Button label="New test" icon="pi pi-plus" size="small" outlined severity="secondary" @click="openCreate" />
       <SplitButton

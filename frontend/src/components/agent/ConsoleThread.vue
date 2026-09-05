@@ -12,24 +12,21 @@ import { useAgentRun } from '../../composables/useAgentRun'
 import { useAssistantChat } from '../../composables/useAssistantChat'
 import type { AgentApproval, AgentDecision, AgentInteraction, AssistantChat, AssistantMessageIntent, AssistantSuggestion, AuditDocument, WorkspaceSummary } from '../../types'
 import ChatComposer from './ChatComposer.vue'
-import ChatHistoryPanel from './ChatHistoryPanel.vue'
 import ChatTranscript from './ChatTranscript.vue'
 import DocumentContextPicker from './DocumentContextPicker.vue'
 import { workspaceContextKey } from '../../composables/useWorkspaceContext'
 
 /**
- * The assistant thread, independent of the frame around it. The console renders
- * it at full content width; `AgentDrawer` renders the same component inside a
- * resizable sidecar. Both observe the same workspace-scoped run and chat stores,
- * so a run started in one is live in the other.
+ * The assistant thread, independent of the frame around it. `AssistantPanel`
+ * renders it docked beside a page and expanded over one; the frame owns the
+ * chat list, the plan and the width, and hands them in through `head-actions`.
  */
 
-const props = defineProps<{ workspace: WorkspaceSummary; dockedHistory?: boolean }>()
+const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
 const chats = useAssistantChat(props.workspace.id)
-const showHistory = ref(false)
 const pickerOpen = ref(false)
 const actionBusy = ref(false)
 const renameOpen = ref(false)
@@ -135,7 +132,6 @@ function remove() {
     accept: async () => {
       try {
         await chats.deleteActive()
-        showHistory.value = false
       } catch (error) { fail('Delete failed', error) }
     },
   })
@@ -158,10 +154,8 @@ async function decide(runId: string, approval: AgentApproval, decisions: AgentDe
   finally { actionBusy.value = false }
 }
 function fail(summary: string, error: unknown) { toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6500 }) }
-// The console docks the chat list in its own left pane instead of this
-// dropdown, but rename/remove stay owned here — the dialogs they need live in
-// this template either way.
-function toggleHistory() { if (!props.dockedHistory) showHistory.value = !showHistory.value }
+// The chat list belongs to the frame; renaming and removing stay here, because
+// the dialogs they need are in this template either way.
 defineExpose({ rename, remove })
 </script>
 
@@ -169,14 +163,21 @@ defineExpose({ rename, remove })
   <div class="console-thread">
     <header class="thread-head">
       <i class="pi pi-sparkles" />
-      <button class="title" :class="{ static: dockedHistory }" @click="toggleHistory"><strong>{{ activeChat?.title ?? 'Audit assistant' }}</strong><i v-if="!dockedHistory" class="pi pi-chevron-down" /></button>
-      <Tag v-if="status" :value="status.replaceAll('_',' ')" :severity="['failed'].includes(status) ? 'danger' : ['awaiting_approval','awaiting_input','interrupted'].includes(status) ? 'warn' : 'info'" />
-      <span v-if="runActive" class="live-dot" :class="{ off: !agent.state.connected }" :title="agent.state.connected ? 'Live updates connected' : 'Live updates reconnecting…'" />
+      <!-- The title edits in place; renaming was a dialog over a sidecar. -->
+      <button class="title static" @dblclick="rename"><strong>{{ activeChat?.title ?? 'Audit assistant' }}</strong></button>
+      <!-- One pill. The live dot went with it: the pill says the run is
+           running, and `--aw-warn` on it says the connection dropped. -->
+      <Tag
+        v-if="status"
+        :value="status.replaceAll('_',' ')"
+        :severity="status === 'failed' ? 'danger'
+          : ['awaiting_approval','awaiting_input','interrupted'].includes(status) ? 'warn'
+          : runActive && !agent.state.connected ? 'warn' : 'info'"
+      />
       <span class="grow" />
       <Button icon="pi pi-plus" text size="small" severity="secondary" aria-label="New chat" @click="chats.createChat()" />
       <slot name="head-actions" />
     </header>
-    <ChatHistoryPanel v-if="showHistory && !dockedHistory" :chats="chats.state.summaries" :activeId="chats.state.activeChatId" @select="chats.switchChat($event); showHistory = false" @create="chats.createChat(); showHistory = false" @rename="rename" @remove="remove" @close="showHistory = false" />
     <div v-if="chats.state.loading && !displayChat" class="loading"><i class="pi pi-spin pi-spinner" /> Loading chat…</div>
     <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" :needsSources="needsSources" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @import="shell?.requestImport()" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
     <ChatComposer

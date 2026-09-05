@@ -348,22 +348,6 @@ export const DOC_TEST_CHIPS: ReviewChip[] = [
   { filter: 'needs_review', tone: 'warn', label: 'Needs review' },
 ]
 
-/**
- * The count sentence beside the page title. Counted in worklist entries,
- * because that is what the list below it shows — the conclusion lane counts
- * tests, and mixing the two is how a status bar contradicts its own list.
- */
-export function docTestHeadline(payload: DocTestSummaryPayload | null): string {
-  const counts = tally(payload, [])
-  if (!counts.entries) return 'no items yet'
-  return [
-    plural(counts.entries, 'item'),
-    counts.executed === counts.entries ? 'all run' : `${counts.executed} of ${counts.entries} run`,
-    counts.exceptions
-      ? `${counts.exceptions} exception${counts.exceptions === 1 ? '' : 's'} open`
-      : 'no exceptions open',
-  ].join(' · ')
-}
 
 export const DOC_TEST_FILTER_LABELS: Record<DocTestFilter, string> = {
   not_run: 'items not run',

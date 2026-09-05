@@ -8,9 +8,11 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
-import Dialog from 'primevue/dialog'
+import Drawer from 'primevue/drawer'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
+import type { MenuItem } from 'primevue/menuitem'
 import { api } from '../api'
-import { documentStatus } from '../composables/documentStatus'
 import { TERMINAL_STATUSES, useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useSession } from '../composables/useSession'
@@ -20,8 +22,14 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import MarkdownView from './MarkdownView.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
+import UiReviewBar from './ui/UiReviewBar.vue'
 import DocumentTypeReview from './documents/DocumentTypeReview.vue'
+import StructuredEvidenceSheet from './documents/StructuredEvidenceSheet.vue'
+import {
+  DOCUMENT_CHIPS, documentMeta, documentTone, documentsStatus, filterDocuments,
+} from './documents/documentsStatus'
+import type { DocumentsFilter } from './documents/documentsStatus'
+import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
@@ -39,6 +47,7 @@ const currentPage = ref(1)
 const view = ref<'preview' | 'analysis' | 'activity'>('preview')
 const detailViews = ['preview', 'analysis', 'activity'] as const
 const search = ref('')
+const statusFilter = ref<DocumentsFilter[]>([])
 const groupBy = ref<'type' | 'folder' | 'status'>('type')
 const collapsedGroups = ref<Set<string>>(new Set())
 const sourceView = ref<'original' | 'text'>('original')
@@ -57,6 +66,8 @@ const summaryDraft = ref('')
 const notesDraft = ref('')
 const analysisBusy = ref(false)
 const compareCandidate = ref(false)
+/** The vocabulary's field table, behind the count that names it. */
+const fieldsOpen = ref(false)
 const fullVisualCoverage = ref(false)
 const session = useSession()
 // Single-user installations run as an administrator, so this is transparent
@@ -69,8 +80,6 @@ const settingsStatus = ref<AssistantStatus | null>(null)
 const visionProvider = ref('')
 const visionModel = ref('')
 const visionSettingsBusy = ref(false)
-const contentSearchOpen = ref(false)
-const contentSearch = ref('')
 const sourceSearch = ref('')
 const searchResults = ref<DocumentSearchResult[]>([])
 const sourceResults = ref<DocumentSearchResult[]>([])
@@ -85,25 +94,12 @@ let unsubscribeWorkspaceChanged: (() => void) | undefined
 // a document under a field schema — last.
 const categories: DocumentCategory[] = ['policy', 'minutes', 'background', 'evidence']
 const documentCategoryOptions = categories.map(value => ({ value, label: value.replace('_', ' ') }))
-const groupOptions = [
-  { value: 'type', label: 'Group by classification' },
-  { value: 'folder', label: 'Group by folder' },
-  { value: 'status', label: 'Group by status' },
-]
 /** `fx_contract` -> `fx contract`; `local.broker_note` -> `broker note`. */
 function documentTypeLabel(value: string): string {
   return value.replace(/^local\./, '').replace(/_/g, ' ')
 }
 const visualPageLimit = 20
 const visionAvailable = computed(() => agent.state.status?.vision_configured === true)
-const structuredFieldsJson = computed(() => {
-  const effective = analysis.value?.effective
-  if (!effective?.records?.length) return ''
-  return JSON.stringify({
-    schema: effective.schema_ref ?? null,
-    records: effective.records,
-  }, null, 2)
-})
 const hasStructuredSummary = computed(() =>
   analysis.value?.effective?.summary_origin === 'structured_evidence',
 )
@@ -162,7 +158,16 @@ function thinReason(item: DocumentVocabulary): string {
   }
   return 'Only identifier fields, so there is nothing to test once a document is joined.'
 }
-const filtered = computed(() => documents.value.filter(doc => {
+/** What the review bar reads its counts from, and what the rows read theirs. */
+const documentFacts = computed(() => ({
+  vocabulary: vocabulary.value,
+  visionAvailable: visionAvailable.value,
+}))
+const status = computed(() => documentsStatus(documents.value, documentFacts.value))
+const scoped = computed(() => statusFilter.value.reduce<AuditDocument[]>(
+  (rows, key) => filterDocuments(rows, key, documentFacts.value), documents.value,
+))
+const filtered = computed(() => scoped.value.filter(doc => {
   const term = search.value.toLowerCase()
   return !term || `${doc.title} ${doc.source}`.toLowerCase().includes(term)
 }))
@@ -228,6 +233,12 @@ const groups = computed(() => {
     : a.value.localeCompare(b.value))
   return entries
 })
+/** Three groupings, cycled from a link rather than chosen from a select. */
+function cycleGrouping() {
+  const order: Array<typeof groupBy.value> = ['type', 'folder', 'status']
+  groupBy.value = order[(order.indexOf(groupBy.value) + 1) % order.length]
+}
+
 const current = computed(() => previewPages.value.find(page => page.page === currentPage.value) || previewPages.value[0])
 const isPdf = computed(() => !!selected.value && /\.pdf$/i.test(selected.value.file))
 const isDocx = computed(() => !!selected.value && /\.docx$/i.test(selected.value.file))
@@ -265,17 +276,6 @@ const indexingProgress = computed(() => {
  */
 const showPageNav = computed(() => showTextView.value)
 /** What the head still has to say once the viewer says the rest. */
-const detailSubtitle = computed(() => {
-  const doc = selected.value
-  if (!doc) return ''
-  const parts: string[] = []
-  if (hasDistinctTitle(doc)) parts.push(doc.title)
-  // Stated by the viewer's own toolbar 250px below, whenever it is showing.
-  if (!(view.value === 'preview' && isPdf.value && sourceView.value === 'original')) {
-    parts.push(`${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`)
-  }
-  return parts.join(' · ')
-})
 // Searching inside one document reads the content index, not the page on
 // screen — it spans the extracted text and any vision transcript, and returns
 // excerpts the viewer's own find cannot. Worth keeping, not worth a permanent
@@ -294,22 +294,21 @@ function toggleFind() {
   findOpen.value = true
   void nextTick(() => (findInput.value?.$el as HTMLInputElement | undefined)?.focus?.())
 }
-const secondaryActions = computed(() => [
-  { label: 'Search contents', icon: 'pi pi-search', command: () => { contentSearchOpen.value = true } },
-  { label: 'Reindex documents', icon: 'pi pi-sync', command: () => void reindexAll() },
+const secondaryActions = computed<MenuItem[]>(() => [
+  { label: 'Reindex search', icon: 'pi pi-sync', command: () => void reindexAll() },
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
+  // Server-wide assistant configuration, so an administrator's to set. A
+  // non-admin still needs to know whether it is available, which the label says.
+  {
+    label: canConfigureVision.value
+      ? (visionAvailable.value ? 'Vision profile' : 'Configure vision')
+      : (visionAvailable.value ? 'Vision configured' : 'Vision not configured'),
+    icon: visionAvailable.value ? 'pi pi-eye' : 'pi pi-cog',
+    disabled: !canConfigureVision.value,
+    command: () => void openVisionSettings(),
+  },
 ])
-
-const selectedStatus = computed(() => selected.value
-  ? documentStatus(selected.value, { visionAvailable: visionAvailable.value })
-  : null)
-const selectedStatusSeverity = computed(() => {
-  const status = selectedStatus.value
-  if (!status) return 'secondary'
-  if (status.level === 'attention') return status.failed ? 'danger' : 'warn'
-  return status.level === 'processing' ? 'info' : 'secondary'
-})
-const documentActions = computed(() => [
+const documentActions = computed<MenuItem[]>(() => [
   { label: 'Re-extract text', icon: 'pi pi-refresh', command: () => void reextract() },
   { label: 'Delete document', icon: 'pi pi-trash', command: () => remove() },
 ])
@@ -521,7 +520,7 @@ async function acceptCandidate() {
 }
 
 async function runContentSearch(documentIds?: string[]) {
-  const query = (documentIds ? sourceSearch.value : contentSearch.value).trim()
+  const query = (documentIds ? sourceSearch.value : search.value).trim()
   if (!query) return
   searchBusy.value = true
   try {
@@ -533,7 +532,6 @@ async function runContentSearch(documentIds?: string[]) {
 }
 
 async function openSearchResult(result: DocumentSearchResult) {
-  contentSearchOpen.value = false
   await selectDocument(result.document_id, result.page)
   view.value = 'preview'; sourceView.value = 'text'
 }
@@ -585,7 +583,7 @@ async function batchAnalyze() {
         runContext: { document_ids: eligible.map(document => document.id), action: 'analyze' },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({ severity: 'info', summary: 'Document analysis started', detail: 'Progress is visible in the assistant.', life: 3000 })
   } catch (error) { toast.add({ severity: 'error', summary: 'Batch analysis unavailable', detail: String(error), life: 5000 }) }
   finally { analysisBusy.value = false }
@@ -635,7 +633,7 @@ function remove() {
 async function attachToAssistant() {
   if (!selected.value) return
   await assistantChat.addDocument(selected.value)
-  if (!agent.state.drawerOpen) agent.toggleDrawer()
+  agent.openPanel()
   toast.add({ severity: 'success', summary: 'Added to assistant', detail: selected.value.title, life: 2500 })
 }
 
@@ -662,16 +660,7 @@ async function renderDocx() {
 
 watch([() => selected.value?.id, sourceView, view], () => { void renderDocx() }, { flush: 'post' })
 
-function fileIcon(doc: AuditDocument) {
-  if (/\.(png|jpe?g|webp|bmp|tiff?)$/i.test(doc.source)) return 'pi pi-image'
-  if (/\.pdf$/i.test(doc.source)) return 'pi pi-file-pdf'
-  if (/\.docx?$/i.test(doc.source)) return 'pi pi-file-word'
-  return 'pi pi-file'
-}
 
-function normalizedName(value: string) {
-  return value.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-}
 
 /**
  * Whether the stored title says anything the filename does not.
@@ -681,16 +670,7 @@ function normalizedName(value: string) {
  * repeats the same words in a worse form. It earns its place only once
  * someone has retitled the document to something genuinely different.
  */
-function hasDistinctTitle(doc: AuditDocument) {
-  return normalizedName(doc.source) !== normalizedName(doc.title)
-}
 
-function openContentSearchFromRail() {
-  contentSearch.value = search.value.trim()
-  searchResults.value = []
-  contentSearchOpen.value = true
-  void runContentSearch()
-}
 
 async function copyText(value: string, label: string) {
   try {
@@ -739,7 +719,9 @@ onUnmounted(() => {
 
 <template>
   <section class="documents-tab">
-    <UiPageHeader title="Documents">
+    <header class="page-head">
+      <h1>Documents</h1>
+      <span class="grow" />
       <!-- A background job, reported at the size of a background job. -->
       <span
         v-if="indexingActive"
@@ -750,121 +732,150 @@ onUnmounted(() => {
       >
         <i class="pi pi-spin pi-spinner" />Indexing<template v-if="indexingProgress"> {{ indexingProgress }}</template>
       </span>
-      <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
-      <Button label="Analyse all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
+      <Button label="Add documents" icon="pi pi-plus" size="small" outlined severity="secondary" @click="emit('import-requested')" />
       <Button
         v-if="unidentifiedCount"
         :label="`Identify ${unidentifiedCount}`"
         icon="pi pi-question-circle"
+        size="small"
         severity="warn"
         outlined
         @click="typeReviewOpen = true"
       />
-      <UiOverflowMenu :items="secondaryActions" />
-    </UiPageHeader>
+      <Button
+        v-if="eligibleDocuments.length"
+        :label="`Analyse ${eligibleDocuments.length}`"
+        icon="pi pi-sparkles"
+        size="small"
+        severity="warn"
+        :loading="analysisBusy"
+        @click="batchAnalyze"
+      />
+      <Button v-else label="Analyse all" icon="pi pi-sparkles" size="small" :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
+      <UiOverflowMenu :items="secondaryActions" tooltip="More document actions" />
+    </header>
+
+    <UiReviewBar
+      v-if="documents.length"
+      :lanes="status.lanes"
+      :chips="DOCUMENT_CHIPS"
+      :filters="status.filters"
+      allLabel="All documents"
+      :total="documents.length"
+      :filter="statusFilter"
+      @filter="statusFilter = ($event as DocumentsFilter[])"
+    />
 
     <div v-if="documents.length" class="document-layout surface-panel">
       <aside class="document-rail">
         <div class="rail-tools">
-          <span class="search-wrap"><i class="pi pi-search" /><InputText v-model="search" placeholder="Search documents" class="rail-search" /></span>
-          <div class="filters">
-            <Select v-model="groupBy" :options="groupOptions" optionLabel="label" optionValue="value" aria-label="Group documents by" />
-          </div>
+          <IconField>
+            <InputIcon class="pi pi-search" />
+            <InputText v-model="search" size="small" placeholder="Search documents" />
+          </IconField>
+          <!-- A link, not a full-width select: grouping is chosen once and
+               then read past. -->
+          <button type="button" class="group-by" @click="cycleGrouping">Group by {{ groupBy }} ▾</button>
         </div>
-        <div v-if="!filtered.length" class="rail-empty">No documents match this search.</div>
+        <div v-if="!filtered.length" class="rail-empty">No document matches this view.</div>
         <div v-for="group in groups" :key="group.key" class="doc-group">
           <button class="group-head" :aria-expanded="!collapsedGroups.has(group.key)" @click="toggleGroup(group.key)">
             <i :class="collapsedGroups.has(group.key) ? 'pi pi-angle-right' : 'pi pi-angle-down'" />
             <span class="group-name">{{ group.label }}</span>
-            <span class="group-count">{{ group.items.length }}</span>
+            <span class="group-count aw-figure">{{ group.items.length }}</span>
           </button>
           <template v-if="!collapsedGroups.has(group.key)">
-            <template v-for="section in group.sections" :key="`${group.key}:${section.key}`">
-              <!-- Only evidence is split further, and only where a type is what
-                   a document is read under. Everything else renders flat. -->
-              <div v-if="section.label" class="doc-subgroup">
-                <span class="subgroup-name">{{ section.label }}</span>
-                <i
-                  v-if="vocabularyByType.get(section.key)?.thin"
-                  class="pi pi-exclamation-triangle subgroup-thin"
-                  v-tooltip.right="thinReason(vocabularyByType.get(section.key)!)"
-                />
-                <span
-                  v-if="vocabularyByType.get(section.key)"
-                  class="subgroup-fields"
-                  v-tooltip.right="`${vocabularyByType.get(section.key)!.fields.length} field(s) read from ${vocabularyByType.get(section.key)!.documents_read.length} document(s); ${vocabularyByType.get(section.key)!.corroborated_fields} stated by two or more.`"
-                >{{ vocabularyByType.get(section.key)!.fields.length }}f</span>
-                <span class="subgroup-count">{{ section.items.length }}</span>
-              </div>
-              <button
-                v-for="doc in section.items" :key="doc.id" class="doc-row"
-                :class="{ active: doc.id === selectedId, nested: !!section.label }"
-                :title="`${doc.source} · ${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`" @click="selectDocument(doc.id, 1)"
-              >
-                <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
-                <span class="doc-identity"><strong>{{ doc.source }}</strong><small v-if="hasDistinctTitle(doc)">{{ doc.title }}</small></span>
-                <template v-for="status in [documentStatus(doc, { visionAvailable })]" :key="`${doc.id}:status`">
-                  <span
-                    v-if="status.level !== 'ready'" class="doc-status" :class="[status.level, { failed: status.failed }]"
-                    :title="`${status.label} — ${status.detail}`"
-                  >
-                    <i :class="status.level === 'processing' ? 'pi pi-spin pi-spinner' : 'pi pi-exclamation-circle'" />
-                  </span>
-                </template>
-              </button>
-            </template>
+            <button
+              v-for="doc in group.items"
+              :key="doc.id"
+              class="doc-row"
+              :class="{ active: doc.id === selectedId }"
+              @click="selectDocument(doc.id, 1)"
+            >
+              <span class="dot" :data-tone="documentTone(doc, documentFacts)" aria-hidden="true" />
+              <span class="doc-identity">
+                <span class="doc-name">{{ doc.source }}</span>
+                <span class="doc-meta aw-figure">
+                  <template v-for="(part, index) in documentMeta(doc, documentFacts)" :key="part.text">
+                    <span v-if="index" aria-hidden="true"> · </span><span :data-tone="part.tone">{{ part.text }}</span>
+                  </template>
+                </span>
+              </span>
+            </button>
           </template>
         </div>
-        <button v-if="search.trim()" class="rail-deep-search" @click="openContentSearchFromRail">
+        <button v-if="search.trim()" class="rail-deep-search" @click="runContentSearch()">
           <i class="pi pi-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
         </button>
+        <!-- The results of that search replace the list in place; the modal
+             that used to hold them is retired. -->
+        <div v-if="searchResults.length" class="rail-results">
+          <p class="rail-results-head">
+            {{ plural(searchResults.length, 'match') }}
+            <button type="button" @click="searchResults = []">Clear</button>
+          </p>
+          <button v-for="result in searchResults" :key="result.citation_id" class="rail-result" @click="openSearchResult(result)">
+            <span class="doc-name">{{ result.title }}</span>
+            <span class="doc-meta aw-figure">page {{ result.page }}</span>
+            <span class="excerpt">{{ result.excerpt }}</span>
+          </button>
+        </div>
       </aside>
 
       <main v-if="selected" class="document-detail">
+        <!-- One 32px row. The page count, the analysis date and the review
+             state are on the list row's meta line and on `Mark reviewed`; a
+             header that restated them was a band the viewer paid for. -->
         <header class="detail-head">
-          <!-- One line. The name, what state it is in, and whatever the viewer
-               below does not already say for itself. -->
-          <div class="detail-identity">
-            <h3>{{ selected.source }}</h3>
-            <Tag v-if="selectedStatus" :value="selectedStatus.label" :severity="selectedStatusSeverity" v-tooltip.bottom="selectedStatus.detail" />
-            <p v-if="detailSubtitle">{{ detailSubtitle }}</p>
-          </div>
-          <div class="detail-actions">
-            <!-- Two answers, and they are not the same question. "Held as" is
-                 what this engagement does with the document and is the
-                 auditor's to set — their answer stands against any rerun.
-                 "Read as" is what the document is, asked only of evidence,
-                 because only evidence is read under a type's fields. -->
-            <label class="classification-field">
-              <span>Held as</span>
-              <Select
-                :modelValue="selected.category"
-                :options="documentCategoryOptions"
-                optionLabel="label"
-                optionValue="value"
-                :disabled="classificationBusy"
-                placeholder="Not yet read"
-                aria-label="What this engagement holds the document as"
-                @update:modelValue="updateClassification"
-              />
-            </label>
-            <span v-if="selected.category === 'evidence'" class="classification-field read-only">
-              <span>Read as</span>
-              <strong>{{
-                selected.classification?.document_type
-                  ? documentTypeLabel(selected.classification.document_type)
-                  : 'not yet identified'
-              }}</strong>
-            </span>
-            <Button label="Add to assistant" icon="pi pi-paperclip" size="small" outlined @click="attachToAssistant" />
-            <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
-          </div>
+          <span class="held" :data-empty="!selected.category">
+            {{ selected.category ? selected.category : 'Not yet read' }}<template
+              v-if="selected.classification?.document_type"> · {{ documentTypeLabel(selected.classification.document_type) }}</template>
+          </span>
+          <h2 :title="selected.source">{{ selected.source }}</h2>
+          <span class="grow" />
+          <label class="held-as">
+            <span>Held as</span>
+            <Select
+              :modelValue="selected.category"
+              :options="documentCategoryOptions"
+              optionLabel="label"
+              optionValue="value"
+              :disabled="classificationBusy"
+              placeholder="Not yet read"
+              size="small"
+              aria-label="What this engagement holds the document as"
+              @update:modelValue="updateClassification"
+            />
+          </label>
+          <Button label="Add to assistant" icon="pi pi-paperclip" size="small" outlined severity="secondary" @click="attachToAssistant" />
+          <Button
+            v-if="selected.analysis_review_state === 'reviewed'"
+            label="Reviewed"
+            icon="pi pi-check"
+            size="small"
+            outlined
+            severity="secondary"
+            disabled
+          />
+          <Button
+            v-else
+            label="Mark reviewed"
+            icon="pi pi-check"
+            size="small"
+            :disabled="!analysis?.effective"
+            :loading="analysisBusy"
+            @click="saveAnalysis(true)"
+          />
+          <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
         </header>
-        <!-- Which view, and how that view is set up: two choices about the
-             same thing, so one row rather than a tab bar above a tool bar. -->
+
+        <!-- Which view, and how that view is set up: one row rather than a tab
+             bar above a tool bar. -->
         <div class="detail-views">
           <nav class="detail-tabs">
-            <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">{{ item }}</button>
+            <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">
+              {{ item }}<span v-if="item === 'activity' && activity.length" class="tab-badge aw-figure">{{ activity.length }}</span>
+            </button>
           </nav>
           <template v-if="view === 'preview'">
             <span v-if="showPageNav" class="page-nav">
@@ -885,6 +896,19 @@ onUnmounted(() => {
             <a :href="fileUrl" target="_blank" class="open-original">Open original</a>
           </template>
         </div>
+
+        <!-- The two states that need a sentence, in the fieldwork stale-strip
+             form. Everything else about the analysis is on the row or the tab. -->
+        <p v-if="selected.analysis_validity_state === 'stale'" class="strip warn">
+          <i class="pi pi-history" aria-hidden="true" />
+          <span>The analysis was made against an earlier version of this file. Refresh it before relying on it.</span>
+          <button type="button" :disabled="analysisBusy" @click="startAnalysis('refresh')">Refresh</button>
+        </p>
+        <p v-else-if="selected.candidate_analysis_id" class="strip info">
+          <i class="pi pi-clone" aria-hidden="true" />
+          <span>A refreshed analysis is waiting.</span>
+          <button type="button" @click="view = 'analysis'; compareCandidate = true">Compare</button>
+        </p>
 
         <div v-if="view === 'preview'" class="detail-content preview-view">
           <div v-if="showDocumentSearch" class="source-search-bar">
@@ -920,12 +944,11 @@ onUnmounted(() => {
 
         <div v-else-if="view === 'analysis'" class="detail-content analysis-view">
           <div class="analysis-toolbar">
-            <div class="analysis-states">
-              <Tag :value="analysis?.status.analysis_run_state || 'idle'" severity="secondary" />
-              <Tag :value="analysis?.status.analysis_coverage_state || 'none'" :severity="analysis?.status.analysis_coverage_state === 'complete' ? 'success' : analysis?.status.analysis_coverage_state === 'partial' ? 'warn' : 'secondary'" />
-              <Tag v-if="analysis?.status.analysis_validity_state" :value="analysis.status.analysis_validity_state" :severity="analysis.status.analysis_validity_state === 'current' ? 'success' : 'warn'" />
-              <Tag v-if="analysis?.status.analysis_review_state !== 'not_applicable'" :value="analysis?.status.analysis_review_state?.replace('_', ' ')" severity="secondary" />
-            </div>
+            <span class="analysis-note">
+              {{ analysis?.effective
+                ? 'What the model read from this file, and what an auditor has added to it.'
+                : 'Nothing has been read from this file yet.' }}
+            </span>
             <div class="analysis-actions">
               <Button
                 v-if="selected.text_state === 'extracted' || selected.text_state === 'partial'"
@@ -937,63 +960,38 @@ onUnmounted(() => {
                 v-tooltip.bottom="`Opt in to visual analysis of text-bearing pages, bounded to ${visualPageLimit} pages for this document.`"
                 @click="fullVisualCoverage = !fullVisualCoverage"
               />
-              <!-- The vision profile is part of the server-wide assistant
-                   configuration, so only an administrator may change it. A
-                   non-admin still needs to know whether it is available. -->
-              <Button
-                v-if="canConfigureVision"
-                :label="visionAvailable ? 'Vision configured' : 'Configure vision'"
-                :icon="visionAvailable ? 'pi pi-eye' : 'pi pi-cog'"
-                size="small"
-                severity="secondary"
-                text
-                @click="openVisionSettings"
-              />
-              <Tag
-                v-else
-                :value="visionAvailable ? 'Vision configured' : 'Vision not configured'"
-                :severity="visionAvailable ? 'secondary' : 'warn'"
-                v-tooltip.bottom="'Set by an administrator for the whole server.'"
-              />
               <Button v-if="!analysis?.generated" label="Analyse" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
-              <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" v-tooltip.bottom="'Re-read this document under the vocabulary its type already carries.'" />
-              <Button
-                v-if="analysis?.generated && isEvidence"
-                label="Revise vocabulary"
-                icon="pi pi-sitemap"
-                size="small"
-                severity="secondary"
-                outlined
-                :loading="analysisBusy"
-                @click="startAnalysis('revise_vocabulary')"
-                v-tooltip.bottom="'Re-read every document of this type, in order, and rebuild the fields they are read under. Expensive, and what the repair actually costs.'"
-              />
-              <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" @click="compareCandidate = !compareCandidate" />
+              <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" outlined :loading="analysisBusy" @click="startAnalysis('refresh')" v-tooltip.bottom="'Re-read this document under the vocabulary its type already carries.'" />
+              <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" outlined @click="compareCandidate = !compareCandidate" />
             </div>
           </div>
 
-          <div v-if="selectedVocabulary" class="vocabulary-panel" :class="{ thin: selectedVocabulary.thin }">
-            <div class="vocabulary-head">
-              <strong>Read as {{ selectedVocabulary.document_type }}</strong>
-              <span class="vocabulary-summary">
-                {{ selectedVocabulary.fields.length }} field(s) from
-                {{ selectedVocabulary.documents_read.length }} document(s) ·
-                {{ selectedVocabulary.corroborated_fields }} stated by two or more
+          <section v-if="selectedVocabulary" class="vocabulary-card" :class="{ thin: selectedVocabulary.thin }">
+            <p class="vocabulary-line">
+              <b>Read as {{ selectedVocabulary.document_type.replace(/_/g, ' ') }}</b>
+              <span class="aw-figure">
+                ·
+                <button type="button" class="fields-link" @click="fieldsOpen = !fieldsOpen">
+                  {{ selectedVocabulary.fields.length }} {{ selectedVocabulary.fields.length === 1 ? 'field' : 'fields' }}
+                  <i class="pi" :class="fieldsOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />
+                </button>
+                from {{ plural(selectedVocabulary.documents_read.length, 'document') }} ·
+                {{ selectedVocabulary.corroborated_fields ? `${selectedVocabulary.corroborated_fields} stated by two or more` : 'none stated by two' }}
               </span>
-            </div>
-            <p v-if="selectedVocabulary.thin" class="vocabulary-warning">
-              <i class="pi pi-exclamation-triangle" />
-              {{ thinReason(selectedVocabulary) }}
             </p>
-            <table class="vocabulary-fields">
+            <p v-if="selectedVocabulary.thin" class="strip warn inline">
+              <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+              <span>{{ thinReason(selectedVocabulary) }}</span>
+              <button v-if="isEvidence" type="button" :disabled="analysisBusy" @click="startAnalysis('revise_vocabulary')">Revise vocabulary</button>
+            </p>
+            <table v-if="fieldsOpen" class="vocabulary-fields">
               <tbody>
                 <tr v-for="field in selectedVocabulary.fields" :key="field.name">
                   <td class="vf-name">{{ field.name }}</td>
                   <td class="vf-role">{{ field.role }}</td>
-                  <td
-                    class="vf-fill"
-                    :class="{ partial: field.fill_count < selectedVocabulary.documents_read.length }"
-                  >{{ field.fill_count }} / {{ selectedVocabulary.documents_read.length }}</td>
+                  <td class="vf-fill" :class="{ partial: field.fill_count < selectedVocabulary.documents_read.length }">
+                    {{ field.fill_count }} / {{ selectedVocabulary.documents_read.length }}
+                  </td>
                   <td class="vf-unread">
                     <span
                       v-if="field.unread.length"
@@ -1003,7 +1001,7 @@ onUnmounted(() => {
                 </tr>
               </tbody>
             </table>
-          </div>
+          </section>
 
           <div v-if="analysis?.status.analysis_coverage_state === 'partial'" class="coverage-warning">
             <i class="pi pi-exclamation-triangle" />
@@ -1020,24 +1018,35 @@ onUnmounted(() => {
 
           <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyse this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
           <template v-else>
-            <section class="analysis-editor">
+            <!-- A summary whose origin is the structured evidence is that
+                 evidence written out as bullets: the same fields, the same
+                 values, one screen apart. The sheet below is the better
+                 rendering of it, so the prose copy is not drawn at all. A
+                 model-written summary is a different thing and stays. -->
+            <section v-if="!hasStructuredSummary" class="analysis-editor">
               <header>
                 <div>
-                  <h4>{{ hasStructuredSummary ? 'Derived summary' : 'Summary' }}</h4>
-                  <small v-if="hasStructuredSummary">Generated locally from the validated structured evidence below.</small>
-                  <small v-else>Auditor edits are stored separately from the generated basis.</small>
+                  <h4 class="aw-label">Summary</h4>
+                  <small>Auditor edits are stored separately from the generated basis.</small>
                 </div>
-                <div><Button v-if="!hasStructuredSummary && analysis.review.summary_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('summary')" /></div>
+                <div><Button v-if="analysis.review.summary_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('summary')" /></div>
               </header>
-              <MarkdownView v-if="hasStructuredSummary" :markdown="summaryDraft" />
-              <MarkdownEditor v-else v-model="summaryDraft" />
+              <MarkdownEditor v-model="summaryDraft" />
             </section>
-            <details v-if="structuredFieldsJson" class="analysis-fields">
-              <summary><span><strong>Structured Evidence</strong><small>Registry-backed records, normalization states, and reduction review items. Read-only.</small></span><i class="pi pi-chevron-down" /></summary>
-              <pre>{{ structuredFieldsJson }}</pre>
-            </details>
+            <section v-if="analysis.effective.records?.length" class="analysis-section">
+              <header>
+                <h4 class="aw-label">Structured evidence</h4>
+                <small>What the model read from the page, checked against the {{ (analysis.effective.schema_ref?.document_type || 'document').replace(/_/g, ' ') }} schema</small>
+              </header>
+              <StructuredEvidenceSheet
+                :records="analysis.effective.records"
+                :schema="analysis.effective.schema_ref"
+                :citations="analysis.effective.citations"
+                :validated="analysis.status.analysis_coverage_state === 'complete'"
+              />
+            </section>
             <section class="analysis-editor">
-              <header><div><h4>Audit Notes</h4><small>Freeform observations are not evidence that a control operated.</small></div><div><Button v-if="analysis.review.audit_notes_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('notes')" /></div></header>
+              <header><div><h4 class="aw-label">Audit notes</h4><small>Freeform observations are not evidence that a control operated.</small></div><div><Button v-if="analysis.review.audit_notes_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('notes')" /></div></header>
               <MarkdownEditor v-model="notesDraft" />
             </section>
             <div class="save-analysis"><Button :label="hasStructuredSummary ? 'Save notes' : 'Save edits'" icon="pi pi-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="pi pi-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
@@ -1049,7 +1058,7 @@ onUnmounted(() => {
             </section>
 
             <section class="analysis-sources">
-              <h4>Sources</h4>
+              <h4 class="aw-label">Sources</h4>
               <button v-for="citation in analysis.effective.citations" :key="`${citation.id}:${citation.page}`" @click="openCitation(citation)">
                 <strong>
                   [{{ citation.id }}] Page {{ citation.page }}
@@ -1094,27 +1103,40 @@ onUnmounted(() => {
       <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
     </UiEmptyState>
 
-    <Dialog v-model:visible="knowledgeOpen" modal header="Methodology knowledge packs" :style="{ width: 'min(64rem, 95vw)' }">
-      <div class="pack-toolbar"><input ref="packInput" type="file" hidden accept=".md,.markdown,.txt" @change="uploadPack" /><Button label="Add Markdown pack" icon="pi pi-plus" @click="packInput?.click()" /><InputText v-model="packSearch" placeholder="Search local methodology" @keyup.enter="searchPacks" /><Button label="Search" severity="secondary" @click="searchPacks" /></div>
-      <div class="pack-grid"><article v-for="pack in packs" :key="`${pack.scope}:${pack.id}`"><strong>{{ pack.name }}</strong><Tag :value="pack.scope" severity="secondary" /><p>Version {{ pack.version }} · updated {{ pack.updated }}</p><details><summary>Technical details</summary><code>{{ pack.id }} · {{ pack.sha1 }}</code></details></article></div>
-      <div v-if="packResults.length" class="search-results"><h4>Cited sections</h4><article v-for="(result, index) in packResults" :key="index"><strong>{{ result.citation }}</strong><p>{{ result.excerpt }}</p></article></div>
-    </Dialog>
-    <Dialog v-model:visible="contentSearchOpen" modal header="Search document contents" :style="{ width: 'min(58rem, 95vw)' }">
-      <div class="global-search-bar"><InputText v-model="contentSearch" autofocus placeholder="Clause, amount, policy name, person, or audit concept" @keyup.enter="runContentSearch()" /><Button label="Search" icon="pi pi-search" :loading="searchBusy" @click="runContentSearch()" /></div>
-      <div class="global-search-results"><button v-for="result in searchResults" :key="result.citation_id" @click="openSearchResult(result)"><div><strong>{{ result.title }}</strong><span><Tag v-if="result.origin === 'vision_transcript'" value="AI visual transcription" severity="info" /><Tag :value="`Page ${result.page}`" severity="secondary" /></span></div><p>{{ result.excerpt }}</p><small>Relevance {{ result.score.toFixed(2) }}</small></button><p v-if="contentSearch && !searchBusy && !searchResults.length" class="muted">No indexed source excerpts matched.</p></div>
-    </Dialog>
-    <Dialog v-model:visible="visionSettingsOpen" modal header="Vision model profile" :style="{ width: 'min(34rem, 95vw)' }">
+    <Drawer v-model:visible="knowledgeOpen" position="right" header="Methodology knowledge" :style="{ width: 'min(45rem, 96vw)' }">
+      <div class="pack-toolbar">
+        <input ref="packInput" type="file" hidden accept=".md,.markdown,.txt" @change="uploadPack" />
+        <Button label="Add Markdown pack" icon="pi pi-plus" size="small" @click="packInput?.click()" />
+        <InputText v-model="packSearch" size="small" placeholder="Search local methodology" @keyup.enter="searchPacks" />
+        <Button label="Search" size="small" severity="secondary" outlined @click="searchPacks" />
+      </div>
+      <div class="pack-list">
+        <article v-for="pack in packs" :key="`${pack.scope}:${pack.id}`">
+          <strong>{{ pack.name }}</strong>
+          <span class="pack-scope">{{ pack.scope }}</span>
+          <p>Version {{ pack.version }} · updated {{ pack.updated }}</p>
+          <details><summary>Technical details</summary><code>{{ pack.id }} · {{ pack.sha1 }}</code></details>
+        </article>
+      </div>
+      <div v-if="packResults.length" class="search-results">
+        <h4 class="aw-label">Cited sections</h4>
+        <article v-for="(result, index) in packResults" :key="index"><strong>{{ result.citation }}</strong><p>{{ result.excerpt }}</p></article>
+      </div>
+    </Drawer>
+
+    <Drawer v-model:visible="visionSettingsOpen" position="right" header="Vision profile" :style="{ width: 'min(34rem, 96vw)' }">
       <div class="vision-settings">
         <p>Document analysis uses this profile only for supported image and scanned-PDF pages. Later workflows reuse the persisted transcription without resending images.</p>
         <label><span>Provider</span><Select v-model="visionProvider" :options="providerOptions" optionLabel="label" optionValue="id" /></label>
         <label><span>Model</span><Select v-if="visionModelOptions.length" v-model="visionModel" :options="visionModelOptions" editable /><InputText v-else v-model="visionModel" placeholder="Vision-capable model name" /></label>
         <p v-if="agent.state.status?.vision_unavailability_reason" class="settings-warning">{{ agent.state.status.vision_unavailability_reason }}</p>
+        <div class="drawer-foot">
+          <Button label="Cancel" size="small" severity="secondary" outlined @click="visionSettingsOpen = false" />
+          <Button label="Save vision profile" icon="pi pi-save" size="small" :loading="visionSettingsBusy" :disabled="!visionProvider || !visionModel.trim()" @click="saveVisionSettings" />
+        </div>
       </div>
-      <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="visionSettingsOpen = false" />
-        <Button label="Save vision profile" icon="pi pi-save" :loading="visionSettingsBusy" :disabled="!visionProvider || !visionModel.trim()" @click="saveVisionSettings" />
-      </template>
-    </Dialog>
+    </Drawer>
+
     <DocumentTypeReview
       v-model="typeReviewOpen"
       :workspace-id="props.workspace.id"
@@ -1125,8 +1147,74 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.documents-tab { display: flex; flex-direction: column; gap: var(--aw-section-gap); height: 100%; min-height: 36rem; }
-.detail-head h3 { margin: 0; }
+.documents-tab { display: flex; flex-direction: column; gap: .75rem; height: 100%; min-height: 36rem; min-width: 0; }
+
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
+.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
+.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.grow { flex: 1; }
+
+/* One 32px row: the pill, the filename, and the acts. Everything the old
+   three-line header restated is on the list row or on `Mark reviewed`. */
+.detail-head { display: flex; align-items: center; gap: .5rem; min-height: 2rem; padding: .5rem 1.25rem; border-bottom: 1px solid var(--aw-border); }
+.detail-head h2 { margin: 0; min-width: 0; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-md); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.held { flex: none; padding: .1rem .5rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 600; text-transform: capitalize; }
+.held[data-empty='true'] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.held-as { display: flex; align-items: center; gap: .35rem; color: var(--aw-muted); font-size: var(--aw-text-2xs); }
+.held-as :deep(.p-select) { min-width: 7.5rem; text-transform: capitalize; }
+
+/* The two states that need a sentence, in the fieldwork strip form. */
+.strip { display: flex; align-items: center; gap: .5rem; margin: 0; padding: .5rem 1.25rem; border-bottom: 1px solid var(--aw-border); font-size: var(--aw-text-sm); line-height: 1.4; }
+.strip.warn { border-bottom-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.strip.info { border-bottom-color: var(--aw-info-line); background: var(--aw-info-soft); color: var(--aw-info); }
+.strip span { flex: 1; min-width: 0; }
+.strip button { flex: none; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.strip.inline { margin: .4rem 0 0; padding: .4rem .625rem; border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control); }
+
+.tab-badge { margin-left: .3rem; padding: 0 .3rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-2xs); }
+
+/* One row per document: a readiness dot, the filename, and what the row owes. */
+.doc-row { display: flex; align-items: center; gap: .625rem; }
+.dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
+.dot[data-tone='ok'] { background: var(--aw-ok); }
+.dot[data-tone='warn'] { background: var(--aw-warn); }
+.dot[data-tone='bad'] { background: var(--aw-danger); }
+.dot[data-tone='info'] { background: var(--aw-info); }
+.doc-name { overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.doc-row.active .doc-name { color: var(--aw-ink-strong); font-weight: 600; }
+.doc-meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-2xs); text-overflow: ellipsis; white-space: nowrap; }
+.doc-meta [data-tone='warn'] { color: var(--aw-warn-ink); }
+.doc-meta [data-tone='bad'] { color: var(--aw-danger); }
+.doc-meta [data-tone='agent'] { color: var(--aw-accent); }
+
+.group-by { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-align: left; text-transform: capitalize; cursor: pointer; }
+
+/* Deep-search results replace the list where the list was. */
+.rail-results { display: flex; flex-direction: column; gap: .3rem; margin-top: .6rem; }
+.rail-results-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.rail-results-head button { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-2xs); cursor: pointer; }
+.rail-result { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: .45rem .55rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); text-align: left; cursor: pointer; }
+.rail-result:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
+.rail-result .excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); line-height: 1.4; }
+
+.vocabulary-card { display: flex; flex-direction: column; gap: .2rem; padding: .7rem .85rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
+.vocabulary-card.thin { border-color: var(--aw-warn-line); }
+.vocabulary-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.vocabulary-line b { color: var(--aw-ink-strong); font-size: var(--aw-text-sm); text-transform: capitalize; }
+.fields-link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer; }
+
+.analysis-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.analysis-section { display: flex; flex-direction: column; gap: .5rem; }
+.analysis-section header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.analysis-section h4 { margin: 0; }
+.analysis-section small { color: var(--aw-muted); font-size: var(--aw-text-2xs); text-align: right; }
+
+.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }
+.pack-toolbar .p-inputtext { flex: 1; }
+.pack-list { display: flex; flex-direction: column; gap: .5rem; }
+.pack-list article { padding: .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }
+.pack-scope { float: right; color: var(--aw-muted); font-size: var(--aw-text-2xs); text-transform: uppercase; letter-spacing: .04em; }
+.drawer-foot { display: flex; justify-content: flex-end; gap: .5rem; padding-top: .875rem; border-top: 1px solid var(--aw-border); }
 .document-layout { display: grid; flex: 1 1 auto; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 0; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }
 /* A running background job, not a problem to be solved. The sentence it used
    to spell out over two lines is on the tooltip. */

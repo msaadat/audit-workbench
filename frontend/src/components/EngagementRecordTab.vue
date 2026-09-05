@@ -285,7 +285,7 @@ const liveElapsed = computed(() => {
 
 /** The thread is where a run is watched in detail; the ledger stays on screen. */
 function watchRun() {
-  agent.openDrawer()
+  agent.openPanel()
 }
 
 function destinationFor(target: string): WorkspaceDestination | null {
@@ -575,7 +575,7 @@ async function start(stage: EngagementStage, alternate?: StartRequest) {
       requestedOutcomes: asked.outcomes,
     })
     justStarted.value = stage.capability
-    agent.openDrawer()
+    agent.openPanel()
   } catch (error) {
     toast.add({
       severity: 'error',

@@ -4,29 +4,23 @@ import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
-import Dialog from 'primevue/dialog'
 import Drawer from 'primevue/drawer'
 import SplitButton from 'primevue/splitbutton'
-import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { CycleVouchMetadata, DocumentSchemaCatalogEntry, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary } from '../types'
-import MarkdownEditor from './MarkdownEditor.vue'
-import ProvenanceRail from './agent/ProvenanceRail.vue'
+import type { CycleVouchMetadata, DocumentSchemaCatalogEntry, PlanningPayload, RcmCompletion, RcmRow, TestRollup, WorkspaceSummary } from '../types'
 import UiReviewBar from './ui/UiReviewBar.vue'
-import { RCM_CHIPS, filterRows, rcmHeadline, rcmStatus } from './planning/rcmStatus'
+import { RCM_CHIPS, filterRows, rcmStatus } from './planning/rcmStatus'
 import type { RcmFilter } from './planning/rcmStatus'
 import RcmGrid from './planning/RcmGrid.vue'
 import RcmRowDrawer from './planning/RcmRowDrawer.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiEmptyState from './ui/UiEmptyState.vue'
 import { plural } from '../format'
 
-const props = defineProps<{ workspace: WorkspaceSummary; section: 'apm' | 'rcm' }>()
+const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const confirm = useConfirm()
@@ -43,13 +37,8 @@ const cycleMeta = ref<CycleVouchMetadata | null>(null)
 // run, which is what the RCM stage now waits for.
 const documentSchemas = ref<DocumentSchemaCatalogEntry[]>([])
 const saving = ref(false)
-const templateOpen = ref(false)
-const template = ref<MarkdownTemplate | null>(null)
 const selectedRcmId = ref<string | null>(null)
-const apmImportInput = ref<HTMLInputElement>()
 const rcmImportInput = ref<HTMLInputElement>()
-const apmExporting = ref(false)
-const apmImporting = ref(false)
 const rcmExporting = ref(false)
 const rcmImporting = ref(false)
 const generatingTests = ref(false)
@@ -68,7 +57,6 @@ const completion = ref<RcmCompletion | null>(null)
 const rcmFilter = ref<RcmFilter[]>([])
 // Open by default. What the memorandum was drafted from is the first thing a
 // reviewer asks about it, and a panel behind a button is a panel nobody opens.
-const apmProvenanceOpen = ref(true)
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
 // Folded rather than combined: each narrowing runs the same predicate over
 // what the last one left, so the filters compose without a second code path.
@@ -79,7 +67,6 @@ const visibleRcm = computed(() => rcmFilter.value.reduce(
 const rcmStatusModel = computed(() => rcmStatus(
   data.value?.rcm ?? [], data.value?.finding_rollups, completion.value,
 ))
-const rcmCount = computed(() => rcmHeadline(data.value?.rcm ?? []))
 const selectedFindings = computed(
   () => data.value?.finding_rollups.by_rcm[selectedRcmId.value ?? ''] ?? [],
 )
@@ -150,26 +137,6 @@ async function savePlanning() {
   } catch (error) { fail('Could not save planning', error) }
   finally { saving.value = false }
 }
-async function exportApm() {
-  apmExporting.value = true
-  try { await api.downloadGet(`/api/workspaces/${props.workspace.id}/planning/apm/export`, `${props.workspace.name}_APM.md`) }
-  catch (error) { fail('Could not export the APM', error) }
-  finally { apmExporting.value = false }
-}
-function triggerApmImport() { apmImportInput.value?.click() }
-async function importApm(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = (input.files ?? [])[0]
-  input.value = ''
-  if (!file) return
-  apmImporting.value = true
-  try {
-    data.value!.planning = await api.uploadOne<PlanningRecord>(`/api/workspaces/${props.workspace.id}/planning/apm/import`, file)
-    emit('changed')
-    toast.add({ severity: 'success', summary: 'APM imported', life: 1800 })
-  } catch (error) { fail('Could not import the APM', error) }
-  finally { apmImporting.value = false }
-}
 async function generate() {
   try {
     await savePlanning()
@@ -178,19 +145,8 @@ async function generate() {
       'Update the planning context and APM, then create or reconcile the RCM and the Document and Data Tests that cover it. Do not create a separate audit program.',
       'act', launchMode.value, { command: 'plan', source: 'tab_button' },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
   } catch (error) { fail('Could not start planning', error) }
-}
-async function openTemplate() {
-  try { template.value = await api.get(`/api/workspaces/${props.workspace.id}/templates/apm`); templateOpen.value = true }
-  catch (error) { fail('Could not load the template', error) }
-}
-async function saveTemplate(reset = false) {
-  if (!template.value) return
-  try {
-    template.value = await api.put(`/api/workspaces/${props.workspace.id}/templates/apm`, reset ? { reset: true } : { markdown: template.value.markdown })
-    toast.add({ severity: 'success', summary: reset ? 'Default template restored' : 'Template saved', life: 1800 })
-  } catch (error) { fail('Could not save the template', error) }
 }
 async function addRcm() {
   try {
@@ -297,7 +253,7 @@ async function generatePlannedTests(rowIds: string[] = rowsWithoutTests.value.ma
         runContext: { target_refs: rowIds.map(id => `rcm:${id}`) },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({ severity: 'success', summary: `Generating planned test${rowIds.length === 1 ? '' : 's'} for ${rowIds.length} RCM row${rowIds.length === 1 ? '' : 's'}`, life: 3000 })
   } catch (error) { fail('Could not start planned test generation', error) }
   finally { generatingTests.value = false }
@@ -311,7 +267,7 @@ async function generateAllFindings() {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button' },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'success',
       summary: 'Generating all eligible findings',
@@ -355,7 +311,7 @@ async function runAllDocumentTests(only?: string[]) {
         runContext: { test_ids: testIds },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'info',
       summary: `Running ${testIds.length} RCM Document Test${testIds.length === 1 ? '' : 's'}`,
@@ -467,14 +423,6 @@ const runOptions = computed(() => [
     command: async () => { await runAllDataTests(); await runAllDocumentTests() },
   },
 ])
-// An untouched memorandum gets an empty state rather than a blank editor: there
-// is nothing to attribute, nothing to save, and no reason to show a formatting
-// toolbar above nothing.
-const apmHasContent = computed(() => Boolean(data.value?.planning.apm_markdown?.trim()))
-/** Open the editor on a memorandum the auditor intends to write by hand. */
-function startApm() {
-  if (data.value) data.value.planning.apm_markdown = '# Audit planning memorandum\n\n'
-}
 // Everything the header used to spell out as its own button. None of these is
 // frequent enough to stand permanently beside the one that says what is
 // outstanding, so they live behind one menu instead of seven controls.
@@ -521,22 +469,11 @@ const rcmActions = computed(() => [
 
 <template>
   <div v-if="data" class="planning-tab">
-    <UiPageHeader v-if="section === 'apm'" title="APM">
-      <Button
-        label="Generate planning drafts"
-        icon="pi pi-sparkles"
-        size="small"
-        :disabled="agentBusy"
-        @click="generate"
-      />
-    </UiPageHeader>
-
     <!-- One title, not two: the matrix used to carry `RCM` here and `Risk and
          control matrix` again over the grid. One count sentence, and at most
          one primary — the write-up the file owes, or adding a risk. -->
-    <header v-else class="page-head">
+    <header class="page-head">
       <h1>Risk and control matrix</h1>
-      <p class="headline aw-figure">{{ rcmCount }}</p>
       <span class="grow" />
       <Button label="Add risk" icon="pi pi-plus" size="small" outlined severity="secondary" @click="addRcm" />
       <SplitButton
@@ -561,29 +498,7 @@ const rcmActions = computed(() => [
       />
       <UiOverflowMenu :items="rcmActions" tooltip="More RCM actions" />
     </header>
-    <section v-if="section === 'apm'" class="apm-view">
-      <!-- Provenance describes a document that exists. On an untouched
-           engagement the old unconditional label read "Auditor edited" over a
-           blank editor nobody had opened. -->
-      <div class="section-toolbar"><div><strong>Audit planning memorandum</strong><span v-if="apmHasContent" class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide sources' : 'Sources'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
-      <input ref="apmImportInput" type="file" accept=".md,.markdown,.txt" hidden @change="importApm"/>
-      <div class="apm-body" :class="{ 'with-rail': apmProvenanceOpen }">
-        <UiEmptyState
-          v-if="!apmHasContent"
-          icon="pi pi-map"
-          title="No planning memorandum yet"
-          description="The assistant drafts it from the engagement material — the documents you imported, the planning context, and the risks already recorded. You can also write it yourself."
-        >
-          <Button label="Generate planning drafts" icon="pi pi-sparkles" :disabled="agentBusy" @click="generate" />
-          <Button label="Start writing" icon="pi pi-pencil" outlined @click="startApm" />
-        </UiEmptyState>
-        <div v-else class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown" placeholder="Write the planning memorandum, or generate a draft from the engagement material."/></div>
-        <!-- Attribution is per artifact, which is what the sidecars record.
-             There is no per-section trail because no per-section record exists. -->
-        <ProvenanceRail v-if="apmProvenanceOpen" :workspaceId="workspace.id" artifactRef="planning:apm"/>
-      </div>
-    </section>
-    <section v-else class="rcm-view">
+    <section class="rcm-view">
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
       <UiReviewBar
         :lanes="rcmStatusModel.lanes"
@@ -645,14 +560,10 @@ const rcmActions = computed(() => [
         @addTest="addTestTo"
       />
     </Drawer>
-    <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>
   </div>
 </template>
 
 <style scoped>
-.apm-body { display:grid; grid-template-columns:minmax(0,1fr); gap:1rem; align-items:start }
-.apm-body.with-rail { grid-template-columns:minmax(0,1fr) 20rem }
-@container workspace-panel (max-width: 60rem) { .apm-body.with-rail { grid-template-columns:minmax(0,1fr) } }
 .rcm-view { display:flex; flex-direction:column; gap:.75rem }
 
 /* One 36px row: the title, what the matrix holds, and at most one primary. */
@@ -673,8 +584,5 @@ const rcmActions = computed(() => [
 .section-toolbar { display:flex; align-items:center; gap:.55rem }
 .section-toolbar>div { display:flex; flex-direction:column }
 .section-toolbar>span { flex:1 }
-.apm-editor { min-height:34rem }
-.apm-editor>:deep(.markdown-editor) { min-height:34rem }
-.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:var(--aw-text-sm) }
 .empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control) }
 </style>

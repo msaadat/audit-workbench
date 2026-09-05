@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { FindingRollups, RcmCompletion, RcmExecutionRollup, RcmRow, TestRollup } from '../../types'
-import { RCM_CHIPS, filterRows, rcmHeadline, rcmStatus } from './rcmStatus'
+import { RCM_CHIPS, filterRows, rcmStatus } from './rcmStatus'
 
 function test(overrides: Partial<TestRollup> & Pick<TestRollup, 'test_id'>): TestRollup {
   return {
@@ -338,12 +338,3 @@ describe('the review bar vocabulary', () => {
   })
 })
 
-describe('rcmHeadline', () => {
-  it('says what the matrix holds, not what state it is in', () => {
-    expect(rcmHeadline([])).toBe('no risks recorded yet')
-    expect(rcmHeadline([
-      row('R1', { test_rollups: [test({ test_id: 'T-1' })] }, { control: 'A control.' }),
-      row('R2', { test_rollups: [test({ test_id: 'T-2' }), test({ test_id: 'T-3' })] }),
-    ])).toBe('2 risks · 1 control · 3 tests')
-  })
-})

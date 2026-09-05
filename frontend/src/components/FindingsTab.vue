@@ -28,7 +28,7 @@ import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiReviewBar from './ui/UiReviewBar.vue'
 import UiVerdictBar from './ui/UiVerdictBar.vue'
 import {
-  FINDING_CHIPS, SEVERITY_ORDER, filterFindings, findingsHeadline, findingsStatus, openItems,
+  FINDING_CHIPS, SEVERITY_ORDER, filterFindings, findingsStatus, openItems,
 } from './findings/findingsStatus'
 import type { FindingsFilter } from './findings/findingsStatus'
 import { plural } from '../format'
@@ -68,7 +68,6 @@ const items = computed(() => data.value?.items ?? [])
 // The bar counts the whole register, not the filtered list: a count that shrank
 // as you filtered by it could never be clicked back out of.
 const status = computed(() => findingsStatus(items.value))
-const headline = computed(() => findingsHeadline(items.value))
 const statusBusy = computed(() => generatingFindings.value || confirmingAll.value)
 const scoped = computed(() => statusFilter.value.reduce<AuditFinding[]>(
   (rows, key) => filterFindings(rows, key), items.value,
@@ -272,7 +271,7 @@ async function draftFromRcm() {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button' },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'success',
       summary: 'Generating all eligible findings',
@@ -414,7 +413,6 @@ const staleSentence = computed(() => {
          outstanding takes the primary slot when anything is. -->
     <header class="page-head">
       <h1>Findings</h1>
-      <p class="headline aw-figure">{{ headline }}</p>
       <span class="grow" />
       <Button
         label="Draft from the RCM"

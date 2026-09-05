@@ -1,6 +1,7 @@
 # Assistant panel redesign: one thread, three widths
 
-**Status:** design proposed on 5 September 2026, not yet built. This is the
+**Status:** design proposed on 5 September 2026, **built** (see "Order of
+work"). This is the
 evaluation the question asked for — can the Assistant tab go, leaving a
 sidebar that expands to the whole screen — and the handoff for building it.
 Every claim about what the code does today was read from the working tree at
@@ -298,14 +299,40 @@ milestone; a router test that `/console` redirects with the query.
 
 ## Order of work
 
-1. `AssistantPanel` with the docked mode only, replacing `AgentDrawer`
-   (same width rules, the collapsed rail removed, the header toggle added).
-   The console still exists; nothing else moves.
-2. The transcript density rules; they improve both frames at once.
-3. The expanded mode, the chat list rows, the plan card, the standing card.
-4. The redirect, the navigation keys, the header switcher's removal;
-   `ConsoleView` deleted.
-5. The chat-summary fields on the backend, and the list rows' dots.
+All five steps are done.
+
+1. **`AssistantPanel` replaces `AgentDrawer`.** `agent/AssistantPanel.vue` owns
+   the frame — mode, width, resize, the expanded grid. `useAgentRun`'s
+   `drawerOpen` boolean became `panelMode: 'closed' | 'docked' | 'expanded'`
+   with `openPanel`, `togglePanel` and `setPanelMode`; the three auto-open
+   sites and the twenty-odd `if (!drawerOpen) toggleDrawer()` call sites all
+   collapse to `openPanel()`. `affordableMode` answers a request to dock with
+   expansion below 1,320 px of window. The collapsed rail is gone and the
+   header carries an `Assistant` toggle with a live dot instead.
+2. **Transcript density.** A milestone whose metrics are all zero and whose
+   highlights are empty renders as one line (`Fieldwork: nothing to report.`)
+   rather than a card — five of them appeared across one chat's four runs. The
+   thread head lost the live dot; the status pill carries the connection state
+   in `--aw-warn` instead, and the title renames in place.
+3. **Expanded mode.** `agent/ChatList.vue` draws the rows with a dot in the
+   last run's tone and the meta line the summaries now carry;
+   `agent/PlanStrip.vue` is the docked live strip that unfolds `PlanSpine` in
+   place (no modal); `PlanSpine` gained a `card` presentation and
+   `EngagementState` a `compact` one — the arc, one sentence, and a link to the
+   record.
+4. **Routing.** `/console` redirects to the workspace root with
+   `?assistant=full`; `WorkspaceView` applies `assistant` and `chat` from the
+   query and strips them; the `console` destination resolves to the record with
+   those two keys; the header switcher, `ConsoleView.vue`, `AgentDrawer.vue`
+   and `ChatHistoryPanel.vue` are deleted, and `console` is no longer a
+   `WorkspaceSurface`.
+5. **Chat summaries** carry `last_run_status`, `failed_run_count` and
+   `run_count`, grouped from the run records in one pass per page.
+
+What is not built from this plan: the run receipt's and milestone card's exact
+type sizes, and the `Read for this run` rail card — the context projection
+still renders in the transcript rather than being lifted out of it for the run
+in flight.
 
 ## Token map
 

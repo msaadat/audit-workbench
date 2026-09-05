@@ -285,7 +285,7 @@ async function addTest(kind: 'data' | 'document' | 'generate') {
         runContext: { target_refs: [`rcm:${props.rowId}`] },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
   } catch (error) { fail('Could not start planned test generation', error) }
 }
 async function draftFinding() {
@@ -296,7 +296,7 @@ async function draftFinding() {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: props.rowId } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
 async function promoteObservation(item: AuditObservation) {
@@ -307,7 +307,7 @@ async function promoteObservation(item: AuditObservation) {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { observation_id: item.id } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
 async function copyPaper(kind: 'markdown' | 'html') {

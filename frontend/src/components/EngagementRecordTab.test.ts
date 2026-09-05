@@ -24,14 +24,14 @@ vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }))
 // incidental to it any more: these stand in for a live run.
 const agentActive = ref(false)
 const agentState = reactive<{ run: Record<string, unknown> | null }>({ run: null })
-const openDrawer = vi.fn()
+const openPanel = vi.fn()
 const agentInit = vi.fn()
 vi.mock('../composables/useAgentRun', () => ({
   useAgentRun: () => ({
     state: agentState,
     isActive: agentActive,
     init: agentInit,
-    openDrawer,
+    openPanel,
     onWorkspaceInvalidated: () => () => undefined,
   }),
 }))
@@ -363,7 +363,7 @@ async function openRow(wrapper: Awaited<ReturnType<typeof render>>, index = 0) {
 describe('EngagementRecordTab', () => {
   beforeEach(() => {
     get.mockReset(); push.mockReset(); send.mockReset()
-    openDrawer.mockReset(); agentInit.mockReset()
+    openPanel.mockReset(); agentInit.mockReset()
     agentActive.value = false
     agentState.run = null
     // Density is a stored preference, so one test choosing Full would otherwise
@@ -584,7 +584,7 @@ describe('EngagementRecordTab', () => {
     const wrapper = await render([filed(), owed()])
     await wrapper.find('.row.ghost button').trigger('click')
 
-    expect(openDrawer).toHaveBeenCalled()
+    expect(openPanel).toHaveBeenCalled()
     expect(push).not.toHaveBeenCalled()
   })
 

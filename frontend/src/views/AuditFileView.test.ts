@@ -27,12 +27,13 @@ vi.mock('../composables/useWorkspaceNavigation', async importActual => ({
 }))
 
 const stubs = {
-  PlanningTab: { props: ['section'], template: '<div class="stub-planning">{{ section }}</div>' },
+  PlanningTab: { template: '<div class="stub-planning" />' },
+  ApmView: { template: '<div class="stub-apm" />' },
   DataTestsTab: { template: '<div class="stub-data-tests" />' },
   DocTestsTab: { template: '<div class="stub-doc-tests" />' },
   ChainView: { template: '<div class="stub-chain" />' },
   FindingsTab: { template: '<div class="stub-findings" />' },
-  ReportTab: { template: '<div class="stub-report" />' },
+  ReportView: { template: '<div class="stub-report" />' },
 }
 
 function render(section: string) {
@@ -56,7 +57,7 @@ function render(section: string) {
 
 describe('AuditFileView', () => {
   it.each([
-    ['apm', '.stub-planning'],
+    ['apm', '.stub-apm'],
     ['coverage', '.stub-planning'],
     ['data-tests', '.stub-data-tests'],
     ['doc-tests', '.stub-doc-tests'],
@@ -69,13 +70,14 @@ describe('AuditFileView', () => {
     wrapper.unmount()
   })
 
-  // The two planning sections share a component and are told apart by a prop,
-  // so a broken hand-off would silently show the memorandum under /coverage.
-  it('tells the two planning sections apart by the section it passes down', () => {
+  // The memorandum and the matrix were one component told apart by a prop, so
+  // a broken hand-off silently showed the memorandum under /coverage. They are
+  // two views now, and the test is that neither answers for the other.
+  it('answers for the memorandum and the matrix with different views', () => {
     const apm = render('apm')
     const rcm = render('coverage')
-    expect(apm.find('.stub-planning').text()).toBe('apm')
-    expect(rcm.find('.stub-planning').text()).toBe('rcm')
+    expect(apm.find('.stub-planning').exists()).toBe(false)
+    expect(rcm.find('.stub-apm').exists()).toBe(false)
     apm.unmount()
     rcm.unmount()
   })

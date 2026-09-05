@@ -65,6 +65,35 @@ function isInteraction(item: TranscriptItem): item is AssistantInteractionProjec
 function isApproval(item: TranscriptItem): item is AssistantApprovalProjection { return item.type === 'approval' }
 function isMilestone(item: TranscriptItem): item is AssistantMilestoneProjection { return item.type === 'milestone' }
 function isContext(item: TranscriptItem): item is AssistantContextProjection { return item.type === 'context' }
+
+/**
+ * A milestone that found nothing is a sentence, not a card.
+ *
+ * `Fieldwork complete — Completed all 0 scheduled tests` appeared five times
+ * across one chat's four runs, each as a headline, a metrics list and a link,
+ * for a stage that did nothing. Every metric zero and no highlights means the
+ * stage ran and had nothing to report, which is one line of prose.
+ */
+function isEmptyMilestone(item: AssistantMilestoneProjection): boolean {
+  const milestone = item.milestone
+  if (milestone.highlights?.length) return false
+  if (milestone.status === 'completed_with_issues' || milestone.status === 'needs_review') return false
+  const metrics = milestone.metrics ?? []
+  if (!metrics.length) return true
+  return metrics.every(metric => {
+    const value = metric.value
+    if (value === null || value === undefined || value === false) return true
+    if (typeof value === 'number') return value === 0
+    return String(value).trim() === '' || String(value).trim() === '0'
+  })
+}
+
+/** The one line such a milestone is worth. */
+function emptyMilestoneLine(item: AssistantMilestoneProjection): string {
+  const milestone = item.milestone
+  const subject = milestone.headline.split('—')[0].trim() || milestone.capability
+  return `${subject}: nothing to report.`
+}
 // Narrower than the card's notion of "active": a run that is paused, waiting on
 // the auditor, or interrupted is not working, and animating a phase line for it
 // claims progress that isn't happening.
@@ -184,7 +213,10 @@ function messageTime(value: string) {
         <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
       </template>
       <AgentContextCard v-else-if="isContext(item)" :context="item.context" />
-      <AgentMilestoneCard v-else-if="isMilestone(item)" :milestone="item.milestone" />
+      <template v-else-if="isMilestone(item)">
+        <p v-if="isEmptyMilestone(item)" class="quiet-line">{{ emptyMilestoneLine(item) }}</p>
+        <AgentMilestoneCard v-else :milestone="item.milestone" />
+      </template>
       <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" />
       <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />
       <div v-else class="message" :class="[item.role, item.kind, item.state]">
@@ -240,6 +272,9 @@ function messageTime(value: string) {
 </template>
 
 <style scoped>
+/* A stage that ran and found nothing, at the size that fact deserves. */
+.quiet-line { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.5; }
+
 .transcript{flex:1;min-height:0;overflow:auto}.transcript-inner{display:flex;flex-direction:column;gap:.65rem;min-height:100%;width:100%;max-width:46rem;margin-inline:auto;padding:.8rem .9rem}.empty-state{display:grid;justify-items:center;gap:.55rem;margin:auto;padding:1.5rem;text-align:center}.empty-icon{display:grid;place-items:center;width:3rem;height:3rem;border-radius:var(--aw-radius-surface);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-xl)}.empty-state p{margin:0;color:var(--aw-muted);font-size:var(--aw-text-sm)}.empty-section{display:grid;justify-items:center;gap:.35rem;width:100%}.empty-section-title{font-size:var(--aw-text-xs);font-weight:700;color:var(--aw-muted)}.empty-section-note{font-size:var(--aw-text-xs);color:var(--aw-muted)}.shortcuts{display:flex;justify-content:center;flex-wrap:wrap;gap:.4rem}.suggestions{display:grid;gap:.35rem;width:100%;max-width:20rem}.suggestion{display:grid;gap:.1rem;padding:.5rem .6rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:var(--aw-panel);text-align:left;cursor:pointer;color:inherit}.suggestion:hover{border-color:var(--aw-teal);background:var(--aw-teal-soft)}.suggestion strong{font-size:var(--aw-text-sm);font-weight:500}.suggestion small{font-size:var(--aw-text-xs);color:var(--aw-muted)}.message{max-width:92%}.message.user{align-self:flex-end}.message.assistant{align-self:flex-start}.bubble{position:relative;display:flex;align-items:center;gap:.4rem;padding:.55rem .7rem;border-radius:var(--aw-radius-surface);font-size:var(--aw-text-sm);line-height:1.4}.message.user .bubble{background:var(--aw-teal);color:white;border-bottom-right-radius:3px}.message.assistant .bubble{padding:0;background:transparent;border-radius:0}.message.user.clarification .bubble{background:var(--aw-warn-soft);border:1px solid var(--aw-warn-line);color:inherit}.message.user.error .bubble,.message.user.failed .bubble{background:var(--aw-danger-soft);color:var(--aw-danger)}.bubble p{margin:0;white-space:pre-wrap}.bubble-markdown{min-width:0;font-size:var(--aw-text-sm)}.bubble-markdown :deep(> :first-child){margin-top:0}.bubble-markdown :deep(> :last-child){margin-bottom:0}.bubble-markdown :deep(h1){font-size:var(--aw-text-md);margin:.5rem 0 .3rem}.bubble-markdown :deep(h2){font-size:var(--aw-text-base);margin:.5rem 0 .25rem}.bubble-markdown :deep(h3),.bubble-markdown :deep(h4){font-size:var(--aw-text-sm);margin:.45rem 0 .2rem}.bubble-markdown :deep(table){font-size:var(--aw-text-xs);margin:.45rem 0}.bubble-markdown :deep(th),.bubble-markdown :deep(td){padding:.3rem .4rem}.bubble.typing{padding:.5rem .7rem;background:transparent}
 .empty-state p{max-width:30rem}
 .empty-followup{color:var(--aw-muted-strong);font-size:var(--aw-text-xs)}

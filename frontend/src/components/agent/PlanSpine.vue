@@ -35,7 +35,15 @@ import { plural, verb } from '../../format'
  * does keep.
  */
 
-const props = defineProps<{ workspaceId: string; overlay?: boolean }>()
+const props = defineProps<{
+  workspaceId: string
+  overlay?: boolean
+  /**
+   * Drawn as one of the panel's rail cards rather than as a rail of its own:
+   * no heading of its own, and the padding of the column it sits in.
+   */
+  card?: boolean
+}>()
 const agent = useAgentRun(props.workspaceId)
 const chats = useAssistantChat(props.workspaceId)
 
@@ -232,8 +240,15 @@ const note = computed(() => {
 </script>
 
 <template>
-  <aside class="plan-spine" :class="{ overlay }">
-    <p class="rail-label">Plan</p>
+  <aside class="plan-spine" :class="{ overlay, card }">
+    <!-- As a rail card it names the run it is the plan for, and how many
+         stages that run has — the count is here because this is what holds
+         the stages. -->
+    <header v-if="card">
+      <h3 class="aw-label">Plan<template v-if="target?.title"> · {{ target.title }}</template></h3>
+      <span v-if="stages.length" class="count aw-figure">{{ stages.length }} stages</span>
+    </header>
+    <p v-else class="rail-label">Plan</p>
 
     <ol v-if="rows.length" class="spine">
       <li v-for="row in rows" :key="row.id" class="spine-row" :data-state="row.state" :class="{ open: isOpen(row) }">
@@ -291,6 +306,7 @@ const note = computed(() => {
 </template>
 
 <style scoped>
+.plan-spine.card { padding: .5rem .625rem; border: 0; background: none; }
 .plan-spine {
   display: flex;
   flex-direction: column;

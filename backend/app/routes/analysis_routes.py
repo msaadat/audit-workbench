@@ -14,7 +14,7 @@ import polars as pl
 from fastapi import APIRouter, Body
 from fastapi.responses import StreamingResponse
 
-from .. import analytics, explore, profiler, workspaces
+from .. import analytics, column_coverage, explore, profiler, projection_cache, workspaces
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 
@@ -46,6 +46,24 @@ def table_schema(workspace_id: str, table_name: str):
 def table_preview(workspace_id: str, table_name: str, rows: int = 100):
     df = _frame(workspace_id, table_name)
     return {"total_rows": df.height, **explore.frame_payload(df, min(rows, 500))}
+
+
+@router.get("/workspaces/{workspace_id}/tables/{table_name}/coverage")
+def table_coverage(workspace_id: str, table_name: str):
+    """Which data test, if any, evaluates each column of this table.
+
+    Cached on the workspace signature and computed for every table at once: the
+    page asks for one table at a time, and reading each table's schema is the
+    whole cost.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    everything = projection_cache.cached(
+        ws.root, "table_coverage", lambda: column_coverage.coverage_by_table(ws)
+    )
+    columns = everything.get(table_name)
+    if columns is None:
+        raise workspaces.WorkspaceError(f"Table '{table_name}' could not be read.")
+    return {"table": table_name, "columns": columns}
 
 
 @router.get("/workspaces/{workspace_id}/tables/{table_name}/profile")

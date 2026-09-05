@@ -13,17 +13,17 @@ type QueryValue = string | number | null | undefined
  */
 
 /**
- * `home` is the engagement record at the workspace root. The console keeps its
- * own path rather than the root: the landing question is "what was done here",
- * and the chat answers a different one — it is also always a click away in the
- * sidecar drawer on every surface but its own.
+ * `home` is the engagement record at the workspace root: the landing question
+ * is "what was done here". The assistant answers a different one, and is no
+ * longer a surface at all — it is a panel over whichever page you are on, so
+ * it contributes no path.
  *
  * `file` is a host rather than a place: it names which component answers for a
  * work product, and its sections sit directly under the workspace. The audit
  * file stopped being a surface when the record became the index, and the
  * `/file/` segment outlived the thing it named.
  */
-export type WorkspaceSurface = 'home' | 'console' | 'file' | 'bench'
+export type WorkspaceSurface = 'home' | 'file' | 'bench'
 
 export type WorkspaceDestination =
   | 'console'
@@ -44,7 +44,7 @@ export type WorkspaceDestination =
 
 interface DestinationSpec {
   surface: WorkspaceSurface
-  /** Path segment under the surface; the console has none. */
+  /** Path segment under the surface; the record and the panel have none. */
   section: string
   /** Query keys this destination owns, so deep links can be normalized. */
   keys: readonly string[]
@@ -61,7 +61,13 @@ interface DestinationSpec {
 }
 
 const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
-  console: { surface: 'console', section: '', keys: [] },
+  /**
+   * The assistant is a panel now, not a place. The key stays — the backend
+   * names `console` as a navigation target in milestones and suggestions — but
+   * it resolves to the record with the panel expanded, which is what the route
+   * itself redirects to.
+   */
+  console: { surface: 'home', section: '', keys: ['chat', 'assistant'] },
   // What the engagement holds, keyed by work product rather than by the chat
   // that asked for it. Drawn from the audit graph, with run history layered on.
   record: { surface: 'home', section: '', keys: [] },
@@ -114,7 +120,6 @@ export function destinationForSection(
 export function surfacePath(workspaceId: string, surface: WorkspaceSurface, section = ''): string {
   const base = `/workspace/${workspaceId}`
   if (surface === 'home') return base
-  if (surface === 'console') return `${base}/console`
   // Work products are named directly: `/workspace/x/apm`, not `/x/file/apm`.
   if (surface === 'file') return `${base}/${section}`
   return section ? `${base}/${surface}/${section}` : `${base}/${surface}`

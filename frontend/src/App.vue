@@ -32,7 +32,7 @@ const accountActions = computed(() => [
 // Every workspace surface brings its own engagement header; the debug console
 // deliberately keeps the global one.
 const WORKSPACE_ROUTES = [
-  'workspace', 'workspace-console', 'workspace-file', 'workspace-bench',
+  'workspace', 'workspace-file', 'workspace-bench',
   'workspace-rcm-row',
 ]
 const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?? '')))

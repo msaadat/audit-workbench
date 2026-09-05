@@ -239,7 +239,7 @@ async function analyzeWithAssistant() {
       'act', agent.launchMode.value,
       { command: 'analyze_data', source: 'tab_button', runContext: { tables } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'info', summary: 'Analysis started',
       detail: 'Progress is visible in the assistant.', life: 3000,
@@ -264,7 +264,7 @@ async function writeSummary() {
       'act', agent.launchMode.value,
       { command: 'analyze_data', source: 'tab_button' },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'info', summary: 'Writing the summary',
       detail: 'Progress is visible in the assistant.', life: 3000,

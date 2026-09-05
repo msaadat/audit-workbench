@@ -4,13 +4,14 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { FILE_SECTIONS, useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
+import ApmView from './ApmView.vue'
 import PlanningTab from '../components/PlanningTab.vue'
 import DataTestsTab from '../components/DataTestsTab.vue'
 import DocTestsTab from '../components/DocTestsTab.vue'
 import ChainView from '../components/planning/ChainView.vue'
 import CycleTab from '../components/planning/CycleTab.vue'
 import FindingsTab from '../components/FindingsTab.vue'
-import ReportTab from '../components/ReportTab.vue'
+import ReportView from './ReportView.vue'
 
 /**
  * One work product, opened from the engagement record.
@@ -84,14 +85,14 @@ const title = computed(() => SECTION_LABEL[section.value] ?? '')
     </nav>
 
     <div class="ui-surface__panel">
-      <PlanningTab v-if="section === 'apm'" :workspace="workspace" section="apm" @changed="reloadStatus" />
+      <ApmView v-if="section === 'apm'" :workspace="workspace" @changed="reloadStatus" />
       <CycleTab v-else-if="section === 'cycle'" :workspace="workspace" @changed="reloadStatus" />
-      <PlanningTab v-else-if="section === 'coverage'" :workspace="workspace" section="rcm" @changed="reloadStatus" />
+      <PlanningTab v-else-if="section === 'coverage'" :workspace="workspace" @changed="reloadStatus" />
       <DataTestsTab v-else-if="section === 'data-tests'" :workspace="workspace" @changed="reload" />
       <DocTestsTab v-else-if="section === 'doc-tests'" :workspace="workspace" @changed="reloadStatus" />
       <FindingsTab v-else-if="section === 'findings'" :workspace="workspace" @changed="reload" />
       <ChainView v-else-if="section === 'chain'" :workspace="workspace" />
-      <ReportTab v-else-if="section === 'report'" :workspace="workspace" @changed="reloadStatus" />
+      <ReportView v-else-if="section === 'report'" :workspace="workspace" @changed="reloadStatus" />
     </div>
   </div>
 </template>

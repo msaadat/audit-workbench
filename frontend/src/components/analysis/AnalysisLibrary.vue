@@ -291,7 +291,7 @@ function fail(summary: string, error: unknown) {
 async function openRun(runId: string) {
   try {
     await agent.openRun(runId)
-    agent.state.drawerOpen || agent.toggleDrawer()
+    agent.openPanel()
   } catch (error) {
     fail('Could not open the run', error)
   }

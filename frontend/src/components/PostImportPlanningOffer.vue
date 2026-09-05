@@ -37,7 +37,7 @@ async function startPlanningUpdate() {
         runContext: { document_ids: props.action.document_ids },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     confirmOpen.value = false
     emit('planning-started')
   } catch (cause) {

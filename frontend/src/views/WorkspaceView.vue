@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -7,7 +7,7 @@ import Button from 'primevue/button'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import type { EngagementPhase, EngagementSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
-import AgentDrawer from '../components/agent/AgentDrawer.vue'
+import AssistantPanel from '../components/agent/AssistantPanel.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { useAppearance } from '../composables/useAppearance'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
@@ -49,15 +49,37 @@ const sectionById = ref<Record<string, EngagementSection>>({})
 
 const agent = useAgentRun(props.id)
 
-// The assistant surface owns the chat full-width; every other surface keeps it
-// as a sidecar so a question is always one click away without leaving the work.
-const onConsole = computed(() => route.name === 'workspace-console')
-const surface = computed(() => {
-  if (route.name === 'workspace-file') return 'file'
-  if (route.name === 'workspace-bench') return 'bench'
-  if (route.name === 'workspace-console') return 'console'
-  return 'home'
+/**
+ * The panel's state, in the header, on every page.
+ *
+ * It is the only trace of the assistant when it is closed — the collapsed rail
+ * that cost 52px of every surface for one icon is gone — so it has to say
+ * whether a run is live without being opened.
+ */
+const assistantOpen = computed(() => agent.state.panelMode !== 'closed')
+const assistantAttention = computed(() => {
+  const status = agent.state.run?.status ?? ''
+  return status === 'awaiting_approval' || status === 'awaiting_input' || status === 'failed'
 })
+const assistantLive = computed(() => agent.isActive.value)
+
+/**
+ * A deep link can carry the panel: `?assistant=full` on any workspace route,
+ * and `?chat=<id>` for the conversation it should open. Applied once and then
+ * stripped, so the page's own history entries stay clean.
+ */
+watch(() => route.query, (query: Record<string, unknown>) => {
+  const wanted = String(query.assistant || '')
+  const chat = String(query.chat || '')
+  if (!wanted && !chat) return
+  if (wanted === 'full') agent.setPanelMode('expanded')
+  else if (wanted) agent.openPanel()
+  else if (chat) agent.openPanel()
+  const rest = { ...route.query }
+  delete rest.assistant
+  delete rest.chat
+  void router.replace({ ...route, query: rest })
+}, { immediate: true, deep: true })
 
 async function loadEngagementStatus() {
   try {
@@ -174,16 +196,21 @@ onUnmounted(() => {
         <h1>{{ workspace.name }}</h1>
       </div>
 
-      <nav class="surface-switcher" aria-label="Workspace surfaces">
-        <router-link :to="nav.to('record')" :class="{ active: surface === 'home' }">
-          <i class="pi pi-history" /><span>Record</span>
-        </router-link>
-        <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
-          <i class="pi pi-sparkles" /><span>Assistant</span>
-        </router-link>
-      </nav>
-
       <span class="header-spacer" />
+      <!-- `Record` alone was not a switch, and the crumb bar already says where
+           you are. What the switcher was really for — reaching the assistant —
+           is this button, which is the same control as `Import` beside it and
+           says what the assistant is doing as well as where it is. -->
+      <Button
+        :label="assistantLive ? 'Assistant · working' : 'Assistant'"
+        icon="pi pi-sparkles"
+        size="small"
+        class="assistant-toggle"
+        :class="{ on: assistantOpen, attention: assistantAttention }"
+        :aria-pressed="assistantOpen"
+        :title="assistantOpen ? 'Close the assistant' : 'Open the assistant'"
+        @click="agent.togglePanel()"
+      />
       <Button label="Import" icon="pi pi-upload" size="small" severity="secondary" @click="folderImportOpen = true" />
       <button
         type="button"
@@ -216,7 +243,7 @@ onUnmounted(() => {
 
     <div class="workspace-layout">
       <router-view />
-      <AgentDrawer v-if="!onConsole" :workspace="workspace" />
+      <AssistantPanel :workspace="workspace" />
     </div>
 
     <ImportDialog
@@ -269,6 +296,23 @@ onUnmounted(() => {
 
 /* The surface switcher is the primary navigation now, so it sits with the
    engagement identity rather than in the utility cluster on the right. */
+/* The same button as `Import`, filled rather than translucent: it is the one
+   control the header exists to offer now that the surface switcher is gone,
+   and a ghost pill beside a filled one read as disabled. */
+.workspace-header :deep(.assistant-toggle.p-button) {
+  border-color: var(--aw-teal); background: var(--aw-teal); color: var(--aw-on-dark);
+}
+.workspace-header :deep(.assistant-toggle.p-button:hover) {
+  border-color: var(--aw-teal-strong, var(--aw-teal-600)); background: var(--aw-teal-strong, var(--aw-teal-600));
+}
+/* Open reads as pressed — the same darker teal the appearance toggles use. */
+.workspace-header :deep(.assistant-toggle.on.p-button) {
+  border-color: var(--aw-teal-600); background: var(--aw-teal-600);
+}
+/* A run that needs the auditor is the one state worth breaking colour for. */
+.workspace-header :deep(.assistant-toggle.attention.p-button) {
+  border-color: var(--aw-warn); background: var(--aw-warn); color: var(--aw-ink-strong);
+}
 .surface-switcher { display: flex; gap: 0.15rem; margin-left: 0.5rem; padding: 0.15rem; border-radius: var(--aw-radius-control); background: rgb(255 255 255 / 8%); }
 .surface-switcher a {
   display: inline-flex;

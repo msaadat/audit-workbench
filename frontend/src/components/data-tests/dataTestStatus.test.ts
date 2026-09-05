@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { AuditFinding, DataTest } from '../../types'
 import {
-  DATA_TEST_CHIPS, dataTestHeadline, dataTestStatus, filterDataTests,
+  DATA_TEST_CHIPS, dataTestStatus, filterDataTests,
 } from './dataTestStatus'
 
 function test(id: string, overrides: Partial<DataTest> = {}): DataTest {
@@ -197,14 +197,3 @@ describe('data test review bar vocabulary', () => {
   })
 })
 
-describe('dataTestHeadline', () => {
-  it('answers how much there is, how much ran, and how much is open', () => {
-    expect(dataTestHeadline([])).toBe('no tests yet')
-    expect(dataTestHeadline([test('DAT-1'), test('DAT-2')]))
-      .toBe('2 tests · all run · no open exceptions')
-    expect(dataTestHeadline([
-      test('DAT-1', { status: 'completed_with_exception', open_exception_count: 2 }),
-      test('DAT-2', { last_run: null, status: 'ready' }),
-    ])).toBe('2 tests · 1 of 2 run · 1 with open exceptions')
-  })
-})

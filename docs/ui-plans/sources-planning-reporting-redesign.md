@@ -1,7 +1,7 @@
 # Sources, planning and reporting views redesign: documents, tables, APM, findings, report
 
-**Status:** design proposed on 5 September 2026. **Findings is built** (see
-"Order of work" below); the other four pages are not. This is the
+**Status:** design proposed on 5 September 2026, **all five pages built** (see
+"Order of work" below). This is the
 handoff for rebuilding the five pages that bracket fieldwork — the two source
 pages the engagement starts from (Documents, Source tables), the memorandum it
 plans with (APM), and the two work products it ends on (Findings, Report) — on
@@ -545,11 +545,58 @@ mapped headings, and the issues rail shows one row per finding.
    the server knows what an evidentiary projection covers
    (`findings.artifact`), so it is a route —
    `POST /findings/{id}/evidence/reaffirm` — rather than a client-side edit.
-2. Report, then APM, on the shared document layout.
-3. Source tables, with the coverage route.
-4. Documents, the largest file and the one with the most dialogs to retire.
-5. Delete `UiStatusLanes`, `UiFilterMenu`, `ReportReconcileDialog`,
-   `JoinDialog`, and dead CSS.
+2. **Report and APM — done.** Both sit on `ui/UiDocumentPage.vue` (sticky
+   outline, scrolling document column, rail) over `ui/UiMarkdownDocument.vue`,
+   which splits the Markdown at every heading so a heading is an addressable
+   element — that is what lets the report attach a quality issue to the section
+   it is about. `ui/markdownOutline.ts` derives the entries and their ids;
+   `report/reportStatus.ts` splits `quality.issues` into the report's own
+   problems and one row per finding, places each report-level issue under a
+   heading, and writes the verdict and preliminary sentences.
+   `views/ReportView.vue` and `views/ApmView.vue` replace `ReportTab.vue` and
+   `PlanningTab`'s `apm` branch; `ReportReconcileDialog.vue` is retired and
+   reconcile is a mode of the page. `planning.apm_sha1` is exposed so the APM
+   compares it against `cycle.apm_sha1`.
+
+   Two departures, both from review. **Neither document page has a verdict
+   bar**: on a page whose rail already answers what it was written from, what
+   it feeds, and what is wrong with it, a band across the top restating those
+   was a third copy. Who wrote it and when moved into a `Written` card beside
+   the generation facts; the report's preliminary sentence leads its rail,
+   because nothing else on the page says it. And **no page carries a count
+   sentence beside its title** — the review bar's chips and meters, one row
+   below, already hold every number it restated. That applies to the fieldwork
+   pages too, so `dataTestHeadline`, `docTestHeadline` and `rcmHeadline` are
+   deleted.
+
+3. **Source tables — done.** `GET /tables/{name}/coverage` names the tests that
+   evaluate each column, computed for the whole workspace in one pass and
+   cached on the workspace signature. `tables/tablesStatus.ts` derives the
+   three meters, the five chips and the row meta line — `52 × 15 · 1 untested`,
+   in the notation a reader of tables already has, rather than nine words for
+   three numbers;
+   `DataTab.vue` is rebuilt on them with the verdict bar, the four tabs, the
+   `Tested` column, inline rename, and `tables/JoinDrawer.vue` in place of
+   `JoinDialog.vue`.
+
+4. **Documents — done.** `documents/documentsStatus.ts` derives Read /
+   Analysed / Reviewed and the six chips;
+   `documents/StructuredEvidenceSheet.vue` renders `effective.records` as a
+   sheet with faint syntax, grouped field names and `p.N` citation chips.
+   `DocumentsTab.vue` gets the review bar, the one-row detail header, the tab
+   row, the two strips, and drawers in place of the knowledge-pack and
+   vision-profile modals; the content-search modal is retired in favour of
+   results in the list.
+
+   A list row says the filename and the document type, and nothing else: the
+   page count distinguishes nothing, and the analysis state is already the dot
+   and already a chip. Category headings are bare counts for the same reason.
+   Where `summary_origin` is `structured_evidence` the derived summary is not
+   drawn at all — it is the sheet's own fields written out as bullets, one
+   screen above the sheet.
+
+5. **Cleanup — done.** `UiStatusLanes`, `UiFilterMenu`, `ReportTab`,
+   `ReportReconcileDialog` and `JoinDialog` are deleted.
 
 ## What the mockups assume
 

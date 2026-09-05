@@ -243,6 +243,51 @@ def untested_columns(workspace: Workspace) -> list[dict[str, Any]]:
     )
 
 
+def coverage_by_table(workspace: Workspace) -> dict[str, list[dict[str, Any]]]:
+    """Per table, per column, the data tests whose steps name that column.
+
+    The auditor's view of the same measurement ``untested_columns`` discloses.
+    That function answers "what did the audit never evaluate" for the report,
+    and reaches the report's model context as counts only, deliberately; this
+    answers "which test evaluates this column" for the person reading the
+    table, and so names the tests.
+
+    Computed for the whole workspace in one pass because the expensive half —
+    reading every table's schema — is shared: asking it per table would rebuild
+    the vocabulary once per table.
+
+    A column name shared by two tables is credited to a test that names it
+    either way. Test code names a column, not a table's column, which is the
+    limit ``ColumnVocabulary`` already documents; it errs towards reporting
+    coverage rather than inventing a gap.
+    """
+    vocab = vocabulary(workspace)
+    named: list[tuple[str, set[str]]] = []
+    for test in workspace.data_tests:
+        found: set[str] = set()
+        for step in test.get("steps") or []:
+            if isinstance(step, Mapping):
+                found |= vocab.found_in(step.get("code"))
+        if found:
+            named.append((str(test.get("id") or ""), found))
+    return {
+        table: [
+            {
+                "column": column,
+                "tests": [test_id for test_id, found in named if column in found],
+            }
+            for column in columns
+        ]
+        for table, columns in vocab.columns_by_table.items()
+    }
+
+
+def table_coverage(workspace: Workspace, table_name: str) -> dict[str, Any] | None:
+    """``coverage_by_table`` for one table, or None when it cannot be read."""
+    columns = coverage_by_table(workspace).get(str(table_name))
+    return None if columns is None else {"table": str(table_name), "columns": columns}
+
+
 def untested_flagged_columns(workspace: Workspace) -> list[dict[str, Any]]:
     """Columns an analysis flagged exceptions over and no data test names.
 

@@ -35,7 +35,7 @@ import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiReviewBar from './ui/UiReviewBar.vue'
 import UiVerdictBar from './ui/UiVerdictBar.vue'
 import {
-  DATA_TEST_CHIPS, dataTestHeadline, dataTestStatus, filterDataTests,
+  DATA_TEST_CHIPS, dataTestStatus, filterDataTests,
 } from './data-tests/dataTestStatus'
 import type { DataTestFilter } from './data-tests/dataTestStatus'
 import { plural } from '../format'
@@ -131,7 +131,6 @@ const filterRcm = ref<string | null>(null)
 // The bar counts every test, not the filtered list: a count that shrank as you
 // filtered by it could never be clicked back out of.
 const status = computed(() => dataTestStatus(tests.value, planning.value?.findings ?? []))
-const headline = computed(() => dataTestHeadline(tests.value))
 const statusBusy = computed(() => running.value || runningAll.value || generatingFindings.value)
 const canRunAgent = computed(() => !agent.isActive.value)
 // Folded rather than combined: each narrowing runs the same predicate over
@@ -511,7 +510,7 @@ async function redraftTest() {
         },
       },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'success',
       summary: 'Redraft started',
@@ -530,7 +529,7 @@ async function draftFinding(regenerate = false) {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
@@ -548,7 +547,7 @@ async function draftPendingFindings(testIds?: string[]) {
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button', runContext: { rcm_ids: rcmIds } },
     )
-    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    agent.openPanel()
     toast.add({
       severity: 'success',
       summary: `Generating findings for ${plural(scope.length, 'test')}`,
@@ -609,7 +608,6 @@ onUnmounted(unsubscribe)
          ordinary next act takes the slot. -->
     <header class="page-head">
       <h1>Data tests</h1>
-      <p class="headline aw-figure">{{ headline }}</p>
       <span class="grow" />
       <Button label="New test" icon="pi pi-plus" size="small" outlined severity="secondary" @click="openNewDefinition" />
       <Button

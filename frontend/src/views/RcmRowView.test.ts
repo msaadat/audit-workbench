@@ -42,8 +42,9 @@ vi.mock('../composables/useAgentRun', async () => {
     useAgentRun: () => ({
       isActive: ref(false),
       launchMode: ref('auto'),
-      state: { drawerOpen: false },
-      toggleDrawer: vi.fn(),
+      state: { panelMode: 'closed' },
+      openPanel: vi.fn(),
+      togglePanel: vi.fn(),
       onWorkspaceInvalidated: () => () => undefined,
     }),
   }

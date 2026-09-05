@@ -24,6 +24,9 @@ export interface JoinSpec {
   how: string
   left_on: string[]
   right_on: string[]
+  /** Who built it. A workspace's joins are mostly the assistant's work. */
+  created_by?: 'agent' | 'user'
+  agent_run_id?: string | null
 }
 
 export interface TableInfo {
@@ -987,6 +990,12 @@ export interface PlanningContext {
 export interface PlanningRecord {
   context: PlanningContext
   apm_markdown: string
+  /**
+   * The hash of `apm_markdown` as the server computes it, so the page can
+   * compare it against the `apm_sha1` the cycle and the matrix recorded when
+   * they were derived. Absent on payloads written before the field existed.
+   */
+  apm_sha1?: string
   /** The shape of the process: steps, their document roles and populations. */
   cycle: CycleShape | null
   created_by: 'agent' | 'user'
@@ -2158,6 +2167,14 @@ export interface AssistantChatSummary {
   created_at: string
   updated_at: string
   message_count: number
+  /**
+   * How the chat's most recent run ended, and how many of its runs failed.
+   * What distinguishes one conversation from another in a list of them; the
+   * summary carried neither until the panel needed to draw a row.
+   */
+  last_run_status?: string | null
+  failed_run_count?: number
+  run_count?: number
 }
 
 export interface AssistantChatMessage {

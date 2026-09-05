@@ -36,8 +36,9 @@ vi.mock('../composables/useAgentRun', async () => {
     useAgentRun: () => ({
       isActive: ref(false),
       launchMode: ref('auto'),
-      state: { drawerOpen: false },
-      toggleDrawer: vi.fn(),
+      state: { panelMode: 'closed' },
+      openPanel: vi.fn(),
+      togglePanel: vi.fn(),
       onWorkspaceInvalidated: () => () => undefined,
     }),
   }
@@ -129,12 +130,14 @@ function mountTab(findings: unknown[] = []) {
 afterEach(() => { vi.restoreAllMocks(); navReplace.mockReset() })
 
 describe('DataTestsTab header', () => {
-  it('says how much there is, how much ran, and how much is open', async () => {
+  it('names the page and leaves the counting to the chips under it', async () => {
     const wrapper = mountTab()
     await flushPromises()
 
     expect(wrapper.get('.page-head h1').text()).toBe('Data tests')
-    expect(wrapper.get('.headline').text()).toBe('3 tests · 1 of 3 run · 1 with open exceptions')
+    // The count sentence went: the review bar's chips and meters already carry
+    // every number it restated, one row below.
+    expect(wrapper.find('.headline').exists()).toBe(false)
   })
 
   it('makes the outstanding write-up the primary, and Run all when there is none', async () => {
