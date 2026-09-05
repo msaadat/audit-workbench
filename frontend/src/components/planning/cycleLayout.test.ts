@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { CycleGraph } from '../../types'
-import { METRICS, layoutCycle, relationshipFields } from './cycleLayout'
+import { METRICS, layoutCycle, placementKey, relationshipFields } from './cycleLayout'
 
 /**
  * The procurement strip, as the backend projects it: four steps, five roles,
@@ -120,18 +120,22 @@ function graph(): CycleGraph {
 describe('relationshipFields', () => {
   it('lists only the fields an edge or a stated mark touches, in edge order', () => {
     const fields = relationshipFields(graph())
+    const order = fields.get(placementKey('Purchase order', 'order'))
+    const invoice = fields.get(placementKey('Invoice processing and payment', 'invoice'))
 
-    expect(fields.get('order')).toEqual(['order_reference', 'po_total'])
-    expect(fields.get('invoice')).toEqual(['order_reference', 'invoice_amount'])
+    expect(order).toEqual(['order_reference', 'po_total'])
+    expect(invoice).toEqual(['order_reference', 'invoice_amount'])
     // Four induced fields, two in a rule: the page shows the vocabulary of the
     // rules rather than the schema.
-    expect(fields.get('order')).toHaveLength(2)
+    expect(order).toHaveLength(2)
   })
 
   it('keeps a field a one-operand assertion requires to be stated', () => {
     const fields = relationshipFields(graph())
 
-    expect(fields.get('requisition')).toEqual(['financial_approval_by'])
+    expect(
+      fields.get(placementKey('Requisition initiation and approval', 'requisition')),
+    ).toEqual(['financial_approval_by'])
   })
 })
 
@@ -145,8 +149,38 @@ describe('layoutCycle', () => {
       'Goods receipt and inspection',
       'Invoice processing and payment',
     ])
-    expect(layout.columns[0].x).toBe(0)
-    expect(layout.columns[1].x).toBe(METRICS.columnWidth + METRICS.gutter)
+    expect(layout.columns[0].x).toBe(METRICS.padX)
+    expect(layout.columns[1].x).toBe(METRICS.padX + METRICS.columnWidth + METRICS.gutter)
+  })
+
+  it('gives a step with two roles two slots and starts the next step after both', () => {
+    const wide = graph()
+    wide.steps[1].documents.push({
+      node: 'amendment', document_type: 'purchase_order', label: 'PO amendment',
+      count: 2, fields: [], bound: true,
+    })
+
+    const layout = layoutCycle(wide)
+    const order = layout.columns[1]
+    const receipt = layout.columns[2]
+    const amendment = order.nodes.find(node => node.id === 'amendment')!
+
+    expect(order.slots).toBe(2)
+    expect(amendment.x).toBe(order.x + METRICS.columnWidth + METRICS.gutter)
+    expect(order.width).toBe(2 * METRICS.columnWidth + METRICS.gutter)
+    // The third step begins after the second slot, not on top of it.
+    expect(receipt.x).toBe(order.x + order.width + METRICS.gutter)
+  })
+
+  it('puts every population on one baseline', () => {
+    const layout = layoutCycle(graph())
+    const tops = new Set(
+      layout.columns.flatMap(column =>
+        column.nodes.filter(node => node.kind === 'population').map(node => node.y),
+      ),
+    )
+    expect(tops.size).toBe(1)
+    expect([...tops][0]).toBe(layout.populationTop)
   })
 
   it('puts the document above its population in every column', () => {
@@ -173,6 +207,46 @@ describe('layoutCycle', () => {
 
   it('routes the procurement strip with no crossing', () => {
     expect(layoutCycle(graph()).crossings).toBe(0)
+  })
+
+  it('draws the anchor straight up its column, labelled with the match', () => {
+    const layout = layoutCycle(graph())
+    const anchor = layout.edges.find(edge => edge.kind === 'anchor')!
+    const column = layout.columns[1]
+    const population = column.nodes.find(node => node.id === 'po_data')!
+    const order = column.nodes.find(node => node.id === 'order')!
+
+    expect(anchor.points).toHaveLength(2)
+    expect(anchor.points[0].x).toBe(anchor.points[1].x)
+    expect(anchor.points[0].y).toBe(population.y)
+    expect(anchor.points[1].y).toBe(order.y + order.height)
+    expect(anchor.labelAt?.text).toBe('PO_NUMBER = order_reference')
+    // Both ends of it are marked on the rows they name.
+    expect(population.fields.find(field => field.name === 'PO_NUMBER')?.anchor).toBe(true)
+    expect(order.fields.find(field => field.name === 'order_reference')?.anchor).toBe(true)
+  })
+
+  it('keeps the bus lanes between the step band and the documents', () => {
+    const layout = layoutCycle(graph())
+    const bandBottom = METRICS.headerTop + METRICS.headerHeight
+    for (const edge of layout.edges.filter(item => item.bus === 'top')) {
+      const lane = Math.min(...edge.points.map(point => point.y))
+      expect(lane).toBeGreaterThan(bandBottom)
+      expect(lane).toBeLessThan(layout.documentTop)
+    }
+  })
+
+  it('rides a table join between two populations below the tables', () => {
+    const layout = layoutCycle(graph())
+    const join = layout.edges.find(edge => edge.ruleId === 'po_invoices')!
+    const lowest = Math.max(
+      ...layout.columns.flatMap(column => column.nodes.map(node => node.y + node.height)),
+    )
+
+    expect(join.rides).toBe(true)
+    expect(join.bus).toBe('bottom')
+    expect(Math.max(...join.points.map(point => point.y))).toBeGreaterThan(lowest)
+    expect(layout.height).toBeGreaterThan(Math.max(...join.points.map(point => point.y)))
   })
 
   it('gives two arrows leaving the same node edge different vertical runs', () => {
@@ -233,8 +307,12 @@ describe('layoutCycle', () => {
     const layout = layoutCycle(graph())
     const borrowed = layout.columns[2].nodes.find(node => node.kind === 'population')!
 
-    expect(borrowed.note).toContain('GRN_ID')
+    expect(borrowed.placeholder).toBe(true)
+    expect(borrowed.columns).toEqual(['GRN_ID'])
     expect(borrowed.note).toContain('No population of its own')
+    // It is a note, not the owner's table drawn twice: no field of po_data
+    // that a rule reaches on the purchase order step is listed here.
+    expect(borrowed.fields).toHaveLength(0)
   })
 
   it('draws the flow with no fields at all before any schema exists', () => {

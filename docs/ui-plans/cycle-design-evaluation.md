@@ -72,6 +72,35 @@ The router is about forty lines and the same arithmetic the component would
 use: a column index and a row index per endpoint, a track counter per gutter,
 a lane counter per bus.
 
+**Landed as** (`cycleLayout.ts`, `CycleStrip.vue`, 5 September 2026):
+
+- **The anchor is the one vertical arrow.** It runs straight up the middle of
+  its column from the population's top edge to the document's bottom edge,
+  with the `COLUMN = field` pill on it, as the artboard draws it — not out
+  through the gutter and back like a field-to-field rule. It falls back to the
+  gutter only where another node sits between the two.
+- **Tracks and lanes are made room for, not assumed.** The top lanes sit
+  between the step band and the documents and push the documents down as they
+  multiply; a table join between two populations rides a bottom bus under the
+  tables, as the artboard's grey arrows do; every population sits on one
+  baseline whatever its document's height.
+- **Rows are ordered by the layout, not the ruleset.** The backend lists a
+  node's fields in rule order. Whether two arrows into one node can be drawn
+  without crossing depends on which row each enters: a short hop crosses the
+  gutter at its own row and must therefore enter below every rider that comes
+  down from the top bus. The layout sorts each node's rows by how their arrows
+  travel, then by the rows they are joined to, before assigning tracks; the
+  crossing count is a real one (a horizontal run cutting a vertical one,
+  touching excepted) and a two-move-deep descent over track, lane and row
+  swaps settles what the ordering leaves.
+- **A node is addressed by step and name.** `po_data` is two nodes on the
+  procurement strip, and keying fields by table name alone gave the goods
+  receipt's placeholder the purchase order's rows. The borrowed occurrence is
+  the dashed note the artboard shows, with no rows unless a rule reaches it
+  there.
+- **A step with two roles takes two slots** and the next step starts after
+  both; the first build placed the following step over the second document.
+
 All three are drawn at 1440 px with the `procurement` workspace as it stands:
 six tables, twelve materialised joins, five induced schemas, 27 matrix rows
 over four processes, two `transaction_cycle` attributes, no ruleset yet. The

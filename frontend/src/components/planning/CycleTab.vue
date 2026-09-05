@@ -12,7 +12,6 @@ import CycleRulesetReview from '../doc-tests/CycleRulesetReview.vue'
 import CycleStrip from './CycleStrip.vue'
 import CycleStepsEditor from './CycleStepsEditor.vue'
 import UiEmptyState from '../ui/UiEmptyState.vue'
-import UiPageHeader from '../ui/UiPageHeader.vue'
 import { plural } from '../../format'
 
 /**
@@ -47,6 +46,12 @@ const approverId = computed(() => session.user.value?.email ?? '')
 
 const hasCycle = computed(() => (graph.value?.steps.length ?? 0) > 0)
 
+const title = computed(() => {
+  const name = graph.value?.name?.trim()
+  if (!name) return 'Cycle'
+  return /cycle$/i.test(name) ? name : `${name} cycle`
+})
+
 /** What the header says the strip contains, counted from what is drawn. */
 const counts = computed(() => {
   const steps = graph.value?.steps ?? []
@@ -74,8 +79,16 @@ const rulesStatus = computed(() => {
   const ruleset = graph.value?.ruleset
   if (!ruleset) return 'no cycle rules yet'
   if (ruleset.status === 'approved') return 'rules approved'
+  if (ruleset.status === 'proposed') return 'rules proposed, awaiting approval'
   return `rules ${ruleset.status}`
 })
+
+const LEGEND = [
+  { kind: 'join', label: 'links, identifier = identifier' },
+  { kind: 'assert', label: 'must agree' },
+  { kind: 'anchor', label: 'population row to its document' },
+  { kind: 'table_join', label: 'table join' },
+] as const
 
 function fail(summary: string, error: unknown) {
   toast.add({
@@ -122,8 +135,14 @@ onMounted(load)
 
 <template>
   <section class="cycle-tab">
-    <UiPageHeader :title="graph?.name || 'Cycle'">
-      <template #default>
+    <header class="ui-page-header cycle-tab__header">
+      <div class="ui-page-header__copy cycle-tab__copy">
+        <h2>{{ title }}</h2>
+        <span v-if="hasCycle" class="cycle-tab__counts" data-testid="cycle-counts">
+          {{ counts }} · {{ rulesStatus }}
+        </span>
+      </div>
+      <div class="ui-page-header__actions">
         <Button
           v-if="hasCycle"
           label="Edit steps"
@@ -137,17 +156,11 @@ onMounted(load)
           v-if="hasCycle"
           label="Review rules"
           size="small"
-          outlined
-          severity="secondary"
           icon="pi pi-list-check"
           @click="reviewOpen = true"
         />
-      </template>
-    </UiPageHeader>
-
-    <p v-if="hasCycle" class="cycle-tab__counts" data-testid="cycle-counts">
-      {{ counts }} · {{ rulesStatus }}
-    </p>
+      </div>
+    </header>
 
     <UiEmptyState
       v-if="!loading && !hasCycle"
@@ -158,18 +171,25 @@ onMounted(load)
       <Button label="Add the steps" size="small" @click="editing = true" />
     </UiEmptyState>
 
-    <div v-else-if="hasCycle" class="cycle-tab__scroller">
-      <CycleStrip :graph="graph!" :show-all-fields="showAllFields" />
+    <div v-else-if="hasCycle" class="cycle-tab__card">
+      <div class="cycle-tab__scroller">
+        <CycleStrip :graph="graph!" :show-all-fields="showAllFields" />
+      </div>
+      <footer class="cycle-tab__legend">
+        <span
+          v-for="entry in LEGEND"
+          :key="entry.kind"
+          :class="['cycle-legend', `cycle-legend--${entry.kind}`]"
+        >{{ entry.label }}</span>
+        <span class="cycle-tab__note">
+          <template v-if="showAllFields">Every induced field is shown.</template>
+          <template v-else>Only fields that take part in a relationship are shown.</template>
+          <button type="button" class="cycle-tab__toggle" @click="showAllFields = !showAllFields">
+            {{ showAllFields ? 'Show rule fields only' : 'Show all fields' }}
+          </button>
+        </span>
+      </footer>
     </div>
-
-    <p v-if="hasCycle" class="cycle-tab__toggle">
-      <Button
-        :label="showAllFields ? 'Show rule fields only' : 'Show all fields'"
-        size="small"
-        text
-        @click="showAllFields = !showAllFields"
-      />
-    </p>
 
     <CycleStepsEditor
       v-model="editing"
@@ -191,15 +211,67 @@ onMounted(load)
 
 <style scoped>
 .cycle-tab { display: flex; flex-direction: column; gap: var(--aw-space-3); min-height: 0; }
+.cycle-tab__header { align-items: center; }
+.cycle-tab__copy { display: flex; align-items: baseline; gap: var(--aw-space-3); flex-wrap: wrap; }
 .cycle-tab__counts {
-  margin: 0;
-  font-size: var(--aw-text-xs);
   color: var(--aw-muted);
+  font-size: var(--aw-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.cycle-tab__card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel);
+  overflow: hidden;
 }
 .cycle-tab__scroller {
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 2.75rem 0.25rem 0.5rem;
 }
-.cycle-tab__toggle { margin: 0; }
+.cycle-tab__legend {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1.25rem;
+  border-top: 1px solid var(--aw-border);
+  background: var(--aw-canvas);
+  color: var(--aw-muted);
+  font-size: var(--aw-text-xs);
+}
+.cycle-legend { display: inline-flex; align-items: center; gap: 0.375rem; white-space: nowrap; }
+.cycle-legend::before {
+  content: '';
+  width: 1.25rem;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+}
+.cycle-legend--join::before { border-top-color: var(--aw-teal); }
+.cycle-legend--assert::before { border-top-color: var(--aw-accent); border-top-style: dashed; }
+.cycle-legend--anchor::before { border-top-color: var(--aw-ink-strong); border-top-width: 3px; }
+.cycle-legend--table_join::before {
+  border-top-color: color-mix(in srgb, var(--aw-muted) 70%, var(--aw-panel));
+}
+.cycle-tab__note {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-style: italic;
+  white-space: nowrap;
+}
+.cycle-tab__toggle {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--aw-teal);
+  font: inherit;
+  font-style: normal;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cycle-tab__toggle:hover { text-decoration: underline; }
 </style>
