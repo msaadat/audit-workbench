@@ -135,14 +135,18 @@ onMounted(load)
 
 <template>
   <section class="cycle-tab">
-    <header class="ui-page-header cycle-tab__header">
-      <div class="ui-page-header__copy cycle-tab__copy">
-        <h2>{{ title }}</h2>
+    <!-- The last page on the old `UiPageHeader`: an `h2` where every other
+         work product carries an `h1`, and a component that now has no other
+         caller. Same row, same shape, one system. -->
+    <header class="page-head">
+      <div class="cycle-tab__copy">
+        <h1>{{ title }}</h1>
         <span v-if="hasCycle" class="cycle-tab__counts" data-testid="cycle-counts">
           {{ counts }} · {{ rulesStatus }}
         </span>
       </div>
-      <div class="ui-page-header__actions">
+      <span class="grow" />
+      <div class="cycle-tab__actions">
         <Button
           v-if="hasCycle"
           label="Edit steps"
@@ -211,8 +215,11 @@ onMounted(load)
 
 <style scoped>
 .cycle-tab { display: flex; flex-direction: column; gap: var(--aw-space-3); min-height: 0; }
-.cycle-tab__header { align-items: center; }
-.cycle-tab__copy { display: flex; align-items: baseline; gap: var(--aw-space-3); flex-wrap: wrap; }
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
+.page-head h1 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; }
+.grow { flex: 1; }
+.cycle-tab__copy { display: flex; align-items: baseline; gap: var(--aw-space-3); flex-wrap: wrap; min-width: 0; }
+.cycle-tab__actions { display: flex; align-items: center; gap: var(--aw-space-2); flex-wrap: wrap; }
 .cycle-tab__counts {
   color: var(--aw-muted);
   font-size: var(--aw-text-sm);

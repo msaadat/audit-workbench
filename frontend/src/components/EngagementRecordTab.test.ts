@@ -320,7 +320,6 @@ async function render(
     props: { workspace: { id: 'procurement' } as never },
     global: {
       stubs: {
-        UiPageHeader: { template: '<div><slot /></div>' },
         UiEmptyState: { template: '<div class="empty" />' },
         Button: { template: '<button />' },
         // Flattened so a test can click the primary and an alternate without

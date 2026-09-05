@@ -180,6 +180,42 @@ def test_an_answer_does_not_survive_the_conclusion_it_answered():
     ]
 
 
+def test_the_answer_reaches_the_page_that_has_to_show_it():
+    """A disposition nobody can see closes nothing.
+
+    `analysis_listing` copies a fixed tuple of keys off the record, and
+    `promotion` was not among them, so the durable answer never left the
+    backend: the Analysis page could not say that a procedure holding
+    exceptions had been carried into a test, nor that sixteen of them had not.
+    """
+    from app import analysis_payloads
+
+    ws = _workspace()
+    analysis = _flagging_analysis(ws)
+
+    listed = analysis_payloads.analysis_listing(ws, analysis)
+    assert listed["promotion"] is None
+
+    analysis[analysis_promotion.PROMOTION_FIELD] = analysis_promotion.promoted_record(
+        result_sha1=analysis_promotion.result_sha1(analysis),
+        test_id="DAT-1",
+        rcm_id=ws.rcm[0]["id"],
+        agent_run_id="run",
+        decided_at="2026-01-01T00:00:00+00:00",
+    )
+    ws.save()
+
+    listed = analysis_payloads.analysis_listing(ws, analysis)
+    assert listed["promotion"]["state"] == analysis_promotion.PROMOTED
+    assert listed["promotion"]["test_id"] == "DAT-1"
+
+    # And it expires with the conclusion it answered, exactly as
+    # `disposition()` does — the listing must not outlive the rule.
+    analysis[analysis_promotion.PROMOTION_FIELD]["result_sha1"] = "a-result-that-is-gone"
+    ws.save()
+    assert analysis_payloads.analysis_listing(ws, analysis)["promotion"] is None
+
+
 # --------------------------------------------------------------------------- #
 # The fitting turn's contract
 # --------------------------------------------------------------------------- #

@@ -6,37 +6,43 @@ import Button from 'primevue/button'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
-import SelectButton from 'primevue/selectbutton'
+import SplitButton from 'primevue/splitbutton'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AnalysisSummaryPayload, SavedAnalysis, WorkspaceSummary } from '../types'
+import type { SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
 import AnalysisList from './analysis/AnalysisList.vue'
 import AnalysisSummary from './analysis/AnalysisSummary.vue'
-import { BUCKET_CLASSIFICATIONS, OUTSTANDING } from './analysis/classification'
+import { ANALYSIS_CHIPS, analysisStatus, visibleAnalyses } from './analysis/analysisStatus'
+import type { AnalysisFilter } from './analysis/analysisStatus'
+import { isOutstanding } from './analysis/classification'
 import UiEmptyState from './ui/UiEmptyState.vue'
-import UiMasterDetail from './ui/UiMasterDetail.vue'
-import UiPageHeader from './ui/UiPageHeader.vue'
-import UiTriageCounts from './ui/UiTriageCounts.vue'
-import type { TriageCount } from './ui/UiTriageCounts.vue'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiReviewBar from './ui/UiReviewBar.vue'
+import type { MenuItem } from 'primevue/menuitem'
 
-// The Analysis tab has two screens over the same saved procedures.
+import { plural } from '../format'
+
+// The Analysis tab has two screens over the same saved procedures, and each
+// borrows the page of the thing it most resembles.
 //
-// Summary is the EDA entry point: only what is worth looking at without being
-// asked — the charts the procedures produced, and the ones that concluded an
-// exception. Procedures is the full triage rail: every saved procedure,
-// filterable by what it concluded, with an editor for whichever one is open.
+// Summary is a written work product with a provenance story, which is the
+// audit planning memorandum: `UiDocumentPage`, an outline, a document on a
+// measure, a rail. Procedures is a register of things that ran and concluded,
+// which is Data tests: `UiReviewBar`, a list with a dot and a meta line, a
+// verdict bar.
 //
 // Both screens read the same loaded list, so a procedure can never disagree
 // with itself between the two — only what each screen chooses to show differs.
 //
-// Creating: Library (a predefined audit test) or Code (hand-written Polars).
-// The assistant writes analyses into this same rail.
+// Creating: Library (a predefined audit test) or Code (hand-written Polars),
+// one split control rather than two buttons. The assistant writes analyses
+// into this same list.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 const route = useRoute()
@@ -45,63 +51,52 @@ const agent = useAgentRun(props.workspace.id)
 const assistantChat = useAssistantChat(props.workspace.id)
 
 const analyses = ref<SavedAnalysis[]>([])
-const summary = ref<AnalysisSummaryPayload | null>(null)
 const view = ref<'summary' | 'procedures'>(route.query.view === 'procedures' ? 'procedures' : 'summary')
-const viewOptions = [
-  { label: 'Summary', value: 'summary' },
-  { label: 'Procedures', value: 'procedures' },
-]
-const filter = ref(String(route.query.filter || 'all'))
+// Narrowings compose across axes: "an exception nobody has answered for" is
+// two questions about the same procedure and neither answers the other.
+const filters = ref<AnalysisFilter[]>(
+  route.query.filter ? [String(route.query.filter) as AnalysisFilter] : [],
+)
 const search = ref('')
+/**
+ * Whether a summary exists, reported up by the tab that loads it. The header
+ * owns the primary and the summary owns the memo, so the one has to be told
+ * whether the other has anything to regenerate.
+ */
+const hasSummary = ref(false)
 const selectedId = ref<string | null>(null)
 const creating = ref<'library' | 'code' | null>(null)
 const loading = ref(false)
 const executing = ref(false)
 
 const selected = computed(() => analyses.value.find(item => item.id === selectedId.value) ?? null)
-const outstandingCount = computed(
-  () => analyses.value.filter(item => OUTSTANDING.includes(item.classification)).length,
-)
+const outstanding = computed(() => analyses.value.filter(isOutstanding))
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
 
-const triage = computed<TriageCount[]>(() => {
-  const counts = summary.value?.counts
-  return [
-    { key: 'all', label: 'All procedures', value: analyses.value.length },
-    { key: 'exception', label: 'Exceptions', value: counts?.exception ?? 0, tone: 'danger' },
-    { key: 'unusual', label: 'Need review', value: counts?.unusual ?? 0, tone: 'warn' },
-    { key: 'errors', label: 'Blocked', value: counts?.errors ?? 0, tone: 'danger' },
-    { key: 'stale', label: 'Rerun required', value: counts?.stale ?? 0, tone: 'warn' },
-    { key: 'clear', label: 'No exception', value: counts?.clear ?? 0, tone: 'ok' },
-    { key: 'informational', label: 'Informational', value: counts?.informational ?? 0, tone: 'info' },
-    { key: 'not_run', label: 'Not run', value: counts?.not_run ?? 0 },
-  ]
-})
-const activeFilterLabel = computed(
-  () => triage.value.find(count => count.key === filter.value)?.label ?? 'All procedures',
-)
+/** The lanes, the chips and the whole filter vocabulary, from one tally. */
+const status = computed(() => analysisStatus(analyses.value))
 
-const visibleAnalyses = computed(() => {
-  const wanted = BUCKET_CLASSIFICATIONS[filter.value]
+const shown = computed(() => {
   const term = search.value.trim().toLowerCase()
-  return analyses.value.filter(item => {
-    if (wanted && !wanted.includes(item.classification)) return false
-    if (!term) return true
-    return `${item.title} ${item.table ?? ''} ${item.source}`.toLowerCase().includes(term)
-  })
+  const narrowed = visibleAnalyses(analyses.value, filters.value)
+  if (!term) return narrowed
+  return narrowed.filter(
+    item => `${item.title} ${item.table ?? ''} ${item.source}`.toLowerCase().includes(term),
+  )
 })
 
 async function load() {
   loading.value = true
   try {
-    const [analysesResp, summaryResp] = await Promise.all([
-      api.get<{ analyses: SavedAnalysis[] }>(`/api/workspaces/${props.workspace.id}/analyses`),
-      api.get<AnalysisSummaryPayload>(`/api/workspaces/${props.workspace.id}/analyses/summary`),
-    ])
-    analyses.value = analysesResp.analyses
-    summary.value = summaryResp
+    // One request. Every count the page shows is derived from the records
+    // themselves, as the fieldwork pages derive theirs, so the engagement-level
+    // summary endpoint was a second answer to a question already answered.
+    const { analyses: loaded } = await api.get<{ analyses: SavedAnalysis[] }>(
+      `/api/workspaces/${props.workspace.id}/analyses`,
+    )
+    analyses.value = loaded
     if (!creating.value && (!selectedId.value || !analyses.value.some(item => item.id === selectedId.value))) {
-      selectedId.value = visibleAnalyses.value[0]?.id ?? analyses.value[0]?.id ?? null
+      selectedId.value = shown.value[0]?.id ?? analyses.value[0]?.id ?? null
     }
   } catch (error) {
     fail('Could not load analyses', error)
@@ -116,7 +111,9 @@ watch(() => [route.query.view, route.query.filter, route.query.analysis], () => 
   const wantedView = String(route.query.view || '') === 'procedures' ? 'procedures' : null
   if (wantedView && wantedView !== view.value) view.value = wantedView
   const wantedFilter = String(route.query.filter || '')
-  if (wantedFilter && wantedFilter !== filter.value) filter.value = wantedFilter
+  if (wantedFilter && !filters.value.includes(wantedFilter as AnalysisFilter)) {
+    filters.value = [wantedFilter as AnalysisFilter]
+  }
   const analysisId = String(route.query.analysis || '')
   if (analysisId && analysisId !== selectedId.value) {
     selectedId.value = analysisId
@@ -134,13 +131,15 @@ onUnmounted(unsubscribe)
 function locate() {
   return nav.replace('analysis', {
     view: view.value === 'summary' ? undefined : view.value,
-    filter: view.value === 'procedures' && filter.value !== 'all' ? filter.value : undefined,
+    // The URL carries one narrowing, as it always did; the rest of a composed
+    // set is a working state rather than a place worth sending someone.
+    filter: view.value === 'procedures' ? filters.value[0] : undefined,
     analysis: view.value === 'procedures' ? selectedId.value || undefined : undefined,
   })
 }
 
-function setView(next: string) {
-  view.value = next === 'procedures' ? 'procedures' : 'summary'
+function setView(next: 'summary' | 'procedures') {
+  view.value = next
   void locate()
 }
 
@@ -152,12 +151,12 @@ function openAnalysis(analysisId: string) {
   void locate()
 }
 
-function pickFilter(key: string) {
-  filter.value = key
+function pickFilters(keys: AnalysisFilter[]) {
+  filters.value = keys
   // Keep a selection that is still visible; otherwise open the first match, so
-  // the filter never leaves the detail pane showing something it excluded.
-  if (!visibleAnalyses.value.some(item => item.id === selectedId.value)) {
-    selectedId.value = visibleAnalyses.value[0]?.id ?? null
+  // a narrowing never leaves the detail pane showing something it excluded.
+  if (!shown.value.some(item => item.id === selectedId.value)) {
+    selectedId.value = shown.value[0]?.id ?? null
     creating.value = null
   }
   void locate()
@@ -229,6 +228,70 @@ async function runAnalyses(ids?: string[]) {
 function runOutstanding() { return runAnalyses() }
 function runAll() { return runAnalyses(analyses.value.map(item => item.id)) }
 
+/**
+ * What `New procedure` offers. One split control: the two buttons it replaces
+ * both opened the same editor with a different starting point.
+ */
+const createOptions = computed(() => [
+  { label: 'Library test', icon: 'pi pi-book', command: () => startLibrary() },
+  { label: 'Custom code', icon: 'pi pi-code', command: () => startCode() },
+])
+
+/**
+ * What the page can do that is not its next act. `Run all` re-executes work
+ * that is already current, which is the rarer half of the pair the header used
+ * to spend two equal buttons on.
+ */
+const menuItems = computed<MenuItem[]>(() => {
+  const unanswered = status.value.lanes
+    .find(lane => lane.key === 'disposition')?.actions[0]?.ids?.length ?? 0
+  return [
+  {
+    label: `Run all (${analyses.value.length})`,
+    icon: 'pi pi-forward',
+    disabled: executing.value || !analyses.value.length,
+    command: () => void runAll(),
+  },
+  {
+    label: 'Analyse with assistant',
+    icon: 'pi pi-sparkles',
+    disabled: assistantUnavailable.value,
+    command: () => void analyzeWithAssistant(),
+  },
+  // What closes the `Answered` lane. Promotion is a fitting turn the assistant
+  // makes over every unanswered procedure at once, so it is asked for once
+  // here rather than offered as a per-row button the page cannot commit.
+  {
+    label: `Carry ${plural(unanswered, 'exception')} into tests`,
+    icon: 'pi pi-shield',
+    visible: unanswered > 0,
+    disabled: assistantUnavailable.value,
+    command: () => void carryIntoTests(),
+  },
+  ]
+})
+
+/**
+ * Ask for the procedures holding exceptions to be carried into data tests.
+ *
+ * The same assistant path as every other workflow request, so the run is
+ * visible and budgeted like the rest.
+ */
+async function carryIntoTests() {
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      'Carry the saved procedures that found exceptions into data tests against '
+      + 'the RCM rows they are evidence about, and record a reason for any you decline.',
+      'act', agent.launchMode.value,
+      { command: 'plan', source: 'tab_button' },
+    )
+    agent.openPanel()
+  } catch (error) {
+    fail('Could not start the promotion', error)
+  }
+}
+
 /** Hand the assistant the frames on screen, so it never has to guess the scope. */
 async function analyzeWithAssistant() {
   const tables = props.workspace.tables.map(table => table.name)
@@ -282,42 +345,72 @@ function fail(summaryText: string, error: unknown) {
 
 <template>
   <div class="analysis">
-    <UiPageHeader title="Analysis">
-      <Button
-        label="Analyse with assistant"
-        icon="pi pi-sparkles"
-        size="small"
-        :disabled="assistantUnavailable"
-        @click="analyzeWithAssistant"
-      />
-      <Button
-        v-if="outstandingCount"
-        :label="`Run outstanding (${outstandingCount})`"
-        icon="pi pi-play"
-        size="small"
-        outlined
-        :loading="executing"
-        v-tooltip.bottom="'Execute only what has no current result — stale or never run'"
-        @click="runOutstanding"
-      />
-      <Button
-        v-if="analyses.length"
-        :label="`Run all (${analyses.length})`"
-        icon="pi pi-forward"
-        size="small"
-        outlined
-        :loading="executing"
-        v-tooltip.bottom="'Re-execute every saved procedure, including ones already current'"
-        @click="runAll"
-      />
-      <Button label="Library" icon="pi pi-book" size="small" outlined @click="startLibrary" />
-      <Button label="Code" icon="pi pi-code" size="small" outlined @click="startCode" />
-    </UiPageHeader>
+    <!-- The title and the controls, nothing else. The review bar below states
+         every count this page has, so a sentence beside the title would
+         restate numbers the reader is about to be shown. -->
+    <header class="page-head">
+      <h1>Analysis</h1>
+      <span class="grow" />
+      <template v-if="analyses.length">
+        <SplitButton
+          label="New procedure"
+          icon="pi pi-plus"
+          size="small"
+          outlined
+          severity="secondary"
+          :model="createOptions"
+          @click="startLibrary"
+        />
+        <!-- The page's next act. Running what has no current result outranks
+             regenerating a summary of results that are about to change. -->
+        <Button
+          v-if="outstanding.length"
+          :label="`Run ${outstanding.length} outstanding`"
+          icon="pi pi-play"
+          size="small"
+          :loading="executing"
+          v-tooltip.bottom="'Execute every procedure with no current result — stale or never run'"
+          @click="runOutstanding"
+        />
+        <Button
+          v-else-if="view === 'summary'"
+          :label="hasSummary ? 'Regenerate' : 'Write the summary'"
+          icon="pi pi-sparkles"
+          size="small"
+          :disabled="assistantUnavailable"
+          @click="writeSummary"
+        />
+        <Button
+          v-else
+          label="Analyse with assistant"
+          icon="pi pi-sparkles"
+          size="small"
+          :disabled="assistantUnavailable"
+          @click="analyzeWithAssistant"
+        />
+        <UiOverflowMenu :items="menuItems" tooltip="More analysis actions" />
+      </template>
+    </header>
 
-    <div v-if="analyses.length" class="analysis-nav">
-      <SelectButton :modelValue="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" @update:modelValue="setView" />
-      <span v-if="view === 'summary'" class="muted">What the analysis found — the population, the exceptions, and the work outstanding.</span>
-    </div>
+    <!-- Two faces of one work product, not two places: an underline, not a
+         form control. The `SelectButton` and the sentence beside it go. -->
+    <nav v-if="analyses.length" class="ui-tabs" aria-label="Analysis views">
+      <button
+        type="button"
+        class="ui-tab"
+        :aria-current="view === 'summary' ? 'page' : undefined"
+        @click="setView('summary')"
+      >Summary</button>
+      <button
+        type="button"
+        class="ui-tab"
+        :aria-current="view === 'procedures' ? 'page' : undefined"
+        @click="setView('procedures')"
+      >
+        Procedures
+        <span class="ui-tab__badge">{{ analyses.length }}</span>
+      </button>
+    </nav>
 
     <AnalysisSummary
       v-if="view === 'summary' && analyses.length"
@@ -325,28 +418,35 @@ function fail(summaryText: string, error: unknown) {
       :analyses="analyses"
       @open="openAnalysis"
       @regenerate="writeSummary"
+      @loaded="hasSummary = $event"
     />
 
     <template v-else-if="analyses.length || creating">
-      <UiTriageCounts v-if="analyses.length" :counts="triage" :active="filter" @select="pickFilter" />
+      <UiReviewBar
+        v-if="analyses.length"
+        :lanes="status.lanes"
+        :chips="ANALYSIS_CHIPS"
+        :filters="status.filters"
+        allLabel="All procedures"
+        :total="analyses.length"
+        :filter="filters"
+        @filter="pickFilters($event as AnalysisFilter[])"
+      />
 
-      <div v-if="analyses.length" class="toolbar">
-        <IconField>
-          <InputIcon class="pi pi-search" />
-          <InputText v-model="search" size="small" placeholder="Search procedures and tables" />
-        </IconField>
-        <span class="muted">
-          {{ visibleAnalyses.length }} of {{ analyses.length }} · {{ activeFilterLabel }}
-        </span>
-      </div>
+      <div class="layout">
+        <section class="list-panel">
+          <div class="list-head">
+            <IconField>
+              <InputIcon class="pi pi-search" />
+              <InputText v-model="search" size="small" placeholder="Search procedures and tables" fluid />
+            </IconField>
+          </div>
+          <div class="list-body">
+            <AnalysisList :items="shown" :selectedId="selectedId" @select="select" />
+          </div>
+        </section>
 
-      <UiMasterDetail railWidth="17rem" :empty="!analyses.length" class="layout">
-        <template #rail>
-          <AnalysisList :items="visibleAnalyses" :selectedId="selectedId" @select="select" />
-          <p v-if="!visibleAnalyses.length" class="rail-empty">No procedure matches this view.</p>
-        </template>
-
-        <section class="detail surface-panel">
+        <section class="detail">
           <AnalysisLibrary
             v-if="creating === 'library' || (!creating && selected?.kind === 'analytics')"
             :key="selected?.id ?? 'new-library'"
@@ -380,7 +480,7 @@ function fail(summaryText: string, error: unknown) {
             <Button label="Custom code" icon="pi pi-code" size="small" outlined @click="startCode" />
           </UiEmptyState>
         </section>
-      </UiMasterDetail>
+      </div>
     </template>
 
     <UiEmptyState
@@ -405,49 +505,30 @@ function fail(summaryText: string, error: unknown) {
 
 <style scoped>
 .analysis {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-}
-/* This column has no `gap` — its children space themselves — so the header
-   keeps the margin the shared rule no longer carries. */
-.analysis > .ui-page-header { margin-bottom: var(--aw-section-gap); }
-
-.analysis-nav {
-  display: flex;
-  align-items: center;
-  gap: var(--aw-space-3);
-  margin: 0 0 var(--aw-space-4);
+  display: flex; flex-direction: column; gap: .75rem;
+  min-width: 0; max-width: 100%; min-height: 0; height: 100%;
 }
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--aw-space-3);
-  flex-wrap: wrap;
-  margin: var(--aw-space-3) 0;
-}
-.muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+/* One 36px row: the title, what there is of it, and at most one primary. */
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
+.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
+.grow { flex: 1; }
 
-/* Bound the procedure rail to the space left below this page's controls.
-   UiMasterDetail owns the rail's overflow, so the list then scrolls without
-   moving the procedure that is open beside it. */
-.layout { flex: 1; min-height: 12rem; }
+.layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
 
-.rail-empty {
-  margin: 0;
-  padding: var(--aw-space-4) 0;
-  color: var(--aw-muted);
-  font-size: var(--aw-text-sm);
-  text-align: center;
-}
+.list-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
+.list-head { display: flex; flex-direction: column; gap: .5rem; padding: .625rem .75rem; border-bottom: 1px solid var(--aw-border); }
+.list-head :deep(.p-iconfield), .list-head :deep(.p-inputtext) { width: 100%; }
+.list-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 
+/* One panel for the whole detail column, as the fieldwork pages draw it. */
 .detail {
-  min-width: 0;
-  /* Room for the focus ring of the sticky header inputs. */
-  padding: var(--aw-space-4);
+  display: flex; flex-direction: column; gap: 1rem;
+  min-width: 0; max-width: 100%; min-height: 100%;
+  padding: 1.125rem 1.375rem;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel);
+  container: master-detail-content / inline-size;
+  overflow-y: auto;
 }
 </style>

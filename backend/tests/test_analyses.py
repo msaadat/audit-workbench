@@ -247,8 +247,9 @@ def test_analysis_summary_projects_only_bounded_outcomes(workspace_with_data):
         "errors": 0,
         "clear": 1,
         "informational": 0,
-        "stale": 0,
         "not_run": 0,
+        "stale": 0,
+        "current": 2,
     }
     item = next(item for item in payload["items"] if item["analysis_id"] == flagged["id"])
     assert item["classification"] == "exception"
@@ -270,10 +271,50 @@ def test_analysis_summary_marks_changed_inputs_stale_and_spec_edits_clear_result
         "input_sha1": "outdated",
         "result_sha1": "result-1",
     }
-    assert analyses_summary_payload(ws)["counts"]["stale"] == 1
+    counts = analyses_summary_payload(ws)["counts"]
+    assert counts["stale"] == 1
+    assert counts["current"] == 0
 
     ws.update_analysis(analysis["id"], {"spec": {"test": "duplicates", "params": {"columns": ["amount"]}}})
     assert "last_result" not in ws._analysis(analysis["id"])
+
+
+def test_a_stale_result_still_reports_what_it_concluded(workspace_with_data):
+    """Freshness must not overwrite the verdict.
+
+    `_classification` used to short-circuit on staleness, so a procedure whose
+    definition had been edited since it ran classified as "stale" and the
+    exceptions it had recorded were counted in no bucket at all. In the
+    engagement this was found in, all twenty-three procedures were stale and
+    the triage row read "23 rerun required, 0 exceptions" over sixteen recorded
+    exceptions — including the largest monetary exposure in the population.
+    """
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis["last_result"] = {
+        "run_id": "run-123",
+        "executed_at": "2026-07-28T16:22:41+00:00",
+        "status": "ok",
+        "verdict": "fail",
+        "verdict_text": "3 rows of 52 breach INVOICE_AMOUNT <= PO_TOTAL_AMOUNT",
+        "row_count": 3,
+        "stats": [],
+        "input_sha1": "outdated",
+        "result_sha1": "result-1",
+    }
+
+    payload = analyses_summary_payload(ws)
+    item = next(item for item in payload["items"] if item["analysis_id"] == analysis["id"])
+
+    # Two answers, not one: what it found, and whether that still stands.
+    assert item["classification"] == "exception"
+    assert item["state"] == "stale"
+    assert payload["counts"]["exception"] == 1
+    assert payload["counts"]["stale"] == 1
+    # The buckets still partition the register; freshness cuts across it.
+    buckets = ("exception", "unusual", "errors", "clear", "informational", "not_run")
+    assert sum(payload["counts"][name] for name in buckets) == len(ws.analyses)
+    assert payload["counts"]["stale"] + payload["counts"]["current"] <= len(ws.analyses)
 
 
 def test_python_exception_policy_turns_nonempty_result_into_a_review_signal(workspace_with_data):

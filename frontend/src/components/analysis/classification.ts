@@ -11,8 +11,15 @@
  * (`analysis_results.analysis_state`). This module only names those
  * classifications — it never re-derives one from a live recomputation, which is
  * what used to let the rail and the summary disagree about the same procedure.
+ *
+ * Freshness is a second axis, not a seventh classification. `stale` used to sit
+ * in this enum and displace the verdict, so a procedure that had recorded four
+ * breaches and then had its definition edited read as "Rerun required" and its
+ * four breaches were counted nowhere. `AnalysisResultState` answers that
+ * question now, and `freshnessMeta` below names it.
  */
-import type { AnalysisSummaryClassification, SavedAnalysis } from '../../types'
+import type { AnalysisResultState, AnalysisSummaryClassification, SavedAnalysis } from '../../types'
+import { stamp } from '../report/reportStatus'
 
 interface ClassificationMeta {
   label: string
@@ -41,12 +48,6 @@ const META: Record<AnalysisSummaryClassification, ClassificationMeta> = {
     severity: 'danger',
     icon: 'pi pi-ban',
     hint: 'The definition could not run. Fix the spec, then run it again.',
-  },
-  stale: {
-    label: 'Rerun required',
-    severity: 'warn',
-    icon: 'pi pi-refresh',
-    hint: 'The definition or its source data changed after this result was recorded.',
   },
   not_run: {
     label: 'Not run',
@@ -79,14 +80,31 @@ export const BUCKET_CLASSIFICATIONS: Record<string, AnalysisSummaryClassificatio
   exception: ['exception'],
   unusual: ['unusual'],
   errors: ['execution_error'],
-  stale: ['stale'],
   clear: ['clear'],
   informational: ['informational'],
   not_run: ['not_run'],
 }
 
+/**
+ * What a procedure's freshness is called, where a reader can see it.
+ *
+ * `current` has no label: a result that still stands is the unremarkable case,
+ * and marking twenty-three rows "current" says nothing a reader can act on.
+ */
+const FRESHNESS: Record<AnalysisResultState, { label: string; icon: string } | null> = {
+  current: null,
+  stale: { label: 'Rerun required', icon: 'pi pi-refresh' },
+  not_run: { label: 'Not run', icon: 'pi pi-clock' },
+}
+
+export function freshnessMeta(state: AnalysisResultState) {
+  return FRESHNESS[state] ?? null
+}
+
 /** Neither has concluded anything current, so both are what "run it" targets. */
-export const OUTSTANDING: AnalysisSummaryClassification[] = ['stale', 'not_run']
+export function isOutstanding(analysis: Pick<SavedAnalysis, 'state'>): boolean {
+  return analysis.state === 'stale' || analysis.state === 'not_run'
+}
 
 /**
  * What a procedure *is*, from its kind and who wrote it.
@@ -108,8 +126,12 @@ export function provenance(
     : { icon: 'pi pi-book', label: 'Library test' }
 }
 
+/**
+ * When a result was recorded, in the stamp every other work product uses.
+ *
+ * It was a bare `toLocaleString()`, which gave the analysis pages a date
+ * format nothing else in the engagement wrote.
+ */
 export function formatExecutedAt(value: string | null | undefined): string {
-  if (!value) return ''
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.valueOf()) ? '' : parsed.toLocaleString()
+  return stamp(value)
 }

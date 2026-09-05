@@ -366,7 +366,12 @@ def test_analysis_area_reports_recorded_outcomes_without_re_running(workspace_wi
     # Bounded: statistics and a verdict, never rows or code.
     assert "rows" not in reported and "code" not in reported and "spec" not in reported
     assert workspaces.load_workspace(ws.id).revision == before_revision
-    assert sum(content["counts"].values()) == 1
+    # The buckets partition the register; `stale` and `current` cut across it,
+    # so a procedure is counted once in each and the two sums differ.
+    buckets = set(analysis_results.CLASSIFICATION_BUCKETS.values())
+    assert sum(content["counts"][name] for name in buckets) == 1
+    assert content["counts"]["current"] == 1
+    assert content["counts"]["stale"] == 0
 
 
 def test_query_tool_shows_bounded_rows_for_aggregated_and_raw_results(workspace_with_data):

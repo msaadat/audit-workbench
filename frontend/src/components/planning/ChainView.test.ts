@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import PrimeVue from 'primevue/config'
 import { describe, expect, it, vi } from 'vitest'
 
 import ChainView from './ChainView.vue'
@@ -7,8 +8,8 @@ import ChainView from './ChainView.vue'
  * A finding points at the rows it was written against; a row does not point
  * back. `RcmRow.finding_refs` is part of the shape but nothing populates it,
  * so the chain has to read `finding_rollups.by_rcm` — the index the server
- * sends for exactly this join. These pin the rail counts, the Findings hop,
- * and the ordering that depends on them.
+ * sends for exactly this join. These pin the row's meta line, the Findings
+ * hop, and the ordering that depends on them.
  */
 
 vi.mock('../../composables/useWorkspaceNavigation', () => ({
@@ -53,7 +54,11 @@ async function render(planning: Record<string, unknown>) {
   }
   const wrapper = mount(ChainView, {
     props: { workspace: { id: 'procurement' } as never },
-    global: { stubs: { EvidenceAnchorDialog: true } },
+    global: {
+      plugins: [PrimeVue],
+      stubs: { EvidenceAnchorDialog: true },
+      directives: { tooltip: {} },
+    },
   })
   await flushPromises()
   return wrapper
@@ -66,7 +71,7 @@ describe('ChainView finding links', () => {
       finding_rollups: { by_rcm: { 'RCM-F08A71': [FINDING] }, by_test: {}, by_procedure: {} },
     })
     // The row carries `finding_refs: []`; reading it counted zero here.
-    expect(wrapper.find('.rail-links').text()).toContain('1 find')
+    expect(wrapper.find('.list .meta').text()).toContain('1 finding')
   })
 
   it('lists those findings in the Findings hop', async () => {
@@ -87,7 +92,7 @@ describe('ChainView finding links', () => {
       ],
       finding_rollups: { by_rcm: { 'RCM-F08A71': [FINDING] }, by_test: {}, by_procedure: {} },
     })
-    const risks = wrapper.findAll('.rail-risk').map(node => node.text())
+    const risks = wrapper.findAll('.list .title').map(node => node.text())
     // Depth ordering weights findings highest; with the row field it read zero
     // for both and fell through to the id tiebreak, which put AAAAAA first.
     expect(risks[0]).toBe('Row that produced a finding.')
@@ -98,15 +103,26 @@ describe('ChainView finding links', () => {
       rcm: [row('RCM-AAAAAA', 'Bare row with no finding.')],
       finding_rollups: { by_rcm: { 'RCM-F08A71': [FINDING] }, by_test: {}, by_procedure: {} },
     })
-    expect(wrapper.find('.rail-links').text()).toContain('0 find')
+    expect(wrapper.find('.list .meta').text()).toContain('no finding')
     expect(wrapper.text()).toContain('No finding has been drafted from this row.')
+  })
+
+  /**
+   * With no matrix there is no chain, and the page says where one starts
+   * rather than drawing an empty review bar over an empty list.
+   */
+  it('points at the matrix when there is nothing to follow', async () => {
+    const wrapper = await render({})
+    expect(wrapper.text()).toContain('Nothing to follow yet')
+    expect(wrapper.find('.review-bar').exists()).toBe(false)
+    expect(wrapper.find('.layout').exists()).toBe(false)
   })
 
   it('survives a payload with no rollups at all', async () => {
     const wrapper = await render({
       rcm: [row('RCM-F08A71', 'Requisitions may be initiated without a valid business need.')],
     })
-    expect(wrapper.find('.rail-links').text()).toContain('0 find')
+    expect(wrapper.find('.list .meta').text()).toContain('no finding')
     expect(wrapper.text()).toContain('No finding has been drafted from this row.')
   })
 })

@@ -1865,7 +1865,32 @@ export interface SavedAnalysis {
   state: AnalysisResultState
   /** The triage meaning of the recorded outcome. Never derived from a preview. */
   classification: AnalysisSummaryClassification
+  /**
+   * Whether anyone has answered for what this procedure found — carried into a
+   * data test, or declined with a reason. Null while nobody has, and again
+   * once the result the answer was given against has been replaced.
+   */
+  promotion?: AnalysisPromotion | null
   last_result?: AnalysisLastResult
+}
+
+/**
+ * The durable answer to "and then what".
+ *
+ * A saved procedure is computed outside the audit graph, so what it found can
+ * support no finding until it becomes a test against an RCM row. This is the
+ * record of that decision, either way.
+ */
+export interface AnalysisPromotion {
+  state: 'promoted' | 'declined'
+  result_sha1: string
+  decided_at: string
+  agent_run_id?: string | null
+  /** Promoted only: the test it became and the row it now covers. */
+  test_id?: string
+  rcm_id?: string
+  /** Declined only: why it is not a control test. */
+  reason?: string
 }
 
 /** What returned rows mean. Absent is read as `informational`. */
@@ -1908,6 +1933,20 @@ export interface AnalysisLastResult {
    *  are readable back through the exceptions endpoint; the rest were capped. */
   exception_count: number
   exception_rows_retained: number
+  /**
+   * What the flagged count is a count *of*. `row_count` is the size of the
+   * result — for an analytics test, its aggregate summary frame — and was
+   * never a denominator. `population` is the frame the procedure ran against,
+   * `tested` how much of it the procedure could evaluate, and `not_tested` the
+   * difference, which is itself audit-relevant: rows dropped for a null key
+   * are rows no conclusion covers. Any of them may be absent — a procedure
+   * that cannot establish its own denominator says so rather than implying one.
+   */
+  population?: number | null
+  tested?: number | null
+  not_tested?: number | null
+  exception_rate?: number | null
+  exception_rate_of?: 'tested' | 'population' | null
   input_sha1?: string
   result_sha1?: string
 }
@@ -1944,13 +1983,18 @@ export function isManualResult(result: AnalysisLastResult | undefined | null): b
   return Boolean(result?.run_id?.startsWith('manual_'))
 }
 
+/**
+ * What a recorded result concluded. Freshness is `AnalysisResultState` and is
+ * deliberately not one of these: a procedure whose definition changed after it
+ * ran still concluded what it concluded, and collapsing the two made every
+ * exception vanish the moment its definition was edited.
+ */
 export type AnalysisSummaryClassification =
   | 'exception'
   | 'unusual'
   | 'execution_error'
   | 'clear'
   | 'informational'
-  | 'stale'
   | 'not_run'
 
 export interface AnalysisSummaryItem {
@@ -1974,14 +2018,20 @@ export interface AnalysisSummaryItem {
 }
 
 export interface AnalysisSummaryPayload {
+  /**
+   * Six buckets that partition the register, then two that cut across it: a
+   * procedure sits in exactly one bucket and is separately either `stale` or
+   * `current` (or neither, having never run).
+   */
   counts: {
     exception: number
     unusual: number
     errors: number
     clear: number
     informational: number
-    stale: number
     not_run: number
+    stale: number
+    current: number
   }
   items: AnalysisSummaryItem[]
 }

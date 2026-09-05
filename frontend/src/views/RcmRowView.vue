@@ -416,22 +416,22 @@ useTrail(() => [
 
         <h1>{{ row.risk }}</h1>
 
-        <nav class="tabs" aria-label="Row sections">
+        <nav class="ui-tabs" aria-label="Row sections">
           <button
             v-for="item in TABS"
             :key="item.key"
             type="button"
-            class="tab"
+            class="ui-tab"
             :aria-current="tab === item.key ? 'page' : undefined"
             @click="goTab(item.key)"
           >
             {{ item.label }}
-            <span v-if="item.key === 'attributes' && row.control_attributes.length" class="badge">
+            <span v-if="item.key === 'attributes' && row.control_attributes.length" class="ui-tab__badge">
               {{ row.control_attributes.length }}
             </span>
             <span
               v-else-if="item.key === 'tests' && tests.length"
-              class="badge"
+              class="ui-tab__badge"
               :data-tone="openExceptions ? 'bad' : 'neutral'"
             >
               {{ tests.length }}<template v-if="openExceptions"> · {{ openExceptions }} exc</template>
@@ -697,17 +697,6 @@ useTrail(() => [
 
 .row-head h1 { max-width: 56rem; margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-lg); font-weight: 600; line-height: 1.35; letter-spacing: -0.01em; }
 
-.tabs { display: flex; gap: .25rem; }
-.tab {
-  display: inline-flex; align-items: center; gap: .375rem;
-  padding: .5rem .875rem; border: 0; border-bottom: 2px solid transparent;
-  background: none; color: var(--aw-ink-soft);
-  font: inherit; font-size: var(--aw-text-base); font-weight: 600; cursor: pointer;
-}
-.tab:hover { color: var(--aw-ink-strong); }
-.tab[aria-current='page'] { border-bottom-color: var(--aw-teal); color: var(--aw-teal-strong); }
-.badge { padding: 0 .375rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-2xs); font-variant-numeric: tabular-nums; }
-.badge[data-tone='bad'] { background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
 
 .row-body { flex: 1; min-height: 0; overflow-y: auto; padding: 1.25rem 1.5rem 1.5rem; background: var(--aw-canvas); container: workspace-panel / inline-size; }
 

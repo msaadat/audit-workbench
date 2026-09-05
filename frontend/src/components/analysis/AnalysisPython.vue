@@ -4,8 +4,6 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
-import SelectButton from 'primevue/selectbutton'
-import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
@@ -18,8 +16,10 @@ import type {
 } from '../../types'
 import ChartView from '../ChartView.vue'
 import CodeEditor from '../CodeEditor.vue'
-import AnalysisOutcome from './AnalysisOutcome.vue'
-import { provenance } from './classification'
+import AnalysisFooter from './AnalysisFooter.vue'
+import AnalysisHead from './AnalysisHead.vue'
+import AnalysisVerdict from './AnalysisVerdict.vue'
+import UiOverflowMenu from '../ui/UiOverflowMenu.vue'
 
 // A saved Python analysis (AI-written or hand-written): editable Polars that
 // runs in the local sandbox. Two verbs, as in the library editor — Preview
@@ -47,14 +47,8 @@ const exporting = ref(false)
 
 // What returned rows mean. The auditor declares it, because only the auditor
 // knows whether this procedure hunts exceptions or produces context — and the
-// declaration is what turns a row count into a verdict.
-const policyOptions = [
-  { label: 'Exceptions', value: 'exception_rows', hint: 'Any returned row is a potential exception.' },
-  { label: 'Informational', value: 'informational', hint: 'Rows are context; no pass/fail conclusion.' },
-]
-const policyHint = computed(
-  () => policyOptions.find(option => option.value === policy.value)?.hint ?? '',
-)
+// declaration is what turns a row count into a verdict. It sits in the verdict
+// bar, beside the reading it decides, rather than as a form row below it.
 
 const savedCode = computed(() => String((props.analysis.spec as { code?: string })?.code ?? ''))
 const savedPolicy = computed(() => props.analysis.outcome_policy?.mode ?? 'informational')
@@ -221,6 +215,15 @@ function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail, life: 6000 })
 }
 
+/** Everything that is not this procedure's next act. */
+const menuItems = computed(() => [
+  {
+    label: 'Delete procedure',
+    icon: 'pi pi-trash',
+    command: () => confirmDelete(),
+  },
+])
+
 /** Open the agent run that recorded this result, in the assistant drawer. */
 async function openRun(runId: string) {
   try {
@@ -233,58 +236,39 @@ async function openRun(runId: string) {
 </script>
 
 <template>
-  <p v-if="props.analysis?.alignment" class="muted">
+  <AnalysisHead :analysis="analysis">
+    <template #actions>
+      <Button
+        label="Save"
+        icon="pi pi-save"
+        size="small"
+        :severity="dirty ? undefined : 'secondary'"
+        :outlined="!dirty"
+        :loading="saving"
+        @click="save"
+      />
+      <Button v-if="frame" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
+      <UiOverflowMenu :items="menuItems" tooltip="More procedure actions" />
+    </template>
+  </AnalysisHead>
+
+  <AnalysisVerdict
+    :classification="detail?.classification ?? analysis.classification"
+    :state="detail?.state ?? analysis.state"
+    :result="detail?.last_result ?? analysis.last_result"
+    :policy="policy"
+    :busy="running"
+    @openRun="openRun"
+    @run="run"
+    @update:policy="policy = $event"
+  />
+
+  <p v-if="props.analysis?.alignment" class="muted population">
     Population: {{ props.analysis.alignment.root }}.
     <span v-for="hop in props.analysis.alignment.joins" :key="hop.name">
       {{ hop.left_on.join(', ') }} → {{ hop.right }}.{{ hop.right_on.join(', ') }}.
     </span>
   </p>
-  <div class="analysis-editor-head">
-    <InputText v-model="title" placeholder="Analysis title" class="title-input" />
-    <Tag v-if="analysis.table" :value="analysis.table" severity="secondary" />
-    <Tag :value="provenance(analysis).label" severity="info" />
-    <span class="grow" />
-    <Button
-      label="Run"
-      icon="pi pi-play"
-      size="small"
-      :loading="running"
-      v-tooltip.bottom="'Execute this procedure and record what it concludes'"
-      @click="run"
-    />
-    <Button
-      label="Save"
-      icon="pi pi-save"
-      size="small"
-      :severity="dirty ? undefined : 'secondary'"
-      :outlined="!dirty"
-      :loading="saving"
-      @click="save"
-    />
-    <Button v-if="frame" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
-    <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="confirmDelete" />
-  </div>
-
-  <AnalysisOutcome
-    :classification="detail?.classification ?? analysis.classification"
-    :result="detail?.last_result ?? analysis.last_result"
-    @openRun="openRun"
-  />
-
-  <div class="policy-row">
-    <div class="field">
-      <label>Returned rows are</label>
-      <SelectButton
-        v-model="policy"
-        :options="policyOptions"
-        optionLabel="label"
-        optionValue="value"
-        :allowEmpty="false"
-        size="small"
-      />
-    </div>
-    <span class="muted">{{ policyHint }}</span>
-  </div>
   <p v-if="dirty" class="dirty-note">
     <i class="pi pi-pencil" /> Unsaved changes. Running saves them first, so the
     recorded result always matches the definition that produced it.
@@ -294,9 +278,16 @@ async function openRun(runId: string) {
     <i class="pi pi-exclamation-triangle" /> {{ runError }}
   </div>
 
+  <!-- The definition, title included: renaming a procedure is one edit among
+       the edits that change what it does, not a bare input above the page. -->
   <div class="analysis-code-block">
     <div class="analysis-code-head">
-      <span><i class="pi pi-code" /> Python — editable, runs in the local sandbox</span>
+      <label class="title-field">
+        <span>Title</span>
+        <InputText v-model="title" placeholder="What this procedure tests" size="small" />
+      </label>
+      <span class="grow" />
+      <span class="hint"><i class="pi pi-code" /> Python — runs in the local sandbox</span>
       <Button label="Preview" icon="pi pi-eye" size="small" text :loading="previewing" @click="preview" />
     </div>
     <CodeEditor v-model="code" />
@@ -314,17 +305,11 @@ async function openRun(runId: string) {
     <i class="pi pi-spin pi-spinner" /> Loading current result…
   </div>
 
+  <AnalysisFooter :analysis="analysis" />
 </template>
 
 <style scoped>
-.policy-row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--aw-space-3);
-  flex-wrap: wrap;
-  margin-bottom: var(--aw-space-3);
-}
-.policy-row .muted { padding-bottom: 0.4rem; font-size: var(--aw-text-xs); }
+.population { margin: 0 0 var(--aw-space-2); font-size: var(--aw-text-sm); }
 .dirty-note {
   display: flex;
   align-items: center;

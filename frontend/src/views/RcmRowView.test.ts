@@ -153,10 +153,10 @@ describe('RcmRowView', () => {
     await flushPromises()
 
     expect(wrapper.get('h1').text()).toBe('A risk statement.')
-    expect(wrapper.findAll('.tab').map(node => node.text().replace(/\s+/g, ' ')))
+    expect(wrapper.findAll('.ui-tab').map(node => node.text().replace(/\s+/g, ' ')))
       .toEqual(['Definition', 'Attributes 1', 'Tests 1 · 2 exc', 'Working paper', 'Where this came from'])
     // The open-exception badge is what makes the tab worth reading first.
-    expect(wrapper.findAll('.badge')[1].attributes('data-tone')).toBe('bad')
+    expect(wrapper.findAll('.ui-tab__badge')[1].attributes('data-tone')).toBe('bad')
   })
 
   it('walks the matrix without going back to it', async () => {

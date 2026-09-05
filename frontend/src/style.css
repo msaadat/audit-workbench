@@ -486,20 +486,10 @@ button, input, textarea, select { font: inherit; }
   border-radius: var(--aw-radius-surface);
 }
 
-/* Shared page and master/detail primitives. */
-/* No bottom margin: every page that uses this stacks it in a flex column whose
-   own `gap` is already `--aw-section-gap`, and the two used to add up to a
-   1.7rem band under every title. Spacing belongs to the stack, not the item. */
-.ui-page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--aw-space-4);
-}
-.ui-page-header__copy { min-width: 0; }
-.ui-page-header h2 { margin: 0; font-size: var(--aw-text-xl); }
-.ui-page-header__description { margin: .25rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.ui-page-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--aw-space-2); flex-wrap: wrap; }
+/* The `.ui-page-header` block that used to sit here — an `h2` with a
+   description and an actions column — is gone with its component. Every work
+   product carries the 36 px `.page-head` row instead: one `h1`, what there is
+   of it, and at most one primary. */
 
 .ui-master-detail {
   display: grid;
@@ -527,6 +517,28 @@ button, input, textarea, select { font: inherit; }
 /* A surface whose chrome is a bar across the top rather than a rail down the
    side, so the panel gets the full width and the bar gets its own row. */
 .ui-surface--stacked { flex-direction: column; }
+
+/* --- the tab row --------------------------------------------------------- */
+/* One work product, read from more than one angle: the RCM row's five faces,
+   Analysis' summary and its procedures. It is not navigation between places —
+   the trail in the shell bar is that — so it is an underline rather than a
+   pill, and it sits under the page header whose title it does not repeat. */
+.ui-tabs { display: flex; gap: .25rem; }
+.ui-tab {
+  display: inline-flex; align-items: center; gap: .375rem;
+  padding: .5rem .875rem; border: 0; border-bottom: 2px solid transparent;
+  background: none; color: var(--aw-ink-soft);
+  font: inherit; font-size: var(--aw-text-base); font-weight: 600; cursor: pointer;
+}
+.ui-tab:hover { color: var(--aw-ink-strong); }
+.ui-tab:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
+.ui-tab[aria-current='page'] { border-bottom-color: var(--aw-teal); color: var(--aw-teal-strong); }
+.ui-tab__badge {
+  padding: 0 .375rem; border-radius: var(--aw-radius-pill);
+  background: var(--aw-raised); color: var(--aw-muted);
+  font-size: var(--aw-text-2xs); font-variant-numeric: tabular-nums;
+}
+.ui-tab__badge[data-tone='bad'] { background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
 
 /* The crumb bar that used to sit here — a whole row for one link and one
    label, drawn again in each of three views — is the trail in the shell bar
@@ -643,6 +655,12 @@ button, input, textarea, select { font: inherit; }
 .analysis-editor-head .grow { flex: 1; }
 .analysis-editor-head .title-input { min-width: 16rem; font-weight: 600; }
 
+/* The title, where it is edited: with the definition rather than above the
+   page. A procedure's name is one of the things a definition edit changes. */
+.title-field { display: flex; align-items: center; gap: var(--aw-space-2); min-width: 0; }
+.title-field > span { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.title-field :deep(.p-inputtext), .title-field input { min-width: 18rem; font-weight: 600; }
+
 .analysis-error {
   color: var(--aw-danger);
   background: var(--aw-danger-soft);
@@ -656,12 +674,14 @@ button, input, textarea, select { font: inherit; }
 .analysis-code-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--aw-space-2);
-  margin-bottom: 0.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
   color: var(--aw-muted);
   font-size: var(--aw-text-sm);
 }
+.analysis-code-head .grow { flex: 1; }
+.analysis-code-head .hint { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
 .analysis-stdout {
   background: var(--aw-ink-strong);
   color: var(--aw-panel);

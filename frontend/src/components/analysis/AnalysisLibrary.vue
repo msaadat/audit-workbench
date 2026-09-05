@@ -22,7 +22,10 @@ import type {
 } from '../../types'
 import ChartView from '../ChartView.vue'
 import FrameTable from '../FrameTable.vue'
-import AnalysisOutcome from './AnalysisOutcome.vue'
+import AnalysisFooter from './AnalysisFooter.vue'
+import AnalysisHead from './AnalysisHead.vue'
+import AnalysisVerdict from './AnalysisVerdict.vue'
+import UiOverflowMenu from '../ui/UiOverflowMenu.vue'
 
 // A library analysis: pick a predefined audit test, configure it, and save it as
 // a rerunnable procedure. Two verbs, kept distinct:
@@ -237,6 +240,11 @@ async function save() {
   }
 }
 
+/** Everything that is not this procedure's next act. */
+const menuItems = computed(() => [
+  { label: 'Delete procedure', icon: 'pi pi-trash', command: () => confirmDelete() },
+])
+
 function confirmDelete() {
   if (!props.analysis) return
   confirm.require({
@@ -361,55 +369,55 @@ watch(table, () => {
 </script>
 
 <template>
-  <p v-if="props.analysis?.alignment" class="muted">
+  <AnalysisHead :analysis="analysis" placeholder="New library test">
+    <template #actions>
+      <Button
+        label="Save"
+        icon="pi pi-save"
+        size="small"
+        :severity="analysis && !dirty ? 'secondary' : undefined"
+        :outlined="Boolean(analysis) && !dirty"
+        :disabled="!ready"
+        :loading="saving"
+        @click="save"
+      />
+      <Button v-if="result || detail" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
+      <UiOverflowMenu v-if="analysis" :items="menuItems" tooltip="More procedure actions" />
+    </template>
+  </AnalysisHead>
+
+  <!-- What this procedure concluded. Absent while creating: nothing has run. -->
+  <AnalysisVerdict
+    v-if="analysis"
+    :classification="detail?.classification ?? analysis.classification"
+    :state="detail?.state ?? analysis.state"
+    :result="detail?.last_result ?? analysis.last_result"
+    :busy="running"
+    @openRun="openRun"
+    @run="run"
+  />
+
+  <p v-if="props.analysis?.alignment" class="muted population">
     Population: {{ props.analysis.alignment.root }}.
     <span v-for="hop in props.analysis.alignment.joins" :key="hop.name">
       {{ hop.left_on.join(', ') }} → {{ hop.right }}.{{ hop.right_on.join(', ') }}.
     </span>
   </p>
-  <div class="analysis-editor-head">
-    <InputText v-model="title" placeholder="Analysis title" class="title-input" />
-    <div class="field">
-      <Select v-model="table" :disabled="!!props.analysis?.alignment" :options="tableOptions" placeholder="Table" style="min-width: 12rem" />
-    </div>
-    <span class="grow" />
-    <Button
-      v-if="analysis"
-      label="Run"
-      icon="pi pi-play"
-      size="small"
-      :disabled="!ready"
-      :loading="running"
-      v-tooltip.bottom="'Execute this procedure and record what it concludes'"
-      @click="run"
-    />
-    <Button
-      label="Save"
-      icon="pi pi-save"
-      size="small"
-      :severity="analysis && !dirty ? 'secondary' : undefined"
-      :outlined="Boolean(analysis) && !dirty"
-      :disabled="!ready"
-      :loading="saving"
-      @click="save"
-    />
-    <Button v-if="result || detail" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
-    <Button v-if="analysis" icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="confirmDelete" />
-  </div>
-
-  <!-- What this procedure concluded. Absent while creating: nothing has run. -->
-  <AnalysisOutcome
-    v-if="analysis"
-    :classification="detail?.classification ?? analysis.classification"
-    :result="detail?.last_result ?? analysis.last_result"
-    @openRun="openRun"
-  />
   <p v-if="analysis && dirty" class="dirty-note">
     <i class="pi pi-pencil" /> Unsaved changes. Running saves them first, so the
     recorded result always matches the definition that produced it.
   </p>
 
-  <!-- Compact strip once a test is chosen; the full catalog only while picking. -->
+  <!-- The definition: what it tests, over which frame, called what. Compact
+       once a test is chosen; the full catalog only while picking. -->
+  <div class="definition-head">
+    <label class="title-field">
+      <span>Title</span>
+      <InputText v-model="title" placeholder="What this procedure tests" size="small" />
+    </label>
+    <span class="grow" />
+    <Select v-model="table" :disabled="!!props.analysis?.alignment" :options="tableOptions" placeholder="Table" size="small" style="min-width: 12rem" />
+  </div>
   <div v-if="selected && !pickerOpen" class="test-strip">
     <i :class="selected.icon" />
     <div class="test-strip-text">
@@ -540,9 +548,18 @@ watch(table, () => {
     <i class="pi pi-spin pi-spinner" /> Loading current result…
   </div>
 
+
+  <AnalysisFooter v-if="analysis" :analysis="analysis" />
 </template>
 
 <style scoped>
+.definition-head {
+  display: flex; align-items: center; gap: var(--aw-space-2); flex-wrap: wrap;
+  margin-bottom: var(--aw-space-3);
+}
+.definition-head .grow { flex: 1; }
+.population { margin: 0 0 var(--aw-space-2); font-size: var(--aw-text-sm); }
+
 .dirty-note {
   display: flex;
   align-items: center;

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import MarkdownView from '../MarkdownView.vue'
+import { markdownBlocks } from './markdownBlocks'
 import { markdownOutline } from './markdownOutline'
 import type { OutlineEntry } from './markdownOutline'
 
@@ -30,34 +31,8 @@ const props = withDefaults(defineProps<{
 const entries = computed<OutlineEntry[]>(() => markdownOutline(props.markdown))
 defineExpose({ entries })
 
-interface Block { entry: OutlineEntry | null; body: string }
-
 /** Split at every heading, so each heading is an element with an id. */
-const blocks = computed<Block[]>(() => {
-  const out: Block[] = []
-  let current: Block = { entry: null, body: '' }
-  const lines: string[] = []
-  let index = 0
-  let fenced = false
-  function flush() {
-    current.body = lines.join('\n').trim()
-    if (current.entry || current.body) out.push({ ...current })
-    lines.length = 0
-  }
-  for (const raw of (props.markdown || '').split('\n')) {
-    const line = raw.trimEnd()
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced
-    if (!fenced && /^#{1,4}\s+/.test(line)) {
-      flush()
-      current = { entry: entries.value[index] ?? null, body: '' }
-      index += 1
-      continue
-    }
-    lines.push(line)
-  }
-  flush()
-  return out
-})
+const blocks = computed(() => markdownBlocks(props.markdown, entries.value))
 </script>
 
 <template>

@@ -1,85 +1,93 @@
 <script setup lang="ts">
 import type { SavedAnalysis } from '../../types'
-import { classificationMeta } from './classification'
+import { classificationMeta, freshnessMeta } from './classification'
+import { classificationTone, foundSummary } from './analysisStatus'
 
-// The rail is deliberately only identity plus an icon: provenance, source
-// table, execution time, and the full outcome all live in the open procedure.
+/**
+ * One line of title and one of fact, per procedure — the Data Tests row, for
+ * the same kind of list of the same kind of thing.
+ *
+ * It was the title clamped to two lines and a status glyph whose only label
+ * was a tooltip, so a reader had to hover thirty rows to find the one that
+ * failed. The dot carries the outcome and the meta line says it in words.
+ *
+ * The outcome leads the meta line rather than the frame, because a joined
+ * frame here is named `invoice_data_po_data_joined` — 27 characters that would
+ * push the one fact that ranks the row off the end of a 300 px column.
+ *
+ * Freshness is a marker at the end rather than a word in the line. It is a
+ * third state a data test does not have — a result that stands but was
+ * recorded against a definition that has since changed — and it is orthogonal
+ * to what the result said, so it must not compete for the same words.
+ */
+
 defineProps<{ items: SavedAnalysis[]; selectedId: string | null }>()
 defineEmits<{ select: [analysis: SavedAnalysis] }>()
 </script>
 
 <template>
-  <ul class="analysis-list" role="listbox" aria-label="Saved analysis procedures">
-    <li v-for="item in items" :key="item.id">
-      <button
-        type="button"
-        role="option"
-        :aria-selected="selectedId === item.id"
-        class="row"
-        :class="{ active: selectedId === item.id }"
-        :data-classification="item.classification"
-        @click="$emit('select', item)"
-      >
-        <span class="row-head">
-          <span class="row-title">{{ item.title }}</span>
-          <i
-            class="row-status"
-            :class="[
-              classificationMeta(item.classification).icon,
-              `tone-${classificationMeta(item.classification).severity}`,
-            ]"
-            :aria-label="classificationMeta(item.classification).label"
-            role="img"
-            v-tooltip.left="classificationMeta(item.classification).label"
-          />
+  <div class="list" role="listbox" aria-label="Saved analysis procedures">
+    <button
+      v-for="item in items"
+      :key="item.id"
+      type="button"
+      role="option"
+      :aria-selected="item.id === selectedId"
+      class="row"
+      :class="{ active: item.id === selectedId }"
+      @click="$emit('select', item)"
+    >
+      <span class="dot" :data-tone="classificationTone(item.classification)" aria-hidden="true" />
+      <span class="copy">
+        <span class="title">{{ item.title }}</span>
+        <span class="meta aw-figure">
+          {{ foundSummary(item) }}<template v-if="item.table"> · {{ item.table }}</template>
         </span>
-      </button>
-    </li>
-  </ul>
+      </span>
+      <i
+        v-if="freshnessMeta(item.state)"
+        class="mark"
+        :class="freshnessMeta(item.state)!.icon"
+        :aria-label="freshnessMeta(item.state)!.label"
+        role="img"
+        v-tooltip.left="freshnessMeta(item.state)!.label"
+      />
+      <span class="sr-only">{{ classificationMeta(item.classification).label }}</span>
+    </button>
+    <p v-if="!items.length" class="empty">No procedure matches this view.</p>
+  </div>
 </template>
 
 <style scoped>
-.analysis-list { display: flex; flex-direction: column; gap: var(--aw-space-2); margin: 0; padding: 0; list-style: none; }
-
+.list { display: flex; flex-direction: column; min-width: 0; }
 .row {
-  width: 100%;
-  text-align: left;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--aw-border);
-  /* The status stripe: the row's outcome is legible before its text is read. */
-  border-left: 3px solid var(--aw-border-strong);
-  border-radius: var(--aw-radius-control);
-  background: var(--aw-panel);
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  transition: border-color .15s, background .15s;
+  display: flex; align-items: center; gap: .625rem;
+  width: 100%; min-width: 0;
+  padding: .625rem .75rem;
+  border: 0; border-top: 1px solid var(--aw-border); border-left: 3px solid transparent;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.row:hover { border-color: var(--aw-border-strong); background: var(--aw-raised); }
-.row.active { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
-.row[data-classification='exception'],
-.row[data-classification='execution_error'] { border-left-color: var(--aw-danger); }
-.row[data-classification='unusual'],
-.row[data-classification='stale'] { border-left-color: var(--aw-warn); }
-.row[data-classification='clear'] { border-left-color: var(--aw-ok); }
-.row[data-classification='informational'] { border-left-color: var(--aw-teal); }
+.row:first-child { border-top: 0; }
+.row:hover:not(.active) { background: var(--aw-raised); }
+.row:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
+.row.active { border-left-color: var(--aw-teal); background: var(--aw-teal-soft); }
 
-.row-head { display: flex; align-items: flex-start; gap: 0.45rem; min-width: 0; }
-.row-title {
-  display: -webkit-box;
-  flex: 1 1 auto;
-  min-width: 0;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  font-size: var(--aw-text-sm);
-  font-weight: 400;
-  line-height: 1.3;
+.dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
+.dot[data-tone='ok'] { background: var(--aw-ok); }
+.dot[data-tone='warn'] { background: var(--aw-warn); }
+.dot[data-tone='bad'] { background: var(--aw-danger); }
+
+.copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.title { overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-base); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.row.active .title { color: var(--aw-ink-strong); font-weight: 600; }
+.meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
+
+.mark { flex: none; color: var(--aw-warn); font-size: var(--aw-text-sm); }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
-.row-status { display: inline-grid; flex: 0 0 auto; width: 1.6rem; height: 1.6rem; place-items: center; border-radius: 50%; font-size: var(--aw-text-sm); }
-.row-status.tone-secondary { color: var(--aw-muted); background: var(--aw-raised); }
-.row-status.tone-success { color: var(--aw-ok); background: var(--aw-ok-soft); }
-.row-status.tone-warn { color: var(--aw-warn); background: var(--aw-warn-soft); }
-.row-status.tone-danger { color: var(--aw-danger); background: var(--aw-danger-soft); }
-.row-status.tone-info { color: var(--aw-teal); background: var(--aw-teal-soft); }
+
+.empty { padding: 1rem .75rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 </style>

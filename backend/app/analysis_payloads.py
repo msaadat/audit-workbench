@@ -14,7 +14,7 @@ had disjoint consumers, and only `counted` in common.
 
 from __future__ import annotations
 
-from . import analysis_results, analytics, explore, sandbox
+from . import analysis_promotion, analysis_results, analytics, explore, sandbox
 from .workspaces import Workspace
 from .text import counted
 
@@ -176,6 +176,13 @@ def analysis_listing(workspace: Workspace, analysis: dict) -> dict:
     }
     listing["outcome_policy"] = dict(analysis.get("outcome_policy") or {})
     listing["created_by"] = analysis.get("created_by")
+    # Whether anyone has answered for what this procedure found. Durable on the
+    # record since `analysis_promotion`, and never sent until now, so no
+    # surface could say that sixteen procedures held exceptions and not one had
+    # been carried into a test. `disposition()` returns None once the result it
+    # answered has been replaced, which is what makes a rewritten procedure
+    # read as unanswered again.
+    listing["promotion"] = analysis_promotion.disposition(analysis)
     last_result = analysis.get("last_result")
     if isinstance(last_result, dict):
         listing["last_result"] = dict(last_result)

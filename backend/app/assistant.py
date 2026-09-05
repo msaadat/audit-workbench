@@ -766,9 +766,13 @@ class _Session:
                 ],
                 "truncated": len(summary["items"]) > 50,
                 "note": (
-                    "'stale' means the definition or its input data changed after "
-                    "the recorded result; 'not_run' means the procedure has never "
-                    "been executed. Neither is a finding."
+                    "'classification' is what the recorded result concluded; "
+                    "'state' is separately whether it still stands — 'stale' "
+                    "means the definition or its input data changed after the "
+                    "result was recorded, and 'not_run' means the procedure has "
+                    "never been executed. A stale exception is still an "
+                    "exception, but neither a stale result nor an unrun "
+                    "procedure is a finding."
                 ),
             }, None
         raise WorkspaceError(

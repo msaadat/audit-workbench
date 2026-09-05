@@ -41,13 +41,18 @@ from .workspaces import (
 )
 
 
+# What a recorded result concluded. Freshness is not one of these: a procedure
+# whose definition has changed since it ran still concluded what it concluded,
+# and ``analysis_result_state`` answers separately whether that still stands.
+# Collapsing the two lost every verdict the moment a definition was edited —
+# sixteen procedures holding exceptions all read as "rerun required" and the
+# exceptions were counted nowhere.
 SUMMARY_CLASSES = (
     "exception",
     "unusual",
     "execution_error",
     "clear",
     "informational",
-    "stale",
     "not_run",
 )
 
@@ -650,11 +655,10 @@ def analysis_result_state(workspace: Workspace, analysis: Mapping[str, object]) 
     return "current" if recorded == analysis_input_sha1(workspace, analysis) else "stale"
 
 
-def _classification(result: Mapping[str, object] | None, state: str) -> str:
+def _classification(result: Mapping[str, object] | None) -> str:
+    """What the recorded result concluded — never whether it is still current."""
     if result is None:
         return "not_run"
-    if state == "stale":
-        return "stale"
     if result.get("status") == "error":
         return "execution_error"
     verdict = str(result.get("verdict") or "")
@@ -678,22 +682,24 @@ CLASSIFICATION_BUCKETS: dict[str, str] = {
     "execution_error": "errors",
     "clear": "clear",
     "informational": "informational",
-    "stale": "stale",
     "not_run": "not_run",
 }
 
 
 def analysis_state(workspace: Workspace, analysis: Mapping[str, object]) -> dict:
-    """Return the durable freshness and triage meaning of one saved analysis.
+    """Return the durable triage meaning and freshness of one saved analysis.
 
-    This is the single answer to "what did this procedure conclude?". The rail,
-    the summary, and the detail header all read it, so none of them can disagree
-    with another about the same record.
+    Two answers, deliberately separate. ``classification`` says what the
+    recorded result concluded; ``state`` says whether it still describes the
+    current definition and data. The rail, the summary and the detail header
+    all read both, so none of them can disagree with another about the same
+    record — and none of them has to choose between reporting an exception and
+    reporting that it needs a rerun.
     """
     raw_result = analysis.get("last_result")
     result = dict(raw_result) if isinstance(raw_result, Mapping) else None
     state = analysis_result_state(workspace, analysis)
-    classification = _classification(result, state)
+    classification = _classification(result)
     return {
         "state": state,
         "classification": classification,
@@ -703,14 +709,18 @@ def analysis_state(workspace: Workspace, analysis: Mapping[str, object]) -> dict
 
 def analyses_summary_payload(workspace: Workspace) -> dict:
     """Return an engagement-level, data-free view of saved analysis outcomes."""
+    # Six buckets that partition the register, plus two counts that cut across
+    # it: `stale` and `current` are freshness, and a procedure is counted in
+    # exactly one bucket and in exactly one of those.
     counts = {
         "exception": 0,
         "unusual": 0,
         "errors": 0,
         "clear": 0,
         "informational": 0,
-        "stale": 0,
         "not_run": 0,
+        "stale": 0,
+        "current": 0,
     }
     items: list[dict] = []
     for analysis in workspace.analyses:
@@ -718,6 +728,8 @@ def analyses_summary_payload(workspace: Workspace) -> dict:
         result = dict(raw_result) if isinstance(raw_result, Mapping) else None
         state = analysis_state(workspace, analysis)
         counts[state["bucket"]] += 1
+        if state["state"] in ("stale", "current"):
+            counts[state["state"]] += 1
         stats = [
             {"label": str(item.get("label") or ""), "value": str(item.get("value") or "")}
             for item in (result.get("stats") or []) if isinstance(item, Mapping)
@@ -747,10 +759,9 @@ def analyses_summary_payload(workspace: Workspace) -> dict:
         "exception": 0,
         "unusual": 1,
         "execution_error": 2,
-        "stale": 3,
-        "not_run": 4,
-        "informational": 5,
-        "clear": 6,
+        "not_run": 3,
+        "informational": 4,
+        "clear": 5,
     }
     # Stable sorts give severity first and the newest result within it.
     items.sort(key=lambda item: str(item.get("executed_at") or ""), reverse=True)
