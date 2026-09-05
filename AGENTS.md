@@ -126,6 +126,10 @@ backend/app/
 |- debug_store.py              - telemetry writes for calls/events/state, into
 |                                the workspace telemetry database
 |- debug_service.py            - debug read models, timing, causal analysis
+|- checkpoints.py              - artifact-surface restore points: a
+|                                content-addressed capture before each workflow
+|                                step, and the exact restore the Debug console
+|                                rolls a completed step back with
 |- model_context.py            - shared model-context helpers
 |- embedding.py                - local embedding utilities
 |- field_names.py              - shared field name normalization helpers

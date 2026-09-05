@@ -81,7 +81,12 @@ from .executors.documents import (
     document_ref,
     extract_text,
 )
-from .execution_support import refresh_workspace, resolve_context, workflow_scope
+from .execution_support import (
+    refresh_workspace,
+    resolve_context,
+    stage_checkpoint,
+    workflow_scope,
+)
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -1972,6 +1977,7 @@ def build_documents_workflow_runner(
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
+        stage_checkpoint=stage_checkpoint(adapter),
         milestone_projector=adapter.milestone_projection,
         finish_evaluator=adapter._finish_projection,
     )

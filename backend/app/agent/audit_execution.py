@@ -92,7 +92,12 @@ from .executors.reporting import (
     output_issues,
     verify_audit,
 )
-from .execution_support import refresh_workspace, resolve_context, workflow_scope
+from .execution_support import (
+    refresh_workspace,
+    resolve_context,
+    stage_checkpoint,
+    workflow_scope,
+)
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -2460,6 +2465,7 @@ def build_audit_workflow_runner(
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
+        stage_checkpoint=stage_checkpoint(adapter),
         milestone_projector=lambda subject, current_run, capability, stage: (
             document_adapter.milestone_projection(
                 subject, current_run, capability, stage

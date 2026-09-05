@@ -66,7 +66,11 @@ from .executors.analysis import (
     run_analysis,
 )
 from ..analysis_results import analyses_summary_payload, analysis_result_state
-from .execution_support import refresh_workspace, workflow_scope
+from .execution_support import (
+    refresh_workspace,
+    stage_checkpoint,
+    workflow_scope,
+)
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -2060,6 +2064,7 @@ def build_analysis_workflow_runner(
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
+        stage_checkpoint=stage_checkpoint(adapter),
         milestone_projector=adapter.milestone_projection,
         finish_evaluator=adapter._finish_projection,
     )

@@ -15,6 +15,7 @@ const props = defineProps<{ id: string }>()
 const route = useRoute(); const router = useRouter(); const toast = useToast(); const confirm = useConfirm()
 const views = [
   { id: 'overview', label: 'Overview', icon: 'pi pi-gauge' },
+  { id: 'steps', label: 'Steps', icon: 'pi pi-check-square' },
   { id: 'timeline', label: 'Timeline', icon: 'pi pi-chart-bar' },
   { id: 'graph', label: 'Plan graph', icon: 'pi pi-sitemap' },
   { id: 'calls', label: 'LLM calls', icon: 'pi pi-comments' },
@@ -26,6 +27,7 @@ const overview = ref<AnyRecord | null>(null); const runs = ref<AnyRecord[]>([])
 const selectedRunId = ref(String(route.query.run || '')); const detail = ref<AnyRecord | null>(null)
 const calls = ref<AnyRecord[]>([]); const selectedCall = ref<AnyRecord | null>(null)
 const events = ref<AnyRecord[]>([]); const selectedTransition = ref<AnyRecord | null>(null)
+const steps = ref<AnyRecord | null>(null); const rollingBack = ref('')
 const beforeSnapshot = ref<AnyRecord | null>(null); const afterSnapshot = ref<AnyRecord | null>(null)
 const jsonSearch = ref(''); const artifactFilter = ref(''); const loading = ref(true); const live = ref(false)
 let source: EventSource | null = null; let refreshTimer: number | undefined
@@ -88,7 +90,72 @@ async function loadAll() {
   finally { loading.value = false }
 }
 async function loadRun() {
-  detail.value = selectedRunId.value ? await api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs/${selectedRunId.value}`) : null
+  if (!selectedRunId.value) { detail.value = null; steps.value = null; return }
+  ;[detail.value, steps.value] = await Promise.all([
+    api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs/${selectedRunId.value}`),
+    api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs/${selectedRunId.value}/steps`),
+  ])
+}
+
+function formatBytes(value: unknown) {
+  const bytes = Number(value || 0)
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Roll one completed step back to the checkpoint taken before it ran.
+ *
+ * The plan is fetched first and shown in full, because an exact restore also
+ * *removes* whatever was created after the step — including a document an
+ * auditor uploaded since. Confirming a count is a decision; confirming an
+ * unexplained "roll back?" is not.
+ */
+async function rollBack(step: AnyRecord) {
+  const checkpoint = step.checkpoint
+  if (!checkpoint) return
+  let plan: AnyRecord
+  try {
+    plan = await api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/checkpoints/${checkpoint.id}/plan`)
+  } catch (error) {
+    toast.add({ severity: 'error', summary: 'Rollback unavailable', detail: String(error), life: 8000 })
+    return
+  }
+  const parts = [
+    plan.changed.length ? `${plan.changed.length} file${plan.changed.length === 1 ? '' : 's'} reverted` : '',
+    plan.restored.length ? `${plan.restored.length} restored` : '',
+    plan.removed.length ? `${plan.removed.length} created since then deleted` : '',
+  ].filter(Boolean)
+  const sample = plan.removed.slice(0, 3).join(', ')
+  confirm.require({
+    header: `Roll back “${step.title || step.capability}”?`,
+    icon: 'pi pi-history',
+    message: [
+      `The engagement returns to the state it was in before this step ran: ${parts.join(', ')}.`,
+      plan.removed.length ? ` Deleted: ${sample}${plan.removed.length > 3 ? ` and ${plan.removed.length - 3} more` : ''}.` : '',
+      ' Imported data, agent run history and chats are not affected.',
+    ].filter(Boolean).join(''),
+    acceptLabel: 'Roll back',
+    rejectLabel: 'Cancel',
+    acceptProps: { severity: 'danger' },
+    accept: async () => {
+      rollingBack.value = String(step.stage_id || '')
+      try {
+        const result = await api.post<AnyRecord>(
+          `/api/workspaces/${props.id}/debug/checkpoints/${checkpoint.id}/restore?confirm=${encodeURIComponent(props.id)}`,
+        )
+        toast.add({
+          severity: 'success', summary: 'Step rolled back',
+          detail: `${result.files_written} file${result.files_written === 1 ? '' : 's'} restored, ${result.files_deleted} removed. Workspace is now at revision ${result.revision}.`,
+          life: 8000,
+        })
+        await loadAll()
+      } catch (error) {
+        toast.add({ severity: 'error', summary: 'Rollback failed', detail: String(error), life: 10000 })
+      } finally { rollingBack.value = '' }
+    },
+  })
 }
 async function inspectCall(id: string) {
   selectedCall.value = await api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/calls/${id}`)
@@ -175,6 +242,54 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
           <article class="panel"><h3>Recent calls</h3><button v-for="call in overview?.recent_calls" :key="call.id" class="row" @click="inspectCall(call.id)"><Tag :value="call.status" :severity="severity(call.status)"/><span><strong>{{ call.correlation?.stage || call.correlation?.purpose || 'Model call' }}</strong><small>{{ call.provider }} / {{ call.model }}</small></span><time>{{ formatMs(call.duration_ms) }}</time><i class="pi pi-chevron-right"/></button><p v-if="!overview?.recent_calls?.length" class="empty">No calls have been recorded yet.</p></article>
         </section>
 
+        <section v-else-if="view === 'steps'" class="stack">
+          <div class="section-head">
+            <div>
+              <h2>Steps</h2>
+              <p>Each workflow step, and the checkpoint taken before it ran. Rolling one back returns the engagement's artifacts to that state.</p>
+            </div>
+            <Tag
+              :value="steps?.checkpointing_enabled ? `${steps?.usage?.checkpoints || 0} checkpoints · ${formatBytes(steps?.usage?.blob_bytes)}` : 'Checkpointing off'"
+              :severity="steps?.checkpointing_enabled ? 'info' : 'warn'"
+            />
+          </div>
+          <p v-if="steps?.notice" class="notice"><i class="pi pi-info-circle"/>{{ steps.notice }}</p>
+          <article class="panel step-list">
+            <div v-for="step in steps?.steps || []" :key="step.stage_id" class="step" :class="{ settled: step.settled }">
+              <span class="step-index">{{ step.index + 1 }}</span>
+              <div class="step-body">
+                <strong>{{ step.title || step.capability }}</strong>
+                <small>
+                  <code>{{ step.capability }}</code>
+                  · {{ step.unit_count }} unit{{ step.unit_count === 1 ? '' : 's' }}
+                  <template v-if="step.result_refs.length"> · {{ step.result_refs.length }} artifact{{ step.result_refs.length === 1 ? '' : 's' }}</template>
+                  <template v-if="step.duration_ms"> · {{ formatMs(step.duration_ms) }}</template>
+                </small>
+                <small v-if="step.error" class="step-error"><i class="pi pi-exclamation-triangle"/>{{ step.error }}</small>
+              </div>
+              <Tag :value="step.status" :severity="severity(step.status)"/>
+              <Button
+                v-if="step.checkpoint"
+                icon="pi pi-history"
+                label="Roll back"
+                severity="danger"
+                outlined
+                size="small"
+                :loading="rollingBack === step.stage_id"
+                v-tooltip.left="`Restore the ${step.checkpoint.file_count} files captured before this step ran`"
+                @click="rollBack(step)"
+              />
+              <!-- Never a disabled button with no reason: a step without a
+                   restore point says why it has none, because that is the fact
+                   an operator needs rather than a control that does nothing. -->
+              <span v-else class="no-checkpoint" v-tooltip.left="'This step ran before checkpointing, or its restore point has aged out under the retention cap.'">
+                <i class="pi pi-ban"/>No checkpoint
+              </span>
+            </div>
+            <p v-if="!(steps?.steps || []).length && !steps?.notice" class="empty">This run scheduled no workflow steps.</p>
+          </article>
+        </section>
+
         <section v-else-if="view === 'timeline'" class="stack"><div class="section-head"><div><h2>Execution timeline</h2><p>Calls share one wall-clock scale, so overlap and sequential gaps are visible.</p></div><Tag :value="`${metrics.parallelism_factor || 0}× parallelism`" severity="info"/></div><div class="timeline panel"><div v-for="item in timeline.items" :key="item.id" class="timeline-row"><button class="timeline-label" @click="item.kind === 'call' ? inspectCall(item.id) : chooseAction(item.id)"><i :class="item.kind === 'call' ? 'pi pi-comments' : 'pi pi-bolt'"/><span>{{ item.label }}</span></button><div class="track"><button class="bar" :class="[item.kind, item.status]" :style="{ left: `${item.left}%`, width: `${item.width}%` }" :title="`${item.label} · ${item.status}`" @click="item.kind === 'call' ? inspectCall(item.id) : chooseAction(item.id)"/></div></div><p v-if="!timeline.items.length" class="empty">This run has no timestamped actions or calls. Historical telemetry is never fabricated.</p></div></section>
 
         <section v-else-if="view === 'graph'" class="stack"><div class="section-head"><div><h2>Plan graph</h2><p>Immutable revisions are used when available; the console caps rendering at 60 actions.</p></div><Tag :value="detail?.graph_telemetry?.available ? `${detail.graph_snapshots.length} revisions` : 'Historical gap'" :severity="detail?.graph_telemetry?.available ? 'success' : 'warn'"/></div><p v-if="detail?.graph_telemetry?.legacy_notice" class="notice"><i class="pi pi-info-circle"/>{{ detail.graph_telemetry.legacy_notice }}</p><div class="graph panel"><svg :viewBox="`0 0 ${graphLayout.width} ${graphLayout.height}`" :style="{ minWidth: `${graphLayout.width}px`, height: `${graphLayout.height}px` }"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"/></marker></defs><line v-for="(edge,index) in graphLayout.edges" :key="index" :x1="edge.from.x + 170" :y1="edge.from.y + 25" :x2="edge.to.x" :y2="edge.to.y + 25" marker-end="url(#arrow)"/><g v-for="node in graphLayout.nodes" :key="node.id" :transform="`translate(${node.x} ${node.y})`" role="button" tabindex="0" @click="chooseAction(node.id)"><rect width="170" height="52" rx="8" :class="[node.status, { selected: route.query.action === node.id }]"/><text x="10" y="20">{{ (node.type || node.id).slice(0,22) }}</text><text x="10" y="39" class="status-text">{{ node.status }} · {{ node.id.slice(-8) }}</text></g></svg><p v-if="!graphLayout.nodes.length" class="empty">Schema-v1 history is represented by its stage/task tree in the raw run record.</p></div><article v-if="selectedAction" class="panel"><div class="section-head"><h3>{{ selectedAction.id }}</h3><Tag :value="selectedAction.status" :severity="severity(selectedAction.status)"/></div><JsonTree :value="selectedAction" path="$" :search="jsonSearch"/><InputText v-model="jsonSearch" placeholder="Search action JSON or correlations" class="json-search"/></article></section>
@@ -209,4 +324,15 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
 .call-gap p,.gap-detail p{margin:0;line-height:1.5}.call-gap small{color:var(--aw-muted-strong)}
 .gap-detail{max-width:36rem;margin:4rem auto;border:0;background:transparent;text-align:left}.gap-detail h3{margin:0;color:var(--aw-ink)}
 @media(max-width:950px){.debug-shell{grid-template-columns:4rem minmax(0,1fr)}}
+.step-list{display:grid;gap:0}
+.step{display:grid;grid-template-columns:1.75rem minmax(0,1fr) auto auto;align-items:center;gap:.75rem;padding:.7rem .1rem;border-top:1px solid var(--aw-border)}
+.step:first-child{border-top:0}
+.step-index{display:grid;place-items:center;width:1.6rem;height:1.6rem;border-radius:50%;background:var(--aw-canvas);color:var(--aw-muted);font:11px 'JetBrains Mono Variable',monospace}
+.step.settled .step-index{background:var(--aw-teal-soft);color:var(--aw-teal)}
+.step-body{display:grid;gap:.15rem;min-width:0}
+.step-body small{color:var(--aw-muted-strong);overflow-wrap:anywhere}
+.step-body code{font-size:var(--aw-text-xs)}
+.step-error{color:var(--aw-danger)!important;display:flex;gap:.35rem;align-items:baseline}
+.no-checkpoint{display:flex;gap:.35rem;align-items:center;color:var(--aw-muted);font-size:var(--aw-text-xs);white-space:nowrap}
+@media(max-width:950px){.step{grid-template-columns:1.75rem minmax(0,1fr);row-gap:.4rem}.step>:nth-child(3),.step>:nth-child(4){grid-column:2}}
 </style>

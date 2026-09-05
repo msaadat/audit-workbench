@@ -64,6 +64,33 @@ def refresh_workspace(host: ExecutionHost) -> Workspace:
     return host.ws
 
 
+def stage_checkpoint(host: ExecutionHost):
+    """Build the scheduler's per-stage restore-point hook for one host.
+
+    Every workflow composition wants the same thing here — capture the artifact
+    surface just before a stage's first unit runs, so the Debug console can roll
+    that step back — and none of them wants a capture failure to end a run that
+    was otherwise going to succeed. A missing restore point costs the ability to
+    undo one step; a raised exception would cost the step itself.
+    """
+
+    def capture(subject: Workspace, capability: Capability, stage: dict) -> None:
+        from .. import checkpoints
+
+        try:
+            checkpoints.capture(
+                subject,
+                run_id=str(host.run.get("id") or ""),
+                stage_id=str(stage.get("id") or ""),
+                capability=capability.id,
+                label=str(stage.get("title") or capability.title or ""),
+            )
+        except Exception as error:  # noqa: BLE001 - never fail a run over telemetry
+            host.warn(f"Checkpoint before '{capability.id}' was not captured: {error}")
+
+    return capture
+
+
 def workflow_scope(run: dict) -> dict:
     """Return the normalized scope persisted by workflow routing."""
 

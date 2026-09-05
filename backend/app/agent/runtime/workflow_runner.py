@@ -29,6 +29,13 @@ RefreshSubject = Callable[[], Any]
 RefreshLimits = Callable[[Any], None]
 DependencyPolicy = Callable[[str, str, str], bool]
 BeforeStage = Callable[[Any, workflow.Capability, dict[str, Any]], None]
+# Invoked once per stage that is actually going to do work, immediately before
+# its first unit runs. It exists separately from ``before_stage`` because that
+# hook also fires for stages the dependency check then blocks and for stages
+# that settle without expanding a unit; a restore point taken for either of
+# those records a state no step changed, and would evict a useful one under the
+# retention cap. The scheduler keeps no opinion about what a host does with it.
+StageCheckpoint = Callable[[Any, workflow.Capability, dict[str, Any]], None]
 StageMilestoneProjector = Callable[
     [Any, dict[str, Any], workflow.Capability, dict[str, Any]],
     Mapping[str, Any] | None,
@@ -285,6 +292,7 @@ class WorkflowRunner:
         refresh_limits: RefreshLimits | None = None,
         dependency_policy: DependencyPolicy | None = None,
         before_stage: BeforeStage | None = None,
+        stage_checkpoint: StageCheckpoint | None = None,
         milestone_projector: StageMilestoneProjector | None = None,
         finish_evaluator: FinishEvaluator | None = None,
     ) -> None:
@@ -301,6 +309,7 @@ class WorkflowRunner:
         self.refresh_limits = refresh_limits
         self.dependency_policy = dependency_policy
         self.before_stage = before_stage
+        self.stage_checkpoint = stage_checkpoint
         self.milestone_projector = milestone_projector
         self.finish_evaluator = finish_evaluator
 
@@ -607,6 +616,8 @@ class WorkflowRunner:
             )
             self._set_stage(stage, "succeeded" if readiness.satisfied else "blocked")
             return
+        if self.stage_checkpoint is not None:
+            self.stage_checkpoint(self.subject, capability, stage)
         execution = self.executions.get(capability.id)
         if execution.pipeline_backed:
             self._run_pipeline_units(execution, capability, stage, units)

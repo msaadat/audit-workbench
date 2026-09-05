@@ -8,7 +8,7 @@ import json
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .. import debug_service, debug_store, workspaces
+from .. import checkpoints, debug_service, debug_store, workspaces
 from ..agent import store as agent_store
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/debug", tags=["debug"])
@@ -36,6 +36,35 @@ def runs(workspace_id: str, cursor: int = 0, limit: int = 50,
 @router.get("/runs/{run_id}")
 def run_detail(workspace_id: str, run_id: str):
     return debug_service.run_detail(workspaces.load_workspace(workspace_id), run_id)
+
+
+@router.get("/runs/{run_id}/steps")
+def run_steps(workspace_id: str, run_id: str):
+    """The run's workflow steps, each joined to the checkpoint that precedes it."""
+    ws = workspaces.load_workspace(workspace_id)
+    return debug_service.run_steps(ws, run_id)
+
+
+@router.get("/checkpoints/{checkpoint_id}/plan")
+def checkpoint_plan(workspace_id: str, checkpoint_id: str):
+    """What rolling back to this checkpoint would change, before anything does."""
+    ws = workspaces.load_workspace(workspace_id)
+    return checkpoints.plan(ws, checkpoint_id)
+
+
+@router.post("/checkpoints/{checkpoint_id}/restore")
+def checkpoint_restore(workspace_id: str, checkpoint_id: str, confirm: str = ""):
+    """Roll the engagement's artifacts back to this checkpoint.
+
+    This rewrites audit content, so it takes the same typed confirmation the
+    telemetry wipe does rather than a bare POST.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    if confirm != workspace_id:
+        raise workspaces.WorkspaceError(
+            "Type the workspace ID to confirm rolling back this step."
+        )
+    return checkpoints.restore(ws, checkpoint_id)
 
 
 @router.get("/calls")
@@ -102,5 +131,9 @@ def clear(workspace_id: str, confirm: str = ""):
     ws = workspaces.load_workspace(workspace_id)
     if confirm != workspace_id:
         raise workspaces.WorkspaceError("Type the workspace ID to confirm clearing debug telemetry.")
+    # Checkpoints go with the rest: their manifests live in the same store, and
+    # leaving the blobs behind would keep megabytes of artifact content that
+    # nothing can reach any more.
+    checkpoints.clear(ws)
     debug_store.clear(workspace_id)
     return {"cleared": True}

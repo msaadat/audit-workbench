@@ -41,6 +41,12 @@ MAX_TRANSITION_RECORDS = 500
 # inline ``changes`` list.
 MAX_SNAPSHOT_FILES = 1000
 MAX_EVENT_LINES = 20_000
+# Checkpoints are bounded per run rather than per workspace: a run's own step
+# history is what the console offers to roll back, and a cap shared across runs
+# would let one long run evict every restore point of the run beside it.  Ten is
+# what keeps the pathological case — a stage that rewrites a multi-megabyte
+# artifact family on every re-run — inside the space telemetry already occupies.
+MAX_CHECKPOINTS_PER_RUN = 10
 
 MIGRATIONS: list[str] = [
     # -- 1 ---------------------------------------------------------------
@@ -144,6 +150,42 @@ MIGRATIONS: list[str] = [
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
+    """,
+    # -- 2 ---------------------------------------------------------------
+    """
+    -- Workspace checkpoints: the manifest half of the restore points the
+    -- Debug console rolls a run's completed steps back to.  The content itself
+    -- lives in a content-addressed blob store under the workspace folder, so
+    -- what is stored here is a path -> sha1 listing per checkpoint and nothing
+    -- larger.  This is the one telemetry table a workspace's *files* depend on:
+    -- losing it costs the ability to roll back, which is why the blob store is
+    -- swept from these rows rather than the other way round.
+    CREATE TABLE checkpoints (
+        id          TEXT PRIMARY KEY,
+        run_id      TEXT NOT NULL,
+        stage_id    TEXT NOT NULL DEFAULT '',
+        capability  TEXT NOT NULL DEFAULT '',
+        label       TEXT NOT NULL DEFAULT '',
+        captured_at TEXT NOT NULL,
+        revision    INTEGER NOT NULL DEFAULT 0,
+        file_count  INTEGER NOT NULL DEFAULT 0,
+        total_bytes INTEGER NOT NULL DEFAULT 0,
+        new_bytes   INTEGER NOT NULL DEFAULT 0,
+        restored_at TEXT
+    );
+    CREATE INDEX checkpoints_run ON checkpoints(run_id);
+    CREATE INDEX checkpoints_captured ON checkpoints(captured_at DESC);
+
+    CREATE TABLE checkpoint_files (
+        checkpoint_id TEXT NOT NULL,
+        path          TEXT NOT NULL,
+        sha1          TEXT NOT NULL,
+        size          INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (checkpoint_id, path)
+    );
+    -- Blob sweeping asks "is this content still referenced by any manifest",
+    -- which is this index and nothing else.
+    CREATE INDEX checkpoint_files_sha1 ON checkpoint_files(sha1);
     """,
 ]
 

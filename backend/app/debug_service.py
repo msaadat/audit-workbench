@@ -5,9 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from . import debug_store, telemetry_db
+from . import checkpoints, debug_store, telemetry_db
 from .agent import store as agent_store
 from .workspaces import Workspace, WorkspaceError
+
+# The unit statuses that mean a step is finished with, in the vocabulary the
+# workflow scheduler folds a stage from.
+SETTLED_STAGE_STATUSES = frozenset({"succeeded", "skipped"})
 
 
 def _dt(value: str | None) -> datetime | None:
@@ -296,6 +300,64 @@ def run_detail(workspace: Workspace, run_id: str) -> dict:
         "metrics": metrics,
         "causal_analysis": causal_analysis(run, calls, transitions, metrics),
         "telemetry_gaps": [] if calls else ["No raw LLM telemetry was recorded for this historical run."],
+    }
+
+
+def run_steps(workspace: Workspace, run_id: str) -> dict:
+    """A run's steps in execution order, each with its rollback target.
+
+    "Step" is the workflow stage — one capability of the audit graph — which is
+    what the engagement is actually built out of. The console's plan graph reads
+    ``run["actions"]``, and that list is empty for every workflow-engine run, so
+    this is the projection that lets the steps be shown at all.
+
+    A step's rollback target is the checkpoint captured immediately *before* it
+    ran, so restoring it returns the workspace to the state the step started
+    from. A step with no checkpoint — one that ran before checkpointing existed,
+    or whose restore point has aged out under the retention cap — is reported
+    with ``checkpoint: None`` rather than being hidden, because a step that
+    cannot be rolled back is exactly what an operator needs told.
+    """
+    run = agent_store.load_run(workspace, run_id)
+    stages = list((run.get("workflow") or {}).get("stages") or [])
+    by_stage: dict[str, dict] = {}
+    for item in checkpoints.list_for_run(workspace, run_id):
+        # Oldest first, so a re-run stage keeps the earliest restore point it
+        # still has: that is the state before the step first touched anything.
+        by_stage.setdefault(str(item.get("stage_id") or ""), item)
+    steps = []
+    for position, stage in enumerate(stages):
+        units = stage.get("units") or []
+        steps.append({
+            "index": position,
+            "stage_id": stage.get("id"),
+            "capability": stage.get("capability"),
+            "title": stage.get("title"),
+            "status": stage.get("status"),
+            "settled": stage.get("status") in SETTLED_STAGE_STATUSES,
+            "started_at": stage.get("started_at"),
+            "finished_at": stage.get("finished_at"),
+            "duration_ms": _ms(stage.get("started_at"), stage.get("finished_at")),
+            "unit_count": len(units),
+            "result_refs": [ref for unit in units for ref in unit.get("result_refs") or []],
+            "error": next(
+                (unit.get("error") for unit in units if unit.get("error")), None
+            ),
+            "checkpoint": by_stage.get(str(stage.get("id") or "")),
+        })
+    return {
+        "run_id": run_id,
+        "engine": run.get("engine"),
+        "status": run.get("status"),
+        "steps": steps,
+        "checkpointing_enabled": checkpoints.enabled(),
+        "usage": checkpoints.usage(workspace),
+        # Named rather than implied: an action-ledger run has no workflow stages
+        # at all, and an empty step list must not read as "nothing happened".
+        "notice": None if stages else (
+            "This run has no workflow stages. Action-ledger and intake runs record"
+            " their work as actions, which the plan graph shows."
+        ),
     }
 
 

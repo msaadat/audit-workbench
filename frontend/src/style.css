@@ -728,6 +728,13 @@ button, input, textarea, select { font: inherit; }
 .p-dialog .p-dialog-header { padding: .9rem var(--aw-space-4); border-bottom: 1px solid var(--aw-border); }
 .p-dialog .p-dialog-content { padding: var(--aw-space-4); }
 .p-dialog .p-dialog-footer { position: sticky; bottom: 0; z-index: 1; padding: var(--aw-space-3) var(--aw-space-4); border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
+/* A confirmation is sized by its question, and PrimeVue sizes it by its text:
+   the dialog is width:auto, so a message naming what an action will delete
+   stretches into a band across the viewport instead of wrapping. Confirmations
+   are the one dialog family with no layout of their own to set a width, so the
+   measure is set here rather than at each call site. */
+.p-confirmdialog { max-width: min(34rem, 92vw); }
+.p-confirmdialog .p-confirmdialog-message { line-height: 1.5; }
 
 /* =========================================================================
    Print.
