@@ -1,0 +1,64 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "title": "Documents, preview",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1000
+    },
+    {
+      "file": "DocumentAnalysis.dc.html",
+      "title": "Documents, analysis tab",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1240
+    },
+    {
+      "file": "Tables.dc.html",
+      "title": "Source tables",
+      "x": 0,
+      "y": 1400,
+      "w": 1440,
+      "h": 1140
+    },
+    {
+      "file": "Findings.dc.html",
+      "title": "Findings register",
+      "x": 1560,
+      "y": 1400,
+      "w": 1440,
+      "h": 1200
+    },
+    {
+      "file": "Apm.dc.html",
+      "title": "Audit planning memorandum",
+      "x": 0,
+      "y": 2800,
+      "w": 1440,
+      "h": 1160
+    },
+    {
+      "file": "Report.dc.html",
+      "title": "Draft audit report",
+      "x": 1560,
+      "y": 2800,
+      "w": 1440,
+      "h": 1240
+    }
+  ],
+  "annotations": [
+    {
+      "id": "note-system",
+      "x": 3160,
+      "y": 0,
+      "w": 320,
+      "text": "Five pages on the fieldwork system: a 36px header with one count sentence and one primary, a review bar whose chips are the filters, a 300px list with a dot and a meta line, and a verdict bar that states what was done and what is recorded. Drawn with the Procurement workspace as of 5 September."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}
