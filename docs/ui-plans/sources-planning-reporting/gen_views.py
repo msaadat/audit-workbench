@@ -108,12 +108,26 @@ def frame(body: str, height: int) -> str:
 </html>
 '''
 
-def shell(crumb: str, content: str, height: int, surface: str = "Record") -> str:
-    """The app chrome the fieldwork artboards draw: navy bar and breadcrumb."""
+def header_bar(assistant: str | None = None, switcher: bool = True) -> str:
+    """The navy bar. `assistant` names the panel state the toggle shows:
+    None keeps today's Record | Assistant switcher; 'closed', 'docked' or
+    'expanded' drops the switcher and draws the toggle in the right cluster."""
     nav_icons = "".join(
         f'<span style="display: inline-flex;">{ic(n, 18)}</span>'
         for n in ("search", "settings", "code", "info", "grid"))
-    top = f'''
+    if switcher and assistant is None:
+        middle = (f'<div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,0.10);">'
+                  f'<span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: #ffffff; color: #0d2340; font-size: 13px; font-weight: 600;">{ic("clock")}Record</span>'
+                  f'<span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; color: #c3d2e4; font-size: 13px; font-weight: 600;">{ic("sparkles")}Assistant</span></div>')
+        toggle = ""
+    else:
+        middle = ""
+        on = assistant in ("docked", "expanded")
+        fill = "background: #0d9488; color: #ffffff; border-color: #0d9488;" if on else "border: 1px solid rgba(255,255,255,0.22); color: #ffffff;"
+        live = f'<span style="width: 7px; height: 7px; border-radius: 50%; background: {"#ffffff" if on else "#2dd4bf"}; box-shadow: 0 0 0 2px rgba(45,212,191,0.35);"></span>'
+        toggle = (f'<span style="display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; {fill}">'
+                  f'{ic("sparkles", 15)}Assistant{live}</span>')
+    return f'''
   <div style="display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 24px; background: linear-gradient(180deg, #0d2340 0%, #07162b 100%); color: #ffffff;">
     <div style="display: flex; align-items: center; gap: 10px;">
       <div style="display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #5eead4 0%, #2dd4bf 100%); color: #07162b;">{ic("check", 18, width=2.5)}</div>
@@ -124,24 +138,36 @@ def shell(crumb: str, content: str, height: int, surface: str = "Record") -> str
       <span style="font-size: 11.5px; font-weight: 600; color: #8fa6c2;">Engagement</span>
       <span style="font-size: 15.2px; font-weight: 700;">Procurement</span>
     </div>
-    <div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,0.10);">
-      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: #ffffff; color: #0d2340; font-size: 13px; font-weight: 600;">{ic("clock")}Record</span>
-      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; color: #c3d2e4; font-size: 13px; font-weight: 600;">{ic("sparkles")}Assistant</span>
-    </div>
+    {middle}
     <span style="flex: 1;"></span>
     <span style="display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border: 1px solid rgba(255,255,255,0.22); border-radius: 8px; font-size: 13px; font-weight: 600;">{ic("upload", 15)}Import</span>
+    {toggle}
     <div style="display: flex; align-items: center; gap: 18px; color: #e6edf6; margin-left: 6px;">{nav_icons}</div>
-  </div>
-  <div style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 24px; border-bottom: 1px solid {C['border']}; background: {C['panel']};">
+  </div>'''
+
+def crumb_bar(crumb: str) -> str:
+    return f'''
+  <div style="display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 24px; border-bottom: 1px solid {C['border']}; background: {C['panel']}; flex: 0 0 auto;">
     {ic("back", 18, C['teal'])}
     <a href="#" style="color: {C['teal']}; font-size: 14px; font-weight: 500;">Engagement record</a>
     <span style="color: {C['border_strong']};">/</span>
     <span style="color: {C['ink_strong']}; font-size: 14px; font-weight: 600;">{crumb}</span>
-  </div>
-  <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 24px 24px; flex: 1;">
-{content}
   </div>'''
-    return frame(top, height)
+
+def shell(crumb: str, content: str, height: int, surface: str = "Record",
+          assistant: str | None = None, panel: str = "") -> str:
+    """The app chrome the fieldwork artboards draw: navy bar, breadcrumb, page.
+
+    With `panel`, the page and the docked assistant sit side by side under the
+    bar, the page taking what the panel leaves."""
+    page = (f'<div style="display: flex; flex-direction: column; flex: 1; min-width: 0;">{crumb_bar(crumb)}'
+            f'<div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 24px 24px; flex: 1;">{content}</div></div>')
+    body = header_bar(assistant)
+    if panel:
+        body += f'<div style="display: flex; flex: 1; min-height: 0; align-items: stretch;">{page}{panel}</div>'
+    else:
+        body += page
+    return frame(body, height)
 
 def btn(label: str, kind: str = "secondary", icon: str | None = None, caret: bool = False, icon_size: int = 13) -> str:
     if kind == "primary":
@@ -200,9 +226,10 @@ def meter(label: str, value: str, segments: list[tuple[str, float]]) -> str:
             f'<span class="num" style="color: {C["muted"]}; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;">{label} <b style="color: {C["ink_strong"]};">{value}</b></span>'
             f'<span style="display: block; width: 64px; height: 4px; border-radius: 2px; background: {bg};"></span></div>')
 
-def review_bar(chips: list[str], meters: list[str], settle: str = "") -> str:
+def review_bar(chips: list[str], meters: list[str], settle: str = "", wrap: bool = False) -> str:
+    flow = "flex-wrap: wrap; row-gap: 8px;" if wrap else ""
     return f'''
-    <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid {C['border']}; border-radius: 12px; background: {C['panel']};">
+    <div style="display: flex; align-items: center; gap: 8px; {flow} padding: 10px 14px; border: 1px solid {C['border']}; border-radius: 12px; background: {C['panel']};">
       {" ".join(chips)}{settle}
       <span style="flex: 1;"></span>
       <div style="display: flex; align-items: center; gap: 18px;">{"".join(meters)}</div>
@@ -767,15 +794,14 @@ def findings_header() -> str:
         kebab(),
     ])
 
-def findings_review_bar() -> str:
-    return review_bar(
-        [chip(18, "All findings", pressed=True),
+def findings_review_bar(wrap: bool = False) -> str:
+    return review_bar(wrap=wrap, chips=[chip(18, "All findings", pressed=True),
          chip(18, "Not linked to a risk", "bad"),
          chip(18, "Evidence moved", "bad"),
          chip(17, "Root cause pending", "warn"),
          chip(18, "No management response", "warn"),
          chip(18, "Drafted by the assistant", "agent")],
-        [meter("Confirmed", "18/18", [("ok", 100)]),
+        meters=[meter("Confirmed", "18/18", [("ok", 100)]),
          meter("Supported", "0/18", []),
          meter("Settled", "0/18", [])],
     )
@@ -790,7 +816,7 @@ def narrative_table() -> str:
     return (f'<div style="border: 1px solid {C["border"]}; border-radius: 8px; overflow: hidden; margin: 4px 0;">{head}'
             f'{row("Head of Treasury", "1,000,000", "4,200,000")}{row("CFO", "10,000,000", "64,000,000")}</div>')
 
-def findings_detail() -> str:
+def findings_detail(narrow: bool = False) -> str:
     head = detail_header(
         f"{mono('F-0571DE')} · {accent('drafted by the assistant')} · 1 Sep 19:02",
         "Requisitions approved above the authority's approval limit",
@@ -834,7 +860,8 @@ def findings_detail() -> str:
              + section("Tests", test_card, link("Add", C["teal"], "plus"))
              + section("Evidence", ev_card, link("Add", C["teal"], "plus"))
              + f'<div style="display: flex; flex-direction: column; gap: 6px;">{chevron_link("Where this came from")}{chevron_link("Run 20260901-190012-ac9972")}</div></div>')
-    body = f'<div style="display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start;"><div style="display: flex; flex-direction: column; gap: 18px;">{left}</div>{right}</div>'
+    columns = "minmax(0, 1fr)" if narrow else "minmax(0, 1fr) 320px"
+    body = f'<div style="display: grid; grid-template-columns: {columns}; gap: 22px; align-items: start;"><div style="display: flex; flex-direction: column; gap: 18px;">{left}</div>{right}</div>'
     return detail_panel(head + verdict + body)
 
 def artboard_findings() -> str:
@@ -1034,30 +1061,272 @@ def artboard_report() -> str:
 
 
 # =============================================================================
+# Assistant panel: one surface, three widths
+# =============================================================================
+def spinner(size: int = 14, color: str | None = None) -> str:
+    col = color or C["info"]
+    return (f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{col}" stroke-width="2.5" stroke-linecap="round">'
+            f'<circle cx="12" cy="12" r="9" stroke-opacity="0.25"></circle><path d="M21 12a9 9 0 0 0-9-9"></path></svg>')
+
+def icon_button(name: str, tone: str | None = None) -> str:
+    col = tone or C["ink_soft"]
+    return f'<span style="display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: {col};">{ic(name, 15)}</span>'
+
+EXPAND_ICON = '<path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path>'
+DOCK_ICON = '<path d="M4 4v16"></path><path d="M20 12H9"></path><path d="m13 8-4 4 4 4"></path>'
+CLOSE_ICON = '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>'
+ICON.update({"expand": EXPAND_ICON, "dock": DOCK_ICON, "close": CLOSE_ICON,
+             "stop": '<circle cx="12" cy="12" r="9"></circle><rect x="9" y="9" width="6" height="6" rx="1"></rect>',
+             "send": '<path d="m22 2-7 20-4-9-9-4z"></path><path d="M22 2 11 13"></path>',
+             "pause": '<path d="M10 5v14"></path><path d="M14 5v14"></path>'})
+
+def panel_header(title: str, status: str, mode: str) -> str:
+    """Title with the chat menu, the run's state as one pill, the frame acts."""
+    status_pill = pill(status, "info", 11) if status else ""
+    frame_act = icon_button("expand") if mode == "docked" else icon_button("dock")
+    return (f'<div style="display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 8px 0 14px; border-bottom: 1px solid {C["border"]}; flex: 0 0 auto;">'
+            f'{ic("sparkles", 15, C["teal"])}'
+            f'<a href="#" class="ell" style="display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: {C["ink_strong"]}; font-size: 13px; font-weight: 600;"><span class="ell">{title}</span>{ic("chev_down", 11, C["muted"], 2.5)}</a>'
+            f'{status_pill}<span style="flex: 1;"></span>{icon_button("plus")}{frame_act}{icon_button("close")}</div>')
+
+def plan_strip(stage: str, progress: str, elapsed: str, stages: str) -> str:
+    """While a run works: the stage it is on, one line, the plan behind a chevron."""
+    return (f'<div style="display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid {C["border"]}; background: {C["raised"]}; flex: 0 0 auto;">'
+            f'{spinner(14)}<span class="ell" style="color: {C["ink_strong"]}; font-size: 12.5px; font-weight: 600;">{stage}</span>'
+            f'<span class="num" style="color: {C["muted"]}; font-size: 12px; white-space: nowrap;">{progress} · {elapsed}</span><span style="flex: 1;"></span>'
+            f'{chevron_link(stages)}</div>')
+
+def user_bubble(text: str, when: str) -> str:
+    return (f'<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 3px; align-self: flex-end; max-width: 78%;">'
+            f'<span style="padding: 8px 12px; border-radius: 12px 12px 3px 12px; background: {C["teal"]}; color: #ffffff; font-size: 13px; line-height: 1.45;">{text}</span>'
+            f'<span class="num" style="color: {C["muted"]}; font-size: 11px;">{when}</span></div>')
+
+def assistant_line(text: str) -> str:
+    return f'<p style="margin: 0; color: {C["ink"]}; font-size: 13px; line-height: 1.5; max-width: 92%;">{text}</p>'
+
+def milestone_card(status: str, headline: str, summary: str, metrics: list[tuple[str, str]], highlights: list[tuple[str, str]] = (), link: str = "") -> str:
+    ok = status == "completed"
+    icon = (f'<span style="display: grid; place-items: center; width: 22px; height: 22px; flex: 0 0 auto; border-radius: 6px; background: {C["ok_soft"] if ok else C["warn_soft"]}; color: {C["ok"] if ok else C["warn_ink"]};">'
+            f'{ic("check" if ok else "warning", 13, width=2.5)}</span>')
+    metric_row = f'<div class="num" style="display: flex; flex-wrap: wrap; gap: 4px 14px; color: {C["muted"]}; font-size: 11.5px;">' + "".join(
+        f'<span>{label} <b style="color: {C["ink_strong"]}; font-weight: 600;">{value}</b></span>' for label, value in metrics) + '</div>'
+    rows = "".join(
+        f'<div style="display: flex; align-items: flex-start; gap: 8px; padding-top: 6px;"><span style="margin-top: 5px;">{dot("bad", 7)}</span>'
+        f'<span style="display: flex; flex-direction: column; gap: 1px;"><span style="color: {C["danger_ink"]}; font-size: 12.5px; font-weight: 600; line-height: 1.4;">{label}</span>'
+        f'<span style="color: {C["ink_soft"]}; font-size: 11.5px;">{detail}</span></span></div>' for label, detail in highlights)
+    high = f'<div style="display: flex; flex-direction: column; border-top: 1px solid {C["border"]}; margin-top: 2px;">{rows}</div>' if highlights else ""
+    link_html = f'<div style="padding-top: 8px;">{tag_chip(link, "neutral", "map", mono_text=False)}</div>' if link else ""
+    return (f'<div style="display: flex; gap: 10px; padding: 10px 12px; border: 1px solid {C["border"]}; border-radius: 8px; background: {C["panel"]}; max-width: 92%;">{icon}'
+            f'<div style="display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1;">'
+            f'<span style="color: {C["ink_strong"]}; font-size: 13.5px; font-weight: 600; line-height: 1.35;">{headline}</span>'
+            f'<span style="color: {C["ink_soft"]}; font-size: 12.5px; line-height: 1.45;">{summary}</span>{metric_row}{high}{link_html}</div></div>')
+
+def working_block(label: str, elapsed: str, items: list[tuple[str, bool]]) -> str:
+    rows = "".join(
+        f'<div style="display: flex; align-items: center; gap: 8px; color: {C["ink_soft"] if done else C["ink_strong"]}; font-size: 12.5px;">'
+        f'{ic("check", 12, C["ok"], 2.5) if done else spinner(12)}<span class="ell">{text}</span></div>' for text, done in items)
+    return (f'<div style="display: flex; flex-direction: column; gap: 6px; max-width: 92%;">'
+            f'<div style="display: flex; align-items: center; gap: 8px;">{spinner(14)}<span style="color: {C["ink_strong"]}; font-size: 13px; font-weight: 600;">{label}</span>'
+            f'<span class="num" style="color: {C["muted"]}; font-size: 12px;">{elapsed}</span></div>'
+            f'<div style="display: flex; flex-direction: column; gap: 4px; padding-left: 22px;">{rows}</div></div>')
+
+def run_receipt(title: str, subline: str, lines: list[tuple[str, str]], failed: bool = False) -> str:
+    border = C["danger_line"] if failed else C["border"]
+    icon = ic("warning", 12, C["danger"]) if failed else ic("sparkles", 12, C["teal"])
+    narration = "".join(
+        f'<div style="display: flex; align-items: center; gap: 8px; color: {C["muted"]}; font-size: 11.5px;">'
+        f'{ic("check", 11, C["ok"], 2.5) if tone == "done" else ic("chev_right", 11, C["border_strong"], 2.5) if tone == "step" else ic("warning", 11, C["danger"])}<span class="ell">{text}</span></div>' for text, tone in lines)
+    return (f'<div style="display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid {border}; border-radius: 8px; background: {C["canvas"]}; max-width: 92%;">'
+            f'<div style="display: flex; align-items: center; gap: 8px;"><span style="display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: {C["danger_soft"] if failed else C["teal_soft"]};">{icon}</span>'
+            f'<span style="display: flex; flex-direction: column; min-width: 0;"><span class="ell" style="color: {C["ink"]}; font-size: 12px; font-weight: 500;">{title}</span>'
+            f'<span class="num" style="color: {C["muted"]}; font-size: 11px;">{subline}</span></span></div>'
+            f'<div style="display: flex; flex-direction: column; gap: 2px; padding-left: 28px;">{narration}</div></div>')
+
+def composer(run_active: bool, width: int | None = None) -> str:
+    stop = (f'<span style="display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid {C["danger_line"]}; border-radius: 8px; color: {C["danger"]}; font-size: 12px; font-weight: 600;">{ic("stop", 13)}Stop</span>' if run_active else "")
+    placeholder = "Send a message to steer the run…" if run_active else "Ask a question, or type / for commands…"
+    w = f"max-width: {width}px; width: 100%; margin: 0 auto;" if width else ""
+    return (f'<div style="padding: 10px 12px 12px; border-top: 1px solid {C["border"]}; background: {C["canvas"]}; flex: 0 0 auto;">'
+            f'<div style="display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 8px; border: 1px solid {C["border_strong"]}; border-radius: 8px; background: {C["panel"]}; {w}">'
+            f'<span style="color: {C["muted"]}; font-size: 13px; padding: 2px 2px 4px;">{placeholder}</span>'
+            f'<div style="display: flex; align-items: center; gap: 6px;">'
+            f'<span style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border: 1px solid {C["border_strong"]}; border-radius: 8px; color: {C["ink_soft"]}; font-size: 11.5px; font-weight: 600;">{ic("paperclip", 12)}Context</span>'
+            f'<span style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border: 1px solid {C["border_strong"]}; border-radius: 8px; color: {C["ink_soft"]}; font-size: 11.5px; font-weight: 600;">Auto{ic("chev_down", 11, width=2.5)}</span>'
+            f'<span style="flex: 1;"></span>{stop}'
+            f'<span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 8px; background: {C["teal"]}; color: #ffffff; font-size: 12px; font-weight: 700;">Send{ic("send", 12)}</span>'
+            f'</div></div></div>')
+
+TRANSCRIPT = [
+    ("user", ("Draft findings.", "2 Sep 00:00")),
+    ("line", "I'll work through executable test specifications, analyses placed in the matrix, fieldwork execution, results and observations, then eligible finding drafts. Sources, document analysis, the planning context, the memorandum and the matrix are already done, so I'll reuse them rather than repeat the work."),
+    ("milestone", ("completed_with_issues", "Results and observations updated",
+                   "Rolled results into 24 RCM rows. Recorded 63 exceptions across 24 exception observations.",
+                   [("RCM rows", "24"), ("Exceptions", "63"), ("Observations", "24")],
+                   [("Payment may be released before goods receipt is recorded.", "9 exceptions across 1 completed test — control concluded ineffective."),
+                    ("Procurement transactions may be omitted from the accounting records.", "9 exceptions across 1 completed test — control concluded ineffective."),
+                    ("Invoices may be paid without the required verification and approval.", "9 exceptions across 2 completed tests — control concluded ineffective.")],
+                   "View RCM")),
+    ("line", "Results and observations is done — now working on eligible finding drafts."),
+    ("working", ("Drafting evidence-linked findings", "9 of 24 · 2m 10s · taking a while",
+                 [("Requisitions approved above the authority's approval limit", True),
+                  ("Purchase orders placed with a vendor whose master status was Inactive", True),
+                  ("Requisitions split by vendor and department to remain below the approval threshold", False)])),
+]
+
+def transcript(items=TRANSCRIPT, width: int | None = None, gap: int = 14, pad: str = "14px 14px") -> str:
+    parts = []
+    for kind, payload in items:
+        if kind == "user": parts.append(user_bubble(*payload))
+        elif kind == "line": parts.append(assistant_line(payload))
+        elif kind == "milestone": parts.append(milestone_card(*payload))
+        elif kind == "working": parts.append(working_block(*payload))
+        elif kind == "receipt": parts.append(run_receipt(*payload))
+    w = f"max-width: {width}px; width: 100%; margin: 0 auto;" if width else ""
+    return (f'<div style="flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;">'
+            f'<div style="display: flex; flex-direction: column; gap: {gap}px; padding: {pad}; {w}">{"".join(parts)}</div></div>')
+
+def assistant_docked(width: int = 440) -> str:
+    inner = (panel_header("Generate planned test for 1 RCM row.", "running", "docked")
+             + plan_strip("Eligible finding drafts", "stage 5 of 5", "2m 10s", "Plan")
+             + transcript()
+             + composer(run_active=True))
+    return (f'<aside style="display: flex; flex-direction: column; flex: 0 0 {width}px; width: {width}px; min-height: 0; '
+            f'border-left: 1px solid {C["border"]}; background: {C["panel"]}; overflow: hidden;">{inner}</aside>')
+
+def chat_row(tone: str, title: str, meta: str, active: bool = False) -> str:
+    return list_row(tone, title, meta, active)
+
+def chats_column() -> str:
+    head = (f'<div style="display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 8px 0 14px; border-bottom: 1px solid {C["border"]};">'
+            f'<span style="color: {C["ink_strong"]}; font-size: 13px; font-weight: 600;">Chats</span><span style="flex: 1;"></span>{icon_button("plus")}</div>')
+    rows = (chat_row("info", "Generate planned test for 1 RCM row.", f"running · 2 Sep 00:00 · 5 messages", True)
+            + chat_row("warn", "Analyse the imported tables.", "1 Sep 23:05 · 10 messages · 3 runs with failures"))
+    search = f'<div style="padding: 10px 12px; border-bottom: 1px solid {C["border"]};">{search_box("Search chats")}</div>'
+    return (f'<div style="display: flex; flex-direction: column; flex: 0 0 264px; min-height: 0; border-right: 1px solid {C["border"]}; background: {C["panel"]};">'
+            f'{head}{search}{rows}</div>')
+
+def plan_column() -> str:
+    arc = (f'<div style="display: flex; gap: 3px;">'
+           f'<span style="flex: 2; height: 4px; border-radius: 2px; background: {C["info"]};"></span>'
+           f'<span style="flex: 3; height: 4px; border-radius: 2px; background: {C["warn"]};"></span>'
+           f'<span style="flex: 2; height: 4px; border-radius: 2px; background: {C["warn"]};"></span></div>')
+    standing = (arc + f'<span style="color: {C["ink"]}; font-size: 12.5px; line-height: 1.45;"><b style="font-weight: 600;">Planning</b> · 32 RCM rows have no test. Fieldwork and the report need attention.</span>'
+                + link("Open the engagement record", C["teal"], "clock"))
+    stage = lambda name, state, meta: (f'<div style="display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid {C["border"]};">'
+                                       f'{ic("check", 12, C["ok"], 2.5) if state == "done" else spinner(12) if state == "running" else dot("neutral", 8)}'
+                                       f'<span class="ell" style="flex: 1; color: {C["ink_strong"] if state != "queued" else C["muted"]}; font-size: 12.5px; font-weight: {600 if state == "running" else 500};">{name}</span>'
+                                       f'<span class="num" style="color: {C["muted"]}; font-size: 11px; white-space: nowrap;">{meta}</span></div>')
+    plan = (stage("Executable test specifications", "done", "reused") + stage("Analyses placed in the matrix", "done", "reused")
+            + stage("Fieldwork execution", "done", "0 to run") + stage("Results and observations", "done", "24 rows · 3s")
+            + stage("Eligible finding drafts", "running", "9 of 24 · 2m 10s")
+            + f'<div style="padding-top: 8px;">{chevron_link("Units and errors")}</div>')
+    doc_row = lambda name, cat: (f'<div style="display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid {C["border"]};">'
+                                 f'{ic("file", 12, C["teal"])}<span class="ell" style="flex: 1; color: {C["ink"]}; font-size: 12px;">{name}</span>'
+                                 f'<span style="color: {C["muted"]}; font-size: 11px;">{cat}</span></div>')
+    read = (f'<span style="color: {C["ink_soft"]}; font-size: 12px; line-height: 1.45;">The target RCM row, the planning context, 12 table metadata items and 7 documents.</span>'
+            + doc_row("Procurement SOP Extracts.docx", "policy") + doc_row("Financial Approval Matrix.docx", "policy")
+            + doc_row("Minutes of Meeting - Procurement Planning.docx", "minutes") + doc_row("REQ2024009_Purchase_Requisition.pdf", "evidence")
+            + f'<div style="padding-top: 6px;">{chevron_link("3 more documents")}</div>'
+            + f'<span style="color: {C["warn_ink"]}; font-size: 11.5px; padding-top: 6px; border-top: 1px solid {C["border"]};">Held back: GRN2024004_Signed_Receipt.pdf — outside this step\'s scope.</span>')
+    return (f'<div style="display: flex; flex-direction: column; gap: 12px; flex: 0 0 320px; min-height: 0; padding: 14px 14px; border-left: 1px solid {C["border"]}; background: {C["raised"]}; overflow: hidden;">'
+            + side_card("Where the engagement stands", standing, "1 of 3")
+            + side_card("Plan · Draft findings", plan, "5 stages")
+            + side_card("Read for this run", read, "at 00:00") + "</div>")
+
+def assistant_expanded() -> str:
+    thread = (f'<div style="display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; background: {C["panel"]};">'
+              + panel_header("Generate planned test for 1 RCM row.", "running", "expanded").replace("padding: 0 8px 0 14px", "padding: 0 16px 0 22px")
+              + transcript(width=760, gap=16, pad="20px 24px")
+              + composer(run_active=True, width=760) + "</div>")
+    return f'<div style="display: flex; flex: 1; min-height: 0; align-items: stretch;">{chats_column()}{thread}{plan_column()}</div>'
+
+def artboard_assistant_docked() -> str:
+    content = (findings_header() + findings_review_bar(wrap=True)
+               + master_detail(findings_list(), findings_detail(narrow=True)))
+    return shell("Findings register", content, 1200, assistant="docked", panel=assistant_docked())
+
+def artboard_assistant_expanded() -> str:
+    return frame(header_bar("expanded") + assistant_expanded(), 900)
+
+def artboard_assistant_states() -> str:
+    """Three widths of one panel, as a diagram: what each shows and what moves between them."""
+    def mini(label: str, sub: str, page: bool, panel_w: int, full: bool, notes: list[str]) -> str:
+        head = f'<div style="height: 18px; background: #0d2340; border-radius: 6px 6px 0 0; display: flex; align-items: center; justify-content: flex-end; padding: 0 8px;"><span style="width: 26px; height: 8px; border-radius: 3px; background: {"#0d9488" if (panel_w or full) else "rgba(255,255,255,0.35)"};"></span></div>'
+        if full:
+            body = (f'<div style="display: flex; flex: 1;"><span style="flex: 0 0 22%; background: {C["panel"]}; border-right: 1px solid {C["border"]};"></span>'
+                    f'<span style="flex: 1; background: {C["panel"]}; display: flex; justify-content: center;"><span style="width: 62%; margin: 12px 0; border-radius: 4px; background: {C["teal_soft"]};"></span></span>'
+                    f'<span style="flex: 0 0 26%; background: {C["raised"]}; border-left: 1px solid {C["border"]};"></span></div>')
+        else:
+            page_block = f'<span style="flex: 1; background: {C["canvas"]}; display: flex; gap: 6px; padding: 10px;"><span style="flex: 0 0 30%; border-radius: 4px; background: {C["panel"]}; border: 1px solid {C["border"]};"></span><span style="flex: 1; border-radius: 4px; background: {C["panel"]}; border: 1px solid {C["border"]};"></span></span>'
+            panel_block = f'<span style="flex: 0 0 {panel_w}%; background: {C["panel"]}; border-left: 1px solid {C["border"]}; display: flex; flex-direction: column;"><span style="flex: 1;"></span><span style="height: 22px; margin: 6px; border-radius: 4px; background: {C["teal_soft"]};"></span></span>' if panel_w else ""
+            body = f'<div style="display: flex; flex: 1;">{page_block}{panel_block}</div>'
+        frame_ = f'<div style="display: flex; flex-direction: column; width: 360px; height: 210px; border: 1px solid {C["border_strong"]}; border-radius: 6px; overflow: hidden; box-shadow: 0 2px 6px rgb(13 35 64 / 7%), 0 10px 24px rgb(13 35 64 / 6%);">{head}{body}</div>'
+        bullets = "".join(f'<li style="margin: 0 0 4px;">{n}</li>' for n in notes)
+        return (f'<div style="display: flex; flex-direction: column; gap: 12px; width: 360px;">{frame_}'
+                f'<div style="display: flex; flex-direction: column; gap: 4px;"><span style="color: {C["ink_strong"]}; font-size: 15.2px; font-weight: 600;">{label}</span>'
+                f'<span class="num" style="color: {C["muted"]}; font-size: 12px;">{sub}</span></div>'
+                f'<ul style="margin: 0; padding-left: 18px; color: {C["ink"]}; font-size: 12.8px; line-height: 1.5;">{bullets}</ul></div>')
+    arrow = lambda top, bottom: (f'<div style="display: flex; flex-direction: column; align-items: center; gap: 6px; width: 110px; padding-top: 90px; flex: 0 0 auto;">'
+                                 f'<span style="color: {C["teal"]}; font-size: 11.5px; font-weight: 600; text-align: center; white-space: nowrap; line-height: 1.4;">{top}</span>'
+                                 f'<svg width="80" height="24" viewBox="0 0 80 24" fill="none" stroke="{C["border_strong"]}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h64"></path><path d="m62 3 6 5-6 5"></path><path d="M76 16H12"></path><path d="m18 11-6 5 6 5"></path></svg>'
+                                 f'<span style="color: {C["muted"]}; font-size: 11.5px; font-weight: 600; text-align: center; white-space: nowrap; line-height: 1.4;">{bottom}</span></div>')
+    row = (mini("Closed", "0 px · the page has the whole width", True, 0, False,
+                ["The header toggle is the only trace: a dot when a run is live, amber when it needs you.",
+                 "Nothing is mounted; the 52 px collapsed rail is gone from every page."])
+           + arrow("Assistant toggle<br>a run starting<br>a milestone link", "✕ or the toggle")
+           + mini("Docked", "440 px · 360–720 · pushes the page", True, 32, False,
+                  ["The default whenever the assistant opens: a question beside the work.",
+                   "Chat title menu, one status pill, the live plan strip, transcript, composer.",
+                   "Under 1,320 px of window the docked width would leave less than 880 px of page, so this state skips straight to Expanded."])
+           + arrow("⤢ in the panel head<br>?assistant=full", "⇥ or Esc")
+           + mini("Expanded", "the workspace below the header · the page stays mounted underneath", False, 0, True,
+                  ["Chats on the left, the thread at 760 px, the run's plan and what it read on the right.",
+                   "Replaces the console route; /console redirects here. Closing returns to the page exactly as it was."]))
+    body = (f'<div style="display: flex; flex-direction: column; gap: 22px; padding: 28px 32px; flex: 1;">'
+            f'<div style="display: flex; flex-direction: column; gap: 4px;"><span style="color: {C["ink_strong"]}; font-size: 21.6px; font-weight: 700; letter-spacing: -0.01em;">One assistant, three widths</span>'
+            f'<span style="color: {C["ink_soft"]}; font-size: 13.5px;">The console route and the drawer are the same thread in two frames. They become one panel whose width is a state, not a place.</span></div>'
+            f'<div style="display: flex; gap: 16px; align-items: flex-start;">{row}</div></div>')
+    return frame(body, 560)
+
+# =============================================================================
 ARTBOARDS = {
-    "Main.dc.html": ("Documents, preview", artboard_documents, 1000),
-    "DocumentAnalysis.dc.html": ("Documents, analysis tab", artboard_document_analysis, 1240),
-    "Tables.dc.html": ("Source tables", artboard_tables, 1140),
-    "Findings.dc.html": ("Findings register", artboard_findings, 1200),
-    "Apm.dc.html": ("Audit planning memorandum", artboard_apm, 1160),
-    "Report.dc.html": ("Draft audit report", artboard_report, 1240),
+    "Main.dc.html": ("Documents, preview", artboard_documents, 1000, "page-views"),
+    "DocumentAnalysis.dc.html": ("Documents, analysis tab", artboard_document_analysis, 1240, "page-views"),
+    "Tables.dc.html": ("Source tables", artboard_tables, 1140, "page-views"),
+    "Findings.dc.html": ("Findings register", artboard_findings, 1200, "page-views"),
+    "Apm.dc.html": ("Audit planning memorandum", artboard_apm, 1160, "page-views"),
+    "Report.dc.html": ("Draft audit report", artboard_report, 1240, "page-views"),
+    "AssistantStates.dc.html": ("One assistant, three widths", artboard_assistant_states, 560, "page-assistant"),
+    "AssistantDocked.dc.html": ("Docked beside the findings", artboard_assistant_docked, 1200, "page-assistant"),
+    "AssistantExpanded.dc.html": ("Expanded to the workspace", artboard_assistant_expanded, 900, "page-assistant"),
 }
 
+PAGES = [
+    {"id": "page-views", "name": "Sources, planning, reporting"},
+    {"id": "page-assistant", "name": "Assistant"},
+]
+
 def main() -> None:
-    layout, y = [], 0
-    for i, (file, (title, fn, height)) in enumerate(ARTBOARDS.items()):
+    layout = []
+    cursor: dict[str, tuple[int, int]] = {}
+    for file, (title, fn, height, page) in ARTBOARDS.items():
         (HERE / file).write_text(fn(), encoding="utf-8")
-        col = i % 2
-        if col == 0 and i:
+        index, y = cursor.get(page, (0, 0))
+        col = index % 2
+        if col == 0 and index:
             y += 1400
-        layout.append({"file": file, "title": title, "x": col * 1560, "y": y, "w": 1440, "h": height})
+        layout.append({"file": file, "title": title, "x": col * 1560, "y": y, "w": 1440, "h": height, "page": page})
+        cursor[page] = (index + 1, y)
     canvas = {
+        "pages": PAGES,
         "artboards": layout,
-        "annotations": [{
-            "id": "note-system", "x": 3160, "y": 0, "w": 320,
-            "text": "Five pages on the fieldwork system: a 36px header with one count sentence and one primary, a review bar whose chips are the filters, a 300px list with a dot and a meta line, and a verdict bar that states what was done and what is recorded. Drawn with the Procurement workspace as of 5 September.",
-        }],
-        "launch": {"view": "canvas"},
+        "annotations": [
+            {"id": "note-system", "x": 3160, "y": 0, "w": 320, "page": "page-views",
+             "text": "Five pages on the fieldwork system: a 36px header with one count sentence and one primary, a review bar whose chips are the filters, a 300px list with a dot and a meta line, and a verdict bar that states what was done and what is recorded. Drawn with the Procurement workspace as of 5 September."},
+            {"id": "note-assistant", "x": 3160, "y": 0, "w": 320, "page": "page-assistant",
+             "text": "The Assistant tab and the sidebar are one thread in two frames. The proposal keeps one panel with three widths — closed, docked, expanded — so the console route goes and the page underneath never unmounts. Drawn with the Procurement workspace's chats as of 5 September; the run in flight is the Draft findings run as it stood at 00:02 on 2 September."},
+        ],
+        "launch": {"view": "canvas", "page": "page-assistant"},
     }
     (HERE / "canvas.json").write_text(json.dumps(canvas, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {len(ARTBOARDS)} artboards and canvas.json to {HERE}")

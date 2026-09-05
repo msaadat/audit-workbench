@@ -1,4 +1,14 @@
 {
+  "pages": [
+    {
+      "id": "page-views",
+      "name": "Sources, planning, reporting"
+    },
+    {
+      "id": "page-assistant",
+      "name": "Assistant"
+    }
+  ],
   "artboards": [
     {
       "file": "Main.dc.html",
@@ -6,7 +16,8 @@
       "x": 0,
       "y": 0,
       "w": 1440,
-      "h": 1000
+      "h": 1000,
+      "page": "page-views"
     },
     {
       "file": "DocumentAnalysis.dc.html",
@@ -14,7 +25,8 @@
       "x": 1560,
       "y": 0,
       "w": 1440,
-      "h": 1240
+      "h": 1240,
+      "page": "page-views"
     },
     {
       "file": "Tables.dc.html",
@@ -22,7 +34,8 @@
       "x": 0,
       "y": 1400,
       "w": 1440,
-      "h": 1140
+      "h": 1140,
+      "page": "page-views"
     },
     {
       "file": "Findings.dc.html",
@@ -30,7 +43,8 @@
       "x": 1560,
       "y": 1400,
       "w": 1440,
-      "h": 1200
+      "h": 1200,
+      "page": "page-views"
     },
     {
       "file": "Apm.dc.html",
@@ -38,7 +52,8 @@
       "x": 0,
       "y": 2800,
       "w": 1440,
-      "h": 1160
+      "h": 1160,
+      "page": "page-views"
     },
     {
       "file": "Report.dc.html",
@@ -46,7 +61,35 @@
       "x": 1560,
       "y": 2800,
       "w": 1440,
-      "h": 1240
+      "h": 1240,
+      "page": "page-views"
+    },
+    {
+      "file": "AssistantStates.dc.html",
+      "title": "One assistant, three widths",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 560,
+      "page": "page-assistant"
+    },
+    {
+      "file": "AssistantDocked.dc.html",
+      "title": "Docked beside the findings",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1200,
+      "page": "page-assistant"
+    },
+    {
+      "file": "AssistantExpanded.dc.html",
+      "title": "Expanded to the workspace",
+      "x": 0,
+      "y": 1400,
+      "w": 1440,
+      "h": 900,
+      "page": "page-assistant"
     }
   ],
   "annotations": [
@@ -55,10 +98,20 @@
       "x": 3160,
       "y": 0,
       "w": 320,
+      "page": "page-views",
       "text": "Five pages on the fieldwork system: a 36px header with one count sentence and one primary, a review bar whose chips are the filters, a 300px list with a dot and a meta line, and a verdict bar that states what was done and what is recorded. Drawn with the Procurement workspace as of 5 September."
+    },
+    {
+      "id": "note-assistant",
+      "x": 3160,
+      "y": 0,
+      "w": 320,
+      "page": "page-assistant",
+      "text": "The Assistant tab and the sidebar are one thread in two frames. The proposal keeps one panel with three widths \u2014 closed, docked, expanded \u2014 so the console route goes and the page underneath never unmounts. Drawn with the Procurement workspace's chats as of 5 September; the run in flight is the Draft findings run as it stood at 00:02 on 2 September."
     }
   ],
   "launch": {
-    "view": "canvas"
+    "view": "canvas",
+    "page": "page-assistant"
   }
 }

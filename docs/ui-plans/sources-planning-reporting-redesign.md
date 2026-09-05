@@ -25,6 +25,8 @@ that plan is the specification.
   [`gen_views.py`](sources-planning-reporting/gen_views.py) in the same
   folder, so every chip, meter, row and pill is drawn by one function;
   regenerate from the script rather than editing the HTML by hand.
+- The canvas has a second page, *Assistant*, whose artboards belong to
+  [`assistant-panel-redesign.md`](assistant-panel-redesign.md).
 
 | Artboard | File | What it shows |
 |---|---|---|
