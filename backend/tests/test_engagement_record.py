@@ -259,7 +259,14 @@ def test_the_default_spine_groups_into_the_five_audit_phases(stub_store):
     assert grouped == {
         "sources": ["sources.imported", "analysis.executed"],
         "documents": ["documents.analysis_generated"],
-        "planning": ["planning.apm_ready", "planning.rcm_ready", "tests.specified"],
+        "planning": [
+            "planning.apm_ready",
+            # The shape of the process, between the memorandum it is read from
+            # and the matrix that takes its process names from it.
+            "planning.cycle_ready",
+            "planning.rcm_ready",
+            "tests.specified",
+        ],
         "fieldwork": [
             "doc_tests.executed",
             "fieldwork.executed",
@@ -906,7 +913,9 @@ def test_a_stage_waiting_on_an_earlier_one_says_so_instead_of_offering_a_button(
     assert rows["planning.apm_ready"]["runnable"] is True
     assert rows["planning.apm_ready"]["blocked_reason"] == ""
     assert rows["planning.rcm_ready"]["runnable"] is False
-    assert rows["planning.rcm_ready"]["blocked_reason"] == "Waits for the memorandum."
+    assert rows["planning.rcm_ready"]["blocked_reason"] == (
+        "Waits for the memorandum and the cycle design."
+    )
 
 
 def test_a_stage_carries_what_to_ask_the_assistant_for(stub_store):
@@ -1393,6 +1402,10 @@ def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
     stub_store([])
     workspace = _Workspace(
         apm="# APM",
+        # A finished engagement has a cycle: the matrix's process names come
+        # from it, so a matrix that is reviewed and concluded was written
+        # against one.
+        planning={"cycle": {"name": "Cycle", "steps": [{"name": "Process"}]}},
         rcm=[{"id": "R1", "review_status": "reviewed", "conclusion": "effective"}],
         data_tests=[
             _ran({"id": "T1", "rcm_id": "R1", "status": "completed_no_exception"}),

@@ -83,14 +83,14 @@ Rules:
 
 ## Fields
 
-- **process** — the process step this row belongs to, as named in the planning
-  basis. It groups the rows; it is not a label for one of them. A cycle has a
-  handful of steps and each carries several risks, so the same process name
-  recurs across every row belonging to it, spelled identically — and a matrix
-  naming a different process on every row has grouped nothing. Where the basis
-  describes the flow without naming its steps, name a few covering the whole
-  flow and reuse those. Keep the wording stable across runs so revisions
-  reconcile.
+- **process** — the step of the cycle this row belongs to, chosen from the
+  supplied PROCESS NAMES and spelled exactly as given. Those names are the
+  cycle design, read from the memorandum's process flow before the matrix was
+  drafted, so the vocabulary is settled and this field selects from it rather
+  than inventing one. It groups the rows; it is not a label for one of them. A
+  cycle has a handful of steps and each carries several risks, so the same
+  process name recurs across every row belonging to it — and a matrix naming a
+  different process on every row has grouped nothing.
 - **risk_rating** — `critical` only where a single failure permits material loss
   or fraud with no compensating control; `high` where the exposure is material
   but partly mitigated; `medium` and `low` below that. Two rows describing the

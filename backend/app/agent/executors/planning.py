@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ... import cycle_vouching
-from ...workspaces import Workspace, WorkspaceError, slugify
+from ...workspaces import Workspace, WorkspaceError, slugify, validate_cycle
 from ..capabilities import _shared as audit_hashes
 from ..artifact_index import canonical_id
 from .model import (
@@ -193,6 +193,190 @@ APM_EXECUTOR = ExecutorDefinition(
 )
 
 EXECUTORS.register(APM_EXECUTOR)
+
+
+# --------------------------------------------------------------------------- #
+# planning.cycle executor (step 5 of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+CYCLE_EXECUTOR_ID = "planning.cycle"
+CYCLE_PARENT_REF = "planning:apm"
+CYCLE_ARTIFACT_REF = "planning:cycle"
+CYCLE_EDIT_PRESERVED = "auditor_owned_cycle_preserved"
+
+
+class CycleEditPreserved(WorkspaceError):
+    """The accepted shape cannot silently replace an auditor-owned cycle."""
+
+
+@dataclass
+class CycleExecutorTarget:
+    workspace: Workspace
+    run_id: str
+    allow_auditor_overwrite: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Cycle executor target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("Cycle executor target requires a run_id.")
+        if not isinstance(self.allow_auditor_overwrite, bool):
+            raise ValueError("allow_auditor_overwrite must be a boolean.")
+
+
+def _validated_cycle(
+    request: ExecutorRequest,
+    target: object,
+) -> tuple[CycleExecutorTarget, dict]:
+    if not isinstance(target, CycleExecutorTarget):
+        raise WorkspaceError("Cycle executor requires a CycleExecutorTarget.")
+    if set(request.expected_parents) != {CYCLE_PARENT_REF}:
+        raise WorkspaceError(
+            "Cycle executor requires exactly the memorandum parent hash."
+        )
+    shape = {
+        key: request.proposal.get(key)
+        for key in ("name", "steps", "cross_cutting")
+    }
+    if not shape.get("steps"):
+        raise WorkspaceError("The accepted cycle proposal has no steps.")
+    return target, shape
+
+
+def _cycle_material(cycle: Mapping | None) -> dict | None:
+    if not cycle:
+        return None
+    return {key: cycle.get(key) for key in ("name", "steps", "cross_cutting")}
+
+
+def _cycle_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+) -> ExecutorResult:
+    cycle = workspace.planning.get("cycle") or {}
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=[CYCLE_ARTIFACT_REF],
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, [CYCLE_ARTIFACT_REF]),
+        output={
+            "status": "updated",
+            "created_by": "agent",
+            "steps": [
+                str(step.get("name") or "") for step in cycle.get("steps") or []
+            ],
+            "auditor_edits_preserved": True,
+        },
+    )
+
+
+def execute_cycle(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Commit one accepted cycle shape under the memorandum parent-hash guard."""
+    target, shape = _validated_cycle(request, raw_target)
+
+    def commit(fresh: Workspace) -> None:
+        existing = fresh.planning.get("cycle") or {}
+        if (
+            existing.get("steps")
+            and existing.get("created_by") == "user"
+            and not target.allow_auditor_overwrite
+        ):
+            raise CycleEditPreserved(CYCLE_EDIT_PRESERVED)
+        # ``update_planning`` re-validates the shape against what this workspace
+        # actually holds. The drafting gate checked it against the lists the
+        # turn was handed; between the two a type could have been retyped or a
+        # table dropped, and this is where that is caught rather than stored.
+        fresh.update_planning(
+            {"cycle": {**shape, "agent_run_id": target.run_id, "created_by": "agent"}},
+            agent=True,
+        )
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _cycle_result(
+        request,
+        committed.workspace,
+        revision_before=committed.revision - 1,
+    )
+
+
+def reconcile_cycle(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted cycle commit without changing workspace state."""
+    target, shape = _validated_cycle(request, raw_target)
+    current = Workspace(target.workspace.root)
+    current_parent = parent_hashes(current, [CYCLE_PARENT_REF])[CYCLE_PARENT_REF]
+    expected_parent = request.expected_parents[CYCLE_PARENT_REF]
+    if current_parent != expected_parent:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=str(
+                ParentConflict(
+                    CYCLE_PARENT_REF,
+                    expected_parent,
+                    current_parent,
+                    current.revision,
+                )
+            ),
+        )
+    stored = current.planning.get("cycle") or {}
+    # The proposal is compared through the same validator the commit used, so a
+    # shape that normalizes to what is stored is recognised as already applied
+    # rather than re-committed against a parent that has not moved.
+    try:
+        normalized = _cycle_material(validate_cycle(current, shape))
+    except WorkspaceError:
+        normalized = None
+    if (
+        normalized is not None
+        and _cycle_material(stored) == normalized
+        and stored.get("created_by") == "agent"
+        and stored.get("agent_run_id") == target.run_id
+    ):
+        if current.revision <= request.expected_revision:
+            return ExecutorReconciliation(
+                "conflict", reason="Cycle commit revision did not advance."
+            )
+        target.workspace = current
+        return ExecutorReconciliation(
+            "already_applied",
+            result=_cycle_result(
+                request,
+                current,
+                revision_before=max(request.expected_revision, current.revision - 1),
+            ),
+            reason="The accepted cycle postcondition already holds.",
+        )
+    if (
+        stored.get("steps")
+        and stored.get("created_by") == "user"
+        and not target.allow_auditor_overwrite
+    ):
+        return ExecutorReconciliation("conflict", reason=CYCLE_EDIT_PRESERVED)
+    return ExecutorReconciliation("not_applied")
+
+
+CYCLE_EXECUTOR = ExecutorDefinition(
+    executor_id=CYCLE_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_cycle,
+    reconciler=reconcile_cycle,
+)
+
+EXECUTORS.register(CYCLE_EXECUTOR)
+
 
 
 # --------------------------------------------------------------------------- #
@@ -541,8 +725,18 @@ def _validated_rcm(
 ) -> tuple[RcmExecutorTarget, list[dict]]:
     if not isinstance(target, RcmExecutorTarget):
         raise WorkspaceError("RCM executor requires an RcmExecutorTarget.")
-    if set(request.expected_parents) != {RCM_PARENT_REF}:
-        raise WorkspaceError("RCM executor requires exactly the APM parent hash.")
+    # The cycle joins the memorandum as a guarded parent: the shape is where a
+    # row's ``process`` vocabulary comes from, so a cycle reshaped under an
+    # in-flight matrix must conflict this commit rather than let rows land
+    # naming steps that no longer exist. It is optional only for the state
+    # before any cycle has been designed.
+    if not {RCM_PARENT_REF} <= set(request.expected_parents) <= {
+        RCM_PARENT_REF,
+        CYCLE_ARTIFACT_REF,
+    }:
+        raise WorkspaceError(
+            "RCM executor requires the APM parent hash, and optionally the cycle's."
+        )
     raw = request.proposal.get("rows")
     if not isinstance(raw, (list, tuple)) or not raw:
         raise WorkspaceError("The accepted RCM proposal has no rows.")

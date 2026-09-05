@@ -44,7 +44,7 @@ from app.workspace_transactions import (
     prepare_linked_write,
     recover_linked_writes,
 )
-from conftest import FakeAgentLLM, wait_run
+from conftest import stamp_planning_cycle, FakeAgentLLM, wait_run
 
 
 # One finding draft the fake model returns for `agent:finding`. Its narrative
@@ -85,6 +85,10 @@ def _planning_workspace(name: str = "Workflow planning") -> workspaces.Workspace
             "risk_rating": "high",
         }
     )
+    # An engagement whose matrix is already settled has a cycle shape saying so.
+    # Without one the cycle stage materializes and the matrix, whose dependency
+    # it is, stops being reusable — right for a first design, wrong here.
+    stamp_planning_cycle(ws)
     return ws
 
 
@@ -433,13 +437,20 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "analysis.summarized": ("analysis.executed",),
         "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
         "planning.apm_ready": ("planning.context_ready",),
+        "planning.cycle_ready": (
+            "planning.apm_ready",
+            "sources.imported",
+            "documents.types_classified",
+        ),
         "planning.rcm_ready": (
             "planning.apm_ready",
+            "planning.cycle_ready",
             "documents.categorized",
             "documents.types_classified",
         ),
         "tests.cycle_ruleset_proposed": (
             "planning.rcm_ready",
+            "planning.cycle_ready",
             "documents.schemas_stamped",
         ),
         "tests.cycle_ruleset_approved": ("tests.cycle_ruleset_proposed",),
@@ -487,6 +498,9 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
+        # The shape of the process, read out of the memorandum: the vocabulary
+        # the matrix's ``process`` is drawn from, and no extraction to reach it.
+        "planning.cycle_ready",
         # The matrix needs the record kinds, not their fields, so it runs
         # before the expensive read rather than behind it.
         "planning.rcm_ready",
@@ -542,6 +556,9 @@ def test_partial_goal_prunes_current_prerequisites():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
+        # The shape of the process, read out of the memorandum: the vocabulary
+        # the matrix's ``process`` is drawn from, and no extraction to reach it.
+        "planning.cycle_ready",
         # The matrix needs the record kinds, not their fields, so it runs
         # before the expensive read rather than behind it.
         "planning.rcm_ready",

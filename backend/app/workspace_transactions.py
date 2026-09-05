@@ -317,6 +317,20 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
                 "created_by": workspace.planning.get("created_by"),
                 "updated": workspace.planning.get("updated"),
             }
+        if item_id == "cycle":
+            # The shape a matrix row's ``process`` and the ruleset's roles are
+            # chosen from — what the artifact asserts, without who wrote it or
+            # when. A cycle reshaped under an in-flight matrix must conflict
+            # that commit; an auditor re-saving the same steps must not.
+            cycle = workspace.planning.get("cycle") or {}
+            return material_projection(
+                {
+                    key: cycle.get(key)
+                    for key in ("name", "steps", "cross_cutting")
+                }
+                if cycle
+                else None
+            )
     # Data-workbench artifacts. The exploratory analysis workflow guards its
     # commits on the tables it read, the joins it materialized, and the analysis
     # definitions it executed, so those need material parent projections too.

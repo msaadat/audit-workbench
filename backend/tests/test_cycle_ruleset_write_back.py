@@ -343,3 +343,171 @@ def test_an_uncontracted_attribute_is_reported_as_untested_until_it_is_designed(
 
     assert "no cycle design has run for it" in note
     assert "untested" in note
+
+
+# --------------------------------------------------------------------------- #
+# The shape binds the anchor (step 5e of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+def _with_cycle(workspace, *, anchor_columns=None):
+    workspace.add_table(
+        "po_data.csv", b"PO_NUMBER,INVOICE_NO\nP1,I1\n"
+    )
+    workspace.update_planning(
+        {
+            "cycle": {
+                "name": "Procure-to-pay",
+                "steps": [
+                    {
+                        "name": "Purchase order",
+                        "roles": [
+                            {"name": "order", "document_type": "purchase_order"}
+                        ],
+                        "populations": [
+                            {
+                                "table": "po_data",
+                                "anchor": True,
+                                **({"columns": anchor_columns} if anchor_columns else {}),
+                            }
+                        ],
+                        "themes": [],
+                    },
+                    {
+                        "name": "Invoice processing",
+                        "roles": [
+                            {"name": "invoice", "document_type": "vendor_invoice"}
+                        ],
+                        "populations": [],
+                        "themes": [],
+                    },
+                ],
+                "cross_cutting": None,
+                "agent_run_id": "run-cycle",
+            }
+        },
+        agent=True,
+    )
+    return workspaces.load_workspace(workspace.id)
+
+
+def test_the_anchor_s_table_comes_from_the_shape_and_its_column_does_not():
+    """The shape owns the table — a table name copied by a model is an
+    identifier it can get wrong. Which of that table's columns carries the
+    identifier is a judgement about the data, and the proposing turn is shown
+    every column to make it.
+
+    Deriving the column instead cost a treasuryfull ruleset: the role's document
+    field was written in as a column of a table that carries no such column, and
+    nothing refused it."""
+
+    workspace, rcm_id = _workspace(_attribute())
+    workspace = _with_cycle(workspace)
+    proposal = _proposal([
+        {"rcm_id": rcm_id, "control_attribute": "three_way_match",
+         "assertion_id": "as_total"}
+    ])
+    proposal["anchor"] = {"table": "not_this_one", "column": "PO_NUMBER",
+                          "role": "invoice", "field": "invoice_number"}
+    target = CycleRulesetExecutorTarget(workspace, "run-ruleset")
+
+    EXECUTORS.execute(_request(workspace, rcm_id, proposal), target)
+
+    stored = cycle_rulesets.list_rulesets(target.workspace)[0]
+    assert stored["anchor"]["table"] == "po_data"
+    assert stored["anchor"]["column"] == "PO_NUMBER"
+    assert stored["anchor"]["role"] == "invoice"
+
+
+def test_an_anchor_column_the_table_does_not_carry_is_refused():
+    workspace, rcm_id = _workspace(_attribute())
+    workspace = _with_cycle(workspace)
+    proposal = _proposal([
+        {"rcm_id": rcm_id, "control_attribute": "three_way_match",
+         "assertion_id": "as_total"}
+    ])
+    # A document field name, not a column. This is what was stored before the
+    # store checked the pair.
+    proposal["anchor"] = {"table": "", "column": "invoice_number",
+                          "role": "invoice", "field": "invoice_number"}
+    target = CycleRulesetExecutorTarget(workspace, "run-ruleset")
+
+    with pytest.raises(cycle_rulesets.RulesetError, match="does not carry"):
+        EXECUTORS.execute(_request(workspace, rcm_id, proposal), target)
+
+
+def test_a_population_that_lives_on_a_neighbour_s_table_names_its_column():
+    workspace, rcm_id = _workspace(_attribute())
+    workspace = _with_cycle(workspace, anchor_columns=["INVOICE_NO"])
+    proposal = _proposal([
+        {"rcm_id": rcm_id, "control_attribute": "three_way_match",
+         "assertion_id": "as_total"}
+    ])
+    target = CycleRulesetExecutorTarget(workspace, "run-ruleset")
+
+    EXECUTORS.execute(_request(workspace, rcm_id, proposal), target)
+
+    stored = cycle_rulesets.list_rulesets(target.workspace)[0]
+    assert stored["anchor"] == {
+        "table": "po_data", "column": "INVOICE_NO",
+        "role": "invoice", "field": "invoice_number",
+    }
+
+
+def test_an_unreachable_role_is_dropped_from_the_rules_and_reported():
+    """The shape keeps the step — it still happens — but no join key can reach
+    it, and ``cycle_rulesets.validate`` would refuse the whole ruleset over it."""
+
+    workspace, rcm_id = _workspace(_attribute())
+    workspace = _with_cycle(workspace)
+    proposal = _proposal(
+        [
+            {"rcm_id": rcm_id, "control_attribute": "three_way_match",
+             "unsupported": True, "reason": "The order cannot be reached."}
+        ],
+        assertions=[{
+            "id": "as_stated", "label": "The invoice states a total",
+            "left": {"role": "invoice", "field": "total_amount"},
+            "right": None,
+            "requirement": "The invoice states the amount billed.",
+            "rationale": "An invoice with no total cannot be checked.",
+        }],
+    )
+    proposal["roles"] = [proposal["roles"][0]]
+    proposal["join_keys"] = []
+    proposal["unreachable"] = [
+        {"role": "order", "reason": "purchase_order induced no identifier field"}
+    ]
+    target = CycleRulesetExecutorTarget(workspace, "run-ruleset")
+
+    receipt = EXECUTORS.execute(_request(workspace, rcm_id, proposal), target)
+
+    stored = cycle_rulesets.list_rulesets(target.workspace)[0]
+    assert [role["name"] for role in stored["roles"]] == ["invoice"]
+    assert list(receipt.output["unreachable"]) == [
+        {"role": "order", "reason": "purchase_order induced no identifier field"}
+    ]
+    # The shape is untouched: the step is still part of the process.
+    steps = target.workspace.planning["cycle"]["steps"]
+    assert [role["name"] for step in steps for role in step["roles"]] == [
+        "order", "invoice",
+    ]
+
+
+def test_the_ruleset_records_which_cycle_shape_its_roles_came_from():
+    workspace, rcm_id = _workspace(_attribute())
+    workspace = _with_cycle(workspace)
+    proposal = _proposal([
+        {"rcm_id": rcm_id, "control_attribute": "three_way_match",
+         "assertion_id": "as_total"}
+    ])
+    target = CycleRulesetExecutorTarget(workspace, "run-ruleset")
+
+    EXECUTORS.execute(_request(workspace, rcm_id, proposal), target)
+
+    stored = cycle_rulesets.list_rulesets(target.workspace)[0]
+    assert stored["cycle_sha1"] == parent_hashes(
+        target.workspace, ["planning:cycle"]
+    )["planning:cycle"]
+    # Outside the rules hash, for the reason ``measured`` is: an approved
+    # ruleset is what was approved, and a reshaped cycle must not silently make
+    # a signature refer to something else.
+    assert "cycle_sha1" not in cycle_rulesets.definition_of(stored)

@@ -45,6 +45,7 @@ MODEL_WAIT_LABELS = {
     "agent:command_planner": "Planning the next fieldwork steps",
     "agent:document_context": "Analyzing planning documents",
     "agent:apm": "Drafting the audit planning memorandum",
+    "agent:planning_cycle": "Working out the steps of the cycle",
     "agent:rcm": "Drafting the risk and control matrix",
     "agent:rcm_attributes": "Stating what each control has to demonstrate",
     "agent:test_generate": "Generating RCM tests",

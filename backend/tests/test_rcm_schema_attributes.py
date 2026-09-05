@@ -409,11 +409,17 @@ def test_the_rcm_waits_for_types_but_no_longer_for_schemas():
 
     assert audit.DEPENDENCIES["planning.rcm_ready"] == (
         "planning.apm_ready",
+        # The cycle shape is a vocabulary rather than a wait: it is drafted from
+        # the memorandum alone, so the matrix reaches it without the extraction
+        # pass this test is about.
+        "planning.cycle_ready",
         "documents.categorized",
         "documents.types_classified",
     )
+    assert "documents.schemas_stamped" not in audit.DEPENDENCIES["planning.rcm_ready"]
     assert audit.DEPENDENCIES["tests.cycle_ruleset_proposed"] == (
         "planning.rcm_ready",
+        "planning.cycle_ready",
         "documents.schemas_stamped",
     )
 

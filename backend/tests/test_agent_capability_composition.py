@@ -111,7 +111,16 @@ _DECLARED = {
         ("sources",),
     ),
     "planning.apm_ready": ("apm", "apm", "planning.apm", ("planning:context",)),
-    "planning.rcm_ready": ("rcm", "rcm", "planning.rcm", ("planning:apm",)),
+    "planning.cycle_ready": ("cycle", "cycle", "planning.cycle", ("planning:apm",)),
+    # The shape as well as the memorandum: the step names are the vocabulary a
+    # row's ``process`` is chosen from, so a reshaped cycle invalidates the
+    # matrix drafted against the names it used to have.
+    "planning.rcm_ready": (
+        "rcm",
+        "rcm",
+        "planning.rcm",
+        ("planning:apm", "planning:cycle"),
+    ),
     "tests.specified": (
         "test_specs",
         "test_generation",

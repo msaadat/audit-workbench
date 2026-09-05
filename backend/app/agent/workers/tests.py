@@ -1558,10 +1558,23 @@ carries. Propose the cycle they form.
 roles name the positions in the cycle. A role is *not* a document type: it is a
 place in the flow that a type fills, which is what lets one cycle hold two of the
 same type — an original and a revised invoice, two counterparty confirmations.
-Give each role a short lower_snake_case name.
 
-anchor names where a cycle starts from a population row: the role and identifier
-field a row in the accounting records would match.
+Where a `cycle` is supplied, the roles are **given**, in the order the cycle
+runs, and are used exactly as named: the shape was read from the audit planning
+memorandum's process flow and the matrix is already written against it. Return
+each of them with the document_type the cycle states. Do not rename one, do not
+add one, and do not drop one — except where a role's document type carries no
+identifier field at all, in which case no join key can reach it: list it under
+`unreachable` as {{"role", "reason"}} and leave it out of `roles`. Where no
+cycle is supplied, name the roles yourself, each a short lower_snake_case name.
+
+anchor names where a cycle starts from a population row. The supplied cycle
+flags which step's population it is and the `table` is filled in locally from
+it, so give three things: the `role` that population's rows are vouched to, the
+identifier `field` of that role, and the `column` of that table whose values
+carry the same identifier. The column is a column *of the anchor table* as
+TABLES spells it — not a document field name repeated, which names nothing in
+the accounting records and would match no row.
 
 join_keys say which document reaches which. Each names a field on one role that
 should equal a field on another. **Only ever an identifier field** — a reference
@@ -1612,7 +1625,7 @@ Keys:
   cycle_label   short name for the cycle
   roles         array of {{"name", "document_type", "cardinality": "one" | "many",
                 "required": true | false}}
-  anchor        {{"table", "column", "role", "field"}}
+  anchor        {{"role", "field", "column"}} — the table comes from the cycle
   join_keys     array of {{"id", "left": {{"role", "field"}},
                 "right": {{"role", "field"}}, "rationale"}}
   assertions    array of {{"id", "label", "left": {{"role", "field"}},
@@ -1621,6 +1634,8 @@ Keys:
   coverage      array of {{"rcm_id", "control_attribute", "assertion_id"}} or
                 {{"rcm_id", "control_attribute", "unsupported": true, "reason"}},
                 one per supplied requirement; omit where none were supplied
+  unreachable   array of {{"role", "reason"}} for a supplied role whose document
+                type carries no identifier field; omit where there are none
 
 requirement says what these fields must show for the control to hold, in the
 terms the control is written in — "the invoice is settled for the amount the
@@ -1714,12 +1729,28 @@ def _linkage_response_schema(response: str) -> Mapping[str, Any]:
             entry["assertion_id"] = str(raw.get("assertion_id") or "").strip()
         coverage.append(entry)
 
+    unreachable = []
+    for index, raw in enumerate(payload.get("unreachable") or []):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(
+                f"unreachable[{index}] must be an object."
+            )
+        unreachable.append({
+            "role": str(raw.get("role") or "").strip(),
+            "reason": str(raw.get("reason") or "").strip(),
+        })
+
     anchor = payload.get("anchor")
     if not isinstance(anchor, Mapping):
         raise WorkerResponseValidationError("The response must name an anchor.")
     return {
         "cycle_label": str(payload.get("cycle_label") or "").strip(),
         "roles": roles,
+        # ``table`` and ``column`` are still parsed where a response volunteers
+        # them, because a proposal written without a cycle shape has nowhere
+        # else to state them. Where a shape *is* supplied the executor fills
+        # both from its flagged population and whatever arrived here is
+        # replaced: the model names things, local code finds things.
         "anchor": {
             "table": str(anchor.get("table") or "").strip(),
             "column": str(anchor.get("column") or "").strip(),
@@ -1731,6 +1762,7 @@ def _linkage_response_schema(response: str) -> Mapping[str, Any]:
         # Absent where nothing was asked, which is the shape a proposal written
         # from the vocabulary alone has always had.
         "coverage": coverage,
+        "unreachable": unreachable,
     }
 
 
@@ -1813,6 +1845,124 @@ def _refuse_malformed_ids(proposal: Mapping[str, Any]) -> None:
     )
 
 
+def _supplied_cycle_roles(request: WorkerRequest) -> dict[str, str]:
+    """The positions the cycle declares, as ``name -> document_type``.
+
+    Empty where no shape was supplied, which is the state of an engagement whose
+    cycle has not been designed — there the worker still names its own roles.
+    """
+
+    cycle = request.unit_input.get("cycle") or {}
+    if not isinstance(cycle, Mapping):
+        return {}
+    return {
+        str(role.get("name") or ""): str(role.get("document_type") or "")
+        for step in cycle.get("steps") or []
+        if isinstance(step, Mapping)
+        for role in step.get("roles") or []
+        if isinstance(role, Mapping) and role.get("name")
+    }
+
+
+def _require_the_cycle_s_roles(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> None:
+    """The roles are an input now, so the response may not invent or lose one.
+
+    The shape named the positions once, after the memorandum, and the matrix is
+    written against those names. A rule naming a role the cycle does not declare
+    addresses a position nothing else in the engagement knows about; a declared
+    role the response drops silently removes a step of the process from every
+    test built on the ruleset.
+
+    Dropping one *is* allowed where its document type carries no identifier
+    field — no join key can reach it and ``cycle_rulesets.validate`` would
+    refuse the whole ruleset over it — but only by saying so under
+    ``unreachable``, which the executor reports to the auditor.
+    """
+
+    declared = _supplied_cycle_roles(request)
+    if not declared:
+        return
+    proposed = {
+        str(role.get("name")): str(role.get("document_type"))
+        for role in proposal.get("roles") or []
+    }
+    problems: list[str] = []
+    for name, document_type in proposed.items():
+        if name not in declared:
+            problems.append(
+                f"Role '{name}' is not one the cycle declares; its roles are: "
+                f"{', '.join(declared) or 'none'}."
+            )
+        elif document_type != declared[name]:
+            problems.append(
+                f"Role '{name}' is filled by '{declared[name]}' in the cycle, "
+                f"not '{document_type}'."
+            )
+    excused = {
+        str(item.get("role"))
+        for item in proposal.get("unreachable") or []
+        if isinstance(item, Mapping)
+    }
+    for name in declared:
+        if name in proposed or name in excused:
+            continue
+        problems.append(
+            f"Role '{name}' is declared by the cycle and the response omits it. "
+            "Return it, or list it under unreachable with the reason no "
+            "identifier field can reach it."
+        )
+    for item in proposal.get("unreachable") or []:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("role"))
+        if name not in declared:
+            problems.append(f"Unreachable role '{name}' is not one the cycle declares.")
+        elif not str(item.get("reason") or "").strip():
+            problems.append(f"Unreachable role '{name}' states no reason.")
+    if problems:
+        raise WorkerResponseValidationError(problems)
+
+
+def _require_every_role_reachable(proposal: Mapping[str, Any]) -> None:
+    """Every role must be reachable from the anchor by join keys.
+
+    ``cycle_rulesets.validate`` enforces this too, and that copy fires at commit
+    — after the model turn has succeeded and outside any repair loop, so it
+    costs the whole run. It cost one: a treasuryfull proposal declared
+    ``broker_ack`` and wrote no join key that reaches it, and the stage failed
+    with nothing to show for two model calls. Asked here, it costs one turn, and
+    the repair has two honest ways out — add the join key, or say the role is
+    ``unreachable`` and why.
+    """
+
+    roles = {str(role.get("name")) for role in proposal.get("roles") or []}
+    anchor = str((proposal.get("anchor") or {}).get("role") or "")
+    if not roles or anchor not in roles:
+        return
+    reachable = {anchor}
+    changed = True
+    while changed:
+        changed = False
+        for key in proposal.get("join_keys") or []:
+            left = str((key.get("left") or {}).get("role") or "")
+            right = str((key.get("right") or {}).get("role") or "")
+            for source, target in ((left, right), (right, left)):
+                if source in reachable and target in roles and target not in reachable:
+                    reachable.add(target)
+                    changed = True
+    stranded = sorted(roles - reachable)
+    if stranded:
+        raise WorkerResponseValidationError([
+            f"No join key reaches role '{name}' from the anchor role "
+            f"'{anchor}'. Give it a join key on an identifier field it shares "
+            "with a role already reachable, or drop it from roles and list it "
+            "under unreachable with the reason no identifier field can reach it."
+            for name in stranded
+        ])
+
+
 def validate_linkage_proposal(
     proposal: Mapping[str, Any], request: WorkerRequest
 ) -> Mapping[str, Any]:
@@ -1845,6 +1995,7 @@ def validate_linkage_proposal(
                 f"Role '{name}' names '{document_type}', which this engagement "
                 "has no schema for."
             )
+    _require_the_cycle_s_roles(proposal, request)
     _refuse_malformed_ids(proposal)
 
     def field_of(operand: Mapping[str, Any], label: str) -> Mapping[str, Any]:
@@ -1882,6 +2033,7 @@ def validate_linkage_proposal(
                 "fields must show for the control to hold."
             )
     field_of(proposal["anchor"], "The anchor")
+    _require_every_role_reachable(proposal)
     _require_every_requirement_answered(proposal, request)
     return proposal
 
@@ -2005,6 +2157,13 @@ def run_linkage_worker(
         "schemas": _plain_json(_supplied_schemas(request)),
         "tables": _plain_json(list(request.unit_input.get("tables") or [])),
     }
+    # The positions this cycle holds, in the order it runs them, decided after
+    # the memorandum and before the matrix. Supplying them is what stops two
+    # model-authored artifacts having to agree by luck: this turn chooses
+    # fields, and no longer invents the places those fields fill.
+    cycle = _plain_json(request.unit_input.get("cycle") or {})
+    if cycle.get("steps"):
+        payload["cycle"] = cycle
     # Read through the same accessor the gate reads, so the proposal is judged
     # against exactly what it was shown. It was resolved into the context and
     # left out of the message before this: the prompt promised the worker the

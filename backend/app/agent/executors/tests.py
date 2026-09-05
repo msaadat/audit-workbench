@@ -703,6 +703,7 @@ def _cycle_ruleset_result(
     revision_before: int,
     record: Mapping[str, object],
     downgraded: list[dict] | None = None,
+    unreachable: list[dict] | None = None,
 ) -> ExecutorResult:
     ref = cycle_ruleset_ref(str(record.get("ruleset_id") or ""))
     return ExecutorResult(
@@ -734,6 +735,11 @@ def _cycle_ruleset_result(
             # attribute kept its requirement and took the strongest path still
             # open to it, and an auditor is told which control that happened on.
             "downgraded": list(downgraded or []),
+            # A position the cycle holds that no join key can reach, because its
+            # document type carries no identifier field. Dropped from the rules
+            # so the rest of the ruleset can stand, kept on the shape because
+            # the step still happens, and reported so it is not a silent gap.
+            "unreachable": list(unreachable or []),
         },
     )
 
@@ -873,6 +879,66 @@ def _contract_matrix_rows(
     return downgraded
 
 
+def _anchor_population(cycle: Mapping[str, object]) -> dict:
+    """The population a cycle test starts from, and the step that holds it."""
+
+    for step in cycle.get("steps") or []:
+        if not isinstance(step, Mapping):
+            continue
+        for population in step.get("populations") or []:
+            if isinstance(population, Mapping) and population.get("anchor"):
+                return {"step": step, "population": population}
+    return {}
+
+
+def _bound_to_the_cycle(proposal: Mapping[str, object], cycle: object) -> dict:
+    """Fill in from the shape what the model was told not to write.
+
+    The anchor's table and column are the shape's, not the response's: the
+    governing rule of the redesign is that the model names things and local code
+    finds them, and a table name copied by a model is an identifier it can get
+    wrong. A role the response declared unreachable is dropped from the stored
+    rules — ``cycle_rulesets.validate`` would refuse the whole ruleset over a
+    role no join key reaches — while the shape keeps it, because it is still a
+    step of the process.
+    """
+
+    bound = _plain_json(proposal)
+    unreachable = {
+        str(item.get("role"))
+        for item in bound.pop("unreachable", None) or []
+        if isinstance(item, Mapping) and item.get("role")
+    }
+    if unreachable:
+        bound["roles"] = [
+            role
+            for role in bound.get("roles") or []
+            if str(role.get("name")) not in unreachable
+        ]
+    if not isinstance(cycle, Mapping) or not cycle.get("steps"):
+        return bound
+    anchored = _anchor_population(cycle)
+    population = anchored.get("population") or {}
+    table = str(population.get("table") or "")
+    if not table:
+        return bound
+    anchor = dict(bound.get("anchor") or {})
+    anchor["table"] = table
+    # Only the *table* is the shape's. Which of its columns carries the
+    # identifier is a judgement about the data, and the proposing turn is shown
+    # every column to make it — so the response keeps that field, except where
+    # the shape has already named the columns a borrowed population lives in.
+    #
+    # Deriving it instead cost a treasuryfull ruleset: the role's document field
+    # (`deal_reference`) was written in as the column, `04_deals` carries
+    # `DEAL_ID`, and nothing refused it. `cycle_rulesets.validate` now does.
+    columns = [str(value) for value in population.get("columns") or []]
+    if columns:
+        anchor["column"] = columns[0]
+    bound["anchor"] = anchor
+    return bound
+
+
 def execute_cycle_ruleset(
     request: ExecutorRequest, raw_target: object
 ) -> ExecutorResult:
@@ -890,12 +956,20 @@ def execute_cycle_ruleset(
         raise WorkspaceError("A cycle ruleset commit requires a proposal.")
     target = raw_target
     state: dict[str, object] = {}
+    unreachable = [
+        _plain_json(item)
+        for item in (proposal.get("unreachable") or [])
+        if isinstance(item, Mapping)
+    ]
 
     def commit(fresh: Workspace) -> dict:
         state["revision_before"] = fresh.revision
-        record = cycle_rulesets.save(
-            fresh, _plain_json(proposal), proposed_by="agent"
-        )
+        # Read inside the guarded callback, like everything else this commit
+        # rests on: ``planning:cycle`` is one of the unit's parents, so the
+        # shape the anchor is bound against here is the one the proposal was
+        # written against or the commit does not happen at all.
+        bound = _bound_to_the_cycle(proposal, fresh.planning.get("cycle"))
+        record = cycle_rulesets.save(fresh, bound, proposed_by="agent")
         # Inside the same guarded callback as the save: the unit's parents are
         # the matrix rows these comparisons land on, so a row rewritten since
         # the proposal was authored conflicts the whole commit rather than
@@ -919,6 +993,7 @@ def execute_cycle_ruleset(
         revision_before=int(state["revision_before"]),
         record=dict(committed.value),
         downgraded=list(state.get("downgraded") or []),
+        unreachable=unreachable,
     )
 
 

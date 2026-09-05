@@ -987,9 +987,100 @@ export interface PlanningContext {
 export interface PlanningRecord {
   context: PlanningContext
   apm_markdown: string
+  /** The shape of the process: steps, their document roles and populations. */
+  cycle: CycleShape | null
   created_by: 'agent' | 'user'
   agent_run_id: string | null
   updated: string | null
+}
+
+/**
+ * The first of the cycle's two layers, authored after the memorandum.
+ *
+ * Its provenance is its own — an agent draft, or an auditor's edit, which is
+ * the confirmation. The memorandum's `created_by` above is a different fact
+ * about a different artifact.
+ */
+export interface CycleShape {
+  name: string
+  steps: CycleStep[]
+  cross_cutting: { name: string; themes: string[] } | null
+  created_by: 'agent' | 'user'
+  agent_run_id: string | null
+  apm_sha1: string
+  updated: string | null
+}
+
+export interface CycleStep {
+  name: string
+  roles: Array<{ name: string; document_type: string }>
+  populations: CyclePopulation[]
+  themes: string[]
+}
+
+export interface CyclePopulation {
+  table: string
+  /** Present where this step's rows live on another step's table. */
+  columns?: string[]
+  anchor?: boolean
+}
+
+/**
+ * The cycle drawn, as the backend assembles it. The page derives nothing from
+ * this: every node, edge and field ordering is decided server-side.
+ */
+export interface CycleGraph {
+  name: string
+  steps: CycleGraphStep[]
+  edges: CycleEdge[]
+  cross_cutting: { name: string; themes: string[] } | null
+  ruleset: { ruleset_id: string; status: string; cycle_label: string } | null
+  created_by?: string
+  updated?: string
+}
+
+export interface CycleGraphStep {
+  name: string
+  documents: CycleDocumentNode[]
+  populations: CyclePopulationNode[]
+  themes: string[]
+  /** Fields a one-operand assertion requires to be stated at all. */
+  stated: string[]
+}
+
+export interface CycleDocumentNode {
+  node: string
+  document_type: string
+  label: string
+  count: number
+  fields: Array<{ name: string; role: string }>
+  /** Null before any ruleset exists; false for a role the rules could not bind. */
+  bound: boolean | null
+}
+
+export interface CyclePopulationNode {
+  table: string
+  rows: number | null
+  columns: string[]
+  /** True where the step reads a few columns of another step's table. */
+  borrowed: boolean
+  anchor: boolean
+}
+
+export type CycleEdgeKind = 'join' | 'assert' | 'anchor' | 'table_join'
+
+export interface CycleEdgeEnd {
+  step: string
+  node: string
+  field: string
+}
+
+export interface CycleEdge {
+  kind: CycleEdgeKind
+  from: CycleEdgeEnd
+  to: CycleEdgeEnd
+  rule_id: string
+  label: string
 }
 
 export interface RcmRow {

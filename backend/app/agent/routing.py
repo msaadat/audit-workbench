@@ -1156,6 +1156,8 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         {
             "apm_updated": 0,
             "apm_proposed": 0,
+            "cycle_updated": 0,
+            "cycle_proposed": 0,
             "rcm_created": 0,
             "rcm_updated": 0,
             "rcm_preserved": 0,

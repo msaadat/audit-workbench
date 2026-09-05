@@ -1,7 +1,8 @@
 """Planning capability group of the audit workflow.
 
 Owns the planning outcomes of the authoritative audit graph:
-``planning.context_ready``, ``planning.apm_ready``, and ``planning.rcm_ready``.
+``planning.context_ready``, ``planning.apm_ready``, ``planning.cycle_ready``
+and ``planning.rcm_ready``.
 Drafting the tests an RCM row needs belongs to the tests capability group.
 
 Each capability is declared here: its readiness (existence and structural
@@ -13,7 +14,7 @@ declared context. The dependency edges come from the authoritative graph in
 from __future__ import annotations
 
 from ...text import counted, verb
-from ...workspaces import Workspace
+from ...workspaces import Workspace, planning_apm_sha1
 from ..workflow import Capability, Readiness, UnitSpec
 from ..workflows import audit as audit_workflow
 from ._shared import rows as _rows
@@ -22,6 +23,7 @@ from ._shared import single_unit as _single
 CAPABILITY_IDS: tuple[str, ...] = (
     "planning.context_ready",
     "planning.apm_ready",
+    "planning.cycle_ready",
     "planning.rcm_ready",
 )
 
@@ -99,6 +101,51 @@ def _planning_apm_ready() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
+# planning.cycle_ready
+# --------------------------------------------------------------------------- #
+def _cycle_ready(workspace: Workspace, _scope: dict) -> Readiness:
+    """Whether a cycle shape exists for the memorandum currently in the file.
+
+    Currency is assessed here, unlike every other planning capability, and for
+    a reason that is particular to this artifact: the shape is a reading *of*
+    the memorandum's process flow, so a memorandum that has been rewritten has
+    left the shape describing a process the engagement no longer says it audits
+    — and the matrix downstream takes its ``process`` vocabulary from it.
+
+    An auditor's edit is the confirmation and keeps the hash it was drafted
+    against, so edits survive until the memorandum itself moves. Nothing waits
+    on a review that may never come.
+    """
+    cycle = workspace.planning.get("cycle") or {}
+    if not cycle.get("steps"):
+        return Readiness("missing", ("no cycle has been designed",))
+    if str(cycle.get("apm_sha1") or "") != planning_apm_sha1(workspace):
+        return Readiness(
+            "missing",
+            ("the cycle was designed against a different memorandum",),
+            details={"artifact_count": 1},
+        )
+    return Readiness(
+        "satisfied",
+        details={"artifact_count": len(cycle.get("steps") or [])},
+    )
+
+
+def _planning_cycle_ready() -> Capability:
+    return Capability(
+        "planning.cycle_ready",
+        "cycle",
+        "Cycle design",
+        "cycle",
+        audit_workflow.dependencies("planning.cycle_ready"),
+        _cycle_ready,
+        _single("cycle", "Design the cycle", "planning:apm"),
+        context="planning.cycle",
+        invalidate_on=("planning:apm",),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # planning.rcm_ready (P7C)
 # --------------------------------------------------------------------------- #
 def _rcm_ready(workspace: Workspace, scope: dict) -> Readiness:
@@ -134,9 +181,11 @@ def _planning_rcm_ready() -> Capability:
         "rcm",
         audit_workflow.dependencies("planning.rcm_ready"),
         _rcm_ready,
-        _single("rcm", "Draft risk and control matrix", "planning:apm"),
+        _single(
+            "rcm", "Draft risk and control matrix", "planning:apm", "planning:cycle"
+        ),
         context="planning.rcm",
-        invalidate_on=("planning:apm",),
+        invalidate_on=("planning:apm", "planning:cycle"),
     )
 
 
@@ -144,6 +193,7 @@ def _planning_rcm_ready() -> Capability:
 _BUILDERS = {
     "planning.context_ready": _planning_context_ready,
     "planning.apm_ready": _planning_apm_ready,
+    "planning.cycle_ready": _planning_cycle_ready,
     "planning.rcm_ready": _planning_rcm_ready,
 }
 

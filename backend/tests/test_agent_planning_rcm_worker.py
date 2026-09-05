@@ -2061,3 +2061,105 @@ def test_shared_function_words_are_not_coverage():
     assert planning._unowned_themes(["Compliance with the entity's own stated policy."], rows) == [
         "Compliance with the entity's own stated policy."
     ]
+
+
+# --------------------------------------------------------------------------- #
+# The cycle's vocabulary (step 5d of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+def _cycle_request(bundle=None, *, process_names=(), business_cycle=""):
+    return WorkerRequest(
+        worker_id="planning.rcm",
+        capability_id="planning.rcm_ready",
+        unit_id="rcm",
+        context=bundle or _bundle(),
+        unit_input={
+            "input_sha1": "rcm-input",
+            "process_names": list(process_names),
+            "business_cycle": business_cycle,
+        },
+        activity={"artifact_refs": ["planning:apm"]},
+    )
+
+
+def test_the_risks_call_is_given_the_cycle_s_step_names_to_choose_from():
+    gateway = _Gateway([json.dumps({"rows": [_row(process="Purchase order")]})])
+    WORKERS.execute(
+        _cycle_request(
+            process_names=["Purchase order", "Invoice processing"],
+            business_cycle="Procure-to-pay",
+        ),
+        gateway,
+    )
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert payload["PROCESS NAMES"] == ["Purchase order", "Invoice processing"]
+    assert payload["BUSINESS CYCLE"] == "Procure-to-pay"
+
+
+def test_every_row_takes_the_cycle_s_name_as_its_business_cycle():
+    """The cycle names itself; a row does not get to disagree with it."""
+
+    gateway = _Gateway([
+        json.dumps({"rows": [_row(process="Purchase order", business_cycle="Something else")]})
+    ])
+    result = WORKERS.execute(
+        _cycle_request(process_names=["Purchase order"], business_cycle="Procure-to-pay"),
+        gateway,
+    )
+
+    assert result.proposal["rows"][0]["business_cycle"] == "Procure-to-pay"
+
+
+def test_a_row_keeps_its_own_business_cycle_when_no_cycle_has_been_designed():
+    gateway = _Gateway([
+        json.dumps({"rows": [_row(business_cycle="Accounts payable")]})
+    ])
+    result = WORKERS.execute(_cycle_request(), gateway)
+
+    assert result.proposal["rows"][0]["business_cycle"] == "Accounts payable"
+
+
+def test_a_process_outside_the_cycle_is_flagged_and_the_row_still_commits():
+    """A flag, not an error: the shape may have missed a step, or the matrix may
+    have invented a name, and the string cannot say which."""
+
+    gateway = _Gateway([
+        json.dumps({"rows": [_row(process="Petty cash disbursement")]})
+    ])
+    result = WORKERS.execute(
+        _cycle_request(process_names=["Purchase order", "Invoice processing"]),
+        gateway,
+    )
+
+    assert len(result.proposal["rows"]) == 1
+    flags = [
+        flag for flag in result.proposal["flags"]
+        if flag["kind"] == "process_outside_cycle"
+    ]
+    assert len(flags) == 1
+    assert "Petty cash disbursement" in flags[0]["message"]
+    assert "Purchase order, Invoice processing" in flags[0]["message"]
+
+
+def test_a_process_inside_the_cycle_is_not_flagged_whatever_its_case():
+    gateway = _Gateway([json.dumps({"rows": [_row(process="purchase ORDER")]})])
+    result = WORKERS.execute(
+        _cycle_request(process_names=["Purchase order"]), gateway
+    )
+
+    assert not [
+        flag for flag in result.proposal.get("flags") or ()
+        if flag["kind"] == "process_outside_cycle"
+    ]
+
+
+def test_no_cycle_means_no_process_flag_at_all():
+    """Before the shape exists there is no vocabulary to be outside of."""
+
+    gateway = _Gateway([json.dumps({"rows": [_row(process="Anything at all")]})])
+    result = WORKERS.execute(_cycle_request(), gateway)
+
+    assert not [
+        flag for flag in result.proposal.get("flags") or ()
+        if flag["kind"] == "process_outside_cycle"
+    ]

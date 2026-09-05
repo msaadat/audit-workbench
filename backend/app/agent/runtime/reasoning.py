@@ -21,18 +21,15 @@ REASONING_BY_WORKER_KIND: dict[str, str] = {
     # answer supplied. Middling: choosing join keys is genuinely a judgement,
     # and joining on the wrong field fuses unrelated transactions.
     "cycle_linkage": "medium",
-    # The two below are declared ahead of the calls that will carry them — the
-    # split matrix turns — so the budget arrives with the prompt rather than
-    # being noticed missing afterwards. Neither kind is emitted yet, and an
-    # entry nothing sends is inert.
-    #
     # Closed-vocabulary classification against a supplied catalogue. The call
     # that spent 56,944 of its 65,853 completion tokens reasoning was doing
     # this and the rest of the matrix at once; on its own it is a lookup.
     "rcm_attributes": "low",
-    # Naming the processes a memorandum already names, and assigning themes to
-    # them. Recall from one document, not deduction.
-    "rcm_scope": "low",
+    # Naming the steps a memorandum already names, choosing each one's document
+    # types and population from supplied lists, and assigning themes to them.
+    # Recall from one document, not deduction. Declared as ``rcm_scope`` before
+    # the shape had a stage of its own.
+    "planning_cycle": "low",
 }
 
 

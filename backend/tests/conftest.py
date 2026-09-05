@@ -236,6 +236,61 @@ def isolated_workspaces(tmp_path, monkeypatch):
     workspaces.clear_artifact_cache()
 
 
+
+def stamp_planning_cycle(workspace, *, steps=None):
+    """Give a workspace a cycle shape current with its memorandum.
+
+    A fixture that builds a matrix by hand has, in effect, an engagement whose
+    process structure is already settled — but no ``planning["cycle"]`` saying
+    so. Without one the cycle stage materializes inside any run that reaches the
+    matrix, and a capability whose dependency materializes is not reused, so the
+    matrix is regenerated too. That is right for a real engagement designing its
+    cycle for the first time and wrong for a fixture about something else.
+
+    The steps default to the matrix's own distinct ``process`` values, which is
+    what the shape would have been read as anyway.
+    """
+    from app import document_classification, planning_cycle
+
+    names = steps or list(
+        dict.fromkeys(
+            str(row.get("process") or "").strip()
+            for row in workspace.rcm
+            if str(row.get("process") or "").strip()
+        )
+    ) or ["Process"]
+    held = [
+        entry["document_type"]
+        for entry in document_classification.evidence_type_counts(workspace)
+        if entry["document_type"] != "other"
+    ]
+    tables = [str(table.get("name") or "") for table in workspace.tables]
+    shape = {
+        "name": "Engagement cycle",
+        "steps": [
+            {
+                "name": name,
+                "roles": (
+                    [{"name": f"record_{index}", "document_type": held[0]}]
+                    if index == 0 and held
+                    else []
+                ),
+                "populations": (
+                    [{"table": tables[0], "anchor": True}]
+                    if index == 0 and tables
+                    else []
+                ),
+                "themes": [],
+            }
+            for index, name in enumerate(names[: planning_cycle.MAX_CYCLE_STEPS])
+        ],
+        "cross_cutting": {"name": "Cycle operations", "themes": []},
+        "agent_run_id": "fixture",
+    }
+    workspace.update_planning({"cycle": shape}, agent=True)
+    return workspace.planning["cycle"]
+
+
 @pytest.fixture
 def transactions_df() -> pl.DataFrame:
     return pl.DataFrame(
@@ -307,6 +362,39 @@ def _scripted_user_view(messages: list[dict]) -> str:
         for message in messages[1:]
         if message.get("role") == "user" and isinstance(message.get("content"), str)
     )
+
+
+def _planning_cycle_response(user: str) -> dict:
+    """One step, holding whatever the fixture happens to have.
+
+    Every RCM run now designs the cycle first, so every agent-run fixture needs
+    an answer for it — and a fixed one would name a document type or a table
+    the workspace does not hold and be refused by the gate. The step therefore
+    takes its role from the first type on offer and its population from the
+    first table, and has neither where the fixture has neither. Every planned
+    theme goes to the cross-cutting bucket, which is always a legal placement.
+    Tests about the shape override this.
+    """
+
+    payload = json.loads(user.split("\n\nPREVIOUS CYCLE DRAFT:")[0])
+    types = [
+        entry["document_type"] for entry in payload.get("DOCUMENT TYPES HELD") or []
+    ]
+    tables = [entry["table"] for entry in payload.get("TABLES") or []]
+    step = {
+        "name": (payload.get("EXISTING STEP NAMES") or ["Process"])[0],
+        "roles": [{"name": "record", "document_type": types[0]}] if types else [],
+        "populations": [{"table": tables[0], "anchor": True}] if tables else [],
+        "themes": [],
+    }
+    return {
+        "name": "Engagement cycle",
+        "steps": [step],
+        "cross_cutting": {
+            "name": "Cycle operations",
+            "themes": list(payload.get("PLANNED RISK THEMES") or []),
+        },
+    }
 
 
 def _rcm_controls_response(user: str) -> dict:
@@ -404,6 +492,10 @@ class FakeAgentLLM:
             "reason": "The procedure describes the population rather than a control.",
         },
         "agent:fix_code": {"code": "result = transactions.head(0)"},
+        # The shape the matrix takes its ``process`` vocabulary from. Scripted
+        # by default because every RCM run designs it first and its answer is a
+        # function of what the fixture holds.
+        "agent:planning_cycle": _planning_cycle_response,
         # The matrix's second and third calls. Scripted by default because both
         # run in every RCM run and their answers are functions of the rows the
         # call before returned, which vary per fixture.

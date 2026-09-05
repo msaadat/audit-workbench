@@ -8,6 +8,7 @@ import PlanningTab from '../components/PlanningTab.vue'
 import DataTestsTab from '../components/DataTestsTab.vue'
 import DocTestsTab from '../components/DocTestsTab.vue'
 import ChainView from '../components/planning/ChainView.vue'
+import CycleTab from '../components/planning/CycleTab.vue'
 import FindingsTab from '../components/FindingsTab.vue'
 import ReportTab from '../components/ReportTab.vue'
 
@@ -58,6 +59,7 @@ watch(() => props.section, value => {
  */
 const SECTION_LABEL: Record<string, string> = {
   apm: 'Audit planning memorandum',
+  cycle: 'Cycle',
   coverage: 'Risk and control matrix',
   'data-tests': 'Test programme',
   'doc-tests': 'Document test results',
@@ -83,6 +85,7 @@ const title = computed(() => SECTION_LABEL[section.value] ?? '')
 
     <div class="ui-surface__panel">
       <PlanningTab v-if="section === 'apm'" :workspace="workspace" section="apm" @changed="reloadStatus" />
+      <CycleTab v-else-if="section === 'cycle'" :workspace="workspace" @changed="reloadStatus" />
       <PlanningTab v-else-if="section === 'coverage'" :workspace="workspace" section="rcm" @changed="reloadStatus" />
       <DataTestsTab v-else-if="section === 'data-tests'" :workspace="workspace" @changed="reload" />
       <DocTestsTab v-else-if="section === 'doc-tests'" :workspace="workspace" @changed="reloadStatus" />

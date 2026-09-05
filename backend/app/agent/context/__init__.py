@@ -121,6 +121,7 @@ from .adapters import (
     test_draft_row_candidates,
     test_generate_scope,
     rcm_current_row_candidates,
+    cycle_scope,
     rcm_scope,
 )
 
@@ -237,5 +238,6 @@ __all__ = [
     "test_draft_row_candidates",
     "test_generate_scope",
     "rcm_current_row_candidates",
+    "cycle_scope",
     "rcm_scope",
 ]

@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_rulesets, cycle_vouching
+from ... import cycle_rulesets, cycle_vouching, planning_cycle
 from ...text import counted, relevance_tokens
 from .. import prompts
 from ..prompts import JSON_RULES, LANGUAGE_RULES
@@ -375,9 +375,7 @@ control, its type, its owner, its criteria and the control attributes are each
 decided by a later pass, and a field you write here that they own is discarded.
 
 All ids and narrative fields are strings. business_cycle names the cycle this
-row belongs to, in the engagement's own words — "Treasury dealing and
-settlement", "Procure to pay". It is the label the matrix chooses; nothing
-derives it, so a row that omits it carries none.
+row belongs to; BUSINESS CYCLE gives it, and every row carries that value.
 
 You are shown the memorandum and the methodology, and no engagement documents,
 tables or profiles. That is deliberate. A risk is what could go wrong in this
@@ -399,16 +397,13 @@ Follow the ACTIVE RISK TEMPLATE for methodology. Its non-negotiable rules:
 - Write risks in generic, condition-independent auditor wording. Never quote
   percentages, counts, null rates, column names, or file names in a risk, never
   embed the cause, and never pre-conclude that a deficiency exists.
-- process groups the rows; it does not label them. A cycle has a handful of
-  process steps and each carries several risks, so reuse a process name across
-  every row belonging to that step, spelled exactly the same way. Take the
-  names from the memorandum's process description. Where it describes the flow
-  without naming its steps, name them yourself — a few of them, covering the
-  whole flow — and then reuse those. A matrix whose every row names a different
-  process has not grouped anything, and two names differing by a word are one
-  process spelled twice. Naming fewer processes never means covering fewer of
-  them: every step of the flow keeps its risks, under whichever name you gave
-  it.
+- process groups the rows; it does not label them. Choose each row's process
+  from PROCESS NAMES, spelled exactly as given: those are the steps of this
+  cycle, already read from the memorandum, and the matrix is grouped by them.
+  A cycle has a handful of steps and each carries several risks, so a matrix
+  whose every row names a different process has not grouped anything. Using
+  fewer process names never means covering fewer of them: every step keeps its
+  risks, under the name the cycle gives it.
 - Rate against the band the template describes, not against the row beside it.
   A set of risks with no medium in it has not been rated, and the rating is the
   first thing a reviewer uses to direct effort.
@@ -1025,6 +1020,8 @@ def _partition_rcm_rows(
     answers = _tabular_answers(request)
     sentences = rcm_sentence_index(request)
     supplied_text = _supplied_basis_text(request)
+    process_names = _rcm_process_names(request)
+    business_cycle = str(request.unit_input.get("business_cycle") or "")
     normalized: list[dict] = []
     failures: list[dict] = []
     flags: list[dict] = []
@@ -1042,7 +1039,15 @@ def _partition_rcm_rows(
         try:
             normalized.append(
                 _normalized_rcm_row(
-                    row, index, existing_ids, answers, sentences, supplied_text, flags
+                    row,
+                    index,
+                    existing_ids,
+                    answers,
+                    sentences,
+                    supplied_text,
+                    flags,
+                    process_names,
+                    business_cycle,
                 )
             )
         except WorkerResponseValidationError as error:
@@ -1235,6 +1240,47 @@ def _validated_control_owner(
     return stated
 
 
+def _rcm_process_names(request: WorkerRequest) -> list[str]:
+    """The step names a row's ``process`` may take, in the cycle's own order."""
+
+    return [
+        str(name)
+        for name in request.unit_input.get("process_names") or []
+        if str(name or "").strip()
+    ]
+
+
+def _process_flags(
+    row: Mapping[str, Any],
+    index: int,
+    process_names: list[str],
+) -> list[dict]:
+    """A process the cycle does not name. Reported, not refused — yet.
+
+    The shape is what the vocabulary *should* be, and a row outside it is
+    either a step the cycle missed or a name the matrix invented. Which of the
+    two it is cannot be told from the string, and refusing on the first run of
+    this would spend the risks call's one repair re-deriving a whole matrix
+    over a disagreement an auditor settles by reading two lists. It becomes a
+    row error once a treasuryfull and a procurement regeneration have been read
+    (step 5d of docs/rcm-generation-redesign.md).
+    """
+
+    if not process_names:
+        return []
+    process = str(row.get("process") or "").strip()
+    if any(process.casefold() == name.casefold() for name in process_names):
+        return []
+    return [{
+        "row_index": index,
+        "kind": "process_outside_cycle",
+        "message": (
+            f"names process \u201c{process}\u201d, which the cycle does not have; "
+            f"its steps are: {', '.join(process_names)}"
+        ),
+    }]
+
+
 def _control_flags(row: Mapping[str, Any], index: int) -> list[dict]:
     """Reported to the auditor, never refused.
 
@@ -1343,6 +1389,8 @@ def _normalized_rcm_row(
     sentences: list[dict[str, Any]] | None = None,
     supplied_text: str = "",
     flags: list[dict] | None = None,
+    process_names: list[str] | None = None,
+    business_cycle: str = "",
 ) -> dict:
     """Validate and normalize exactly one proposed RCM row."""
 
@@ -1371,6 +1419,7 @@ def _normalized_rcm_row(
     control_owner = _validated_control_owner(row, index, supplied_text)
     if flags is not None:
         flags.extend(_control_flags(row, index))
+        flags.extend(_process_flags(row, index, list(process_names or [])))
     criteria_refs, criteria_flag = resolve_criteria(
         row.get("criteria"), row.get("criteria_hint"), list(sentences or [])
     )
@@ -1392,9 +1441,12 @@ def _normalized_rcm_row(
         raise WorkerResponseValidationError(
             [f"RCM row {index}: {message}" for message in error.errors]
         ) from error
-    # A row's business cycle is a label the matrix chose, not a projection of
-    # anything the engine owns.
-    expected_cycle = str(row.get("business_cycle") or "").strip()
+    # The cycle names itself, and every row of the matrix belongs to it. The
+    # row's own answer is kept only where no cycle has been designed, which is
+    # the state an engagement is in before the shape exists.
+    expected_cycle = (
+        str(business_cycle).strip() or str(row.get("business_cycle") or "").strip()
+    )
     operation = str(row.get("operation") or "").strip().lower()
     if operation not in {"update", "create"}:
         raise WorkerResponseValidationError(
@@ -1913,6 +1965,12 @@ def _rcm_risks_user(request: WorkerRequest) -> str:
         {
             "ACTIVE RISK TEMPLATE (verbatim)": template,
             "REVISED APM": current_apm,
+            # The closed vocabulary. Supplied even when empty, so the rule in
+            # the system prompt is never left pointing at a key that is not
+            # there — an engagement with no cycle designed gets an empty list
+            # and the flag below rather than silence.
+            "PROCESS NAMES": _rcm_process_names(request),
+            "BUSINESS CYCLE": str(request.unit_input.get("business_cycle") or ""),
             "EXISTING RISKS": [
                 {
                     "rcm_id": str(row.get("id") or ""),
@@ -2905,11 +2963,228 @@ PLANNING_CONTEXT_WORKER = WorkerDefinition(
 WORKERS.register(PLANNING_CONTEXT_WORKER)
 
 
+# --------------------------------------------------------------------------- #
+# planning.cycle worker (step 5 of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+CYCLE_WORKER_ID = "planning.cycle"
+CYCLE_SYSTEM = f"""[agent:planning_cycle]
+Name the steps of the process this engagement audits, as the audit planning
+memorandum names them, in the order it gives them. The memorandum's process
+flow is the source; do not invent a step it does not describe, and do not
+merge two it separates.
+
+Return {{"name": ..., "steps": [...], "cross_cutting": {{...}}}}.
+
+- `name` is the cycle as a whole, in the entity's own words where the
+  memorandum gives them ("Procure-to-pay", "Treasury dealing and settlement").
+- Each step has `name`, `roles`, `populations` and `themes`.
+- `roles` are the document types that record the step, chosen from DOCUMENT
+  TYPES HELD and spelled exactly as listed. A role's `name` is a short
+  lowercase identifier for the position it fills in the cycle (`order`,
+  `receipt`, `invoice`), unique across the whole cycle, and is not the type id
+  repeated. A step no held document type records has no roles; say so by
+  leaving the list empty rather than by naming a type the engagement lacks.
+- `populations` are the tables whose rows *are* that step, chosen from TABLES
+  and spelled exactly. Where a step's records live on another step's table,
+  give that table with the `columns` that hold them. A step with no table has
+  an empty list.
+- Flag `anchor: true` on the one population a test of this cycle would start
+  from — the table whose rows are the transactions being vouched. Exactly one
+  population in the whole cycle carries it.
+- `themes` assigns each entry of PLANNED RISK THEMES to the one step that
+  answers it, copied verbatim. A theme that belongs to no single step goes to
+  `cross_cutting`. Every theme is placed exactly once.
+- `cross_cutting` is one bucket for what runs across the cycle rather than
+  within a step — override, monitoring, segregation. Give it a `name` and its
+  `themes`.
+
+Where EXISTING STEP NAMES or EXISTING PROCESS NAMES describe a step you are
+naming, reuse that wording exactly: the matrix's rows are grouped by it, and
+renaming a step it already uses orphans them.
+
+You are describing the process, not assessing it. No risks, no controls, no
+judgement about whether a step is adequately covered. {JSON_RULES} """ + LANGUAGE_RULES
+
+CYCLE_PLANNING_SOURCE_ID = "planning_context"
+CYCLE_CURRENT_APM_SOURCE_ID = "current_apm"
+
+
+def _cycle_response_schema(response: str) -> Mapping[str, Any]:
+    payload = decode_json_response(response)
+    if not isinstance(payload, Mapping):
+        raise WorkerResponseValidationError("the cycle response is not an object")
+    steps = payload.get("steps")
+    if not isinstance(steps, (list, tuple)):
+        raise WorkerResponseValidationError("the cycle response carries no steps")
+    return {
+        "name": str(payload.get("name") or ""),
+        "steps": [_plain_json(step) for step in steps],
+        "cross_cutting": _plain_json(payload.get("cross_cutting")),
+    }
+
+
+def _cycle_allowed_values(request: WorkerRequest) -> tuple[list[str], list[str]]:
+    """The document types and tables this call may name, in the order supplied."""
+
+    types = [
+        str(entry.get("document_type") or "")
+        for entry in request.unit_input.get("document_types") or []
+        if isinstance(entry, Mapping) and entry.get("document_type")
+    ]
+    tables = [entry["table"] for entry in _table_column_names(request)]
+    return types, tables
+
+
+def _cycle_placed_themes(cycle: Mapping[str, Any]) -> list[str]:
+    placed = [
+        str(theme)
+        for step in cycle.get("steps") or []
+        if isinstance(step, Mapping)
+        for theme in step.get("themes") or []
+    ]
+    cross = cycle.get("cross_cutting")
+    if isinstance(cross, Mapping):
+        placed.extend(str(theme) for theme in cross.get("themes") or [])
+    return placed
+
+
+def _cycle_with_unplaced_themes(
+    cycle: dict[str, Any],
+    planned: list[str],
+) -> dict[str, Any]:
+    """Assign a theme the response left out to the cross-cutting bucket.
+
+    Locally rather than by refusing the response: a theme nobody claimed is a
+    theme no step owns, which is what the cross-cutting bucket is for, and
+    spending the one repair on re-deriving a whole shape to move one string
+    would be paying the largest available price for the smallest defect. A
+    theme placed *twice* is refused instead — that is a contradiction the
+    model has to resolve, not an omission local code can settle.
+    """
+    placed = {theme.casefold() for theme in _cycle_placed_themes(cycle)}
+    missing = [theme for theme in planned if theme.casefold() not in placed]
+    if not missing:
+        return cycle
+    cross = dict(cycle.get("cross_cutting") or {})
+    cross.setdefault("name", "Cross-cutting")
+    cross["themes"] = [*(cross.get("themes") or []), *missing]
+    return {**cycle, "cross_cutting": cross}
+
+
+def validate_cycle_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Gate one proposed cycle shape against the vocabularies it was given.
+
+    The structural rules are :func:`planning_cycle.validate_cycle_shape`, which
+    is also what the commit and every auditor edit run through — checked here
+    against the *supplied* lists rather than against a workspace this worker
+    must not reach, so a shape that passes here is a shape the workspace will
+    store. What is added is the part only this turn knows: the themes it was
+    asked to place.
+    """
+    planned = [
+        str(theme) for theme in request.unit_input.get("risk_themes") or [] if theme
+    ]
+    cycle = _cycle_with_unplaced_themes(dict(proposal), planned)
+    allowed_types, allowed_tables = _cycle_allowed_values(request)
+    try:
+        return planning_cycle.validate_cycle_shape(
+            cycle,
+            allowed_types=set(allowed_types),
+            base_tables=set(allowed_tables),
+        )
+    except planning_cycle.CycleShapeError as error:
+        raise WorkerResponseValidationError(str(error)) from error
+
+
+def _cycle_user(request: WorkerRequest) -> str:
+    return json.dumps(
+        {
+            "REVISED APM": str(_resolved_item(request, CYCLE_CURRENT_APM_SOURCE_ID) or ""),
+            "PLANNED RISK THEMES": [
+                str(theme) for theme in request.unit_input.get("risk_themes") or []
+            ],
+            "DOCUMENT TYPES HELD": _plain_json(
+                request.unit_input.get("document_types") or []
+            ),
+            "TABLES": _table_column_names(request),
+            "TABLE JOINS ALREADY INFERRED": _plain_json(
+                request.unit_input.get("joins") or []
+            ),
+            "EXISTING STEP NAMES": [
+                str(name) for name in request.unit_input.get("existing_steps") or []
+            ],
+            "EXISTING PROCESS NAMES": [
+                str(name) for name in request.unit_input.get("existing_processes") or []
+            ],
+            "RESOLVED CONTEXT": _context_from_sources(
+                request, CYCLE_PLANNING_SOURCE_ID
+            ),
+        },
+        indent=1,
+        ensure_ascii=False,
+    )
+
+
+def run_cycle_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Transform the supplied bundle into one small structured cycle request."""
+
+    user = _cycle_user(request)
+    if attempt.is_repair:
+        if attempt.previous_response:
+            user += "\n\nPREVIOUS CYCLE DRAFT:\n" + attempt.previous_response
+        user += (
+            "\n\nThe previous cycle draft failed the engagement quality gate: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return the complete corrected cycle, keeping the steps that "
+            "did not fail."
+        )
+    return gateway.complete(
+        CYCLE_SYSTEM,
+        user,
+        _rcm_activity(request, "planning_cycle"),
+        attempt=attempt.number,
+    )
+
+
+CYCLE_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="planning.cycle.response",
+    schema_hash=_sha256_text("cycle-response:v1:name-steps-roles-populations-themes"),
+    validator=_cycle_response_schema,
+)
+CYCLE_WORKER = WorkerDefinition(
+    worker_id=CYCLE_WORKER_ID,
+    prompt_hash=_sha256_text(CYCLE_SYSTEM),
+    response_schema=CYCLE_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair a cycle shape against the supplied types, tables and themes."
+        ),
+    ),
+    implementation=run_cycle_worker,
+    semantic_validator=validate_cycle_proposal,
+)
+
+WORKERS.register(CYCLE_WORKER)
+
+
+
 __all__ = [
     "APM_RESPONSE_SCHEMA",
     "APM_SYSTEM",
     "APM_WORKER",
     "APM_WORKER_ID",
+    "CYCLE_RESPONSE_SCHEMA",
+    "CYCLE_SYSTEM",
+    "CYCLE_WORKER",
+    "CYCLE_WORKER_ID",
     "PLANNING_CONTEXT_FIELDS",
     "PLANNING_CONTEXT_RESPONSE_SCHEMA",
     "PLANNING_CONTEXT_SYSTEM",
@@ -2922,9 +3197,11 @@ __all__ = [
     "RCM_WORKER",
     "RCM_WORKER_ID",
     "run_apm_worker",
+    "run_cycle_worker",
     "run_planning_context_worker",
     "run_rcm_worker",
     "validate_apm_proposal",
+    "validate_cycle_proposal",
     "validate_planning_context_proposal",
     "validate_rcm_proposal",
 ]

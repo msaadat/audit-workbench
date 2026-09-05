@@ -464,12 +464,16 @@ def _ruleset_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
         ),
         key=lambda item: item["document_type"],
     )
+    # The shape joins the matrix rows as a guarded parent: the roles are its,
+    # so a reshaped cycle must conflict a proposal written against the positions
+    # it used to declare, exactly as a re-derived schema does for the fields.
+    parents = (*rows, *(("planning:cycle",) if workspace.planning.get("cycle") else ()))
     return [
         UnitSpec(
             semantic_unit_id("cycle_ruleset", "proposal"),
             "cycle_ruleset_proposal",
             "Propose the cycle rules for this engagement",
-            rows,
+            parents,
             {"schemas": vocabulary},
         )
     ]

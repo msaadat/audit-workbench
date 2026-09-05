@@ -12,6 +12,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from .. import (
     doc_tests,
     findings,
+    planning_cycle_graph,
     projection_cache,
     rcm_execution,
     templates_store,
@@ -72,6 +73,21 @@ def get_planning(workspace_id: str):
 @router.patch("/planning")
 def patch_planning(workspace_id: str, payload: dict = Body(...)):
     return _ws(workspace_id).update_planning(payload)
+
+
+@router.get("/planning/cycle/graph")
+def get_cycle_graph(workspace_id: str):
+    """The cycle drawn: one entry per step, and the edges between their fields.
+
+    Read-only and derived — no model call, and nothing the page then has to
+    infer. Cached on the workspace signature because it opens a frame per named
+    population to state its size, which is the one expensive thing it does.
+    """
+
+    ws = _ws(workspace_id)
+    return projection_cache.cached(
+        ws.root, "planning_cycle_graph", lambda: planning_cycle_graph.cycle_graph(ws)
+    )
 
 
 @router.get("/planning/apm/export")

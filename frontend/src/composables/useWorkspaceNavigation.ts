@@ -29,6 +29,7 @@ export type WorkspaceDestination =
   | 'console'
   | 'record'
   | 'apm'
+  | 'cycle'
   | 'rcm'
   | 'rcm-row'
   | 'chain'
@@ -65,6 +66,9 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   // that asked for it. Drawn from the audit graph, with run history layered on.
   record: { surface: 'home', section: '', keys: [] },
   apm: { surface: 'file', section: 'apm', keys: [] },
+  // The shape of the process, between the memorandum it is read from and the
+  // matrix that takes its process names from it.
+  cycle: { surface: 'file', section: 'cycle', keys: [] },
   // `paper` names the row whose working paper is open, so a rendered paper is
   // a link someone can send rather than a dialog only they can see.
   rcm: { surface: 'file', section: 'coverage', keys: ['rcm', 'observation', 'paper'] },
@@ -88,7 +92,7 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
 
 /** Sections in rail order, per surface. */
 export const FILE_SECTIONS = [
-  'apm', 'coverage', 'data-tests', 'doc-tests', 'findings', 'chain', 'report',
+  'apm', 'cycle', 'coverage', 'data-tests', 'doc-tests', 'findings', 'chain', 'report',
 ] as const
 export const BENCH_SECTIONS = ['documents', 'tables', 'query', 'analysis'] as const
 

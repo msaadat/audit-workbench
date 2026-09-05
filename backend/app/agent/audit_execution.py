@@ -30,6 +30,7 @@ from .. import (
 )
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
+from ..planning_cycle import cycle_process_names
 from ..workspaces import (
     Workspace,
     WorkspaceConflict,
@@ -62,6 +63,7 @@ from .context import (
     cycle_linkage_scope,
     apm_document_methodology_scope,
     apm_table_profile_candidates,
+    cycle_scope,
     finding_draft_scope,
     planning_context_scope,
     rcm_scope,
@@ -75,7 +77,9 @@ from .executors.fieldwork import (
 )
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
+    CYCLE_EDIT_PRESERVED,
     ApmExecutorTarget,
+    CycleExecutorTarget,
     PlanningContextExecutorTarget,
     RcmExecutorTarget,
 )
@@ -1143,6 +1147,168 @@ class AuditWorkflowExecution(ActionRunner):
             conflict_handler=conflict_handler,
         )
 
+    def _bind_cycle(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the cycle-design capability to the shared ``UnitPipeline``.
+
+        The vocabularies this turn may name things from travel on the unit
+        input, not in the prompt and not through a declared context source:
+        the document types the engagement holds, the imported tables and their
+        columns, the joins already inferred between them, and the themes the
+        memorandum planned. Each is computed locally, and each is hashed into
+        ``unit_input_hash`` — so classifying a new document type, or importing
+        a table the shape could have used, invalidates a persisted proposal
+        rather than leaving one drafted against a smaller world.
+        """
+        self.ws = subject
+        expected_apm = parent_hashes(self.ws, ["planning:apm"])
+        target = CycleExecutorTarget(
+            self.ws,
+            self.run["id"],
+            allow_auditor_overwrite=self.run["mode"] == "permission",
+        )
+        task = self.add_task("cycle", "workflow:cycle", "Cycle design")
+        stored_cycle = self.ws.planning.get("cycle") or {}
+
+        def context_provider():
+            return resolve_context(
+                self, self.context_resolver, capability, unit, cycle_scope(self.ws)
+            )
+
+        def approval_provider(proposal):
+            proposals = [
+                self.proposal_item(
+                    str(proposal.get("name") or "Cycle design"),
+                    "The steps of the process, read from the memorandum.",
+                    dict(proposal),
+                )
+            ]
+            accepted = self.request_approval("cycle", task, proposals)
+            return dict(accepted[0]["spec"]) if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            self.run["planning_changes"]["cycle_updated"] += 1
+            self.record_artifact(
+                "planning", "cycle", "planning:cycle", "updated", task
+            )
+            # A step the memorandum describes but no held document type records
+            # is a fact worth seeing rather than an error: the process runs, and
+            # this engagement holds nothing that evidences that part of it.
+            for step in (self.ws.planning.get("cycle") or {}).get("steps") or []:
+                if not step.get("roles"):
+                    self.warn(
+                        f"Cycle step '{step.get('name')}' has no document type "
+                        "recording it, so no cycle test can reach it."
+                    )
+            if not any(
+                population.get("anchor")
+                for step in (self.ws.planning.get("cycle") or {}).get("steps") or []
+                for population in step.get("populations") or []
+            ):
+                self.warn(
+                    "The cycle names no anchor population, so a cycle test has "
+                    "no population to start from."
+                )
+
+        def conflict_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            if str(error) != CYCLE_EDIT_PRESERVED:
+                return None
+            self.run.setdefault("planning_revisions", []).append(
+                {
+                    "kind": "cycle",
+                    "status": "proposed",
+                    "sidecar": dict(error.proposal_reference or {}),
+                }
+            )
+            self.run["planning_changes"]["cycle_proposed"] += 1
+            return ("awaiting_confirmation", "Auditor-owned cycle was preserved.")
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.cycle",
+                executor_id="planning.cycle",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                    # The themes the memorandum planned, so each is assigned to
+                    # the step that answers it. Derived locally from the same
+                    # memorandum the turn is shown, by the same function the
+                    # matrix's coverage warnings use.
+                    "risk_themes": planning_workers.planned_risk_themes(
+                        str(self.ws.planning.get("apm_markdown") or "")
+                    ),
+                    # The record kinds held, by name and count: what a step's
+                    # document roles are chosen from. ``other`` is filtered out
+                    # because a role may not name it — a document nothing could
+                    # type records no identifiable position in the cycle — and
+                    # offering a value the gate then refuses spends the one
+                    # repair on a choice this list should never have allowed.
+                    "document_types": [
+                        entry
+                        for entry in document_classification.evidence_type_counts(
+                            self.ws
+                        )
+                        if entry.get("document_type") != "other"
+                    ],
+                    # What the tables already relate to each other by. The shape
+                    # does not author joins — it reads them, so a step whose
+                    # population lives on a neighbour's table can say so.
+                    "joins": [
+                        {
+                            "name": join.get("name"),
+                            "left": join.get("left"),
+                            "right": join.get("right"),
+                            "left_on": list(join.get("left_on") or []),
+                            "right_on": list(join.get("right_on") or []),
+                        }
+                        for join in self.ws.joins
+                    ],
+                    # For reuse verbatim. Renaming a step the matrix already
+                    # groups its rows by orphans them, so both vocabularies in
+                    # play are handed back to the turn that could break them.
+                    "existing_steps": cycle_process_names(stored_cycle),
+                    "existing_processes": sorted(
+                        {
+                            str(row.get("process") or "").strip()
+                            for row in self.ws.rcm
+                            if str(row.get("process") or "").strip()
+                        }
+                    ),
+                },
+                activity={
+                    "artifact_refs": ["planning:cycle"],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_apm,
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=("cycle" if self.run["mode"] == "permission" else None),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(target.workspace, {}),
+            on_committed=on_committed,
+            conflict_handler=conflict_handler,
+        )
+
     def _bind_rcm(
         self,
         subject: Workspace,
@@ -1160,7 +1326,14 @@ class AuditWorkflowExecution(ActionRunner):
         that translates receipt row actions into planning-change accounting.
         """
         self.ws = subject
-        expected_apm = parent_hashes(self.ws, ["planning:apm"])
+        cycle = self.ws.planning.get("cycle") or {}
+        # The shape joins the memorandum as a guarded parent once one exists.
+        # Before that the matrix is guarded on the memorandum alone, which is
+        # the state an engagement is in until the cycle stage first runs.
+        expected_apm = parent_hashes(
+            self.ws,
+            ["planning:apm", *(["planning:cycle"] if cycle.get("steps") else [])],
+        )
         target = RcmExecutorTarget(
             self.ws,
             self.run["id"],
@@ -1277,6 +1450,12 @@ class AuditWorkflowExecution(ActionRunner):
                     "document_types": document_classification.evidence_type_counts(
                         self.ws
                     ),
+                    # The closed vocabulary a row's ``process`` is chosen from,
+                    # and the cycle every row belongs to. Both are hashed into
+                    # ``unit_input_hash``, so a reshaped cycle invalidates a
+                    # persisted proposal — correct, because the vocabulary moved.
+                    "process_names": cycle_process_names(cycle),
+                    "business_cycle": str(cycle.get("name") or ""),
                 },
                 activity={
                     "artifact_refs": ["planning:apm"],
@@ -1346,6 +1525,15 @@ class AuditWorkflowExecution(ActionRunner):
             # open to it, which is the honest outcome and not a silent one:
             # the control is now answered from the population or from a
             # document rather than from linked source records.
+            # A step of the process the rules cannot bind, because its document
+            # type carries no identifier field for a join key to reach it by.
+            # The shape keeps the step; the ruleset cannot test it.
+            for item in output.get("unreachable") or []:
+                self.warn(
+                    f"Cycle role '{item.get('role')}' could not be bound into the "
+                    f"rules ({item.get('reason') or 'no reason given'}), so no "
+                    "cycle test reaches that step of the process."
+                )
             for item in output.get("downgraded") or []:
                 self.warn(
                     f"Control attribute '{item.get('control_attribute')}' of RCM "
@@ -1370,6 +1558,11 @@ class AuditWorkflowExecution(ActionRunner):
                     # data *is*, never from what it happens to contain. The
                     # document schemas arrive as declared context instead.
                     "tables": tooling.table_schemas(self.ws),
+                    # The positions this cycle holds, decided after the
+                    # memorandum. This stage chooses fields; it no longer
+                    # invents the places those fields fill, and the anchor's
+                    # table and column are read off the shape at commit.
+                    "cycle": self.ws.planning.get("cycle") or {},
                 },
                 activity={
                     "artifact_refs": ["workflow:cycle_ruleset"],
@@ -1976,6 +2169,13 @@ _PARTIAL_DEPENDENCIES = {
     # sources before planning and to give the record a stage to draw, not to
     # forbid planning from a brief alone.
     "planning.context_ready": {"sources.imported", "documents.analysis_generated"},
+    # The cycle takes the same edge for the same reason. It reads the imported
+    # tables to name each step's population, but a step *may* have none — that
+    # is the ordinary state of a step whose records were never imported — so an
+    # engagement with nothing imported still has a process with steps and
+    # document roles, and must not have its matrix withheld for lacking
+    # populations it was never going to have.
+    "planning.cycle_ready": {"sources.imported"},
     # Promotion is additive: it carries an exploratory procedure into a test
     # the engagement would not otherwise have. A fit the model could not make
     # is one test the audit does not gain, and must never withhold the tests it
@@ -2035,6 +2235,10 @@ def build_audit_workflow_runner(
         "planning.apm_ready": (
             adapter._bind_apm,
             {"worker": "planning.apm", "executor": "planning.apm"},
+        ),
+        "planning.cycle_ready": (
+            adapter._bind_cycle,
+            {"worker": "planning.cycle", "executor": "planning.cycle"},
         ),
         "planning.rcm_ready": (
             adapter._bind_rcm,

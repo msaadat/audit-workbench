@@ -57,7 +57,7 @@ const starting = ref('')
 const expanded = ref<Set<string>>(new Set())
 
 const KNOWN_DESTINATIONS: readonly string[] = [
-  'apm', 'rcm', 'chain', 'doc-tests', 'data-tests',
+  'apm', 'cycle', 'rcm', 'chain', 'doc-tests', 'data-tests',
   'findings', 'report', 'documents', 'data', 'query', 'analysis',
 ]
 
@@ -65,6 +65,7 @@ const KNOWN_DESTINATIONS: readonly string[] = [
 const FILED_ICONS: Record<string, string> = {
   Sources: 'pi pi-folder-open',
   'Audit planning memorandum': 'pi pi-map',
+  'Cycle design': 'pi pi-sitemap',
   'Risk and control matrix': 'pi pi-table',
   'Control conclusions': 'pi pi-check-square',
   'Test programme': 'pi pi-shield',

@@ -1,8 +1,11 @@
 # Cycle design after the APM: feasibility and mockups
 
-**Status:** design agreed on 5 September 2026 — the *Simplified view* page of
-the canvas is the one being built; nothing is implemented yet. The build plan
-is **step 5** of [`rcm-generation-redesign.md`](../rcm-generation-redesign.md),
+**Status:** built, 5 September 2026 — the *Simplified view* page of the canvas
+is what shipped. Read the *Landed as* notes under **step 5** of
+[`rcm-generation-redesign.md`](../rcm-generation-redesign.md) before building
+on this: three of the open questions below are answered there, and the
+`sources.imported` edge this document asks for is an edge but a partial one.
+The build plan is **step 5** of [`rcm-generation-redesign.md`](../rcm-generation-redesign.md),
 which supersedes the file-level sketch under *Feasibility* below where the two
 differ. Every claim about what the code does was read from the working tree
 at commit `d8e179d` plus the uncommitted `control_type` change. Step 1 of that
@@ -282,7 +285,9 @@ validation error string at commit time.
   would take a cycle selector when a second one is real.
 - **Confirmation is not approval.** Confirming the shape is an auditor saying
   the steps and roles are right; it grants nothing. Approving the rules is the
-  human act it is today.
+  human act it is today. *Built without a separate confirmed state: an
+  auditor's edit is the confirmation, and readiness never waits on one — see
+  step 5a.*
 - **The graph endpoint reads tables' column names** on every load; on a
   workspace with wide tables that is a frame open per table. Cache it on the
   workspace's table signature the way `projection_cache` caches the document
@@ -293,12 +298,18 @@ validation error string at commit time.
 
 ## Open questions for the auditor
 
+*All three are answered by step 5 as built; kept for the reasoning.*
+
 1. Does the RCM's `process` become an error when it names a step the shape
    does not have, or a warning that reconciles rows into the nearest step? The
-   mockup assumes the closed vocabulary.
+   mockup assumes the closed vocabulary. **Answered by 5d: a flag on the run
+   first, promoted to a row error once one treasuryfull and one procurement
+   regeneration have been read.**
 2. Should the bindings be proposed as soon as schemas exist, before the matrix,
    with the coverage of matrix requirements as a later pass? It would let the
    graph fill in earlier at the cost of a second linkage turn. The mockup keeps
-   today's single turn after the matrix.
+   today's single turn after the matrix. **Answered by 5e: the stage keeps its
+   place and both of its edges; only the roles became an input.**
 3. Where does the page live: under Planning beside the APM and the matrix, or
    under the workbench beside Tables? The mockup's breadcrumb says Planning.
+   **Answered by 5f: a file section `cycle`, between `apm` and `coverage`.**

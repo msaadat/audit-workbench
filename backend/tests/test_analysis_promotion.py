@@ -27,7 +27,7 @@ from app.agent.context import PRESETS, ContextResolver, promotion_scope
 from app.agent.workers import analysis as analysis_workers
 from app.agent.workers.model import WorkerResponseValidationError
 
-from conftest import FakeAgentLLM, wait_run
+from conftest import stamp_planning_cycle, FakeAgentLLM, wait_run
 
 
 PYTHON_CODE = (
@@ -57,6 +57,11 @@ def _workspace() -> workspaces.Workspace:
             "risk_rating": "high",
         }
     )
+    # An engagement whose matrix is already settled has a cycle shape saying so.
+    # Without one the cycle stage materializes and the matrix, whose dependency
+    # it is, stops being reusable — so these runs would re-derive the whole
+    # matrix instead of exercising promotion.
+    stamp_planning_cycle(ws)
     # The row already carries an executable test, so ``tests.specified`` is
     # satisfied and these runs exercise promotion rather than re-deriving the
     # generation stage that precedes it.

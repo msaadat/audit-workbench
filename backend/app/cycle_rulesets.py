@@ -291,9 +291,35 @@ def _validate_anchor(
     operand = _role_field(item, "anchor", roles, workspace)
     if _field_role(workspace, roles, operand) != "identifier":
         raise RulesetError("The anchor must name an identifier field; it seeds the graph.")
+    table = _text(item.get("table"), "anchor.table")
+    column = _text(item.get("column"), "anchor.column")
+    # The anchor's column is checked against the table the same way every rule
+    # field is checked against its document schema. It was not, and a ruleset
+    # stored `deal_reference` — the *role's* field name — as a column of
+    # `04_deals`, which carries `DEAL_ID`. Nothing refused it, and a cycle
+    # anchored on a column that does not exist matches no population row at all,
+    # which reads downstream as an engagement whose records simply do not link.
+    # Only where the table is one this engagement actually holds. A ruleset
+    # naming a table that was never imported, or has since been replaced, is a
+    # pre-existing condition of that engagement; refusing to *read* it would
+    # turn a data problem into a workspace nobody can open. What is checked is
+    # the pair: a real table, and a column it really carries.
+    try:
+        columns = (
+            {str(name) for name in workspace.get_frame(table).columns}
+            if table in set(workspace.table_names())
+            else None
+        )
+    except Exception:
+        columns = None
+    if columns is not None and column not in columns:
+        raise RulesetError(
+            f"The anchor names column '{column}', which '{table}' does not carry. "
+            f"Its columns are: {', '.join(sorted(columns))}."
+        )
     return {
-        "table": _text(item.get("table"), "anchor.table"),
-        "column": _text(item.get("column"), "anchor.column"),
+        "table": table,
+        "column": column,
         "role": operand["role"],
         "field": operand["field"],
     }
@@ -366,9 +392,28 @@ def validate(workspace: Workspace, payload: object) -> dict:
             ),
             key=lambda ref: ref["document_type"],
         ),
+        # Which cycle shape these roles came from, recorded beside the schema
+        # refs and for the same reason: the rules were written against a set of
+        # positions, and a reader should be able to tell which. It is outside
+        # ``ruleset_hash`` for the reason ``measured`` is — an approved ruleset
+        # is what was approved, and a reshaped cycle must not silently make an
+        # auditor's signature refer to something else.
+        "cycle_sha1": _cycle_sha1(workspace),
     }
     record["ruleset_hash"] = canonical_sha256(definition_of(record))
     return record
+
+
+def _cycle_sha1(workspace: Workspace) -> str:
+    """The hash of the cycle shape's material projection, or empty where none."""
+
+    from .workspace_transactions import artifact_projection, canonical_sha1
+
+    try:
+        projection = artifact_projection(workspace, "planning:cycle")
+    except WorkspaceError:
+        return ""
+    return canonical_sha1(projection) if projection else ""
 
 
 # --------------------------------------------------------------------------- #

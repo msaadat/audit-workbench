@@ -78,6 +78,13 @@ def _rcm(getfixture):
     return {"rows": [row]}, request
 
 
+@builds("planning.cycle")
+def _cycle(getfixture):
+    from test_agent_planning_cycle_worker import _request, _shape
+
+    return _shape(), _request()
+
+
 @builds("planning.context")
 def _planning_context(getfixture):
     from test_agent_planning_context_worker import _bundle

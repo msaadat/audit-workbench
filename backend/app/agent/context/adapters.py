@@ -858,6 +858,60 @@ def rcm_scope(
     )
 
 
+CYCLE_PLANNING_SOURCE_ID = "planning_context"
+CYCLE_CURRENT_APM_SOURCE_ID = "current_apm"
+CYCLE_TABLE_METADATA_SOURCE_ID = "table_metadata"
+
+
+def cycle_scope(
+    workspace: Workspace,
+    *,
+    planning_context: Mapping[str, object] | None = None,
+) -> ContextScope:
+    """Build the local candidate scope for the cycle-design capability.
+
+    Three sources and no fourth. The shape of a process is stated in the
+    memorandum, and what it may name is settled by lists the binder computes
+    locally — so this turn is shown the memorandum, the planning context and
+    the table columns, and nothing that had to be extracted from a document.
+    That is the whole point of the stage sitting where it does: it runs before
+    the evidence read, so it cannot depend on it.
+    """
+    context = dict(planning_context or workspace.planning.get("context") or {})
+    planning_content = {
+        "context": context,
+        "ownership": {
+            key: workspace.planning.get(key)
+            for key in ("created_by", "agent_run_id", "updated")
+        },
+    }
+    current_apm = str(workspace.planning.get("apm_markdown") or "")
+    return ContextScope(
+        candidates={
+            CYCLE_PLANNING_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:context",
+                    source=planning_content,
+                    representations={"planning_context": planning_content},
+                    metadata={"artifact": "planning_context"},
+                ),
+            ),
+            CYCLE_CURRENT_APM_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:apm",
+                    source=current_apm,
+                    representations={"current_artifact": current_apm},
+                    metadata={"artifact": "apm"},
+                ),
+            ),
+            CYCLE_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
+                workspace, imported_only=True
+            ),
+        },
+        selector_context=dict(context),
+    )
+
+
 # The bounded fields supplied for the one RCM row a generation unit plans
 # against. Roll-ups, evidence references, and execution state stay out;
 # generation needs the risk/control narrative and the row's current tests so

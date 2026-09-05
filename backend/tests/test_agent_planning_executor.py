@@ -12,8 +12,13 @@ from app.agent.executors.planning import (
     APM_EXECUTOR,
     APM_PARENT_REF,
     AUDITOR_EDIT_PRESERVED,
+    CYCLE_EDIT_PRESERVED,
+    CYCLE_EXECUTOR,
+    CYCLE_PARENT_REF,
     ApmEditPreserved,
     ApmExecutorTarget,
+    CycleEditPreserved,
+    CycleExecutorTarget,
     PLANNING_CONTEXT_EXECUTOR,
     PLANNING_CONTEXT_REF,
     PlanningContextExecutorTarget,
@@ -427,6 +432,141 @@ def test_rcm_executor_reconciles_interrupted_commit_and_detects_later_edit():
     target.workspace.update_rcm(committed_id, {"control": "Auditor edit"})
     # The auditor edit is not an agent write, so it is now preserved, not applied.
     assert RCM_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+
+# --------------------------------------------------------------------------- #
+# planning.cycle (step 5c of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+def _cycle_workspace(name="Cycle executor"):
+    workspace = _planning_workspace(name)
+    workspace.add_table(
+        "po_data.csv", b"PO_NUMBER,AMOUNT\nP1,10\n"
+    )
+    workspace.update_planning(
+        {"apm_markdown": "# Engagement\n\n## Process flow\nPurchase to pay."},
+        agent=True,
+    )
+    return workspace
+
+
+def _cycle_shape(**overrides):
+    shape = {
+        "name": "Procure-to-pay",
+        "steps": [
+            {
+                "name": "Purchase order",
+                "roles": [{"name": "order", "document_type": "purchase_order"}],
+                "populations": [{"table": "po_data", "anchor": True}],
+                "themes": [],
+            }
+        ],
+        "cross_cutting": {"name": "Procurement operations", "themes": []},
+    }
+    shape.update(overrides)
+    return shape
+
+
+def _cycle_request(workspace, shape=None):
+    return ExecutorRequest(
+        executor_id="planning.cycle",
+        capability_id="planning.cycle_ready",
+        unit_id="cycle",
+        proposal=shape or _cycle_shape(),
+        expected_revision=workspace.revision,
+        expected_parents=parent_hashes(workspace, [CYCLE_PARENT_REF]),
+        activity={"artifact_refs": ["planning:cycle"]},
+    )
+
+
+def test_cycle_executor_commits_under_the_memorandum_parent_hash():
+    workspace = _cycle_workspace()
+    request = _cycle_request(workspace)
+    target = CycleExecutorTarget(workspace, "run-cycle")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    stored = target.workspace.planning["cycle"]
+    assert stored["name"] == "Procure-to-pay"
+    assert stored["created_by"] == "agent"
+    assert stored["agent_run_id"] == "run-cycle"
+    assert stored["apm_sha1"] == workspaces.planning_apm_sha1(target.workspace)
+    assert list(receipt.artifact_refs) == ["planning:cycle"]
+    assert receipt.postcondition_hashes == parent_hashes(
+        target.workspace, ["planning:cycle"]
+    )
+    assert list(receipt.output["steps"]) == ["Purchase order"]
+    # Committing a cycle says nothing about the memorandum, so the artifact the
+    # matrix is guarded on must not move under it.
+    assert parent_hashes(target.workspace, [CYCLE_PARENT_REF]) == request.expected_parents
+
+
+def test_cycle_executor_rejects_a_memorandum_that_moved_under_it():
+    workspace = _cycle_workspace("Cycle parent guard")
+    request = _cycle_request(workspace)
+    workspace.update_planning({"apm_markdown": "# A different memorandum"}, agent=True)
+    target = CycleExecutorTarget(workspace, "run-cycle")
+
+    with pytest.raises(ParentConflict):
+        CYCLE_EXECUTOR.implementation(request, target)
+    assert not (workspaces.load_workspace(workspace.id).planning.get("cycle") or {})
+
+
+def test_cycle_executor_refuses_a_shape_the_workspace_cannot_hold():
+    """The drafting gate checked the lists the turn was handed. Between the two
+    a table can be dropped, and this is where that is caught."""
+
+    workspace = _cycle_workspace("Cycle validation")
+    shape = _cycle_shape()
+    shape["steps"][0]["populations"] = [{"table": "gl_entries"}]
+    target = CycleExecutorTarget(workspace, "run-cycle")
+
+    with pytest.raises(workspaces.WorkspaceError, match="not an imported table"):
+        CYCLE_EXECUTOR.implementation(_cycle_request(workspace, shape), target)
+
+
+def test_cycle_executor_preserves_an_auditor_owned_shape_without_permission():
+    workspace = _cycle_workspace("Cycle preservation")
+    workspace.update_planning({"cycle": _cycle_shape(name="Auditor cycle")})
+    request = _cycle_request(workspace)
+    target = CycleExecutorTarget(workspace, "run-cycle")
+
+    reconciliation = CYCLE_EXECUTOR.reconciler(request, target)
+    assert reconciliation.disposition == "conflict"
+    assert reconciliation.reason == CYCLE_EDIT_PRESERVED
+    with pytest.raises(CycleEditPreserved, match=CYCLE_EDIT_PRESERVED):
+        CYCLE_EXECUTOR.implementation(request, target)
+    assert workspaces.load_workspace(workspace.id).planning["cycle"]["name"] == (
+        "Auditor cycle"
+    )
+
+
+def test_cycle_executor_can_replace_an_auditor_shape_with_permission():
+    workspace = _cycle_workspace("Cycle overwrite")
+    workspace.update_planning({"cycle": _cycle_shape(name="Auditor cycle")})
+    request = _cycle_request(workspace)
+    target = CycleExecutorTarget(workspace, "run-cycle", allow_auditor_overwrite=True)
+
+    CYCLE_EXECUTOR.implementation(request, target)
+
+    assert target.workspace.planning["cycle"]["name"] == "Procure-to-pay"
+    assert target.workspace.planning["cycle"]["created_by"] == "agent"
+
+
+def test_cycle_executor_reconciles_an_interrupted_commit():
+    workspace = _cycle_workspace("Cycle reconcile")
+    request = _cycle_request(workspace)
+    target = CycleExecutorTarget(workspace, "run-cycle")
+
+    assert CYCLE_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+    CYCLE_EXECUTOR.implementation(request, target)
+    reconciliation = CYCLE_EXECUTOR.reconciler(request, target)
+    assert reconciliation.disposition == "already_applied"
+    assert list(reconciliation.result.artifact_refs) == ["planning:cycle"]
+
+    # An auditor reshaping it afterwards is a later edit, not this commit.
+    target.workspace.update_planning({"cycle": _cycle_shape(name="Reshaped")})
+    assert CYCLE_EXECUTOR.reconciler(request, target).disposition == "conflict"
 
 
 def test_planning_executor_has_no_gateway_worker_or_provider_dependency():

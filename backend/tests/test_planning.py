@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import threading
 import time
 
@@ -10,7 +11,16 @@ from fastapi.testclient import TestClient
 from app.agent import runner, store
 from app.agent.workers import planning as planning_worker
 from app.main import create_app
-from app import doc_tests, document_analysis, documents, llm, methodology, templates_store, workspaces
+from app import (
+    doc_tests,
+    document_analysis,
+    documents,
+    llm,
+    methodology,
+    planning_cycle,
+    templates_store,
+    workspaces,
+)
 
 from conftest import FakeAgentLLM, wait_run
 
@@ -707,7 +717,7 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
     assert "return the memorandum as markdown only" in prompt
 
 
-def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
+def test_permission_planning_gates_each_planning_artifact(monkeypatch):
     configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("Permission planning")
     started = start_planning(ws, "permission")
@@ -730,7 +740,15 @@ def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
         time.sleep(0.02)
     completed = wait_run(ws, started["id"])
     assert completed["status"] == "completed"
-    assert [approval["kind"] for approval in completed["approvals"]] == ["apm", "rcm"]
+    # One gate per artifact the run commits, in the order it commits them. The
+    # cycle earns its own: it is what the matrix's ``process`` vocabulary is
+    # drawn from, so approving the matrix without having seen the shape it was
+    # written against approves half a decision.
+    assert [approval["kind"] for approval in completed["approvals"]] == [
+        "apm",
+        "cycle",
+        "rcm",
+    ]
 
 
 def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
@@ -988,3 +1006,341 @@ def test_rcm_import_rejects_invalid_enum_values():
     unchanged = client.get(f"{base}/rcm").json()["items"][0]
     assert unchanged["risk_rating"] == "medium"
     assert unchanged["review_status"] == "draft"
+
+
+# --------------------------------------------------------------------------- #
+# The cycle shape (step 5a of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+def _cycle_workspace(name="Cycle shape") -> workspaces.Workspace:
+    ws = workspaces.create_workspace(name)
+    ws.add_table(
+        "po_data.csv",
+        pl.DataFrame(
+            {"PO_NUMBER": ["P1"], "GRN_ID": ["G1"], "AMOUNT": [10.0]}
+        ).write_csv().encode(),
+    )
+    ws.add_table(
+        "invoice_data.csv",
+        pl.DataFrame({"INVOICE_NO": ["I1"], "PO_NUMBER": ["P1"]}).write_csv().encode(),
+    )
+    return ws
+
+
+def _cycle_payload(**overrides) -> dict:
+    payload = {
+        "name": "Procure-to-pay",
+        "steps": [
+            {
+                "name": "Purchase order",
+                "roles": [{"name": "order", "document_type": "purchase_order"}],
+                "populations": [{"table": "po_data", "anchor": True}],
+                "themes": ["Authorisation against limits"],
+            },
+            {
+                "name": "Goods receipt",
+                "roles": [{"name": "receipt", "document_type": "goods_receipt"}],
+                "populations": [{"table": "po_data", "columns": ["GRN_ID"]}],
+                "themes": [],
+            },
+            {
+                "name": "Invoice processing",
+                "roles": [{"name": "invoice", "document_type": "vendor_invoice"}],
+                "populations": [{"table": "invoice_data"}],
+                "themes": ["Segregation of duties"],
+            },
+        ],
+        "cross_cutting": {
+            "name": "Procurement operations",
+            "themes": ["Fraud risks considered"],
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_validate_cycle_accepts_a_shape_and_returns_only_what_it_asserts():
+    ws = _cycle_workspace()
+    cycle = workspaces.validate_cycle(ws, _cycle_payload())
+
+    assert set(cycle) == {"name", "steps", "cross_cutting"}
+    assert [step["name"] for step in cycle["steps"]] == [
+        "Purchase order",
+        "Goods receipt",
+        "Invoice processing",
+    ]
+    assert cycle["steps"][0]["populations"] == [{"table": "po_data", "anchor": True}]
+    assert cycle["steps"][1]["populations"] == [
+        {"table": "po_data", "columns": ["GRN_ID"]}
+    ]
+    assert planning_cycle.cycle_process_names(cycle) == [
+        "Purchase order",
+        "Goods receipt",
+        "Invoice processing",
+        "Procurement operations",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda p: p.update(name=""), "Cycle name is required"),
+        (lambda p: p.update(steps=[]), "at least one step"),
+        (
+            lambda p: p.update(steps=[dict(p["steps"][0], name=f"Step {n}") for n in range(13)]),
+            "at most 12 steps",
+        ),
+        (
+            lambda p: p["steps"].append(dict(p["steps"][0], name="purchase ORDER")),
+            "is named twice",
+        ),
+        (
+            lambda p: p["steps"][0].update(name="P" * 61),
+            "longer than 60 characters",
+        ),
+        (
+            lambda p: p["steps"][1]["roles"][0].update(name="order"),
+            "a role fills one position",
+        ),
+        (
+            lambda p: p["steps"][0]["roles"][0].update(name="Purchase Order"),
+            "must be a lowercase identifier",
+        ),
+        (
+            lambda p: p["steps"][0]["roles"][0].update(document_type="other"),
+            "which this engagement does not hold",
+        ),
+        (
+            lambda p: p["steps"][0]["roles"][0].update(document_type="not_a_type"),
+            "which this engagement does not hold",
+        ),
+        (
+            lambda p: p["steps"][0]["populations"][0].update(table="absent_table"),
+            "is not an imported table",
+        ),
+        (
+            lambda p: p["steps"][2]["populations"][0].update(anchor=True),
+            "at most one anchor population",
+        ),
+        (
+            lambda p: p["steps"][1].update(themes=["Segregation of duties"]),
+            "assign it to exactly one",
+        ),
+        (
+            lambda p: p["steps"][0].update(themes=["Fraud risks considered"]),
+            "assign it to exactly one",
+        ),
+    ],
+)
+def test_validate_cycle_refuses_a_malformed_shape(mutate, message):
+    ws = _cycle_workspace()
+    payload = _cycle_payload()
+    mutate(payload)
+    with pytest.raises(workspaces.WorkspaceError) as error:
+        workspaces.validate_cycle(ws, payload)
+    assert message in str(error.value)
+
+
+def test_a_derived_join_is_not_a_population():
+    ws = _cycle_workspace()
+    ws.add_join(
+        {
+            "name": "po_invoices",
+            "left": "po_data",
+            "right": "invoice_data",
+            "how": "inner",
+            "left_on": ["PO_NUMBER"],
+            "right_on": ["PO_NUMBER"],
+        }
+    )
+    payload = _cycle_payload()
+    payload["steps"][0]["populations"] = [{"table": "po_invoices"}]
+
+    with pytest.raises(workspaces.WorkspaceError) as error:
+        workspaces.validate_cycle(ws, payload)
+    assert "is a derived join" in str(error.value)
+
+
+def test_the_cycle_carries_its_own_provenance_and_never_the_memorandum_s():
+    ws = _cycle_workspace()
+    ws.update_planning(
+        {"apm_markdown": "# Memo", "created_by": "user"}, agent=True
+    )
+
+    planning = ws.update_planning(
+        {"cycle": _cycle_payload(agent_run_id="run-1")}, agent=True
+    )
+    cycle = planning["cycle"]
+    assert cycle["created_by"] == "agent"
+    assert cycle["agent_run_id"] == "run-1"
+    assert cycle["apm_sha1"] == workspaces.planning_apm_sha1(ws)
+    # The APM's own ownership marker is what stops an agent run from
+    # overwriting an auditor's memorandum. Committing a cycle must not touch it.
+    assert planning["created_by"] == "user"
+
+
+def test_an_auditor_edit_confirms_the_cycle_and_keeps_its_memorandum_hash():
+    ws = _cycle_workspace()
+    ws.update_planning({"apm_markdown": "# Memo"}, agent=True)
+    ws.update_planning({"cycle": _cycle_payload(agent_run_id="run-1")}, agent=True)
+    drafted = dict(ws.planning["cycle"])
+
+    edited = _cycle_payload()
+    edited["steps"][0]["name"] = "Purchase order and approval"
+    # The page PATCHes the whole object back, provenance included; the
+    # workbench re-stamps it rather than taking the caller's word for it.
+    edited.update(created_by="agent", apm_sha1="forged", agent_run_id="run-9")
+    planning = ws.update_planning({"cycle": edited})
+
+    assert planning["cycle"]["created_by"] == "user"
+    assert planning["cycle"]["agent_run_id"] == "run-1"
+    assert planning["cycle"]["apm_sha1"] == drafted["apm_sha1"]
+    assert planning["cycle"]["steps"][0]["name"] == "Purchase order and approval"
+
+
+def test_the_cycle_projection_is_the_shape_without_its_provenance():
+    from app import workspace_transactions
+
+    ws = _cycle_workspace()
+    ws.update_planning({"apm_markdown": "# Memo"}, agent=True)
+    assert workspace_transactions.artifact_projection(ws, "planning:cycle") is None
+
+    ws.update_planning({"cycle": _cycle_payload(agent_run_id="run-1")}, agent=True)
+    before = workspace_transactions.parent_hashes(ws, ["planning:cycle"])
+
+    # Re-saving the same steps is not a change of basis; renaming one is.
+    ws.update_planning({"cycle": _cycle_payload()})
+    assert workspace_transactions.parent_hashes(ws, ["planning:cycle"]) == before
+
+    reshaped = _cycle_payload()
+    reshaped["steps"][0]["name"] = "Purchase order and approval"
+    ws.update_planning({"cycle": reshaped})
+    assert workspace_transactions.parent_hashes(ws, ["planning:cycle"]) != before
+
+
+def test_the_cycle_survives_a_round_trip_through_the_planning_route():
+    client = TestClient(create_app())
+    created = client.post("/api/workspaces", json={"name": "Cycle route"}).json()
+    base = f"/api/workspaces/{created['id']}"
+    ws = workspaces.load_workspace(created["id"])
+    ws.add_table(
+        "po_data.csv", pl.DataFrame({"PO_NUMBER": ["P1"]}).write_csv().encode()
+    )
+
+    payload = {
+        "name": "Procure-to-pay",
+        "steps": [
+            {
+                "name": "Purchase order",
+                "roles": [{"name": "order", "document_type": "purchase_order"}],
+                "populations": [{"table": "po_data", "anchor": True}],
+                "themes": [],
+            }
+        ],
+        "cross_cutting": None,
+    }
+    saved = client.patch(f"{base}/planning", json={"cycle": payload})
+    assert saved.status_code == 200
+    assert saved.json()["cycle"]["steps"][0]["roles"][0]["name"] == "order"
+
+    reloaded = client.get(f"{base}/planning").json()["planning"]["cycle"]
+    assert reloaded["name"] == "Procure-to-pay"
+    assert reloaded["created_by"] == "user"
+
+    rejected = client.patch(
+        f"{base}/planning",
+        json={"cycle": {**payload, "steps": [{"name": "Nowhere", "populations": [{"table": "ghost"}]}]}},
+    )
+    assert rejected.status_code == 400
+
+
+def test_the_matrix_takes_its_process_names_from_the_cycle(monkeypatch):
+    """The vocabulary moves by construction rather than by exhortation.
+
+    The cycle is designed first, its step names reach the risks call as
+    PROCESS NAMES, and a row naming a step the cycle does not have is flagged
+    on the run rather than committed silently.
+    """
+
+    fake = configure_planning_llm(monkeypatch, {
+        "agent:planning_cycle": {
+            "name": "Procure-to-pay",
+            "steps": [
+                {"name": "Purchase order", "roles": [], "populations": [], "themes": []},
+                {"name": "Invoice processing", "roles": [], "populations": [], "themes": []},
+            ],
+            "cross_cutting": {"name": "Procurement operations", "themes": []},
+        },
+        "agent:rcm": {
+            "rows": [
+                {
+                    "operation": "create",
+                    "process": "Purchase order",
+                    "risk": "Orders are placed above the approved limit",
+                    "risk_rating": "high",
+                },
+                {
+                    "operation": "create",
+                    "process": "Petty cash",
+                    "risk": "Disbursements are made without a receipt",
+                    "risk_rating": "medium",
+                },
+            ]
+        },
+    })
+    ws = workspaces.create_workspace("Cycle vocabulary")
+    completed = wait_run(ws, start_planning(ws)["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] in {"completed", "completed_with_open_items"}
+    assert reloaded.planning["cycle"]["name"] == "Procure-to-pay"
+
+    risks_call = next(
+        call for call in fake.calls if call["tag"] == "agent:rcm"
+    )
+    payload = json.loads(risks_call["messages"][-1]["content"])
+    assert payload["PROCESS NAMES"] == [
+        "Purchase order", "Invoice processing", "Procurement operations"
+    ]
+    assert payload["BUSINESS CYCLE"] == "Procure-to-pay"
+
+    # Every row belongs to the cycle that named itself.
+    assert {row["business_cycle"] for row in reloaded.rcm} == {"Procure-to-pay"}
+    # The stray process still commits, and the run says so. It becomes a row
+    # error once a treasuryfull and a procurement regeneration have been read.
+    assert {row["process"] for row in reloaded.rcm} == {"Purchase order", "Petty cash"}
+    assert any(
+        "Petty cash" in warning and "the cycle does not have" in warning
+        for warning in completed["warnings"]
+    )
+
+
+def test_a_cycle_current_with_the_memorandum_is_not_redesigned(monkeypatch):
+    """Readiness is currency here, unlike every other planning capability: the
+    shape is a reading *of* the memorandum, so it is stale exactly when the
+    memorandum has moved and current otherwise."""
+
+    from app.agent.capabilities.planning import _cycle_ready
+
+    ws = workspaces.create_workspace("Cycle currency")
+    ws.update_planning({"apm_markdown": "# Memo\n\n## Flow\nOne step."}, agent=True)
+    ws.update_planning({"cycle": {
+        "name": "Procure-to-pay",
+        "steps": [{"name": "Purchase order", "roles": [], "populations": [], "themes": []}],
+        "cross_cutting": None,
+        "agent_run_id": "run-1",
+    }}, agent=True)
+
+    assert _cycle_ready(workspaces.load_workspace(ws.id), {}).state == "satisfied"
+
+    # An auditor's edit is the confirmation and keeps the hash.
+    ws = workspaces.load_workspace(ws.id)
+    ws.update_planning({"cycle": {
+        "name": "Purchase to pay",
+        "steps": [{"name": "Purchase order", "roles": [], "populations": [], "themes": []}],
+        "cross_cutting": None,
+    }})
+    assert _cycle_ready(workspaces.load_workspace(ws.id), {}).state == "satisfied"
+
+    ws = workspaces.load_workspace(ws.id)
+    ws.update_planning({"apm_markdown": "# A different memorandum"}, agent=True)
+    assert _cycle_ready(workspaces.load_workspace(ws.id), {}).state == "missing"

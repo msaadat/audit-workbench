@@ -1,12 +1,13 @@
 # RCM generation redesign: a staged pipeline, delivered in small steps
 
-**Status:** steps 0 to 3 are implemented (4-5 September 2026); step 4 is still
-design. **Step 5, the cycle design after the APM, was agreed on 5 September
-2026 and is the next step to build**; it depends on step 1 only, comes before
-step 4, and supersedes 4a and 4b. This is the handoff for splitting the
-single RCM judgment turn into a per-process, per-job pipeline, for moving the
-cycle-vouching evidence contract out of planning, and for giving the cycle a
-place of its own between the memorandum and the matrix. Each step lands on
+**Status:** steps 0 to 3 and step 5 are implemented (4-5 September 2026); step
+4 is still design. Step 5, the cycle design after the APM, superseded 4a and
+4b; **step 4 is now the next step to build**, on step 5's artifact.
+
+This is the handoff for splitting the single RCM judgment turn into a
+per-process, per-job pipeline, for moving the cycle-vouching evidence contract
+out of planning, and for giving the cycle a place of its own between the
+memorandum and the matrix. Each step lands on
 its own, leaves `rcm_only` regenerating a matrix end to end, and is measured
 against the previous step before the next one starts.
 
@@ -1408,6 +1409,175 @@ PROCESS NAMES and the linkage worker goes back to naming its roles; nothing
 downstream reads the shape except through those two inputs. The page reads a
 missing cycle as its empty state.
 
+**Landed as:**
+
+- **The validator could not live where 5a puts it.** 5b has the drafting gate
+  run `workspaces.validate_cycle`, and
+  `test_agent_final_boundaries.py::test_a_worker_cannot_reach_a_workspace_a_transaction_or_the_run_store`
+  forbids `workers/` from importing `app.workspaces` at all — correctly, since a
+  worker is a pure function of its supplied bundle. The structural half is now
+  `planning_cycle.validate_cycle_shape`, a pure function taking the two
+  vocabularies as arguments; `workspaces.validate_cycle` resolves them from the
+  workspace and delegates. One validator, two callers: the turn checks a
+  proposal against the lists it was handed, the commit checks it against what
+  the engagement holds, and a shape that passes the first cannot surprise the
+  second. It collects every problem rather than raising at the first, because
+  the one repair should see all of them.
+- **The cycle's provenance is inside the cycle, not on the planning object.**
+  5c writes `update_planning({"cycle": ..., "created_by": "agent",
+  "agent_run_id": ...})`, and those two keys are the *memorandum's*: setting
+  them on a cycle commit clears the `created_by: "user"` marker that stops an
+  agent run from overwriting an auditor's APM. The cycle carries its own, as 5a's
+  JSON already shows, and `update_planning` stamps them.
+- **Committing a cycle must not restamp the memorandum.** `planning["updated"]`
+  is inside the `planning:apm` artifact projection, so writing the cycle moved
+  the matrix's guarded parent and the matrix regenerated on every run that
+  designed one. A cycle-only change now leaves `updated` alone. The fragility
+  predates this — editing planning context has always restamped the APM — but
+  the cycle is what made it bite.
+- **`sources.imported` is an edge, and a partial one.** 5c omits it; the
+  evaluation doc lists it. Both are right about something: the shape reads the
+  imported tables to name a step's population, so the edge belongs — but a step
+  *may* have no population, so an engagement with nothing imported must still
+  get a matrix. It is in `_PARTIAL_DEPENDENCIES`, beside `planning.context_ready`
+  and for the reason stated there.
+- **Readiness assesses currency, which no other planning capability does.** The
+  shape is a reading *of* the memorandum, so a rewritten memorandum leaves it
+  describing a process the engagement no longer claims to audit — and the matrix
+  takes its `process` vocabulary from it. `workspaces.planning_apm_sha1` is the
+  memorandum's text and nothing else; `workflow_basis_sha1` is deliberately out,
+  because a new voucher does not stop a process description being true.
+- **`other` had to be filtered out of the offered types.** `evidence_type_counts`
+  includes it, and `validate_cycle_shape` refuses a role that names it, so the
+  turn was being handed a value it would then be refused for. `_bind_cycle`
+  drops it: a document nothing could type records no identifiable position.
+- **A satisfied matrix is not reused when the cycle materializes.** That is
+  `workflow.materialize`'s general rule (`dependency_will_materialize`) and it is
+  right — a matrix drafted before any cycle existed has a `process` vocabulary
+  nothing checked. It does mean the first run that designs a cycle on an existing
+  engagement also regenerates the matrix, once. Test fixtures that build a matrix
+  by hand now stamp a shape (`conftest.stamp_planning_cycle`) rather than
+  re-deriving one.
+- **The page's colours had to be the app's.** The strip was written against
+  PrimeVue's `--p-surface-*` tokens, which do not flip: `--p-surface-0` is
+  `#ffffff` in both themes, so every node drew white with light text on it.
+  Every colour is an `--aw-*` token now.
+- **A note above a field row moves the arrow that enters it.** Endpoints are
+  computed from a row's index, so the unbound note, the "no schema" line and the
+  hidden-field count are all rendered *after* the field list, and counted into
+  the node's height so the population below does not overlap it.
+- The anchor's `table` is filled from the shape inside the guarded commit
+  rather than from the unit input: `ExecutorRequest` carries no `unit_input`,
+  and reading `fresh.planning["cycle"]` under the `planning:cycle` parent guard
+  is the stronger version of what 5e intends.
+- **The anchor's `column` is not the shape's to give, and deriving it wrote a
+  column that did not exist.** 5e says the executor fills both `table` and
+  `column`; the shape names a *table*, and only names columns in the borrowed
+  case, so the first implementation fell back to the role's document field. On
+  `treasuryfull` that stored `deal_reference` as a column of `04_deals`, which
+  carries `DEAL_ID` — and nothing refused it, because `_validate_anchor` checked
+  only that the column was a non-empty string. A cycle anchored on a column that
+  does not exist matches no population row, which reads downstream as an
+  engagement whose records simply do not link. Now: the shape owns the table,
+  the response owns the column (the turn is shown every column of every table),
+  the borrowed case still takes the shape's named column, and
+  `cycle_rulesets.validate` refuses a column the table does not carry — checked
+  as a pair, so a ruleset naming a table this engagement never imported is still
+  readable rather than becoming a workspace nobody can open.
+- **Reachability had to move into the repair loop.** A role the response
+  declares that no join key reaches fails `cycle_rulesets.validate` at commit —
+  after the turn has succeeded and outside any repair — so it costs the whole
+  run. It cost one: a `treasuryfull` proposal declared `broker_ack`, wrote no
+  join key reaching it, and the stage failed with nothing to show for two model
+  calls. `validate_linkage_proposal` now runs the same walk, and the repair has
+  two honest ways out: add the join key, or declare the role `unreachable`. The
+  re-run took the second, which is what 5e's mechanism is for.
+
+
+### Measured on `procurement` and `treasuryfull`, 5 September 2026
+
+`rcm_only` on each, then `tests.cycle_ruleset_approved` on `treasuryfull`. Same
+model and settings as every earlier measurement in this document
+(`deepseek/deepseek-v4-flash-0731`, `LLM_REASONING=medium`), auto mode, over the
+matrix each engagement already had.
+
+| | procurement | treasuryfull |
+|---|---|---|
+| cycle steps + cross-cutting | 4 + 1 | 3 + 1 |
+| distinct `process` values written | **5** | **4** |
+| rows the turn wrote outside the shape | **0** | **0** |
+| rows committed | 32 (4 created, 28 updated) | 30 (1 created, 25 updated) |
+| calls | 4 | 4 |
+| prompt / output tokens | 34,977 / 52,593 | 55,909 / 38,244 |
+| cycle call output tokens | **9,040 — smallest** | **5,619 — smallest** |
+| cycle call latency | 48.7 s — smallest | 48.0 s |
+| largest call | rcm_risks, 82.0 s | rcm_controls, 72.6 s |
+| repairs | 0 | 0 |
+
+**The closed vocabulary holds.** Every row either turn wrote named a step the
+shape declares. On both engagements the shape reused the matrix's existing
+process names verbatim, which is what `EXISTING PROCESS NAMES` is for — and on
+`treasuryfull` it also *reduced* four to three, folding "Treasury operations"
+into the cross-cutting bucket, which is the arrangement 4a's own example
+predicted for this cycle.
+
+**The cycle call is the smallest in the run on both**, as the step expected.
+
+**`business_cycle` is now uniform** on `procurement` (one value, the cycle's
+name) and has two values on `treasuryfull` — for a reason worth stating.
+
+#### What a warm regeneration cannot show
+
+`treasuryfull` finished with one row outside the shape and two `business_cycle`
+values, and neither is the turn's doing: four rows from a 2 September run were
+not re-proposed, and an omitted row keeps what it had (*"Omission never deletes
+an existing row"*). One of the four carries `process: "Treasury operations"`,
+which the new shape does not name.
+
+So the measure as written — *distinct `process` values per regeneration against
+the shape's step count (expect equal)* — cannot be read off a warm engagement at
+all. It held on `procurement` by luck, because the shape happened to reuse all
+four old names. What is actually enforced, and what both runs show, is the
+narrower claim: **no row the turn writes names a process outside the shape.**
+
+The stale rows are also outside `process_outside_cycle`'s reach, and promoting
+that flag to a row error (5d) would not touch them: the flag is computed on
+*proposed* rows. Reconciling a row whose process the cycle no longer names is a
+`match_rcm_revision` question and belongs with step 4, not with the gate.
+
+#### The ruleset stage, on `treasuryfull`
+
+Two model calls: the first refused by the gate, the second accepted — *0 after
+one repair*, as the step predicted, though it took two attempts to get there
+and both of the defects it caught were mine (see the *Landed as* notes above).
+
+- **Roles are the shape's.** Five of the six the cycle declares came back with
+  the cycle's own names and types. The ruleset this replaced — proposed under
+  the old contract, on the same engagement — had invented five different names
+  (`internal_deal_ticket`, `fx_counterparty_confirmation`, …). The shape and the
+  rules now agree by construction rather than by luck, which is the whole point
+  of 5e.
+- **`unreachable` fired for real, and reported.** `broker_ack` was dropped from
+  the rules with its reason — *"broker_confirmation fields only an identifier
+  (note_number) that is not shared with any reachable role"* — and the run
+  warned about it. The shape keeps the step. This is the
+  `purchase_requisition` case the evaluation doc predicted, arriving on a
+  different role in a different engagement.
+- **The anchor bound correctly**: `04_deals` from the shape, `DEAL_ID` from the
+  turn.
+- `cycle_sha1` recorded on the ruleset and outside `ruleset_hash`.
+- Write-back: 3 attributes contracted, 3 downgraded with reasons.
+
+#### Not measured
+
+Nothing here is a claim about quality. Every number above is one run, and this
+document's own *One run per variant cannot measure a prompt change* applies: only
+the gate-enforced properties — rows outside the shape, roles outside the cycle,
+the anchor's column against its table — are safe to read from a single
+regeneration. Token and latency figures are recorded so a later run has
+something to sit beside, not because a 4-call run is now known to cost more than
+a 3-call one.
+
 ---
 
 ## What each step buys
@@ -1418,7 +1588,7 @@ missing cycle as its empty state.
 | 1 | 1 | unchanged | the matrix | none on the RCM |
 | 2 | 2 | roughly two thirds | rows or attributes, not both | none |
 | 3 | 3 | roughly half | one job's rows | none |
-| 5 | 4 (one small shape call) | unchanged | the shape alone, or one job's rows | none; the cycle's field half stays after the schemas |
+| 5 ✅ | 4 (one small shape call) | unchanged | the shape alone, or one job's rows | none; the cycle's field half stays after the schemas |
 | 4 | 1 + 3 per step + 3 per cycle, parallel | a step's rows | one job of one step | none |
 
 ## What is deliberately not changed

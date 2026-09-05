@@ -924,6 +924,59 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
+        preset_id="planning.cycle",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="planning_context",
+                    source_type="planning",
+                    required=True,
+                    selector=ContextSelector(selector_id="planning.current"),
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=10_000),
+                ),
+                ContextSource(
+                    id="current_apm",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    # The whole memorandum, for the same reason the matrix takes
+                    # it whole: the process flow this call reads the steps out of
+                    # can sit anywhere in it, and a truncated tail is a step the
+                    # cycle silently does not have.
+                    budget=ContextBudget(max_items=1, max_characters=60_000),
+                ),
+                ContextSource(
+                    id="table_metadata",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=24, max_characters=16_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=26, max_characters=86_000),
+            # Names and shapes only. No document text, no profile, no row: this
+            # stage runs *before* the evidence read, and a cycle that needed any
+            # of them would put the extraction pass back in front of the matrix,
+            # which is the one thing step 1 of the redesign removed.
+            #
+            # ``allow_document_text`` is here for the memorandum alone, which
+            # travels as ``current_artifact`` under that permission. No document
+            # source is declared, so no evidence text can reach this turn.
+            privacy=ContextPrivacy(
+                allow_planning_context=True,
+                allow_document_text=True,
+                allow_table_metadata=True,
+            ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
         preset_id="tests.cycle_linkage",
         spec=ContextSpec(
             sources=(

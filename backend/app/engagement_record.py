@@ -148,6 +148,12 @@ _SPINE: dict[str, dict[str, Any]] = {
         "headline": "Draft the audit planning memorandum",
         "prompt": "Draft the APM.", "live_body": True,
     },
+    "planning.cycle_ready": {
+        "label": "Cycle design", "destination": "cycle",
+        "unit": "step", "count": "cycle_steps",
+        "headline": "Work out the steps of the cycle",
+        "prompt": "Design the cycle.", "live_body": True,
+    },
     "planning.rcm_ready": {
         "label": "Risk and control matrix", "destination": "rcm",
         "unit": "row", "count": "rcm",
@@ -230,6 +236,9 @@ def _counts(workspace: Workspace) -> dict[str, int]:
         "document_analyses": _document_analyses(workspace),
         "tables": len(workspace.table_names()),
         "analyses": len(workspace.analyses),
+        "cycle_steps": len(
+            ((workspace.planning or {}).get("cycle") or {}).get("steps") or []
+        ),
         "rcm": len(workspace.rcm),
         "data_tests": data_tests,
         "document_tests": document_tests,
@@ -516,6 +525,8 @@ _HOLDS: dict[str, Any] = {
         lambda ws: True if _document_analyses(ws) else (None if not ws.documents else False),
     "planning.apm_ready":
         lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
+    "planning.cycle_ready":
+        lambda ws: bool(((ws.planning or {}).get("cycle") or {}).get("steps")),
     "doc_tests.executed": _doc_tests_ran,
     "fieldwork.executed": _fieldwork_ran,
     "results.rolled_up": _conclusions_set,
@@ -532,6 +543,7 @@ _NOUNS = {
     "analysis.executed": "the analyses",
     "documents.analysis_generated": "the document analyses",
     "planning.apm_ready": "the memorandum",
+    "planning.cycle_ready": "the cycle design",
     "planning.rcm_ready": "the matrix",
     "tests.specified": "the tests",
     "fieldwork.executed": "the test results",

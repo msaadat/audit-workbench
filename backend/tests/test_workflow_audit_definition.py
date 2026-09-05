@@ -43,13 +43,20 @@ EXPECTED_DEPENDENCIES = {
     "analysis.summarized": ("analysis.executed",),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
+    "planning.cycle_ready": (
+        "planning.apm_ready",
+        "sources.imported",
+        "documents.types_classified",
+    ),
     "planning.rcm_ready": (
-            "planning.apm_ready",
-            "documents.categorized",
-            "documents.types_classified",
-        ),
+        "planning.apm_ready",
+        "planning.cycle_ready",
+        "documents.categorized",
+        "documents.types_classified",
+    ),
     "tests.cycle_ruleset_proposed": (
         "planning.rcm_ready",
+        "planning.cycle_ready",
         "documents.schemas_stamped",
     ),
     "tests.cycle_ruleset_approved": ("tests.cycle_ruleset_proposed",),
@@ -102,10 +109,14 @@ def test_full_audit_closure_is_topological():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
+        # The shape of the process, read out of the memorandum, is what the
+        # matrix's ``process`` vocabulary is drawn from — so it is scheduled
+        # between the two, and costs no extraction to reach.
+        "planning.cycle_ready",
         # The matrix runs ahead of the extraction pass now that it authors no
         # evidence contract: it needs to know which record kinds exist, not
         # what fields they carry. Reading the evidence is the cycle design's
-        # prerequisite, and it is scheduled as one.
+        # field-level half, and it is scheduled as its prerequisite.
         "planning.rcm_ready",
         "documents.evidence_read",
         "documents.schemas_stamped",

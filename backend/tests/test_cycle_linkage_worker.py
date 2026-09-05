@@ -771,3 +771,197 @@ def test_every_id_is_reported_at_once():
     message = str(raised.value)
     assert "2 ids" in message
     assert "jk_order" in message and "invoice_match_totals_agree" in message
+
+
+# --------------------------------------------------------------------------- #
+# The roles are given (step 5e of docs/rcm-generation-redesign.md)
+# --------------------------------------------------------------------------- #
+CYCLE = {
+    "name": "Procure-to-pay",
+    "steps": [
+        {
+            "name": "Purchase order",
+            "roles": [{"name": "order", "document_type": "purchase_order"}],
+            "populations": [{"table": "po_data", "anchor": True}],
+            "themes": [],
+        },
+        {
+            "name": "Invoice processing",
+            "roles": [{"name": "invoice", "document_type": "vendor_invoice"}],
+            "populations": [],
+            "themes": [],
+        },
+    ],
+    "cross_cutting": None,
+}
+
+
+def _cycle_request(cycle=None, requirements=None):
+    return _Request(
+        schemas=SCHEMAS,
+        requirements=requirements,
+        cycle=CYCLE if cycle is None else cycle,
+    )
+
+
+def test_a_proposal_using_exactly_the_cycle_s_roles_is_accepted():
+    validate_linkage_proposal(_proposal(), _cycle_request())
+
+
+def test_a_role_the_cycle_does_not_declare_is_refused():
+    proposal = _proposal()
+    proposal["roles"].append({
+        "name": "receipt", "document_type": "purchase_order",
+        "cardinality": "one", "required": True,
+    })
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        validate_linkage_proposal(proposal, _cycle_request())
+
+    message = str(error.value)
+    assert "not one the cycle declares" in message
+    assert "order, invoice" in message
+
+
+def test_a_role_filled_by_a_different_type_than_the_cycle_states_is_refused():
+    proposal = _proposal()
+    proposal["roles"][0]["document_type"] = "purchase_order"
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        validate_linkage_proposal(proposal, _cycle_request())
+
+    assert "is filled by 'vendor_invoice' in the cycle" in str(error.value)
+
+
+def test_a_declared_role_the_response_drops_is_refused():
+    proposal = _proposal()
+    proposal["roles"] = [proposal["roles"][0]]
+    proposal["join_keys"] = []
+    proposal["assertions"] = [{
+        "id": "as_stated", "label": "Approval is stated",
+        "requirement": "The invoice records an approval.",
+        "left": {"role": "invoice", "field": "approval"},
+        "right": None,
+        "rationale": "An unapproved invoice should not be paid.",
+    }]
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        validate_linkage_proposal(proposal, _cycle_request())
+
+    message = str(error.value)
+    assert "the response omits it" in message
+    assert "unreachable" in message
+
+
+def test_a_dropped_role_declared_unreachable_is_accepted_with_its_reason():
+    """The ``purchase_requisition`` case: a type induced with no identifier
+    field can be reached by no join key, so the whole ruleset would be refused
+    over it. Saying so is what makes the gap visible instead."""
+
+    proposal = _proposal()
+    proposal["roles"] = [proposal["roles"][0]]
+    proposal["join_keys"] = []
+    proposal["assertions"] = [{
+        "id": "as_stated", "label": "Approval is stated",
+        "requirement": "The invoice records an approval.",
+        "left": {"role": "invoice", "field": "approval"},
+        "right": None,
+        "rationale": "An unapproved invoice should not be paid.",
+    }]
+    proposal["unreachable"] = [
+        {"role": "order", "reason": "purchase_order induced no identifier field"}
+    ]
+
+    validate_linkage_proposal(proposal, _cycle_request())
+
+
+def test_an_unreachable_role_without_a_reason_is_refused():
+    proposal = _proposal()
+    proposal["roles"] = [proposal["roles"][0]]
+    proposal["join_keys"] = []
+    proposal["unreachable"] = [{"role": "order", "reason": ""}]
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        validate_linkage_proposal(proposal, _cycle_request())
+
+    assert "states no reason" in str(error.value)
+
+
+def test_an_unreachable_role_the_cycle_never_declared_is_refused():
+    proposal = _proposal()
+    proposal["unreachable"] = [{"role": "ghost", "reason": "nothing to join on"}]
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        validate_linkage_proposal(proposal, _cycle_request())
+
+    assert "Unreachable role 'ghost' is not one the cycle declares" in str(error.value)
+
+
+def test_without_a_cycle_the_worker_still_names_its_own_roles():
+    """An engagement whose cycle has not been designed proposes as it always
+    did; the gate has no vocabulary to hold it to.
+
+    The extra role is given a join key because reachability is enforced either
+    way — that rule is about the rules hanging together, not about the shape.
+    """
+
+    proposal = _proposal()
+    proposal["roles"].append({
+        "name": "receipt", "document_type": "purchase_order",
+        "cardinality": "one", "required": True,
+    })
+    proposal["join_keys"].append({
+        "id": "jk_receipt", "match": "normalized_equal",
+        "left": {"role": "order", "field": "order_number"},
+        "right": {"role": "receipt", "field": "order_number"},
+        "rationale": "A receipt cites the order it fulfils.",
+    })
+
+    validate_linkage_proposal(proposal, _request())
+
+
+def test_the_unreachable_list_is_parsed_off_the_response():
+    parsed = _linkage_response_schema(
+        json.dumps(_proposal(unreachable=[{"role": "order", "reason": "no identifier"}]))
+    )
+    assert parsed["unreachable"] == [{"role": "order", "reason": "no identifier"}]
+    assert _linkage_response_schema(json.dumps(_proposal()))["unreachable"] == []
+
+
+def test_a_role_no_join_key_reaches_is_refused_in_the_turn_that_can_fix_it():
+    """``cycle_rulesets.validate`` enforces this too, at commit — after the turn
+    has succeeded and outside any repair loop, so it costs the whole run. It
+    cost one, on treasuryfull, for exactly this role shape."""
+
+    proposal = _proposal()
+    proposal["roles"].append({
+        "name": "receipt", "document_type": "purchase_order",
+        "cardinality": "one", "required": True,
+    })
+
+    with pytest.raises(WorkerResponseValidationError) as error:
+        validate_linkage_proposal(proposal, _request())
+
+    message = str(error.value)
+    assert "No join key reaches role 'receipt'" in message
+    # Two honest ways out, and the repair is told both.
+    assert "join key" in message and "unreachable" in message
+
+
+def test_a_role_reached_through_another_role_is_accepted():
+    """Reachability is transitive: the walk follows join keys outward from the
+    anchor rather than requiring every role to touch it directly."""
+
+    proposal = _proposal()
+    proposal["roles"].append({
+        "name": "receipt", "document_type": "purchase_order",
+        "cardinality": "one", "required": True,
+    })
+    proposal["join_keys"].append({
+        "id": "jk_receipt", "match": "normalized_equal",
+        "left": {"role": "order", "field": "order_number"},
+        "right": {"role": "receipt", "field": "order_number"},
+        "rationale": "A receipt cites the order it fulfils.",
+    })
+
+    validate_linkage_proposal(proposal, _request())

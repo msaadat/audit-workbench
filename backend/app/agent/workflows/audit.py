@@ -92,6 +92,16 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "analysis.summarized": analysis_workflow.dependencies("analysis.summarized"),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
+    # The shape of the process, read out of the memorandum before anything has
+    # been extracted from a document. It needs the types this engagement holds
+    # to name a step's document roles and the imported tables to name its
+    # population, and nothing else — which is what lets it sit here, in front of
+    # the matrix, rather than after the schemas with the field-level half.
+    "planning.cycle_ready": (
+        "planning.apm_ready",
+        "sources.imported",
+        "documents.types_classified",
+    ),
     # Classification, not extraction. Both are cheap — page-one text and the
     # type of each document — and the matrix needs them: a row choosing an
     # evidence strategy has to know which record kinds this engagement actually
@@ -104,18 +114,28 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # the expensive extraction pass no longer sits between the memorandum and
     # the matrix, and a schema that moves re-runs the cycle design rather than
     # the whole RCM.
+    #
+    # The *cycle* edge is new, and is a vocabulary rather than a wait: the
+    # shape's step names are what a row's ``process`` is chosen from, so the
+    # matrix can no longer invent a process structure the engagement has not
+    # written down. It costs no extraction — the shape is drafted from the
+    # memorandum alone — so the closure's order does not move.
     "planning.rcm_ready": (
         "planning.apm_ready",
+        "planning.cycle_ready",
         "documents.categorized",
         "documents.types_classified",
     ),
-    # Rules are written against the matrix's requirements and the induced
-    # vocabulary, so both must exist first — and this is the only stage that
-    # sees both, which is why the evidence contract is authored here. Proposing
-    # is still not approving — they are two capabilities, and the second one
-    # below is where the two run modes part.
+    # Rules are written against the matrix's requirements, the cycle's roles and
+    # the induced field vocabulary, so all three must exist first — and this is
+    # the only stage that sees all three, which is why the evidence contract is
+    # authored here. What the cycle edge changes is that the roles are now an
+    # input: this stage chooses fields, and no longer invents the positions
+    # those fields fill. Proposing is still not approving — they are two
+    # capabilities, and the second one below is where the two run modes part.
     "tests.cycle_ruleset_proposed": (
         "planning.rcm_ready",
+        "planning.cycle_ready",
         "documents.schemas_stamped",
     ),
     # Approval is on the graph, and in ``permission`` mode it is a gate that

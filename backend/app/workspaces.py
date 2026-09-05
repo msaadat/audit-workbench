@@ -330,6 +330,10 @@ _PLANNING_DEFAULT = {
         "materiality": "", "key_contacts": "", "background_notes": "",
         "interview_answers": {},
     },
+    # The cycle shape: steps, the document roles each holds, the population
+    # each reads. Absent until the cycle stage drafts one, and the key is
+    # declared here so every reader sees the same shape of planning object.
+    "cycle": None,
     "created_by": "user", "agent_run_id": None, "updated": None,
 }
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -759,6 +763,43 @@ def _rcm_row_defaults(item: dict, *, now: str) -> dict:
         )
     )
     return item
+
+
+def planning_apm_sha1(workspace: "Workspace") -> str:
+    """Identity of the memorandum a planning artifact was drafted against.
+
+    The memorandum's text and nothing else. ``workflow_basis_sha1`` is
+    deliberately out: it moves when a document or a table is imported, and a
+    cycle shape drafted from the process description does not stop describing
+    that process because a new voucher arrived. What must invalidate the shape
+    is the prose it was read out of changing.
+    """
+    markdown = str(workspace.planning.get("apm_markdown") or "")
+    return hashlib.sha1(markdown.encode("utf-8")).hexdigest()
+
+
+def validate_cycle(workspace: "Workspace", payload: object) -> dict:
+    """Validate a cycle shape against what this engagement actually holds.
+
+    The material half of ``planning["cycle"]``. Provenance is the workbench's
+    to write and is layered on by :meth:`Workspace.update_planning`, so this
+    returns exactly what the shape asserts.
+
+    Both vocabularies are cheap: type ids and table names come from manifests
+    already in memory. Column names deliberately are not checked — that is a
+    frame open per table, and this runs on every write.
+    """
+    from . import document_schemas, planning_cycle
+
+    try:
+        return planning_cycle.validate_cycle_shape(
+            payload,
+            allowed_types=set(document_schemas.effective_type_ids(workspace)),
+            base_tables={str(table.get("name") or "") for table in workspace.tables},
+            join_names={str(join.get("name") or "") for join in workspace.joins},
+        )
+    except planning_cycle.CycleShapeError as error:
+        raise WorkspaceError(str(error)) from error
 
 
 def _validate_test_refs(workspace: "Workspace", refs: object) -> list[str]:
@@ -1789,7 +1830,7 @@ class Workspace:
 
     def update_planning(self, changes: dict, *, agent: bool = False) -> dict:
         allowed = {
-            "context", "apm_markdown", "agent_run_id", "created_by",
+            "context", "apm_markdown", "cycle", "agent_run_id", "created_by",
             "workflow_basis_sha1",
         }
         unknown = set(changes) - allowed
@@ -1806,14 +1847,56 @@ class Workspace:
             if not isinstance(context, dict):
                 raise WorkspaceError("Planning context must be an object.")
             self.planning["context"].update(context)
+        if "cycle" in changes:
+            self.planning["cycle"] = self._stamped_cycle(changes["cycle"], agent=agent)
         for key in ("apm_markdown", "agent_run_id", "created_by", "workflow_basis_sha1"):
             if key in changes:
                 self.planning[key] = changes[key]
         if not agent and apm_changed and self.planning.get("created_by") == "agent":
             self.planning["created_by"] = "user"
-        self.planning["updated"] = self._updated_now()
+        # ``updated`` is part of the ``planning:apm`` artifact projection, so
+        # bumping it restamps the memorandum's identity and conflicts every
+        # commit guarded on it. The cycle is its own artifact with its own
+        # provenance and its own ``updated``; writing one says nothing about
+        # when the memorandum was last touched, and saying it anyway made
+        # designing the cycle invalidate the matrix drafted from the same memo.
+        if set(changes) - {"cycle"}:
+            self.planning["updated"] = self._updated_now()
         self.save()
         return self.planning
+
+    def _stamped_cycle(self, payload: object, *, agent: bool) -> dict:
+        """Validate a cycle shape and stamp the provenance it does not own.
+
+        The cycle carries its own ``created_by``/``agent_run_id``/``apm_sha1``
+        rather than sharing the planning object's, which belong to the APM: a
+        cycle commit that wrote them would clear the marker that stops an agent
+        run from overwriting an auditor's memorandum.
+
+        An auditor's edit *is* the confirmation — there is no separate confirmed
+        state — and it keeps the memorandum hash the shape was drafted against,
+        so edits survive until the memorandum itself moves. A shape an auditor
+        authors from nothing takes the memorandum in front of them.
+        """
+        cycle = validate_cycle(self, payload)
+        stored = self.planning.get("cycle") or {}
+        supplied = payload if isinstance(payload, dict) else {}
+        if agent:
+            cycle["created_by"] = str(supplied.get("created_by") or "agent")
+            cycle["agent_run_id"] = supplied.get("agent_run_id") or stored.get(
+                "agent_run_id"
+            )
+            cycle["apm_sha1"] = str(
+                supplied.get("apm_sha1") or planning_apm_sha1(self)
+            )
+        else:
+            cycle["created_by"] = "user"
+            cycle["agent_run_id"] = stored.get("agent_run_id")
+            cycle["apm_sha1"] = str(
+                stored.get("apm_sha1") or planning_apm_sha1(self)
+            )
+        cycle["updated"] = self._updated_now()
+        return cycle
 
     def _planning_record(self, collection: list[dict], item_id: str, label: str) -> dict:
         item = next((row for row in collection if row.get("id") == item_id), None)
