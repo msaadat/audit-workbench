@@ -192,7 +192,12 @@ class AgentLoop(BaseRunner):
                 prompts.LOOP_SYSTEM,
                 bounded_conversation(self.conversation),
                 self._tool_schemas,
-                attempt=turns,
+                # Every loop turn is a first attempt at a *different* turn. The
+                # gateway reads ``attempt`` as a retry counter — it charges
+                # ``usage["retries"]`` and labels the activity strip with it —
+                # so passing the turn number here reported a ten-turn request
+                # as nine retries of one call.
+                attempt=1,
             )
             calls = [
                 call
@@ -425,7 +430,34 @@ class AgentLoop(BaseRunner):
         suggestions = list(finish.get("suggestions") or [])
         if suggestions:
             self.run["suggestions"] = suggestions
-        self._close(self._terminal_status(), note=str(finish.get("summary") or ""))
+        summary = str(finish.get("summary") or "").strip()
+        account = self._committed_account()
+        if account:
+            # The model's prose, then the ledger's own account of what the runs
+            # committed. The first live run's summary claimed a redraft that a
+            # zero-unit stage had not performed; a reader could not tell,
+            # because nothing beside the prose said otherwise. Now something
+            # does, and it is not written by the thing being checked.
+            self.run["committed_account"] = account["items"]
+            summary = f"{summary}\n\n{account['text']}" if summary else account["text"]
+        self._close(self._terminal_status(), note=summary)
+
+    def _committed_account(self) -> dict | None:
+        """What this request's runs actually committed, read from their records."""
+
+        accounts = []
+        for run_id in self.run.get("children") or []:
+            try:
+                accounts.append(loop_tools.run_account(store.load_run(self.ws, run_id)))
+            except WorkspaceError:
+                continue
+        lines = loop_tools.account_sentences(accounts)
+        if not lines:
+            return None
+        return {
+            "items": accounts,
+            "text": "What the runs actually did:\n" + "\n".join(f"- {line}" for line in lines),
+        }
 
     def _terminal_status(self) -> str:
         """What this request amounted to, read from the runs it started."""

@@ -55,7 +55,9 @@ SOURCES = {"composer", "shortcut", "tab_button", "folder_intake"}
 # `generation_mode` says whether an artifact already in place counts as done —
 # the question a "Redraft this test" button answers — and `instruction` says
 # what the auditor wants different about the result.
-OUTCOME_RUN_CONTEXT_KEYS = frozenset({"target_refs", "generation_mode", "instruction"})
+OUTCOME_RUN_CONTEXT_KEYS = frozenset(
+    {"target_refs", "generation_mode", "instruction", "review_each_stage"}
+)
 
 _file_locks: dict[str, threading.RLock] = {}
 _file_locks_guard = threading.Lock()
@@ -772,7 +774,19 @@ def _launch_command(
         )
 
     refs = []
-    if not goal_template and not requested_outcomes and re.search(r"\b(that|it|this)\b", request, re.I):
+    # "Rerun that" means the artifact above it, and an isolated action has no
+    # way to find out which one. A loop brief is not that kind of sentence: it
+    # is a self-contained request the coordinator wrote, in prose that names
+    # its own subject and then says "it" about that subject — and the loop has
+    # read tools and a question to resolve what remains. Holding a brief to
+    # this rule refused every hand-off whose brief happened to contain a
+    # pronoun, which was most of them.
+    if (
+        source != store.LOOP_COMMAND_SOURCE
+        and not goal_template
+        and not requested_outcomes
+        and re.search(r"\b(that|it|this)\b", request, re.I)
+    ):
         preceding = next((item for item in reversed(record.get("messages") or []) if item.get("role") == "assistant"), None)
         ids = list((preceding or {}).get("artifact_ids") or [])
         if len(ids) != 1:
@@ -1347,6 +1361,90 @@ def _plan_line_entry(run_id: str, plan_line: str, run: dict, fallback_created_at
     }
 
 
+#: A finished loop's own offers come first, then deterministic readiness. The
+#: loop just did the work and knows what it left; readiness knows what the
+#: engagement needs next. Both, in that order, and no more than this many.
+MAX_CHAT_SUGGESTIONS = 5
+
+
+def _loop_suggestions(run: dict) -> list[dict]:
+    """The closing turn's offers, projected as chat suggestions."""
+
+    projected = []
+    for item in run.get("suggestions") or []:
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        outcomes = [str(value) for value in item.get("requested_outcomes") or []]
+        message = str(item.get("message") or "").strip()
+        projected.append({
+            # Not a readiness suggestion: it came from the run that just
+            # finished, not from what the workspace is missing.
+            "capability": "",
+            "requested_outcomes": outcomes,
+            "target_refs": [str(value) for value in item.get("target_refs") or []],
+            "label": label,
+            "command": message or label,
+            "message": message,
+            "reason": "Suggested by the agent when it finished",
+            "source": "agent",
+        })
+    return projected
+
+
+def _review_suggestion(runs: list[dict]) -> list[dict]:
+    """One offer to review the newest run that ended badly and was never read.
+
+    A run that failed or stopped with open items is the auditor's problem to
+    decide about, and today the only way to ask what happened is to type it.
+    The offer disappears once a loop has inspected that run.
+    """
+
+    for run in runs:
+        if run.get("status") not in store.TERMINAL_STATUSES:
+            continue
+        if run.get("status") == "completed" or run.get("engine") == store.AGENT_ENGINE:
+            return []
+        if run.get("reviewed_by_run_id"):
+            return []
+        return [{
+            "capability": "",
+            "requested_outcomes": [],
+            "target_refs": [],
+            "label": "Review this run with the agent",
+            "command": f"Review run {run['id']}",
+            "message": f"Review run {run['id']}",
+            "reason": "It did not finish cleanly",
+            "source": "agent",
+        }]
+    return []
+
+
+def _chat_suggestions(
+    workspace: Workspace, workflow_state: dict | None, linked_runs: dict[str, dict]
+) -> list[dict]:
+    newest = sorted(
+        linked_runs.values(), key=lambda item: str(item.get("created") or ""), reverse=True
+    )
+    latest_loop = next(
+        (
+            run for run in newest
+            if run.get("engine") == store.AGENT_ENGINE
+            and run.get("status") in store.TERMINAL_STATUSES
+        ),
+        None,
+    )
+    suggestions = _loop_suggestions(latest_loop or {})
+    suggestions.extend(_review_suggestion(newest))
+    seen = {item["label"] for item in suggestions}
+    for item in narration.next_steps(workspace, workflow_state):
+        if item["label"] in seen:
+            continue
+        suggestions.append(item)
+        seen.add(item["label"])
+    return suggestions[:MAX_CHAT_SUGGESTIONS]
+
+
 def _run_projection(run: dict) -> dict:
     summary = store.run_summary(run)
     open_items = narration.blockers(run)
@@ -1637,7 +1735,7 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
     result.update({
         "transcript": transcript, "artifacts": artifacts, "artifact_errors": artifact_errors,
         "runs": linked, "missing_document_ids": missing, "capabilities": capabilities(),
-        "suggestions": narration.next_steps(workspace, workflow_state),
+        "suggestions": _chat_suggestions(workspace, workflow_state, linked_runs),
         "guided_workflows": narration.guided_workflows(workflow_state),
     })
     active_statuses = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)

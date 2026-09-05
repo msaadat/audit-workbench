@@ -2636,6 +2636,12 @@ export interface AssistantSuggestion {
   label: string
   command: string
   reason: string
+  /** Named targets for an offer the agent scoped when it finished. */
+  target_refs?: string[]
+  /** Set when the offer is a message to send rather than outcomes to run. */
+  message?: string
+  /** 'agent' for a finished loop's own offer; absent for readiness. */
+  source?: string
 }
 
 export interface AssistantGuidedWorkflow {
@@ -3104,6 +3110,8 @@ export interface AgentAction {
 export type AgentInteractionType =
   | 'clarification' | 'target_choice' | 'confirmation'
   | 'proposal_approval' | 'conflict_resolution'
+  /** Asked before a stage runs, when the run asked to review each one. */
+  | 'stage_review'
 
 export interface AgentInteractionOption {
   value?: string

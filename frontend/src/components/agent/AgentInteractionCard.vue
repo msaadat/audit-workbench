@@ -25,7 +25,7 @@ onMounted(async () => {
 const title = computed(() => ({
   clarification: 'Information needed', target_choice: 'Choose a target',
   confirmation: 'Destructive action', proposal_approval: 'Review proposal',
-  conflict_resolution: 'Resolve a conflict',
+  conflict_resolution: 'Resolve a conflict', stage_review: 'Next stage',
 }[props.interaction.type]))
 
 
@@ -92,6 +92,16 @@ function readablePreview(value: unknown) {
         <small>{{ option.reason }}<span v-if="option.score"> · {{ Math.round(option.score * 100) }}%</span></small>
       </button>
       <Button label="Use selected target" size="small" :loading="busy" :disabled="!selected" @click="emit('respond', { choice: selected })" />
+    </template>
+
+    <!-- Three answers, not free text: the run is waiting, and the decision is
+         continue, skip this stage, or stop here. -->
+    <template v-else-if="interaction.type === 'stage_review'">
+      <div class="buttons">
+        <Button label="Stop" severity="danger" outlined size="small" :disabled="busy" @click="emit('respond', { choice: 'stop' })" />
+        <Button label="Skip this stage" severity="secondary" outlined size="small" :disabled="busy" @click="emit('respond', { choice: 'skip' })" />
+        <Button label="Continue" size="small" :loading="busy" @click="emit('respond', { choice: 'continue' })" />
+      </div>
     </template>
 
     <template v-else-if="interaction.type === 'proposal_approval'">

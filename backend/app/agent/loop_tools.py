@@ -41,6 +41,96 @@ WORKSPACE_TARGET = "workspace:current"
 _UNSETTLED_UNIT_STATUSES = frozenset(
     {"failed", "conflict", "blocked", "awaiting_input", "awaiting_confirmation"}
 )
+_SETTLED_UNIT_STATUSES = frozenset({"succeeded", "skipped"})
+#: How many committed refs one stage contributes to an account before the rest
+#: are counted rather than named.
+MAX_ACCOUNT_REFS = 8
+
+
+def run_account(child: dict) -> dict:
+    """What a finished run actually did, read from its own record.
+
+    The loop's own account of a run is a model's account, and a model that
+    asked for three things will describe three things. This reads the ledger
+    instead: which capabilities committed units and what those units produced,
+    which ran with nothing to do, and what never settled. It is what the
+    auditor is told at the end, and — supplied back through ``inspect_run`` and
+    ``run_outcomes`` — what the loop has to reconcile its story against.
+
+    A stage with no units is the interesting case and the reason this exists.
+    It is not a failure and reads as a success in every status projection: the
+    capability had nothing it considered doing, which is exactly the shape of
+    "the redraft you asked for did not happen".
+    """
+
+    committed: list[dict] = []
+    nothing_to_do: list[dict] = []
+    for stage in (child.get("workflow") or {}).get("stages") or []:
+        units = list(stage.get("units") or [])
+        entry = {
+            "capability": stage.get("capability"),
+            "title": stage.get("title"),
+            "status": stage.get("status"),
+        }
+        if not units:
+            nothing_to_do.append(
+                {**entry, "reasons": list((stage.get("readiness_before") or {}).get("reasons") or [])}
+            )
+            continue
+        # Skipped is settled but committed nothing, and counting it as work
+        # done is the same lie this account exists to prevent.
+        done = [unit for unit in units if unit.get("status") == "succeeded"]
+        skipped = [unit for unit in units if unit.get("status") == "skipped"]
+        if not done:
+            if skipped:
+                nothing_to_do.append({**entry, "reasons": [f"{len(skipped)} skipped"]})
+            continue
+        refs = list(
+            dict.fromkeys(
+                str(ref)
+                for unit in done
+                for ref in unit.get("result_refs") or []
+            )
+        )
+        committed.append(
+            {
+                **entry,
+                "units": len(done),
+                "of": len(units),
+                "skipped": len(skipped),
+                "refs": refs[:MAX_ACCOUNT_REFS],
+                "more_refs": max(0, len(refs) - MAX_ACCOUNT_REFS),
+            }
+        )
+    return {
+        "run_id": child.get("id"),
+        "committed": committed,
+        "nothing_to_do": nothing_to_do,
+    }
+
+
+def account_sentences(accounts: list[dict]) -> list[str]:
+    """The deterministic half of a closing message, one line per fact."""
+
+    lines: list[str] = []
+    for account in accounts:
+        for item in account["committed"]:
+            title = str(item.get("title") or narration.humanize(item.get("capability")))
+            count = int(item.get("units") or 0)
+            lines.append(
+                f"{title}: {count} item{'' if count == 1 else 's'} committed"
+                + (f" ({', '.join(item['refs'][:3])})" if item.get("refs") else "")
+                + "."
+            )
+        for item in account["nothing_to_do"]:
+            title = str(item.get("title") or narration.humanize(item.get("capability")))
+            reasons = "; ".join(item.get("reasons") or [])
+            lines.append(
+                f"{title}: nothing to do, so nothing changed"
+                + (f" ({reasons})" if reasons else "")
+                + "."
+            )
+    return lines
 
 
 class ToolError(WorkspaceError):
@@ -108,6 +198,13 @@ def tool_schemas() -> list[dict]:
                             "What the auditor wants different this time, in "
                             "one or two plain sentences. The workers read it "
                             "as declared context."
+                        ),
+                    },
+                    "review_each_stage": {
+                        "type": "boolean",
+                        "description": (
+                            "Ask the auditor before each stage runs. Only has "
+                            "an effect in permission mode."
                         ),
                     },
                 },
@@ -261,18 +358,38 @@ class LoopTools:
         usage[key] = int(usage.get(key) or 0) + 1
         self.loop.save()
 
-    def _child(self, run_id: str) -> dict:
-        """Load a run this loop is allowed to look at."""
+    def _readable_run(self, run_id: str) -> dict:
+        """Load any command run in this workspace, for reading.
+
+        Reading a run is a read like any other, and a request to review one the
+        auditor names — "review run X" — is exactly the case the loop exists
+        for. Changing one is narrower: see :meth:`_writable_run`.
+        """
 
         wanted = str(run_id or "").strip()
         if not wanted:
             raise ToolError("Name the run to inspect.")
-        if wanted != self.run["id"] and wanted not in (self.run.get("children") or []):
+        try:
+            return store.load_run(self.ws, wanted)
+        except WorkspaceError as error:
+            raise ToolError(str(error)) from error
+
+    def _writable_run(self, run_id: str) -> dict:
+        """Load a run this loop may run part of again.
+
+        Its own children, or a run it was asked to review and has inspected.
+        Anything else is somebody else's work, reachable by reading only.
+        """
+
+        child = self._readable_run(run_id)
+        own = child["id"] in (self.run.get("children") or []) or child["id"] == self.run["id"]
+        reviewed = str(child.get("reviewed_by_run_id") or "") == self.run["id"]
+        if not own and not reviewed:
             raise ToolError(
-                f"Run '{wanted}' is not one of this request's runs. Inspect a "
-                "run this request started."
+                f"Run '{child['id']}' is not one of this request's runs. Inspect "
+                "it first if the auditor asked you to review it."
             )
-        return store.load_run(self.ws, wanted)
+        return child
 
     # -- tools ------------------------------------------------------------- #
     def plan_outcomes(self, args: dict) -> dict:
@@ -322,6 +439,14 @@ class LoopTools:
             "resolved": list(resolved),
             "reused": list(reused),
             "blocked": blocked,
+            # A stage that expands no units will run and change nothing. It is
+            # not an error and it will report success, so it is named here
+            # rather than left to be inferred from a zero.
+            "will_do_nothing": [
+                stage.get("capability")
+                for stage in stages
+                if not (stage.get("units") or [])
+            ],
             # One model turn per unit is the shape of every generation stage;
             # a stage that spends more says so through its own budget, and the
             # loop only needs the order of magnitude before it commits.
@@ -346,6 +471,8 @@ class LoopTools:
             "generation_mode": mode,
         }
         context = {"instruction": instruction} if instruction else {}
+        if bool(args.get("review_each_stage")):
+            context["review_each_stage"] = True
         child = self.loop.child_run(command, context)
         return {
             "definition": definition_id,
@@ -353,14 +480,30 @@ class LoopTools:
         }
 
     def inspect_run(self, args: dict) -> dict:
-        child = self._child(str(args.get("run_id") or ""))
+        child = self._readable_run(str(args.get("run_id") or ""))
         only = str(args.get("unit_id") or "").strip() or None
-        return self._run_report(child, unit_id=only)
+        report = self._run_report(child, unit_id=only)
+        self._stamp_reviewed(child)
+        return report
+
+    def _stamp_reviewed(self, child: dict) -> None:
+        """Record that this request has read that run.
+
+        It is what retires the chat's "review this run" offer, and what lets
+        this loop rerun units of a run it did not start.
+        """
+
+        if child["id"] == self.run["id"]:
+            return
+        if str(child.get("reviewed_by_run_id") or "") == self.run["id"]:
+            return
+        child["reviewed_by_run_id"] = self.run["id"]
+        store.save_run(self.ws, child)
 
     def rerun_units(self, args: dict) -> dict:
         from . import runner
 
-        child = self._child(str(args.get("run_id") or ""))
+        child = self._writable_run(str(args.get("run_id") or ""))
         wanted = _string_list(args.get("unit_ids"))
         if not wanted:
             raise ToolError("Name the units to run again.")
@@ -511,10 +654,15 @@ class LoopTools:
                 if unit_id and unit.get("id") != unit_id:
                     continue
                 details.append(self._unit_detail(child, stage, unit))
+        account = run_account(child)
         return {
             "run_id": child["id"],
             "engine": child.get("engine"),
             "status": child.get("status"),
+            # What the run actually committed, and which stages ran with
+            # nothing to do. Say nothing in a summary that this contradicts.
+            "committed": account["committed"],
+            "nothing_to_do": account["nothing_to_do"],
             "error": child.get("error"),
             "requested_outcomes": list(state.get("requested_outcomes") or []),
             "target_refs": list(state.get("target_refs") or []),

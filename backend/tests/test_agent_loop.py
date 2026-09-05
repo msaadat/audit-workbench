@@ -179,7 +179,14 @@ def test_plan_then_run_produces_one_child_run_and_a_closing_summary(
     assert child["parent_run_id"] == run["id"]
     assert child["status"] == "completed"
     assert child["workflow"]["requested_outcomes"] == [APM_OUTCOME]
-    assert run["messages"][-1]["content"] == "The planning memorandum is drafted."
+    # The model's prose, then the ledger's own account of what committed.
+    closing = run["messages"][-1]["content"]
+    assert closing.startswith("The planning memorandum is drafted.")
+    assert "What the runs actually did:" in closing
+    assert "1 item committed" in closing
+    assert APM_OUTCOME in {
+        item["capability"] for item in run["committed_account"][0]["committed"]
+    }
     assert workspace_with_data.reload().planning.get("apm_markdown")
 
 
@@ -395,10 +402,27 @@ def test_an_outcome_set_no_workflow_owns_starts_nothing(monkeypatch, workspace_w
     assert "one registered workflow" in refusal["error"]
 
 
-def test_inspect_run_refuses_a_run_this_request_did_not_start(workspace_with_data):
+def test_reading_a_run_is_open_and_changing_one_is_not(workspace_with_data):
+    """Review is a read; rerunning someone else's units needs that read first."""
+
     ws = workspace_with_data
     parent = store.new_command_run(ws, "auto", {"source": "loop", "text": "Look"})
     other = store.new_command_run(ws, "auto", {"source": "chat", "text": "Elsewhere"})
+    other["workflow"] = {
+        "requested_outcomes": [APM_OUTCOME],
+        "target_refs": ["workspace:current"],
+        "stages": [
+            {
+                "capability": APM_OUTCOME,
+                "title": "Planning memorandum",
+                "units": [
+                    {"id": "apm:1", "status": "failed", "parent_refs": ["planning:current"]}
+                ],
+            }
+        ],
+    }
+    other["status"] = "completed_with_failures"
+    store.save_run(ws, other)
 
     class _Loop:
         pass
@@ -406,8 +430,102 @@ def test_inspect_run_refuses_a_run_this_request_did_not_start(workspace_with_dat
     loop = _Loop()
     loop.ws = ws
     loop.run = parent
+    loop.save = lambda: store.save_run(ws, parent)
+    tools = loop_tools.LoopTools(loop)
+
+    # A run this request never started cannot be reran...
     with pytest.raises(loop_tools.ToolError):
-        loop_tools.LoopTools(loop).inspect_run({"run_id": other["id"]})
+        tools.rerun_units({"run_id": other["id"], "unit_ids": ["apm:1"]})
+    # ...until it has been read, which is what "review run X" asks for.
+    report = tools.inspect_run({"run_id": other["id"]})
+    assert report["status"] == "completed_with_failures"
+    assert store.load_run(ws, other["id"])["reviewed_by_run_id"] == parent["id"]
+    # A run that does not exist is a tool error, not a crash.
+    with pytest.raises(loop_tools.ToolError):
+        tools.inspect_run({"run_id": "20260101-000000-nope00"})
+
+
+# --------------------------------------------------------------------------- #
+# The closing message is the ledger's, not the model's
+# --------------------------------------------------------------------------- #
+def test_a_stage_that_did_nothing_is_named_as_having_done_nothing():
+    """The live-run failure, as a unit: a zero-unit stage reports success.
+
+    `doc_tests.definitions_ready` under force expanded no units — the
+    capability only defines tests it considers unusable — so the redraft never
+    happened, while every status projection said the stage succeeded. The
+    account is the one place that says so.
+    """
+
+    child = {
+        "id": "run-1",
+        "workflow": {
+            "stages": [
+                {
+                    "capability": "doc_tests.definitions_ready",
+                    "title": "Document test definitions",
+                    "status": "succeeded",
+                    "units": [],
+                    "readiness_before": {"state": "satisfied"},
+                },
+                {
+                    "capability": "doc_tests.executed",
+                    "title": "Document test execution",
+                    "status": "succeeded",
+                    "units": [
+                        {"id": "u1", "status": "succeeded", "result_refs": ["doctest:DT-1"]},
+                        {"id": "u2", "status": "succeeded", "result_refs": ["doctest:DT-1"]},
+                    ],
+                },
+            ]
+        },
+    }
+
+    account = loop_tools.run_account(child)
+
+    assert [item["capability"] for item in account["nothing_to_do"]] == [
+        "doc_tests.definitions_ready"
+    ]
+    assert account["committed"] == [
+        {
+            "capability": "doc_tests.executed",
+            "title": "Document test execution",
+            "status": "succeeded",
+            "units": 2,
+            "of": 2,
+            "skipped": 0,
+            "refs": ["doctest:DT-1"],
+            "more_refs": 0,
+        }
+    ]
+    lines = loop_tools.account_sentences([account])
+    assert "Document test execution: 2 items committed (doctest:DT-1)." in lines
+    assert (
+        "Document test definitions: nothing to do, so nothing changed." in lines
+    )
+
+
+def test_the_closing_message_contradicts_a_summary_that_overclaims(
+    monkeypatch, workspace_with_data
+):
+    """A summary the runs do not support is published beside what they did."""
+
+    script = LoopScript(
+        tool_turn("run_outcomes", {"requested_outcomes": [APM_OUTCOME]}),
+        finish_turn("I rewrote every test in the engagement from scratch."),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop(workspace_with_data)
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    closing = run["messages"][-1]["content"]
+    assert closing.startswith("I rewrote every test in the engagement from scratch.")
+    # The claim stands as the model's, and the record's own account stands
+    # beside it naming the one capability that actually committed.
+    assert "What the runs actually did:" in closing
+    assert "test" not in closing.split("What the runs actually did:")[1].lower()
+    assert "Audit planning memorandum" in closing or "planning" in closing.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -805,6 +923,73 @@ def test_the_coordinator_is_lent_take_action_and_seeds_the_loop(
     assert assistant._command_schemas(
         assistant.Commander(catalog=(), launch_command=lambda _: {}, launch_action=lambda _: {})
     )[-1]["function"]["name"] == "start_action"
+
+
+def test_the_finished_loops_offers_come_before_readiness_suggestions(
+    monkeypatch, workspace_with_data
+):
+    ws = workspace_with_data
+    script = LoopScript(
+        finish_turn(
+            "Drafted the memorandum.",
+            suggestions=[
+                {"label": "Generate the matrix next", "requested_outcomes": ["planning.rcm_ready"]},
+                {"label": "Tell me what changed", "message": "What changed in the APM?"},
+                {"label": "Nonsense", "requested_outcomes": ["not.a.capability"]},
+            ],
+        )
+    )
+    configured(monkeypatch, script)
+    chat = assistant_chats.create_chat(ws)
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": store.LOOP_COMMAND_SOURCE,
+            "text": "Draft the planning memorandum",
+            "chat_id": chat["id"],
+        },
+    )
+    run = wait_run(ws, started["id"], timeout=60)
+
+    # An offer naming an unregistered outcome is dropped, not persisted.
+    assert [item["label"] for item in run["suggestions"]] == [
+        "Generate the matrix next",
+        "Tell me what changed",
+    ]
+    record = assistant_chats.get_chat(ws, chat["id"])
+    labels = [item["label"] for item in record["suggestions"]]
+    assert labels[:2] == ["Generate the matrix next", "Tell me what changed"]
+    assert len(labels) > 2  # readiness still supplies the rest
+    offered = record["suggestions"][1]
+    assert offered["message"] == "What changed in the APM?"
+    assert record["suggestions"][0]["requested_outcomes"] == ["planning.rcm_ready"]
+
+
+def test_a_run_that_ended_badly_is_offered_for_review_until_it_is_read(
+    monkeypatch, workspace_with_data
+):
+    ws = workspace_with_data
+    chat = assistant_chats.create_chat(ws)
+    failed = store.new_command_run(
+        ws, "auto", {"source": "chat", "text": "Draft the APM", "chat_id": chat["id"]}
+    )
+    failed["status"] = "completed_with_failures"
+    failed["engine"] = store.WORKFLOW_ENGINE
+    store.save_run(ws, failed)
+
+    labels = [
+        item["label"] for item in assistant_chats.get_chat(ws, chat["id"])["suggestions"]
+    ]
+    assert "Review this run with the agent" in labels
+
+    # Once a loop has inspected it, the offer retires.
+    failed["reviewed_by_run_id"] = "20260101-000000-abc123"
+    store.save_run(ws, failed)
+    labels = [
+        item["label"] for item in assistant_chats.get_chat(ws, chat["id"])["suggestions"]
+    ]
+    assert "Review this run with the agent" not in labels
 
 
 def test_a_loop_run_projects_its_children_into_the_chat(monkeypatch, workspace_with_data):

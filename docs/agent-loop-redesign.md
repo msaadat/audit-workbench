@@ -1,8 +1,8 @@
 # Agent loop redesign: a steering model over gated capabilities, in small steps
 
-**Status:** steps 0 to 3 landed at commit `0fffce7` (5 September 2026); step 4,
-the agent engine, is built and under test (6 September 2026), and with it the
-whole of step 5's prompt and guards; steps 6 to 9 are still design. This is the
+**Status:** steps 0 to 3 landed at commit `0fffce7` (5 September 2026); steps 4,
+5 and 6 are built and under test (6 September 2026), with step 4 measured on one
+live run; steps 7 to 9 are still design. This is the
 handoff for replacing the fixed request-to-closure pipeline in front of the
 workflow engine with a budgeted model loop that plans, runs capability units,
 reads what happened, repairs what it can, and asks when it cannot. Each step
@@ -764,6 +764,61 @@ the `agent:loop` tag:
 8. `run_outcomes` with whole-workspace force and no `force_confirmed` returns a
    tool error and starts no child.
 
+#### The first live run, 6 September 2026
+
+`treasuryfull`, `deepseek/deepseek-v4-flash-0731` through OpenRouter, auto mode.
+The message — "Document test DT-D5D323C9 does not look right to me, redraft it
+and check the result" — matched no phrase, reached the coordinator, and was
+handed over with `take_action`. Run `20260905-205920-0c1767`: 10 loop turns, 18
+tool calls, 1 child run, 93 seconds wall clock, ~102,000 estimated prompt
+tokens, terminal status `completed_with_open_items`.
+
+What worked, and is the answer to the model-profile open question: the loop read
+before acting (`get_audit_progress`, `get_artifact`), planned twice
+(`plan_outcomes`), ran a narrowly targeted child
+(`run_outcomes(force, ["doctest:DT-D5D323C9"])`), inspected it (`inspect_run`),
+re-read the artifact, and closed with `finish`. It recovered from two tool errors
+— an artifact id it invented, a table that does not exist — without derailing.
+Tool-calling quality is adequate; no `tool_choice` forcing is needed.
+
+Three findings, in the order they cost something:
+
+1. **The hand-off was refused four times before it worked.** `_launch_command`'s
+   artifact-pronoun guard — "rerun *that*" needs a preceding chat artifact —
+   applied to a loop brief, and a brief that says "it" about the subject it just
+   named is most briefs. Fixed: the guard is for isolated actions, whose
+   ambiguity the chat layer must resolve; a loop resolves its own with read
+   tools and `ask_auditor`.
+2. **The loop reported ten turns as nine retries.** The gateway reads `attempt`
+   as a retry counter, and the loop was passing the turn number. Fixed: every
+   loop turn is a first attempt at a different turn.
+3. **The closing summary claimed work that did not happen.** The loop chose
+   `doc_tests.definitions_ready` under force to redraft the test;
+   `plan_outcomes` told it that stage expands **0 units** — the doc-test
+   definitions capability only defines tests it considers unusable, and a
+   redraft of an existing one is step 2b's `tests.specified` with a `doctest:`
+   ref, in the audit workflow. It ran anyway, the test was executed but never
+   redrafted, and the summary said all three steps had been mapped to items when
+   the record it had just read still showed two. Nothing was committed that
+   should not have been — the execution is real and correct — but the auditor
+   was told something untrue.
+
+All three are fixed. Finding 3 got both candidate answers, because the prompt
+half is advice and the code half is a guarantee:
+
+- `loop_tools.run_account(run)` reads a finished run's own ledger — which
+  capabilities committed units and what those produced, which ran with nothing
+  to do, and (since a skipped unit commits nothing) how many were skipped. It is
+  returned by `run_outcomes` and `inspect_run` as `committed` / `nothing_to_do`,
+  so the loop has to reconcile its story against it before writing one, and
+  `plan_outcomes` names `will_do_nothing` outright.
+- `finish` no longer publishes the model's prose alone. The closing message is
+  the summary followed by "What the runs actually did", composed from the
+  account, and the account is persisted on `run["committed_account"]`. A
+  summary that overclaims now stands next to the record contradicting it.
+- `LOOP_SYSTEM` says what a zero-unit stage means and that a summary may not
+  describe work such a stage was going to do.
+
 **Invariant:** every existing route, endpoint, and test passes unchanged; no
 new provider call site (`test_the_only_provider_call_site_in_the_agent_is_the_model_gateway`
 still holds); a child run's sidecars are byte-for-byte what a top-level run
@@ -817,7 +872,11 @@ regeneration; auditor questions per request.
 
 ### Step 6. Review at the end of a run
 
-Builds on 4.
+Builds on 4. **Landed**, 6 September 2026, with two deviations noted under 6a
+and 6c below and one addition: `inspect_run` reads *any* command run in the
+workspace, because 6b asks the loop to review a run it did not start, while
+`rerun_units` still requires the run to be this loop's child or one it has
+inspected. Reading is a read; changing is not.
 
 #### 6a. The loop's closing turn is the review
 
@@ -833,6 +892,12 @@ loop run come first, then `narration.next_steps`. `frontend/src/types.ts`
 `AssistantSuggestion` gains optional `message` and `target_refs`;
 `ConsoleThread.vue` `nextStep` sends a `message` suggestion as chat text and an
 outcome suggestion as today with its target refs in `run_context`.
+
+*As built:* `_chat_suggestions` merges the two, deduplicates by label and caps
+at five. A `message` suggestion is sent with intent `auto`, not `act` — an offer
+the agent left as a question ("what changed in the APM?") is a question, and
+forcing it through `act` would ask the workspace to change when the auditor
+asked to be told something.
 
 #### 6b. Review a run that had no loop
 
@@ -854,6 +919,16 @@ through `runtime.wait_for_interaction`. `skip` marks the stage and its units
 passes the flag; the Run buttons may pass it too.
 `frontend/src/components/agent/AgentInteractionCard.vue` already renders
 options.
+
+*As built:* the card did **not** already render these — its option rendering is
+`target_choice`, which expects option *objects* and a "use selected" button. A
+stage review is three answers to a waiting run, so it got its own branch:
+Stop / Skip this stage / Continue, emitting `{choice}`. `skip` marks the units
+through `workflow.transition_unit`, so the stage still runs, finds everything
+settled, and folds — and the skipped units stay visible in the counts and in the
+account the closing message is built from. An unrecognized answer continues:
+permission mode still approves every proposal, so continuing asks again at the
+next boundary, while skipping or stopping would discard work nobody declined.
 
 Tests: `tests/test_assistant_chats.py` for suggestion ordering and the review
 chip; a new `tests/test_agent_stage_review.py` for continue, skip, and stop.

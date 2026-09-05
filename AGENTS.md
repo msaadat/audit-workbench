@@ -421,6 +421,16 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   cap, the question cap — are code, not prompt. Its conversation with the model
   is persisted beside the run as `conversation.json`, so a crash resumes the
   request at its next turn.
+- A loop's closing message is the model's summary followed by
+  `loop_tools.run_account`'s reading of what its runs actually committed —
+  which capabilities settled units, what those units produced, and which stages
+  ran with nothing to do. The account is also returned by `run_outcomes` and
+  `inspect_run`, so the loop reconciles against it before it writes; a stage
+  that expands no units reports success and changes nothing, which is the one
+  shape a model reliably narrates as work done.
+- In permission mode, a run whose context carries `review_each_stage` is asked
+  before each stage runs (`audit_execution.stage_review`): continue, skip, or
+  stop. An auto run never waits there.
 - `ActionRunner` is still used for isolated mutations and repairable action
   graphs. `IntakeRunner` is the one retained protocol runner: folder intake is a
   single-unit protocol over a staged batch whose authoritative state lives under

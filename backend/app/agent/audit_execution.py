@@ -16,6 +16,7 @@ handler.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Mapping
 
 from .. import (
@@ -38,7 +39,7 @@ from ..workspaces import (
     slugify,
 )
 from . import capabilities as audit_capabilities
-from . import narration, workflow
+from . import narration, store, workflow
 from .action_runner import ActionRunner
 from .analysis_execution import AnalysisWorkflowExecution
 from .capabilities.analysis import (
@@ -104,6 +105,7 @@ from .execution_support import (
 )
 from .runtime import (
     BoundUnitPipeline,
+    Cancelled,
     CapabilityExecution,
     DeterministicUnitResult,
     FinishProjection,
@@ -2238,6 +2240,114 @@ _PARTIAL_DEPENDENCIES = {
 }
 
 
+#: What an auditor may answer at a stage review, and what each answer means.
+STAGE_REVIEW_OPTIONS = ("continue", "skip", "stop")
+
+
+def stage_review(
+    adapter: "AuditWorkflowExecution",
+    capability: workflow.Capability,
+    stage: dict,
+) -> str:
+    """Ask before a stage runs, when the request asked to be asked.
+
+    Permission mode already approves each *proposal*; this approves each
+    *stage*, before its first model turn is spent. It exists because the
+    cheapest place to stop work that was never wanted is before it is done, and
+    because a request carried out by the steering loop can run several stages
+    the auditor never named one by one.
+
+    Off unless both are true: the run is in permission mode, and its context
+    carries ``review_each_stage``. An auto run never waits here.
+    """
+
+    run = adapter.run
+    if run.get("mode") != "permission":
+        return "continue"
+    if not (run.get("context") or {}).get("review_each_stage"):
+        return "continue"
+    units = list(stage.get("units") or [])
+    if not units or stage.get("review_decision"):
+        return "continue"
+    interaction = next(
+        (
+            item
+            for item in run.get("interactions") or []
+            if item.get("type") == "stage_review"
+            and item.get("status") == "pending"
+            and (item.get("payload") or {}).get("stage_id") == stage.get("id")
+        ),
+        None,
+    )
+    if interaction is None:
+        interaction = {
+            "id": f"int_{uuid.uuid4().hex[:12]}",
+            "action_id": f"workflow:stage_review:{stage.get('id')}",
+            "type": "stage_review",
+            "prompt": (
+                f"{stage.get('title') or capability.title} is next: "
+                f"{counted(len(units), 'item')}. Continue, skip, or stop?"
+            ),
+            "options": list(STAGE_REVIEW_OPTIONS),
+            "payload": {
+                "stage_id": stage.get("id"),
+                "capability": capability.id,
+                "units": len(units),
+            },
+            "policy_reason": "You asked to review each stage before it runs.",
+            "status": "pending",
+            "response": None,
+            "actor": None,
+            "created_at": store.utcnow(),
+            "resolved_at": None,
+        }
+        run.setdefault("interactions", []).append(interaction)
+        adapter.save()
+        adapter.emit("checkpoint_request", {"interaction": interaction})
+    response = adapter.runtime.wait_for_interaction(interaction)
+    decision = _stage_review_decision(response)
+    stage["review_decision"] = decision
+    if decision == "skip":
+        # Marked, not removed: the stage still runs, finds every unit settled,
+        # and folds. What was skipped stays visible in the counts and in the
+        # account the loop's closing message is composed from.
+        for unit in units:
+            if unit.get("status") not in {"succeeded", "skipped"}:
+                workflow.transition_unit(unit, "skipped")
+                adapter.emit("unit_update", {"stage_id": stage.get("id"), "unit": unit})
+    adapter.runtime.resolve_interaction(interaction, response)
+    adapter.emit(
+        "checkpoint_resolved",
+        {"interaction_id": interaction["id"], "decision": decision},
+    )
+    adapter.save()
+    if decision == "stop":
+        raise Cancelled()
+    return decision
+
+
+def _stage_review_decision(response: Mapping[str, object]) -> str:
+    """Read one of the three answers out of whatever shape came back.
+
+    Anything unrecognized continues. Permission mode still approves every
+    proposal the stage produces, so continuing on an unclear answer asks again
+    at the next boundary rather than acting unasked; skipping or stopping on
+    one would discard work nobody declined.
+    """
+
+    for key in ("choice", "option", "decision", "text"):
+        value = str(response.get(key) or "").strip().casefold()
+        for option in STAGE_REVIEW_OPTIONS:
+            if value == option or value.startswith(option):
+                return option
+    options = response.get("options")
+    if isinstance(options, (list, tuple)) and options:
+        value = str(options[0]).strip().casefold()
+        if value in STAGE_REVIEW_OPTIONS:
+            return value
+    return "continue"
+
+
 def build_audit_workflow_runner(
     workspace: Workspace,
     run: dict,
@@ -2480,7 +2590,7 @@ def build_audit_workflow_runner(
     def before_stage(
         subject: Workspace,
         capability: workflow.Capability,
-        _stage: dict,
+        stage: dict,
     ) -> None:
         adapter.ws = subject
         document_adapter.ws = subject
@@ -2488,6 +2598,7 @@ def build_audit_workflow_runner(
         checkpoint = stage_checkpoints.get(capability.id)
         if checkpoint is not None and run.get("mode") == "permission":
             checkpoint_handlers[checkpoint]()
+        stage_review(adapter, capability, stage)
 
     scheduler = WorkflowRunner(
         subject=workspace,

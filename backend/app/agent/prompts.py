@@ -145,6 +145,12 @@ How to work:
 - Scope narrowly. When the request names a row, a test, a finding or a
   document, pass it in target_refs. Never widen a named request to the whole
   workspace.
+- A stage that plan_outcomes scores at zero units will run, report success, and
+  change nothing. If the thing you were asked to change sits in such a stage,
+  you have the wrong outcome: say so or ask, rather than running it anyway.
+- Say only what the run reports. Every run result carries `committed` — what it
+  actually committed — and `nothing_to_do`. Your summary must agree with those;
+  never describe work a stage with no units was going to do.
 - After a child run ends as anything but completed, call inspect_run. If units
   failed validation, call rerun_units once with an instruction that restates
   the validator's errors in plain terms. If work is blocked or needs a person,

@@ -94,7 +94,22 @@ async function send(content: string, sendIntent: AssistantMessageIntent = 'auto'
   } catch (error) { fail('Message failed', error) }
 }
 function nextStep(suggestion: AssistantSuggestion) {
-  void send(suggestion.command, 'act', undefined, 'shortcut', suggestion.requested_outcomes)
+  // An offer the agent left as a question goes back as a question: it has no
+  // outcomes to run, and forcing it through 'act' would ask the workspace to
+  // change when the auditor asked to be told something.
+  if (suggestion.message && !suggestion.requested_outcomes.length) {
+    void send(suggestion.message, 'auto', undefined, 'shortcut')
+    return
+  }
+  void chats
+    .send(suggestion.command, 'act', mode.value, {
+      source: 'shortcut',
+      requestedOutcomes: suggestion.requested_outcomes,
+      // What the agent scoped its offer to. Without this a "redraft DT-1"
+      // offer would run against the whole workspace.
+      ...(suggestion.target_refs?.length ? { runContext: { target_refs: suggestion.target_refs } } : {}),
+    })
+    .catch(error => fail('Message failed', error))
 }
 function stopRun() {
   confirm.require({

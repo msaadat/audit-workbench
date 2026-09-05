@@ -1073,6 +1073,9 @@ corrects what it can.
 
 Rules for starting work:
 - Choose between them by what the request needs. One registered command that covers the whole request: start_command. One operation on one artifact: start_action. Anything else that changes the workspace — several steps, a named row or test to redo, work whose result has to be read and corrected — take_action, with a brief in the auditor's own terms.
+- "Review run <id>" is a request to carry work out: call take_action with a \
+brief telling the agent to inspect that run, say what went wrong, and repair \
+what it can.
 - Start a run only when the auditor is asking for the work to be carried out. \
 A question about what something is, what it would involve, what state it is \
 in, or whether it is worth doing is answered with the read tools — never by \
