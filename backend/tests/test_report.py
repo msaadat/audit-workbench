@@ -3,7 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import doc_tests, findings, llm, report, templates_store, workspaces
+from app import data_tests, doc_tests, findings, llm, report, templates_store, workspaces
 from app.agent import store
 from app.main import create_app
 
@@ -929,6 +929,58 @@ def test_finding_and_report_routes(monkeypatch, workspace_with_data):
     assert client.patch(f"{base}/report", json={"status": "final"}).status_code == 400
     assert client.patch(f"{base}/findings/{finding_id}", json={"status": "final"}).status_code == 400
     assert client.delete(f"{base}/findings/{finding_id}").json() == {"ok": True}
+
+
+def test_a_data_test_evidence_option_is_not_stale_the_moment_it_is_attached(
+    monkeypatch, workspace_with_data
+):
+    """The picker must offer the hash the staleness check resolves.
+
+    The option carried the run's ``result_sha1`` -- the whole-result file
+    integrity hash -- while ``evidence_warnings`` resolves the narrower
+    evidentiary projection through ``data_tests.result_artifact``. The two
+    never agree, so every data-test anchor an auditor picked was reported as
+    moved before the finding was even saved.
+    """
+
+    ws, rcm, procedure, execution, _analysis, _anchor = linked_workspace(workspace_with_data)
+    data_test = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate invoice numbers",
+            "objective": "Identify repeated invoice numbers.",
+            "criteria": "Invoice identifiers must be unique.",
+            "steps": [{"label": "Analyze the full population.", "instruction": "Analyze the full population."}],
+            "rcm_id": rcm["id"],
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+        },
+    )
+    run = data_tests.run(ws, data_test["id"])
+    monkeypatch.setattr(llm, "agent_status", lambda: {"configured": False})
+    client = TestClient(create_app())
+    base = f"/api/workspaces/{ws.id}"
+
+    listing = client.get(f"{base}/findings").json()
+    anchor = next(
+        option["anchor"]
+        for option in listing["evidence_options"]
+        if option["anchor"]["source_id"] == f"{data_test['id']}:{run['id']}"
+    )
+    assert anchor["source_sha1"] == data_tests.result_artifact(ws, anchor["source_id"])["sha1"]
+    assert anchor["source_sha1"] != run["result_sha1"]
+
+    created = client.post(
+        f"{base}/findings", json=complete_finding_payload(rcm, procedure, execution, anchor)
+    )
+    assert created.status_code == 200
+    listed = next(
+        item
+        for item in client.get(f"{base}/findings").json()["items"]
+        if item["id"] == created.json()["id"]
+    )
+    assert listed["evidence_warnings"] == []
 
 
 def test_removed_artifact_statuses_are_discarded_when_loading(workspace_with_data):

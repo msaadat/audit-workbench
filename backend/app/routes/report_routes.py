@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Body
 
 from .. import doc_tests, findings, report, workspaces
-from ..evidence import normalize_anchor
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["findings", "report"])
 
@@ -41,14 +40,15 @@ def list_findings(workspace_id: str):
             last_run = data_test.get("last_run")
             if not last_run:
                 continue
-            anchor = normalize_anchor(
-                {
-                    "source_kind": "datatest",
-                    "source_id": f"{data_test['id']}:{last_run['id']}",
-                    "source_sha1": last_run["result_sha1"],
-                },
-                require_hash=True,
+            # Stamp the option with the hash the staleness checks resolve, not
+            # the run's ``result_sha1`` file-integrity hash: an anchor pins the
+            # narrower evidentiary projection, so the two never agree and every
+            # freshly picked data-test anchor read as already stale.
+            anchor = findings.anchor_from_ref(
+                ws, f"datatest:{data_test['id']}:{last_run['id']}"
             )
+            if anchor is None:
+                continue
             evidence_options.append(
                 {"anchor": anchor, "label": f"{data_test['id']} · durable result {last_run['id']}"}
             )
