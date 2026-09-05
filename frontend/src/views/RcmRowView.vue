@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -14,7 +14,8 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { destinationLabel, useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { useTrail } from '../composables/useShell'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 import EvidenceAnchorDialog from '../components/EvidenceAnchorDialog.vue'
 import ProvenanceRail from '../components/agent/ProvenanceRail.vue'
@@ -329,20 +330,19 @@ const menuItems = computed(() => [
   { label: 'Export the matrix', icon: 'pi pi-download', command: () => void exportMatrix() },
   { label: 'Remove row', icon: 'pi pi-trash', command: () => remove() },
 ])
+
+/**
+ * Three pieces in the trail: the engagement, the matrix this row belongs to,
+ * and the row's own id — mono, as every other place this page draws it.
+ */
+useTrail(() => [
+  { label: destinationLabel('rcm'), to: nav.to('rcm') },
+  { label: props.rowId, mono: true },
+])
 </script>
 
 <template>
   <div class="ui-surface ui-surface--stacked">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <RouterLink :to="nav.to('record')" class="crumb__back">
-        <i class="pi pi-arrow-left" aria-hidden="true" />Engagement record
-      </RouterLink>
-      <span class="crumb__sep" aria-hidden="true">/</span>
-      <RouterLink :to="nav.to('rcm')" class="crumb__back">Risk and control matrix</RouterLink>
-      <span class="crumb__sep" aria-hidden="true">/</span>
-      <span class="crumb__cur" aria-current="page">{{ rowId }}</span>
-    </nav>
-
     <UiEmptyState
       v-if="data && !row"
       icon="pi pi-map"
@@ -803,7 +803,7 @@ label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { wi
    contents list are navigation, and navigation does not belong on a filed
    working paper. */
 @media print {
-  .row-head, .paper-nav, .crumb { display: none !important; }
+  .row-head, .paper-nav { display: none !important; }
   .row-body { overflow: visible; padding: 0; background: none; }
   .paper-tab { display: block; }
   .paper { max-width: none; border: 0; padding: 0; }

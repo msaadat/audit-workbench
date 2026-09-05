@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
 import AuditFileView from './AuditFileView.vue'
+import { resetShell, useShell } from '../composables/useShell'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 import type { WorkspaceContext } from '../composables/useWorkspaceContext'
 
@@ -56,6 +57,8 @@ function render(section: string) {
 }
 
 describe('AuditFileView', () => {
+  beforeEach(resetShell)
+
   it.each([
     ['apm', '.stub-apm'],
     ['coverage', '.stub-planning'],
@@ -84,26 +87,28 @@ describe('AuditFileView', () => {
 
   /**
    * The rail used to say where you were by highlighting the entry beside you.
-   * With it gone, this bar is the only navigation on the surface, so it has to
-   * name the page and carry the way back on every one of them — not just the
-   * ones a reader is likely to open first.
+   * With it gone, the trail in the shell bar is the only thing that says which
+   * work product this is, so this host has to publish it on every one of them
+   * — not just the ones a reader is likely to open first. The way back is the
+   * engagement crumb the bar draws before it, which is why nothing here draws
+   * a link of its own any more.
    */
   it.each([
     ['apm', 'Audit planning memorandum'],
     ['coverage', 'Risk and control matrix'],
-    ['data-tests', 'Test programme'],
-    ['doc-tests', 'Document test results'],
-    ['findings', 'Findings register'],
+    ['data-tests', 'Data tests'],
+    ['doc-tests', 'Document tests'],
+    ['findings', 'Findings'],
     ['chain', 'Chain'],
-    ['report', 'Report'],
-  ])('names %s in the crumb bar and points it back at the record', (section, label) => {
+    ['report', 'Draft audit report'],
+  ])('names %s in the shell trail', (section, label) => {
     const wrapper = render(section)
 
-    expect(wrapper.find('.crumb__cur').text()).toBe(label)
-    const back = wrapper.find('.crumb__back')
-    expect(back.text()).toContain('Engagement record')
-    expect(back.attributes('href')).toBe('/record')
+    expect(useShell().trail.value).toEqual([{ label }])
     wrapper.unmount()
+    // A surface withdraws its trail when it leaves, or the bar would keep
+    // naming a page nobody is on.
+    expect(useShell().trail.value).toEqual([])
   })
 
   it('draws no rail, because the record is the index', () => {

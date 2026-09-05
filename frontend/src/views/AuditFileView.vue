@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, inject, watch } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 
-import { FILE_SECTIONS, useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { FILE_SECTIONS, sectionLabel, useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { useTrail } from '../composables/useShell'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 import ApmView from './ApmView.vue'
 import PlanningTab from '../components/PlanningTab.vue'
@@ -21,10 +22,11 @@ import ReportView from './ReportView.vue'
  * index now, and it lists the same seven things with what each one cost, what
  * it left open, and what has not run — none of which a rail could say.
  *
- * What replaces it is the bar below: where you are, and one click back to the
- * index. That bar belongs to this surface rather than to the pages under it —
- * every page here has the same parent, so none of them should have to be told
- * what it is.
+ * What replaces it is the trail in the shell bar: where you are, and one click
+ * back — to the record through the engagement's own name, which is the way
+ * back from every page in the app rather than a link this surface has to draw.
+ * The bar that used to sit here spent a whole row on that one link, and was
+ * written again in the workbench and on the row page.
  */
 
 const props = defineProps<{ id: string; section: string }>()
@@ -49,41 +51,20 @@ watch(() => props.section, value => {
 }, { immediate: true })
 
 /**
- * What the bar calls each section.
+ * Where the trail says you are.
  *
- * These are the record's own row labels, so the name in the bar is the name on
- * the row that was clicked — a reader should not have to work out that "RCM"
- * and "Risk and control matrix" are the same thing. They are stated here rather
- * than read from the record because the bar must not wait on a request to say
- * where you are, and a wrong label is a smaller failure than a bar that arrives
- * late or empty.
+ * The name comes from the navigation module, which is also where the record's
+ * doors resolve, rather than from a map kept here — there were two such maps,
+ * one here and one in the workbench, and they had already drifted from the
+ * pages they named.
  */
-const SECTION_LABEL: Record<string, string> = {
-  apm: 'Audit planning memorandum',
-  cycle: 'Cycle',
-  coverage: 'Risk and control matrix',
-  'data-tests': 'Test programme',
-  'doc-tests': 'Document test results',
-  findings: 'Findings register',
-  chain: 'Chain',
-  report: 'Report',
-}
+const title = computed(() => sectionLabel('file', section.value))
 
-const title = computed(() => SECTION_LABEL[section.value] ?? '')
+useTrail(() => [{ label: title.value }])
 </script>
 
 <template>
   <div class="ui-surface ui-surface--stacked">
-    <!-- What the rail used to do, done in one row: where you are, and the way
-         back. -->
-    <nav class="crumb" aria-label="Breadcrumb">
-      <RouterLink :to="nav.to('record')" class="crumb__back">
-        <i class="pi pi-arrow-left" aria-hidden="true" />Engagement record
-      </RouterLink>
-      <span class="crumb__sep" aria-hidden="true">/</span>
-      <span class="crumb__cur" aria-current="page">{{ title }}</span>
-    </nav>
-
     <div class="ui-surface__panel">
       <ApmView v-if="section === 'apm'" :workspace="workspace" @changed="reloadStatus" />
       <CycleTab v-else-if="section === 'cycle'" :workspace="workspace" @changed="reloadStatus" />

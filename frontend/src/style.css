@@ -35,6 +35,11 @@ body {
   --aw-control-height-sm: 1.9rem;
   --aw-row-height: 2.5rem;
   --aw-section-gap: 0.85rem;
+  /* The shell bar and the controls it carries. It is one bar on every page —
+     44 px where a work product used to meet a 60 px header and a 39 px crumb
+     row — and it scales with presentation density because its type does. */
+  --aw-shell-height: 2.75rem;
+  --aw-shell-control: 1.875rem;
 
   /* One spacing lane, 4px based. */
   --aw-space-1: 0.25rem;
@@ -58,6 +63,14 @@ body {
   --aw-on-dark: #ffffff;
   --aw-on-navy: #e6edf6;
   --aw-on-navy-muted: #8fa6c2;
+  /* Washes over the navy shell: a ghost control's fill and border, the trail's
+     separator, and the hover any control on the bar takes. The shell is navy
+     in both themes, so these are white in both; they were written as literals
+     in two headers before the bar became one place. */
+  --aw-on-dark-wash: rgb(255 255 255 / 9%);
+  --aw-on-dark-line: rgb(255 255 255 / 18%);
+  --aw-on-dark-hover: rgb(255 255 255 / 10%);
+  --aw-on-dark-sep: rgb(255 255 255 / 32%);
   /* Text on a solid accent fill. Distinct from `--aw-on-dark`, which is text
      over the navy header and stays white in both themes: the accent is dark
      teal on a light ground and light teal on a dark one, so what reads on it
@@ -168,6 +181,8 @@ body {
   --aw-control-height-sm: 2.2rem;
   --aw-row-height: 2.9rem;
   --aw-section-gap: 1.1rem;
+  --aw-shell-height: 3.25rem;
+  --aw-shell-control: 2.2rem;
 }
 
 /* =========================================================================
@@ -513,29 +528,9 @@ button, input, textarea, select { font: inherit; }
    side, so the panel gets the full width and the bar gets its own row. */
 .ui-surface--stacked { flex-direction: column; }
 
-/* --- the crumb bar ------------------------------------------------------- */
-/* What the audit file's rail used to do, in one row. It is a bar rather than a
-   line of small print because it is the only navigation on the surface: it has
-   to be findable without being looked for, which the caption it replaced was
-   not. */
-.crumb {
-  flex: 0 0 auto;
-  display: flex; align-items: center; gap: .5rem;
-  padding: .55rem 1.25rem;
-  border-bottom: 1px solid var(--aw-border);
-  background: var(--aw-panel);
-  font-size: var(--aw-text-sm);
-}
-.crumb__back {
-  display: inline-flex; align-items: center; gap: .4rem;
-  color: var(--aw-teal); font-weight: 600; text-decoration: none;
-  padding: .15rem .35rem; margin-left: -.35rem; border-radius: var(--aw-radius-control);
-}
-.crumb__back:hover { background: var(--aw-teal-soft); }
-.crumb__back:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
-.crumb__sep { color: var(--aw-border-strong); }
-.crumb__cur { color: var(--aw-ink); font-weight: 600; }
-@media (max-width: 46rem) { .crumb { padding-inline: .85rem; } }
+/* The crumb bar that used to sit here — a whole row for one link and one
+   label, drawn again in each of three views — is the trail in the shell bar
+   now. See `components/shell/AppHeader.vue`. */
 .ui-surface__rail {
   flex: 0 0 12.5rem;
   display: flex;
@@ -736,6 +731,15 @@ button, input, textarea, select { font: inherit; }
 .p-confirmdialog { max-width: min(34rem, 92vw); }
 .p-confirmdialog .p-confirmdialog-message { line-height: 1.5; }
 
+/* The shell kebab's one checked row (presentation size). A popup menu is
+   teleported to the body, so no scoped block can reach it. */
+.p-menu .p-menu-item.shell-menu-item--on .p-menu-item-link,
+.p-menu .p-menu-item.shell-menu-item--on .p-menu-item-content {
+  background: var(--aw-teal-soft);
+  color: var(--aw-teal);
+  font-weight: 600;
+}
+
 /* =========================================================================
    Print.
 
@@ -746,7 +750,7 @@ button, input, textarea, select { font: inherit; }
    shell they all sit inside, which no scoped block can reach.
    ========================================================================= */
 @media print {
-  .workspace-header { display: none !important; }
+  .app-shell { display: none !important; }
   #app, .workspace-page { height: auto; display: block; }
   .ui-surface, .ui-surface__panel { display: block; overflow: visible; height: auto; }
   body { background: #ffffff; }

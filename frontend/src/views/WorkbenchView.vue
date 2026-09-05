@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, inject, watch } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 
-import { BENCH_SECTIONS, useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { BENCH_SECTIONS, sectionLabel, useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { useTrail } from '../composables/useShell'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 import DocumentsTab from '../components/DocumentsTab.vue'
 import DataTab from '../components/DataTab.vue'
@@ -31,31 +32,19 @@ const { workspace, reload, requestImport } = inject(workspaceContextKey)!
 /** The paths this host answers for, read from the module that owns them. */
 const known: readonly string[] = BENCH_SECTIONS
 
-/** What the crumb calls each section — the record's own words for the door. */
-const SECTION_LABEL: Record<string, string> = {
-  documents: 'Documents',
-  tables: 'Source tables',
-  query: 'Query',
-  analysis: 'Analysis library',
-}
-const title = computed(() => SECTION_LABEL[section.value] ?? '')
 const section = computed(() => (known.includes(props.section) ? props.section : 'documents'))
+/** What the trail calls each section, from the module that owns the names. */
+const title = computed(() => sectionLabel('bench', section.value))
 
 watch(() => props.section, value => {
   if (!known.includes(value)) void router.replace(nav.to('documents'))
 }, { immediate: true })
+
+useTrail(() => [{ label: title.value }])
 </script>
 
 <template>
   <div class="ui-surface ui-surface--stacked">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <RouterLink :to="nav.to('record')" class="crumb__back">
-        <i class="pi pi-arrow-left" aria-hidden="true" />Engagement record
-      </RouterLink>
-      <span class="crumb__sep" aria-hidden="true">/</span>
-      <span class="crumb__cur" aria-current="page">{{ title }}</span>
-    </nav>
-
     <div class="ui-surface__panel">
       <DocumentsTab v-if="section === 'documents'" :workspace="workspace" @changed="reload" @import-requested="requestImport" />
       <AnalysisTab v-else-if="section === 'analysis'" :workspace="workspace" />

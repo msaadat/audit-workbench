@@ -4,7 +4,9 @@ import {
   BENCH_SECTIONS,
   FILE_SECTIONS,
   destinationForSection,
+  destinationLabel,
   routeForTarget,
+  sectionLabel,
   surfacePath,
   workspaceRoute,
 } from './useWorkspaceNavigation'
@@ -130,5 +132,27 @@ describe('a row as a place of its own', () => {
 
   it('resolves the coverage section to the matrix, not to one of its rows', () => {
     expect(destinationForSection('file', 'coverage')).toBe('rcm')
+  })
+})
+
+/**
+ * The shell's trail is the only thing that names the page you are on, and the
+ * names used to be kept in two hand-written maps — one in each routed host —
+ * that disagreed with each other and with the pages they named. One map now,
+ * beside the destinations it names.
+ */
+describe('what a destination is called', () => {
+  it('names a work product as its own page names itself', () => {
+    // The two that disagreed: the bar said `Test programme` over a page
+    // headed `Data tests`, and `Document test results` over `Document tests`.
+    expect(sectionLabel('file', 'data-tests')).toBe('Data tests')
+    expect(sectionLabel('file', 'doc-tests')).toBe('Document tests')
+    expect(sectionLabel('file', 'coverage')).toBe('Risk and control matrix')
+    expect(sectionLabel('bench', 'tables')).toBe('Source tables')
+  })
+
+  it('says nothing for a section no surface answers for', () => {
+    expect(sectionLabel('file', 'dashboard')).toBe('')
+    expect(destinationLabel(null)).toBe('')
   })
 })

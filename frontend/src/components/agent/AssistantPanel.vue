@@ -281,7 +281,12 @@ const contextRead = computed(() => {
   border-left: 0;
 }
 .chats-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--aw-border); background: var(--aw-panel); }
-.thread-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+/* `flex: 1` so the column fills the docked panel rather than sizing to the
+   conversation. Without it the thread was as tall as its messages, which put
+   the composer directly under the last one and left the rest of the panel
+   blank — invisible on a long transcript, wrong on every new chat. Expanded,
+   this is a grid item and stretches on its own; the flex value is ignored. */
+.thread-column { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .rail-column {
   display: flex; flex-direction: column; gap: .875rem;
   min-width: 0; min-height: 0; overflow-y: auto;

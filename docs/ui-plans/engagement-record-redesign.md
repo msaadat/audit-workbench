@@ -1,6 +1,8 @@
 # Engagement record redesign: the phased plan
 
-**Status:** design agreed on 4 September 2026, not yet implemented. This is the
+**Status:** design agreed on 4 September 2026; **built** — the 32 px toolbar,
+the progress strip, the phase cards with `NEXT` and the stage rows are all in
+`EngagementRecordTab.vue`. This is the
 handoff for rebuilding the Record tab (`frontend/src/components/EngagementRecordTab.vue`)
 around the five audit phases the backend already defines, with a phase progress
 strip at the top. Every claim about what the code does today was read from the

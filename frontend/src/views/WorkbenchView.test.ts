@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
 import WorkbenchView from './WorkbenchView.vue'
+import { resetShell, useShell } from '../composables/useShell'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 import type { WorkspaceContext } from '../composables/useWorkspaceContext'
 
@@ -52,17 +53,19 @@ function render(section: string) {
 }
 
 describe('WorkbenchView', () => {
+  beforeEach(resetShell)
+
   it.each([
     ['documents', 'Documents'],
     ['tables', 'Source tables'],
     ['query', 'Query'],
-    ['analysis', 'Analysis library'],
-  ])('names %s in the crumb bar and points it back at the record', (section, label) => {
+    ['analysis', 'Analysis'],
+  ])('names %s in the shell trail', (section, label) => {
     const wrapper = render(section)
 
-    expect(wrapper.find('.crumb__cur').text()).toBe(label)
-    expect(wrapper.find('.crumb__back').attributes('href')).toBe('/record')
+    expect(useShell().trail.value).toEqual([{ label }])
     wrapper.unmount()
+    expect(useShell().trail.value).toEqual([])
   })
 
   it('draws no rail, because the record is the index', () => {

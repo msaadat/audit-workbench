@@ -9,37 +9,32 @@ import { useAgentRun } from '../composables/useAgentRun'
 import type { EngagementPhase, EngagementSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AssistantPanel from '../components/agent/AssistantPanel.vue'
 import ImportDialog from '../components/ImportDialog.vue'
-import { useAppearance } from '../composables/useAppearance'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
+import { useEngagementCrumb } from '../composables/useShell'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
-import { useSession } from '../composables/useSession'
 
 /**
- * The workspace shell. It owns the engagement header, the surface switcher, the
- * folder-import dialog and drop target, and the workspace/phase state every
- * surface reads. Surfaces themselves are routes — see docs/agentic-ux-plan.md.
+ * The workspace shell. It owns the folder-import dialog and drop target and
+ * the workspace/phase state every surface reads. Surfaces themselves are
+ * routes — see docs/agentic-ux-plan.md.
+ *
+ * It used to draw a header of its own as well: a second navy bar with the same
+ * brand mark, the engagement's name as plain text, and eight icon-only
+ * controls whose only label was a tooltip. There is one bar now, in `App.vue`.
+ * What this still owns is the *state* the bar shows — which engagement, and
+ * what the assistant is doing — so it publishes the engagement to the shell
+ * and teleports the assistant toggle into the bar with its bindings intact.
  */
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
-const session = useSession()
-// The workspace shell replaces the global header, so sign-out has to be
-// reachable from here too — otherwise a signed-in auditor inside an engagement
-// has no way out.
-const showAccount = computed(() => !session.state.singleUser && session.state.user !== null)
-
-async function signOut() {
-  await session.signOut()
-  await router.replace({ name: 'login' })
-}
 
 const route = useRoute()
 const router = useRouter()
 const nav = useWorkspaceNav()
 
 const workspace = ref<WorkspaceSummary | null>(null)
-const { theme, presenting, cycleTheme } = useAppearance()
 const folderImportOpen = ref(false)
 const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
 const dropActive = ref(false)
@@ -96,9 +91,14 @@ async function loadWorkspace() {
   try {
     workspace.value = await api.get<WorkspaceSummary>(`/api/workspaces/${props.id}`)
   } catch (error) {
-    toast.add({ severity: 'error', summary: 'Workspace not found', detail: String(error), life: 5000 })
+    toast.add({ severity: 'error', summary: 'Engagement not found', detail: String(error), life: 5000 })
   }
 }
+
+// The bar names the engagement as soon as the route does, and corrects the
+// name once the workspace answers: an id in the trail is a worse first frame
+// than the real name a moment later, but both beat an empty bar.
+useEngagementCrumb(() => ({ id: props.id, name: workspace.value?.name || props.id }))
 
 async function reload() {
   await Promise.all([loadWorkspace(), loadEngagementStatus()])
@@ -185,61 +185,31 @@ onUnmounted(() => {
 
 <template>
   <div class="page workspace-page" v-if="workspace">
-    <header class="workspace-header">
-      <router-link to="/" class="brand" aria-label="Audit Workbench home">
-        <span class="brand-mark"><i class="pi pi-verified" /></span>
-        <strong>Audit Workbench</strong>
-      </router-link>
-      <span class="header-divider" />
-      <div class="engagement-title">
-        <small>Engagement</small>
-        <h1>{{ workspace.name }}</h1>
-      </div>
+    <!-- The one control that belongs to the engagement, in the bar at the top
+         of the app. It is rendered here, where its state lives, and lands in
+         the header as one of its own children, so the bar shows what the
+         assistant is doing without owning any of it.
 
-      <span class="header-spacer" />
-      <!-- `Record` alone was not a switch, and the crumb bar already says where
-           you are. What the switcher was really for — reaching the assistant —
-           is this button, which is the same control as `Import` beside it and
-           says what the assistant is doing as well as where it is. -->
+         `Import` was beside it and is not any more. Importing is something an
+         engagement needs a few times and then never again, and it was already
+         offered everywhere it is actually wanted: the record's Sources row,
+         `Add documents` and `Add files` on the two pages that hold them, the
+         assistant's own prompt, and a drop anywhere on the window. A button on
+         every page for it bought nothing and cost the bar its one-control
+         right cluster. -->
+    <Teleport to="#shell-actions">
       <Button
-        :label="assistantLive ? 'Assistant · working' : 'Assistant'"
+        :label="assistantAttention ? 'Assistant · needs you' : assistantLive ? 'Assistant · working' : 'Assistant'"
         icon="pi pi-sparkles"
         size="small"
         class="assistant-toggle"
         :class="{ on: assistantOpen, attention: assistantAttention }"
         :aria-pressed="assistantOpen"
+        aria-label="Assistant"
         :title="assistantOpen ? 'Close the assistant' : 'Open the assistant'"
         @click="agent.togglePanel()"
       />
-      <Button label="Import" icon="pi pi-upload" size="small" severity="secondary" @click="folderImportOpen = true" />
-      <button
-        type="button"
-        class="header-link"
-        :class="{ on: presenting }"
-        :aria-pressed="presenting"
-        :title="presenting ? 'Presentation size — on' : 'Presentation size — larger type for a room'"
-        aria-label="Presentation size"
-        @click="presenting = !presenting"
-      ><i class="pi pi-search-plus" /></button>
-      <button
-        type="button"
-        class="header-link"
-        :title="`Theme — ${theme}`"
-        :aria-label="`Theme: ${theme}. Change theme.`"
-        @click="cycleTheme"
-      ><i :class="theme === 'system' ? 'pi pi-desktop' : theme === 'dark' ? 'pi pi-moon' : 'pi pi-sun'" /></button>
-      <router-link :to="`/workspace/${props.id}/debug`" class="header-link" aria-label="Debug console" title="Debug console"><i class="pi pi-code" /></router-link>
-      <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
-      <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
-      <button
-        v-if="showAccount"
-        type="button"
-        class="header-link"
-        :aria-label="`Sign out (${session.state.user?.email ?? ''})`"
-        :title="`Sign out (${session.state.user?.email ?? ''})`"
-        @click="signOut"
-      ><i class="pi pi-sign-out" /></button>
-    </header>
+    </Teleport>
 
     <div class="workspace-layout">
       <router-view />
@@ -271,97 +241,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.workspace-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  min-height: 3.75rem;
-  padding: 0.5rem 1.5rem;
-  color: var(--aw-on-dark);
-  background: linear-gradient(180deg, var(--aw-navy-900) 0%, var(--aw-navy-950) 100%);
-  box-shadow: var(--aw-shadow-sm);
-}
-
-.brand { display: inline-flex; align-items: center; gap: 0.65rem; flex: 0 0 auto; color: var(--aw-on-dark); text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-control); color: var(--aw-navy-950); background: linear-gradient(135deg, var(--aw-mint) 0%, var(--aw-mint-600) 100%); box-shadow: 0 0 0 1px rgb(94 234 212 / 25%), 0 2px 8px rgb(45 212 191 / 30%); }
-.brand strong { font-size: var(--aw-text-md); white-space: nowrap; }
-.header-divider { align-self: stretch; width: 1px; margin: 0.15rem 0.1rem; background: rgb(255 255 255 / 16%); }
-.engagement-title { min-width: 0; line-height: 1.1; }
-.engagement-title small { color: var(--aw-on-navy-muted); font-size: var(--aw-text-2xs); font-weight: 700; }
-.engagement-title h1 { max-width: 18rem; margin: 0.15rem 0 0; overflow: hidden; color: var(--aw-on-dark); font-size: var(--aw-text-md); text-overflow: ellipsis; white-space: nowrap; }
-.header-spacer { flex: 1; }
-
-/* The surface switcher is the primary navigation now, so it sits with the
-   engagement identity rather than in the utility cluster on the right. */
-/* The same button as `Import`, filled rather than translucent: it is the one
-   control the header exists to offer now that the surface switcher is gone,
-   and a ghost pill beside a filled one read as disabled. */
-.workspace-header :deep(.assistant-toggle.p-button) {
-  border-color: var(--aw-teal); background: var(--aw-teal); color: var(--aw-on-dark);
-}
-.workspace-header :deep(.assistant-toggle.p-button:hover) {
-  border-color: var(--aw-teal-strong, var(--aw-teal-600)); background: var(--aw-teal-strong, var(--aw-teal-600));
-}
-/* Open reads as pressed — the same darker teal the appearance toggles use. */
-.workspace-header :deep(.assistant-toggle.on.p-button) {
-  border-color: var(--aw-teal-600); background: var(--aw-teal-600);
-}
-/* A run that needs the auditor is the one state worth breaking colour for. */
-.workspace-header :deep(.assistant-toggle.attention.p-button) {
-  border-color: var(--aw-warn); background: var(--aw-warn); color: var(--aw-ink-strong);
-}
-.surface-switcher { display: flex; gap: 0.15rem; margin-left: 0.5rem; padding: 0.15rem; border-radius: var(--aw-radius-control); background: rgb(255 255 255 / 8%); }
-.surface-switcher a {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.7rem;
-  border-radius: var(--aw-radius-control);
-  color: var(--aw-on-navy-muted);
-  font-size: var(--aw-text-sm);
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background .15s, color .15s;
-}
-.surface-switcher a:hover { background: rgb(255 255 255 / 10%); color: var(--aw-on-dark); }
-.surface-switcher a.active { background: var(--aw-panel); color: var(--aw-navy-900); box-shadow: var(--aw-shadow-sm); }
-.surface-switcher i { font-size: var(--aw-text-sm); }
-/* The count is the point of the Decisions entry, so it survives the narrow
-   breakpoint that drops the labels. */
-.surface-switcher em {
-  min-width: 1.15rem;
-  padding: 0.02rem 0.3rem;
-  border-radius: var(--aw-radius-pill);
-  background: var(--aw-mint);
-  color: var(--aw-navy-950);
-  font-size: var(--aw-text-2xs);
-  font-style: normal;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-.surface-switcher a.active em { background: var(--aw-navy-900); color: var(--aw-on-dark); }
-
-/* Outranks the global secondary-button rule: on the navy header the same
-   button is white-on-navy, not ink-on-canvas. */
-.workspace-header :deep(.p-button.p-button-secondary.p-component) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: var(--aw-on-dark); }
-.header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-control); color: var(--aw-on-navy); text-decoration: none; transition: background .15s; }
-.header-link:hover { background: rgb(255 255 255 / 10%); }
-/* The two appearance controls are buttons, not links; they need the reset a
-   link does not, and the pressed one has to look pressed. */
-button.header-link { border: 0; background: transparent; cursor: pointer; font: inherit; }
-button.header-link.on { background: var(--aw-teal-600); color: var(--aw-on-dark); }
-.header-link:focus-visible { outline: 2px solid var(--aw-mint); outline-offset: 2px; }
-
-@media (max-width: 1280px) {
-  .brand strong { display: none; }
-  .engagement-title h1 { max-width: 12rem; }
-  .surface-switcher span { display: none; }
-  .surface-switcher a { padding-inline: 0.55rem; }
 }
 
 .drop-overlay {

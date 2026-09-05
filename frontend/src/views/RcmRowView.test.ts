@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api'
 import type { PlanningPayload, RcmRow } from '../types'
 import RcmRowView from './RcmRowView.vue'
+import { resetShell, useShell } from '../composables/useShell'
 
 const PrimeVueConfirmSymbol = (
   PrimeVueConfirm as unknown as { PrimeVueConfirmSymbol: symbol }
@@ -32,7 +33,11 @@ vi.mock('vue-router', async () => {
   }
 })
 
-vi.mock('../composables/useWorkspaceNavigation', () => ({
+// Only the router binding is stubbed; `destinationLabel` is the real one, so
+// the trail this page publishes is checked against the name the rest of the
+// app gives the matrix.
+vi.mock('../composables/useWorkspaceNavigation', async importActual => ({
+  ...(await importActual<object>()),
   useWorkspaceNav: () => ({ to: navTo, push: routerPush, replace: routerReplace }),
 }))
 
@@ -139,6 +144,7 @@ afterEach(() => {
   routerPush.mockReset()
   routerReplace.mockReset()
   routeState.query = {}
+  resetShell()
 })
 
 describe('RcmRowView', () => {
@@ -161,6 +167,24 @@ describe('RcmRowView', () => {
     await wrapper.findAll('.stepper button')[1].trigger('click')
 
     expect(navTo).toHaveBeenCalledWith('rcm-row', expect.objectContaining({ rcm: 'RCM-B' }))
+  })
+
+  /**
+   * Three pieces, because a row is two levels down: the matrix it belongs to
+   * is a link, the id is the page, and the engagement crumb the bar draws
+   * before them is the way out. The row page used to draw all of that itself,
+   * in a bar of its own, in its own words.
+   */
+  it('publishes the matrix and the row id as the shell trail', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(useShell().trail.value).toEqual([
+      { label: 'Risk and control matrix', to: { destination: 'rcm', state: undefined } },
+      { label: 'RCM-A', mono: true },
+    ])
+    wrapper.unmount()
+    expect(useShell().trail.value).toEqual([])
   })
 
   it('offers sign-off as one act while the conclusion is the agent’s', async () => {

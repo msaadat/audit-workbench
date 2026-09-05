@@ -117,6 +117,49 @@ export function destinationForSection(
   return found ?? null
 }
 
+/**
+ * What a destination is called where a reader can see it.
+ *
+ * One map, because there were two and they disagreed with each other and with
+ * the pages they named: the bar over the data tests said `Test programme`
+ * while the page's own `h1` said `Data tests`, and the bar over the document
+ * tests said `Document test results` over a page titled `Document tests`. The
+ * names here are each page's own title, so the trail and the heading directly
+ * under it cannot say different things.
+ *
+ * These are page names, not the record's row labels. The record names the
+ * *artifact* a stage filed — `Test programme`, `Document test results`,
+ * `Fieldwork results` — and three of its rows can point at one page, so its
+ * vocabulary is a different one and stays where it is.
+ */
+const DESTINATION_LABEL: Record<WorkspaceDestination, string> = {
+  console: 'Assistant',
+  record: 'Engagement record',
+  apm: 'Audit planning memorandum',
+  cycle: 'Cycle design',
+  rcm: 'Risk and control matrix',
+  'rcm-row': 'Risk and control matrix',
+  chain: 'Chain',
+  'doc-tests': 'Document tests',
+  'data-tests': 'Data tests',
+  findings: 'Findings',
+  report: 'Draft audit report',
+  documents: 'Documents',
+  data: 'Source tables',
+  query: 'Query',
+  analysis: 'Analysis',
+}
+
+/** The label for a destination, or nothing for one this build cannot name. */
+export function destinationLabel(destination: WorkspaceDestination | null): string {
+  return destination ? DESTINATION_LABEL[destination] ?? '' : ''
+}
+
+/** The label for a section of a surface, which is what the routed hosts hold. */
+export function sectionLabel(surface: WorkspaceSurface, section: string): string {
+  return destinationLabel(destinationForSection(surface, section))
+}
+
 export function surfacePath(workspaceId: string, surface: WorkspaceSurface, section = ''): string {
   const base = `/workspace/${workspaceId}`
   if (surface === 'home') return base
