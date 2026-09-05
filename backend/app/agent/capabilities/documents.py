@@ -783,9 +783,16 @@ def _classified_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     }
     forced = _forced(scope)
     if forced:
+        # An auditor's type is excluded from the forced sweep as much as from
+        # the unforced one. ``assign`` refuses to overwrite it, so a unit here
+        # can only spend a model turn on an answer that cannot be committed —
+        # which is exactly what one forced run did, failing the stage and
+        # blocking every stage that depends on it.
         candidates = [
             document_id for document_id in document_scope.document_ids
-            if document_id in known and document_id in evidence
+            if document_id in known
+            and document_id in evidence
+            and not document_classification.is_auditor_assigned(workspace, document_id)
         ]
     else:
         candidates = [

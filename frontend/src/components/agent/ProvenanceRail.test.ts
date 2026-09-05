@@ -158,11 +158,14 @@ describe('ProvenanceRail withheld tally', () => {
     const withheld = wrapper.findAll('.card').find(card => card.text().startsWith('Not supplied'))!
     const rows = withheld.findAll('.tally').map(row => row.text())
     expect(rows).toHaveLength(3)
-    // Losses and capacity facts lead; scope decisions come last.
+    // Losses and capacity facts lead, then scope decisions; an optional source
+    // nobody supplied is last and is never called unavailable — it is the
+    // ordinary case, not a shortfall.
     expect(rows[0]).toContain('Past the size limit')
-    expect(rows[1]).toContain('Not available')
-    expect(rows[2]).toContain("Outside this step's scope")
-    expect(rows[2]).toContain('1 document')
+    expect(rows[1]).toContain("Outside this step's scope")
+    expect(rows[1]).toContain('1 document')
+    expect(rows[2]).toContain('Optional, none given')
+    expect(withheld.text()).not.toContain('Not available')
     expect(withheld.text()).not.toContain('Methodology')
   })
 
@@ -216,5 +219,19 @@ describe('ProvenanceRail trust verdict', () => {
     const trust = wrapper.findAll('.card').find(card => card.text().startsWith('Trust'))!
     expect(trust.text()).toContain('1 source was cut short')
     expect(trust.text()).toContain('unsupported')
+  })
+
+  it('does not report an optional source nobody supplied as unavailable', async () => {
+    // ``instruction`` is optional on five presets, so it is absent on nearly
+    // every run. "1 source was not available" read as a shortfall on a run
+    // that was simply given no instruction.
+    const wrapper = await render({
+      selections: [selection('documents', 'documents', 'document:d1', 'summary')],
+      omissions: [omission('instruction', 'Optional context source is unavailable.')],
+    })
+
+    const trust = wrapper.findAll('.card').find(card => card.text().startsWith('Trust'))!
+    expect(trust.text()).toContain('Everything this step selected was supplied in full')
+    expect(trust.text()).not.toContain('not available')
   })
 })

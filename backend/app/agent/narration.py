@@ -315,6 +315,13 @@ _OMISSION_KINDS: tuple[tuple[str, str], ...] = (
     ("did not match", "scope"),
     ("selector item limit", "scope"),
     ("limit", "capacity"),
+    # First among the "unavailable" reasons, and reported by nothing. A source
+    # a preset declares optional is absent on almost every run — no auditor
+    # instruction was given, no earlier draft exists — and "your instruction
+    # was not available" reads as a failure to find something the auditor never
+    # supplied. A *required* source that is unavailable never reaches here at
+    # all: the resolver raises instead.
+    ("optional context source is unavailable", "expected_absence"),
     ("unavailable", "absent"),
     ("no permitted items", "absent"),
     ("representation", "absent"),
@@ -583,11 +590,13 @@ def context_read(
         ],
         workspace,
     )
+    # ``absent`` is the kind name; "unavailable" was never one, so this list has
+    # always been empty and the card's own "not available" line never drew.
     absent = _grouped_source_labels(
         [
             item
             for item in omissions
-            if _omission_kind(str(getattr(item, "reason", "") or "")) == "unavailable"
+            if _omission_kind(str(getattr(item, "reason", "") or "")) == "absent"
         ],
         workspace,
         name_documents=False,
@@ -982,6 +991,7 @@ def _produced(run: dict) -> list[str]:
 # Why a unit was stepped over, phrased to follow "I skipped X —".
 _SKIP_REASONS = {
     "document_has_no_extractable_text": "it has no text I can read, most likely a scan or an image",
+    "auditor_owned_document_type_preserved": "you set its document type yourself",
 }
 
 

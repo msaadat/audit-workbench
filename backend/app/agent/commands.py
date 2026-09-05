@@ -132,10 +132,19 @@ COMMANDS: dict[str, Command] = {
                 "summarize the documents", "summarise the documents",
             ),
         ),
+        # Named for the two-pass flow that no longer exists: a test was drafted,
+        # then a second pass wrote its executable specification. ``tests.specified``
+        # now writes the plan and the executable part — Polars steps for a Data
+        # Test, items and checks for a Document Test — in one commit, so this
+        # command requests exactly the generation the RCM rows still need. The
+        # id and goal template keep their names because runs, chats, and the
+        # tab button are stored against them; the words an auditor reads say
+        # what actually runs, so a button can no longer promise a pass whose
+        # only possible answer is "nothing needed doing".
         Command(
-            "prepare_document_tests", "document_test_preparation", "Prepare document tests",
+            "prepare_document_tests", "document_test_preparation", "Draft missing tests",
             slash=("prepare document tests", "prepare tests"),
-            description="Write the executable specification for each drafted test.",
+            description="Draft the executable tests the RCM rows still need, Document Tests included.",
             phrases=("prepare the document tests", "prepare document tests"),
         ),
         Command(

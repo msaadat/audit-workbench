@@ -1280,3 +1280,58 @@ def test_the_plan_line_says_so_when_the_request_itself_was_already_done():
     )
 
     assert "already done" in sentence
+
+
+def test_an_optional_source_nobody_supplied_is_not_reported_as_unavailable():
+    """"Your instruction was not available." on a run given no instruction.
+
+    ``instruction`` is optional on five presets, so it is absent on nearly every
+    run — as is ``current_tests`` on a first draft. Reporting that as a source
+    the step could not find described a shortfall where there was none. A
+    *required* source that is unavailable never reaches the narration at all:
+    the resolver raises rather than omitting it.
+    """
+    manifest = _Manifest(
+        selections=[_Selection("rcm_row", "rcm:R-1")],
+        omissions=[
+            _Omission("instruction", "Optional context source is unavailable."),
+        ],
+    )
+
+    text = narration.context_note(manifest, _Workspace())
+
+    assert "not available" not in text
+    assert "instruction" not in text
+    assert text == "Reading the target RCM row."
+
+
+def test_a_source_excluded_by_permission_is_still_reported_as_unavailable():
+    """The mute above is for absence by design, not for material held back."""
+    manifest = _Manifest(
+        selections=[_Selection("rcm_row", "rcm:R-1")],
+        omissions=[
+            _Omission("exception_rows", "Optional context source supplied no permitted items."),
+        ],
+    )
+
+    text = narration.context_note(manifest, _Workspace())
+
+    assert "The exception rows was not available." in text
+
+
+def test_the_context_card_lists_the_sources_that_were_not_available():
+    """``unavailable`` was compared against a kind name that does not exist."""
+    manifest = _Manifest(
+        selections=[
+            _Selection("planning_documents", "document:d1"),
+            _Selection("rcm_row", "rcm:R-1"),
+        ],
+        omissions=[
+            _Omission("exception_rows", "Optional context source supplied no permitted items."),
+            _Omission("instruction", "Optional context source is unavailable."),
+        ],
+    )
+
+    card = narration.context_read(manifest, _Workspace(_documents()))
+
+    assert card["unavailable"] == ["the exception rows"]

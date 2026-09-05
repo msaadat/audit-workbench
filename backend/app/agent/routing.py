@@ -134,7 +134,9 @@ GOAL_TEMPLATES: dict[str, dict] = {
     },
     "document_analysis": {"objective": "Analyse the documents in scope."},
     "document_test_preparation": {
-        "objective": "Write the executable specification for each drafted test.",
+        # See the command's note in agent/commands.py: the specification is
+        # written at draft time, so this objective is the drafting itself.
+        "objective": "Draft the executable tests the RCM rows still need.",
     },
     "document_test_execution": {"objective": "Execute the Document Tests in scope."},
 }

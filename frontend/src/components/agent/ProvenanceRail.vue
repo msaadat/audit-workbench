@@ -45,17 +45,20 @@ const truncations = computed(() => context.value?.truncations ?? [])
  * context resolver rather than stable codes, so they are matched loosely and
  * anything unrecognised falls through to the mildest reading.
  */
-type OmissionKind = 'scope' | 'limit' | 'unavailable'
+type OmissionKind = 'scope' | 'limit' | 'unavailable' | 'unsupplied'
 
 function omissionKind(reason: string): OmissionKind {
   const text = reason.toLowerCase()
   if (text.includes('did not match') || text.includes('selector item limit')) return 'scope'
   if (text.includes('limit')) return 'limit'
+  // A source the preset declares optional is absent on almost every run, so
+  // counting it as "not available" reported a routine fact as a shortfall.
+  if (text.includes('optional context source is unavailable')) return 'unsupplied'
   return 'unavailable'
 }
 
 const omissions = computed(() => {
-  const order: OmissionKind[] = ['scope', 'limit', 'unavailable']
+  const order: OmissionKind[] = ['scope', 'limit', 'unavailable', 'unsupplied']
   return (context.value?.omissions ?? [])
     .map(item => ({ ...item, kind: omissionKind(item.reason ?? '') }))
     .sort((left, right) => order.indexOf(left.kind) - order.indexOf(right.kind))
@@ -231,16 +234,21 @@ function groupSummary(group: { key: GroupKey; rows: unknown[] }) {
  * that matter here — how much was held back, and what held it. What the step
  * *did* read is named above, and that is the list a reviewer can act on.
  */
-type WithheldKind = 'truncated' | 'limit' | 'unavailable' | 'scope'
+type WithheldKind = 'truncated' | 'limit' | 'unavailable' | 'scope' | 'unsupplied'
 
 const WITHHELD_PHRASE: Record<WithheldKind, string> = {
   truncated: 'Cut short',
   limit: 'Past the size limit',
   unavailable: 'Not available',
   scope: "Outside this step's scope",
+  unsupplied: 'Optional, none given',
 }
-// Losses first, decisions last: what went missing outranks what was declined.
-const WITHHELD_ORDER: WithheldKind[] = ['truncated', 'limit', 'unavailable', 'scope']
+// Losses first, decisions last: what went missing outranks what was declined,
+// and an optional source nobody supplied is last of all — it is the ordinary
+// case, not a shortfall.
+const WITHHELD_ORDER: WithheldKind[] = [
+  'truncated', 'limit', 'unavailable', 'scope', 'unsupplied',
+]
 
 interface WithheldTally {
   key: GroupKey

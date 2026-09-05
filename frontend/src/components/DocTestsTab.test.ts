@@ -468,7 +468,7 @@ describe('DocTestsTab finding generation', () => {
 
     // The write-up is offered on each test's own footer row, where the
     // exception is read. The batch is the shortcut, so it sits in the kebab
-    // rather than taking the header's one primary slot from Prepare.
+    // rather than taking the header's one primary slot from test drafting.
     const button = wrapper.findAll('.overflow button')
       .find(item => item.text().includes('Draft'))
     expect(button?.text()).toBe('Draft 1 finding')
@@ -486,7 +486,10 @@ describe('DocTestsTab finding generation', () => {
     const wrapper = mountTab([{ id: 'F-1', test_refs: ['DT-CYCLE'], rcm_refs: ['RCM-1'] }])
     await flushPromises()
 
-    expect(wrapper.findAll('button').some(item => item.text().includes('Draft'))).toBe(false)
+    // Scoped to the kebab, where the finding batch lives: the header carries
+    // its own "Draft missing tests", which is about tests, not findings.
+    expect(wrapper.findAll('.overflow button').some(item => item.text().includes('finding')))
+      .toBe(false)
     // The meter still reports it, without a sentence claiming credit for it.
     expect(wrapper.findAll('.review-bar .meter-label').map(item => item.text()))
       .toContain('Findings 1/1')

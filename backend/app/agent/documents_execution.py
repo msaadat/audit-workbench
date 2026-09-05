@@ -73,6 +73,7 @@ from .executors.documents import (
     DOCUMENT_REVIEW_REQUIRED,
     DOCUMENT_REQUIRES_VISION,
     DOCUMENT_TEXT_UNAVAILABLE,
+    DOCUMENT_TYPE_PRESERVED,
     DOCUMENT_VISUAL_SOURCE_UNSUPPORTED,
     PARTIAL_COVERAGE,
     VISUAL_PREPARATION_FAILED,
@@ -354,6 +355,26 @@ class DocumentWorkflowExecution(BaseRunner):
             kind="skipped",
         )
         return DeterministicUnitResult("skipped", result_refs, DOCUMENT_TEXT_UNAVAILABLE)
+
+    def _preserved_document_type(self, document_id: str) -> DeterministicUnitResult:
+        """Settle a document whose type the auditor set themselves.
+
+        Retyping is how an auditor's judgement enters classification, so a run
+        that meets one has nothing to decide and nothing to ask: their answer is
+        the answer, in permission mode as much as auto. It is a skip rather than
+        a success because no work was done, and skips are narrated and named in
+        the closing summary — a document the run stepped over is never silent.
+        """
+        title = self._title(document_id)
+        narration.note(
+            self.run,
+            self.emit,
+            f"Left {title} as it is — you set its document type yourself.",
+            kind="skipped",
+        )
+        return DeterministicUnitResult(
+            "skipped", (document_ref(document_id),), DOCUMENT_TYPE_PRESERVED
+        )
 
     @staticmethod
     def _parent(unit: dict, prefix: str) -> str:
@@ -768,6 +789,12 @@ class DocumentWorkflowExecution(BaseRunner):
         """
         self.ws = subject
         document_id = self._parent(unit, "document")
+        if document_classification.is_auditor_assigned(self.ws, document_id):
+            # Expansion excludes these, so reaching one means the auditor typed
+            # the document after this run's units were named. Settling here
+            # rather than at the commit saves the model turn that could only
+            # produce an answer the executor is bound to refuse.
+            return self._preserved_document_type(document_id)
         extracted = analyzable(self.ws, document_id)
         if extracted is None:
             return self._unreadable_document(document_id)
@@ -846,6 +873,15 @@ class DocumentWorkflowExecution(BaseRunner):
                 document_classification_scope(self.ws, document_id, text),
             )
 
+        def conflict_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            # The auditor retyped between this bind and the commit. Not a
+            # conflict for them to resolve — their answer is already stored —
+            # so it settles as the same skip the bind-time check produces.
+            if str(error) != DOCUMENT_TYPE_PRESERVED:
+                return None
+            self._preserved_document_type(document_id)
+            return ("skipped", DOCUMENT_TYPE_PRESERVED)
+
         return BoundUnitPipeline(
             request=request,
             target=target,
@@ -853,6 +889,7 @@ class DocumentWorkflowExecution(BaseRunner):
             context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
                 capability, manifest
             ),
+            conflict_handler=conflict_handler,
         )
 
     def _bind_evidence_read(

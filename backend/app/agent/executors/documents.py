@@ -49,6 +49,7 @@ READ_EXECUTOR_ID = "documents.read"
 STAMP_EXECUTOR_ID = "documents.stamp"
 
 DOCUMENT_TEXT_UNAVAILABLE = "document_has_no_extractable_text"
+DOCUMENT_TYPE_PRESERVED = "auditor_owned_document_type_preserved"
 DOCUMENT_REQUIRES_VISION = "document_requires_vision"
 DOCUMENT_VISUAL_SOURCE_UNSUPPORTED = "document_visual_source_unsupported"
 VISUAL_PREPARATION_FAILED = "visual_preparation_failed"
@@ -683,9 +684,14 @@ def reconcile_document_classification(
     parent equality cannot prove the commit never ran. The sidecar's own identity
     does: an assignment carrying this run and this unit proves it applied.
 
-    An auditor assignment reconciles as applied whatever this unit proposed. The
-    commit path refuses to overwrite one, so the unit's outcome is that their
-    decision stands, and re-running would only reconfirm it.
+    An auditor assignment is neither applied nor appliable, and reporting it as
+    ``already_applied`` was wrong twice over: a receipt has to name a revision
+    this unit advanced, and nothing advanced, so the result raised the
+    executor's own invariant — the whole ``documents.types_classified`` stage
+    then failed and took every dependent stage with it. It is reported the way
+    the memorandum reports the same situation: a recognized conflict the binder
+    settles as a skip, because the auditor's decision stands and re-running
+    would only reconfirm it.
     """
 
     if not isinstance(raw_target, DocumentClassificationExecutorTarget):
@@ -704,7 +710,9 @@ def reconcile_document_classification(
         )
     record = document_classification.classification(current, target.document_id)
     by = str(record.get("assigned_by") or "")
-    if by != "auditor" and (
+    if by == "auditor":
+        return ExecutorReconciliation("conflict", reason=DOCUMENT_TYPE_PRESERVED)
+    if (
         str(record.get("unit_id") or "") != request.unit_id
         or str(record.get("agent_run_id") or "") != target.run_id
     ):
@@ -1263,6 +1271,7 @@ __all__ = [
     "DOCUMENT_REVIEW_REQUIRED",
     "DOCUMENT_REQUIRES_VISION",
     "DOCUMENT_TEXT_UNAVAILABLE",
+    "DOCUMENT_TYPE_PRESERVED",
     "DOCUMENT_VISUAL_SOURCE_UNSUPPORTED",
     "PARTIAL_COVERAGE",
     "VISUAL_PREPARATION_FAILED",

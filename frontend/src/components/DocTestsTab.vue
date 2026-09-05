@@ -698,12 +698,12 @@ async function prepareTests() {
   try {
     await assistantChat.createChat()
     await assistantChat.send(
-      'Write the executable specification for each drafted Document Test, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.',
+      'Draft the executable tests the RCM rows still need, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.',
       'act', launchMode.value, { command: 'prepare_document_tests', source: 'tab_button' },
     )
     agent.openPanel()
-    toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress in the assistant.', life: 3000 })
-  } catch (error) { fail('Could not start document test preparation', error) }
+    toast.add({ severity: 'info', summary: 'Drafting missing tests', detail: 'Review progress in the assistant.', life: 3000 })
+  } catch (error) { fail('Could not start test drafting', error) }
 }
 function openRcm(rcmId: string) {
   void nav.replace('rcm', { rcm: rcmId })
@@ -824,9 +824,14 @@ function onRulesetApproved(): void {
         :disabled="assistantUnavailable || !allTestIds.length"
         @click="runAllTests"
       />
+      <!-- Named for what it runs. "Prepare with assistant" beside a populated
+           worklist promised a second pass over tests that already carry their
+           executable part, and its only possible answer was "nothing needed
+           doing". What it actually requests is generation for the rows that
+           still lack a test. -->
       <Button
         v-if="hasTests"
-        label="Prepare with assistant"
+        label="Draft missing tests"
         icon="pi pi-sparkles"
         size="small"
         :disabled="assistantUnavailable"
