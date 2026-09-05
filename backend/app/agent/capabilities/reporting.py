@@ -26,6 +26,7 @@ from ..workflow import (
 from ..workflows import audit as audit_workflow
 from ._shared import all_tests as _all_tests
 from ._shared import eligible_observations as _eligible_observations
+from ._shared import named_observation_ids as _named_observation_ids
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
 
@@ -40,6 +41,24 @@ CAPABILITY_IDS: tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 # findings.drafted (P7H)
 # --------------------------------------------------------------------------- #
+def _unsupported_observations(
+    workspace: Workspace, eligible: list[dict]
+) -> dict[str, list[str]]:
+    """Eligible observations a finding executor would refuse, and why.
+
+    The support check is deterministic and needs no draft, so asking it here
+    costs nothing and saves a whole model turn: ``executors.reporting`` runs the
+    same check after the worker has written a draft and raises out of the unit,
+    which bills the turn and fails the stage for a reason no prompt could have
+    avoided.
+    """
+    issues = {
+        str(item["id"]): findings.observation_support_issues(workspace, item)
+        for item in eligible
+    }
+    return {key: value for key, value in issues.items() if value}
+
+
 def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     eligible = _eligible_observations(workspace, scope)
     linked = {
@@ -53,26 +72,68 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
         if (item := linked.get(observation["id"])) is not None
         and findings.support_issues(workspace, item)
     ]
+    unsupported = _unsupported_observations(workspace, eligible)
+    details: dict = {"eligible": len(eligible)}
+    if unsupported:
+        details["unsupported"] = sorted(unsupported)
+        details["unsupported_issues"] = {
+            key: unsupported[key] for key in sorted(unsupported)
+        }
+    unsupported_reason = (
+        f"{counted(len(unsupported), 'eligible observation')} "
+        f"{verb(len(unsupported), 'rests', 'rest')} on a test that is not complete"
+        if unsupported
+        else ""
+    )
     if invalid:
         return Readiness(
             "review_required",
-            (f"{counted(len(invalid), 'existing finding draft')} {verb(len(invalid), 'fails', 'fail')} support validation",),
-            details={"eligible": len(eligible), "invalid": len(invalid)},
+            tuple(
+                reason
+                for reason in (
+                    f"{counted(len(invalid), 'existing finding draft')} {verb(len(invalid), 'fails', 'fail')} support validation",
+                    unsupported_reason,
+                )
+                if reason
+            ),
+            details={**details, "invalid": len(invalid)},
         )
     covered = set(linked)
-    missing = [item["id"] for item in eligible if item["id"] not in covered]
+    # An unsupported observation is not missing a draft; it is not draftable.
+    # Counting it as missing would report work the expansion will not do, and
+    # the run would finish "completed" having quietly skipped it.
+    missing = [
+        item["id"]
+        for item in eligible
+        if item["id"] not in covered and item["id"] not in unsupported
+    ]
     if missing:
         return Readiness(
             "missing",
-            (f"{counted(len(missing), 'eligible observation')} {verb(len(missing))} finding drafts",),
-            details={"eligible": len(eligible)},
+            tuple(
+                reason
+                for reason in (
+                    f"{counted(len(missing), 'eligible observation')} {verb(len(missing))} finding drafts",
+                    unsupported_reason,
+                )
+                if reason
+            ),
+            details=details,
         )
-    return Readiness("satisfied", details={"eligible": len(eligible), "drafted": len(eligible)})
+    if unsupported:
+        return Readiness("blocked", (unsupported_reason,), details=details)
+    return Readiness("satisfied", details={**details, "drafted": len(eligible)})
 
 
 def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     existing = {str(item.get("source_observation_id") or "") for item in workspace.findings}
     forced = str(scope.get("generation_mode") or "") == "force"
+    # Naming a finding, or the observation under it, is the instruction to
+    # redraft: an auditor who points at a draft and says it is wrong has already
+    # said they want it replaced, so force need not be asked for a second time.
+    named = set(_named_observation_ids(workspace, scope))
+    eligible = _eligible_observations(workspace, scope)
+    unsupported = _unsupported_observations(workspace, eligible)
     return [
         UnitSpec(
             semantic_unit_id("finding", item["id"]),
@@ -87,8 +148,9 @@ def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             ),
             item,
         )
-        for item in _eligible_observations(workspace, scope)
-        if forced or item["id"] not in existing
+        for item in eligible
+        if (forced or item["id"] in named or item["id"] not in existing)
+        and item["id"] not in unsupported
     ]
 
 

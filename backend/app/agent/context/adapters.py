@@ -7,6 +7,7 @@ enforce context policy, call a model, or duplicate domain retrieval logic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
@@ -545,11 +546,48 @@ def small_table_row_candidates(
     return tuple(candidates)
 
 
+#: The source id every preset that accepts steering declares. One name, so a
+#: worker reads the instruction the same way whatever capability it belongs to.
+INSTRUCTION_SOURCE_ID = "instruction"
+
+
+def instruction_candidates(
+    instruction: str | None,
+) -> tuple[ContextCandidate, ...]:
+    """Expose what the auditor said as one declared, hash-identified source.
+
+    The only source supplied at run time rather than read from the workspace,
+    which is exactly why it is declared: a prompt patched in by a binder is
+    invisible to the manifest, unbudgeted, and untruncatable, and the run then
+    has no record of what the worker was actually told. As a source it is none
+    of those things — the manifest records the ref, the hash and the size, and
+    the words themselves live only in the local bundle, like every other
+    supplied content.
+
+    Empty in, nothing out: an absent instruction is an absent optional source,
+    not a source carrying an empty string.
+    """
+    text = str(instruction or "").strip()
+    if not text:
+        return ()
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    source = {"sha1": digest, "characters": len(text)}
+    return (
+        ContextCandidate(
+            source_ref=f"instruction:{digest[:12]}",
+            source=source,
+            representations={"auditor_instruction": text},
+            metadata={"characters": len(text)},
+        ),
+    )
+
+
 def apm_document_methodology_scope(
     workspace: Workspace,
     *,
     planning_context: Mapping[str, object] | None = None,
     document_ids: Iterable[str] | None = None,
+    instruction: str | None = None,
 ) -> ContextScope:
     """Build the complete local candidate scope for the live APM capability."""
     context = dict(planning_context or workspace.planning.get("context") or {})
@@ -606,6 +644,7 @@ def apm_document_methodology_scope(
                 excerpt_query=apm_query,
             ),
             APM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={**context, "apm_query": apm_query},
     )
@@ -768,6 +807,7 @@ def rcm_scope(
     *,
     planning_context: Mapping[str, object] | None = None,
     document_ids: Iterable[str] | None = None,
+    instruction: str | None = None,
 ) -> ContextScope:
     """Build the complete local candidate scope for the live RCM capability."""
     context = dict(planning_context or workspace.planning.get("context") or {})
@@ -855,6 +895,7 @@ def rcm_scope(
                 include_audit_notes=False,
             ),
             RCM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={**context, "rcm_query": rcm_query},
     )
@@ -1276,6 +1317,7 @@ def test_generate_scope(
     *,
     planning_context: Mapping[str, object] | None = None,
     document_ids: Iterable[str] | None = None,
+    instruction: str | None = None,
 ) -> ContextScope:
     """Build the local candidate scope for one merged test-generation unit.
 
@@ -1368,6 +1410,7 @@ def test_generate_scope(
             TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
                 workspace
             ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={**context, "test_generate_query": test_generate_query},
     )
@@ -1766,7 +1809,12 @@ def _finding_execution_projection(
     return None
 
 
-def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextScope:
+def finding_draft_scope(
+    workspace: Workspace,
+    observation_id: str,
+    *,
+    instruction: str | None = None,
+) -> ContextScope:
     """Build the local candidate scope for one finding-draft unit."""
     from ... import findings
 
@@ -1879,6 +1927,7 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
                 if exception_rows
                 else ()
             ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={
             "finding_query": " ".join(
@@ -2384,6 +2433,7 @@ def analysis_definition_scope(
     probe_findings: Iterable[Mapping[str, object]] = (),
     value_domains: Iterable[Mapping[str, object]] = (),
     analytics_registry: object = None,
+    instruction: str | None = None,
 ) -> ContextScope:
     """Build the local candidate scope for one analysis-definition unit.
 
@@ -2551,6 +2601,7 @@ def analysis_definition_scope(
                 )
                 for item in current
             ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={"analysis_query": target},
     )

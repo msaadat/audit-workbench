@@ -11,7 +11,9 @@ from app import (
     documents,
     workspaces,
 )
+from app import data_tests
 from app.agent.capabilities import tests as test_capabilities
+from app.agent.capabilities import _shared
 
 
 def _workspace_with_a_voucher():
@@ -473,3 +475,135 @@ def test_an_unknown_approver_kind_is_refused():
             approved_by_kind="robot",
         )
     assert cycle_rulesets.get(workspace, record["ruleset_id"])["status"] == "proposed"
+
+
+# --------------------------------------------------------------------------- #
+# Addressing what lives below the RCM row (step 2)
+# --------------------------------------------------------------------------- #
+def _row_with_two_tests():
+    """A settled row: two executable Data Tests, nothing left to generate."""
+    workspace = workspaces.create_workspace("Below the row")
+    workspace.add_table("transactions.csv", b"invoice,amount\n1001,100\n1002,50\n")
+    row = workspace.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate payments",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    made = [
+        data_tests.create(
+            workspace,
+            {
+                "title": title,
+                "objective": f"{title}.",
+                "criteria": "No duplicate is paid.",
+                "steps": [{"label": title, "instruction": title}],
+                "rcm_id": row["id"],
+                "engine": "polars",
+                "spec": {
+                    "schema_version": 2,
+                    "steps": [
+                        {
+                            "label": title,
+                            "instruction": title,
+                            "table_refs": ["transactions"],
+                            "code": "result = transactions.filter(pl.col('amount') > 50)",
+                        }
+                    ],
+                },
+            },
+        )
+        for title in ("First screening", "Second screening")
+    ]
+    return workspaces.load_workspace(workspace.id), row, made
+
+
+def test_a_scope_naming_a_test_selects_the_row_that_test_sits_on():
+    workspace, row, tests = _row_with_two_tests()
+
+    scope = _shared.target_scope(
+        workspace, {"target_refs": [f"datatest:{tests[0]['id']}"]}
+    )
+
+    assert scope.test_ids == (tests[0]["id"],)
+    assert scope.rcm_ids == (row["id"],)
+    assert scope.explicit is True
+    # Every caller that only understands rows keeps working against it.
+    assert _shared.target_rcm_ids(
+        workspace, {"target_refs": [f"datatest:{tests[0]['id']}"]}
+    ) == [row["id"]]
+
+
+def test_an_unscoped_request_still_selects_every_row():
+    workspace, row, _tests = _row_with_two_tests()
+
+    scope = _shared.target_scope(workspace, {})
+
+    assert scope == _shared.TargetScope()
+    assert _shared.target_rcm_ids(workspace, {}) == [row["id"]]
+    assert _shared.target_rcm_ids(
+        workspace, {"target_refs": ["workspace:current"]}
+    ) == [row["id"]]
+
+
+def test_a_scope_naming_a_test_that_no_longer_exists_selects_nothing():
+    """A stale button narrows to nothing rather than widening to everything."""
+    workspace, _row, _tests = _row_with_two_tests()
+
+    assert _shared.target_rcm_ids(
+        workspace, {"target_refs": ["datatest:DAT-GONE"]}
+    ) == []
+
+
+def test_a_settled_row_expands_nothing_until_a_test_is_named():
+    workspace, row, tests = _row_with_two_tests()
+    capability = test_capabilities.capabilities()
+    specified = next(item for item in capability if item.id == "tests.specified")
+
+    assert specified.expand_units(workspace, {}) == []
+
+    units = specified.expand_units(
+        workspace, {"target_refs": [f"datatest:{tests[0]['id']}"]}
+    )
+
+    # One unit, on the owning row — not one per test and not one per row.
+    assert [unit.parent_refs for unit in units] == [(f"rcm:{row['id']}",)]
+
+
+def test_naming_a_test_is_the_force_so_it_need_not_be_asked_for_twice():
+    workspace, _row, tests = _row_with_two_tests()
+    specified = next(
+        item for item in test_capabilities.capabilities()
+        if item.id == "tests.specified"
+    )
+
+    named = specified.expand_units(
+        workspace, {"target_refs": [f"datatest:{tests[0]['id']}"]}
+    )
+
+    assert len(named) == 1
+
+
+def test_a_redraft_unit_is_a_different_unit_from_a_whole_row_regeneration():
+    """Otherwise a proposal that rewrote the whole row could be reused as one
+    that rewrites a single test of it, and the siblings would vanish."""
+    workspace, _row, tests = _row_with_two_tests()
+    specified = next(
+        item for item in test_capabilities.capabilities()
+        if item.id == "tests.specified"
+    )
+
+    whole_row = specified.expand_units(workspace, {"generation_mode": "force"})
+    one_test = specified.expand_units(
+        workspace, {"target_refs": [f"datatest:{tests[0]['id']}"]}
+    )
+
+    assert whole_row[0].id == one_test[0].id, "the same row, so the same unit id"
+    assert whole_row[0].input_sha1 != one_test[0].input_sha1
+
+    other_test = specified.expand_units(
+        workspace, {"target_refs": [f"datatest:{tests[1]['id']}"]}
+    )
+    assert one_test[0].input_sha1 != other_test[0].input_sha1

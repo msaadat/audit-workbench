@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 
 import polars as pl
@@ -538,6 +539,8 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
         "table_profiles",
         "documents",
         "methodology",
+        # Optional, and absent on every run the workflow schedules for itself.
+        "instruction",
     ]
     assert [source.selector.selector_id for source in spec.sources] == [
         "planning.current",
@@ -549,6 +552,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
         "tables.all",
         "documents.lexical",
         "methodology.lexical",
+        "instructions.current",
     ]
     assert spec.privacy.allow_planning_context is True
     assert spec.privacy.allow_template_text is True
@@ -557,6 +561,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert spec.privacy.allow_table_profiles is True
     # Planning sees the written memo, never the flagged rows behind it.
     assert spec.privacy.allow_analysis_summary is True
+    assert spec.privacy.allow_auditor_instruction is True
     assert spec.privacy.allow_analysis_exception_rows is False
     assert spec.privacy.allow_table_rows is False
     assert spec.privacy.allow_table_rows is False
@@ -596,11 +601,13 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
         "transaction_evidence",
         "documents",
         "methodology",
+        # Optional, and absent on every run the workflow schedules for itself.
+        "instruction",
     ]
     # The one target row is required; every material source is not, since the
     # model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, True, False, False,
+        True, True, False, True, False, False, False,
     ]
     # Generation reads schema metadata and document text — never a table row —
     # since it decides both Data and Document Test sources itself.
@@ -1197,3 +1204,82 @@ def test_join_gate_collapse_does_not_depend_on_the_order_diagnosis_recorded(
     other = _join_catalog(workspace_with_data, [{"candidates": [mirror, forward]}])
 
     assert one["candidates"] == other["candidates"]
+
+
+# --------------------------------------------------------------------------- #
+# Every steerable scope builder supplies the instruction the same way (step 3)
+# --------------------------------------------------------------------------- #
+def test_instruction_candidates_carry_the_words_and_manifest_only_their_shape():
+    text = "Redraft DT-123; the population is wrong."
+
+    candidates = context_adapters.instruction_candidates(text)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.representations["auditor_instruction"] == text
+    # Everything the manifest will keep: a ref, a hash, a size. Not the words.
+    assert candidate.source == {
+        "sha1": hashlib.sha1(text.encode("utf-8")).hexdigest(),
+        "characters": len(text),
+    }
+    assert candidate.source_ref.startswith("instruction:")
+    assert text not in candidate.source_ref
+
+
+def test_the_same_instruction_is_the_same_source_ref():
+    """Identity is the content, so two runs saying the same thing agree."""
+    first = context_adapters.instruction_candidates("  Say it once.  ")
+    second = context_adapters.instruction_candidates("Say it once.")
+
+    assert first[0].source_ref == second[0].source_ref
+
+
+def test_an_absent_or_blank_instruction_supplies_no_candidate():
+    assert context_adapters.instruction_candidates(None) == ()
+    assert context_adapters.instruction_candidates("") == ()
+    assert context_adapters.instruction_candidates("   ") == ()
+
+
+def test_every_steerable_scope_builder_offers_the_instruction_source():
+    """One source id across five capabilities, so a worker reads it one way."""
+    workspace = workspaces.create_workspace("Steerable scopes")
+    workspace.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": "# APM\n\n## Scope\nAccounts payable.",
+        }
+    )
+    row = workspace.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    workspace.add_table("transactions.csv", b"invoice,amount\n1001,100\n1002,50\n")
+    workspace = workspaces.load_workspace(workspace.id)
+    text = "Follow the firm's wording for control descriptions."
+
+    scopes = (
+        context_adapters.apm_document_methodology_scope(workspace, instruction=text),
+        context_adapters.rcm_scope(workspace, instruction=text),
+        context_adapters.test_generate_scope(workspace, row["id"], instruction=text),
+    )
+
+    for scope in scopes:
+        candidates = scope.candidates[context_adapters.INSTRUCTION_SOURCE_ID]
+        assert [item.representations["auditor_instruction"] for item in candidates] == [
+            text
+        ]
+
+
+def test_a_scope_built_without_an_instruction_declares_the_source_empty():
+    workspace = workspaces.create_workspace("Unsteered scope")
+    workspace.update_planning({"context": {"objective": "Assess payments"}})
+
+    scope = context_adapters.apm_document_methodology_scope(
+        workspaces.load_workspace(workspace.id)
+    )
+
+    assert scope.candidates[context_adapters.INSTRUCTION_SOURCE_ID] == ()

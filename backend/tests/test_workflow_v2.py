@@ -116,6 +116,31 @@ def test_full_template_materializes_locally_without_command_interpreter():
     assert persisted["usage"]["llm_turns"] == 0
 
 
+def _completed_doc_test(ws, row) -> dict:
+    """A finished Document Test on ``row``, fit to support a finding draft."""
+    test = doc_tests.create_test(
+        ws,
+        {
+            "kind": "attribute",
+            "title": "Approval evidence",
+            "objective": "Determine whether the payment was approved.",
+            "steps": [
+                {"label": "Inspect the approval.", "instruction": "Inspect the approval."}
+            ],
+            "rcm_id": row["id"],
+            "items": [
+                {
+                    "label": "Invoice 1001",
+                    "state": "exception",
+                    "auditor_disposition": "exception",
+                    "attributes": [{"name": "Approval", "result": "fail"}],
+                }
+            ],
+        },
+    )
+    return doc_tests.update_test(ws, test["id"], {"status": "completed"})
+
+
 def test_finding_draft_scope_expands_only_the_selected_observation():
     ws = _planning_workspace("Scoped finding drafts")
     first_row = ws.rcm[0]
@@ -127,15 +152,21 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
             "risk_rating": "high",
         }
     )
+    # Each observation rests on a real, completed, row-linked test: expansion
+    # now skips an observation whose support the finding executor would refuse,
+    # so one citing a test that does not exist would expand nothing and this
+    # test would pass its scope assertion for the wrong reason.
+    first_test = _completed_doc_test(ws, first_row)
+    second_test = _completed_doc_test(ws, second_row)
     ws.observations.extend([
         {
-            "id": "OBS-ONE", "rcm_id": first_row["id"], "test_id": "DT-ONE",
-            "execution_ref": "datatest:DT-ONE:RUN-ONE", "summary": "First exception",
+            "id": "OBS-ONE", "rcm_id": first_row["id"], "test_id": first_test["id"],
+            "execution_ref": f"doctest:{first_test['id']}", "summary": "First exception",
             "outcome": "exception", "classification": "draft_finding_candidate",
         },
         {
-            "id": "OBS-TWO", "rcm_id": second_row["id"], "test_id": "DT-TWO",
-            "execution_ref": "datatest:DT-TWO:RUN-TWO", "summary": "Second exception",
+            "id": "OBS-TWO", "rcm_id": second_row["id"], "test_id": second_test["id"],
+            "execution_ref": f"doctest:{second_test['id']}", "summary": "Second exception",
             "outcome": "exception", "classification": "draft_finding_candidate",
         },
     ])

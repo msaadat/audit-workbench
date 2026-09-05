@@ -236,6 +236,10 @@ class FindingExecutorTarget:
     workspace: Workspace
     run_id: str
     observation_id: str
+    #: Whether the auditor named this finding, or the observation under it, in
+    #: the request. Naming it is the permission to replace it — the same rule a
+    #: named test is replaced under. It does not extend to any other draft.
+    named_by_request: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, Workspace):
@@ -245,6 +249,8 @@ class FindingExecutorTarget:
             if not value:
                 raise ValueError(f"Finding executor target requires a {field_name}.")
             setattr(self, field_name, value)
+        if not isinstance(self.named_by_request, bool):
+            raise ValueError("named_by_request must be a boolean.")
 
 
 def _validated_finding(
@@ -363,7 +369,7 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
         )
         if existing is None:
             return findings.add(fresh, item, source="agent")
-        if existing.get("source") != "agent":
+        if existing.get("source") != "agent" and not target.named_by_request:
             raise WorkspaceError("A manually maintained finding cannot be regenerated.")
         # Keep the stable finding identity and creation record while replacing
         # the agent-authored draft from the current observation and evidence.

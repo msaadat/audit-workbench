@@ -801,6 +801,14 @@ def _explanation(
     capability *titles* rather than capability ids. The dependency closure that
     produced it is still fully recoverable from ``resolved_capabilities`` and
     ``reused_capabilities`` on the same record.
+
+    Reuse is named only where the auditor asked for something already done.
+    Every request drags in a closure, and most of that closure is settled, so
+    listing all of it opened every run by naming twelve capabilities it would
+    *not* run before the one it would — an answer to a question nobody asked.
+    Asking to regenerate something already in place is a different case: there
+    the reuse *is* the answer, and saying so is the difference between a run
+    that decided to reuse and one that quietly did nothing.
     """
 
     def title(capability_id: str) -> str:
@@ -809,9 +817,10 @@ def _explanation(
         except WorkspaceError:
             return narration.humanize(capability_id)
 
+    named_reuse = [item for item in reused if item in set(requested)]
     return narration.plan_sentence(
         [str(stage.get("title") or title(stage["capability"])) for stage in stages],
-        [title(item) for item in reused],
+        [title(item) for item in named_reuse],
         added_prerequisites=any(item not in requested for item in resolved),
     )
 
@@ -972,6 +981,13 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "permission_mode": run.get("mode") == "permission",
         "generation_mode": generation_mode,
     }
+    # What the auditor said they wanted changed, if they said anything. It
+    # lives on the run's context, which is where it survives a resume, and is
+    # copied here so a binder reads it from the same place it reads every other
+    # narrowing rather than reaching back into the record.
+    instruction = str((run.get("context") or {}).get("instruction") or "").strip()
+    if instruction:
+        scope["instruction"] = instruction
     if document_scope_route:
         # A resolved document scope is durable on the workflow record, so a
         # checkpoint answer or an explicitly selected document survives a resume.

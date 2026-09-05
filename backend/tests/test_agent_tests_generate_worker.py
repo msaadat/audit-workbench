@@ -23,6 +23,7 @@ from app.agent.context import (
     total_supplied_size,
 )
 from app.agent.workers import WORKERS, WorkerContractError, WorkerRequest, WorkerRunError
+from app.agent.workers.model import WorkerResponseValidationError
 from app.agent.workers import tests as tests_workers
 
 
@@ -65,6 +66,7 @@ _METHODOLOGY_SECTION = {
 
 def _bundle(
     *,
+    instruction=None,
     rcm_rows=("RCM-1",),
     methodology=(_METHODOLOGY_SECTION,),
     tables=("transactions",),
@@ -95,6 +97,15 @@ def _bundle(
             },
         ),
     ]
+    if instruction is not None:
+        values.append(
+            (
+                "instruction",
+                "instruction:abcdef123456",
+                ContextRepresentation("auditor_instruction"),
+                instruction,
+            )
+        )
     for rcm_id in rcm_rows:
         values.append(
             (
@@ -184,13 +195,20 @@ def _bundle(
     )
 
 
-def _request(bundle=None):
+def _request(bundle=None, *, regenerate_test_ids=None):
     return WorkerRequest(
         worker_id="tests.generate",
         capability_id="tests.specified",
         unit_id="test_generation:RCM-1",
         context=bundle or _bundle(),
-        unit_input={"input_sha1": "test-generate-input"},
+        unit_input={
+            "input_sha1": "test-generate-input",
+            **(
+                {"regenerate_test_ids": list(regenerate_test_ids)}
+                if regenerate_test_ids
+                else {}
+            ),
+        },
         activity={"artifact_refs": ["rcm:RCM-1"]},
     )
 
@@ -1791,3 +1809,128 @@ def test_generate_worker_rejects_a_revises_that_is_not_on_this_row():
     assert "DAT-NOTHERE" in guidance
     assert "DAT-EXISTING1" in guidance
     assert result.proposal["tests"][0]["revises"] == "DAT-EXISTING1"
+
+
+# --------------------------------------------------------------------------- #
+# Redrafting one named test rather than the row (step 2)
+# --------------------------------------------------------------------------- #
+def _row_with_tests(*ids):
+    return {
+        "id": "RCM-1",
+        "risk": "Duplicate payments are processed",
+        "control": "Duplicate invoice validation",
+        "existing_tests": [
+            {
+                "id": test_id,
+                "title": f"Existing {test_id}",
+                "objective": "Look for duplicates.",
+                "steps": [],
+                "created_by": "agent",
+                "source": "data",
+            }
+            for test_id in ids
+        ],
+    }
+
+
+def test_a_named_redraft_tells_the_model_what_it_may_and_may_not_touch():
+    request = _request(
+        _bundle(rcm_payload=_row_with_tests("DAT-1", "DAT-2")),
+        regenerate_test_ids=["DAT-1"],
+    )
+
+    payload = tests_workers._generation_prompt_payload(request)
+
+    assert payload["regenerate_test_ids"] == ["DAT-1"]
+    assert "regenerate_test_ids" in payload["instructions"]
+    assert "revises" in payload["instructions"]
+    # The whole point: DAT-2 is somebody's work and this request is not about it.
+    assert "Leave every other test" in payload["instructions"]
+
+
+def test_an_ordinary_row_generation_says_nothing_about_regenerating():
+    payload = tests_workers._generation_prompt_payload(_request())
+
+    assert "regenerate_test_ids" not in payload
+    assert "regenerate_test_ids" not in payload["instructions"]
+
+
+def test_a_redraft_that_answers_about_the_wrong_test_is_rejected():
+    request = _request(
+        _bundle(rcm_payload=_row_with_tests("DAT-1", "DAT-2")),
+        regenerate_test_ids=["DAT-1"],
+    )
+    proposal = {"tests": [_data_test(revises="DAT-2")]}
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        tests_workers.validate_generate_proposal(proposal, request)
+
+    errors = raised.value.errors
+    assert any("nothing revises ['DAT-1']" in error for error in errors)
+
+
+def test_a_redraft_that_adds_a_test_nobody_asked_for_is_rejected():
+    request = _request(
+        _bundle(rcm_payload=_row_with_tests("DAT-1")),
+        regenerate_test_ids=["DAT-1"],
+    )
+    proposal = {
+        "tests": [_data_test(revises="DAT-1"), _data_test(title="A second idea")]
+    }
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        tests_workers.validate_generate_proposal(proposal, request)
+
+    assert any("revise none of" in error for error in raised.value.errors)
+
+
+def test_a_redraft_that_answers_exactly_the_named_test_is_accepted():
+    request = _request(
+        _bundle(rcm_payload=_row_with_tests("DAT-1", "DAT-2")),
+        regenerate_test_ids=["DAT-1"],
+    )
+
+    result = tests_workers.validate_generate_proposal(
+        {"tests": [_data_test(revises="DAT-1")]}, request
+    )
+
+    assert [entry["revises"] for entry in result["tests"]] == ["DAT-1"]
+
+
+def test_a_redraft_defect_is_never_partially_committed():
+    """A partial commit would settle the row and retire the unit that still owes
+    the replacement, which is the one failure mode a redraft cannot survive."""
+    request = _request(
+        _bundle(rcm_payload=_row_with_tests("DAT-1")),
+        regenerate_test_ids=["DAT-1"],
+    )
+    proposal = {"tests": [_data_test(title="Something else entirely")]}
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        tests_workers.validate_generate_proposal(proposal, request)
+
+    assert raised.value.partial is None
+
+
+def test_the_generation_turn_is_told_what_the_auditor_asked_for():
+    text = "Prefer a Data Test wherever the population is tabular."
+
+    payload = tests_workers._generation_prompt_payload(
+        _request(_bundle(instruction=text))
+    )
+
+    assert payload["auditor_instruction"] == text
+    # Promoted once, not also buried in the serialized bundle.
+    assert str(payload).count(text) == 1
+
+
+def test_a_turn_with_no_instruction_carries_no_empty_key():
+    """A key present and blank invites a model to invent what belonged in it."""
+    payload = tests_workers._generation_prompt_payload(_request())
+
+    assert "auditor_instruction" not in payload
+
+
+def test_the_generation_prompt_states_where_an_instruction_ranks():
+    assert "auditor_instruction" in tests_workers.GENERATE_SYSTEM
+    assert "never over the response contract" in tests_workers.GENERATE_SYSTEM

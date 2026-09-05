@@ -264,6 +264,7 @@ def plan_sentence(
 # are stable across workspaces, unlike the refs they select. (singular, plural)
 # so a lone item and a group both read naturally.
 _SOURCE_LABELS: dict[str, tuple[str, str]] = {
+    "instruction": ("your instruction", "your instruction"),
     "planning_context": ("the planning context", "the planning context"),
     "current_planning_context": ("the current planning context", "the current planning context"),
     "planning_documents": ("a supporting document", "supporting documents"),

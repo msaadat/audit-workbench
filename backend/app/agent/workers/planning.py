@@ -14,6 +14,9 @@ from .. import prompts
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
+    AUDITOR_INSTRUCTION_RULE,
+    AUDITOR_INSTRUCTION_SOURCE_ID,
+    auditor_instruction,
     WORKERS,
     WorkerAttempt,
     WorkerContractError,
@@ -65,7 +68,7 @@ not apply to this engagement is recorded as considered and not applicable, with
 the reason; an empty section is not the same as a dismissed one.
 
 Return the memorandum as Markdown only, without a JSON wrapper or Markdown code
-fence. """ + LANGUAGE_RULES
+fence. """ + LANGUAGE_RULES + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
@@ -290,14 +293,19 @@ def run_apm_worker(
     template = str(_resolved_item(request, "apm_template") or "")
     current_apm = str(_resolved_item(request, "current_apm") or "")
     _resolved_item(request, "planning_context")
+    instruction = auditor_instruction(request)
     user = json.dumps(
         {
             "ACTIVE APM TEMPLATE (verbatim)": template,
             "CURRENT APM TO REVISE": current_apm,
+            # Omitted rather than sent empty: a key present and blank invites a
+            # model to invent what should have been in it.
+            **({"auditor_instruction": instruction} if instruction else {}),
             "RESOLVED CONTEXT": _context_without_sources(
                 request,
                 "apm_template",
                 "current_apm",
+                AUDITOR_INSTRUCTION_SOURCE_ID,
             ),
         },
         indent=1,
@@ -409,7 +417,7 @@ Follow the ACTIVE RISK TEMPLATE for methodology. Its non-negotiable rules:
   first thing a reviewer uses to direct effort.
 - One risk per row, and two rows describing the same underlying failure are one
   row. Say it once, in the wording that covers both.
-{JSON_RULES} {LANGUAGE_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 
 #: The control pass: what management asserts it does about each settled risk.
@@ -462,7 +470,7 @@ Follow the ACTIVE CONTROL TEMPLATE. Its non-negotiable rules:
   Where no supplied clause states a criterion, leave criteria empty.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
   percentage is not an exception rate; a maximum is not a policy limit.
-{JSON_RULES} {LANGUAGE_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 
 #: The attribute pass: the closed-vocabulary half of a matrix row.
@@ -535,7 +543,7 @@ Follow the ACTIVE ATTRIBUTE TEMPLATE. Its non-negotiable rules:
   comparison_recipes: what must agree is decided later, against this
   engagement's own documents.
 
-{JSON_RULES} {LANGUAGE_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
@@ -1961,10 +1969,12 @@ def _rcm_risks_user(request: WorkerRequest) -> str:
 
     template = str(_resolved_item(request, "rcm_template") or "")
     current_apm = str(_resolved_item(request, "current_apm") or "")
+    instruction = auditor_instruction(request)
     return json.dumps(
         {
             "ACTIVE RISK TEMPLATE (verbatim)": template,
             "REVISED APM": current_apm,
+            **({"auditor_instruction": instruction} if instruction else {}),
             # The closed vocabulary. Supplied even when empty, so the rule in
             # the system prompt is never left pointing at a key that is not
             # there — an engagement with no cycle designed gets an empty list
@@ -2024,11 +2034,13 @@ def _controls_user(request: WorkerRequest, rows: list[dict]) -> str:
     came from.
     """
 
+    instruction = auditor_instruction(request)
     return json.dumps(
         {
             "ACTIVE CONTROL TEMPLATE (verbatim)": str(
                 _resolved_item(request, "rcm_controls_template") or ""
             ),
+            **({"auditor_instruction": instruction} if instruction else {}),
             "RISKS": [
                 {
                     "row_index": index,
@@ -2283,8 +2295,10 @@ def _attributes_user(request: WorkerRequest, rows: list[dict]) -> str:
     which is the whole of what ``evidence_kind`` asks.
     """
 
+    instruction = auditor_instruction(request)
     return json.dumps(
         {
+            **({"auditor_instruction": instruction} if instruction else {}),
             "ROWS": [
                 {
                     "row_index": index,

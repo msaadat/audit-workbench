@@ -52,7 +52,11 @@ from .capabilities.documents import (
     resolve_document_scope,
 )
 from .capabilities import tests as test_capabilities
-from .capabilities._shared import target_rcm_ids
+from .capabilities._shared import (
+    named_observation_ids,
+    named_test_ids_for_row,
+    target_rcm_ids,
+)
 from .doc_tests_execution import bind_document_test_unit
 from .documents_execution import (
     DocumentWorkflowExecution,
@@ -1085,6 +1089,7 @@ class AuditWorkflowExecution(ActionRunner):
                 apm_document_methodology_scope(
                     self.ws,
                     document_ids=self._curated_document_ids(),
+                    instruction=workflow_scope(self.run).get("instruction"),
                 ),
             )
 
@@ -1355,6 +1360,7 @@ class AuditWorkflowExecution(ActionRunner):
                 rcm_scope(
                     self.ws,
                     document_ids=self._curated_document_ids(),
+                    instruction=workflow_scope(self.run).get("instruction"),
                 ),
             )
 
@@ -1617,11 +1623,19 @@ class AuditWorkflowExecution(ActionRunner):
         self.ws = subject
         rcm_id = unit["parent_refs"][0].split(":", 1)[1]
         expected_row = parent_hashes(self.ws, [f"rcm:{rcm_id}"])
+        # Re-derived from the run's durable scope rather than read off the unit:
+        # a unit record carries its input *hash*, not its input, and the one
+        # function below is what the capability used to expand this unit, so the
+        # two cannot disagree about which tests were named.
+        regenerate_test_ids = named_test_ids_for_row(
+            self.ws, (self.run.get("workflow") or {}).get("scope") or {}, rcm_id
+        )
         target = TestGenerateExecutorTarget(
             self.ws,
             self.run["id"],
             rcm_id,
             allow_auditor_overwrite=self.run["mode"] == "permission",
+            regenerate_test_ids=regenerate_test_ids,
         )
         task = self.add_task(
             "test_specs", "workflow:test_specs", "Executable test specifications"
@@ -1637,6 +1651,7 @@ class AuditWorkflowExecution(ActionRunner):
                     self.ws,
                     rcm_id,
                     document_ids=self._curated_document_ids(),
+                    instruction=workflow_scope(self.run).get("instruction"),
                 ),
             )
 
@@ -1684,6 +1699,11 @@ class AuditWorkflowExecution(ActionRunner):
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
+                    **(
+                        {"regenerate_test_ids": list(regenerate_test_ids)}
+                        if regenerate_test_ids
+                        else {}
+                    ),
                 },
                 activity={
                     "artifact_refs": [f"rcm:{rcm_id}"],
@@ -1816,7 +1836,18 @@ class AuditWorkflowExecution(ActionRunner):
         self.ws = subject
         observation_id = unit["parent_refs"][0].split(":", 1)[1]
         expected_observation = parent_hashes(self.ws, [f"observation:{observation_id}"])
-        target = FindingExecutorTarget(self.ws, self.run["id"], observation_id)
+        # Re-derived from the run's durable scope for the same reason the
+        # test binder re-derives its named ids: the unit record carries a hash
+        # of its input, not the input.
+        target = FindingExecutorTarget(
+            self.ws,
+            self.run["id"],
+            observation_id,
+            named_by_request=observation_id
+            in named_observation_ids(
+                self.ws, (self.run.get("workflow") or {}).get("scope") or {}
+            ),
+        )
         task = self.add_task("findings", "workflow:findings", "Eligible finding drafts")
 
         def context_provider():
@@ -1825,7 +1856,11 @@ class AuditWorkflowExecution(ActionRunner):
                 self.context_resolver,
                 capability,
                 unit,
-                finding_draft_scope(self.ws, observation_id),
+                finding_draft_scope(
+                    self.ws,
+                    observation_id,
+                    instruction=workflow_scope(self.run).get("instruction"),
+                ),
             )
 
         def approval_provider(proposal):

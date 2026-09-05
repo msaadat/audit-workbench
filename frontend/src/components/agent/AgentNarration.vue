@@ -28,6 +28,9 @@ const SETTLED_ICONS: Record<string, string> = {
 
 function icon(entry: AgentNarrationEntry, current: boolean) {
   if (current) return 'pi pi-spin pi-spinner'
+  // A repair is work being redone, not progress being made. It reads as its own
+  // kind of line so a reader can tell a stage that struggled from one that ran.
+  if (entry.kind === 'repair') return 'pi pi-wrench'
   if (entry.kind !== 'stage_settled') return 'pi pi-angle-right'
   return SETTLED_ICONS[entry.status ?? ''] ?? 'pi pi-check'
 }

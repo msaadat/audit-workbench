@@ -111,6 +111,15 @@ policy. Adding a runtime policy editor later would require a separate versioned
 persistence, authorization, validation, API, and UX design; it is not implicit
 in `ContextSpec` deserialization or manifest inspection.
 
+The auditor's instruction is the one context source supplied at run time
+rather than read from the workspace. It is declared like any other: an optional
+`instructions` source on the five presets that accept steering, carrying an
+`auditor_instruction` representation under its own `allow_auditor_instruction`
+permission, budgeted and truncated on a rule, and recorded in the manifest by
+hash and size alone. Declaring it is what makes it bounded and auditable; a
+prompt patched in by a binder would be neither. It reaches a run through
+`run["context"]["instruction"]`, which routing copies into workflow scope.
+
 Automatic selectors are local, deterministic resolver components. They cannot
 call `ModelGateway`, a provider model, or a network service. A selector may use
 stable metadata, lexical scoring, or a hash-identified local embedding/index

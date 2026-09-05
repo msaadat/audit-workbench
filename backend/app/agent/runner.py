@@ -244,8 +244,28 @@ def _carried_target_refs(workflow_state: dict) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
-def retry_run(workspace: Workspace, run_id: str) -> dict:
-    """Start a fresh linked attempt without rewriting the failed run ledger."""
+def retry_run(
+    workspace: Workspace,
+    run_id: str,
+    *,
+    target_refs: list[str] | None = None,
+    instruction: str | None = None,
+) -> dict:
+    """Start a fresh linked attempt without rewriting the failed run ledger.
+
+    ``target_refs`` narrows the retry to part of what the linked command
+    covered; without it the retry carries the same refs it did, which is what
+    Retry has always meant. ``instruction`` says what should be different this
+    time and lands on the new run's context, from where routing copies it into
+    scope and the five steerable presets resolve it as a declared source.
+
+    An instruction deliberately defeats the rejection seed in
+    ``unit_pipeline._linked_repair_seed``: that seed is only reused under an
+    exact execution identity, and the manifest hash is part of it, so a retry
+    carrying an instruction never loads the previous rejection. That is the
+    right way round — the instruction *is* the seed, and it says something the
+    validator's own errors could not.
+    """
     previous = store.load_run(workspace, run_id)
     # A partly failed run is retryable too. Structural readiness keeps whatever
     # it already committed, so retrying reattempts only the unsettled work.
@@ -267,17 +287,27 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
         "context_refs": list(original.get("context_refs") or []),
         "planning_basis_run_id": previous.get("planning_basis_run_id"),
         "requested_outcomes": list(previous_workflow.get("requested_outcomes") or []),
-        "target_refs": _carried_target_refs(previous_workflow),
+        "target_refs": [
+            str(value) for value in target_refs if str(value or "").strip()
+        ] if target_refs else _carried_target_refs(previous_workflow),
         # Structural readiness keeps successful siblings; carrying a prior
         # ``force`` mode into retry would unnecessarily repeat them.
         "generation_mode": "reuse_existing",
     }
+    context = dict(previous.get("context") or {})
+    text = str(instruction or "").strip()
+    if text:
+        context["instruction"] = text
+    else:
+        # A retry with nothing new to say does not inherit what the last attempt
+        # was told: the instruction belongs to the ask that carried it.
+        context.pop("instruction", None)
     return start_command_run(
         workspace,
         previous["mode"],
         command,
         parent_run_id=previous["id"],
-        context=dict(previous.get("context") or {}),
+        context=context,
     )
 
 
@@ -518,9 +548,16 @@ def steer(
     run_context: dict | None = None,
     goal_template: str | None = None,
     requested_outcomes: list[str] | None = None,
+    generation_mode: str | None = None,
 ) -> dict:
     """A message to a run: steering while it's live, a persisted note while
-    paused, or a linked follow-up run once it has finished."""
+    paused, or a linked follow-up run once it has finished.
+
+    ``generation_mode`` travels with the command rather than being inferred
+    from its text: a button that means "redraft this one" has said so already,
+    and leaving it to the force-phrase table would make the button's behaviour
+    depend on the sentence someone happened to write on it.
+    """
     content = str(content or "").strip()
     if not content:
         raise WorkspaceError("Say what the agent should do.")
@@ -534,7 +571,8 @@ def steer(
              "chat_id": chat_id, "source_message_id": source_message_id,
              "context_refs": list(context_refs or []),
              "target_refs": list(target_refs or []),
-             "requested_outcomes": list(requested_outcomes or [])},
+             "requested_outcomes": list(requested_outcomes or []),
+             **({"generation_mode": generation_mode} if generation_mode else {})},
             parent_run_id=run_id,
             context=run_context,
         )
@@ -550,6 +588,7 @@ def steer(
             "target_refs": list(target_refs or []),
             "requested_outcomes": list(requested_outcomes or []),
             "run_context": dict(run_context or {}),
+            **({"generation_mode": generation_mode} if generation_mode else {}),
         }
         handle = get_handle(run_id)
         if handle is not None:

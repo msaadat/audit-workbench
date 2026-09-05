@@ -71,6 +71,7 @@ const saving = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
 const generatingFindings = ref(false)
+const redrafting = ref(false)
 // The narrowings in force, at most one per axis. The review bar's chips are
 // this same vocabulary: a count on the bar and a predicate here.
 const statusFilter = ref<DataTestFilter[]>([])
@@ -489,6 +490,37 @@ function deleteTest() {
     },
   })
 }
+// Redrafting *this* test, not the row it sits on. The row's other tests are
+// work someone is already relying on, and regenerating them because a
+// neighbour reads badly is the behaviour that made this button unaskable
+// before the request could name a test.
+async function redraftTest() {
+  if (!selected.value) return
+  redrafting.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Data test ${selected.value.id} does not look right; redraft it.`,
+      'act', launchMode.value,
+      {
+        source: 'tab_button',
+        requestedOutcomes: ['tests.specified'],
+        runContext: {
+          target_refs: [`datatest:${selected.value.id}`],
+          generation_mode: 'force',
+        },
+      },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'success',
+      summary: 'Redraft started',
+      detail: `${selected.value.id} will be rewritten; the row's other tests are left as they are.`,
+      life: 3600,
+    })
+  } catch (error) { fail('Could not start the redraft', error) }
+  finally { redrafting.value = false }
+}
 async function draftFinding(regenerate = false) {
   if (!selected.value?.rcm_id || !selected.value.last_run) return
   try {
@@ -664,6 +696,16 @@ onUnmounted(unsubscribe)
           />
           <Button label="Edit definition" icon="pi pi-sliders-h" size="small" outlined severity="secondary" @click="openDefinition" />
           <Button label="Run" icon="pi pi-play" size="small" outlined severity="secondary" :loading="running" :disabled="runningAll" @click="runTest" />
+          <Button
+            v-if="selected.rcm_id"
+            label="Redraft"
+            icon="pi pi-pencil"
+            size="small"
+            outlined
+            severity="secondary"
+            :loading="redrafting"
+            @click="redraftTest"
+          />
         </header>
 
         <!-- What the run found, and what is recorded. Twice, never four

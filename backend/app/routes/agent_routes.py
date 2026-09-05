@@ -155,10 +155,23 @@ async def resume_run(workspace_id: str, run_id: str):
 
 
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/retry")
-async def retry_run(workspace_id: str, run_id: str):
+async def retry_run(workspace_id: str, run_id: str, payload: dict = Body(default={})):
     ws = workspaces.load_workspace(workspace_id)
+    raw_refs = payload.get("target_refs")
+    if raw_refs is not None and (
+        not isinstance(raw_refs, list)
+        or any(not isinstance(value, str) or not value.strip() for value in raw_refs)
+    ):
+        raise HTTPException(400, detail="target_refs must be a list of non-empty strings.")
+    instruction = payload.get("instruction")
+    if instruction is not None and not isinstance(instruction, str):
+        raise HTTPException(400, detail="instruction must be a string.")
     try:
-        return await asyncio.to_thread(runner.retry_run, ws, run_id)
+        return await asyncio.to_thread(
+            lambda: runner.retry_run(
+                ws, run_id, target_refs=raw_refs, instruction=instruction
+            )
+        )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
 

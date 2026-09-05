@@ -59,6 +59,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "datatest_exception_rows": "allow_datatest_exception_rows",
     "analysis_summary": "allow_analysis_summary",
     "value_domain": "allow_value_domains",
+    "auditor_instruction": "allow_auditor_instruction",
 }
 
 
@@ -426,6 +427,20 @@ _register_selectors(
             strategy="metadata",
         ),
         SelectorDefinition(
+            # One item, no ranking, nothing to choose between: a request carries
+            # one instruction or none. It is a selector at all so that the
+            # instruction enters a worker's turn the same way every other source
+            # does — declared, budgeted, and recorded in the manifest — rather
+            # than as a prompt the binder patches in on the side.
+            selector_id="instructions.current",
+            selector_kind="deterministic",
+            supported_source_types=("instructions",),
+            implementation_hash=_implementation_hash(
+                "instructions.current:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
+        SelectorDefinition(
             selector_id="templates.current",
             selector_kind="deterministic",
             supported_source_types=("templates",),
@@ -752,12 +767,27 @@ PRESETS.register(
                     representations=(ContextRepresentation("excerpt"),),
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
+                # What the auditor asked for, when they asked for something.
+                # Optional and absent on every run the workflow schedules for
+                # itself; present when a person said what they wanted changed.
+                # Declared rather than patched into the prompt so that it is
+                # budgeted, truncated on a rule, and recorded in the manifest by
+                # hash and size like every other thing a worker was shown.
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
             ),
-            # 46 = the declared per-source ceilings summed; the population
-            # summary is the one added item and must not cost the last
-            # methodology excerpt its slot.
-            budget=ContextBudget(max_items=46, max_characters=94_000),
+            # 47 = the declared per-source ceilings summed; the population
+            # summary is one added item and the auditor's instruction another,
+            # and neither must cost the last methodology excerpt its slot.
+            budget=ContextBudget(max_items=47, max_characters=96_000),
             privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
                 allow_planning_context=True,
                 allow_template_text=True,
                 allow_document_text=True,
@@ -907,9 +937,24 @@ PRESETS.register(
                     representations=(ContextRepresentation("excerpt"),),
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
+                # What the auditor asked for, when they asked for something.
+                # Optional and absent on every run the workflow schedules for
+                # itself; present when a person said what they wanted changed.
+                # Declared rather than patched into the prompt so that it is
+                # budgeted, truncated on a rule, and recorded in the manifest by
+                # hash and size like every other thing a worker was shown.
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
             ),
-            budget=ContextBudget(max_items=254, max_characters=136_000),
+            budget=ContextBudget(max_items=255, max_characters=138_000),
             privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
                 allow_planning_context=True,
                 allow_template_text=True,
                 allow_document_text=True,
@@ -1109,12 +1154,27 @@ PRESETS.register(
                     representations=(ContextRepresentation("excerpt"),),
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
+                # What the auditor asked for, when they asked for something.
+                # Optional and absent on every run the workflow schedules for
+                # itself; present when a person said what they wanted changed.
+                # Declared rather than patched into the prompt so that it is
+                # budgeted, truncated on a rule, and recorded in the manifest by
+                # hash and size like every other thing a worker was shown.
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
             ),
             # Data Test code is validated against schema-only empty frames, so
             # profiles are not needed to generate a valid executable procedure.
             # Keep the overall ceiling aligned with the remaining source limits.
-            budget=ContextBudget(max_items=182, max_characters=128_000),
+            budget=ContextBudget(max_items=183, max_characters=130_000),
             privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
                 allow_planning_context=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
@@ -1253,8 +1313,22 @@ PRESETS.register(
                     ),
                     budget=ContextBudget(max_items=1, max_characters=10_000),
                 ),
+                # What the auditor asked for, when they asked for something.
+                # Optional and absent on every run the workflow schedules for
+                # itself; present when a person said what they wanted changed.
+                # Declared rather than patched into the prompt so that it is
+                # budgeted, truncated on a rule, and recorded in the manifest by
+                # hash and size like every other thing a worker was shown.
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
             ),
-            budget=ContextBudget(max_items=6, max_characters=42_000),
+            budget=ContextBudget(max_items=7, max_characters=44_000),
             # A finding is grounded in its exception observation, the immutable
             # execution result behind it, and — for a Data Test — the rows that
             # result flagged. The row admission is the deliberate widening: it
@@ -1263,6 +1337,7 @@ PRESETS.register(
             # the adapter before this budget applies. No document text, no table
             # slice, and no population beyond the flagged rows is declared.
             privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
                 allow_document_text=True,
                 allow_template_text=True,
                 allow_datatest_exception_rows=True,
@@ -1505,8 +1580,22 @@ PRESETS.register(
                     # from every frame sharing a base table with this one.
                     budget=ContextBudget(max_items=40, max_characters=16_000),
                 ),
+                # What the auditor asked for, when they asked for something.
+                # Optional and absent on every run the workflow schedules for
+                # itself; present when a person said what they wanted changed.
+                # Declared rather than patched into the prompt so that it is
+                # budgeted, truncated on a rule, and recorded in the manifest by
+                # hash and size like every other thing a worker was shown.
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
             ),
-            budget=ContextBudget(max_items=95, max_characters=86_000),
+            budget=ContextBudget(max_items=96, max_characters=88_000),
             # This preset admits exactly one class of engagement value, and no
             # row. ``allow_value_domains`` admits the categories a column ranges
             # over — the disclosure that lets a procedure be written against
@@ -1522,6 +1611,7 @@ PRESETS.register(
             # ``allow_table_rows`` remains denied and ``table_rows`` remains
             # structurally rejected at the resolver boundary.
             privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
                 allow_table_profiles=True,

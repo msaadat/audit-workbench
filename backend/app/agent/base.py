@@ -138,6 +138,11 @@ class BaseRunner:
         # document capabilities it depends on — must share one lock, or the two
         # would serialize their own writes to the one run record independently.
         self._state_lock = state_lock if state_lock is not None else threading.RLock()
+        # Which units of work have already said, out loud, that they are running
+        # long. A stage of seven slow units said it seven times; the second and
+        # later waits now move the activity strip's detail instead, which is
+        # where "still going" belongs.
+        self._heartbeat_noted: set[str] = set()
         self.runtime = runtime if runtime is not None else DefaultRunRuntime(
             workspace=self.ws,
             run=self.run,
@@ -183,17 +188,55 @@ class BaseRunner:
         )
 
     def _emit_model_wait_heartbeat(self, tag: str) -> None:
-        """Say one thing when a call is still running well past normal.
+        """Say one thing per unit of work when a call runs well past normal.
 
         A real conversational turn, not a log entry: a reader who opens the
-        transcript after the call finally settles should still see that it
-        ran long, not just its eventual result.
+        transcript after the call finally settles should still see that it ran
+        long, not just its eventual result. Said *once*, though. The heartbeat
+        fires per slow call, and a stage that fans out over seven rows is seven
+        slow calls saying the identical sentence — which reads as a stuck run
+        rather than a working one, and buries whatever else the stage said.
+
+        A later wait under the same task moves ``activity.detail`` instead. The
+        strip is live and disposable, which is exactly the right home for "and
+        it is *still* going": it replaces itself instead of accumulating.
         """
+        activity = self.run.get("activity") or {}
+        # The task id is the stage. Without one — an action run, a bare model
+        # call — the tag stands in, so the sentence is still said once per kind
+        # of work rather than once per call.
+        key = str(activity.get("task_id") or "") or f"tag:{tag}"
+        if key in self._heartbeat_noted:
+            self._note_slow_activity(activity)
+            return
+        self._heartbeat_noted.add(key)
         label = MODEL_WAIT_LABELS.get(tag, "Working")
         narration.say(
             self.run,
             self.emit,
             f"Still {label[0].lower()}{label[1:]} — this is taking longer than usual.",
+        )
+
+    def _note_slow_activity(self, activity: dict[str, Any]) -> None:
+        """Move the live strip's detail to say the wait is continuing."""
+        phase = str(activity.get("phase") or "")
+        if not phase:
+            return
+        total = activity.get("total")
+        current = activity.get("current")
+        detail = "running long"
+        if total:
+            # The unit in flight is the one after those already settled.
+            detail = f"running long (unit {int(current or 0) + 1} of {int(total)})"
+        self.set_activity(
+            phase,
+            str(activity.get("label") or "Working"),
+            detail=detail,
+            current=current,
+            total=total,
+            attempt=activity.get("attempt"),
+            task_id=activity.get("task_id"),
+            action_id=activity.get("action_id"),
         )
 
     def _emit_model_stream(self, tag: str, text: str, call_id: str) -> None:

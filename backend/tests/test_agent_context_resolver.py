@@ -441,3 +441,83 @@ def test_local_embedding_selector_is_hash_bound_and_stably_tie_broken():
                 local_embedding_queries={"documents": mismatched},
             ),
         )
+
+
+# --------------------------------------------------------------------------- #
+# The auditor's instruction as a declared source (step 3)
+# --------------------------------------------------------------------------- #
+def _instruction_source(max_characters: int = 2_000) -> ContextSource:
+    return ContextSource(
+        id="instruction",
+        source_type="instructions",
+        required=False,
+        selector=ContextSelector("instructions.current"),
+        representations=(ContextRepresentation("auditor_instruction"),),
+        budget=ContextBudget(max_items=1, max_characters=max_characters),
+    )
+
+
+def _instruction_spec(max_characters: int = 2_000) -> ContextSpec:
+    return ContextSpec(
+        sources=(_instruction_source(max_characters),),
+        budget=ContextBudget(max_items=1, max_characters=max_characters),
+        privacy=ContextPrivacy(allow_auditor_instruction=True),
+    )
+
+
+def test_the_manifest_records_an_instruction_by_hash_and_size_only():
+    """The words go to the provider; the durable record keeps only their shape."""
+    from app.agent.context.adapters import instruction_candidates
+
+    text = "Every template section must contain text."
+    manifest, bundle = _resolve(
+        _instruction_spec(),
+        ContextScope({"instruction": instruction_candidates(text)}),
+    )
+
+    assert [item.content for item in bundle.items] == [text]
+    assert text not in manifest.to_json()
+    selection = manifest.selections[0]
+    assert selection.source_ref.startswith("instruction:")
+    assert selection.supplied_size.characters == len(text)
+
+
+def test_an_over_long_instruction_is_truncated_and_the_truncation_recorded():
+    from app.agent.context.adapters import instruction_candidates
+
+    manifest, bundle = _resolve(
+        _instruction_spec(max_characters=100),
+        ContextScope({"instruction": instruction_candidates("x" * 3_000)}),
+    )
+
+    assert len(str(bundle.items[0].content)) == 100
+    assert manifest.truncations[0].original_size.characters == 3_000
+    assert manifest.truncations[0].supplied_size.characters == 100
+
+
+def test_no_instruction_is_an_absent_optional_source_not_an_empty_one():
+    from app.agent.context.adapters import instruction_candidates
+
+    manifest, bundle = _resolve(
+        _instruction_spec(),
+        ContextScope({"instruction": instruction_candidates(None)}),
+    )
+
+    assert bundle.items == ()
+    assert manifest.selections == ()
+
+
+def test_an_instruction_needs_its_own_permission_like_every_representation():
+    """Structural, not nominal: declaring the source is not permission to send it."""
+    from app.agent.context.presets import SELECTORS
+
+    spec = ContextSpec(
+        sources=(_instruction_source(),),
+        budget=ContextBudget(max_items=1, max_characters=2_000),
+        privacy=ContextPrivacy(),
+    )
+
+    with pytest.raises(ValueError, match="allow_auditor_instruction"):
+        SELECTORS.validate_spec(spec)
+
+    SELECTORS.validate_spec(_instruction_spec())

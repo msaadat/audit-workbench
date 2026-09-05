@@ -48,6 +48,9 @@ from ..analysis_identity import (
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
+    AUDITOR_INSTRUCTION_RULE,
+    AUDITOR_INSTRUCTION_SOURCE_ID,
+    auditor_instruction,
     MAX_REPAIR_ERRORS,
     WORKERS,
     WorkerAttempt,
@@ -174,7 +177,7 @@ columns record — "a GRN records receipt, so it cannot predate the order it
 receives" rather than "checks the dates". If you cannot write that sentence for
 a proposal, you have not established that the two columns belong together, and
 the analysis should not be proposed.
-{JSON_RULES} {LANGUAGE_RULES}"""
+{JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
 JOIN_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
@@ -1625,6 +1628,7 @@ def run_analysis_definition_worker(
         PROBE_FINDINGS_SOURCE_ID,
         VALUE_DOMAINS_SOURCE_ID,
         JOIN_HYPOTHESIS_SOURCE_ID,
+        AUDITOR_INSTRUCTION_SOURCE_ID,
     )
     measured = [
         _plain_json(item) for item in _source_items(request, PROBE_FINDINGS_SOURCE_ID)
@@ -1635,9 +1639,13 @@ def run_analysis_definition_worker(
     hypotheses = [
         _plain_json(item) for item in _source_items(request, JOIN_HYPOTHESIS_SOURCE_ID)
     ]
+    instruction = auditor_instruction(request)
     user = json.dumps(
         {
             **({"ANALYTICS CATALOG": catalog} if catalog else {}),
+            # Omitted rather than sent empty: a key present and blank invites a
+            # model to invent what should have been in it.
+            **({"auditor_instruction": instruction} if instruction else {}),
             "TARGET FRAME": schema,
             **({"VALUE DOMAINS": domains} if domains else {}),
             **({"MEASURED ON THIS FRAME": measured} if measured else {}),

@@ -314,6 +314,14 @@ class ContextPrivacy(_JSONModel):
     # against ``Rejected`` at all; a profile reporting "7 distinct values" cannot
     # name one, and a test cannot filter on a value nobody was allowed to see.
     allow_value_domains: bool = False
+    # What the auditor typed about this piece of work — "every template section
+    # must contain text", "DT-123 does not look right". Its own permission
+    # because it is the one source supplied at run time rather than read from
+    # the workspace: it is not an artifact anybody can point at afterwards, so
+    # it earns a declaration saying exactly which turns may carry one. Bounded
+    # and hash-recorded like every other source; the manifest keeps the hash and
+    # the size, never the words.
+    allow_auditor_instruction: bool = False
 
     _FIELDS: ClassVar[tuple[str, ...]] = (
         "allow_provider",
@@ -333,6 +341,7 @@ class ContextPrivacy(_JSONModel):
         "allow_datatest_exception_rows",
         "allow_analysis_summary",
         "allow_value_domains",
+        "allow_auditor_instruction",
     )
 
     def __post_init__(self) -> None:

@@ -1104,6 +1104,35 @@ def test_a_turn_that_answers_in_tool_calls_carries_no_prose_and_is_not_rejected(
     assert message["tool_calls"][0]["function"]["name"] == "route"
 
 
+def test_a_part_generated_answer_the_provider_calls_an_error_is_unusable(
+    workspace_with_data, monkeypatch
+):
+    """``error`` is the provider disowning the turn, text or no text.
+
+    Text arriving under it is the wreckage of an answer, not an answer: a
+    worker handed it would have to guess the part that never came. Retried on
+    the empty-completion rule, because the request was accepted either way.
+    """
+    active, calls = _no_output_gateway(
+        workspace_with_data,
+        monkeypatch,
+        {
+            "content": '{"rows": [{"id": "R-1"',
+            "finish_reason": "error",
+            "usage": {"completion_tokens": 1_200},
+        },
+    )
+
+    with pytest.raises(ModelResponseUnusable) as raised:
+        active.model_gateway.complete("[agent:rcm]\nDraft it", "payload")
+
+    assert len(calls) == 2, "asked once more, on the same rule as an empty one"
+    detail = str(raised.value)
+    assert "'error'" in detail
+    # Not "returned no output": it returned some, which is the whole problem.
+    assert "no output" not in detail
+
+
 def test_a_dead_completion_is_metered_before_it_is_raised(
     workspace_with_data, monkeypatch
 ):

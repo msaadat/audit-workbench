@@ -49,7 +49,12 @@ SOURCES = {"composer", "shortcut", "tab_button", "folder_intake"}
 # Scope keys a requested-outcomes message (no goal template) may carry — the
 # chat-side equivalent of the `target_refs` the direct run-creation endpoint
 # accepts, so a caller can name specific rows without a registered template.
-OUTCOME_RUN_CONTEXT_KEYS = frozenset({"target_refs"})
+# The scope keys a requested-outcomes message may narrow itself with. Each is a
+# narrowing, never a routing override: `target_refs` says which artifacts,
+# `generation_mode` says whether an artifact already in place counts as done —
+# the question a "Redraft this test" button answers — and `instruction` says
+# what the auditor wants different about the result.
+OUTCOME_RUN_CONTEXT_KEYS = frozenset({"target_refs", "generation_mode", "instruction"})
 
 _file_locks: dict[str, threading.RLock] = {}
 _file_locks_guard = threading.Lock()
@@ -656,6 +661,16 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                         not isinstance(value, str) or not value.strip() for value in raw_refs
                     ):
                         raise WorkspaceError("target_refs must be a list of non-empty strings.")
+                if "generation_mode" in run_context and (
+                    run_context.get("generation_mode") not in store.GENERATION_MODES
+                ):
+                    raise WorkspaceError(
+                        "generation_mode must be 'reuse_existing' or 'force'."
+                    )
+                if "instruction" in run_context and not isinstance(
+                    run_context.get("instruction"), str
+                ):
+                    raise WorkspaceError("instruction must be a string.")
                 if "rcm_ids" in run_context:
                     raw_ids = run_context.get("rcm_ids")
                     if not isinstance(raw_ids, list) or any(
@@ -774,12 +789,18 @@ def _launch_command(
             for item in (planning_context.get("target_refs") or [])
             if str(item or "").strip()
         ]
+    generation_mode = (
+        str(planning_context.get("generation_mode") or "").strip() or None
+        if not goal_template and requested_outcomes
+        else None
+    )
     command = {
         "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),
         "text": request, "goal_template": goal_template,
         "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
         "target_refs": target_refs,
         "requested_outcomes": list(requested_outcomes or []),
+        **({"generation_mode": generation_mode} if generation_mode else {}),
     }
     if goal_template == "planning" and not planning_context.get("document_ids"):
         planning_context["document_ids"] = list(
@@ -791,6 +812,7 @@ def _launch_command(
             source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
             run_context=planning_context, goal_template=goal_template,
             requested_outcomes=requested_outcomes,
+            generation_mode=generation_mode,
         )
         queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
         pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
@@ -829,6 +851,7 @@ def _launch_command(
             source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
             run_context=planning_context, goal_template=goal_template,
             requested_outcomes=requested_outcomes,
+            generation_mode=generation_mode,
         )
         queued = response.get("command") or {}
         return {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}

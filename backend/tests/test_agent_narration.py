@@ -11,7 +11,7 @@ import re
 import pytest
 
 from app import assistant_chats
-from app.agent import narration, store
+from app.agent import base, narration, routing, runner, store, workflow
 from app.workspaces import write_json_atomic
 
 
@@ -1134,3 +1134,149 @@ def test_row_level_artifacts_never_become_cards():
     )
 
     assert read["artifacts"] == []
+
+
+# --------------------------------------------------------------------------- #
+# The narration diet (step 1): said once, not once per unit
+# --------------------------------------------------------------------------- #
+def _runner_on_a_stage(workspace_with_data, *, total=7):
+    """A runner whose live activity is one workflow stage of ``total`` units."""
+    run = store.new_run(workspace_with_data, "auto")
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    active = base.BaseRunner(workspace_with_data, run, handle)
+    active.set_activity(
+        "workflow.test_generation",
+        "RCM tests",
+        current=0,
+        total=total,
+        task_id="workflow:test_generation",
+    )
+    return active
+
+
+def test_a_stage_says_it_is_running_long_once_however_often_it_waits(
+    workspace_with_data,
+):
+    """Run ``67df8c`` opened by saying the same sentence five times."""
+    active = _runner_on_a_stage(workspace_with_data)
+
+    for _ in range(5):
+        active._emit_model_wait_heartbeat("agent:test_generate")
+
+    said = [item["content"] for item in active.run["messages"]]
+    assert said == ["Still generating RCM tests — this is taking longer than usual."]
+
+
+def test_a_later_wait_moves_the_live_strip_instead_of_speaking(workspace_with_data):
+    """"Still going" belongs somewhere that replaces itself, not somewhere that accumulates."""
+    active = _runner_on_a_stage(workspace_with_data)
+    active._emit_model_wait_heartbeat("agent:test_generate")
+
+    active.set_activity(
+        "workflow.test_generation",
+        "RCM tests",
+        current=2,
+        total=7,
+        task_id="workflow:test_generation",
+    )
+    active._emit_model_wait_heartbeat("agent:test_generate")
+
+    assert len(active.run["messages"]) == 1
+    assert active.run["activity"]["detail"] == "running long (unit 3 of 7)"
+
+
+def test_a_second_stage_gets_its_own_sentence(workspace_with_data):
+    """The cap is per stage, not per run: a new stage running long is news."""
+    active = _runner_on_a_stage(workspace_with_data)
+    active._emit_model_wait_heartbeat("agent:test_generate")
+
+    active.set_activity(
+        "workflow.findings", "Findings", current=0, total=3, task_id="workflow:findings"
+    )
+    active._emit_model_wait_heartbeat("agent:finding")
+
+    assert len(active.run["messages"]) == 2
+
+
+def _repair_narrator(workspace_with_data):
+    from app.agent.runtime.workflow_runner import WorkflowRunner
+    from app.agent.runtime.workflow_runner import CapabilityExecutionRegistry
+
+    run = store.new_run(workspace_with_data, "auto")
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    active = base.BaseRunner(workspace_with_data, run, handle)
+    registry = workflow.CapabilityRegistry()
+    return WorkflowRunner(
+        subject=workspace_with_data,
+        run=run,
+        runtime=active.runtime,
+        registry=registry,
+        executions=CapabilityExecutionRegistry(),
+    )
+
+
+def test_a_repair_is_a_note_about_a_unit_not_a_message_to_the_auditor(
+    workspace_with_data,
+):
+    """26 units in the evidence exhausted their repairs; each said so per attempt."""
+    engine = _repair_narrator(workspace_with_data)
+    stage = {"id": "test_generation", "capability": "tests.specified"}
+    unit = {"id": "test:r-4", "title": "Generate tests — Unapproved payments"}
+
+    engine._narrate_repair(stage, unit)(1, ("a", "b", "c"))
+
+    assert engine.run["messages"] == []
+    entry = engine.run["narration"][-1]
+    assert entry["kind"] == "repair"
+    assert entry["unit_id"] == "test:r-4"
+    assert entry["stage_id"] == "test_generation"
+    # Named by what it is about, so a rail of them says which rows struggled.
+    assert entry["text"] == (
+        "Unapproved payments: The first draft failed 3 checks; redoing it."
+    )
+
+
+def test_a_units_second_repair_is_silent(workspace_with_data):
+    engine = _repair_narrator(workspace_with_data)
+    stage = {"id": "test_generation", "capability": "tests.specified"}
+    unit = {"id": "test:r-4", "title": "Generate tests — Unapproved payments"}
+    repaired = engine._narrate_repair(stage, unit)
+
+    repaired(1, ("a",))
+    repaired(2, ("a", "b"))
+
+    assert len(engine.run["narration"]) == 1
+
+
+def _explain(requested, reused, stage_titles):
+    registry = workflow.CapabilityRegistry()
+    return routing._explanation(
+        registry,
+        list(requested) + list(reused),
+        [{"capability": f"cap.{index}", "title": title} for index, title in enumerate(stage_titles)],
+        list(reused),
+        list(requested),
+    )
+
+
+def test_the_plan_line_does_not_list_the_closure_it_will_not_run():
+    """Every treasuryfull run opened by naming twelve capabilities it skipped."""
+    sentence = _explain(
+        requested=["tests.specified"],
+        reused=["planning.apm_ready", "planning.rcm_ready"],
+        stage_titles=["RCM tests"],
+    )
+
+    assert sentence == "I'll work through rcm tests."
+    assert "already done" not in sentence
+
+
+def test_the_plan_line_says_so_when_the_request_itself_was_already_done():
+    """Here the reuse is the answer: otherwise the run reads as having done nothing."""
+    sentence = _explain(
+        requested=["planning.apm_ready"],
+        reused=["planning.apm_ready"],
+        stage_titles=[],
+    )
+
+    assert "already done" in sentence

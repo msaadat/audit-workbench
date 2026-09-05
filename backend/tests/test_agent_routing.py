@@ -598,3 +598,129 @@ def test_a_pending_route_run_can_still_queue_and_be_retried(workspace_with_data)
     queued = runner.steer(workspace_with_data, run["id"], "and pin the result")
     assert queued["handled"] == "queued_command"
     assert store.load_run(workspace_with_data, run["id"])["pending_commands"]
+
+
+# --------------------------------------------------------------------------- #
+# The instruction travels from the run's context into workflow scope (step 3)
+# --------------------------------------------------------------------------- #
+def test_install_resolution_copies_the_instruction_into_scope(workspace_with_data):
+    ws = workspace_with_data
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {"source": "chat", "text": "Redraft the memorandum."},
+        context={"instruction": "Every template section must contain text."},
+    )
+
+    routing.install_resolution(
+        ws,
+        run,
+        {
+            "requested_outcomes": ["planning.apm_ready"],
+            "target_refs": ["workspace:current"],
+            "generation_mode": "force",
+        },
+    )
+
+    assert run["workflow"]["scope"]["instruction"] == (
+        "Every template section must contain text."
+    )
+
+
+def test_a_run_with_no_instruction_has_no_instruction_key(workspace_with_data):
+    """Absent, not empty: an unsteered run declares the optional source absent."""
+    ws = workspace_with_data
+    run = store.new_command_run(
+        ws, "auto", {"source": "chat", "text": "Draft the memorandum."}
+    )
+
+    routing.install_resolution(
+        ws,
+        run,
+        {
+            "requested_outcomes": ["planning.apm_ready"],
+            "target_refs": ["workspace:current"],
+        },
+    )
+
+    assert "instruction" not in run["workflow"]["scope"]
+
+
+def _failed_run(monkeypatch, workspace, *, target_refs=None):
+    _configured(monkeypatch)
+    monkeypatch.setattr(runner, "_launch", lambda *args: None)
+    failed = store.new_command_run(
+        workspace,
+        "auto",
+        {
+            "source": "chat",
+            "text": "Draft the findings",
+            "requested_outcomes": ["findings.drafted"],
+            **({"target_refs": list(target_refs)} if target_refs else {}),
+        },
+    )
+    routing.resolve_route(workspace, failed)
+    failed = store.load_run(workspace, failed["id"])
+    failed["status"] = "failed"
+    failed["finished"] = store.utcnow()
+    store.save_run(workspace, failed)
+    return failed
+
+
+def test_a_retry_with_an_instruction_carries_it_into_scope(
+    monkeypatch, workspace_with_data
+):
+    """A retry with nothing new to say repeats the ask that already failed."""
+    failed = _failed_run(monkeypatch, workspace_with_data)
+
+    retried = runner.retry_run(
+        workspace_with_data,
+        failed["id"],
+        instruction="Every template section must contain text.",
+    )
+
+    assert retried["context"]["instruction"] == (
+        "Every template section must contain text."
+    )
+    assert retried["workflow"]["scope"]["instruction"] == (
+        "Every template section must contain text."
+    )
+
+
+def test_a_plain_retry_does_not_inherit_the_last_attempts_instruction(
+    monkeypatch, workspace_with_data
+):
+    """The instruction belongs to the ask that carried it, not to the run."""
+    failed = _failed_run(monkeypatch, workspace_with_data)
+    first = runner.retry_run(
+        workspace_with_data, failed["id"], instruction="Say more about cause."
+    )
+    first = store.load_run(workspace_with_data, first["id"])
+    first["status"] = "failed"
+    first["finished"] = store.utcnow()
+    store.save_run(workspace_with_data, first)
+
+    second = runner.retry_run(workspace_with_data, first["id"])
+
+    assert "instruction" not in second["context"]
+    assert "instruction" not in second["workflow"]["scope"]
+
+
+def test_a_retry_may_narrow_to_part_of_what_the_command_covered(
+    monkeypatch, workspace_with_data
+):
+    failed = _failed_run(
+        monkeypatch,
+        workspace_with_data,
+        target_refs=["rcm:RCM-1", "rcm:RCM-2"],
+    )
+
+    narrowed = runner.retry_run(
+        workspace_with_data, failed["id"], target_refs=["rcm:RCM-2"]
+    )
+
+    assert narrowed["command"]["target_refs"] == ["rcm:RCM-2"]
+    # Without one it still carries what the linked command carried.
+    assert runner.retry_run(workspace_with_data, failed["id"])["command"][
+        "target_refs"
+    ] == ["rcm:RCM-1", "rcm:RCM-2"]

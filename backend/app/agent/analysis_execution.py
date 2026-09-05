@@ -1328,6 +1328,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                     # already exists, which the identity check then drops — a
                     # slot spent to produce a duplicate.
                     value_domains=probes.value_domains(self.input_workspace(), target_frame),
+                    instruction=workflow_scope(self.run).get("instruction"),
                 ),
             )
 

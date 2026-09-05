@@ -651,3 +651,78 @@ def test_pending_turn_is_recovered_as_failed(workspace_with_data):
     restored = assistant_chats.get_chat(ws, chat["id"])
     assert restored["messages"][0]["state"] == "failed"
     assert "Interrupted before completion" in restored["messages"][0]["error"]
+
+
+# --------------------------------------------------------------------------- #
+# A Redraft button naming one test (step 2)
+# --------------------------------------------------------------------------- #
+def test_a_redraft_button_carries_the_test_ref_and_the_force(
+    workspace_with_data, monkeypatch
+):
+    """Force travels with the command, not inferred from the sentence on it."""
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.update(command=command, context=context)
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    assistant_chats.send_message(ws, chat["id"], {
+        "content": "Data test DAT-1 does not look right; redraft it.",
+        "intent": "act", "mode": "auto", "request_id": "request-redraft",
+        "source": "tab_button",
+        "requested_outcomes": ["tests.specified"],
+        "run_context": {
+            "target_refs": ["datatest:DAT-1"],
+            "generation_mode": "force",
+        },
+    })
+
+    assert launched["command"]["target_refs"] == ["datatest:DAT-1"]
+    assert launched["command"]["generation_mode"] == "force"
+
+
+def test_a_requested_outcomes_message_rejects_an_unknown_generation_mode(
+    workspace_with_data, monkeypatch
+):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Redraft it.",
+        "intent": "act", "mode": "auto", "request_id": "request-bad-mode",
+        "source": "tab_button",
+        "requested_outcomes": ["tests.specified"],
+        "run_context": {"target_refs": ["datatest:DAT-1"], "generation_mode": "wipe"},
+    })
+
+    assert result["outcome"]["kind"] == "error"
+    assert "generation_mode" in result["outcome"]["message"]
+
+
+def test_a_requested_outcomes_message_still_refuses_an_undeclared_scope_key(
+    workspace_with_data, monkeypatch
+):
+    """Scope, never a routing override: the allowed set is exactly two keys."""
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Redraft it.",
+        "intent": "act", "mode": "auto", "request_id": "request-bad-key",
+        "source": "tab_button",
+        "requested_outcomes": ["tests.specified"],
+        "run_context": {"engine": "action"},
+    })
+
+    assert result["outcome"]["kind"] == "error"

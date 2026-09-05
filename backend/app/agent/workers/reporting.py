@@ -18,6 +18,9 @@ from ... import templates_store
 from ..prompts import LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
+    AUDITOR_INSTRUCTION_RULE,
+    AUDITOR_INSTRUCTION_SOURCE_ID,
+    auditor_instruction,
     WORKERS,
     WorkerAttempt,
     WorkerContractError,
@@ -77,7 +80,7 @@ actionable:
   rerunning the check.
 
 Do not create or alter RCM, planned-test, execution, or evidence references. Do
-not claim auditor confirmation. {LANGUAGE_RULES}"""
+not claim auditor confirmation. {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"
@@ -129,6 +132,19 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
             f"Context source '{source_id}' must supply exactly one item."
         )
     return matches[0]
+
+
+def _context_without_sources(
+    request: WorkerRequest,
+    *source_ids: str,
+) -> dict[str, Any]:
+    """Serialize context without items already promoted in the model prompt."""
+    context = request.context.to_dict()
+    excluded = set(source_ids)
+    context["items"] = [
+        item for item in context["items"] if item.get("source_id") not in excluded
+    ]
+    return context
 
 
 def _optional_item(request: WorkerRequest, source_id: str) -> object | None:
@@ -305,8 +321,12 @@ def run_finding_worker(
     attempt: WorkerAttempt,
 ) -> str:
     """Transform only the supplied bundle into one budgeted model request."""
+    instruction = auditor_instruction(request)
     user = json.dumps(
         {
+            # Omitted rather than sent empty: a key present and blank invites a
+            # model to invent what should have been in it.
+            **({"auditor_instruction": instruction} if instruction else {}),
             "OBSERVATION": _resolved_item(request, FINDING_OBSERVATION_SOURCE_ID),
             "IMMUTABLE EXECUTION RESULT": _resolved_item(
                 request, FINDING_EXECUTION_SOURCE_ID
@@ -315,7 +335,9 @@ def run_finding_worker(
             "EXCEPTION ROWS": _optional_item(
                 request, FINDING_EXCEPTION_ROWS_SOURCE_ID
             ),
-            "RESOLVED CONTEXT": request.context.to_dict(),
+            "RESOLVED CONTEXT": _context_without_sources(
+                request, AUDITOR_INSTRUCTION_SOURCE_ID
+            ),
             "REQUIRED OUTPUT": (
                 "Markdown only: a `#` title line, a `**Severity:**` line, then "
                 "the narrative sections below as `##` headings, each on its own "

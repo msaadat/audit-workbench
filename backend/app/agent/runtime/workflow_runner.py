@@ -312,6 +312,14 @@ class WorkflowRunner:
         self.stage_checkpoint = stage_checkpoint
         self.milestone_projector = milestone_projector
         self.finish_evaluator = finish_evaluator
+        # What has already been said once. A run narrates per unit because that
+        # is where the events happen, but a reader wants a stage's story, not a
+        # unit's — so the context sentence is said for a stage's first unit and
+        # a repair is noted for a unit's first repair. Kept on the runner rather
+        # than on the record: this is about one live reading of the transcript,
+        # and a resumed run saying its opening line again is right.
+        self._context_noted: set[str] = set()
+        self._repair_noted: set[str] = set()
 
     def materialize(
         self,
@@ -734,10 +742,10 @@ class WorkflowRunner:
                 approval_provider=bound.approval_provider,
                 readiness_provider=bound.readiness_provider,
                 on_manifest_persisted=self._reference_recorder(unit, "context_manifest"),
-                on_manifest_resolved=self._narrate_context(capability),
+                on_manifest_resolved=self._narrate_context(capability, stage),
                 on_proposal_persisted=self._reference_recorder(unit, "proposal_sidecar"),
                 on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
-                on_worker_repaired=self._narrate_repair(),
+                on_worker_repaired=self._narrate_repair(stage, unit),
                 on_worker_completed=self._narrate_completion(capability),
                 on_rejection_persisted=self._reference_recorder(
                     unit, "rejected_response_sidecar"
@@ -797,10 +805,10 @@ class WorkflowRunner:
                 approval_provider=bound.approval_provider,
                 readiness_provider=bound.readiness_provider,
                 on_manifest_persisted=self._reference_recorder(unit, "context_manifest"),
-                on_manifest_resolved=self._narrate_context(capability),
+                on_manifest_resolved=self._narrate_context(capability, stage),
                 on_proposal_persisted=self._reference_recorder(unit, "proposal_sidecar"),
                 on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
-                on_worker_repaired=self._narrate_repair(),
+                on_worker_repaired=self._narrate_repair(stage, unit),
                 on_worker_completed=self._narrate_completion(capability),
                 on_rejection_persisted=self._reference_recorder(
                     unit, "rejected_response_sidecar"
@@ -822,9 +830,9 @@ class WorkflowRunner:
         return persist
 
     def _narrate_context(
-        self, capability: workflow.Capability
+        self, capability: workflow.Capability, stage: dict[str, Any]
     ) -> Callable[[Any], None]:
-        """Say what a unit is about to read, right before its model call.
+        """Say what a stage is about to read, right before its first model call.
 
         Fired from the pipeline only when a model call is actually happening
         (never on a reused proposal), so this is the one place a long,
@@ -832,7 +840,16 @@ class WorkflowRunner:
         until it settles. A real conversational turn (``say``), not a log
         entry: it belongs in the transcript the auditor reads back, not only
         in a live status strip that vanishes once the unit settles.
+
+        Said once per stage. Later units of the same stage read the same kinds
+        of source and differ only in which row they read, so repeating the
+        sentence per unit filled the transcript with a line that never changed.
+        The per-unit provenance is not lost: every unit still appends its own
+        ``context_reads`` record, which the chat coalesces into one card per
+        stage naming every document the stage actually saw.
         """
+
+        stage_key = str(stage.get("id") or stage.get("capability") or "")
 
         def resolved(manifest: Any) -> None:
             # A structured read where there are documents to show, so the
@@ -846,21 +863,53 @@ class WorkflowRunner:
                 self.run.setdefault("context_reads", []).append(record)
                 self.runtime.emit("context_read", {"entry": record})
                 return
+            if stage_key in self._context_noted:
+                return
+            self._context_noted.add(stage_key)
             text = narration.context_note(manifest, self.subject, label=capability.title)
             if text:
                 narration.say(self.run, self.runtime.emit, text)
 
         return resolved
 
-    def _narrate_repair(self) -> Callable[[int, tuple[str, ...]], None]:
+    def _narrate_repair(
+        self, stage: dict[str, Any], unit: dict[str, Any]
+    ) -> Callable[[int, tuple[str, ...]], None]:
+        """Note that one unit's draft was rejected and is being redone.
+
+        A note on the narration rail rather than an agent message: a repair is
+        a thing that happened to a unit, not a thing the agent has to say to
+        the auditor. Said as a message, a hard stage repeated one identical
+        sentence per attempt and the transcript's length tracked how badly the
+        model was doing rather than what the run produced.
+
+        Once per unit, too. A unit's second repair adds nothing a reader can
+        act on; the attempts and their validator errors are all on the
+        rejection sidecar, which is where a diagnosis is made.
+        """
+
+        unit_id = str(unit.get("id") or "")
+
         def repaired(_attempt: int, errors: tuple[str, ...]) -> None:
-            # Only the first error is narrated — a repair turn now carries every
-            # problem the validator found, and the rest belong in the rejection
-            # sidecar rather than in the reader's activity feed.
-            narration.say(
+            if unit_id in self._repair_noted:
+                return
+            self._repair_noted.add(unit_id)
+            subject = narration.subject_of(unit)
+            count = len(errors)
+            # Only the count is narrated — a repair turn carries every problem
+            # the validator found, and those messages describe the response
+            # contract rather than the audit.
+            failed = (
+                f"failed {count} checks" if count != 1 else "failed a check"
+            ) if count else "didn't match the required shape"
+            text = f"The first draft {failed}; redoing it."
+            narration.note(
                 self.run,
                 self.runtime.emit,
-                narration.repair_note(errors[0] if errors else ""),
+                f"{subject}: {text}" if subject else narration.repair_note(),
+                kind="repair",
+                stage_id=str(stage.get("id") or "") or None,
+                unit_id=unit_id or None,
             )
 
         return repaired

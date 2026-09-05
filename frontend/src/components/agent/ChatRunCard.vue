@@ -101,10 +101,26 @@ async function control(action: 'pause'|'resume'|'cancel') {
   try { await api.post(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/${action}`); await load(); emit('changed') }
   finally { busy.value = false }
 }
+// A retry with nothing new to say repeats the ask that already failed. The
+// field is where the auditor says what should be different — "every template
+// section must contain text" — which reaches the worker as a declared source
+// rather than as a prompt patched in on the side.
+const retryPromptOpen = ref(false)
+const retryInstruction = ref('')
+function openRetryPrompt() {
+  retryInstruction.value = ''
+  retryPromptOpen.value = true
+}
 async function retryRun() {
   busy.value = true
   try {
-    const retried = await api.post<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/retry`)
+    const instruction = retryInstruction.value.trim()
+    const retried = await api.post<AgentRun>(
+      `/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/retry`,
+      instruction ? { instruction } : {},
+    )
+    retryPromptOpen.value = false
+    retryInstruction.value = ''
     await agent.openRun(retried.id)
     emit('changed')
   } finally { busy.value = false }
@@ -152,8 +168,26 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       <!-- Continue is offered first wherever the run named what is left: it
            resumes only the remainder, where retry replays the whole command. -->
       <button v-else-if="canContinue" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="pi pi-arrow-right" /></button>
-      <button v-else-if="canRetry" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="retryRun"><i class="pi pi-refresh" /></button>
+      <button v-else-if="canRetry" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="openRetryPrompt"><i class="pi pi-refresh" /></button>
     </div>
+
+    <!-- Optional, and skippable in one click: most retries have nothing to add,
+         and the ones that do are the ones a person already knows the fix for. -->
+    <form v-if="retryPromptOpen" class="retry-prompt" @submit.prevent="retryRun">
+      <label :for="`retry-${projection.run_id}`">Tell the agent what to change</label>
+      <input
+        :id="`retry-${projection.run_id}`"
+        v-model="retryInstruction"
+        type="text"
+        maxlength="2000"
+        placeholder="Optional — e.g. every template section must contain text"
+        :disabled="busy"
+      >
+      <span class="retry-actions">
+        <button type="submit" class="retry-go" :disabled="busy">Retry</button>
+        <button type="button" class="retry-cancel" :disabled="busy" @click="retryPromptOpen = false">Cancel</button>
+      </span>
+    </form>
 
     <!-- The steps, kept. The live activity strip and the streaming checklist
          both replace themselves as a stage settles, so without this the only
@@ -195,6 +229,13 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 .summary-line{margin:0;padding:0 .55rem .45rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .run-detail{padding:.6rem;border-top:1px solid var(--aw-border);background:var(--aw-panel)}
 .blockers{display:grid;gap:.4rem;padding:0 .55rem .5rem}
+.retry-prompt{display:grid;gap:.35rem;padding:0 .55rem .55rem}
+.retry-prompt label{font-size:var(--aw-text-2xs);color:var(--aw-muted)}
+.retry-prompt input{width:100%;padding:.3rem .4rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:var(--aw-panel);color:inherit;font:inherit;font-size:var(--aw-text-xs)}
+.retry-actions{display:flex;gap:.35rem}
+.retry-go,.retry-cancel{padding:.25rem .6rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:transparent;color:inherit;font-size:var(--aw-text-2xs);cursor:pointer}
+.retry-go{border-color:var(--aw-teal);color:var(--aw-teal)}
+.retry-go:disabled,.retry-cancel:disabled{opacity:.4;cursor:default}
 .control{display:grid;place-items:center;width:1.5rem;height:1.5rem;flex:0 0 auto;border:0;border-radius:var(--aw-radius-control);background:transparent;color:var(--aw-muted);cursor:pointer}
 .control:hover:not(:disabled){background:var(--aw-raised);color:inherit}
 .control:disabled{opacity:.4;cursor:default}

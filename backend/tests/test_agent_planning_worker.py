@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import inspect
 
 import pytest
@@ -28,7 +29,10 @@ class _Gateway:
         return self.responses.pop(0)
 
 
-def _bundle(*, planning_context=None, template=None, current="", population=None):
+def _bundle(
+    *, planning_context=None, template=None, current="", population=None,
+    instruction=None,
+):
     values = (
         (
             "apm_template",
@@ -50,6 +54,10 @@ def _bundle(*, planning_context=None, template=None, current="", population=None
     ) + (
         (("population_summary", "workspace:populations", population),)
         if population is not None
+        else ()
+    ) + (
+        (("instruction", "instruction:abcdef123456", instruction),)
+        if instruction is not None
         else ()
     )
     items = tuple(
@@ -334,3 +342,32 @@ def test_planning_worker_has_no_workspace_store_resolver_or_scheduler_dependency
     )
     assert ".ws" not in source
     assert "load_workspace" not in source
+
+
+# --------------------------------------------------------------------------- #
+# The auditor's instruction reaches the turn (step 3)
+# --------------------------------------------------------------------------- #
+def test_the_apm_turn_is_told_what_the_auditor_asked_for():
+    text = "Name the two subsidiaries in scope in every section that mentions scope."
+    gateway = _Gateway(["# Engagement\n\nx\n\n# Scope\n\ny"])
+
+    WORKERS.execute(_request(_bundle(instruction=text)), gateway)
+
+    sent = json.loads(gateway.calls[0]["user"])
+    assert sent["auditor_instruction"] == text
+    # Promoted once, not also buried in the serialized bundle beneath it.
+    assert gateway.calls[0]["user"].count(text) == 1
+
+
+def test_an_apm_turn_with_no_instruction_carries_no_empty_key():
+    gateway = _Gateway(["# Engagement\n\nx\n\n# Scope\n\ny"])
+
+    WORKERS.execute(_request(), gateway)
+
+    assert "auditor_instruction" not in json.loads(gateway.calls[0]["user"])
+
+
+def test_the_apm_prompt_states_where_an_instruction_ranks():
+    """Above the default instructions, below the response contract."""
+    assert "auditor_instruction" in planning.APM_SYSTEM
+    assert "never over the response contract" in planning.APM_SYSTEM

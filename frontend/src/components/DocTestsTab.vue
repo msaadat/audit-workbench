@@ -92,6 +92,7 @@ const running = ref(false)
 const runningAll = ref(false)
 const runningOutstanding = ref(false)
 const generatingFindings = ref(false)
+const redrafting = ref(false)
 const anchorOpen = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 // Bulk sign-off. A sampled test is 25 items the runner mostly got right, and
@@ -626,6 +627,39 @@ async function draftPendingFindings(testIds?: string[]) {
 function openFinding(findingId: string) {
   void nav.replace('findings', { finding: findingId })
 }
+// Redrafting *this* test, not the row it sits on. The row's other tests are
+// work someone is already relying on, and regenerating them because a
+// neighbour reads badly is the behaviour that made this action unaskable
+// before the request could name a test.
+async function redraftTest() {
+  const test = currentTest.value
+  const testId = test?.id ?? selectedCycleEntry.value?.test_id
+  if (!testId) return
+  redrafting.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Document test ${testId} does not look right; redraft it.`,
+      'act', launchMode.value,
+      {
+        source: 'tab_button',
+        requestedOutcomes: ['tests.specified'],
+        runContext: {
+          target_refs: [`doctest:${testId}`],
+          generation_mode: 'force',
+        },
+      },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'success',
+      summary: 'Redraft started',
+      detail: `${testId} will be rewritten; the row's other tests are left as they are.`,
+      life: 3600,
+    })
+  } catch (error) { fail('Could not start the redraft', error) }
+  finally { redrafting.value = false }
+}
 function deleteTest() {
   const test = currentTest.value
   const cycle = selectedCycleEntry.value
@@ -717,6 +751,14 @@ const menuItems = computed(() => [
     label: 'Cycle rules',
     icon: 'pi pi-sitemap',
     command: () => { rulesetReviewOpen.value = true },
+  },
+  {
+    label: 'Redraft this test',
+    icon: 'pi pi-pencil',
+    disabled:
+      assistantUnavailable.value
+      || (!currentTest.value && !selectedCycleEntry.value),
+    command: () => void redraftTest(),
   },
   {
     label: 'Delete this test',

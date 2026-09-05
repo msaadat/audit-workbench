@@ -195,6 +195,11 @@ class TestGenerateExecutorTarget:
     run_id: str
     rcm_id: str
     allow_auditor_overwrite: bool = False
+    #: Tests the auditor named by id. Naming a test is the permission to replace
+    #: it, whoever authored it — the auditor is looking at the record and asking
+    #: for this one to be rewritten. It is not permission to touch the rest of
+    #: the row, which is why this is a list of ids rather than a wider flag.
+    regenerate_test_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, Workspace):
@@ -206,6 +211,28 @@ class TestGenerateExecutorTarget:
             setattr(self, field_name, value)
         if not isinstance(self.allow_auditor_overwrite, bool):
             raise ValueError("allow_auditor_overwrite must be a boolean.")
+        self.regenerate_test_ids = tuple(
+            text
+            for value in (self.regenerate_test_ids or ())
+            if (text := str(value or "").strip())
+        )
+
+
+def _may_overwrite(
+    target: TestGenerateExecutorTarget, existing: Mapping[str, object]
+) -> bool:
+    """Whether this commit may replace a test that already exists.
+
+    An agent-authored test is the run's own previous answer and is always
+    replaceable. An auditor-authored one is someone's work, and is not — unless
+    the auditor named it, which is them pointing at the record and asking for it
+    to be redrafted, or unless the run is in permission mode, where a person
+    approves each commit before it lands.
+    """
+    record = existing.get("record") or {}
+    if record.get("created_by") == "agent" or target.allow_auditor_overwrite:
+        return True
+    return str(existing.get("id") or "") in target.regenerate_test_ids
 
 
 def _validated_generation(
@@ -510,11 +537,7 @@ def execute_test_generation(request: ExecutorRequest, raw_target: object) -> Exe
                 semantic,
                 revises=str(spec.get("revises") or ""),
             )
-            if (
-                existing
-                and existing["record"].get("created_by") != "agent"
-                and not target.allow_auditor_overwrite
-            ):
+            if existing and not _may_overwrite(target, existing):
                 outcomes.append(
                     {"kind": kind, "id": existing["id"], "action": "preserved"}
                 )
@@ -617,11 +640,7 @@ def reconcile_test_generation(
             str(spec["semantic_id"]),
             revises=str(spec.get("revises") or ""),
         )
-        if (
-            existing
-            and existing["record"].get("created_by") != "agent"
-            and not target.allow_auditor_overwrite
-        ):
+        if existing and not _may_overwrite(target, existing):
             outcomes.append({"kind": kind, "id": existing["id"], "action": "preserved"})
             continue
         record = existing["record"] if existing else None

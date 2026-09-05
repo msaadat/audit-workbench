@@ -30,6 +30,7 @@ from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import audit as audit_workflow
+from ._shared import named_test_ids_for_row as _named_test_ids_for_row
 from ._shared import rows as _rows
 from ._shared import target_rcm_ids as _target_rcm_ids
 
@@ -278,6 +279,7 @@ def _generation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     force = scope.get("generation_mode") == "force"
     units = []
     for row in _rows(workspace, scope):
+        named = _named_test_ids_for_row(workspace, scope, row["id"])
         tests = grouped.get(row["id"], [])
         covered = any(item["executable"] for item in tests)
         upgradeable_draft = any(
@@ -288,20 +290,28 @@ def _generation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             item["status"] == "draft" and item.get("created_by") != "agent"
             for item in tests
         )
-        if covered and not _awaits_cycle_test(workspace, row, tests):
-            if not force and not upgradeable_draft:
+        # Naming a test is the instruction. It says the row is not settled
+        # whatever the manifest reports, and it says which one test is wrong —
+        # so neither the coverage gate nor the auditor-draft gate applies, and
+        # force need not be asked for separately.
+        if not named:
+            if covered and not _awaits_cycle_test(workspace, row, tests):
+                if not force and not upgradeable_draft:
+                    continue
+            elif auditor_draft_blocks:
+                # Review-required, not a generation gap the executor can fix
+                # without explicit overwrite permission.
                 continue
-        elif auditor_draft_blocks:
-            # Review-required, not a generation gap the executor can fix
-            # without explicit overwrite permission.
-            continue
         units.append(
             UnitSpec(
                 semantic_unit_id("test_generation", row["id"]),
                 "test_generation",
                 f"Generate tests — {row.get('risk') or row['id']}",
                 (f"rcm:{row['id']}",),
-                row,
+                # The named ids are part of the unit's input identity, so a
+                # proposal that rewrote a whole row is never reused as one that
+                # rewrites a single test of it.
+                {"row": row, "regenerate_test_ids": list(named)} if named else row,
             )
         )
     return units

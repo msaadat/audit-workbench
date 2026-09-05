@@ -650,3 +650,104 @@ def test_revises_naming_a_test_on_another_row_falls_back_rather_than_hijacking()
     by_row = {item["id"]: item["rcm_id"] for item in workspace.data_tests}
     assert len(by_row) == 2
     assert by_row[foreign_id] == rcm_id
+
+
+# --------------------------------------------------------------------------- #
+# Redrafting one named test rather than the row (step 2)
+# --------------------------------------------------------------------------- #
+def test_a_named_redraft_replaces_that_test_and_leaves_its_siblings_alone():
+    """The whole promise of "redraft DT-123": DT-124 is not collateral."""
+    workspace, rcm_id, doc_id = _workspace()
+    EXECUTORS.execute(
+        _request(
+            workspace,
+            rcm_id,
+            [_data_test(), _data_test(title="Sibling screening")],
+        ),
+        TestGenerateExecutorTarget(workspace, "run-seed", rcm_id),
+    )
+    seeded = workspaces.load_workspace(workspace.id)
+    by_title = {item["title"]: item for item in seeded.data_tests}
+    named = by_title["Duplicate payment detection"]
+    sibling = dict(by_title["Sibling screening"])
+
+    target = TestGenerateExecutorTarget(
+        seeded,
+        "run-redraft",
+        rcm_id,
+        regenerate_test_ids=(named["id"],),
+    )
+    receipt = EXECUTORS.execute(
+        _request(
+            seeded,
+            rcm_id,
+            [_data_test(objective="Rewritten objective", revises=named["id"])],
+        ),
+        target,
+    )
+
+    after = {item["title"]: item for item in target.workspace.data_tests}
+    assert len(after) == 2
+    # Replaced in place: the same record, so every reference to it still holds.
+    assert after["Duplicate payment detection"]["id"] == named["id"]
+    assert after["Duplicate payment detection"]["objective"] == "Rewritten objective"
+    assert receipt.output["tests"][0]["action"] == "updated"
+    # Untouched, field for field.
+    assert after["Sibling screening"] == sibling
+
+
+def test_naming_an_auditor_owned_test_is_the_permission_to_replace_it():
+    """Pointing at a record and asking for it to be redrafted is consent."""
+    workspace, rcm_id, doc_id = _workspace()
+    semantic = semantic_test_id("datatest", rcm_id, "Duplicate payment detection")
+    from app import data_tests
+
+    auditor_test = data_tests.create_draft(
+        workspace,
+        {
+            "id": stable_test_id("datatest", semantic),
+            "semantic_id": semantic,
+            "title": "Auditor test",
+            "objective": "Auditor objective",
+            "rcm_id": rcm_id,
+        },
+    )
+    target = TestGenerateExecutorTarget(
+        workspace,
+        "run-named",
+        rcm_id,
+        regenerate_test_ids=(auditor_test["id"],),
+    )
+
+    receipt = EXECUTORS.execute(_request(workspace, rcm_id, [_data_test()]), target)
+
+    assert receipt.output["tests"][0]["action"] == "updated"
+    assert target.workspace.data_tests[0]["objective"] == (
+        "Determine whether duplicate payments were prevented."
+    )
+
+
+def test_naming_one_auditor_test_is_not_permission_over_another():
+    """The permission is the id, not a mode: it does not spread down the row."""
+    workspace, rcm_id, doc_id = _workspace()
+    semantic = semantic_test_id("datatest", rcm_id, "Duplicate payment detection")
+    from app import data_tests
+
+    data_tests.create_draft(
+        workspace,
+        {
+            "id": stable_test_id("datatest", semantic),
+            "semantic_id": semantic,
+            "title": "Auditor test",
+            "objective": "Auditor objective",
+            "rcm_id": rcm_id,
+        },
+    )
+    target = TestGenerateExecutorTarget(
+        workspace, "run-other", rcm_id, regenerate_test_ids=("DAT-SOMETHING-ELSE",)
+    )
+
+    receipt = EXECUTORS.execute(_request(workspace, rcm_id, [_data_test()]), target)
+
+    assert receipt.output["tests"][0]["action"] == "preserved"
+    assert target.workspace.data_tests[0]["objective"] == "Auditor objective"

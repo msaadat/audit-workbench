@@ -95,6 +95,35 @@ def _frozen_json(value: object) -> object:
     return value
 
 
+#: The source id every preset that accepts steering declares for it, mirroring
+#: ``context.adapters.INSTRUCTION_SOURCE_ID``. Named here so a worker reads the
+#: instruction without importing the adapter layer it must not depend on.
+AUDITOR_INSTRUCTION_SOURCE_ID = "instruction"
+
+#: The one sentence a steerable worker's system prompt adds. It says where the
+#: instruction sits in the order of authority, which is the only thing a worker
+#: needs to decide: above the default instructions, below the response
+#: contract — a request to write it differently is never a licence to write it
+#: in a shape the executor cannot commit.
+AUDITOR_INSTRUCTION_RULE = (
+    "`auditor_instruction`, when present, states what the auditor wants "
+    "changed. Follow it over the default instructions, never over the response "
+    "contract."
+)
+
+
+def auditor_instruction(request: "WorkerRequest") -> str:
+    """What the auditor asked for on this run, or an empty string.
+
+    The source is optional on every preset that declares it, so its absence is
+    ordinary and silent: a workflow that scheduled itself has nobody to quote.
+    """
+    for item in request.context.items:
+        if item.source_id == AUDITOR_INSTRUCTION_SOURCE_ID:
+            return str(item.content or "").strip()
+    return ""
+
+
 class WorkerContractError(ValueError):
     """The registered worker implementation violated the worker contract."""
 

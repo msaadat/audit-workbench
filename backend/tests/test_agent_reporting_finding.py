@@ -12,7 +12,9 @@ import json
 
 import pytest
 
-from app import data_tests, rcm_execution, workspaces
+from app import data_tests, doc_tests, rcm_execution, workspaces
+from app.agent import capabilities as audit_capabilities
+from app.agent.capabilities import _shared
 from app.agent.context import (
     ContextBundle,
     ContextBundleItem,
@@ -137,7 +139,11 @@ EXCEPTION_ROWS = {
 }
 
 
-def _bundle(template: str = TEMPLATE, exception_rows: dict | None = EXCEPTION_ROWS):
+def _bundle(
+    template: str = TEMPLATE,
+    exception_rows: dict | None = EXCEPTION_ROWS,
+    instruction: str | None = None,
+):
     values = [
         (
             "observation",
@@ -178,6 +184,15 @@ def _bundle(template: str = TEMPLATE, exception_rows: dict | None = EXCEPTION_RO
             template,
         ),
     ]
+    if instruction is not None:
+        values.append(
+            (
+                "instruction",
+                "instruction:abcdef123456",
+                ContextRepresentation("auditor_instruction"),
+                instruction,
+            )
+        )
     if exception_rows is not None:
         values.append(
             (
@@ -205,12 +220,12 @@ def _bundle(template: str = TEMPLATE, exception_rows: dict | None = EXCEPTION_RO
     )
 
 
-def _request():
+def _request(bundle=None):
     return WorkerRequest(
         worker_id="reporting.finding",
         capability_id="findings.drafted",
         unit_id="finding:OBS-1",
-        context=_bundle(),
+        context=bundle if bundle is not None else _bundle(),
         unit_input={"input_sha1": "finding-input"},
         activity={"artifact_refs": ["observation:OBS-1"]},
     )
@@ -580,3 +595,232 @@ def test_the_severity_line_is_read_however_it_is_emphasised():
         result = WORKERS.execute(_request(), gateway)
 
         assert result.proposal["finding"]["severity"] == "high", line
+
+
+# --------------------------------------------------------------------------- #
+# Support the executor will refuse, refused before the model turn (step 0b)
+# --------------------------------------------------------------------------- #
+def _doc_test_observation(workspace_with_data, *, finished: bool):
+    """An exception observation resting on a Document Test, open or finished.
+
+    The open case is the shape of the two evidence failures: the observation is
+    a real exception, the finding worker would happily draft it, and the
+    executor would then refuse the draft because the test behind it is not
+    complete — after the turn had been paid for.
+    """
+    ws = workspace_with_data
+    row = ws.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Payments may be released without approval",
+            "control": "Approval is evidenced before release",
+            "risk_rating": "high",
+        }
+    )
+    items = [
+        {
+            "label": "Invoice 1001",
+            "state": "exception",
+            "auditor_disposition": "exception",
+            "attributes": [{"name": "Approval", "result": "fail"}],
+        }
+    ]
+    if not finished:
+        items.append({"label": "Invoice 1002", "state": "pending"})
+    test = doc_tests.create_test(
+        ws,
+        {
+            "kind": "attribute",
+            "title": "Approval evidence",
+            "objective": "Determine whether payments were approved.",
+            "steps": [
+                {"label": "Inspect the approval.", "instruction": "Inspect the approval."}
+            ],
+            "rcm_id": row["id"],
+            "items": items,
+        },
+    )
+    if finished:
+        test = doc_tests.update_test(ws, test["id"], {"status": "completed"})
+    observation = {
+        "id": "OBS-PENDING",
+        "rcm_id": row["id"],
+        "test_id": test["id"],
+        "execution_ref": f"doctest:{test['id']}",
+        "summary": "Approval was not evidenced.",
+        "outcome": "exception",
+        "classification": "draft_finding_candidate",
+    }
+    ws.observations.append(observation)
+    ws.save()
+    return ws, row, test, observation
+
+
+def test_an_observation_on_an_unfinished_test_expands_no_finding_unit(
+    workspace_with_data,
+):
+    """The turn saved: the unit is never expanded, so it is never billed."""
+    ws, _row, _test, _observation = _doc_test_observation(
+        workspace_with_data, finished=False
+    )
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+    scope = {"target_refs": ["observation:OBS-PENDING"]}
+
+    assert capability.expand_units(ws, scope) == []
+    # Force is a decision about reuse, not a licence to run a unit that cannot
+    # commit, so it does not reopen the gate either.
+    assert capability.expand_units(ws, {**scope, "generation_mode": "force"}) == []
+
+
+def test_the_same_observation_on_a_finished_test_expands_as_before(
+    workspace_with_data,
+):
+    """The gate is the test's state, not the presence of the check."""
+    ws, _row, _test, _observation = _doc_test_observation(
+        workspace_with_data, finished=True
+    )
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+
+    units = capability.expand_units(ws, {"target_refs": ["observation:OBS-PENDING"]})
+
+    assert [unit.parent_refs[0] for unit in units] == ["observation:OBS-PENDING"]
+
+
+def test_readiness_names_the_observation_it_cannot_draft(workspace_with_data):
+    """Blocked, not satisfied: a skipped observation must still be visible."""
+    ws, _row, _test, _observation = _doc_test_observation(
+        workspace_with_data, finished=False
+    )
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+
+    readiness = capability.readiness(ws, {"target_refs": ["observation:OBS-PENDING"]})
+
+    assert readiness.state == "blocked"
+    assert readiness.details["unsupported"] == ["OBS-PENDING"]
+    assert any("is not complete" in reason for reason in readiness.reasons)
+    assert any(
+        "is not complete" in issue
+        for issue in readiness.details["unsupported_issues"]["OBS-PENDING"]
+    )
+
+
+def test_readiness_on_a_finished_test_is_missing_and_says_nothing_about_support(
+    workspace_with_data,
+):
+    ws, _row, _test, _observation = _doc_test_observation(
+        workspace_with_data, finished=True
+    )
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+
+    readiness = capability.readiness(ws, {"target_refs": ["observation:OBS-PENDING"]})
+
+    assert readiness.state == "missing"
+    assert "unsupported" not in readiness.details
+
+
+def test_the_executor_still_refuses_the_same_draft_by_itself(workspace_with_data):
+    """The gate above is an optimization; it is not the guarantee.
+
+    Expansion is skipped to save a model turn. What makes an unsupported
+    finding impossible to commit is still the executor's own check, so a draft
+    built by hand and handed straight to it is refused exactly as before.
+    """
+    ws, _row, _test, observation = _doc_test_observation(
+        workspace_with_data, finished=False
+    )
+    request = _finding_request(ws, observation)
+    target = FindingExecutorTarget(ws, "run-pending", observation["id"])
+
+    with pytest.raises(workspaces.WorkspaceError, match="support validation"):
+        FINDING_EXECUTOR.implementation(request, target)
+
+    assert workspaces.load_workspace(ws.id).findings == []
+
+
+# --------------------------------------------------------------------------- #
+# Redrafting one named finding (step 2c)
+# --------------------------------------------------------------------------- #
+def test_a_drafted_observation_expands_nothing_until_its_finding_is_named(
+    workspace_with_data,
+):
+    ws, observation = _observed_workspace(workspace_with_data)
+    EXECUTORS.execute(
+        _finding_request(ws, observation),
+        FindingExecutorTarget(ws, "run-first", observation["id"]),
+    )
+    ws = workspaces.load_workspace(ws.id)
+    finding = ws.findings[0]
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+
+    # Already drafted, so an unscoped pass has nothing to do.
+    assert capability.expand_units(ws, {}) == []
+
+    units = capability.expand_units(ws, {"target_refs": [f"finding:{finding['id']}"]})
+
+    # Naming the finding is the instruction; force is not asked for twice.
+    assert [unit.parent_refs[0] for unit in units] == [
+        f"observation:{observation['id']}"
+    ]
+
+
+def test_a_named_finding_scopes_to_its_own_row_not_the_whole_workspace(
+    workspace_with_data,
+):
+    ws, observation = _observed_workspace(workspace_with_data)
+    scope = {"target_refs": [f"observation:{observation['id']}"]}
+
+    assert _shared.target_rcm_ids(ws, scope) == [observation["rcm_id"]]
+    assert _shared.named_observation_ids(ws, scope) == (observation["id"],)
+
+
+def test_naming_a_finding_is_the_permission_to_replace_an_auditors_draft(
+    workspace_with_data,
+):
+    """An auditor pointing at their own draft and asking for a rewrite has
+    consented to it. An unnamed run still must not touch it."""
+    ws, observation = _observed_workspace(workspace_with_data)
+    EXECUTORS.execute(
+        _finding_request(ws, observation),
+        FindingExecutorTarget(ws, "run-agent", observation["id"]),
+    )
+    ws = workspaces.load_workspace(ws.id)
+    ws.findings[0]["source"] = "manual"
+    ws.save()
+
+    with pytest.raises(workspaces.WorkspaceError, match="manually maintained"):
+        FINDING_EXECUTOR.implementation(
+            _finding_request(ws, observation),
+            FindingExecutorTarget(ws, "run-unnamed", observation["id"]),
+        )
+
+    target = FindingExecutorTarget(
+        ws, "run-named", observation["id"], named_by_request=True
+    )
+    EXECUTORS.execute(_finding_request(ws, observation), target)
+
+    assert target.workspace.findings[0]["source"] == "agent"
+
+
+def test_the_finding_turn_is_told_what_the_auditor_asked_for():
+    text = "Every template section must contain text."
+    gateway = _Gateway([_markdown()])
+
+    WORKERS.execute(_request(_bundle(instruction=text)), gateway)
+
+    sent = json.loads(gateway.calls[0]["user"])
+    assert sent["auditor_instruction"] == text
+    # Promoted once, not also buried in the serialized bundle beneath it.
+    assert gateway.calls[0]["user"].count(text) == 1
+
+
+def test_a_finding_turn_with_no_instruction_carries_no_empty_key():
+    gateway = _Gateway([_markdown()])
+
+    WORKERS.execute(_request(), gateway)
+
+    assert "auditor_instruction" not in json.loads(gateway.calls[0]["user"])
+
+
+def test_the_finding_prompt_states_where_an_instruction_ranks():
+    assert "auditor_instruction" in reporting_worker.FINDING_SYSTEM
+    assert "never over the response contract" in reporting_worker.FINDING_SYSTEM

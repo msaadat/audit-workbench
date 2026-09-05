@@ -37,7 +37,12 @@ class VisionRequestRejected(RuntimeError):
 
 
 class ModelResponseUnusable(RuntimeError):
-    """The provider returned a completion carrying no output to work with.
+    """The provider returned a completion carrying no answer to work with.
+
+    Two shapes: an empty message, and a message the provider itself finished
+    with :data:`ERRORED_FINISH_REASON`. Neither is a response a worker can act
+    on or correct, and both are retryable for the same reason — the request was
+    accepted, so the next ask starts from the same place this one did.
 
     Distinct from a response the worker rejects, and deliberately not a
     :class:`WorkerResponseValidationError`: there is no text to correct, so the
@@ -55,9 +60,16 @@ class ModelResponseUnusable(RuntimeError):
 #: same unchanged request.
 UNUSABLE_COMPLETION_RETRIES = 1
 
+#: A provider finish reason that reports the turn as failed rather than
+#: finished. It is unusable whether or not text came back with it: the model
+#: stopped because generation broke, so any text is a fragment of an answer the
+#: worker would have to guess the rest of. Retried on the same rule as an empty
+#: completion — the request was accepted, so asking again often lands.
+ERRORED_FINISH_REASON = "error"
+
 
 def _unusable_completion_detail(
-    finish_reason: str, usage: Mapping[str, Any]
+    finish_reason: str, usage: Mapping[str, Any], *, empty: bool = True
 ) -> str:
     """Say what the provider spent, so the reader knows where the answer went."""
     completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
@@ -65,6 +77,14 @@ def _unusable_completion_detail(
     reasoning = (
         details.get("reasoning_tokens") if isinstance(details, Mapping) else None
     ) or 0
+    if finish_reason == ERRORED_FINISH_REASON:
+        return (
+            "The provider reported the completion itself as failed "
+            f"(finish reason '{finish_reason}'), so "
+            + ("it returned nothing" if empty else "whatever it returned is a "
+               "part-generated answer rather than a whole one")
+            + ". Retry: the request was accepted, the generation was not."
+        )
     if finish_reason == "length":
         spent = (
             f"{reasoning:,} of its {completion:,} completion tokens on reasoning"
@@ -739,11 +759,15 @@ class DefaultModelGateway:
         # Checked after metering and provenance, never before: a runaway that
         # spends a full output budget is real spend on a real turn, and the run
         # has to carry it whether or not the turn produced anything. A turn that
-        # answers with tool calls carries no content by design and is untouched.
-        if not content and not message.get("tool_calls"):
+        # answers with tool calls carries no content by design, so emptiness
+        # alone does not condemn it — but a provider-reported failure does,
+        # whatever came back with it.
+        finish_reason = str(message.get("finish_reason") or "")
+        empty = not content and not message.get("tool_calls")
+        if empty or finish_reason == ERRORED_FINISH_REASON:
             raise ModelResponseUnusable(
                 _unusable_completion_detail(
-                    str(message.get("finish_reason") or ""), provider_usage
+                    finish_reason, provider_usage, empty=empty
                 )
             )
         return message if return_message else content
@@ -860,5 +884,6 @@ __all__ = [
     "ModelResponseUnusable",
     "PreparedMediaError",
     "UNUSABLE_COMPLETION_RETRIES",
+    "ERRORED_FINISH_REASON",
     "VisionRequestRejected",
 ]

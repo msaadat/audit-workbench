@@ -32,6 +32,8 @@ from ...text import counted, relevance_tokens, verb
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
+    AUDITOR_INSTRUCTION_RULE,
+    auditor_instruction,
     WORKERS,
     WorkerAttempt,
     WorkerContractError,
@@ -297,7 +299,13 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
             "question}; question may repeat instruction. Never return an empty "
             "tests array."
         )
-    return {
+    regenerate = _generation_regenerate_ids(request)
+    instruction = auditor_instruction(request)
+    instructions = (
+        "Generate complete executable tests for target_rcm_row only. Use "
+        f"only allowed_test_variants. {variant_instruction}"
+    )
+    payload = {
         "target_rcm_row": rcm_row,
         "planning_context": planning,
         "table_schemas": table_schemas,
@@ -305,11 +313,25 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         "transaction_evidence": _model_transaction_manifest(transaction_evidence),
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
         "allowed_test_variants": allowed_variants,
-        "instructions": (
-            "Generate complete executable tests for target_rcm_row only. Use "
-            f"only allowed_test_variants. {variant_instruction}"
-        ),
+        "instructions": instructions,
     }
+    if regenerate:
+        # The auditor pointed at one test, not at the row. Everything else the
+        # row has is work someone is already relying on, and rewriting it
+        # because a neighbour was wrong is the behaviour that made "redraft
+        # DT-123" unaskable in the first place.
+        payload["regenerate_test_ids"] = list(regenerate)
+        payload["instructions"] = (
+            f"{instructions} Return a replacement for each id in "
+            "regenerate_test_ids and nothing else; carry `revises: <id>` on "
+            "each so it replaces that test rather than joining it. Leave every "
+            "other test in target_rcm_row.existing_tests exactly as it is."
+        )
+    if instruction:
+        # Omitted rather than sent empty: a key present and blank invites a
+        # model to invent what should have been in it.
+        payload["auditor_instruction"] = instruction
+    return payload
 
 
 def _json_payload(response: str) -> object:
@@ -485,7 +507,7 @@ alongside the first rather than replacing it.
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
 attributes use the evidence that is actually supplied. One durable test has one
-source. Use only supplied table/column/document ids. {JSON_RULES} {LANGUAGE_RULES}"""
+source. Use only supplied table/column/document ids. {JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 GENERATE_ROW_SOURCE_ID = "rcm_row"
 GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
@@ -626,6 +648,20 @@ def _generate_rcm_row(request: WorkerRequest) -> dict:
     if not isinstance(value, Mapping):
         raise WorkerContractError("RCM-row context must supply one object.")
     return _plain_json(value)
+
+
+def _generation_regenerate_ids(request: WorkerRequest) -> tuple[str, ...]:
+    """The tests this unit was asked to replace, named by the auditor's request.
+
+    Empty for an ordinary row generation, which is every unit the workflow
+    expands on its own. It is only non-empty when a person pointed at a test.
+    """
+    values = request.unit_input.get("regenerate_test_ids")
+    if not isinstance(values, (list, tuple)):
+        return ()
+    return tuple(
+        text for value in values if (text := str(value or "").strip())
+    )
 
 
 def _generate_existing_test_ids(request: WorkerRequest) -> set[str]:
@@ -1148,6 +1184,7 @@ def validate_generate_proposal(
     if not isinstance(values, (list, tuple)) or not values:
         raise WorkerResponseValidationError("tests must be a non-empty array")
     rcm_id = _generate_rcm_id(request)
+    regenerate = _generation_regenerate_ids(request)
     methodology_refs = _generate_methodology_refs(request)
     known_tables = _generate_supplied_tables(request)
     table_grains = _generate_supplied_grains(request)
@@ -1304,7 +1341,7 @@ def validate_generate_proposal(
     # and a population a requirement names with no step about it.
     row_level = coverage + _untested_named_populations(
         request, normalized, known_tables
-    )
+    ) + _redraft_scope_errors(regenerate, normalized)
     errors.extend(row_level)
     if errors:
         # A row-level coverage gap is the one failure a partial commit must not
@@ -1317,6 +1354,48 @@ def validate_generate_proposal(
             partial=({"tests": clean} if clean and not row_level else None),
         )
     return {"tests": normalized}
+
+
+def _redraft_scope_errors(
+    regenerate: tuple[str, ...], tests: list[dict]
+) -> list[str]:
+    """Hold a redraft to the tests it was asked to redraft.
+
+    A row-level check, not a per-test one, and deliberately so: the defect is
+    the shape of the whole answer — a missing replacement, or an extra test
+    nobody asked for — and committing the part that happens to be right would
+    retire the unit while leaving the named test untouched.
+    """
+    if not regenerate:
+        return []
+    errors: list[str] = []
+    replaced: dict[str, int] = {}
+    extra = 0
+    for entry in tests:
+        revises = str(entry.get("revises") or "")
+        if revises in regenerate:
+            replaced[revises] = replaced.get(revises, 0) + 1
+        else:
+            extra += 1
+    missing = [test_id for test_id in regenerate if test_id not in replaced]
+    if missing:
+        errors.append(
+            "tests must carry one replacement for each of "
+            f"{sorted(regenerate)}; nothing revises {sorted(missing)}"
+        )
+    duplicated = sorted(key for key, count in replaced.items() if count > 1)
+    if duplicated:
+        errors.append(
+            f"tests carries more than one replacement for {duplicated}; return "
+            "exactly one test per id in regenerate_test_ids"
+        )
+    if extra:
+        errors.append(
+            f"tests carries {extra} test(s) that revise none of "
+            f"{sorted(regenerate)}; this request replaces named tests only, so "
+            "return no others"
+        )
+    return errors
 
 
 def _columns_corroborate_name(

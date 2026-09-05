@@ -254,19 +254,22 @@ def narrative_issues(workspace: Workspace, item: dict) -> list[str]:
     return ["narrative section not completed: " + heading for heading in missing]
 
 
-def support_issues(workspace: Workspace, item: dict) -> list[str]:
-    """Return deterministic blockers to treating a draft as a formal finding."""
-    issues = narrative_issues(workspace, item)
-    rcm_refs = {str(value) for value in item.get("rcm_refs") or []}
-    test_refs = {str(value) for value in item.get("test_refs") or []}
-    if not rcm_refs:
-        issues.append("no RCM reference")
-    if not test_refs:
-        issues.append("no test reference")
-    if not item.get("execution_refs"):
-        issues.append("no execution-result reference")
-    if not item.get("evidence_refs"):
-        issues.append("no immutable evidence anchor")
+def _reference_issues(
+    workspace: Workspace,
+    rcm_refs: set[str],
+    test_refs: set[str],
+    execution_refs: object,
+) -> list[str]:
+    """Blockers readable from a finding's links alone, before any narrative.
+
+    Split out of :func:`support_issues` so that
+    :func:`observation_support_issues` can ask the same questions of the links
+    an observation *would* produce, and the two cannot answer them differently.
+    The caller supplies the references because they come from different places:
+    a draft carries its own, an observation implies the ones the executor will
+    derive from it.
+    """
+    issues: list[str] = []
     # Resolved once, not once per reference: `_known_test_ids` lists and
     # hydrates every Document Test, which for a cycle-vouching test re-validates
     # every evidence record against every assertion. A finding carrying three
@@ -281,7 +284,7 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
         linked_row = _test_rcm_id(workspace, test_id)
         if linked_row not in rcm_refs:
             issues.append(f"test {test_id} is not covered by the finding's RCM links")
-    for value in item.get("execution_refs") or []:
+    for value in execution_refs or []:
         kind, separator, source_id = str(value).partition(":")
         if not separator or kind not in {"datatest", "doctest"}:
             issues.append(f"invalid execution reference {value}")
@@ -312,6 +315,64 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
                 issues.append(f"unlinked Document Test {source_id}")
             if not str(execution.get("status") or "").startswith("completed"):
                 issues.append(f"Document Test {source_id} is not complete")
+    return issues
+
+
+def observation_support_issues(workspace: Workspace, observation: dict) -> list[str]:
+    """Blockers a finding drafted from this observation would inherit.
+
+    The finding executor derives every reference a draft carries from the
+    observation — its RCM row, its test, its execution result — and then refuses
+    the draft if those references do not hold up. That refusal happens *after*
+    the model turn is spent, so the same question is worth asking before the
+    unit is expanded: does the observation rest on a test that exists, belongs
+    to the observation's row, and has finished?
+
+    Only the subset of :func:`support_issues` computable without a draft. The
+    narrative checks and the immutable evidence anchor need one and are absent
+    here by design: they say the draft is incomplete, not that drafting it is
+    futile.
+    """
+    rcm_id = str(observation.get("rcm_id") or "")
+    test_id = str(observation.get("test_id") or "")
+    execution_ref = str(observation.get("execution_ref") or "")
+    issues: list[str] = []
+    if not rcm_id:
+        issues.append("no RCM reference")
+    if not test_id:
+        issues.append("no test reference")
+    if not execution_ref:
+        issues.append("no execution-result reference")
+    issues.extend(
+        _reference_issues(
+            workspace,
+            {rcm_id} if rcm_id else set(),
+            {test_id} if test_id else set(),
+            [execution_ref] if execution_ref else [],
+        )
+    )
+    return list(dict.fromkeys(issues))
+
+
+def support_issues(workspace: Workspace, item: dict) -> list[str]:
+    """Return deterministic blockers to treating a draft as a formal finding."""
+    issues = narrative_issues(workspace, item)
+    rcm_refs = {str(value) for value in item.get("rcm_refs") or []}
+    test_refs = {str(value) for value in item.get("test_refs") or []}
+    if not rcm_refs:
+        issues.append("no RCM reference")
+    if not test_refs:
+        issues.append("no test reference")
+    if not item.get("execution_refs"):
+        issues.append("no execution-result reference")
+    if not item.get("evidence_refs"):
+        issues.append("no immutable evidence anchor")
+    # Asked of the draft's own links, not of its observation's: a hand-authored
+    # finding may cite a different test from the one the observation names, and
+    # that citation is what has to hold up.
+    issues.extend(
+        _reference_issues(workspace, rcm_refs, test_refs, item.get("execution_refs"))
+    )
     observation_id = str(item.get("source_observation_id") or "")
     if observation_id:
         observation = next(
