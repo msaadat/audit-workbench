@@ -144,7 +144,8 @@ limit that has to be read through two hops.
 An assertion may be stated in terms of the tables it was drawn from, before
 either was joined. The frame's rows already reflect the join: for every row
 here, the invoice's columns and the matching PO's columns sit side by side,
-aligned by that key, with no missing counterpart. Do not re-establish the match
+aligned by that key. Unmatched rows retain null counterpart attributes; distinguish
+unmatched from tested populations. Do not re-establish the match
 — no join, self-join, or key lookup against the same table again — to write the
 test; read and compare the already-aligned columns directly. The open question
 an assertion leaves you is never "does X match Y" (that is why this frame
@@ -1623,6 +1624,7 @@ def run_analysis_definition_worker(
         ANALYTICS_REGISTRY_SOURCE_ID,
         PROBE_FINDINGS_SOURCE_ID,
         VALUE_DOMAINS_SOURCE_ID,
+        JOIN_HYPOTHESIS_SOURCE_ID,
     )
     measured = [
         _plain_json(item) for item in _source_items(request, PROBE_FINDINGS_SOURCE_ID)
@@ -1780,6 +1782,13 @@ its flagged condition would mean in terms of the business events the columns
 record. Do this for the ones that matter most; the rest keep the name the
 measurement derives.
 
+FRAME MAP describes base schemas once. A join descriptor carries all left
+columns plus right columns except its coalesced right_on keys; apply renamed
+to colliding right columns. These are temporary local alignments unless already
+saved by the auditor. Left joins retain unmatched rows with null counterpart
+attributes. Place each assertion on the exact population and role route it needs.
+Descriptors marked selectable=false supply dependency columns only, not targets.
+
 Do not restate a nomination as an added assertion. It is already in the
 register, and adding it again asks a model to rewrite a spec that was measured
 exactly.
@@ -1788,15 +1797,31 @@ exactly.
 
 def _reading_frames(request: WorkerRequest) -> dict[str, set[str]]:
     """Supplied frame names mapped to the columns each actually has."""
-    frames: dict[str, set[str]] = {}
-    for item in _source_items(request, READING_FRAMES_SOURCE_ID):
-        schema = _plain_json(item)
-        if not isinstance(schema, Mapping):
-            continue
-        name = str(schema.get("table") or "").strip()
-        if name:
+    entries = {str(item.get("table") or ""): _plain_json(item)
+               for item in _source_items(request, READING_FRAMES_SOURCE_ID)
+               if isinstance(item, Mapping) and item.get("table")}
+    frames = {}
+    def columns(name, seen=frozenset()):
+        if name in frames:
+            return frames[name]
+        if name in seen or name not in entries:
+            return None
+        schema = entries[name]
+        join = schema.get("join")
+        if not isinstance(join, Mapping):
             frames[name] = _column_names(schema)
-    return frames
+            return frames[name]
+        left = columns(join.get("left"), seen | {name})
+        right = columns(join.get("right"), seen | {name})
+        if left is None or right is None:
+            return None  # A truncated source cannot authorize an assertion.
+        removed = set(join.get("right_on") or ()) if join.get("how") != "cross" else set()
+        renames = schema.get("renamed") or {}
+        frames[name] = left | {renames.get(c, c) for c in right - removed}
+        return frames[name]
+    for name in entries:
+        columns(name)
+    return {name: cols for name, cols in frames.items() if entries[name].get("selectable", True)}
 
 
 def _reading_nominations(request: WorkerRequest) -> dict[str, Mapping[str, Any]]:
@@ -2079,6 +2104,7 @@ def run_analysis_reading_worker(
         READING_NOMINATIONS_SOURCE_ID,
         READING_REGISTRY_SOURCE_ID,
         READING_DOMAIN_SOURCE_ID,
+        READING_HYPOTHESIS_SOURCE_ID,
     )
     user = json.dumps(
         {

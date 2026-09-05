@@ -1583,11 +1583,13 @@ class Workspace:
         if kind not in ("analytics", "python"):
             raise WorkspaceError("Analysis kind must be 'analytics' or 'python'.")
         table = payload.get("table")
+        from .analysis_inputs import for_analysis
+        input_workspace = for_analysis(self, payload)
         # Python analyses carry their own code and may reference any table(s),
         # so a bound table is optional (and only a label) for them.
         if kind == "python":
-            table = table if table in self.table_names() else None
-        elif table not in self.table_names():
+            table = table if table in input_workspace.table_names() else None
+        elif table not in input_workspace.table_names():
             raise WorkspaceError(f"Unknown table '{table}'.")
         title = str(payload.get("title") or "").strip()
         if not title:
@@ -1601,7 +1603,7 @@ class Workspace:
             # The test itself knows its natural chart — computed once here so
             # a saved definition's own viz is meaningful without recomputing,
             # instead of always defaulting to a table.
-            viz = self._analytics_default_viz(table, spec)
+            viz = input_workspace._analytics_default_viz(table, spec)
 
         analysis = _apply_provenance(
             {
@@ -1610,6 +1612,7 @@ class Workspace:
                 "kind": kind,
                 "table": table,
                 "spec": spec,
+                **({"alignment": input_workspace._input_recipes[table]} if payload.get("alignment") else {}),
                 "viz": dict(viz or {"type": "table"}),
                 "note": str(payload.get("note") or "").strip(),
                 "source": payload.get("source") or ("ai" if kind == "python" else "library"),
@@ -2176,6 +2179,10 @@ class Workspace:
 
         join = self._join_entry(name)
         if join is None:
+            from .analysis_inputs import saved_input, InputWorkspace
+            recipe = saved_input(self, name)
+            if recipe:
+                return InputWorkspace(self, [recipe]).get_frame(name)
             raise WorkspaceError(f"No table named '{name}'.")
 
         seen = _seen | {name}
@@ -2232,6 +2239,10 @@ class Workspace:
 
         join = self._join_entry(name)
         if join is None:
+            from .analysis_inputs import saved_input, InputWorkspace
+            recipe = saved_input(self, name)
+            if recipe:
+                return InputWorkspace(self, [recipe])._table_signature(name)
             raise WorkspaceError(f"No table named '{name}'.")
 
         seen = _seen | {name}

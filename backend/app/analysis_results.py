@@ -237,14 +237,22 @@ def _sha1(value: object) -> str:
 def analysis_input_sha1(workspace: Workspace, analysis: Mapping[str, object]) -> str:
     """Fingerprint the definition and local frames an execution depended on.
 
-    Python analyses receive all workspace frames in the sandbox.  They may use
+    Legacy Python analyses receive all workspace frames in the sandbox.  They may use
     bare frame variables, so their dependency set is deliberately conservative:
     every available frame participates in the fingerprint.  That can request an
     extra rerun after unrelated data changes, but cannot label a result current
-    when an untracked input changed.
+    when an untracked input changed. Analysis-owned alignments track the frames
+    their code names, falling back to all frames for dynamic table access.
     """
+    from .analysis_inputs import for_analysis, frame_names
+    try:
+        workspace = for_analysis(workspace, analysis, validate=False)
+    except Exception as error:
+        return _sha1({"alignment": analysis.get("alignment"), "unavailable": str(error)})
     kind = str(analysis.get("kind") or "")
-    if kind == "python":
+    if analysis.get("alignment"):
+        names = frame_names(workspace, analysis)
+    elif kind == "python":
         names = sorted(workspace.table_names())
     else:
         table = str(analysis.get("table") or "").strip()
@@ -260,6 +268,7 @@ def analysis_input_sha1(workspace: Workspace, analysis: Mapping[str, object]) ->
             "kind": kind,
             "spec": analysis.get("spec") or {},
             "outcome_policy": analysis.get("outcome_policy") or {},
+            **({"alignment": analysis["alignment"]} if analysis.get("alignment") else {}),
             "inputs": signatures,
         }
     )

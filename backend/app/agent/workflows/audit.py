@@ -82,13 +82,11 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "data.join_utility_ready"
     ),
     "data.joins_ready": analysis_workflow.dependencies("data.joins_ready"),
-    "analysis.register_ready": analysis_workflow.dependencies(
-        "analysis.register_ready"
-    ),
+    "analysis.register_ready": ("data.joins_ready",),
     "analysis.definitions_ready": analysis_workflow.dependencies(
         "analysis.definitions_ready"
     ),
-    "analysis.executed": analysis_workflow.dependencies("analysis.executed"),
+    "analysis.executed": ("analysis.definitions_ready",),
     "analysis.summarized": analysis_workflow.dependencies("analysis.summarized"),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),

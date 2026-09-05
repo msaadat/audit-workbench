@@ -1,8 +1,7 @@
 """Analysis-side composition of the domain-neutral capability scheduler.
 
 Every analysis capability is bound to a native scheduler path: a per-unit
-pipeline binding for the one model-backed capability (analysis definitions) and
-a per-unit deterministic computation for the three that need no model. This
+pipeline binding for model work or a deterministic local computation. This
 module owns only the analysis-shaped glue the scheduler must not know about —
 which worker and executor a unit uses, the declared context scope it resolves,
 the approval items an auditor sees, the scope-clarification checkpoint, the
@@ -21,10 +20,11 @@ from __future__ import annotations
 
 import uuid
 
+from ..analysis_inputs import InputWorkspace, for_analysis, saved_input, source_refs
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
-from . import joins as join_diagnostics, narration, probes, register, store, workflow
+from . import alignment_catalog, joins as join_diagnostics, narration, probes, register, store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
@@ -84,7 +84,7 @@ from .runtime import (
     unsettled_capabilities,
 )
 from .workers import WORKERS
-from .workers.analysis import NOTHING_NEW_TO_ANALYSE
+from .workers.analysis import MAX_AUTHORED_ASSERTIONS, NOTHING_NEW_TO_ANALYSE
 
 
 class DeterministicCommitConflict(WorkspaceConflict):
@@ -116,8 +116,10 @@ class AnalysisWorkflowExecution(BaseRunner):
         *,
         runtime: RunRuntime | None = None,
         context_resolver: ContextResolver | None = None,
+        legacy_inputs: bool = False,
     ):
         super().__init__(workspace, run, handle, runtime=runtime)
+        self.legacy_inputs = legacy_inputs
         self.context_resolver = context_resolver or ContextResolver()
         self.sidecars = UnitSidecarStore(workspace, run["id"])
         self.unit_pipeline: UnitPipeline | None = None
@@ -141,10 +143,14 @@ class AnalysisWorkflowExecution(BaseRunner):
         is per-turn headroom rather than a per-turn expectation.
         """
         table_scope = self.scope()
-        targets = max(1, len(table_scope.targets))
-        # Bounded turns that are not per frame: the join-utility gate, the
-        # register's reading turn, the memo, and a repair turn for each, all
-        # charged like any other model call.
+        targets = max(
+            1,
+            len(table_scope.targets) if self.legacy_inputs
+            else min(MAX_AUTHORED_ASSERTIONS, len(table_scope.targets)),
+        )
+        # Reading, memo/tool turns and bounded repairs need headroom beyond the
+        # authored frames. Explicit durable-join requests also spend a utility
+        # turn; ordinary EDA does not. Deterministic floor specs spend no turns.
         calculated = 16 + 2 * targets
         self.update_limits(
             {
@@ -155,8 +161,20 @@ class AnalysisWorkflowExecution(BaseRunner):
             grow_only=True,
         )
 
+    def input_recipe(self, name):
+        if self.legacy_inputs:
+            return saved_input(self.ws, name)
+        return (alignment_catalog.recipe_for(self.ws, self.scope().tables, name)
+                or saved_input(self.ws, name))
+
+    def input_workspace(self):
+        if self.legacy_inputs:
+            saved = [a["alignment"] for a in self.ws.analyses if a.get("alignment")]
+            return InputWorkspace(self.ws, saved, validated=True) if saved else self.ws
+        return alignment_catalog.view(self.ws, self.scope().tables)
+
     def scope(self) -> TableScope:
-        return resolve_table_scope(self.ws, workflow_scope(self.run))
+        return resolve_table_scope(self.ws, {**workflow_scope(self.run), "_legacy_analysis": self.legacy_inputs})
 
     def milestone_projection(
         self,
@@ -393,7 +411,7 @@ class AnalysisWorkflowExecution(BaseRunner):
         cached = record.setdefault("probes", {})
         if frame in cached:
             return list(cached[frame])
-        found = probes.probe_frame(self.ws, frame)
+        found = probes.probe_frame(self.input_workspace(), frame)
         cached[frame] = found
         self.save()
         return list(found)
@@ -499,8 +517,18 @@ class AnalysisWorkflowExecution(BaseRunner):
             "relationships", "workflow:relationships", "Table relationships"
         )
         self.task_status(task, "running")
-        record = infer_relationship(self.ws, left, right)
+        if self.legacy_inputs:
+            record = infer_relationship(self.ws, left, right)
+        else:
+            routes = [r for r in alignment_catalog.catalog(self.ws, self.scope().tables)["routes"]
+                      if {r["left"], r["right"]} == {left, right}]
+            record = {"left": left, "right": right, "candidates": routes,
+                      "strong": [r for r in routes if r["strength"] == "strong"],
+                      "moderate": [r for r in routes if r["strength"] == "moderate"],
+                      "join": None}
         self._record_relationships(record)
+        if not self.legacy_inputs:
+            alignment_catalog.settle_pair(self.ws, left, right)
         refs = tuple(str(item["ref"]) for item in record["candidates"])
         self.emit(
             "relationship_evidence",
@@ -859,7 +887,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                 frame: self.frame_probes(frame)
                 for frame in definable_targets(self.ws, table_scope)
             }
-            floor = register.build_floor(self.ws, swept)
+            floor = register.build_floor(self.input_workspace(), swept)
             record["register_floor"] = [
                 {
                     "ref": item.ref,
@@ -950,7 +978,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                 capability,
                 unit,
                 analysis_reading_scope(
-                    self.ws,
+                    self.input_workspace(),
                     frames,
                     nominations=[
                         {
@@ -988,19 +1016,20 @@ class AnalysisWorkflowExecution(BaseRunner):
                                 else {}
                             ),
                             **(
-                                {"also_measured_on": list(item.also_on)}
+                                {"also_measured_on_count": len(item.also_on)}
                                 if item.also_on
                                 else {}
                             ),
                         }
                         for item in floor
                     ],
-                    relationships=self.relationship_records(),
+                    relationships=(self.relationship_records() if self.legacy_inputs else
+                                   alignment_catalog.catalog(self.ws, table_scope.tables)["routes"]),
                     hypotheses=self.retained_hypotheses(),
                     value_domains=[
                         domain
-                        for frame in frames
-                        for domain in probes.value_domains(self.ws, frame)
+                        for frame in (frames if self.legacy_inputs else table_scope.tables)
+                        for domain in probes.value_domains(self.input_workspace(), frame)
                     ],
                 ),
             )
@@ -1087,6 +1116,10 @@ class AnalysisWorkflowExecution(BaseRunner):
         """
         settled = self.assertion_register()
         definitions = [item.definition() for item in settled.kept]
+        for definition in definitions:
+            recipe = self.input_recipe(definition["table"])
+            if recipe:
+                definition["alignment"] = recipe
         if not definitions:
             return DeterministicUnitResult("skipped")
         task = self.add_task(
@@ -1101,7 +1134,11 @@ class AnalysisWorkflowExecution(BaseRunner):
         # register reference; what a concurrent write could invalidate is a
         # frame one of these specs reads.
         expected = parent_hashes(
-            self.ws, [frame_ref(self.ws, name) for name in frames]
+            self.ws, sorted({ref for item in definitions for ref in
+                (source_refs(item["alignment"]) if item.get("alignment") else
+                 (frame_ref(self.ws, item["table"]),))} |
+                {frame_ref(self.ws, item["spec"]["params"]["lookup_table"])
+                 for item in definitions if item.get("spec", {}).get("params", {}).get("lookup_table")})
         )
         target = AnalysisRegisterExecutorTarget(
             self.ws,
@@ -1167,8 +1204,10 @@ class AnalysisWorkflowExecution(BaseRunner):
         """
         self.ws = subject
         parent_ref = str(unit["parent_refs"][0])
-        target_frame = parent_ref.split(":", 1)[1]
         table_scope = self.scope()
+        target_frame = next((name for name in table_scope.targets
+            if workflow.semantic_unit_id("analysis_definitions", name) == unit["id"]),
+            parent_ref.split(":", 1)[1])
         settled = self.assertion_register()
         assertions = settled.assertions_for(target_frame)
         # Analyses the register wrote are not evidence that this unit has run.
@@ -1242,17 +1281,22 @@ class AnalysisWorkflowExecution(BaseRunner):
             # analysis" hold the whole chain — register, definitions, execution,
             # summary — short of satisfied forever.
             register.settle_frame(
-                self.ws,
+                self.input_workspace(),
                 target_frame,
                 "the register placed no assertion this frame had not already saved",
             )
             return DeterministicUnitResult("skipped")
-        expected = parent_hashes(self.ws, [parent_ref])
+        recipe = self.input_recipe(target_frame)
+        extra = tuple(f"table:{t['name']}" for t in self.ws.tables
+                      if recipe and f"table:{t['name']}" not in source_refs(recipe))
+        expected = parent_hashes(self.ws, [*unit["parent_refs"], *extra])
         target = AnalysisDefinitionExecutorTarget(
             self.ws,
             self.run["id"],
             target_frame,
             parent_ref,
+            alignment=recipe,
+            extra_parent_refs=extra,
             allow_auditor_overwrite=self.run["mode"] == "permission",
         )
         task = self.add_task(
@@ -1265,10 +1309,10 @@ class AnalysisWorkflowExecution(BaseRunner):
                 capability,
                 unit,
                 analysis_definition_scope(
-                    self.ws,
+                    self.input_workspace(),
                     target_frame,
                     related=[
-                        name for name in table_scope.targets if name != target_frame
+                        name for name in table_scope.tables if name != target_frame
                     ],
                     relationships=self.relationship_records(),
                     hypotheses=hypotheses,
@@ -1279,7 +1323,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                     # nomination would ask the model to re-propose a spec that
                     # already exists, which the identity check then drops — a
                     # slot spent to produce a duplicate.
-                    value_domains=probes.value_domains(self.ws, target_frame),
+                    value_domains=probes.value_domains(self.input_workspace(), target_frame),
                 ),
             )
 
@@ -1331,7 +1375,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                 # against a frame built from the same tables. That is the
                 # de-duplication working, not an outcome needing an auditor.
                 register.settle_frame(
-                    self.ws,
+                    self.input_workspace(),
                     target_frame,
                     "every analysis proposed here is already saved against a "
                     "related frame",
@@ -1354,7 +1398,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             # data, so the unit settles instead of failing the run.
             if NOTHING_NEW_TO_ANALYSE in str(error):
                 register.settle_frame(
-                    self.ws,
+                    self.input_workspace(),
                     target_frame,
                     "every analysis this frame supports is already saved against "
                     "a frame built from the same tables",
@@ -1369,7 +1413,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             # population, which establishes nothing about any row in it.
             if NO_INFORMATIVE_ANALYSIS in str(error):
                 register.settle_frame(
-                    self.ws,
+                    self.input_workspace(),
                     target_frame,
                     "no analysis proposed for this frame separated any of its "
                     "rows from the rest",
@@ -1649,6 +1693,16 @@ class AnalysisWorkflowExecution(BaseRunner):
         )
 
     # ----------------------------------------------------- analysis.executed
+    def _bind_input(self, subject, run, capability, stage, unit):
+        self.ws = subject
+        aid = unit["parent_refs"][0].split(":", 1)[1]
+        item = next(a for a in self.ws.analyses if a["id"] == aid)
+        try:
+            for_analysis(self.ws, item).get_frame(item["table"])
+        except Exception as error:
+            return DeterministicUnitResult("failed", error=str(error))
+        return DeterministicUnitResult("succeeded", (f"analysis:{aid}",))
+
     def _bind_execution(
         self,
         subject: Workspace,
@@ -1864,9 +1918,10 @@ _PARTIAL_DEPENDENCIES = {
     # reading turn that could not be used must not withhold the floor it was
     # given, which is the whole safety argument for spending one turn on the
     # whole engagement.
-    "analysis.register_ready": {"data.joins_ready"},
+    "analysis.register_ready": {"data.relationships_inferred"},
     "analysis.definitions_ready": {"analysis.register_ready"},
-    "analysis.executed": {"analysis.definitions_ready"},
+    "analysis.inputs_ready": {"analysis.definitions_ready"},
+    "analysis.executed": {"analysis.inputs_ready"},
     # One procedure that would not execute must not withhold the memo. A
     # summary written over the results that did land is the useful artifact,
     # and the procedure that failed is itself reported in "further work".
@@ -1926,6 +1981,7 @@ def build_analysis_workflow_runner(
             adapter._bind_join,
             {"deterministic": "analysis.join"},
         ),
+        "analysis.inputs_ready": (adapter._bind_input, {"deterministic": "analysis.inputs"}),
         "analysis.executed": (
             adapter._bind_execution,
             {"deterministic": "analysis.execution"},
@@ -1971,11 +2027,15 @@ def build_analysis_workflow_runner(
         if checkpoint is not None:
             checkpoint_handlers[checkpoint]()
         if capability.id == "analysis.definitions_ready":
+            if adapter.join_utility_decisions():
+                adapter._warn_untestable_hypotheses()
+                adapter._warn_unjoined_engagement()
             # Said once for the stage, before any frame is bound: a test the
             # gate admitted and no frame can carry is a coverage gap, and the
             # frames that were skipped are not where a reader would look for it.
-            adapter._warn_untestable_hypotheses()
-            adapter._warn_unjoined_engagement()
+            omitted = alignment_catalog.catalog(subject, adapter.scope().tables)["omitted"]
+            if omitted:
+                adapter.warn(f"Alignment catalog reached its bounds; {omitted} routes or alignments were omitted.")
 
     def dependency_policy(
         capability_id: str,

@@ -51,9 +51,9 @@ def table_metadata(
     )
 
 
-def schema_brief(workspace: Workspace) -> list[dict]:
+def schema_brief(workspace: Workspace, tables: list[str] | None = None) -> list[dict]:
     """Compatibility wrapper for the shared schema handler."""
-    return tooling.table_schemas(workspace)
+    return tooling.table_schemas(workspace, tables=tables)
 
 
 def workspace_manifest(workspace: Workspace) -> dict:

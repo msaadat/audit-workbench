@@ -85,7 +85,8 @@ def analytics_registry():
 def run_analytics(
     workspace_id: str, table_name: str, test_id: str, params: dict = Body(default={})
 ):
-    result = analytics.run_test(_frame(workspace_id, table_name), test_id, params)
+    ws = workspaces.load_workspace(workspace_id)
+    result = analytics.run_test(ws.get_frame(table_name), test_id, params, source=ws.frame_source())
     return result.payload()
 
 
@@ -93,7 +94,8 @@ def run_analytics(
 def export_analytics(
     workspace_id: str, table_name: str, test_id: str, params: dict = Body(default={})
 ):
-    result = analytics.run_test(_frame(workspace_id, table_name), test_id, params)
+    ws = workspaces.load_workspace(workspace_id)
+    result = analytics.run_test(ws.get_frame(table_name), test_id, params, source=ws.frame_source())
     frame = result.export_frame()
     if frame is None:
         frame = pl.DataFrame({"stat": [s["label"] for s in result.stats],

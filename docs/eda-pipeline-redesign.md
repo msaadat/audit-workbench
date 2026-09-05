@@ -1,8 +1,11 @@
 # EDA pipeline: forward plan
 
-**Status:** E1, E2, and E4 are complete. E3's value-domain half is complete;
-its row-sample half was deliberately reverted. E5, E6, and a within-group
-variance primitive remain open.
+**Status (2026-09-05):** E1, E4, and E5 are implemented. E2's alternate and
+weak-route retention is implemented in the bounded EDA catalog; the older
+durable-join selector remains separate. E3's value-domain half is complete;
+its row-sample half was deliberately reverted. E6 and a within-group variance
+primitive remain open. See [E5 validation](eda-e5-validation.md) for measurements
+and limits; this is not a claim of live-provider validation.
 
 **Scope:** `analysis_workflow_v1` only. Do not change the audit workflow,
 document analysis, document tests, or the row-level privacy boundary.
@@ -20,19 +23,23 @@ than discard relationships or candidate checks before it has evaluated their
 audit significance. It must also retain an explainable record of every
 assertion it considered, including one it could not test.
 
-The target flow is:
+The implemented standalone EDA flow is:
 
 ```text
-data.characterized       deterministic column metadata and safe value domains
-data.relationship_map    deterministic, unpruned routes and orphan evidence
-data.probes              deterministic ranked nominations
-analysis.reading         one bounded model reading over the full map
-analysis.definitions     model-authored executable definitions by assertion cluster
-data.joins_ready         deterministic materialization of only required joins
-analysis.executed        local execution
-analysis.reconciled      deterministic assertion-register coverage
-analysis.summarized      bounded model summary
+data.relationships_inferred   deterministic route diagnostics and orphan evidence
+analysis.register_ready      local probes, safe domains, one bounded model reading
+analysis.definitions_ready   direct floor specs; authored assertions batched per frame
+analysis.inputs_ready        validate/load accepted analysis-owned alignment recipes
+analysis.executed            local execution and bounded recorded results
+analysis.summarized          bounded model summary
 ```
+
+Probes may compute candidate alignments locally to measure them before selection.
+Only accepted definitions persist a recipe; speculative alignments do not enter
+the workspace's durable join collection. `analysis.reconciled` is still proposed
+work under E6. Explicit durable-join requests retain their separate
+`data.join_utility_ready` → `data.joins_ready` branch, and the audit graph keeps
+its original branch and dependencies.
 
 The model provides judgment, interpretation, and negative-space observations;
 deterministic probes provide the default evidence-backed floor. A failed or
@@ -43,10 +50,10 @@ unhelpful reading must never silently remove a deterministic nomination.
 | Item | State | Contract that remains important |
 | --- | --- | --- |
 | E1 — deterministic probes | Complete | Sweep intra-frame pairs before cross-frame routes; emit executable nominations in the analytics library's vocabulary and rank them by measured yield. |
-| E2 — relationship map | Complete | Diagnose every viable route. `weak` is explanatory metadata, not an exclusion gate; orphan counts may themselves nominate `referential` work. |
+| E2 — relationship map | Implemented with bounds | Retain alternate keys and weak/zero-match evidence in the EDA catalog. Diagnose candidate routes; disclose catalog omissions. The explicit durable-join selector keeps its older arbitration. |
 | E3 — safe context | Partly complete | Low-cardinality domains and format information are available. Do **not** reintroduce row samples without a separately reviewed privacy permission, cap, source-aware truncation, and a demonstrable need. |
 | E4 — one reading turn | Complete | The assertion register is additive by default. The reading may decline a deterministic nomination only with a recorded reason. |
-| E5 — joins after definitions | Open | Definitions choose what must be computed; joins are then materialized for those accepted definitions. |
+| E5 — joins after definitions | Implemented | Accepted definitions own reproducible alignment recipes; execution validates sources, keys and multiplicity without creating durable joins. |
 | E6 — reconciliation | Open | A durable coverage artifact must classify every assertion's outcome. |
 | Within-group variance | Open | Add a primitive for same-key/different-value analysis without treating every group as an exception. |
 | Regression scorer | Complete | Any substantive change must be measured against the answer key; do not replace its signatures or pinned baseline to make a regression disappear. |
@@ -78,35 +85,59 @@ unhelpful reading must never silently remove a deterministic nomination.
 
 ## Next work
 
-### E5 — materialize joins after definitions
+### E5 — implemented alignment contract
 
-This is the highest-value remaining change. The present scarcity of durable
-joins forces routing to select one candidate before the system knows which
-comparisons a definition needs. Separate a user-visible durable join from a
-transient, reproducible alignment used to compute a proposed analysis.
+The deterministic catalog retains up to 32 routes per directed table pair and
+192 candidate alignments, exploring up to two hops. It retains low/zero-match
+diagnostics and alternate keys, including value-supported reference-shaped keys
+whose names differ. An executable alignment must use compatible key types and
+unique non-null right keys. Its ordered left joins preserve the root population;
+an unmatched counterpart stays null. Bounds are disclosed in a run warning.
 
-Required behavior:
+The reading selects an exact frame and role route. Its executor attaches the
+catalog's recipe to the accepted definition; model text cannot replace that
+recipe. Saved recipes include the root, ordered source/key mappings and aliases.
+The reader accepts up to three hops for persisted recipes, while automatic
+discovery currently explores two. Static Python dependencies and analytics
+lookup dependencies join the recipe in the result fingerprint. Existing
+unaligned analysis fingerprints and durable-join route identities are unchanged.
 
-- Probes and the relationship map may retain multiple viable routes between the
-  same table pair.
-- An accepted definition declares its required source tables, columns, and
-  route(s). Validate that declaration against the map before execution.
-- Materialize only the routes required by accepted definitions, after definition
-  selection. Equivalent route choices must be deterministic and explainable.
-- Preserve analysis identity and staleness semantics when a required route or
-  input table changes.
-- Do not make a durable user-visible join merely to test a transient alignment.
+Rerun, preview, export, summary provenance, and promotion consume the saved
+recipe. Promotion carries equivalent local Polars code into the Data Test, so
+deleting the original analysis does not remove the test's input construction.
+Source changes during generation or execution trigger parent conflicts instead
+of committing an obsolete result. Multiplying or broken joins fail validation.
 
-The first acceptance scenario is the mixed `invoice_data.PO_NUMBER_LINK` field:
-some values are PO identifiers and others are requisition identifiers. The
-pipeline must be able to connect invoice-side evidence to `requisitions` without
-losing the ordinary invoice-to-PO route. This is necessary to fully evaluate
-A03/A04 and is a guard against the same class of loss in authority, SoD, and
-master-data checks.
+The mixed-identifier acceptance fixture preserves both invoice-to-PO and
+invoice-to-requisition routes: 25 invoices remain the population, five are
+comparable to requisitions, and one exceeds the requisition amount. This tests
+the A03/A04 route prerequisite; it does not claim those answer-key items are now
+fully answered on an existing workspace. The measured Procurement improvement
+is the two-hop authority path, A10/A11, described in the validation note.
 
-Before changing route arbitration, measure the current single-sided-definition
-rejection rule. It previously removed plausible definitions simply because they
-read one side of a joined frame; do not loosen or retain that rule on intuition.
+The single-sided-definition and saturation screens remain in force. Role-route
+identity now includes the entire alignment path so, for example, requester and
+approver authority checks cannot collapse merely because their last hop is the
+same job-title lookup.
+
+### Prompt size and workload
+
+The reading frame map sends base schemas once, then compact join descriptors
+and collision renames. Dependency-only descriptors cannot be selected as
+assertion targets; missing source descriptors do not authorize invented columns.
+Safe domains come from base columns once. Definition turns receive the target's
+exact schema and base-table lookup context, without every speculative sibling's
+full schema. Hypotheses appear once in each prompt. Durable nomination provenance
+retains repeated-frame references, while the reading sees their count.
+
+Full EDA saves one utility-gate call. Deterministic floor specs still need zero
+definition calls, and the reading's maximum 12 authored assertions are grouped
+into at most 12 frame-specific definition turns before repair/tool turns. The
+reading context remains capped at 180,000 characters; compact descriptors and
+nominations have larger item limits within that same total budget. These are
+bounds, not expected usage. More eligible analyses can increase local probing,
+definition work, and memo/tool work; prompt reduction alone does not establish
+an end-to-end runtime improvement.
 
 ### E6 — reconcile the assertion register
 
@@ -167,9 +198,10 @@ Exercise at least these cases:
 
 ## Open risks
 
-- The probe sweep is fast on the current corpus but has not been characterized
-  on very wide tables. Add deterministic bounds before assuming it scales to
-  hundreds of columns.
+- Expanded local probing is material: the six-table Procurement check took
+  about 35 seconds. Catalog output is bounded, but column-pair diagnosis and
+  probe cost have not been characterized on very wide tables. Do not assume
+  output bounds imply constant compute or memory use.
 - Direction matters. An inverted comparison can saturate a population; retain
   directional probe evidence rather than weakening the saturation guard.
 - A single `analysis.reading` turn is a model failure point. The additive

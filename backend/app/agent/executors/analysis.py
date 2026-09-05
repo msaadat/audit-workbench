@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ... import analysis_promotion, analysis_results, data_tests, sandbox
+from ...analysis_inputs import for_analysis, source_refs, validate_input, execution_frames
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
@@ -355,7 +356,7 @@ def reconcile_join(
 # --------------------------------------------------------------------------- #
 # The declared fields an accepted analysis proposal may write. Provenance,
 # identity, and result state are owned by the executor, never the proposal.
-ANALYSIS_FIELDS = ("title", "kind", "table", "spec", "note", "outcome_policy")
+ANALYSIS_FIELDS = ("title", "kind", "table", "spec", "note", "outcome_policy", "alignment")
 
 
 def analysis_ref(analysis_id: str) -> str:
@@ -377,6 +378,8 @@ class AnalysisDefinitionExecutorTarget:
     target_frame: str
     parent_ref: str
     allow_auditor_overwrite: bool = False
+    alignment: dict | None = None
+    extra_parent_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, Workspace):
@@ -401,7 +404,9 @@ def _validated_definitions(
         raise WorkspaceError(
             "Analysis definition executor requires an AnalysisDefinitionExecutorTarget."
         )
-    if set(request.expected_parents) != {target.parent_ref}:
+    required = set(source_refs(target.alignment)) if target.alignment else {target.parent_ref}
+    required.update(target.extra_parent_refs)
+    if required != set(request.expected_parents):
         raise WorkspaceError(
             "Analysis definition executor requires exactly its target-frame parent hash."
         )
@@ -413,6 +418,9 @@ def _validated_definitions(
             continue
         definition = {key: _plain_json(entry[key]) for key in ANALYSIS_FIELDS if key in entry}
         definition["table"] = target.target_frame
+        definition.pop("alignment", None)
+        if target.alignment:
+            definition["alignment"] = validate_input(target.workspace, target.alignment)
         semantic = str(entry.get("semantic_id") or "").strip()
         if not semantic:
             raise WorkspaceError("An accepted analysis definition has no semantic id.")
@@ -443,12 +451,6 @@ def _validate_generated_python_definitions(
     every analytics-kind proposal, which cannot fail this check at all — over
     one broken python spec.
     """
-    frames = {}
-    for name in workspace.table_names():
-        try:
-            frames[name] = workspace.get_frame(name)
-        except Exception:
-            continue
     kept: list[dict] = []
     dropped: list[str] = []
     for definition in definitions:
@@ -457,8 +459,9 @@ def _validate_generated_python_definitions(
             continue
         code = str((definition.get("spec") or {}).get("code") or "")
         try:
-            sandbox.run(code, frames)
-        except sandbox.SandboxError as error:
+            inputs = for_analysis(workspace, definition)
+            sandbox.run(code, execution_frames(inputs, definition))
+        except (sandbox.SandboxError, WorkspaceError) as error:
             title = str(definition.get("title") or "generated Python analysis")
             dropped.append(f"'{title}' failed local validation: {error}")
             continue
@@ -648,6 +651,8 @@ def _write_definitions(
     covered: list[str] = []
     creates: list[dict] = []
     for definition in accepted:
+        if definition.get("alignment"):
+            validate_input(fresh, definition["alignment"])
         semantic = str(definition["semantic_id"])
         existing = _existing_analysis(fresh, semantic)
         if existing is None:
@@ -677,6 +682,7 @@ def _write_definitions(
                 # need that, and a changed spec never matches an existing
                 # semantic id, it creates a new analysis instead.
                 "spec": dict(definition.get("spec") or {}),
+                **({"alignment": definition["alignment"]} if definition.get("alignment") else {}),
                 "note": str(definition.get("note") or ""),
                 **(
                     {"outcome_policy": dict(definition["outcome_policy"])}
@@ -781,6 +787,22 @@ def execute_analysis_register(
         accepted.append(definition)
     if not accepted:
         raise WorkspaceError("The assertion register is empty.")
+    required = set()
+    for definition in accepted:
+        if definition["table"] not in target.frames:
+            raise WorkspaceError("A register entry targets an undeclared frame.")
+        if definition.get("alignment"):
+            recipe = validate_input(target.workspace, definition["alignment"])
+            if recipe["name"] != definition["table"]:
+                raise WorkspaceError("Register frame and input recipe disagree.")
+            required.update(source_refs(recipe))
+        else:
+            required.add(frame_ref(target.workspace, definition["table"]))
+        lookup = (definition.get("spec") or {}).get("params", {}).get("lookup_table")
+        if lookup:
+            required.add(frame_ref(target.workspace, lookup))
+    if required != set(request.expected_parents):
+        raise WorkspaceError("Register commit requires exactly its input-source parent hashes.")
     accepted, uninformative = _screen_uninformative_definitions(
         target.workspace, accepted
     )
@@ -889,15 +911,15 @@ def reconcile_analysis_definitions(
     silently replace it, which is a conflict rather than a repeat.
     """
     target, accepted = _validated_definitions(request, raw_target)
-    parent_ref = target.parent_ref
     current = Workspace(target.workspace.root)
-    actual = parent_hashes(current, [parent_ref])[parent_ref]
-    expected = request.expected_parents[parent_ref]
-    if actual != expected:
-        return ExecutorReconciliation(
-            "conflict",
-            reason=str(ParentConflict(parent_ref, expected, actual, current.revision)),
-        )
+    actuals = parent_hashes(current, list(request.expected_parents))
+    for parent_ref, expected in request.expected_parents.items():
+        actual = actuals[parent_ref]
+        if actual != expected:
+            return ExecutorReconciliation(
+                "conflict",
+                reason=str(ParentConflict(parent_ref, expected, actual, current.revision)),
+            )
     matches = [
         (definition, _existing_analysis(current, str(definition["semantic_id"])))
         for definition in accepted
@@ -1033,6 +1055,11 @@ def execute_analysis_run(request: ExecutorRequest, raw_target: object) -> Execut
         )
         if analysis is None:
             raise WorkspaceError(f"Analysis '{target.analysis_id}' not found.")
+        if analysis.get("alignment"):
+            actual = analysis_results.analysis_input_sha1(fresh, analysis)
+            expected = str(result.get("input_sha1") or "")
+            if actual != expected:
+                raise ParentConflict(f"analysis_input:{target.analysis_id}", expected, actual, fresh.revision)
         analysis["last_result"] = dict(result)
         writer.stage(fresh, target.analysis_id, evidence)
         return analysis
@@ -1325,6 +1352,8 @@ def execute_analysis_promotion(
             fresh.save()
             return {"state": analysis_promotion.DECLINED, "test_id": ""}
         step = dict(decision.get("step") or {})
+        from ...analysis_inputs import carry_input_code
+        step["code"] = carry_input_code(fresh, analysis, str(step.get("code") or ""))
         semantic = f"datatest:promoted:{target.analysis_id}"
         item = data_tests.create(
             fresh,

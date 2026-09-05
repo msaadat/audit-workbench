@@ -10,14 +10,18 @@ The workflow answers requests such as "see the two tables, perform relevant
 joins and data analysis" as a durable outcome workflow rather than as an ad-hoc
 action DAG:
 
-``data.relationships_inferred`` diagnoses table relationships from deterministic
-local Polars evidence, ``data.join_utility_ready`` selects the relationships
-that support a concrete audit hypothesis, ``data.joins_ready`` materializes
-only those selected joins, ``analysis.register_ready`` reads every frame at once
-and settles the ordered assertion register, ``analysis.definitions_ready``
-proposes rerunnable analysis specs for the assertions the register could not
-already state as a measured spec, and ``analysis.executed`` runs them locally
-and records a bounded result contract.
+``data.relationships_inferred`` diagnoses alternate routes from local Polars
+evidence. ``analysis.register_ready`` reads the bounded map and settles the
+assertion register; ``analysis.definitions_ready`` authors specs only for work
+the register could not already express as a measured spec.
+``analysis.inputs_ready`` validates and loads the accepted definitions' saved
+alignment recipes, then ``analysis.executed`` records their local results and
+``analysis.summarized`` writes the memo. Probes can evaluate candidate alignments
+locally before selection; none become user-visible durable joins.
+
+The separate ``data.join_utility_ready`` → ``data.joins_ready`` branch remains
+available for explicit requests to create durable joins. Full EDA does not
+depend on that branch. The audit workflow retains its original dependencies.
 
 ``analysis.register_ready`` is the only capability in this graph whose model
 turn is optional to its own outcome. Its floor is the deterministic sweep, so a
@@ -69,9 +73,10 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "data.relationships_inferred": (),
     "data.join_utility_ready": ("data.relationships_inferred",),
     "data.joins_ready": ("data.join_utility_ready",),
-    "analysis.register_ready": ("data.joins_ready",),
+    "analysis.register_ready": ("data.relationships_inferred",),
     "analysis.definitions_ready": ("analysis.register_ready",),
-    "analysis.executed": ("analysis.definitions_ready",),
+    "analysis.inputs_ready": ("analysis.definitions_ready",),
+    "analysis.executed": ("analysis.inputs_ready",),
     "analysis.summarized": ("analysis.executed",),
 }
 

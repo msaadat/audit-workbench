@@ -107,8 +107,18 @@ def _analysis_reading_response(user: str) -> dict:
     """
     payload = json.loads(user.split("\n\nYour previous response")[0])
     added = []
-    for frame in payload.get("FRAME MAP") or []:
-        columns = [column["name"] for column in frame.get("columns") or []]
+    frames = {frame["table"]: frame for frame in payload.get("FRAME MAP") or []}
+    def frame_columns(name):
+        frame = frames[name]
+        if not frame.get("join"):
+            return [c["name"] for c in frame.get("columns") or []]
+        join = frame["join"]
+        return frame_columns(join["left"]) + [(frame.get("renamed") or {}).get(c,c)
+            for c in frame_columns(join["right"]) if c not in join.get("right_on", [])]
+    for frame in frames.values():
+        if not frame.get("selectable", True):
+            continue
+        columns = frame_columns(frame["table"])
         if not columns:
             continue
         added.append(

@@ -56,7 +56,10 @@ const saving = ref(false)
 const pickerOpen = ref(!props.analysis)
 const paramsOpen = ref(true)
 
-const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
+const tableOptions = computed(() => [...new Set([
+  ...props.workspace.tables.map((t) => t.name),
+  ...(props.analysis?.alignment && props.analysis.table ? [props.analysis.table] : []),
+])])
 
 const verdictSeverity: Record<string, string> = {
   ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
@@ -358,10 +361,16 @@ watch(table, () => {
 </script>
 
 <template>
+  <p v-if="props.analysis?.alignment" class="muted">
+    Population: {{ props.analysis.alignment.root }}.
+    <span v-for="hop in props.analysis.alignment.joins" :key="hop.name">
+      {{ hop.left_on.join(', ') }} → {{ hop.right }}.{{ hop.right_on.join(', ') }}.
+    </span>
+  </p>
   <div class="analysis-editor-head">
     <InputText v-model="title" placeholder="Analysis title" class="title-input" />
     <div class="field">
-      <Select v-model="table" :options="tableOptions" placeholder="Table" style="min-width: 12rem" />
+      <Select v-model="table" :disabled="!!props.analysis?.alignment" :options="tableOptions" placeholder="Table" style="min-width: 12rem" />
     </div>
     <span class="grow" />
     <Button

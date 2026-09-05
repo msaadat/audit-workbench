@@ -135,6 +135,14 @@ def _analysis_run(workspace, *, mode="auto", text=None, command=None) -> dict:
     return store.load_run(workspace, run["id"])
 
 
+def _join_analysis_run(workspace, **kwargs):
+    """Explicit durable-join requests retain their independent legacy branch."""
+    return _analysis_run(workspace, mode=kwargs.get("mode", "auto"), command={
+        "text": kwargs.get("text") or "Build durable joins and run analysis",
+        "requested_outcomes": ["data.joins_ready", "analysis.summarized"],
+    })
+
+
 def _stage(run: dict, capability_id: str) -> dict:
     return next(
         item
@@ -211,9 +219,10 @@ def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
         "data.relationships_inferred": (),
         "data.join_utility_ready": ("data.relationships_inferred",),
         "data.joins_ready": ("data.join_utility_ready",),
-        "analysis.register_ready": ("data.joins_ready",),
+        "analysis.register_ready": ("data.relationships_inferred",),
         "analysis.definitions_ready": ("analysis.register_ready",),
-        "analysis.executed": ("analysis.definitions_ready",),
+        "analysis.inputs_ready": ("analysis.definitions_ready",),
+        "analysis.executed": ("analysis.inputs_ready",),
         "analysis.summarized": ("analysis.executed",),
     }
     assert analysis_workflow.FULL_ANALYSIS_OUTCOMES == ["analysis.summarized"]
@@ -229,10 +238,9 @@ def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
     registry = capability_registries.build_analysis_registry()
     assert registry.closure(["analysis.summarized"]) == [
         "data.relationships_inferred",
-        "data.join_utility_ready",
-        "data.joins_ready",
         "analysis.register_ready",
         "analysis.definitions_ready",
+        "analysis.inputs_ready",
         "analysis.executed",
         "analysis.summarized",
     ]
@@ -270,6 +278,7 @@ def test_grouped_analysis_composition_is_validated_at_startup():
     ] == [
         "data.relationships_inferred",
         "data.joins_ready",
+        "analysis.inputs_ready",
         "analysis.executed",
     ]
 
@@ -387,8 +396,9 @@ def test_a_lookup_table_costs_no_definition_turn():
     ws.add_table("grades.csv", grades.write_csv().encode())
 
     scope = analysis_capabilities.resolve_table_scope(ws, {})
-    assert set(scope.targets) == {"ledger", "grades"}
-    assert analysis_capabilities.definable_targets(ws, scope) == ("ledger",)
+    assert set(scope.tables) == {"ledger", "grades"}
+    assert "grades" not in analysis_capabilities.definable_targets(ws, scope)
+    assert "ledger" in analysis_capabilities.definable_targets(ws, scope)
 
     # Naming it is the answer to whether it is worth analysing.
     named = analysis_capabilities.resolve_table_scope(ws, {"tables": ["grades"]})
@@ -405,7 +415,7 @@ def test_a_small_workspace_is_not_an_empty_one():
     scope = analysis_capabilities.resolve_table_scope(ws, {})
     # Every frame is under the floor, and none is dwarfed by another. Pruning
     # here would analyse nothing at all, so nothing is pruned.
-    assert set(analysis_capabilities.definable_targets(ws, scope)) == {"left", "right"}
+    assert {"left", "right"} <= set(analysis_capabilities.definable_targets(ws, scope))
 
 
 def test_unknown_table_blocks_every_analysis_capability(workspace_with_data):
@@ -569,7 +579,9 @@ def test_a_chained_join_connects_the_pair_it_makes_testable():
 
     registry = capability_registries.build_analysis_registry()
     readiness = registry.get("data.relationships_inferred").readiness(ws, {})
-    assert readiness.state == "satisfied"
+    # Existing joins do not discharge E5's alternate-route diagnosis.
+    assert readiness.state == "missing"
+    assert capability_registries.AUDIT_REGISTRY.get("data.relationships_inferred").readiness(ws, {}).satisfied
 
 
 def test_the_stage_settles_a_dead_end_until_the_data_changes(monkeypatch):
@@ -650,7 +662,7 @@ def test_strong_evidence_materializes_exactly_one_guarded_join(
 ):
     ws = workspace_with_data
     fake = _fake_model(monkeypatch)
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
@@ -679,7 +691,7 @@ def test_strong_evidence_materializes_exactly_one_guarded_join(
 def test_auto_mode_materializes_the_top_ranked_moderate_join(monkeypatch):
     ws = _moderate_pair_workspace()
     _fake_model(monkeypatch)
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
     _drive(ws, run, "data.relationships_inferred")
 
     record = run["analysis"]["relationships"][0]
@@ -723,7 +735,7 @@ def test_unrelatable_tables_are_skipped_rather_than_joined(monkeypatch):
     ws.add_table("alphas.csv", left.write_csv().encode())
     ws.add_table("zulus.csv", right.write_csv().encode())
     _fake_model(monkeypatch)
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -808,7 +820,7 @@ def test_the_gate_may_keep_a_moderate_key_over_the_strong_one_it_rejected(monkey
     moderate_ref = "relationship:orders:regions:order_ref:order_ref"
     fake = _fake_model(monkeypatch)
     fake.overrides["agent:join_utility"] = _gate_script(moderate_ref)
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
     record = run["analysis"]["relationships"][0]
@@ -837,7 +849,7 @@ def test_a_pair_the_gate_rejects_outright_is_skipped_and_says_why(monkeypatch):
     ws = _mixed_strength_workspace()
     fake = _fake_model(monkeypatch)
     fake.overrides["agent:join_utility"] = _gate_script(None)
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -866,7 +878,7 @@ def test_the_gate_is_not_asked_about_a_pair_local_evidence_already_rejected(
     ws.add_table("alphas.csv", left.write_csv().encode())
     ws.add_table("zulus.csv", right.write_csv().encode())
     fake = _fake_model(monkeypatch)
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -936,7 +948,7 @@ def test_a_test_spanning_three_tables_is_placed_by_a_turn_that_sees_all_of_them(
             frozenset(("customers", "plans")): {"orders", "customers", "plans"},
         }
     )
-    run = _analysis_run(ws, text="join these tables and analyse them")
+    run = _join_analysis_run(ws, text="join these tables and analyse them")
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -989,7 +1001,7 @@ def test_a_frame_the_sweep_found_something_on_keeps_its_turn(monkeypatch):
             frozenset(("customers", "plans")): {"orders", "customers", "plans"},
         }
     )
-    run = _analysis_run(ws, text="join these tables and analyse them")
+    run = _join_analysis_run(ws, text="join these tables and analyse them")
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -1034,7 +1046,7 @@ def test_a_frame_is_told_the_assertion_the_register_placed_on_it(monkeypatch):
     fake.overrides["agent:join_utility"] = _requires_script(
         {frozenset(("orders", "regions")): {"orders", "regions"}}
     )
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -1091,7 +1103,7 @@ def test_a_frame_carrying_a_hypothesis_is_told_the_join_already_happened(monkeyp
     fake.overrides["agent:join_utility"] = _requires_script(
         {frozenset(("orders", "regions")): {"orders", "regions"}}
     )
-    run = _analysis_run(ws)
+    run = _join_analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -1123,7 +1135,7 @@ def test_a_retained_test_no_frame_can_carry_is_reported_rather_than_lost(monkeyp
     fake.overrides["agent:join_utility"] = _requires_script(
         {frozenset(("orders", "customers")): {"orders", "customers", "plans"}}
     )
-    run = _analysis_run(ws, text="join these tables and analyse them")
+    run = _join_analysis_run(ws, text="join these tables and analyse them")
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -2567,7 +2579,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert completed["status"] == "completed"
     assert [stage["status"] for stage in completed["workflow"]["stages"]] == [
         "succeeded"
-    ] * 7
+    ] * 6
     fresh = workspaces.load_workspace(ws.id)
     # The run's answer is the memo, written over the results it just recorded
     # and current against them.
@@ -2584,7 +2596,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
         any(item["id"] == cited for item in fresh.analyses)
         for cited in memo["cited_analysis_ids"]
     )
-    assert [item["name"] for item in fresh.joins] == ["transactions_customers_joined"]
+    assert not fresh.joins
     # One definition unit per scoped frame — both tables and the new join — but
     # five analyses, not six. The script proposes the same duplicate check on
     # every frame it is given, and on the join that check reads only columns
@@ -2592,9 +2604,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     # rather than saved twice. The join keeps only the analysis that is
     # genuinely its own.
     assert len(fresh.analyses) == 5
-    assert [item["table"] for item in fresh.analyses].count(
-        "transactions_customers_joined"
-    ) == 1
+    assert sum(bool(item.get("alignment")) for item in fresh.analyses) == 1
     assert all(item["last_result"]["status"] == "ok" for item in fresh.analyses)
     assert "Analyses executed: 5" in completed["summary_markdown"]
     assert [item["capability"] for item in completed["milestones"]] == [
@@ -2608,20 +2618,17 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     ) == 5
     assert "rows" not in milestone and "table_rows" not in milestone
     first_turns = len(fake.calls)
-    # One utility-gate turn for the whole scope, one reading turn that settles
-    # the register over every frame at once, one definition turn per scoped
-    # frame (both tables and the join), and the single workspace-wide summary
-    # turn. The gate and the reading turn are each charged once no matter how
-    # many pairs or frames they judge, which is why each sits on its own stage.
+    # One reading, three authored frames, one memo. Candidate alignments and
+    # deterministic floor definitions add no model turns; full EDA no longer
+    # spends a utility-gate turn.
     assert [call["tag"] for call in fake.calls] == [
-        "agent:join_utility",
         "agent:analysis_reading",
         "agent:analysis_definitions",
         "agent:analysis_definitions",
         "agent:analysis_definitions",
         "agent:analysis_summary",
     ]
-    assert first_turns == 6
+    assert first_turns == 5
 
     repeat = runner.start_command_run(
         # Materialization reads the caller's workspace, which is how a route
@@ -2637,12 +2644,10 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
 
     assert second["status"] == "completed"
     assert second["workflow"]["stages"] == []
-    assert set(second["workflow"]["reused_capabilities"]) == set(
-        analysis_workflow.DEPENDENCIES
-    )
+    assert set(second["workflow"]["reused_capabilities"]) == set(capability_registries.ANALYSIS_REGISTRY.closure(["analysis.summarized"]))
     assert len(fake.calls) == first_turns, "a repeat run must not re-bill the provider"
     unchanged = workspaces.load_workspace(ws.id)
-    assert len(unchanged.joins) == 1
+    assert not unchanged.joins
     assert len(unchanged.analyses) == 5
 
 
@@ -2957,7 +2962,7 @@ def test_the_join_stage_builds_a_chain_its_first_wave_could_not_name(monkeypatch
     stage has to re-expand rather than settle on the units it started with."""
     ws = _three_hop_workspace()
     _fake_model(monkeypatch)
-    run = _analysis_run(ws, text="join these tables and analyse them")
+    run = _join_analysis_run(ws, text="join these tables and analyse them")
 
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.join_utility_ready")
@@ -3016,7 +3021,7 @@ def test_auto_mode_applies_a_tied_role_join_and_names_what_it_passed_over(monkey
     """
     ws = _role_tie_workspace()
     _fake_model(monkeypatch)
-    run = _analysis_run(ws, text="join these tables and analyse them")
+    run = _join_analysis_run(ws, text="join these tables and analyse them")
 
     _drive(ws, run, "data.relationships_inferred")
     record = run["analysis"]["relationships"][0]

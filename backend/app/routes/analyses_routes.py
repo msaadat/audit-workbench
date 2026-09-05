@@ -70,6 +70,17 @@ def get_analysis(workspace_id: str, analysis_id: str):
     return analysis_payloads.analysis_payload(ws, ws._analysis(analysis_id))
 
 
+@router.post("/analyses/{analysis_id}/preview")
+def preview_analysis(workspace_id: str, analysis_id: str, payload: dict = Body(...)):
+    """Try an edited spec against the saved input recipe without changing it."""
+    ws = workspaces.load_workspace(workspace_id)
+    item = dict(ws._analysis(analysis_id))
+    if not isinstance(payload.get("spec"), dict):
+        raise workspaces.WorkspaceError("Preview requires an analysis spec.")
+    item["spec"] = payload["spec"]
+    return analysis_payloads.compute_payload(ws, item)
+
+
 @router.get("/analyses/{analysis_id}/exceptions")
 def get_analysis_exceptions(workspace_id: str, analysis_id: str):
     """Read back the rows the recorded result flagged, without recomputing.

@@ -2302,20 +2302,19 @@ def build_audit_workflow_runner(
             {"deterministic": "reporting.verify"},
         ),
     }
-    # Full-audit runs include the same exploratory analysis capability branch as
-    # the standalone analysis workflow. The audit graph schedules this branch
-    # before planning, but does not make APM semantically depend on it.
+    # Audit retains its durable-join analysis branch while standalone EDA uses
+    # analysis-owned alignments. It shares bindings with legacy inputs selected
+    # explicitly; APM still does not semantically depend on this branch.
     analysis_adapter = AnalysisWorkflowExecution(
         workspace,
         run,
         handle,
         runtime=adapter.runtime,
         context_resolver=adapter.context_resolver,
+        legacy_inputs=True,
     )
     analysis_adapter.unit_pipeline = unit_pipeline
-    # Both graphs bind the analysis capabilities through the same analysis
-    # adapter methods, so a capability behaves identically whether an audit run
-    # or a standalone analysis request scheduled it.
+    # Shared methods honor the graph's selected input mode.
     _ANALYSIS_PIPELINE_BINDERS = {
         "data.join_utility_ready": (
             analysis_adapter._bind_join_utility,

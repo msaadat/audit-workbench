@@ -107,13 +107,19 @@ async function preview() {
   previewing.value = true
   runError.value = null
   try {
-    const result = await api.post<RunPythonResult>(
-      `/api/workspaces/${props.workspace.id}/run-python`,
-      { code: code.value },
-    )
-    frame.value = result.frame
-    totalRows.value = result.total_rows
-    stdout.value = result.stdout
+    const result = props.analysis.alignment
+      ? await api.post<AnalysisDetail>(
+        `/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}/preview`,
+        { spec: { code: code.value } },
+      )
+      : await api.post<RunPythonResult>(
+        `/api/workspaces/${props.workspace.id}/run-python`,
+        { code: code.value },
+      )
+    if ('error' in result && result.error) throw new Error(result.error)
+    frame.value = result.frame ?? null
+    totalRows.value = result.total_rows ?? 0
+    stdout.value = result.stdout ?? null
     detail.value = null
   } catch (error) {
     runError.value = error instanceof ApiError ? error.message : String(error)
@@ -227,6 +233,12 @@ async function openRun(runId: string) {
 </script>
 
 <template>
+  <p v-if="props.analysis?.alignment" class="muted">
+    Population: {{ props.analysis.alignment.root }}.
+    <span v-for="hop in props.analysis.alignment.joins" :key="hop.name">
+      {{ hop.left_on.join(', ') }} → {{ hop.right }}.{{ hop.right_on.join(', ') }}.
+    </span>
+  </p>
   <div class="analysis-editor-head">
     <InputText v-model="title" placeholder="Analysis title" class="title-input" />
     <Tag v-if="analysis.table" :value="analysis.table" severity="secondary" />

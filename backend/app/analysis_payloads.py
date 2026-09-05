@@ -25,16 +25,6 @@ def _cap_for(viz: dict) -> int:
     return VIZ_ROW_CAPS.get(str(viz.get("type") or "table"), 50)
 
 
-def _python_frames(workspace: Workspace) -> dict:
-    frames = {}
-    for name in workspace.table_names():
-        try:
-            frames[name] = workspace.get_frame(name)
-        except Exception:
-            continue
-    return frames
-
-
 def _frame_height(workspace: Workspace, name: object) -> int | None:
     """The row count of a named frame, or nothing if it will not resolve.
 
@@ -57,7 +47,7 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
     broken item degrades to an error card instead of raising."""
     payload = {
         key: item.get(key)
-        for key in ("id", "title", "kind", "table", "note", "viz", "created", "source", "spec")
+        for key in ("id", "title", "kind", "table", "note", "viz", "created", "source", "spec", "alignment")
     }
     payload["exceptions"] = None
     payload["exception_rows"] = 0
@@ -69,10 +59,12 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
     payload["population"] = None
     payload["tested"] = None
     try:
+        from .analysis_inputs import for_analysis, execution_frames
+        workspace = for_analysis(workspace, item)
         if item["kind"] == "python":
             code = (item.get("spec") or {}).get("code") or ""
             payload["code"] = code
-            result, stdout = sandbox.run(code, _python_frames(workspace))
+            result, stdout = sandbox.run(code, execution_frames(workspace, item))
             payload["stdout"] = stdout or None
             payload["total_rows"] = result.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
@@ -146,10 +138,12 @@ def analysis_export_frame(workspace: Workspace, analysis: dict):
     """
     import polars as pl
 
+    from .analysis_inputs import for_analysis, execution_frames
+    workspace = for_analysis(workspace, analysis)
     kind = str(analysis.get("kind") or "")
     if kind == "python":
         result, _ = sandbox.run(
-            (analysis.get("spec") or {}).get("code") or "", _python_frames(workspace)
+            (analysis.get("spec") or {}).get("code") or "", execution_frames(workspace, analysis)
         )
         return result
     frame = workspace.get_frame(analysis["table"])
@@ -177,7 +171,7 @@ def analysis_listing(workspace: Workspace, analysis: dict) -> dict:
     listing = {
         key: analysis.get(key)
         for key in (
-            "id", "title", "kind", "table", "note", "viz", "created", "source", "spec",
+            "id", "title", "kind", "table", "note", "viz", "created", "source", "spec", "alignment",
         )
     }
     listing["outcome_policy"] = dict(analysis.get("outcome_policy") or {})

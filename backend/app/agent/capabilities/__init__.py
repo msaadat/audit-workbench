@@ -71,6 +71,32 @@ class CapabilityGroupView:
             if capability.id in wanted
         )
 
+
+class AuditAnalysisGroup:
+    """EDA E5 is opt-in to its own graph; audit retains its shipped branch."""
+    CAPABILITY_IDS = tuple(
+        cid for cid in analysis.CAPABILITY_IDS if cid != "analysis.inputs_ready"
+    )
+
+    @staticmethod
+    def capabilities():
+        from dataclasses import replace
+
+        def legacy_scope(fn):
+            return lambda ws, scope: fn(ws, {**scope, "_legacy_analysis": True})
+
+        return tuple(
+            replace(
+                capability,
+                depends_on=audit_workflow.DEPENDENCIES[capability.id],
+                readiness=legacy_scope(capability.readiness),
+                expand_units=legacy_scope(capability.expand_units),
+            )
+            for capability in analysis.capabilities()
+            if capability.id in AuditAnalysisGroup.CAPABILITY_IDS
+        )
+
+
 # The audit dependency graph and outcome sets are authoritative in
 # ``workflows.audit``; these re-exports keep routing call sites reading from one
 # audit-domain package.
@@ -101,7 +127,7 @@ AUDIT_DOCUMENT_GROUP = CapabilityGroupView(documents, documents.AUDIT_CAPABILITY
 CAPABILITY_GROUPS = (
     sources,
     AUDIT_DOCUMENT_GROUP,
-    analysis,
+    AuditAnalysisGroup,
     planning,
     tests_group,
     fieldwork,

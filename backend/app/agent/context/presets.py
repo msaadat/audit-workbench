@@ -1313,7 +1313,7 @@ PRESETS.register(
                     # reason to exist, so this is the one analysis source sized
                     # for the whole engagement rather than for one frame.
                     representations=(ContextRepresentation("table_metadata"),),
-                    budget=ContextBudget(max_items=24, max_characters=60_000),
+                    budget=ContextBudget(max_items=224, max_characters=60_000),
                 ),
                 ContextSource(
                     id="nominations",
@@ -1325,7 +1325,7 @@ PRESETS.register(
                     # by. Aggregate counts and column names, exactly as the
                     # per-frame probe source carries them.
                     representations=(ContextRepresentation("table_aggregate"),),
-                    budget=ContextBudget(max_items=80, max_characters=48_000),
+                    budget=ContextBudget(max_items=256, max_characters=80_000),
                 ),
                 ContextSource(
                     id="relationship_map",
@@ -1364,7 +1364,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=20_000),
                 ),
             ),
-            budget=ContextBudget(max_items=201, max_characters=180_000),
+            budget=ContextBudget(max_items=577, max_characters=180_000),
             # The same class as ``analysis.definitions`` and no wider. Breadth
             # here is across frames, not down into rows: twenty column
             # inventories disclose what one column inventory discloses, twenty

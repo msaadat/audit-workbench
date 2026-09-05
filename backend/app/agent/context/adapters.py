@@ -340,11 +340,12 @@ def apm_table_metadata_candidates(
     workspace: Workspace,
     *,
     imported_only: bool = False,
+    names: Iterable[str] | None = None,
 ) -> tuple[ContextCandidate, ...]:
     """Expose schema-only table metadata through the existing assistant builder."""
     imported = _imported_table_names(workspace) if imported_only else None
     candidates = []
-    for table in assistant.schema_brief(workspace):
+    for table in assistant.schema_brief(workspace, tables=list(names) if names is not None else None):
         table_name = str(table.get("table") or "").strip()
         if not table_name or table.get("error"):
             continue
@@ -367,6 +368,7 @@ def apm_table_profile_candidates(
     workspace: Workspace,
     *,
     imported_only: bool = False,
+    names: Iterable[str] | None = None,
 ) -> tuple[ContextCandidate, ...]:
     """Expose bounded statistical profiles, plus category values where safe.
 
@@ -379,7 +381,7 @@ def apm_table_profile_candidates(
     """
     imported = _imported_table_names(workspace) if imported_only else None
     candidates = []
-    for table_name in workspace.table_names():
+    for table_name in (names if names is not None else workspace.table_names()):
         if imported is not None and table_name not in imported:
             continue
         try:
@@ -2127,7 +2129,11 @@ def analysis_relationship_candidates(
     mostly fail to match is exactly where an unreconciled population lives.
     """
     candidates = []
-    for record in relationships or ():
+    records = (
+        candidate for record in relationships or ()
+        for candidate in ((record.get("candidates") or []) if "candidates" in record else [record])
+    )
+    for record in records:
         left = str(record.get("left") or "")
         right = str(record.get("right") or "")
         if target and target not in {left, right}:
@@ -2140,6 +2146,7 @@ def analysis_relationship_candidates(
             "right_on": list(record.get("right_on") or []),
             "how": record.get("how"),
             "strength": record.get("strength"),
+            **({"compatible": record["compatible"]} if "compatible" in record else {}),
             "materialized_join": record.get("join"),
             "diagnostics": dict(record.get("diagnostics") or {}),
         }
@@ -2297,33 +2304,20 @@ def analysis_reading_scope(
     """
     from ... import analytics as analytics_module
 
-    known = set(workspace.table_names())
-    scoped = [str(name) for name in frames if str(name) in known]
-    inventory = {
-        str(item.get("table")): item
-        for item in assistant.schema_brief(workspace)
-        if str(item.get("table") or "") in set(scoped) and not item.get("error")
-    }
-    frame_candidates = []
-    for name in scoped:
-        schema = inventory.get(name)
-        if schema is None:
-            continue
-        described = {
-            **schema,
-            "column_origins": join_diagnostics.column_origins(workspace, name),
-            "frame_root": join_diagnostics.frame_root(workspace, name),
-            "frame_route": join_diagnostics.frame_route(workspace, name),
-        }
-        frame_candidates.append(
-            ContextCandidate(
-                source_ref=f"table:{name}",
-                source=described,
-                representations={"table_metadata": described},
-                metadata={"table": name},
-                lexical_text=name,
-            )
+    from ...analysis_inputs import compact_frame_map
+    scoped = list(frames)
+    described_by_name = compact_frame_map(workspace, scoped)
+    for name, described in described_by_name.items():
+        if name not in scoped:
+            described["selectable"] = False
+    frame_candidates = [
+        ContextCandidate(
+            source_ref=f"table:{name}", source=described,
+            representations={"table_metadata": described},
+            metadata={"table": name}, lexical_text=name,
         )
+        for name, described in described_by_name.items()
+    ]
     registry = (
         analytics_registry
         if analytics_registry is not None
@@ -2405,7 +2399,7 @@ def analysis_definition_scope(
     schema = next(
         (
             item
-            for item in assistant.schema_brief(workspace)
+            for item in assistant.schema_brief(workspace, tables=[target])
             if str(item.get("table") or "") == target and not item.get("error")
         ),
         None,
@@ -2414,7 +2408,7 @@ def analysis_definition_scope(
         raise WorkspaceError(f"Table '{target}' has no readable schema.")
     profile_candidates = tuple(
         candidate
-        for candidate in apm_table_profile_candidates(workspace)
+        for candidate in apm_table_profile_candidates(workspace, names=[target])
         if candidate.metadata.get("table") == target
     )
     # A frame whose lineage the target already contains has no column the
@@ -2431,7 +2425,7 @@ def analysis_definition_scope(
     ]
     related_candidates = tuple(
         candidate
-        for candidate in apm_table_metadata_candidates(workspace)
+        for candidate in apm_table_metadata_candidates(workspace, names=related_names)
         if candidate.metadata.get("table") in set(related_names)
     )
     # The complete public contract for every workflow-eligible library test.
@@ -2623,6 +2617,7 @@ def _summary_result_projection(
         # reads like an auditor wrote it; one that only has titles does not.
         "note": analysis.get("note"),
         "table": analysis.get("table"),
+        **({"alignment": analysis["alignment"]} if analysis.get("alignment") else {}),
         "kind": analysis.get("kind"),
         "test": spec.get("test"),
         # What the procedure actually did, not only what it was called. A title
@@ -2936,6 +2931,8 @@ def promotion_scope(workspace: Workspace, analysis_id: str) -> ContextScope:
         ),
         None,
     )
+    from ...analysis_inputs import for_analysis
+    workspace = for_analysis(workspace, analysis or {})
     subject = fitting_subject(analysis or {})
     return ContextScope(
         candidates={

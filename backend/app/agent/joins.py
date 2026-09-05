@@ -462,7 +462,9 @@ def frame_lineage(workspace: Workspace, name: str, _seen: frozenset = frozenset(
         (item for item in workspace.joins if str(item.get("name")) == name), None
     )
     if join is None:
-        return frozenset()
+        from ..analysis_inputs import saved_input
+        recipe = saved_input(workspace, name)
+        return frozenset({recipe["root"], *(hop["right"] for hop in recipe["joins"])}) if recipe else frozenset()
     seen = _seen | {name}
     return frame_lineage(workspace, str(join.get("left")), seen) | frame_lineage(
         workspace, str(join.get("right")), seen
@@ -488,7 +490,9 @@ def frame_grain(workspace: Workspace, name: str, _seen: frozenset = frozenset())
         (item for item in workspace.joins if str(item.get("name")) == name), None
     )
     if join is None:
-        return name
+        from ..analysis_inputs import saved_input
+        recipe = saved_input(workspace, name)
+        return recipe["root"] if recipe else name
     return frame_grain(workspace, str(join.get("left")), _seen | {name})
 
 
@@ -542,7 +546,9 @@ def frame_root(workspace: Workspace, name: str, _seen: frozenset = frozenset()) 
         (item for item in workspace.joins if str(item.get("name")) == name), None
     )
     if join is None:
-        return name
+        from ..analysis_inputs import saved_input
+        recipe = saved_input(workspace, name)
+        return recipe["root"] if recipe else name
     return frame_root(workspace, str(join.get("left")), _seen | {name})
 
 
@@ -560,6 +566,18 @@ def frame_route(workspace: Workspace, name: str) -> dict[str, str]:
     brought that side in, which is the key that decides which of its rows each
     row of the frame sees.
     """
+    from ..analysis_inputs import saved_input
+    recipe = getattr(workspace, "_input_recipes", {}).get(name) or saved_input(workspace, name)
+    if recipe:
+        # E5 must distinguish both lookup keys and every upstream role. A limit
+        # reached through an approver is different from the same limit reached
+        # through a requester even though the final hop is JOB_TITLE in both.
+        path = [recipe["root"]]
+        route = {}
+        for hop in recipe["joins"]:
+            path.append([hop["right"], hop["left_on"], hop["right_on"], hop["how"]])
+            route[hop["right"]] = json.dumps(path, separators=(",", ":"))
+        return route
     joins = {str(item.get("name")): item for item in workspace.joins}
     route: dict[str, str] = {}
     seen: set[str] = set()
@@ -598,7 +616,9 @@ def column_origins(
         (item for item in workspace.joins if str(item.get("name")) == name), None
     )
     if join is None:
-        return {}
+        from ..analysis_inputs import saved_input, InputWorkspace
+        recipe = saved_input(workspace, name)
+        return column_origins(InputWorkspace(workspace, [recipe]), name) if recipe else {}
     seen = _seen | {name}
     left = column_origins(workspace, str(join.get("left")), seen)
     right = column_origins(workspace, str(join.get("right")), seen)

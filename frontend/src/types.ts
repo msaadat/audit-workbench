@@ -1832,6 +1832,13 @@ export interface EngagementStatusPayload {
   sections?: Record<string, EngagementSection>
 }
 
+export interface AnalysisAlignment {
+  version: 1
+  name: string
+  root: string
+  joins: { name: string; left: string; right: string; how: 'left'; left_on: string[]; right_on: string[] }[]
+}
+
 export interface SavedAnalysis {
   id: string
   title: string
@@ -1844,6 +1851,7 @@ export interface SavedAnalysis {
   created_by?: 'user' | 'agent' | string | null
   spec?: Record<string, unknown>
   outcome_policy?: AnalysisOutcomePolicy
+  alignment?: AnalysisAlignment | null
   /** Freshness of `last_result` against the current definition and inputs. */
   state: AnalysisResultState
   /** The triage meaning of the recorded outcome. Never derived from a preview. */

@@ -25,6 +25,8 @@ from ...text import counted, verb
 from ...analysis_results import analysis_result_state, summary_basis_digest
 from ...workspaces import Workspace, WorkspaceError
 from .. import joins as join_diagnostics, register as assertion_register
+from .. import alignment_catalog
+from ...analysis_inputs import source_refs, saved_input, InputWorkspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import analysis as analysis_workflow
 
@@ -34,6 +36,7 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "data.joins_ready",
     "analysis.register_ready",
     "analysis.definitions_ready",
+    "analysis.inputs_ready",
     "analysis.executed",
     "analysis.summarized",
 )
@@ -165,6 +168,8 @@ def resolve_table_scope(workspace: Workspace, scope: dict) -> TableScope:
                 unknown.append(value)
             elif bound in base:
                 selected.append(bound)
+            elif (analyses.get(name) or {}).get("alignment"):
+                selected.extend(ref.split(":", 1)[1] for ref in source_refs(analyses[name]["alignment"]))
             elif bound in joins:
                 selected.extend(_join_sides(joins, bound))
             else:
@@ -192,9 +197,12 @@ def resolve_table_scope(workspace: Workspace, scope: dict) -> TableScope:
         for name in sorted(joins)
         if join_diagnostics.frame_lineage(workspace, name) <= scoped
     )
+    virtual = () if scope.get("_legacy_analysis") else tuple(r["name"] for r in alignment_catalog.catalog(workspace, tables)["recipes"])
+    saved = tuple(a["table"] for a in workspace.analyses if a.get("alignment")
+                  and set(source_refs(a["alignment"])) <= {f"table:{t}" for t in tables})
     return TableScope(
         tables=tables,
-        joins=materialized,
+        joins=tuple(dict.fromkeys((*materialized, *virtual, *saved))),
         requested=requested,
         unknown=tuple(dict.fromkeys(unknown)),
         ambiguity=ambiguity,
@@ -298,6 +306,16 @@ def chain_pairs(
     return tuple(pairs)
 
 
+def input_view(workspace, table_scope):
+    missing = set(table_scope.targets) - set(workspace.table_names())
+    if not missing:
+        return workspace
+    saved = [saved_input(workspace, name) for name in missing]
+    if all(saved):
+        return InputWorkspace(workspace, saved, validated=True)
+    return alignment_catalog.view(workspace, table_scope.tables)
+
+
 def definable_targets(
     workspace: Workspace, table_scope: TableScope
 ) -> tuple[str, ...]:
@@ -323,12 +341,15 @@ def definable_targets(
     a small workspace, not an empty one: the rule discriminates between frames,
     so it cannot decide the whole engagement.
     """
+    workspace = input_view(workspace, table_scope)
     if table_scope.explicit:
         return table_scope.targets
     sizes: dict[str, int] = {}
     for name in table_scope.targets:
         try:
-            rows = workspace.get_profile(name).get("rows")
+            recipe = getattr(workspace, "_input_recipes", {}).get(name)
+            rows = (workspace.get_frame(recipe["root"]).height if recipe
+                    else workspace.get_profile(name).get("rows"))
         except (OSError, WorkspaceError):
             continue
         if isinstance(rows, int):
@@ -386,7 +407,7 @@ def unanswered_frames(
     defined = {
         str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
     }
-    settled = assertion_register.settled_frames(workspace)
+    settled = assertion_register.settled_frames(input_view(workspace, table_scope))
     return tuple(
         target
         for target in definable_targets(workspace, table_scope)
@@ -422,15 +443,16 @@ def _relationships_ready(workspace: Workspace, scope: dict) -> Readiness:
             "satisfied",
             details={"tables": len(table_scope.tables), "pairs": 0},
         )
-    pending = uncovered_pairs(workspace, table_scope)
+    pending = (uncovered_pairs(workspace, table_scope) if scope.get("_legacy_analysis")
+               else alignment_catalog.pending_pairs(workspace, table_scope.pairs()))
     details = {
         "tables": len(table_scope.tables),
         "pairs": len(table_scope.pairs()),
         "undiagnosed_pairs": len(pending),
     }
     if not pending:
-        # Every scoped pair is already connected by a durable join, so there is
-        # nothing left for local diagnosis to establish.
+        # EDA has diagnosed every pair at these source signatures. Audit's
+        # legacy mode instead uses its durable-join/declined-pair coverage.
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
@@ -576,6 +598,33 @@ def _data_joins_ready() -> Capability:
     )
 
 
+def _inputs_ready(workspace: Workspace, scope: dict) -> Readiness:
+    from ...analysis_inputs import validate_input
+    errors = []
+    items = agent_analyses(workspace, resolve_table_scope(workspace, scope))
+    for item in items:
+        if item.get("alignment"):
+            try:
+                validate_input(workspace, item["alignment"])
+            except (ValueError, WorkspaceError) as error:
+                errors.append(f"{item['id']}: {error}")
+    return Readiness("missing" if errors else "satisfied", tuple(errors))
+
+
+def _input_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    return [UnitSpec(semantic_unit_id("analysis_input", a["id"]), "analysis_input",
+        f"Prepare input — {a.get('title') or a['id']}", (f"analysis:{a['id']}",),
+        {"analysis_id": a["id"]})
+        for a in agent_analyses(workspace, resolve_table_scope(workspace, scope))
+        if a.get("alignment") and (_forced(scope) or analysis_result_state(workspace, a) != "current")]
+
+
+def _analysis_inputs_ready() -> Capability:
+    return Capability("analysis.inputs_ready", "analysis_inputs", "Prepare accepted analysis inputs",
+        "analysis_input", analysis_workflow.dependencies("analysis.inputs_ready"),
+        _inputs_ready, _input_units, context=None, invalidate_on=("analyses", "tables", "joins"))
+
+
 # --------------------------------------------------------------------------- #
 # analysis.register_ready (E4)
 # --------------------------------------------------------------------------- #
@@ -604,7 +653,7 @@ def _register_ready(workspace: Workspace, scope: dict) -> Readiness:
         str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
     }
     targets = definable_targets(workspace, table_scope)
-    settled = assertion_register.settled_frames(workspace)
+    settled = assertion_register.settled_frames(input_view(workspace, table_scope))
     missing = unanswered_frames(workspace, table_scope)
     details = {
         "frames": len(targets),
@@ -696,7 +745,7 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
         str(item.get("table") or "") for item in agent_analyses(workspace, table_scope)
     }
     targets = definable_targets(workspace, table_scope)
-    settled = assertion_register.settled_frames(workspace)
+    settled = assertion_register.settled_frames(input_view(workspace, table_scope))
     # A frame this stage already decided to leave empty is answered, exactly as
     # one carrying a definition is. Counting it as missing would hold the
     # capability short of satisfied forever and block execution and the summary
@@ -719,6 +768,14 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
     )
 
 
+def input_parent_refs(workspace, table_scope, name):
+    if name in workspace.table_names():
+        return (frame_ref(workspace, name),)
+    recipe = (alignment_catalog.recipe_for(workspace, table_scope.tables, name)
+              or saved_input(workspace, name))
+    return source_refs(recipe) if recipe else (frame_ref(workspace, name),)
+
+
 def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     """One unit per definable frame; whether it spends a turn is the binder's.
 
@@ -737,7 +794,7 @@ def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             semantic_unit_id("analysis_definitions", target),
             "analysis_definition",
             f"Propose analyses — {target}",
-            (f"{'join' if target in joins else 'table'}:{target}",),
+            input_parent_refs(workspace, table_scope, target),
             {"target": target},
         )
         for target in definable_targets(workspace, table_scope)
@@ -909,6 +966,7 @@ _BUILDERS = {
     "data.joins_ready": _data_joins_ready,
     "analysis.register_ready": _analysis_register_ready,
     "analysis.definitions_ready": _analysis_definitions_ready,
+    "analysis.inputs_ready": _analysis_inputs_ready,
     "analysis.executed": _analysis_executed,
     "analysis.summarized": _analysis_summarized,
 }
