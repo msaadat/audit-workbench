@@ -132,7 +132,10 @@ backend/app/
 |- intake.py                   - staged mixed file/document intake
 |- documents.py                - document inventory, versions, extraction,
 |                                metadata, and activity logs
-|- document_context.py         - bounded document context packaging
+|- document_context.py         - bounded document context packaging, and
+|                                the structured-record representation the
+|                                chat and the steering loop read readings
+|                                through
 |- document_search.py          - retrieval helpers over extracted docs
 |- document_analysis.py        - document-analysis jobs and conflict model
 |- doc_tests.py                - durable document test definitions and runs
@@ -421,6 +424,33 @@ frontend/src/
   - `assistant_chats.py`: durable chat UX that routes each message as `ask`,
     `act`, or clarification, stores local artifacts, and projects linked runs
     back into the transcript.
+- The read tools are registered once in `assistant.READ_TOOLS`; the steering
+  loop takes a subset of the same registry through `assistant_tools`, excluding
+  only the three compute tools (`query_table`, `run_analytics`, `run_python`)
+  because they preview real rows and produce chat artifacts a loop turn has
+  nowhere to put.
+- `list_artifacts` and `get_artifact` reach every audit artifact the index
+  holds — including data tests, document tests and their question items,
+  observations and validation rulesets, none of which an
+  `inspect_audit_artifacts` area covers. Both surfaces have them, in two
+  variants of one handler: `ActionToolSession(include_operations=False)` for
+  the chat, which answers questions and hands work over as a brief, and the
+  full payload for the loop, which spends that action vocabulary.
+  `assistant_tools.ARTIFACT_READ_TOOL_NAMES` names the ownership rather than
+  leaving it to dispatch order, since both registries now define the two names.
+- A listing is capped, and the index appends kinds in a fixed order, so an
+  unfiltered list in a real workspace never reaches the tail kinds.
+  `kind_counts` totals every kind before the cap for exactly that reason: a
+  truncated page must read as a narrowing instruction, not as an empty kind.
+- A document is reachable two ways, and they answer different questions.
+  `get_document_records` reads what the pipeline already extracted against the
+  type's frozen schema — stated field values, each carrying the page and
+  excerpt its extractor cited — and is the first reach for a question about
+  what a document *states*. `search_documents` returns prose excerpts and is
+  for what the schema does not cover. A reading stamped with a schema that has
+  since moved is never reinterpreted under today's vocabulary: it is absent,
+  and its document is named in `unread_documents`, next to the
+  `missing_fields` a record does not state.
 - Chat messages can start new runs or queue commands onto the active run.
 - Assistant artifacts are revisioned and rerunnable; editable Python artifacts
   are re-executed locally through the sandbox.

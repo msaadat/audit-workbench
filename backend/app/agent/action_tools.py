@@ -16,7 +16,7 @@ from . import actions, artifact_index, operations
 
 
 MAX_TOOL_CALLS = 12
-MAX_ARTIFACTS = 50
+MAX_ARTIFACTS = tooling.MAX_ARTIFACTS
 MAX_ARTIFACT_CHARS = 12_000
 
 
@@ -223,11 +223,26 @@ def _model_artifact_record(record: object) -> object:
 
 
 class ActionToolSession:
-    """Local dispatch for the action planner's explicitly limited read tools."""
+    """Local dispatch for the action planner's explicitly limited read tools.
 
-    def __init__(self, workspace: Workspace, catalog: list[dict]):
+    ``include_operations`` is what a caller that cannot act turns off. The
+    artifact reads carry "what may be done to this" alongside the record, which
+    is the planner's whole reason for reading one; a read-only caller shown the
+    same block is being offered a vocabulary it has no tool to spend, and the
+    chat's own way of handing work over is a brief in the auditor's words, not
+    an action type.
+    """
+
+    def __init__(
+        self,
+        workspace: Workspace,
+        catalog: list[dict],
+        *,
+        include_operations: bool = True,
+    ):
         self.workspace = workspace
         self.catalog = list(catalog)
+        self.include_operations = bool(include_operations)
 
     def dispatch(self, name: str, args: dict) -> dict:
         handler = getattr(self, f"_{name}", None)
@@ -250,19 +265,31 @@ class ActionToolSession:
             if not kinds or str(item.get("kind")) in kinds
         ]
         kept = artifacts[:limit]
-        return {
+        result = {
             "revision": index["revision"],
             "artifacts": kept,
             "truncated": len(artifacts) > limit,
+            # How many of each kind exist, counted before the limit and across
+            # every kind rather than the filtered set. The index appends in a
+            # fixed order, so an unfiltered listing that hits the cap drops the
+            # tail kinds entirely — data tests, documents, observations and
+            # tables in a workspace of any size — and a reader shown fifty rows
+            # with no counts concludes those kinds are empty. Naming the counts
+            # is what turns a truncated list into a narrowing instruction.
+            "kind_counts": dict(
+                Counter(str(item.get("kind") or "") for item in index["artifacts"])
+            ),
+        }
+        if self.include_operations:
             # One entry per *kind* present, not per artifact: what may be done
             # to a finding is a fact about findings, and repeating it beside
             # each of thirty would cost more than the list itself.
-            "operations_by_kind": {
+            result["operations_by_kind"] = {
                 kind: operations.artifact_operations(kind)
                 for kind in sorted({str(item.get("kind") or "") for item in kept} - {""})
-            },
-            "creating": operations.creating_actions(),
-        }
+            }
+            result["creating"] = operations.creating_actions()
+        return result
 
     def _get_artifact(self, args: dict) -> dict:
         ref = str(args.get("ref") or "").strip()
@@ -274,19 +301,21 @@ class ActionToolSession:
         )
         record = _model_artifact_record(record)
         bounded, truncated = _bounded_record(record)
-        return {
+        result = {
             "artifact": {
                 key: entry.get(key)
                 for key in ("id", "ref", "kind", "title", "status", "linked_refs")
             },
             "record": bounded,
             "record_truncated": truncated,
+        }
+        if self.include_operations:
             # What may be done to this artifact, from the action catalog and
             # the capability registry rather than from a name. ``outcomes``
             # that do not accept this ref will run over their whole scope
             # however narrowly they are asked.
-            "operations": operations.artifact_operations(str(entry["kind"])),
-        }
+            result["operations"] = operations.artifact_operations(str(entry["kind"]))
+        return result
 
     def _get_table_schemas(self, args: dict) -> dict:
         return {"tables": tooling.table_schemas(self.workspace, args.get("tables"))}

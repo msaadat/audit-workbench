@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
+from collections.abc import Iterable, Mapping
 
 from . import document_analysis, document_search, documents
 from .agent.prompts import document_summary_heading
@@ -11,6 +13,15 @@ from .workspaces import Workspace, WorkspaceError
 
 SMALL_DOCUMENT_CHARACTERS = 32_000
 MAX_EXCERPT_CHARACTERS = 8_000
+#: Bounds for the structured-record representation. A reading is dense — one
+#: record is a couple of dozen short values — so the caps exist to keep a whole
+#: corpus out of one turn's context, not to withhold anything: what a cap left
+#: out is always counted back in ``population_records``.
+MODEL_RECORD_LIMIT = 25
+MODEL_RECORD_FIELDS = 30
+MODEL_RECORD_VALUE_CHARACTERS = 240
+MODEL_RECORD_EXCERPT_CHARACTERS = 160
+MODEL_ADDITIONAL_FIELDS = 10
 
 
 def apm_document_context(
@@ -261,3 +272,259 @@ def assistant_attachments(workspace: Workspace, document_ids: list[str], *,
             "trimmed": any(item["trimmed"] for item in manifest),
             "scope_required": any(item["context_outcome"] == "scope_required" for item in manifest),
             "character_budget": max_characters}
+
+
+# ------------------------------------------------------- structured readings
+def record_type_catalog(workspace: Workspace) -> list[dict]:
+    """One entry per document type: what it holds and the vocabulary it holds it in.
+
+    Both document counts are reported because their difference answers a
+    question the records alone cannot. ``documents`` is what the corpus is
+    typed as; ``documents_with_records`` is what produced a reading against the
+    type's current schema. A document in the gap — never analysed, retyped, or
+    extracted against a schema that has since moved — contributes nothing, and
+    is indistinguishable from one that had nothing to say unless the gap is
+    stated.
+    """
+
+    from . import cycle_linking, document_classification, document_schemas
+
+    records, _hashes = cycle_linking.structured_evidence(workspace)
+    by_type: dict[str, list[dict]] = {}
+    for record in records:
+        by_type.setdefault(str(record.get("document_type") or ""), []).append(record)
+    typed: dict[str, int] = {}
+    for document in workspace.documents:
+        document_type = document_classification.document_type(
+            workspace, str(document.get("id") or "")
+        )
+        if document_type:
+            typed[document_type] = typed.get(document_type, 0) + 1
+    catalog = []
+    for document_type in sorted(set(typed) | set(by_type)):
+        rows = by_type.get(document_type) or []
+        schema = document_schemas.load_schema(workspace, document_type) or {}
+        declared = list(schema.get("fields") or [])
+        projected = [
+            {
+                key: str(field.get(key) or "")
+                for key in ("name", "label", "role", "value_type")
+                if field.get(key)
+            }
+            for field in declared[:MODEL_RECORD_FIELDS]
+        ]
+        catalog.append({
+            "document_type": document_type,
+            "documents": typed.get(document_type, 0),
+            "documents_with_records": len({
+                str(row.get("document_id") or "") for row in rows
+            }),
+            "records": len(rows),
+            "schema_version": schema.get("schema_version"),
+            "fields": projected,
+            "fields_truncated": len(declared) > len(projected),
+        })
+    return catalog
+
+
+def _record_value(entry: Mapping, anchors: Mapping[str, Mapping]) -> dict:
+    """One stated value with the page and excerpt its extractor cited for it."""
+
+    value = {"value": str(entry.get("value") or "")[:MODEL_RECORD_VALUE_CHARACTERS]}
+    citation = anchors.get(str(entry.get("citation") or "")) or {}
+    if citation:
+        value["page"] = int(citation.get("page") or 1)
+        value["excerpt"] = str(citation.get("excerpt") or "")[
+            :MODEL_RECORD_EXCERPT_CHARACTERS
+        ]
+    return value
+
+
+def structured_records(
+    workspace: Workspace,
+    *,
+    document_type: str = "",
+    document_ids: Iterable[str] = (),
+    fields: Iterable[str] = (),
+    limit: int = MODEL_RECORD_LIMIT,
+    purpose: str = "structured_records",
+    run_id: str | None = None,
+    stage: str | None = None,
+    record_activity: bool = True,
+) -> dict:
+    """The readings taken off evidence documents, as values rather than prose.
+
+    A reading is what the document pipeline already extracted against the
+    type's frozen schema, and every value carries the citation the extractor
+    recorded for it — so an answer drawn from here stands on a page without a
+    page ever being fetched, at a few hundred characters where the excerpt path
+    costs tens of thousands.
+
+    Records extracted against a schema that has since moved are not
+    reinterpreted under today's vocabulary: they are absent, and the documents
+    holding them are named in ``unread_documents`` rather than left to be
+    inferred from a count that came back smaller than expected.
+    """
+
+    from . import cycle_linking, document_classification, document_schemas
+
+    started = time.monotonic()
+    document_type = str(document_type or "").strip()
+    wanted_ids = [str(value).strip() for value in document_ids or [] if str(value).strip()]
+    requested = [str(value).strip() for value in fields or [] if str(value).strip()]
+    limit = min(MODEL_RECORD_LIMIT, max(1, int(limit or MODEL_RECORD_LIMIT)))
+
+    known = {str(item.get("id") or ""): item for item in workspace.documents}
+    unknown_ids = sorted({value for value in wanted_ids if value not in known})
+    if unknown_ids:
+        raise WorkspaceError("Unknown document id(s): " + ", ".join(unknown_ids) + ".")
+
+    records, _hashes = cycle_linking.structured_evidence(workspace)
+    if document_type:
+        schema = document_schemas.load_schema(workspace, document_type)
+        if schema is None:
+            available = sorted({
+                str(row.get("document_type") or "") for row in records
+            } - {""})
+            raise WorkspaceError(
+                f"Document type '{document_type}' has no stamped schema. "
+                + (
+                    "Types carrying readings: " + ", ".join(available) + "."
+                    if available
+                    else "No document type carries a current reading yet."
+                )
+            )
+        rows = [
+            row for row in records
+            if str(row.get("document_type") or "") == document_type
+        ]
+    else:
+        schema = None
+        rows = list(records)
+    # Which documents of the type have a reading is a property of the type, not
+    # of the caller's id filter: computing it after the filter would report
+    # every unasked-for document as unread.
+    with_records = {str(row.get("document_id") or "") for row in rows}
+    if wanted_ids:
+        selected = set(wanted_ids)
+        rows = [row for row in rows if str(row.get("document_id") or "") in selected]
+
+    declared = [
+        str(field.get("name") or "") for field in (schema or {}).get("fields") or []
+    ]
+    unknown_fields = sorted({name for name in requested if declared and name not in declared})
+    names = (
+        [name for name in requested if not declared or name in declared]
+        if requested
+        else declared[:MODEL_RECORD_FIELDS]
+    )
+    fields_truncated = not requested and len(declared) > len(names)
+
+    population = len(rows)
+    anchors_by_document: dict[str, dict] = {}
+    projected = []
+    for row in rows[:limit]:
+        document_id = str(row.get("document_id") or "")
+        if document_id not in anchors_by_document:
+            detail = document_analysis.load_analysis(
+                workspace, document_id, document=known.get(document_id), with_status=False
+            )
+            artifact = detail.get("effective") or {}
+            anchors_by_document[document_id] = {
+                "analysis_id": artifact.get("id"),
+                "anchors": {
+                    str(item.get("id") or ""): item
+                    for item in artifact.get("citations") or []
+                },
+            }
+        anchors = anchors_by_document[document_id]["anchors"]
+        # Without a named type there is no declared vocabulary to project
+        # against, so the record's own stated names stand in for it.
+        wanted = names or list(
+            dict.fromkeys(
+                str(field.get("name") or "")
+                for field in row.get("fields") or []
+                if str(field.get("name") or "")
+            )
+        )[:MODEL_RECORD_FIELDS]
+        stated: dict[str, list[dict]] = {}
+        missing: list[str] = []
+        for name in wanted:
+            entries = cycle_linking.stated(row, name)
+            if not entries:
+                missing.append(name)
+                continue
+            stated[name] = [_record_value(entry, anchors) for entry in entries]
+        projected.append({
+            "document_id": document_id,
+            "document_title": documents.display_name(known.get(document_id), document_id),
+            "document_type": str(row.get("document_type") or ""),
+            "record_index": int(row.get("record_index") or 0),
+            "record_id": str(row.get("record_id") or ""),
+            "analysis_id": anchors_by_document[document_id]["analysis_id"],
+            "fields": stated,
+            # Named rather than omitted: a field the reading does not state is
+            # often the thing the question was about, and silence about it
+            # reads as a value.
+            "missing_fields": missing,
+            "additional_fields": [
+                {
+                    "name": str(field.get("name") or ""),
+                    "value": str(field.get("value") or "")[:MODEL_RECORD_VALUE_CHARACTERS],
+                }
+                for field in (row.get("additional_fields") or [])[:MODEL_ADDITIONAL_FIELDS]
+                if str(field.get("value") or "").strip()
+            ],
+        })
+
+    unread = []
+    if document_type:
+        unread = [
+            {
+                "document_id": str(document.get("id") or ""),
+                "title": documents.display_name(document, str(document.get("id") or "")),
+            }
+            for document in document_classification.documents_of_type(
+                workspace, document_type
+            )
+            if str(document.get("id") or "") not in with_records
+        ]
+
+    result = {
+        "document_type": document_type or None,
+        "records": projected,
+        "population_records": population,
+        "returned_records": len(projected),
+        "truncated": population > len(projected),
+        "unread_documents": unread,
+        "unknown_fields": unknown_fields,
+        "fields_truncated": fields_truncated,
+    }
+    duration = round((time.monotonic() - started) * 1000, 2)
+    result["retrieval_duration_ms"] = duration
+    if record_activity and projected:
+        pages = sorted({
+            int(value["page"])
+            for record in projected
+            for entries in record["fields"].values()
+            for value in entries
+            if value.get("page") is not None
+        })
+        documents.append_activity(
+            workspace, run_id=run_id, stage=stage, task=None, purpose=purpose,
+            provider=None, model=None, vision_used=False, prompt_version=None,
+            template_versions=[], knowledge_packs=[],
+            document_ids=sorted({record["document_id"] for record in projected}),
+            page_ranges=pages,
+            source_hashes=sorted({
+                str((known.get(record["document_id"]) or {}).get("sha1") or "")
+                for record in projected
+            } - {""}),
+            response_at=documents.utcnow(), response_hash=None, artifact_ref=None,
+            disposition="context", representation="structured_record",
+            analysis_id=None, search_query_hash=None,
+            characters_supplied=len(json.dumps(projected, default=str)),
+            cache_hit=True, retrieval_duration_ms=duration, model_duration_ms=None,
+            context_outcome="trimmed" if result["truncated"] else "supplied",
+        )
+    return result

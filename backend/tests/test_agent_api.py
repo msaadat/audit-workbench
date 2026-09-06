@@ -129,7 +129,15 @@ def test_approval_round_trip_over_api(client, ws_id, workspace_with_data, fake_a
     done = wait_run(workspace_with_data, run["id"])
     assert done["status"] == "completed"
     ws = workspaces.load_workspace(ws_id)
-    assert ws.joins and ws.analyses
+    # Analyses only. An unscoped run requests `analysis.summarized`, whose
+    # closure reaches `data.relationships_inferred` — read-only diagnosis — and
+    # not `data.joins_ready`, which sits on the separate `data.join_utility_ready`
+    # branch that `table_relationships` asks for. This line used to assert
+    # `ws.joins` too, from before that split; the run never promised one, and an
+    # analysis needing the joined shape carries its own alignment recipe rather
+    # than a materialized join. The approval round trip this test is named for
+    # is what the loop above proves.
+    assert ws.analyses
 
 
 def test_offline_control_responses_are_durable_before_resume(

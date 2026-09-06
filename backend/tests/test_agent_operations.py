@@ -141,3 +141,47 @@ def test_list_artifacts_carries_one_entry_per_kind_not_per_artifact(
     )
     # And what makes a new one, which targets no existing artifact at all.
     assert "create_finding" in {item["action"] for item in listed["creating"]}
+
+
+def test_a_read_only_caller_gets_the_record_without_the_action_vocabulary(
+    workspace_with_a_finding,
+):
+    """What may be *done* is planner context, and a reader cannot spend it."""
+
+    session = action_tools.ActionToolSession(
+        workspace_with_a_finding, [], include_operations=False
+    )
+    listed = session.dispatch("list_artifacts", {"kinds": ["finding"]})
+
+    assert listed["artifacts"]
+    assert "operations_by_kind" not in listed
+    assert "creating" not in listed
+
+    got = session.dispatch("get_artifact", {"ref": listed["artifacts"][0]["ref"]})
+
+    assert got["record"]
+    assert "operations" not in got
+
+
+def test_a_truncated_listing_still_counts_the_kinds_it_cut_off(
+    workspace_with_a_finding,
+):
+    """The index appends in a fixed order, so a cap drops whole kinds.
+
+    Without the counts a reader shown the first page concludes the kinds behind
+    it are empty — which is exactly the question ``list_artifacts`` is asked.
+    """
+
+    from app import findings
+
+    for index in range(3):
+        findings.add(workspace_with_a_finding, {"title": f"Another {index}"})
+    session = action_tools.ActionToolSession(workspace_with_a_finding, [])
+
+    listed = session.dispatch("list_artifacts", {"limit": 1})
+
+    assert len(listed["artifacts"]) == 1
+    assert listed["truncated"] is True
+    assert listed["kind_counts"]["finding"] == 4
+    # Counted across the whole index, not the page.
+    assert sum(listed["kind_counts"].values()) > 1

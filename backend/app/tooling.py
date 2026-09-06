@@ -13,6 +13,11 @@ from .workspaces import Workspace, WorkspaceError
 
 
 CATEGORY_SAMPLE_MAX = 30
+#: How many artifact-index entries one listing may carry. It lives here
+#: rather than with the action planner because both the planner and the
+#: read-only coordinator advertise it in a tool schema, and this module is
+#: the one they can both import without a cycle.
+MAX_ARTIFACTS = 50
 
 
 def function_tool(name: str, description: str, parameters: dict) -> dict:

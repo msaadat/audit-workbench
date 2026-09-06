@@ -540,6 +540,7 @@ export interface AIActivityEvent {
   response_hash: string | null
   disposition: string
   representation?: 'raw_pages' | 'summary' | 'audit_notes' | 'excerpt'
+    | 'vision_transcript' | 'structured_record'
   analysis_id?: string | null
   search_query_hash?: string | null
   characters_supplied?: number

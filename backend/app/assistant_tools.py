@@ -33,6 +33,7 @@ LOOP_READ_TOOL_NAMES = (
     "get_latest_run",
     "inspect_audit_artifacts",
     "search_documents",
+    "get_document_records",
     "list_tables",
     "describe_table",
     "get_table_schemas",
@@ -41,12 +42,21 @@ LOOP_READ_TOOL_NAMES = (
     "get_artifact",
 )
 
+#: Reads both registries now define, whose handler here is the artifact
+#: session's. The coordinator registers its own read-only variant of these —
+#: same records, no operations block, because a chat turn answers questions and
+#: hands work over as a brief. The loop steers capabilities and spends that
+#: vocabulary, so ownership is named rather than left to which branch of
+#: :meth:`ReadToolSession.dispatch` happens to be tested first.
+ARTIFACT_READ_TOOL_NAMES = ("list_artifacts", "get_artifact")
+
 #: Labels for the activity strip, keyed by tool name.
 TOOL_LABELS = {
     "get_audit_progress": "Reading audit progress",
     "get_latest_run": "Reading the latest run",
     "inspect_audit_artifacts": "Reading audit artifacts",
     "search_documents": "Searching documents",
+    "get_document_records": "Reading document records",
     "list_tables": "Listing tables",
     "describe_table": "Describing a table",
     "get_table_schemas": "Reading table schemas",
@@ -66,6 +76,9 @@ def loop_tool_schemas() -> list[dict]:
         str(schema["function"]["name"]): schema
         for schema in [*assistant.TOOLS, *action_tools.TOOL_SCHEMAS]
     }
+    # ``action_tools`` comes second so its wording wins for the two names both
+    # registries define: the loop is the caller those descriptions were written
+    # for.
     missing = [name for name in LOOP_READ_TOOL_NAMES if name not in available]
     if missing:
         raise RuntimeError(
@@ -108,7 +121,7 @@ class ReadToolSession:
 
         if name not in self.names:
             raise LookupError(f"Unknown read tool '{name}'.")
-        if name in assistant.READ_TOOL_REGISTRY:
+        if name in assistant.READ_TOOL_REGISTRY and name not in ARTIFACT_READ_TOOL_NAMES:
             handler = assistant.READ_TOOL_REGISTRY[name].handler
             content, _artifact = getattr(self._assistant, handler)(args)
             return content if isinstance(content, dict) else {"result": content}
@@ -121,6 +134,7 @@ class ReadToolSession:
 
 
 __all__ = [
+    "ARTIFACT_READ_TOOL_NAMES",
     "LOOP_READ_TOOL_NAMES",
     "TOOL_LABELS",
     "ReadToolSession",
