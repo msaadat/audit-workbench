@@ -610,6 +610,9 @@ def _documents_text_ready() -> Capability:
         # inputs, so it declares no context.
         context=None,
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=("document",),
     )
 
 
@@ -715,6 +718,9 @@ def _documents_categorized() -> Capability:
         # would race on it. Independence of inputs is not independence of
         # commits.
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=("document",),
     )
 
 
@@ -844,6 +850,9 @@ def _documents_types_classified() -> Capability:
         # same collection — which is exactly what the parallel barrier asserts
         # cannot happen. Independence of *inputs* is not independence of commits.
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=("document",),
     )
 
 
@@ -1102,6 +1111,9 @@ def _documents_evidence_read() -> Capability:
         # read parallel and lock the master" is not an option: the reads would
         # not be wrong about the master, they would never have been shown it.
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=(),
     )
 
 
@@ -1261,6 +1273,9 @@ def _documents_schemas_stamped() -> Capability:
         # samples agreed.
         context=None,
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=(),
     )
 
 
@@ -1496,6 +1511,9 @@ def _documents_analysis_chunks_ready() -> Capability:
         # one capability whose units the scheduler may run concurrently.
         barrier="all_settled_parallel",
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=("document",),
     )
 
 
@@ -1572,6 +1590,9 @@ def _documents_analysis_generated() -> Capability:
         _generated_units,
         context="documents.analysis_reduction",
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=("document",),
     )
 
 
@@ -1644,6 +1665,9 @@ def _documents_analysis_reviewed() -> Capability:
         _review_units,
         context=None,
         invalidate_on=("documents",),
+    
+        produces=("document",),
+        accepts_refs=("document",),
     )
 
 

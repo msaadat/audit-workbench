@@ -650,6 +650,135 @@ def apm_document_methodology_scope(
     )
 
 
+# --------------------------------------------------------------------------- #
+# planning.delta — what new evidence changes (step 9)
+# --------------------------------------------------------------------------- #
+DELTA_DOCUMENT_SOURCE_ID = "new_document_analyses"
+DELTA_CURRENT_APM_SOURCE_ID = "current_apm"
+DELTA_CURRENT_ROWS_SOURCE_ID = "current_rcm"
+DELTA_PLANNING_SOURCE_ID = "planning_context"
+
+
+#: How much of an unanalysed document the assessment reads. Enough to judge
+#: what it is about; not a substitute for analysing it.
+MAX_DELTA_DOCUMENT_CHARACTERS = 8_000
+
+
+def delta_document_candidates(
+    workspace: Workspace, document_ids: Iterable[str]
+) -> tuple[ContextCandidate, ...]:
+    """Expose each named document as the assessment would read it.
+
+    Its analysis where one exists — that is the reading the plan should be
+    measured against — and its bounded leading pages where none does. Not
+    query-matched excerpts, which is how the APM turn reads a document and is
+    wrong here for a precise reason: retrieval scores a document against what is
+    already planned, and a document that changes the plan is exactly the one
+    that will match it least. The first evidence of a new risk would be filtered
+    out for not resembling the old ones.
+
+    Its audit notes travel with it. A note is a conclusion already drawn about
+    the document, and whether the plan accounts for that conclusion is the
+    question being asked.
+    """
+
+    documents_by_id = {str(item.get("id")): item for item in workspace.documents}
+    candidates = []
+    for document_id in _normalized_document_ids(workspace, document_ids):
+        document = documents_by_id[document_id]
+        analysis = document_context.apm_document_context(workspace, document_id)
+        if analysis.get("outcome") == "supplied" and analysis.get("content"):
+            representations: dict[str, object] = {"summary": analysis["content"]}
+        else:
+            pages = document_context.get_document_context(
+                workspace,
+                document_id,
+                "pages",
+                max_characters=MAX_DELTA_DOCUMENT_CHARACTERS,
+                purpose="change_assessment",
+                stage="change_assessment",
+                record_activity=False,
+            )
+            content = str(pages.get("content") or "")
+            representations = {"raw_pages": content} if content else {}
+        if not representations:
+            continue
+        metadata = {
+            "document_id": document_id,
+            "title": _document_display_name(document, document_id),
+            "category": str(document.get("category") or ""),
+            "text_state": document.get("text_state") or "",
+            "analysis_id": analysis.get("analysis_id"),
+            "analysis_validity_state": analysis.get("analysis_validity_state"),
+            # An explicitly named document is relevant by virtue of being named.
+            "planning_relevant": True,
+        }
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"document:{document_id}",
+                source={**metadata, "source_sha1": document.get("sha1")},
+                representations=representations,
+                metadata=metadata,
+                lexical_text="\n".join(
+                    str(value or "")
+                    for value in (metadata["title"], *representations.values())
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def delta_review_scope(
+    workspace: Workspace,
+    *,
+    document_ids: Iterable[str],
+    instruction: str | None = None,
+) -> ContextScope:
+    """The three things an assessment compares, and nothing else.
+
+    What the named documents say, what the memorandum says, and what the matrix
+    says. No tables, no profiles, no methodology: the question is not "what
+    should this engagement plan" but "does what we already planned still hold
+    given this". A turn shown the whole planning corpus answers the first
+    question, at length, and calls it an assessment.
+    """
+
+    named = [str(value) for value in document_ids if str(value or "").strip()]
+    context = dict(workspace.planning.get("context") or {})
+    planning_content = {
+        "context": context,
+        "ownership": {
+            key: workspace.planning.get(key)
+            for key in ("created_by", "agent_run_id", "updated")
+        },
+    }
+    current_apm = str(workspace.planning.get("apm_markdown") or "")
+    return ContextScope(
+        candidates={
+            DELTA_DOCUMENT_SOURCE_ID: delta_document_candidates(workspace, named),
+            DELTA_CURRENT_APM_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:apm",
+                    source=current_apm,
+                    representations={"current_artifact": current_apm},
+                    metadata={"artifact": "apm"},
+                ),
+            ),
+            DELTA_CURRENT_ROWS_SOURCE_ID: rcm_current_row_candidates(workspace),
+            DELTA_PLANNING_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:context",
+                    source=planning_content,
+                    representations={"planning_context": planning_content},
+                    metadata={"artifact": "planning_context"},
+                ),
+            ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
+        },
+        selector_context=context,
+    )
+
+
 PLANNING_CONTEXT_CURRENT_SOURCE_ID = "current_planning_context"
 PLANNING_CONTEXT_DOCUMENT_SOURCE_ID = "planning_documents"
 # Per-document share of the declared planning-document character budget, so one

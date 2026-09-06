@@ -95,6 +95,24 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # to name a step's document roles and the imported tables to name its
     # population, and nothing else — which is what lets it sit here, in front of
     # the matrix, rather than after the schemas with the field-level half.
+    # What new evidence changes, if anything. Off every template and outside
+    # ``FULL_AUDIT_OUTCOMES`` on purpose: it exists to be *asked for*. The
+    # framework does not assess currency on its own, and a capability that ran
+    # as part of a lifecycle request would be doing exactly that.
+    #
+    # It declares no dependency, and that is the whole design of it. The plan
+    # for this step gave it three — the document analyses, the memorandum and
+    # the matrix — which is what it *reads*, and reading is not depending.
+    # Materialization schedules a satisfied capability whenever anything in its
+    # closure is materializing, so a new document (which by definition has no
+    # analysis yet) reached the document capabilities, and through them the
+    # planning chain: asking "does this change the memorandum?" would have
+    # rewritten the memorandum before answering. What the assessment actually
+    # requires is that the two artifacts *exist*, which is a readiness question
+    # and is answered there — blocked, naming what is missing, so the loop runs
+    # planning first if it must. Asking for an assessment schedules exactly one
+    # unit and never anything else.
+    "planning.change_assessed": (),
     "planning.cycle_ready": (
         "planning.apm_ready",
         "sources.imported",

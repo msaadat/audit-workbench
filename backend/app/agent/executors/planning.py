@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
-from ... import cycle_vouching
+from ... import cycle_vouching, planning_delta
 from ...workspaces import Workspace, WorkspaceError, slugify, validate_cycle
 from ..capabilities import _shared as audit_hashes
 from ..artifact_index import canonical_id
@@ -1020,3 +1020,159 @@ __all__ = [
     "reconcile_planning_context",
     "reconcile_rcm",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# planning.delta — write one change assessment (step 9)
+# --------------------------------------------------------------------------- #
+DELTA_EXECUTOR_ID = "planning.delta"
+
+
+@dataclass
+class DeltaExecutorTarget:
+    """Where one assessment is written, and what it was made against."""
+
+    workspace: Workspace
+    run_id: str
+    document_ids: tuple[str, ...] = ()
+    basis_sha1: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Delta executor target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("Delta executor target requires a run_id.")
+        self.document_ids = tuple(
+            text for value in self.document_ids if (text := str(value or "").strip())
+        )
+        if not self.document_ids:
+            raise ValueError("Delta executor target requires the documents assessed.")
+        self.basis_sha1 = str(self.basis_sha1 or "").strip()
+        if not self.basis_sha1:
+            raise ValueError("Delta executor target requires the assessment basis.")
+
+
+def _validated_delta(
+    request: ExecutorRequest, target: object
+) -> tuple[DeltaExecutorTarget, dict]:
+    if not isinstance(target, DeltaExecutorTarget):
+        raise WorkspaceError("Delta executor requires a DeltaExecutorTarget.")
+    proposal = dict(request.proposal)
+    if str(proposal.get("impact") or "") not in planning_delta.IMPACTS:
+        raise WorkspaceError("The accepted assessment carries no usable impact.")
+    return target, proposal
+
+
+def _delta_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    target: DeltaExecutorTarget,
+    assessment: dict,
+    *,
+    revision_before: int,
+) -> ExecutorResult:
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        # The documents it read. The assessment names the memorandum and the
+        # matrix but does not change them, and nothing downstream may treat it
+        # as having revised either.
+        artifact_refs=[f"document:{value}" for value in target.document_ids],
+        applied_parents=dict(request.expected_parents),
+        # The documents are unchanged by an assessment of them, so their
+        # post-state hashes are their current ones. Saying so explicitly is
+        # what lets a later unit see that nothing it depends on moved.
+        postcondition_hashes=parent_hashes(
+            workspace, [f"document:{value}" for value in target.document_ids]
+        ),
+        output={
+            "impact": assessment["impact"],
+            "basis_sha1": target.basis_sha1,
+            "apm_changes": len(assessment.get("apm_changes") or []),
+            "rcm_changes": len(assessment.get("rcm_changes") or []),
+        },
+    )
+
+
+def execute_delta(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Write one assessment beside the planning artifacts it is about.
+
+    The one executor in the audit workflow that commits no artifact. It records
+    a judgment — what these documents change, and where — under the basis it was
+    made against, so asking the same question of the same material is answered
+    from disk rather than by a second model turn. Revising the memorandum or the
+    matrix on the strength of it is a separate, requested, reviewable run.
+    """
+
+    target, proposal = _validated_delta(request, raw_target)
+    if set(request.expected_parents) != {APM_ARTIFACT_REF}:
+        raise WorkspaceError(
+            "Delta executor requires exactly the memorandum's parent hash."
+        )
+    written: dict = {}
+
+    def commit(fresh: Workspace) -> None:
+        written.update(
+            planning_delta.save(
+                fresh,
+                target.basis_sha1,
+                proposal,
+                document_ids=list(target.document_ids),
+                run_id=target.run_id,
+            )
+        )
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _delta_result(
+        request,
+        committed.workspace,
+        target,
+        written,
+        revision_before=committed.revision - 1,
+    )
+
+
+def reconcile_delta(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    """Classify an interrupted assessment write; the file is the whole state."""
+
+    target, proposal = _validated_delta(request, raw_target)
+    current = Workspace(target.workspace.root)
+    existing = planning_delta.load(current, target.basis_sha1)
+    if existing is None:
+        return ExecutorReconciliation("not_applied")
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_delta_result(
+            request,
+            current,
+            target,
+            existing,
+            revision_before=max(request.expected_revision, current.revision - 1),
+        ),
+        reason="The assessment for this basis is already on file.",
+    )
+
+
+DELTA_EXECUTOR = ExecutorDefinition(
+    executor_id=DELTA_EXECUTOR_ID,
+    # No workspace artifact is written, but the memorandum it read is still
+    # guarded: an assessment landing against a memorandum that moved while the
+    # turn ran is an assessment of something else, and the basis it is filed
+    # under would name material that never produced it.
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_delta,
+    reconciler=reconcile_delta,
+)
+
+EXECUTORS.register(DELTA_EXECUTOR)

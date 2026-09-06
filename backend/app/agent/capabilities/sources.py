@@ -58,6 +58,9 @@ def _sources_imported_capability() -> Capability:
         # No model ever sees this capability: it reads two counts.
         context=None,
         invalidate_on=("sources",),
+    
+        produces=("table",),
+        accepts_refs=("table",),
     )
 
 

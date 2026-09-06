@@ -322,6 +322,13 @@ def _apm(getfixture):
     return proposal, _request()
 
 
+@builds("planning.delta_review")
+def _delta_review(getfixture):
+    from test_agent_planning_worker import _assessment, delta_request
+
+    return _assessment(), delta_request()
+
+
 @builds("reporting.finding")
 def _finding(getfixture):
     from test_agent_reporting_finding import _draft, _request

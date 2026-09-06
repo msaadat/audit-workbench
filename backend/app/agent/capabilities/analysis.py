@@ -493,6 +493,9 @@ def _data_relationships_inferred() -> Capability:
         # model ever sees this capability's inputs or produces its facts.
         context=None,
         invalidate_on=("tables",),
+    
+        produces=("table",),
+        accepts_refs=("table",),
     )
 
 
@@ -532,6 +535,9 @@ def _data_join_utility_ready() -> Capability:
         "join_utility", analysis_workflow.dependencies("data.join_utility_ready"),
         _join_utility_ready, _join_utility_units, context="analysis.join_utility",
         invalidate_on=("tables",),
+    
+        produces=("table",),
+        accepts_refs=("table",),
     )
 
 
@@ -595,6 +601,9 @@ def _data_joins_ready() -> Capability:
         _join_units,
         context=None,
         invalidate_on=("tables",),
+    
+        produces=("table",),
+        accepts_refs=("table",),
     )
 
 
@@ -622,7 +631,8 @@ def _input_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
 def _analysis_inputs_ready() -> Capability:
     return Capability("analysis.inputs_ready", "analysis_inputs", "Prepare accepted analysis inputs",
         "analysis_input", analysis_workflow.dependencies("analysis.inputs_ready"),
-        _inputs_ready, _input_units, context=None, invalidate_on=("analyses", "tables", "joins"))
+        _inputs_ready, _input_units, context=None, invalidate_on=("analyses", "tables", "joins"),
+        produces=("analysis",), accepts_refs=("table",))
 
 
 # --------------------------------------------------------------------------- #
@@ -730,6 +740,9 @@ def _analysis_register_ready() -> Capability:
         _register_units,
         context="analysis.reading",
         invalidate_on=("tables", "joins"),
+    
+        produces=("analysis",),
+        accepts_refs=("table",),
     )
 
 
@@ -812,6 +825,9 @@ def _analysis_definitions_ready() -> Capability:
         _definition_units,
         context="analysis.definitions",
         invalidate_on=("tables", "joins"),
+    
+        produces=("analysis",),
+        accepts_refs=("table",),
     )
 
 
@@ -870,6 +886,9 @@ def _analysis_executed() -> Capability:
         _execution_units,
         context=None,
         invalidate_on=("analyses",),
+    
+        produces=("analysis",),
+        accepts_refs=("table",),
     )
 
 
@@ -938,6 +957,9 @@ def _analysis_summarized() -> Capability:
         _summary_units,
         context="analysis.summary",
         invalidate_on=("analyses",),
+    
+        produces=("analysis",),
+        accepts_refs=("table",),
     )
 
 

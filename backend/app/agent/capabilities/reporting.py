@@ -165,6 +165,10 @@ def _findings_drafted() -> Capability:
         _finding_units,
         context="reporting.finding_draft",
         invalidate_on=("observation",),
+    
+        produces=("finding",),
+        accepts_refs=("observation", "finding", "rcm"),
+        redoes_named=("finding", "observation"),
     )
 
 
@@ -219,6 +223,9 @@ def _working_papers_generated() -> Capability:
         _working_papers_ready,
         _paper_units,
         invalidate_on=("rollup",),
+    
+        produces=("procedure",),
+        accepts_refs=(),
     )
 
 
@@ -254,6 +261,9 @@ def _report_working_draft() -> Capability:
         _report_ready,
         _single("report", "Assemble report working draft"),
         invalidate_on=("planning:apm", "rollup", "findings"),
+    
+        produces=("report",),
+        accepts_refs=(),
     )
 
 
@@ -290,6 +300,9 @@ def _audit_verified() -> Capability:
         _verified,
         _single("verify", "Verify completion and report quality"),
         invalidate_on=("outputs",),
+    
+        produces=(),
+        accepts_refs=(),
     )
 
 

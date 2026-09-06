@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import assistant, debug_store, doc_tests, engagement_progress, llm
+from . import assistant, debug_store, doc_tests, engagement_progress, llm, planning_delta
 from .agent import commands, narration, routing, runner, store
 from .agent import workflow as agent_workflow
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
@@ -1414,6 +1414,46 @@ def _review_suggestion(runs: list[dict]) -> list[dict]:
     return []
 
 
+def _assessment_suggestion(workspace: Workspace) -> list[dict]:
+    """Offer to assess a document the current plan was never measured against.
+
+    Deliberately an offer rather than a watch. The framework does not decide
+    that an artifact has gone stale — it cannot, without assessing currency on
+    its own, which is the one judgment it is not allowed to make. What it can
+    see is narrower and honest: a document arrived after the memorandum was
+    written, and nobody has yet asked what it changes.
+    """
+
+    try:
+        apm_updated = str((workspace.planning or {}).get("updated") or "")
+        newer = [
+            item
+            for item in workspace.documents
+            if str(item.get("created") or item.get("updated") or "") >= apm_updated
+        ]
+        if not apm_updated or not newer:
+            return []
+        latest = planning_delta.latest(workspace)
+        covered = set((latest or {}).get("document_ids") or [])
+        pending = [item for item in newer if str(item.get("id")) not in covered]
+        if not pending:
+            return []
+    except Exception:
+        return []
+    subject = pending[0]
+    name = str(subject.get("title") or subject.get("source") or subject.get("id"))
+    return [{
+        "capability": "",
+        "requested_outcomes": [],
+        "target_refs": [f"document:{subject.get('id')}"],
+        "label": f"Assess what {name} changes",
+        "command": f"Assess what {name} changes for the APM and RCM",
+        "message": f"Assess what {name} changes for the APM and RCM",
+        "reason": "It arrived after the memorandum was written",
+        "source": "agent",
+    }]
+
+
 def _chat_suggestions(
     workspace: Workspace, workflow_state: dict | None, linked_runs: dict[str, dict]
 ) -> list[dict]:
@@ -1430,6 +1470,7 @@ def _chat_suggestions(
     )
     suggestions = _loop_suggestions(latest_loop or {})
     suggestions.extend(_review_suggestion(newest))
+    suggestions.extend(_assessment_suggestion(workspace))
     seen = {item["label"] for item in suggestions}
     for item in narration.next_steps(workspace, workflow_state):
         if item["label"] in seen:

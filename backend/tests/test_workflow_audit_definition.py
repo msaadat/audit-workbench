@@ -43,6 +43,7 @@ EXPECTED_DEPENDENCIES = {
     "analysis.summarized": ("analysis.executed",),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
+    "planning.change_assessed": (),
     "planning.cycle_ready": (
         "planning.apm_ready",
         "sources.imported",
@@ -132,10 +133,15 @@ def test_full_audit_closure_is_topological():
         "audit.verified",
     ]
     position = {capability_id: index for index, capability_id in enumerate(resolved)}
+    # Only the edges *inside* this closure: ``planning.change_assessed`` is
+    # declared on the graph and deliberately outside every template, so it has
+    # no position in a full-audit ordering.
     assert all(
         position[dependency] < position[capability_id]
         for capability_id, deps in audit.DEPENDENCIES.items()
+        if capability_id in position
         for dependency in deps
+        if dependency in position
     )
     # The EDA branch, memo included, completes before planning reads it.
     assert resolved.index("analysis.summarized") < resolved.index("planning.apm_ready")

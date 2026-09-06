@@ -1,8 +1,8 @@
 # Agent loop redesign: a steering model over gated capabilities, in small steps
 
 **Status:** steps 0 to 3 landed at commit `0fffce7` (5 September 2026); steps 4
-to 8 are built and under test (6 September 2026), with step 4 measured on two
-live runs; step 9 is still design. This is the
+to 9 are built and under test (6 September 2026), with step 4 measured on two
+live runs. The plan is implemented; what remains is measurement. This is the
 handoff for replacing the fixed request-to-closure pipeline in front of the
 workflow engine with a budgeted model loop that plans, runs capability units,
 reads what happened, repairs what it can, and asks when it cannot. Each step
@@ -1122,7 +1122,90 @@ history.
 
 ---
 
+### Interlude. Artifact operations, and three deletes
+
+6 September 2026, between steps 8 and 9, from an audit of what the loop can
+reach. Two findings, one of which corrects this document's earlier account.
+
+**The doc-test redraft was never a capability gap.** Materialized against the
+treasuryfull engagement, `tests.specified` with `target_refs=["doctest:DT-…"]`
+and `reuse_existing` expands exactly one unit — the redraft the auditor asked
+for, no force needed, because step 2b made naming a test the permission. The
+loop requested `doc_tests.definitions_ready` instead, which defines tests that
+have no usable definition and expands nothing for one that has. Both live-run
+failures were the same failure, and it was never missing machinery: four
+outcomes accept a `doctest:` ref and nothing told the loop which one redrafts.
+
+So `agent/operations.py` joins what the registries already knew. Capabilities
+gained three declarations — `produces`, `accepts_refs`, and `redoes_named` (the
+refs where naming the artifact *is* the instruction to redo it) — and
+`get_artifact` and `list_artifacts` carry the result, which is where the loop
+already looks. A list answers once per artifact kind rather than once per
+artifact, and no new tool joins the 8.6k tokens of schema every turn already
+carries. None of the three declarations is hashed: they describe a capability
+rather than changing what a unit computes.
+
+**Three deletes were missing.** A data test, a saved analysis and a validation
+ruleset could each be created and edited by the agent and then only removed by
+hand — an asymmetry the document-test and RCM-row paths did not have.
+`delete_data_test`, `delete_custom_analysis` and `delete_validation_rules` fill
+it; the generic reconciler and `_restore_snapshot` already handled `delete_*`
+for all three kinds, so undo works without further change.
+
+Two gaps were left, deliberately. Deleting a `doctest_item` has no domain
+function, and adding one would let an item be removed while the step that
+declares it remains — reproducing the exact inconsistency the first live run
+found. Documents, tables and observations stay read-only to the agent: they are
+evidence, or derived from it. Both belong to step 9's subject rather than this
+one.
+
+---
+
 ### Step 9. Delta review for new evidence
+
+**Landed**, 6 September 2026, with one deviation that is worth more than the
+step it belongs to.
+
+The plan gave `planning.change_assessed` three dependencies — the document
+analyses, the memorandum, the matrix — which is what it *reads*. Built that way,
+it did something absurd on its first run: asked "does this new document change
+the memorandum?", it regenerated the memorandum, the cycle and the matrix, and
+then assessed the change. `workflow.materialize` schedules a *satisfied*
+capability whenever anything in its closure is materializing, and a new document
+has no analysis yet, so the document capabilities materialized and the whole
+planning chain came with them.
+
+Reading is not depending. The capability now declares **no** dependencies, and
+what it requires — that a memorandum and a matrix exist to compare against — is
+a readiness question, answered `blocked` naming what is missing. Asking for an
+assessment schedules exactly one unit and never anything else, which is what the
+step's own invariant demanded: *nothing regenerates without an explicit request*.
+
+Three smaller findings, each a place where the plan's shape met a contract:
+
+- **A new document is read as itself, not as a retrieval match.** The plan
+  reused the APM's document candidates, which score a document against what is
+  already planned — and a document that changes the plan is precisely the one
+  that will match it least. `delta_document_candidates` supplies the analysis
+  where one exists and the bounded leading pages where none does. The first
+  evidence of a new risk is not filtered out for failing to resemble the old
+  ones.
+- **The assessment is a commit.** The executor contract requires the workspace
+  revision to advance and the artifact refs to be non-empty, and the honest way
+  to satisfy it was not to weaken it: the assessment is durable workspace state,
+  written through `mutate` under the memorandum's parent hash, with the
+  documents it read as its refs and their unchanged hashes as its postcondition.
+- **A frozen proposal is not JSON.** `planning_delta.save` projects the
+  ``MappingProxyType`` proposal back to plain containers at the one boundary
+  where it becomes a file. Caught by the "both" scenario; the "none" scenario
+  passed because its lists were empty.
+
+Everything else is as specified: the `planning.delta` preset and worker with its
+three-part semantic validator, the `planning.delta` executor, the binder, the
+`assess_change` tool that returns the assessment and names the revisions to run
+in dependency order, the prompt rule, and the chat suggestion for a document the
+plan was never measured against. The capability is on the audit registry, in no
+template, and outside `FULL_AUDIT_OUTCOMES`.
 
 Builds on 4 and 3. Row-scoped RCM revision waits on
 `docs/rcm-generation-redesign.md` step 3; until then the RCM half regenerates

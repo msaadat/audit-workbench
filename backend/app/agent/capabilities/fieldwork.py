@@ -132,6 +132,9 @@ def _fieldwork_executed() -> Capability:
         _execution_units,
         context=DOCUMENT_TEST_CONTEXT,
         invalidate_on=("test", "evidence"),
+    
+        produces=("datatest", "doctest_item"),
+        accepts_refs=("rcm",),
     )
 
 
@@ -158,6 +161,9 @@ def _results_rolled_up() -> Capability:
         _rollup_ready,
         _single("rollup", "Roll up RCM results"),
         invalidate_on=("execution",),
+    
+        produces=("observation",),
+        accepts_refs=(),
     )
 
 

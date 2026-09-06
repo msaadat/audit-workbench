@@ -394,6 +394,7 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "analysis.summarized": ("analysis.executed",),
         "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
         "planning.apm_ready": ("planning.context_ready",),
+        "planning.change_assessed": (),
         "planning.cycle_ready": (
             "planning.apm_ready",
             "sources.imported",
@@ -476,10 +477,15 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
     ]
     position = {capability_id: index for index, capability_id in enumerate(resolved)}
     assert position["analysis.summarized"] < position["planning.apm_ready"]
+    # Every edge inside this closure. ``planning.change_assessed`` is declared
+    # on the graph and outside every template — it is asked for, never
+    # scheduled by a lifecycle request — so it has no position here.
     assert all(
         position[dependency] < position[capability.id]
         for capability in audit_capabilities.REGISTRY.all()
+        if capability.id in position
         for dependency in capability.depends_on
+        if dependency in position
     )
     assert {
         capability_id: audit_capabilities.REGISTRY.get(capability_id).depends_on

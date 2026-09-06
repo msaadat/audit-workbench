@@ -704,6 +704,9 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "edit_validation_rules":
         item = workspace.update_ruleset(target_id, args["changes"])
         return _receipt(action, item, refs=[f"ruleset:{target_id}"])
+    if type_ == "delete_validation_rules":
+        workspace.remove_ruleset(target_id)
+        return _receipt(action, refs=[f"ruleset:{target_id}"])
     if type_ == "run_validation_rules":
         ruleset = artifact_snapshot(workspace, "ruleset", target_id)
         result = validation.run_rules(workspace.get_frame(ruleset["table"]), ruleset["rules"], ruleset["table"], resolve=workspace.get_frame)
@@ -725,6 +728,9 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "edit_data_test":
         item = data_tests.update(workspace, target_id, args["changes"])
         return _receipt(action, item, refs=[f"datatest:{target_id}"])
+    if type_ == "delete_data_test":
+        data_tests.remove(workspace, target_id)
+        return _receipt(action, refs=[f"datatest:{target_id}"])
     if type_ == "run_data_test":
         item = data_tests._record(workspace, target_id)
         result = data_tests.run(workspace, target_id)
@@ -752,6 +758,9 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(
             action, item, refs=[ref, *( [f"rcm:{rcm_id}"] if rcm_id else [] )]
         )
+    if type_ == "delete_custom_analysis":
+        workspace.remove_analysis(target_id)
+        return _receipt(action, refs=[f"analysis:{target_id}"])
     if type_ == "create_custom_analysis":
         sandbox.run(str((args.get("spec") or {}).get("code") or ""), {name: workspace.get_frame(name) for name in workspace.table_names()})
         item = workspace.add_analysis({**args, "kind": "python", "agent_run_id": run["id"], "source": "ai"})
@@ -1008,6 +1017,7 @@ _register(
     properties={"title": STR, "table": STR, "rules": {"type": "array", "items": RULE_SPEC}},
 )
 _register("edit_validation_rules", "Edit validation rules", "reversible_mutation", ("ruleset",), ("changes",), {"changes": OBJ})
+_register("delete_validation_rules", "Delete a validation ruleset", "destructive", ("ruleset",))
 _register("run_validation_rules", "Run a saved validation ruleset", "compute", ("ruleset",))
 _register(
     "run_analytics", "Run a library audit analytic", "compute",
@@ -1029,6 +1039,7 @@ _register(
     },
 )
 _register("edit_data_test", "Edit a durable Data Test definition", "reversible_mutation", ("datatest",), ("changes",), {"changes": OBJ})
+_register("delete_data_test", "Delete a durable Data Test definition", "destructive", ("datatest",))
 _register(
     "run_data_test",
     "Execute a Data Test and preserve its immutable bounded result",
@@ -1045,6 +1056,7 @@ _register(
 )
 _register("create_custom_analysis", "Create an in-memory sandboxed Polars analysis (no imports or file I/O; assign result)", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
+_register("delete_custom_analysis", "Delete a saved analysis definition", "destructive", ("analysis",))
 _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("analysis",))
 _register(
     "create_document_test", "Create a document test", "create",
@@ -1079,6 +1091,10 @@ _register(
     model="draft",
 )
 _register("delete_document_test", "Delete a document test", "destructive", ("doctest",))
+# Deleting is offered wherever creating and editing are, so the loop can undo
+# its own work in the same vocabulary it did it in. The three below closed that
+# asymmetry: a data test, a saved analysis and a validation ruleset could each
+# be created and edited by the agent and then only be removed by hand.
 _register("attach_document_to_test", "Attach a document to a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("detach_document_from_test", "Detach a document from a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("update_test_comparisons", "Update document-test comparisons", "reversible_mutation", ("doctest_item",), ("checks",), {"checks": ARR})

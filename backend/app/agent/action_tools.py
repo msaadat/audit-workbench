@@ -12,7 +12,7 @@ from collections import Counter
 
 from .. import analytics, cycle_vouching, tooling, validation
 from ..workspaces import Workspace, WorkspaceError
-from . import actions, artifact_index
+from . import actions, artifact_index, operations
 
 
 MAX_TOOL_CALLS = 12
@@ -249,10 +249,19 @@ class ActionToolSession:
             item for item in index["artifacts"]
             if not kinds or str(item.get("kind")) in kinds
         ]
+        kept = artifacts[:limit]
         return {
             "revision": index["revision"],
-            "artifacts": artifacts[:limit],
+            "artifacts": kept,
             "truncated": len(artifacts) > limit,
+            # One entry per *kind* present, not per artifact: what may be done
+            # to a finding is a fact about findings, and repeating it beside
+            # each of thirty would cost more than the list itself.
+            "operations_by_kind": {
+                kind: operations.artifact_operations(kind)
+                for kind in sorted({str(item.get("kind") or "") for item in kept} - {""})
+            },
+            "creating": operations.creating_actions(),
         }
 
     def _get_artifact(self, args: dict) -> dict:
@@ -272,6 +281,11 @@ class ActionToolSession:
             },
             "record": bounded,
             "record_truncated": truncated,
+            # What may be done to this artifact, from the action catalog and
+            # the capability registry rather than from a name. ``outcomes``
+            # that do not accept this ref will run over their whole scope
+            # however narrowly they are asked.
+            "operations": operations.artifact_operations(str(entry["kind"])),
         }
 
     def _get_table_schemas(self, args: dict) -> dict:

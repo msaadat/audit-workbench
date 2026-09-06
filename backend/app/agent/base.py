@@ -48,6 +48,7 @@ MODEL_WAIT_LABELS = {
     "agent:apm": "Drafting the audit planning memorandum",
     "agent:planning_cycle": "Working out the steps of the cycle",
     "agent:rcm": "Drafting the risk and control matrix",
+    "agent:delta_review": "Working out what the new evidence changes",
     "agent:rcm_attributes": "Stating what each control has to demonstrate",
     "agent:test_generate": "Generating RCM tests",
     "agent:document_qa": "Answering from document evidence",

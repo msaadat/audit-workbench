@@ -422,6 +422,9 @@ def _doc_tests_definitions_ready() -> Capability:
         # sees this capability's inputs, so it declares no context.
         context=None,
         invalidate_on=("definition",),
+    
+        produces=("doctest",),
+        accepts_refs=("doctest",),
     )
 
 
@@ -516,6 +519,9 @@ def _doc_tests_executed() -> Capability:
         _execution_units,
         context=DOCUMENT_TEST_CONTEXT,
         invalidate_on=("definition", "evidence"),
+    
+        produces=("doctest", "doctest_item"),
+        accepts_refs=("doctest",),
     )
 
 
@@ -593,6 +599,9 @@ def _doc_tests_dispositioned() -> Capability:
         _disposition_units,
         context=None,
         invalidate_on=("definition", "evidence", "evaluation", "disposition"),
+    
+        produces=("doctest",),
+        accepts_refs=("doctest",),
     )
 
 

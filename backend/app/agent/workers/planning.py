@@ -371,6 +371,195 @@ WORKERS.register(APM_WORKER)
 
 
 # --------------------------------------------------------------------------- #
+# planning.delta_review worker (step 9)
+# --------------------------------------------------------------------------- #
+DELTA_WORKER_ID = "planning.delta_review"
+DELTA_SYSTEM = f"""[agent:delta_review]
+Decide what new evidence changes for an audit plan that already exists.
+
+You are shown the analyses of documents the auditor has just supplied, the
+current audit planning memorandum, and the current risk and control matrix.
+Answer one question: does what these documents say require the memorandum or the
+matrix to change, and if so, where.
+
+Return an object with:
+- impact: "none" | "apm" | "rcm" | "both"
+- summary: one paragraph, in plain terms, saying what the documents change and
+  what they confirm. An auditor who reads only this sentence should know
+  whether to act.
+- apm_changes: a list of {{section, change, reason, citation}}. `section` must be
+  a heading that already exists in the memorandum. `citation` is the id of the
+  document that requires the change.
+- rcm_changes: a list of {{rcm_id, change, summary, reason}} where `change` is
+  "revise", "add" or "retire". `rcm_id` is an existing row id, or null when the
+  change is an addition.
+
+Rules:
+- Say "none" when the documents are consistent with what is already planned.
+  Confirming an existing plan is a real and common answer, and a change list
+  written to look useful is worse than no change at all.
+- Every entry must be traceable to something a supplied document says. Do not
+  propose improvements the documents do not require.
+- Do not rewrite anything here. You are deciding whether a revision is needed
+  and naming where; the revision itself is a separate, reviewable run.
+- {AUDITOR_INSTRUCTION_RULE}
+{JSON_RULES} {LANGUAGE_RULES}"""
+
+DELTA_IMPACTS = ("none", "apm", "rcm", "both")
+DELTA_CHANGE_KINDS = ("revise", "add", "retire")
+
+
+def _apm_headings(request: WorkerRequest) -> set[str]:
+    markdown = str(_resolved_item(request, "current_apm") or "")
+    return {
+        match.group(1).strip().casefold()
+        for match in re.finditer(r"(?m)^#{1,6}\s+(.+?)\s*$", markdown)
+    }
+
+
+def validate_delta_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Hold the assessment to the artifacts it claims to be about.
+
+    Three checks, each catching a way an assessment can read as authoritative
+    while being about nothing: a section that is not in the memorandum, a row id
+    that is not in the matrix, and an ``impact`` that disagrees with the lists
+    underneath it — the last being how "no change needed" arrives with four
+    changes attached.
+    """
+
+    impact = str(proposal.get("impact") or "").strip().casefold()
+    if impact not in DELTA_IMPACTS:
+        raise WorkerResponseValidationError(
+            f"impact must be one of {', '.join(DELTA_IMPACTS)}"
+        )
+    if not str(proposal.get("summary") or "").strip():
+        raise WorkerResponseValidationError("summary is empty")
+
+    apm_changes = list(proposal.get("apm_changes") or [])
+    rcm_changes = list(proposal.get("rcm_changes") or [])
+    headings = _apm_headings(request)
+    for entry in apm_changes:
+        if not isinstance(entry, Mapping):
+            raise WorkerResponseValidationError("each apm_changes entry must be an object")
+        section = str(entry.get("section") or "").strip()
+        if not section:
+            raise WorkerResponseValidationError("an apm_changes entry names no section")
+        if headings and section.casefold() not in headings:
+            raise WorkerResponseValidationError(
+                f"apm_changes names section '{section}', which the memorandum does not have"
+            )
+
+    known_rows = {
+        str(row.get("id"))
+        for row in _supplied_items(request, "current_rcm")
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    for entry in rcm_changes:
+        if not isinstance(entry, Mapping):
+            raise WorkerResponseValidationError("each rcm_changes entry must be an object")
+        change = str(entry.get("change") or "").strip().casefold()
+        if change not in DELTA_CHANGE_KINDS:
+            raise WorkerResponseValidationError(
+                f"rcm_changes change must be one of {', '.join(DELTA_CHANGE_KINDS)}"
+            )
+        rcm_id = str(entry.get("rcm_id") or "").strip()
+        if change == "add":
+            if rcm_id:
+                raise WorkerResponseValidationError(
+                    "an added row carries no rcm_id; it does not exist yet"
+                )
+            continue
+        if not rcm_id:
+            raise WorkerResponseValidationError(
+                f"an rcm_changes entry to {change} names no rcm_id"
+            )
+        if known_rows and rcm_id not in known_rows:
+            raise WorkerResponseValidationError(
+                f"rcm_changes names row '{rcm_id}', which the matrix does not have"
+            )
+
+    expected = {
+        "none": (False, False),
+        "apm": (True, False),
+        "rcm": (False, True),
+        "both": (True, True),
+    }[impact]
+    if (bool(apm_changes), bool(rcm_changes)) != expected:
+        raise WorkerResponseValidationError(
+            f"impact '{impact}' does not agree with the changes listed "
+            f"({len(apm_changes)} for the memorandum, {len(rcm_changes)} for the matrix)"
+        )
+    return {
+        "impact": impact,
+        "summary": str(proposal.get("summary") or "").strip(),
+        "apm_changes": apm_changes,
+        "rcm_changes": rcm_changes,
+    }
+
+
+def run_delta_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    documents = [
+        item
+        for item in _supplied_items(request, "new_document_analyses")
+        if str(item or "").strip()
+    ]
+    payload: dict[str, Any] = {
+        "new_documents": documents,
+        "current_apm": str(_resolved_item(request, "current_apm") or ""),
+        "current_rcm": list(_supplied_items(request, "current_rcm")),
+        "planning_context": _resolved_item(request, "planning_context"),
+    }
+    instruction = auditor_instruction(request)
+    if instruction:
+        payload["auditor_instruction"] = instruction
+    activity = dict(request.activity or {})
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "delta_review",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(
+        DELTA_SYSTEM,
+        json.dumps(payload, default=str),
+        activity,
+        attempt=attempt.number,
+    )
+
+
+DELTA_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="planning.delta_review.response",
+    schema_hash=_sha256_text("delta-review:impact-summary-apm_changes-rcm_changes"),
+    validator=decode_json_response,
+)
+DELTA_WORKER = WorkerDefinition(
+    worker_id=DELTA_WORKER_ID,
+    prompt_hash=_sha256_text(DELTA_SYSTEM),
+    response_schema=DELTA_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair impact/list disagreement and unknown APM sections or RCM ids."
+        ),
+    ),
+    implementation=run_delta_worker,
+    semantic_validator=validate_delta_proposal,
+)
+
+WORKERS.register(DELTA_WORKER)
+
+
+# --------------------------------------------------------------------------- #
 # planning.rcm worker (P7C)
 # --------------------------------------------------------------------------- #
 RCM_WORKER_ID = "planning.rcm"

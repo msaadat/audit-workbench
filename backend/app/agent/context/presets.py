@@ -659,6 +659,71 @@ PRESETS.register(
 )
 PRESETS.register(
     ContextPreset(
+        preset_id="planning.delta",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="new_document_analyses",
+                    source_type="documents",
+                    # Required: an assessment with no new evidence in front of
+                    # it is not an assessment. The capability refuses to expand
+                    # a unit without named documents, and this is the same rule
+                    # stated where the bundle is built.
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(
+                        ContextRepresentation("summary"),
+                        ContextRepresentation("raw_pages"),
+                    ),
+                    budget=ContextBudget(max_items=8, max_characters=40_000),
+                ),
+                ContextSource(
+                    id="current_apm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    # The whole memorandum, for the same reason the APM turn
+                    # gets it whole: a reader who cannot see the end of a
+                    # document will say the end is missing.
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
+                ),
+                ContextSource(
+                    id="current_rcm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=200, max_characters=40_000),
+                ),
+                ContextSource(
+                    id="planning_context",
+                    source_type="planning",
+                    required=True,
+                    selector=ContextSelector(selector_id="planning.current"),
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=10_000),
+                ),
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=210, max_characters=120_000),
+            privacy=ContextPrivacy(
+                allow_planning_context=True,
+                allow_document_text=True,
+                allow_auditor_instruction=True,
+            ),
+        ),
+    )
+)
+PRESETS.register(
+    ContextPreset(
         preset_id="planning.apm",
         spec=ContextSpec(
             sources=(

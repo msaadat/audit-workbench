@@ -616,6 +616,53 @@ content-free manifest before the call, and runs classification as a proposal-onl
 `UnitPipeline` unit so a restart reuses the proposal instead of re-billing. Its
 explicit engine value `intake` is part of the target schema.
 
+## Change Assessment
+
+"I uploaded document XX, revise the APM and RCM as appropriate" is the request
+the framework is built to refuse: currency is `not_assessed` by design, and a
+capability that decided on its own that an artifact had gone stale would be the
+framework assessing currency. `planning.change_assessed` makes the judgment the
+only way it may be made — as a requested outcome, by a registered worker,
+against declared context — and writes the answer, not the revision.
+
+It declares **no dependencies**. What it reads (the documents' analyses, the
+memorandum, the matrix) is not what it depends on: materialization schedules a
+satisfied capability whenever anything in its closure is materializing, so
+declaring the artifacts it reads as dependencies regenerated all of them before
+answering whether any needed regenerating. The requirement that a memorandum and
+a matrix exist is a readiness question, answered `blocked` and naming what is
+missing.
+
+An assessment is keyed by its *basis* — the analyses of the documents it read,
+the memorandum's hash, and the matrix rows' hashes — under
+`Planning/.delta/<basis>.json`. The same question against the same material is
+answered from disk; a change to any part of it makes the stored answer an answer
+to a different question, so readiness goes missing and the outcome re-runs. The
+loop reads the result through `assess_change`, which returns the impact and the
+revisions to run in dependency order; running them is a separate, declinable
+request.
+
+## Artifact Operations
+
+`agent/operations.py` answers "what can be done to this artifact?" from the two
+registries and nothing else. The action catalog already declared the artifact
+kinds each action targets; capabilities now declare `produces` (the kinds they
+write), `accepts_refs` (the typed refs that narrow them) and `redoes_named` (the
+refs where naming the artifact *is* the instruction to redo it, with no `force`
+and no coverage gate). None of the three is part of
+`capability_definition_hash`: they describe a capability, they do not change
+what a unit computes.
+
+`get_artifact` and `list_artifacts` carry the join, so the question is answered
+in the call an agent was going to make anyway rather than by a tool of its own —
+and a list answers once per artifact *kind* rather than once per artifact.
+
+The distinction it exists to publish is `redoes_named`. Four outcomes accept a
+`doctest:` ref; exactly one of them, `tests.specified`, redrafts a Document Test
+that already looks usable. The first live runs of the steering loop lost a whole
+request to that difference, having read the artifact ten times without being
+able to see it.
+
 ## Registered actions
 
 The action catalog handles bounded imperative operations that do not represent

@@ -579,6 +579,155 @@ def test_the_closing_message_contradicts_a_summary_that_overclaims(
 
 
 # --------------------------------------------------------------------------- #
+# "I uploaded a document, revise as appropriate" (step 9)
+# --------------------------------------------------------------------------- #
+NO_CHANGE = {
+    "impact": "none",
+    "summary": "The policy restates the threshold the memorandum already assumes.",
+    "apm_changes": [],
+    "rcm_changes": [],
+}
+
+
+def _assessed_workspace(ws):
+    """A workspace with a memorandum, a matrix row, and a new document."""
+
+    from app import documents
+
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": COMPLETE_APM,
+        }
+    )
+    ws.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate payments",
+            "control": "Invoice duplicate check",
+            "risk_rating": "high",
+        }
+    )
+    document = documents.add_document(
+        ws, "policy.txt", b"Approvals above 50,000 require two signatures."
+    )
+    return ws.reload(), str(document["id"])
+
+
+def test_assess_change_answers_without_revising_anything(
+    monkeypatch, workspace_with_data
+):
+    """Impact "none" is a complete answer, and nothing is rewritten to prove it."""
+
+    ws, document_id = _assessed_workspace(workspace_with_data)
+    script = LoopScript(
+        tool_turn("assess_change", {"document_ids": [document_id]}),
+        finish_turn("Nothing needed changing."),
+    )
+    configured(monkeypatch, script, {"agent:delta_review": NO_CHANGE})
+
+    started = start_loop(ws, f"I uploaded {document_id}; revise the plan as appropriate.")
+    run = wait_run(ws, started["id"], timeout=90)
+
+    assert run["status"] == "completed"
+    assert len(run["children"]) == 1
+    conversation = agent_loop.ConversationStore(ws, run["id"]).load()["messages"]
+    result = json.loads(
+        next(item for item in conversation if item["role"] == "tool")["content"]
+    )
+    assert result["assessment"]["impact"] == "none"
+    assert result["revise_next"] == []
+    # The memorandum is untouched: the assessment is a judgment, not a rewrite.
+    assert ws.reload().planning["apm_markdown"] == COMPLETE_APM
+
+
+def test_assess_change_names_the_revisions_to_run_and_their_order(
+    monkeypatch, workspace_with_data
+):
+    ws, document_id = _assessed_workspace(workspace_with_data)
+    row_id = str(ws.rcm[0]["id"])
+    assessment = {
+        "impact": "both",
+        "summary": "The policy raises the approval threshold.",
+        "apm_changes": [
+            {
+                "section": "Key risks and planned response",
+                "change": "State the new threshold.",
+                "reason": "The policy changed.",
+                "citation": document_id,
+            }
+        ],
+        "rcm_changes": [
+            {
+                "rcm_id": row_id,
+                "change": "revise",
+                "summary": "Reflect the two-signature rule.",
+                "reason": "The policy changed.",
+            }
+        ],
+    }
+    script = LoopScript(
+        tool_turn("assess_change", {"document_ids": [document_id]}),
+        finish_turn("Both need revising; say the word."),
+    )
+    configured(monkeypatch, script, {"agent:delta_review": assessment})
+
+    started = start_loop(ws, f"What does {document_id} change?")
+    run = wait_run(ws, started["id"], timeout=90)
+
+    conversation = agent_loop.ConversationStore(ws, run["id"]).load()["messages"]
+    result = json.loads(
+        next(item for item in conversation if item["role"] == "tool")["content"]
+    )
+    # The matrix reads the memorandum, so a plan that revises both revises them
+    # in that order.
+    assert result["revise_next"] == ["planning.apm_ready", "planning.rcm_ready"]
+    assert result["assessment"]["rcm_changes"][0]["rcm_id"] == row_id
+    # Still nothing rewritten: naming the revisions is not making them.
+    assert ws.reload().planning["apm_markdown"] == COMPLETE_APM
+
+
+def test_the_same_question_is_answered_from_disk_the_second_time(
+    monkeypatch, workspace_with_data
+):
+    """Readiness is honest: the assessment is keyed by what it was made against."""
+
+    from app import planning_delta
+
+    ws, document_id = _assessed_workspace(workspace_with_data)
+    script = LoopScript(
+        tool_turn("assess_change", {"document_ids": [document_id]}),
+        tool_turn("assess_change", {"document_ids": [document_id]}, "call_2"),
+        finish_turn("Asked and answered."),
+    )
+    fake = configured(monkeypatch, script, {"agent:delta_review": NO_CHANGE})
+
+    started = start_loop(ws, f"Assess {document_id}")
+    run = wait_run(ws, started["id"], timeout=90)
+
+    assert run["status"] == "completed"
+    # Two child runs, one model turn: the second found the answer on file.
+    assert len(run["children"]) == 2
+    assert [call["tag"] for call in fake.calls].count("agent:delta_review") == 1
+    stored = planning_delta.load(
+        ws.reload(), planning_delta.basis_sha1(ws.reload(), [document_id])
+    )
+    assert stored["impact"] == "none"
+    assert stored["document_ids"] == [document_id]
+
+
+def test_an_assessment_is_offered_for_a_document_the_plan_never_saw(
+    workspace_with_data,
+):
+    ws, document_id = _assessed_workspace(workspace_with_data)
+    chat = assistant_chats.create_chat(ws)
+
+    labels = [item["label"] for item in assistant_chats.get_chat(ws, chat["id"])["suggestions"]]
+
+    assert any(label.startswith("Assess what") for label in labels)
+
+
+# --------------------------------------------------------------------------- #
 # Failure is an observation
 # --------------------------------------------------------------------------- #
 def test_a_failed_unit_is_reported_with_its_validator_errors_and_rerun_once(

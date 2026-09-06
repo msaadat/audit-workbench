@@ -511,6 +511,9 @@ def _cycle_ruleset_proposed() -> Capability:
         # matrix is a different question and the proposal answering the old one
         # is not an answer to it.
         invalidate_on=("rcm",),
+    
+        produces=("ruleset",),
+        accepts_refs=(),
     )
 
 
@@ -641,6 +644,9 @@ def _cycle_ruleset_approved() -> Capability:
         # different question, and an approval of the answer to the old one is
         # not an approval of the answer to this one.
         invalidate_on=("rcm",),
+    
+        produces=("ruleset",),
+        accepts_refs=(),
     )
 
 
@@ -661,6 +667,9 @@ def _analysis_promoted() -> Capability:
         # A rewritten RCM invalidates every fit: a procedure placed against a
         # row that no longer exists is a placement nobody made.
         invalidate_on=("rcm",),
+    
+        produces=("datatest",),
+        accepts_refs=("table",),
     )
 
 
@@ -682,6 +691,10 @@ def _tests_specified() -> Capability:
         # seventy turns at a minute each exhaust it before the stage completes.
         barrier="all_settled_parallel",
         invalidate_on=("rcm",),
+    
+        produces=("datatest", "doctest"),
+        accepts_refs=("rcm", "datatest", "doctest"),
+        redoes_named=("datatest", "doctest"),
     )
 
 

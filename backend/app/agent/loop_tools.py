@@ -25,6 +25,7 @@ import json
 import uuid
 from typing import Any
 
+from .. import planning_delta
 from ..workspaces import Workspace, WorkspaceError
 from . import actions as action_catalog
 from . import capabilities as audit_capabilities
@@ -259,6 +260,29 @@ def tool_schemas() -> list[dict]:
             },
         ),
         _function(
+            "assess_change",
+            "Decide what newly supplied documents change for the audit plan. "
+            "Reads the documents' analyses against the current memorandum and "
+            "matrix and returns an impact ('none', 'apm', 'rcm' or 'both'), a "
+            "summary, and where each change belongs. Changes nothing: revising "
+            "is a separate run you start after reading this.",
+            {
+                "type": "object",
+                "properties": {
+                    "document_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The documents to assess, by id.",
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "What the auditor asked you to look for, if anything.",
+                    },
+                },
+                "required": ["document_ids"],
+            },
+        ),
+        _function(
             "ask_auditor",
             "Ask the auditor one question and wait for the answer. Use only "
             "when the answer changes what you would do next.",
@@ -375,6 +399,7 @@ TOOL_LABELS = {
     "run_outcomes": "Running audit work",
     "inspect_run": "Reading what happened",
     "rerun_units": "Trying the failed work again",
+    "assess_change": "Working out what the new evidence changes",
     "ask_auditor": "Asking you a question",
     "finish": "Wrapping up",
 }
@@ -648,6 +673,55 @@ class LoopTools:
             "error": settled.get("error"),
             "result_refs": list(settled.get("result_refs") or []),
             "receipt": settled.get("receipt"),
+        }
+
+    def assess_change(self, args: dict) -> dict:
+        """Ask what new evidence changes, without changing anything.
+
+        The request this whole plan was written around — "I uploaded document
+        XX, revise the APM and RCM as appropriate" — split into the two
+        decisions it actually contains. This is the first: does anything need to
+        change, and where. The second, revising, is a run the loop starts after
+        reading the answer, so the judgment and the rewrite are separately
+        reviewable and the rewrite can be declined.
+        """
+
+        document_ids = _string_list(args.get("document_ids"))
+        if not document_ids:
+            raise ToolError("Name the documents to assess.")
+        instruction = str(args.get("instruction") or "").strip()
+        self._guard_child_budget()
+        command = {
+            "source": "follow_up",
+            "text": f"Assess what {len(document_ids)} new document(s) change",
+            "requested_outcomes": ["planning.change_assessed"],
+            "target_refs": [f"document:{value}" for value in document_ids],
+            "generation_mode": "reuse_existing",
+        }
+        context = {"instruction": instruction} if instruction else {}
+        child = self.loop.child_run(command, context)
+        report = self._run_report(child)
+        assessment = planning_delta.load(
+            self.ws.reload(),
+            planning_delta.basis_sha1(self.ws.reload(), document_ids),
+        )
+        if assessment is None:
+            return {**report, "assessment": None}
+        return {
+            **report,
+            "assessment": {
+                key: assessment.get(key)
+                for key in ("impact", "summary", "apm_changes", "rcm_changes")
+            },
+            # Naming the next move rather than leaving it to be inferred: the
+            # matrix reads the memorandum, so a plan that revises both revises
+            # them in that order.
+            "revise_next": {
+                "none": [],
+                "apm": ["planning.apm_ready"],
+                "rcm": ["planning.rcm_ready"],
+                "both": ["planning.apm_ready", "planning.rcm_ready"],
+            }[str(assessment.get("impact") or "none")],
         }
 
     def ask_auditor(self, args: dict) -> dict:

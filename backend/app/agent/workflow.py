@@ -153,6 +153,22 @@ class Capability:
     commit_policy: str = "serialized"
     approval_policy: str = "auto_or_stage_batch"
     invalidate_on: tuple[str, ...] = ()
+    #: Artifact kinds this capability writes, and the typed refs a request may
+    #: name to narrow it. ``invalidate_on`` above says what it *reads*; these
+    #: say what it produces and what it will accept being pointed at, which is
+    #: what lets "what can I do with this artifact?" be answered from the
+    #: registry instead of guessed from an id. Deliberately absent from
+    #: ``capability_definition_hash``: they describe the capability, they do
+    #: not change what a unit computes, and hashing them would invalidate every
+    #: persisted proposal for a documentation change.
+    produces: tuple[str, ...] = ()
+    accepts_refs: tuple[str, ...] = ()
+    #: Ref kinds where naming the artifact is by itself the instruction to redo
+    #: it — no ``force`` needed, and no coverage gate consulted. This is the
+    #: distinction the operations index exists to publish: several capabilities
+    #: accept a ``doctest:`` ref, and exactly one of them will redraft a test
+    #: that already looks usable.
+    redoes_named: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.barrier not in BARRIERS:

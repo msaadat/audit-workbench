@@ -442,6 +442,22 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
 - In permission mode, a run whose context carries `review_each_stage` is asked
   before each stage runs (`audit_execution.stage_review`): continue, skip, or
   stop. An auto run never waits there.
+- `planning.change_assessed` answers "does this new evidence change the plan?"
+  without changing it. It declares no dependencies — reading the memorandum and
+  the matrix is not depending on the capabilities that write them, and doing so
+  regenerated both before answering — and requires their existence through
+  readiness instead. Its answer is keyed by the basis it was made against (the
+  documents' analyses, the memorandum, the matrix hashes) in
+  `Planning/.delta/<basis>.json`, so the same question is answered from disk and
+  a changed artifact re-asks. The framework still assesses currency nowhere: this
+  is a requested outcome, off every template.
+- What can be done to an artifact is derived, not written twice.
+  `agent/operations.py` joins the action catalog's `target_kinds` to the
+  capability registry's `produces` / `accepts_refs` / `redoes_named`, and
+  `get_artifact` and `list_artifacts` carry the result. `redoes_named` is the
+  distinction that matters: four outcomes accept a `doctest:` ref and exactly
+  one of them redrafts a test that already looks usable. Registering an action
+  or a capability publishes it; there is no second list to keep in step.
 - `max_read_turns` counts consecutive loop turns that only read. At the limit
   the loop is told to decide; at twice it the request ends saying it found
   nothing it could carry out. Reading always looks like progress and never

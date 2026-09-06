@@ -15,6 +15,8 @@ from app.agent.context import (
 )
 from app.agent.workers import WORKERS, WorkerRequest, WorkerRunError
 from app.agent.workers import planning
+from app.agent.workers.model import WorkerResponseValidationError
+from app.agent.workers.planning import validate_delta_proposal
 
 
 class _Gateway:
@@ -371,3 +373,157 @@ def test_the_apm_prompt_states_where_an_instruction_ranks():
     """Above the default instructions, below the response contract."""
     assert "auditor_instruction" in planning.APM_SYSTEM
     assert "never over the response contract" in planning.APM_SYSTEM
+
+
+# --------------------------------------------------------------------------- #
+# planning.delta_review — what new evidence changes (step 9)
+# --------------------------------------------------------------------------- #
+APM_WITH_HEADINGS = (
+    "# Audit Planning Memorandum\n\n## Engagement\n\nProcurement.\n\n"
+    "## Key risks and planned response\n\nApproval compliance.\n"
+)
+
+
+def delta_bundle(
+    *, documents=("Policy now requires two approvers above 50,000.",),
+    apm=APM_WITH_HEADINGS, rows=None, instruction=None,
+):
+    rows = [{"id": "RCM-1", "risk": "Purchases bypass approval"}] if rows is None else rows
+    values = [
+        ("new_document_analyses", f"document:doc{index}", content)
+        for index, content in enumerate(documents)
+    ]
+    values.append(("current_apm", "planning:apm", apm))
+    values.extend(("current_rcm", f"rcm:{row['id']}", row) for row in rows)
+    values.append(
+        (
+            "planning_context",
+            "planning:context",
+            {"context": {"objective": "Assess procurement approvals"}},
+        )
+    )
+    if instruction is not None:
+        values.append(("instruction", "instruction:abcdef123456", instruction))
+    items = tuple(
+        ContextBundleItem(
+            source_id=source_id,
+            source_ref=source_ref,
+            representation=ContextRepresentation("planning_context"),
+            content=content,
+            supplied_size=supplied_size(content),
+        )
+        for source_id, source_ref, content in values
+    )
+    return ContextBundle(
+        capability_id="planning.change_assessed",
+        unit_id="change_assessment",
+        items=items,
+        supplied_size=total_supplied_size(item.supplied_size for item in items),
+    )
+
+
+def delta_request(bundle=None):
+    return WorkerRequest(
+        worker_id="planning.delta_review",
+        capability_id="planning.change_assessed",
+        unit_id="change_assessment",
+        context=bundle or delta_bundle(),
+        unit_input={"document_ids": ["doc0"], "basis_sha1": "basis"},
+        activity={"artifact_refs": ["document:doc0"]},
+    )
+
+
+def _assessment(**overrides):
+    return {
+        "impact": "apm",
+        "summary": "The policy raises the approval threshold.",
+        "apm_changes": [
+            {
+                "section": "Key risks and planned response",
+                "change": "Note the new threshold.",
+                "reason": "The policy changed.",
+                "citation": "doc0",
+            }
+        ],
+        "rcm_changes": [],
+        **overrides,
+    }
+
+
+def test_delta_worker_reads_only_its_bundle_and_returns_a_validated_assessment():
+    gateway = _Gateway([json.dumps(_assessment())])
+
+    result = WORKERS.execute(delta_request(), gateway)
+
+    assert result.proposal["impact"] == "apm"
+    assert result.proposal["apm_changes"][0]["section"] == "Key risks and planned response"
+    sent = json.loads(gateway.calls[0]["user"])
+    assert sent["new_documents"] == ["Policy now requires two approvers above 50,000."]
+    assert sent["current_apm"] == APM_WITH_HEADINGS
+    assert [row["id"] for row in sent["current_rcm"]] == ["RCM-1"]
+
+
+def test_delta_worker_refuses_a_section_the_memorandum_does_not_have():
+    with pytest.raises(WorkerResponseValidationError, match="does not have"):
+        validate_delta_proposal(
+            _assessment(
+                apm_changes=[
+                    {"section": "Data analytics performed", "change": "x", "reason": "y"}
+                ]
+            ),
+            delta_request(),
+        )
+
+
+def test_delta_worker_refuses_a_row_the_matrix_does_not_have():
+    with pytest.raises(WorkerResponseValidationError, match="does not have"):
+        validate_delta_proposal(
+            _assessment(
+                impact="rcm",
+                apm_changes=[],
+                rcm_changes=[
+                    {"rcm_id": "RCM-404", "change": "revise", "summary": "x", "reason": "y"}
+                ],
+            ),
+            delta_request(),
+        )
+
+
+def test_delta_worker_refuses_an_impact_that_disagrees_with_its_own_lists():
+    """"Nothing needs changing" with four changes attached is the failure."""
+
+    with pytest.raises(WorkerResponseValidationError, match="does not agree"):
+        validate_delta_proposal(_assessment(impact="none"), delta_request())
+    with pytest.raises(WorkerResponseValidationError, match="does not agree"):
+        validate_delta_proposal(
+            _assessment(impact="both"), delta_request()
+        )
+
+
+def test_delta_worker_accepts_no_change_as_a_complete_answer():
+    """Confirming the plan is a real answer, and the common one."""
+
+    validated = validate_delta_proposal(
+        {
+            "impact": "none",
+            "summary": "The policy restates what the memorandum already assumes.",
+            "apm_changes": [],
+            "rcm_changes": [],
+        },
+        delta_request(),
+    )
+
+    assert validated["impact"] == "none"
+    assert validated["apm_changes"] == []
+
+
+def test_delta_worker_reads_the_auditors_instruction_when_one_is_supplied():
+    gateway = _Gateway([json.dumps(_assessment())])
+
+    WORKERS.execute(
+        delta_request(delta_bundle(instruction="Focus on approval thresholds.")),
+        gateway,
+    )
+
+    sent = json.loads(gateway.calls[0]["user"])
+    assert sent["auditor_instruction"] == "Focus on approval thresholds."

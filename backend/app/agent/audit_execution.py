@@ -21,6 +21,7 @@ from collections.abc import Mapping
 
 from .. import (
     cycle_measurement,
+    planning_delta,
     cycle_rulesets,
     cycle_vouching,
     doc_tests,
@@ -69,6 +70,7 @@ from .context import (
     apm_document_methodology_scope,
     apm_table_profile_candidates,
     cycle_scope,
+    delta_review_scope,
     finding_draft_scope,
     planning_context_scope,
     rcm_scope,
@@ -81,10 +83,12 @@ from .executors.fieldwork import (
     untested_populations,
 )
 from .executors.planning import (
+    APM_ARTIFACT_REF,
     AUDITOR_EDIT_PRESERVED,
     CYCLE_EDIT_PRESERVED,
     ApmExecutorTarget,
     CycleExecutorTarget,
+    DeltaExecutorTarget,
     PlanningContextExecutorTarget,
     RcmExecutorTarget,
 )
@@ -390,6 +394,18 @@ def _category_breakdown(documents: list[dict]) -> str:
     if len(parts) == 1:
         return parts[0]
     return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _assessment_sentence(impact: str, document_ids: list[str]) -> str:
+    """What the assessment concluded, said once, in the auditor's terms."""
+
+    subject = counted(len(document_ids), "document")
+    return {
+        "none": f"I read {subject} and the plan already accounts for it — nothing to change.",
+        "apm": f"I read {subject}: the memorandum needs revising, the matrix does not.",
+        "rcm": f"I read {subject}: the matrix needs revising, the memorandum does not.",
+        "both": f"I read {subject}: both the memorandum and the matrix need revising.",
+    }.get(impact, f"I assessed what {subject} changes.")
 
 
 class AuditWorkflowExecution(ActionExecution):
@@ -1157,6 +1173,120 @@ class AuditWorkflowExecution(ActionExecution):
             readiness_provider=lambda: capability.readiness(target.workspace, {}),
             on_committed=on_committed,
             conflict_handler=conflict_handler,
+        )
+
+    def _bind_delta_review(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the change assessment to the shared ``UnitPipeline``.
+
+        The one unit in the audit workflow that commits nothing. It still runs
+        the whole pipeline — declared context, one worker turn, a persisted
+        proposal, approval in permission mode, a guarded write, a receipt —
+        because an assessment an auditor will act on has to be as reviewable as
+        the revision it triggers.
+        """
+
+        self.ws = subject
+        document_ids = [
+            str(value)
+            for value in ((unit.get("input_payload") or {}).get("document_ids") or [])
+        ] or [
+            ref.split(":", 1)[1]
+            for ref in unit.get("parent_refs") or []
+            if str(ref).startswith("document:")
+        ]
+        basis = str(
+            (unit.get("input_payload") or {}).get("basis_sha1")
+            or planning_delta.basis_sha1(self.ws, document_ids)
+        )
+        expected_context = parent_hashes(self.ws, [APM_ARTIFACT_REF])
+        target = DeltaExecutorTarget(
+            self.ws,
+            self.run["id"],
+            document_ids=tuple(document_ids),
+            basis_sha1=basis,
+        )
+        task = self.add_task(
+            "change_assessment", "workflow:change_assessment", "Change assessment"
+        )
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                delta_review_scope(
+                    self.ws,
+                    document_ids=document_ids,
+                    instruction=workflow_scope(self.run).get("instruction"),
+                ),
+            )
+
+        def approval_provider(proposal):
+            proposals = [
+                self.proposal_item(
+                    "Change assessment",
+                    str(proposal.get("summary") or "What the new evidence changes."),
+                    dict(proposal),
+                )
+            ]
+            accepted = self.request_approval("change_assessment", task, proposals)
+            return dict(accepted[0]["spec"]) if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            impact = str((getattr(outcome, "output", None) or {}).get("impact") or "")
+            narration.say(
+                self.run,
+                self.emit,
+                _assessment_sentence(impact, document_ids),
+            )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.delta_review",
+                executor_id="planning.delta",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                    "document_ids": document_ids,
+                    "basis_sha1": basis,
+                },
+                activity={
+                    "artifact_refs": [f"document:{value}" for value in document_ids],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_context,
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=(
+                    "change_assessment" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(
+                target.workspace, workflow_scope(self.run)
+            ),
+            on_committed=on_committed,
         )
 
     def _bind_cycle(
@@ -2393,6 +2523,10 @@ def build_audit_workflow_runner(
         "planning.rcm_ready": (
             adapter._bind_rcm,
             {"worker": "planning.rcm", "executor": "planning.rcm"},
+        ),
+        "planning.change_assessed": (
+            adapter._bind_delta_review,
+            {"worker": "planning.delta_review", "executor": "planning.delta"},
         ),
         "tests.cycle_ruleset_proposed": (
             adapter._bind_cycle_ruleset,
