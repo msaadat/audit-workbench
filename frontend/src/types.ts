@@ -589,7 +589,12 @@ export interface DocTestDisposition {
 export type CycleEvaluationState = 'not_run' | 'passed' | 'failed' | 'incomplete' | 'needs_review' | 'stale'
 export type CycleDispositionState = 'pending' | 'confirmed' | 'exception'
 export type CycleAssertionVerdict = 'match' | 'mismatch' | 'cannot_determine' | 'missing_evidence' | 'invalid_extraction' | 'ambiguous' | 'not_run'
-export type CycleAssuranceScope = 'targeted_evidence_only' | 'sampled_population'
+export type CycleAssuranceScope =
+  | 'targeted_evidence_only'
+  | 'sampled_population'
+  /** Every record of the type, every one of them assessed. Only a population
+   *  nothing sampled, capped, or left unread may say this. */
+  | 'full_population'
 /** What a reader may answer for a pair it was asked to judge. Agreement is
  *  settled against the values, so there is no comparison operator here. */
 export type CycleVerdict = 'agrees' | 'disagrees' | 'cannot_determine'
@@ -650,8 +655,17 @@ export interface DocTestItem {
   question?: string
   response?: string
   citations?: EvidenceRef[]
-  /** Per-document assessment, keyed by document id. */
+  /** Per-assessment answer. The key is the document id for an item that
+   *  attaches documents, and `<document id>#<record index>` for one written
+   *  against a typed population, whose unit of assessment is the record. */
   qa_answers?: Record<string, { answer: string; outcome: string; citations: EvidenceRef[] }>
+  /** The type this item is written against, and what it resolved to on the
+   *  last read. Present instead of hand-attached `document_ids`, never beside
+   *  them: the workspace resolves the documents every run. */
+  population?: DocumentPopulation
+  /** The auditor's call on individual records, keyed the same way
+   *  `qa_answers` is. The item's own `disposition` is folded from these. */
+  record_dispositions?: Record<string, { state: DocTestDispositionState; note: string; actor: string; at: string }>
   runner_note?: string
   document_conflicts?: { duplicate_documents: string[][] }
   transaction_identifiers?: string[]
@@ -724,6 +738,130 @@ export interface DocTestItem {
   }>
 }
 
+export interface PopulationSelection {
+  mode: 'all' | 'sample'
+  method?: 'random' | 'interval' | 'stratified'
+  size?: number
+  seed?: number
+  stratify_by?: string
+}
+
+export type PopulationCriteriaRef =
+  | { kind: 'document'; document_id: string; section: string }
+  | { kind: 'rcm'; rcm_id: string; field: string }
+
+export interface DocumentPopulation {
+  document_type: string
+  fields: string[]
+  selection: PopulationSelection
+  criteria_refs: PopulationCriteriaRef[]
+  schema_ref?: { document_type: string; schema_version: number; schema_hash: string }
+  resolved_records: Array<{
+    document_id: string
+    record_index: number
+    record_id: string
+    content_sha1: string
+  }>
+  resolved_document_ids: string[]
+  /** Documents of the type that produced no current reading. A document that
+   *  silently contributes nothing is the failure this names rather than hides. */
+  unread_documents: Array<{ document_id: string; title: string }>
+  population_records: number
+  population_documents: number
+  omitted_records: number
+  capped: boolean
+  inputs_sha1: string
+  resolved_at: string
+}
+
+/** What one population item covered, and what it did not. */
+export interface PopulationSummary {
+  item_id: string
+  label: string
+  document_type: string
+  fields: string[]
+  selection: PopulationSelection
+  assurance_scope: CycleAssuranceScope
+  population_records: number
+  population_documents: number
+  resolved: number
+  resolved_documents: number
+  assessed: number
+  omitted_records: number
+  capped: boolean
+  unread_documents: Array<{ document_id: string; title: string }>
+  resolved_at: string
+  outcome_counts: { accepted: number; exception: number; needs_manual_check: number }
+  /** Whether the run has caught up with the population as it now stands. */
+  run_current: boolean
+}
+
+export type PopulationRowOutcome =
+  | 'accepted'
+  | 'exception'
+  | 'needs_manual_check'
+  | 'not_run'
+
+export interface PopulationGridRow {
+  key: string
+  document_id: string
+  record_index: number
+  document_title: string
+  values: Record<string, string>
+  field_citations: Record<string, string>
+  /** Fields the reading does not state. Silence about a field is not a value. */
+  missing_fields: string[]
+  outcome: PopulationRowOutcome
+  answer: string
+  conclusion: string
+  evidence_refs: EvidenceRef[]
+  disposition: DocTestDispositionState
+  disposition_note: string
+}
+
+export interface PopulationGrid {
+  test_id: string
+  test_sha1: string
+  item_id: string
+  label: string
+  question: string
+  document_type: string
+  identifier_columns: string[]
+  field_columns: string[]
+  available_columns: string[]
+  criteria: Array<{
+    kind: string
+    label: string
+    text: string
+    document_id?: string
+    section?: string
+    rcm_id?: string
+  }>
+  summary: PopulationSummary
+  assurance_scope: CycleAssuranceScope
+  rows: PopulationGridRow[]
+  page: { offset: number; limit: number; total: number }
+  truncated: boolean
+}
+
+export interface PopulationTypeOption {
+  document_type: string
+  documents: number
+  records: number
+  sample_document_ids: string[]
+  fields: Array<{ name: string; role: string; value_type: string; label: string }>
+  identifier_fields: string[]
+}
+
+export interface PopulationOptions {
+  types: PopulationTypeOption[]
+  criteria_documents: Array<{ id: string; title: string; category: string }>
+  selection_modes: string[]
+  sampling_methods: string[]
+  max_records: number
+  max_fields: number
+}
+
 export interface DocTestRollup {
   items: number
   tested_items?: number
@@ -750,6 +888,8 @@ export interface DocTestRollup {
   exceptions: number
   manual_review: number
   pending: number
+  /** One entry per item written against a typed population. */
+  populations?: PopulationSummary[]
 }
 
 export interface EvidenceRequest {
@@ -818,6 +958,10 @@ export interface DocTestSummaryItem {
   image_only: boolean
   evidence_request_count: number
   has_conflict: boolean
+  /** Present when the item names a document *type* rather than attaching ids:
+   *  what it resolved to, how much of it has been assessed, and what the run
+   *  did not cover. Null on an ordinary item. */
+  population?: PopulationSummary | null
   updated: string
 }
 

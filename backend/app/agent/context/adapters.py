@@ -20,6 +20,8 @@ from ... import (
     doc_tests,
     document_classification,
     document_context,
+    document_population,
+    document_schemas,
     documents,
     intake,
     methodology,
@@ -375,11 +377,12 @@ def apm_table_profile_candidates(
     """Expose bounded statistical profiles, plus category values where safe.
 
     A value list is kept on a column only when it is a *category domain*, not
-    its rows restated: the table has a population and each value recurs
-    across it (``MIN_CATEGORY_ROWS``, ``MIN_CATEGORY_REPETITION`` — the same
-    gate ``test_generate_table_metadata_candidates`` applies), and the
-    underlying frequency list holds one entry per distinct value rather than a
-    truncated top-N. Anything narrower carries its distinct count alone.
+    its rows restated: the table has a population, each value recurs across it,
+    the values read as labels rather than prose (``MIN_CATEGORY_ROWS``,
+    ``MIN_CATEGORY_REPETITION``, ``_label_domain`` — the same gate
+    ``test_generate_table_metadata_candidates`` applies), and the underlying
+    frequency list holds one entry per distinct value rather than a truncated
+    top-N. Anything narrower carries its distinct count alone.
     """
     imported = _imported_table_names(workspace) if imported_only else None
     candidates = []
@@ -407,6 +410,7 @@ def apm_table_profile_candidates(
                 and len(values) == distinct
                 and rows >= MIN_CATEGORY_ROWS
                 and distinct * MIN_CATEGORY_REPETITION <= rows
+                and _label_domain(values)
             )
             if not keep_values:
                 entry.pop("values", None)
@@ -1241,7 +1245,7 @@ def document_test_document_candidates(
     *,
     document_ids: Iterable[str] | None = None,
     include_audit_notes: bool = True,
-    evidence_identity_only: bool = False,
+    exclude_evidence: bool = False,
 ) -> tuple[ContextCandidate, ...]:
     """Expose every document with the identity and citations an item may cite.
 
@@ -1251,17 +1255,17 @@ def document_test_document_candidates(
     :func:`document_context.apm_document_context`, the single model-facing
     document boundary.
 
-    ``evidence_identity_only`` withholds the summary and citations of documents
-    this engagement holds as *transaction evidence*, leaving their identity and
-    their induced type. It exists because those two fields were 83% of this
-    projection's bytes and said the same thing once per document: measured on
-    the treasury engagement, 82 evidence documents carried 145k characters of
-    prose across six types. A turn writing a question about a payment
-    instruction needs to know what a payment instruction *states*, which is the
-    type's schema, not what one of eighteen of them happened to say. Planning
-    material keeps its summary — a policy has no schema to stand in for it, and
-    its prose is the thing being reasoned about rather than a sample of a
-    population.
+    ``exclude_evidence`` withholds *transaction evidence* documents outright.
+    A step no longer names them: it names a type, and the workspace resolves the
+    documents at run time, so their per-document identity items were twelve — or
+    eighty-four — lines saying what :func:`test_generate_evidence_type_candidates`
+    says in one. Withholding their prose came first, for size: measured on the
+    treasury engagement, 82 evidence documents carried 145k characters across six
+    types. Withholding the identities too is the consequence of the type becoming
+    the thing a step names. Planning material stays in full — a policy has no
+    schema to stand in for it, its prose is the thing being reasoned about rather
+    than a sample of a population, and a question may legitimately be asked of
+    one named policy document.
     """
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
     candidates = []
@@ -1273,13 +1277,10 @@ def document_test_document_candidates(
         # a document and a schema in the same breath; empty where nothing was
         # typed, which is what an untyped document honestly offers.
         document_type = document_classification.document_type(workspace, document_id)
-        identity_only = bool(evidence_identity_only and category == "evidence")
-        context = (
-            {}
-            if identity_only
-            else document_context.apm_document_context(
-                workspace, document_id, include_audit_notes=include_audit_notes
-            )
+        if exclude_evidence and category == "evidence":
+            continue
+        context = document_context.apm_document_context(
+            workspace, document_id, include_audit_notes=include_audit_notes
         )
         metadata = {
             "document_id": document_id,
@@ -1295,30 +1296,24 @@ def document_test_document_candidates(
             "title": metadata["title"],
             "document_type": document_type,
         }
-        if not identity_only:
-            content.update(
-                {
-                    "analysis_id": context.get("analysis_id"),
-                    "citations": [
-                        {key: citation.get(key) for key in ("id", "page", "excerpt")}
-                        for citation in (context.get("citations") or [])[
-                            :_MAX_DOCUMENT_TEST_CITATIONS
-                        ]
-                    ],
-                    "summary": context.get("content") or "",
-                }
-            )
+        content.update(
+            {
+                "analysis_id": context.get("analysis_id"),
+                "citations": [
+                    {key: citation.get(key) for key in ("id", "page", "excerpt")}
+                    for citation in (context.get("citations") or [])[
+                        :_MAX_DOCUMENT_TEST_CITATIONS
+                    ]
+                ],
+                "summary": context.get("content") or "",
+            }
+        )
         candidates.append(
             ContextCandidate(
                 source_ref=f"document:{document_id}",
                 source=content,
                 representations={"summary": content},
                 metadata=metadata,
-                # Withheld prose is withheld from the *selector* too, so an
-                # evidence document is ranked on what it is rather than on a
-                # summary the turn will never be shown. The type carries that
-                # weight now: a row asking about payment instructions ranks the
-                # payment instructions.
                 lexical_text="\n".join(
                     str(value or "")
                     for value in (
@@ -1482,8 +1477,43 @@ def test_generate_schema_candidates(
             },
         ),
     )
+
+
+TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID = "evidence_types"
+
+
+def test_generate_evidence_type_candidates(
+    workspace: Workspace,
+) -> tuple[ContextCandidate, ...]:
+    """What evidence this engagement holds, once per type rather than per file.
+
+    One item, because a step names a *type* and the workspace resolves the
+    documents at run time. What the turn needs from this is the count — a
+    requirement written against a population cannot be answered by a type
+    carrying one record — and it pairs with ``evidence_schemas``, which says
+    what a record of that type states.
+    """
+
+    items = document_population.evidence_type_items(workspace)
+    if not items:
+        return ()
+    content = {"types": items}
+    return (
+        ContextCandidate(
+            source_ref="evidence-types:workspace",
+            source=content,
+            representations={"cycle_schema": content},
+            metadata={
+                "document_types": [
+                    str(entry.get("document_type") or "") for entry in items
+                ]
+            },
+        ),
+    )
+
+
 TEST_GENERATE_TABLE_METADATA_SOURCE_ID = "table_metadata"
-TEST_GENERATE_DOCUMENT_SOURCE_ID = "documents"
+TEST_GENERATE_DOCUMENT_SOURCE_ID = "planning_documents"
 TEST_GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
 TEST_GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID = "transaction_evidence"
 
@@ -1493,7 +1523,38 @@ TEST_GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID = "transaction_evidence"
 # alone, so a narrow or near-unique column can never become a row disclosure.
 MIN_CATEGORY_ROWS = 20
 MIN_CATEGORY_REPETITION = 4
+#: The longest a *phrase* may be and still be read as a label rather than free
+#: text. The two bounds above were supposed to make "an identifier, a name, or a
+#: free-text field fail by construction", and on real data they do not: a note
+#: column written from three templates repeats often enough to pass, and its
+#: complete contents then travel as a category domain. Measured across the
+#: engagements on this machine, every genuine label domain — job titles, account
+#: names, departments, approval channels, counterparty types — tops out at 27
+#: characters, and the next value up is 44. This sits in that gap.
+MAX_CATEGORY_LABEL_CHARACTERS = 32
 
+
+def _label_domain(values: Iterable[object]) -> bool:
+    """Whether a value set reads as labels rather than as free text.
+
+    Length is only applied to values that contain a space, because a long
+    unbroken token is a code and codes are exactly what the domain is disclosed
+    for — ``MM_PLACEMENT;MM_BORROWING;TBILL_PURCHASE`` is forty characters and
+    is the kind of vocabulary a predicate has to name. A *phrase* running past
+    the bound is prose, and prose has no domain: it repeats because the data is
+    small, not because the column is coded.
+
+    One clause on purpose. Terminal punctuation catches "Sr. Accountant" and a
+    dash separator catches "Chief Dealer - Money Market", both of which are
+    labels; length is the only signal that separated the two prose columns from
+    every legitimate one without a false positive.
+    """
+
+    return all(
+        " " not in str(value).strip()
+        or len(str(value).strip()) <= MAX_CATEGORY_LABEL_CHARACTERS
+        for value in values
+    )
 
 #: How much more a match on the table's own name is worth than a match on one
 #: of its columns. The same weighting the test worker's own schema ranking
@@ -1556,7 +1617,12 @@ def test_generate_table_metadata_candidates(
     "complete set of values" of a column is just its rows restated, so a column
     qualifies only when the table is large enough to have a population and each
     value recurs across it (``MIN_CATEGORY_ROWS``, ``MIN_CATEGORY_REPETITION``).
-    An identifier, a name, or a free-text field fails this by construction.
+    An identifier or a name fails this by construction. Free text does not: a
+    note column written from a handful of templates repeats often enough to
+    pass, and a treasury engagement disclosed the complete text of its
+    discrepancy notes on that basis. ``_label_domain`` is the third bound, and
+    it is about shape rather than frequency — free text is prose, and prose has
+    no domain.
 
     A vocabulary is supplied only when it is provably complete. The profile keeps
     a bounded number of the most frequent values, so a column with more distinct
@@ -1595,6 +1661,7 @@ def test_generate_table_metadata_candidates(
                     and len(values) == distinct
                     and rows >= MIN_CATEGORY_ROWS
                     and distinct * MIN_CATEGORY_REPETITION <= rows
+                    and _label_domain(values)
                 ):
                     entry["values"] = values
             columns.append(entry)
@@ -1719,10 +1786,14 @@ def test_generate_scope(
                 workspace,
                 document_ids=document_ids,
                 include_audit_notes=False,
-                # Evidence documents contribute identity and type here; what
-                # they *state* comes from the schema source below, once per
-                # type rather than once per document.
-                evidence_identity_only=True,
+                # Planning material only. Transaction evidence is named by type
+                # in the two sources below, and resolved by the workspace at run
+                # time, so listing eighty-four vouchers here would spend the
+                # prompt on ids no step is allowed to write.
+                exclude_evidence=True,
+            ),
+            TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID: (
+                test_generate_evidence_type_candidates(workspace)
             ),
             TEST_GENERATE_SCHEMA_SOURCE_ID: test_generate_schema_candidates(
                 workspace, row
@@ -1738,6 +1809,8 @@ def test_generate_scope(
 
 DOCUMENT_QA_ITEM_SOURCE_ID = "qa_item"
 DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"
+DOCUMENT_QA_READING_SOURCE_ID = "document_reading"
+DOCUMENT_QA_CRITERIA_SOURCE_ID = "criteria_excerpt"
 
 # The item fields a Q&A answer is derived from. Existing
 # answers, and evidence anchors are deliberately excluded: the worker answers the
@@ -1751,6 +1824,7 @@ def document_qa_page_candidates(
     *,
     question: str,
     pages: Iterable[int] | None = None,
+    fallback_to_pages: bool = False,
 ) -> tuple[ContextCandidate, ...]:
     """Expose one candidate per included document page.
 
@@ -1773,7 +1847,22 @@ def document_qa_page_candidates(
         stage="document_qa",
         record_activity=False,
     )
-    if scoped:
+    if not scoped and fallback_to_pages and not (context.get("citations") or []):
+        # Retrieval found nothing to match on. Where the caller asked for pages
+        # because the reading was *silent* about a field, an empty result would
+        # answer that silence with more silence, so the document's own pages are
+        # supplied and the budget decides how much of them fits.
+        mode = "pages"
+        context = document_context.get_document_context(
+            workspace,
+            str(document_id),
+            "pages",
+            pages=None,
+            purpose="document_qa",
+            stage="document_qa",
+            record_activity=False,
+        )
+    if mode == "pages":
         included = [
             {"page": int(page["page"]), "text": str(page.get("text") or "")}
             for page in context.get("page_items") or []
@@ -1818,13 +1907,86 @@ def document_qa_page_candidates(
     )
 
 
+def document_reading_candidates(
+    workspace: Workspace,
+    population: Mapping[str, object],
+    document_id: str,
+    record_index: int,
+) -> tuple[tuple[ContextCandidate, ...], list[str]]:
+    """One record's reading, and the fields it does not state.
+
+    The second return value is what decides whether this unit costs a page
+    fetch: a reading that states every field the question names answers it in a
+    few hundred characters, and only a gap in the reading sends the unit back to
+    the document text.
+    """
+
+    schema = document_schemas.load_schema(
+        workspace, str(population.get("document_type") or "")
+    )
+    projection = document_population.record_projection(
+        workspace,
+        str(document_id),
+        int(record_index),
+        fields=[str(value) for value in population.get("fields") or []],
+        identifiers=document_population.identifier_fields(schema),
+    )
+    candidate = ContextCandidate(
+        source_ref=f"record:{document_id}:{int(record_index):05d}",
+        source=projection,
+        representations={"current_artifact": projection},
+        metadata={
+            "document_id": str(document_id),
+            "record_index": int(record_index),
+            "document_type": projection["document_type"],
+        },
+    )
+    return (candidate,), list(projection.get("missing_fields") or [])
+
+
+def criteria_excerpt_candidates(
+    workspace: Workspace,
+    population: Mapping[str, object],
+    *,
+    question: str,
+) -> tuple[ContextCandidate, ...]:
+    """The policy text one population's answers are judged against."""
+
+    excerpts = document_population.criteria_excerpts(
+        workspace, population.get("criteria_refs") or [], question=question
+    )
+    return tuple(
+        ContextCandidate(
+            source_ref=(
+                f"criteria:{excerpt.get('rcm_id') or excerpt.get('document_id')}:{index:03d}"
+            ),
+            source=excerpt,
+            representations={"excerpt": excerpt},
+            metadata={
+                "kind": str(excerpt.get("kind") or ""),
+                "document_id": str(excerpt.get("document_id") or ""),
+                "section": str(excerpt.get("section") or ""),
+            },
+        )
+        for index, excerpt in enumerate(excerpts)
+    )
+
+
 def document_qa_scope(
     workspace: Workspace,
     test_id: str,
     item_id: str,
     document_id: str,
+    record_index: object = None,
 ) -> ContextScope:
-    """Build the local candidate scope for one bounded document-assessment unit."""
+    """Build the local candidate scope for one bounded document-assessment unit.
+
+    Two shapes behind one declaration. A question over named documents reads
+    pages, as it always has. A question over a typed population reads *one
+    record's structured reading* — the fields already extracted with their
+    citations — plus the criteria it is judged against, and reaches for pages
+    only where the reading is silent about a field the question names.
+    """
     test = doc_tests.load_test(workspace, str(test_id))
     item = next(
         (
@@ -1838,10 +2000,11 @@ def document_qa_scope(
         raise WorkspaceError(
             f"Document Test '{test_id}' has no item '{item_id}'."
         )
-    if str(document_id) not in [str(value) for value in item.get("document_ids") or []]:
+    unit = document_population.unit_key(str(document_id), record_index)
+    known = {value["key"] for value in document_population.assessment_units(item)}
+    if unit not in known:
         raise WorkspaceError(
-            f"Document '{document_id}' is not attached to Document Test item "
-            f"'{item_id}'."
+            f"'{unit}' is not an assessment unit of Document Test item '{item_id}'."
         )
     kind = str(test.get("kind") or "")
     question = str(item.get("question") or "").strip()
@@ -1855,29 +2018,61 @@ def document_qa_scope(
         question = str(item.get("instruction") or item.get("label") or "Review this document evidence.")
     if not question:
         raise WorkspaceError(f"Document Test item '{item_id}' has no assessable instruction.")
+    population = item.get("population") or {}
     projection = {
         **{key: item.get(key) for key in _DOCUMENT_QA_ITEM_FIELDS},
         "document_test_id": str(test_id),
         "document_id": str(document_id),
         "question": question,
     }
+    if population:
+        projection.update(
+            document_type=str(population.get("document_type") or ""),
+            fields=[str(value) for value in population.get("fields") or []],
+            record_index=int(record_index or 0),
+        )
+    candidates: dict[str, tuple[ContextCandidate, ...]] = {
+        DOCUMENT_QA_ITEM_SOURCE_ID: (
+            ContextCandidate(
+                source_ref=f"docitem:{item_id}",
+                source=projection,
+                representations={"current_artifact": projection},
+                metadata={"document_test_id": str(test_id), "item_id": str(item_id)},
+            ),
+        ),
+    }
+    if not population:
+        candidates[DOCUMENT_QA_PAGE_SOURCE_ID] = document_qa_page_candidates(
+            workspace,
+            str(document_id),
+            question=question,
+            pages=item.get("pages"),
+        )
+        return ContextScope(
+            candidates=candidates,
+            selector_context={"document_qa_query": question},
+        )
+    reading, missing_fields = document_reading_candidates(
+        workspace, population, str(document_id), int(record_index or 0)
+    )
+    candidates[DOCUMENT_QA_READING_SOURCE_ID] = reading
+    criteria = criteria_excerpt_candidates(workspace, population, question=question)
+    if criteria:
+        candidates[DOCUMENT_QA_CRITERIA_SOURCE_ID] = criteria
+    if missing_fields:
+        # The reading is silent about a field the question names. Silence is not
+        # a value, so the pages are fetched to settle it rather than the answer
+        # being inferred from the absence.
+        pages = document_qa_page_candidates(
+            workspace,
+            str(document_id),
+            question=f"{question} {' '.join(missing_fields)}",
+            fallback_to_pages=True,
+        )
+        if pages:
+            candidates[DOCUMENT_QA_PAGE_SOURCE_ID] = pages
     return ContextScope(
-        candidates={
-            DOCUMENT_QA_ITEM_SOURCE_ID: (
-                ContextCandidate(
-                    source_ref=f"docitem:{item_id}",
-                    source=projection,
-                    representations={"current_artifact": projection},
-                    metadata={"document_test_id": str(test_id), "item_id": str(item_id)},
-                ),
-            ),
-            DOCUMENT_QA_PAGE_SOURCE_ID: document_qa_page_candidates(
-                workspace,
-                str(document_id),
-                question=question,
-                pages=item.get("pages"),
-            ),
-        },
+        candidates=candidates,
         selector_context={"document_qa_query": question},
     )
 
@@ -3920,6 +4115,7 @@ __all__ = [
     "TEST_GENERATE_TABLE_METADATA_SOURCE_ID",
     "TEST_GENERATE_TABLE_PROFILE_SOURCE_ID",
     "TEST_GENERATE_DOCUMENT_SOURCE_ID",
+    "TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID",
     "TEST_GENERATE_METHODOLOGY_SOURCE_ID",
     "TEST_GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID",
     "test_generate_scope",
@@ -3946,12 +4142,15 @@ __all__ = [
     "MAX_SMALL_TABLE_ROWS",
     "document_chunk_scope",
     "document_metadata_candidate",
+    "criteria_excerpt_candidates",
     "document_qa_page_candidates",
     "document_qa_scope",
+    "document_reading_candidates",
     "document_reduction_scope",
     "document_evidence_read_scope",
     "document_visual_page_scope",
     "document_test_document_candidates",
+    "test_generate_evidence_type_candidates",
     "finding_draft_scope",
     "document_category_scope",
     "intake_classification_scope",

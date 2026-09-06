@@ -33,6 +33,7 @@ from .base import BaseRunner
 from .capabilities import DOC_TESTS_REGISTRY
 from .capabilities.doc_tests import (
     DocTestScope,
+    assessment_pairs,
     resolve_doc_test_scope,
     scoped_tests,
     unexecuted_items,
@@ -65,6 +66,10 @@ from .runtime import (
 )
 from .workers import WORKERS
 
+#: Room in the execution stage for the units that assess nothing — a blocked
+#: worklist, a deterministic comparison, a review awaiting an auditor.
+DOC_TEST_UNIT_HEADROOM = 50
+
 DEFINITION_REVIEW_REQUIRED = "document_test_definition_needs_auditor_attention"
 AUDITOR_DISPOSITION_REQUIRED = "document_test_disposition_needs_auditor_attention"
 
@@ -73,6 +78,32 @@ def unit_ref(unit: dict, prefix: str) -> str:
     """The first parent reference of a given kind, whatever else precedes it."""
 
     return next(ref for ref in unit["parent_refs"] if ref.startswith(prefix))
+
+
+def optional_unit_ref(unit: dict, prefix: str) -> str | None:
+    """The same, for a reference only some units of a kind carry."""
+
+    return next(
+        (ref for ref in unit["parent_refs"] if ref.startswith(prefix)), None
+    )
+
+
+def unit_record_index(unit: dict) -> int | None:
+    """Which record of its document this unit assesses, or None for the whole.
+
+    A document-grained question has no record: it is one unit per attached
+    document, exactly as before. A population question is record-grained,
+    because a voucher pack's three line items are three transactions and
+    assessing them together lets two clean ones carry a third that is not.
+    """
+
+    ref = optional_unit_ref(unit, "record:")
+    if ref is None:
+        return None
+    try:
+        return int(ref.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -96,9 +127,15 @@ def bind_document_qa(
     test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
     item_id = unit_ref(unit, "docitem:").split(":", 1)[1]
     document_id = unit_ref(unit, "document:").split(":", 1)[1]
+    record_index = unit_record_index(unit)
     expected_test = parent_hashes(adapter.ws, [f"doctest:{test_id}"])
     target = DocumentQaExecutorTarget(
-        adapter.ws, adapter.run["id"], test_id, item_id, document_id
+        adapter.ws,
+        adapter.run["id"],
+        test_id,
+        item_id,
+        document_id,
+        record_index=record_index,
     )
 
     def context_provider():
@@ -107,7 +144,9 @@ def bind_document_qa(
             adapter.context_resolver,
             capability,
             unit,
-            document_qa_scope(adapter.ws, test_id, item_id, document_id),
+            document_qa_scope(
+                adapter.ws, test_id, item_id, document_id, record_index
+            ),
         )
 
     def on_committed(_stage, _unit, _outcome) -> DeterministicUnitResult:
@@ -118,7 +157,11 @@ def bind_document_qa(
         )
         return DeterministicUnitResult(
             "succeeded",
-            (document_qa_answer_ref(test_id, item_id, document_id),),
+            (
+                document_qa_answer_ref(
+                    test_id, item_id, document_id, record_index=record_index
+                ),
+            ),
         )
 
     return BoundUnitPipeline(
@@ -136,6 +179,7 @@ def bind_document_qa(
                 "artifact_refs": list(unit.get("parent_refs") or []),
                 "document_ids": [document_id],
                 "task_id": task["id"],
+                **({"record_index": record_index} if record_index is not None else {}),
             },
             expected_revision=adapter.ws.revision,
             expected_parents=expected_test,
@@ -305,24 +349,24 @@ class DocTestWorkflowExecution(BaseRunner):
 
     # ------------------------------------------------------------- scheduling
     def _refresh_dynamic_limits(self) -> None:
-        """Size the model budget from the Q&A pairs actually in scope.
+        """Size the model budget from the assessments actually in scope.
 
-        Only the Q&A unit kind calls the model, once per unanswered
-        item/document pair, so the budget follows the resolved scope rather than
-        the whole worklist library.
+        Only the Q&A unit kind calls the model, once per unanswered assessment
+        unit, so the budget follows the resolved scope rather than the whole
+        worklist library. A population resolves afresh every time this runs, so
+        a voucher imported mid-run buys its own turn instead of exhausting the
+        budget the run started with.
         """
-        qa_pairs = sum(
-            len(item.get("document_ids") or [])
-            for test in scoped_tests(self.ws, workflow_scope(self.run))
-            if test.get("kind") == "qa"
-            for item in test.get("items") or []
-        )
+        qa_pairs = assessment_pairs(scoped_tests(self.ws, workflow_scope(self.run)))
         calculated = 4 + 2 * qa_pairs
         self.update_limits(
             {
                 "max_model_turns": calculated,
                 "max_estimated_prompt_tokens": calculated * 10_000,
                 "max_completion_tokens": calculated * 4_000,
+                # The stage fans out one unit per assessment, so the per-stage
+                # unit cap has to follow the population as well as the budget.
+                "max_units_per_stage": qa_pairs + DOC_TEST_UNIT_HEADROOM,
             },
             grow_only=True,
         )

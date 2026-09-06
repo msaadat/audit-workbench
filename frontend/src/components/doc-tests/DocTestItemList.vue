@@ -73,6 +73,31 @@ function meta(entry: DocTestSummaryEntry) {
   const decided = call(entry)
   return [kind(entry), state, decided === state ? '' : decided].filter(Boolean).join(' · ')
 }
+
+/**
+ * What an item written against a type is *over*, on the row itself.
+ *
+ * One row per item stays right at eighty-four records — but without this the
+ * row reads exactly like one attached to a single document, and the difference
+ * between "one voucher" and "every voucher" is the whole point of the shape.
+ * Counts are accepted / exception / needs review, then assessed over resolved.
+ */
+function population(entry: DocTestSummaryEntry) {
+  if (entry.entry_type !== 'item' || !entry.population) return null
+  const summary = entry.population
+  const counts = summary.outcome_counts
+  const sampled = summary.assurance_scope !== 'full_population'
+  return {
+    type: summary.document_type,
+    scope: sampled ? 'sampled' : 'full population',
+    sampled,
+    accepted: counts.accepted,
+    exception: counts.exception,
+    review: counts.needs_manual_check,
+    fraction: `${summary.assessed}/${summary.resolved}`,
+    behind: !summary.run_current && summary.assessed > 0,
+  }
+}
 </script>
 
 <template>
@@ -85,8 +110,10 @@ function meta(entry: DocTestSummaryEntry) {
     >
       <!-- The tick sits outside the navigation button so selecting rows for a
            bulk sign-off never moves the detail pane out from under you. -->
+      <!-- A population item's call is recorded on its records in the grid, so
+           it offers no bulk tick here. -->
       <input
-        v-if="selecting && item.entry_type === 'item'"
+        v-if="selecting && item.entry_type === 'item' && !item.population"
         type="checkbox"
         class="row-check"
         :checked="checkedIds?.includes(item.item_id)"
@@ -98,6 +125,17 @@ function meta(entry: DocTestSummaryEntry) {
         <span class="title">{{ entryLabel(item) }}</span>
         <span class="meta">
           {{ meta(item) }}<template v-if="item.conclusion_state === 'agent'"> · <span class="agent">agent-set</span></template>
+        </span>
+        <span v-if="population(item)" class="population">
+          <span class="type">{{ population(item)!.type }}</span>
+          <span class="scope" :data-sampled="population(item)!.sampled">{{ population(item)!.scope }}</span>
+          <span class="counts">
+            <span class="ok">{{ population(item)!.accepted }} ✓</span>
+            <span class="bad">{{ population(item)!.exception }} ✗</span>
+            <span class="warn">{{ population(item)!.review }} ?</span>
+          </span>
+          <span class="fraction">{{ population(item)!.fraction }}</span>
+          <span v-if="population(item)!.behind" class="behind">population changed — run to update</span>
         </span>
       </button>
     </div>
@@ -134,6 +172,21 @@ function meta(entry: DocTestSummaryEntry) {
 .row.active .title { color: var(--aw-ink-strong); font-weight: 600; }
 .meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .meta .agent { color: var(--aw-accent); }
+
+.population {
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  margin-top: 2px;
+  color: var(--aw-muted); font-size: var(--aw-text-xs);
+}
+.population .type { color: var(--aw-ink); font-family: var(--aw-mono, monospace); }
+.population .scope { color: var(--aw-muted); }
+.population .scope[data-sampled='true'] { color: var(--aw-warn); }
+.population .counts { display: flex; gap: .375rem; font-variant-numeric: tabular-nums; }
+.population .counts .ok { color: var(--aw-ok); }
+.population .counts .bad { color: var(--aw-danger); }
+.population .counts .warn { color: var(--aw-warn); }
+.population .fraction { font-variant-numeric: tabular-nums; }
+.population .behind { color: var(--aw-warn); }
 
 .empty { padding: 1rem .75rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 </style>

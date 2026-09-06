@@ -133,8 +133,12 @@ def test_executor_result_is_immutable_and_requires_exact_postconditions():
             postcondition_hashes={"other:artifact": POST_A},
             applied_parents={"planning:context": PARENT_A},
         )
-    with pytest.raises(ValueError, match="must be greater"):
-        _result(after=4)
+    with pytest.raises(ValueError, match="must not be older"):
+        _result(before=4, after=3)
+    # Equality is legal on the result, which describes where a postcondition
+    # holds rather than what this call did to make it hold. What a *receipt*
+    # may claim is the stricter question, and it is asked separately.
+    assert _result(before=4, after=4).workspace_revision_after == 4
     with pytest.raises(ValueError, match="must be a list or tuple"):
         ExecutorResult(
             executor_id="planning.apm",
@@ -398,6 +402,41 @@ def test_interrupted_commit_reconciliation_can_create_receipt_without_reexecutio
     assert outcome.disposition == "already_applied"
     assert receipt.reconciled is True
     assert receipt.receipt_hash != registry.execute(request, object()).receipt_hash
+
+
+def test_a_reconciled_receipt_may_publish_no_revision_and_a_fresh_one_may_not():
+    """The contract the forced re-read failed on.
+
+    A reconciler describes a commit that already landed, so it publishes no
+    revision of its own and says ``before == after``. An execution that mutated
+    has to advance the workspace, or the receipt proves a commit that left no
+    trace. Both readings were once the single rule ``after > before``, which
+    made every truthful reconciliation a contract violation.
+    """
+
+    registry = ExecutorRegistry()
+    request = _request()
+    no_op = _result(request, before=9, after=9)
+    registry.register(
+        _definition(
+            implementation=lambda value, target: no_op,
+            reconciler=lambda value, target: ExecutorReconciliation(
+                "already_applied", result=no_op, reason="The APM already holds."
+            ),
+        )
+    )
+
+    receipt = registry.receipt_for_reconciliation(
+        request, registry.reconcile(request, object())
+    )
+    assert receipt.reconciled is True
+    assert (receipt.workspace_revision_before, receipt.workspace_revision_after) == (
+        9,
+        9,
+    )
+    # And the same pair, claimed as a fresh commit, is still refused.
+    with pytest.raises(ValueError, match="unless the receipt is reconciled"):
+        registry.execute(request, object())
 
 
 def test_not_applied_and_conflict_reconciliation_do_not_create_receipts():

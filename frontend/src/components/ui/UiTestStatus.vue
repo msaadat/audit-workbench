@@ -22,6 +22,9 @@ const meta: Record<string, { icon: string; tone: string; label: string }> = {
   manual_review: { icon: 'pi-eye', tone: 'warn', label: 'Manual review' },
   error: { icon: 'pi-times-circle', tone: 'danger', label: 'Error' },
   needs_manual_check: { icon: 'pi-eye', tone: 'warn', label: 'Needs manual check' },
+  // The worker's own accept, which a population grid shows per record until an
+  // auditor's disposition overrides it.
+  accepted: { icon: 'pi-check-circle', tone: 'success', label: 'Accepted' },
   awaiting_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Awaiting evidence' },
   not_run: { icon: 'pi-clock', tone: 'secondary', label: 'Not run' },
   passed: { icon: 'pi-check-circle', tone: 'success', label: 'Passed' },

@@ -719,12 +719,20 @@ def stamp_schema_ref(
     emerged from reading these N documents*, applied once the N are known.
 
     Returns the updated artifact, or None where there is nothing to stamp.
+
+    **The candidate first, in the same order** :func:`generated_record` **reads
+    them.** A forced re-read lands as a candidate over the active artifact it is
+    replacing, and that candidate is the reading the master was accumulated from
+    — so stamping the active one back-stamped the reading being superseded and
+    left the new one carrying no schema reference at all. Every capability
+    downstream asks ``generated_record``, so the type finished its stamp with
+    none of its readings usable as evidence.
     """
 
     with document_lock(workspace, document_id):
         index = load_index(workspace, document_id)
         analysis_id = str(
-            index.get("active_analysis_id") or index.get("candidate_analysis_id") or ""
+            index.get("candidate_analysis_id") or index.get("active_analysis_id") or ""
         )
         artifact = _load_generated(workspace, document_id, analysis_id)
         if artifact is None:

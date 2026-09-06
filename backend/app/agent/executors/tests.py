@@ -310,9 +310,20 @@ def _sourced_steps(
     is a scope note about the first, not an item anyone can execute, and reading
     it as an unattached item blocked whole tests that had four documents on
     their real question.
+
+    A step naming a *population* is sourced too. It carries no ids by design —
+    the workspace resolves the type at run time — and reading the absence of ids
+    as absent evidence is exactly the misreading that blocked a test in an
+    engagement holding twelve of the document it asked for.
     """
-    sourced = [step for step in steps if step.get("document_ids")]
-    return sourced, [step for step in steps if not step.get("document_ids")]
+    sourced = [
+        step for step in steps if step.get("document_ids") or step.get("population")
+    ]
+    return sourced, [
+        step
+        for step in steps
+        if not step.get("document_ids") and not step.get("population")
+    ]
 
 
 def _document_items_from_steps(steps: list[Mapping[str, object]]) -> list[dict]:
@@ -331,6 +342,12 @@ def _document_items_from_steps(steps: list[Mapping[str, object]]) -> list[dict]:
         }
         if str(step.get("mode") or "") == "question":
             item["question"] = str(step.get("question") or "")
+        if step.get("population"):
+            # Carried across untouched; ``doc_tests`` validates it against the
+            # induced schema and resolves it, inside the same guarded write that
+            # commits the test, so an item never becomes durable naming a type
+            # this engagement has no schema for.
+            item["population"] = _plain_json(step["population"])
         items.append(item)
     return items
 
@@ -426,7 +443,78 @@ def _commit_document_test(
         doc_tests.update_plan(fresh, existing["id"], payload)
         test = doc_tests.apply_spec(fresh, existing["id"], payload)
     _generate_missing_evidence(fresh, test, steps, target=target, unit_id=unit_id)
+    # After, not instead: a test can carry both an unattached scope-note step and
+    # a population over a type nothing was imported for, and the two gaps are
+    # requested separately because they are repaired separately.
+    _population_evidence_requests(fresh, test, target=target, unit_id=unit_id)
     return test
+
+
+def _population_evidence_requests(
+    fresh: Workspace,
+    test: dict,
+    *,
+    target: TestGenerateExecutorTarget,
+    unit_id: str,
+) -> None:
+    """Request evidence for a population type this engagement holds none of.
+
+    Only for *zero*. A population that resolves to eleven of twelve vouchers is
+    not blocked evidence; it is stated coverage, and the eleven get tested. The
+    request names the type — ``payment_voucher`` — instead of the placeholder
+    ``supporting_evidence`` an unattached step produced, because the type is
+    what an auditor imports and what the population would then resolve to.
+    """
+
+    blocked = [
+        item
+        for item in test.get("items") or []
+        if (item.get("population") or {}) and not item.get("document_ids")
+    ]
+    if not blocked:
+        return
+    evidence_hash = canonical_sha1(
+        [
+            {key: item.get(key) for key in ("id", "sha1", "category", "title")}
+            for item in fresh.documents
+        ]
+    )
+    limitations = []
+    for item in blocked:
+        document_type = str((item["population"]).get("document_type") or "")
+        reason = (
+            f"No document of type '{document_type}' in this engagement carries a "
+            "current reading, so this question has no population to run over."
+        )
+        limitations.append(reason)
+        evidence_request = {
+            "id": f"ER-{uuid.uuid4().hex[:10].upper()}",
+            "rcm_id": target.rcm_id,
+            "document_test_id": test["id"],
+            "item_id": item.get("id"),
+            "transaction_identifier": _item_identifier(str(item.get("label") or "")),
+            "missing_document_types": [document_type] if document_type else [],
+            "status": "open",
+            "reason": reason,
+            "next_action": (
+                f"Import {document_type or 'the missing'} documents, or point the "
+                "population at a type this engagement holds."
+            ),
+            "blocked_unit_id": unit_id,
+            "evidence_availability_sha1": evidence_hash,
+            "created": fresh._updated_now(),
+            "updated": fresh._updated_now(),
+        }
+        fresh.evidence_requests.append(evidence_request)
+        item.setdefault("evidence_request_ids", []).append(evidence_request["id"])
+    if len(blocked) == len(test.get("items") or []):
+        test["status"] = "blocked"
+    existing = str(test.get("scope_limitations") or "").strip()
+    test["scope_limitations"] = "; ".join(
+        part for part in (existing, "; ".join(limitations)) if part
+    )
+    doc_tests.save_test(fresh, test)
+    fresh.save()
 
 
 def _generate_missing_evidence(

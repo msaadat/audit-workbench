@@ -1078,11 +1078,22 @@ def reconcile_document_read(
 ) -> ExecutorReconciliation:
     """Classify an interrupted reading.
 
-    The master is the record that settles it. A document appears in its type's
-    ``documents_read`` exactly once and only after its reading committed, so a
-    document already listed there *is* this commit — whoever wrote it — and
-    re-running would fold the same reading in a second time, double-counting
-    every fill it contributed.
+    **The reading's own identity settles it, not the master's membership.** The
+    master says a document of this type was read; it does not say *by whom*, and
+    the two answers differ exactly where it matters. A forced ``refresh`` re-asks
+    a question whose earlier answer is still on disk, and reading membership as
+    proof reported every one of those as already-applied — a run that paid for
+    twelve model turns, discarded all twelve readings, and, because a
+    reconciliation publishes no revision, could not even describe what it had
+    done without violating the receipt contract.
+
+    So the same proof ``reconcile_document_analysis`` uses: the stored artifact
+    carries this run's id and this unit's id, which only the commit this call is
+    replacing could have written. Anything else — a previous run's reading, a
+    reading of a different unit — is ``not_applied``, and the executor commits
+    the reading it was given. Folding a document into the master twice is what
+    made that unsafe and no longer does: ``apply_reading`` counts a document
+    once, so a re-read restates its contribution rather than doubling it.
     """
 
     if not isinstance(raw_target, DocumentReadExecutorTarget):
@@ -1093,6 +1104,14 @@ def reconcile_document_read(
         current, target.document_type, target.document_id
     ):
         return ExecutorReconciliation("not_applied")
+    artifact = document_analysis.generated_record(current, target.document_id)
+    if artifact is None:
+        return ExecutorReconciliation("not_applied")
+    if (
+        str(artifact.get("agent_run_id") or "") != target.run_id
+        or str(artifact.get("unit_id") or "") != request.unit_id
+    ):
+        return ExecutorReconciliation("not_applied")
     target.workspace = current
     return ExecutorReconciliation(
         "already_applied",
@@ -1101,11 +1120,10 @@ def reconcile_document_read(
             current,
             revision_before=current.revision,
             document_id=target.document_id,
-            artifact=dict(
-                document_analysis.generated_record(current, target.document_id) or {}
-            ),
+            artifact=dict(artifact),
             master=document_masters.master(current, target.document_type),
         ),
+        reason="This run's reading of the document already holds.",
     )
 
 
@@ -1200,9 +1218,19 @@ def reconcile_document_stamp(
 ) -> ExecutorReconciliation:
     """Classify an interrupted stamp.
 
-    The schema store is content-addressed, so a stored schema whose hash equals
-    what this master would produce *is* this commit. Back-stamping is idempotent
-    for the same reason: it writes the same reference onto the same readings.
+    The stamp commits two things and both have to be proven. The schema store is
+    content-addressed, so a stored schema whose hash equals what this master
+    would produce *is* this commit's first half. The second half is the
+    back-stamp, and a matching schema hash says nothing about it: a forced
+    re-read replaces every reading of the type under a vocabulary that did not
+    move, so the schema is byte-identical while none of the readings it belongs
+    to carry it. Reported as already-applied, the type finished its stamp with no
+    usable evidence under it.
+
+    So the readings are checked too, and where any is unstamped the executor
+    runs — which costs nothing it would not otherwise cost, because
+    ``save_schema`` is a no-op when the meaning has not moved and back-stamping
+    writes the same reference onto the readings that already hold it.
     """
 
     if not isinstance(raw_target, DocumentStampExecutorTarget):
@@ -1223,6 +1251,12 @@ def reconcile_document_stamp(
     )
     if str(stored.get("schema_hash") or "") != expected:
         return ExecutorReconciliation("not_applied")
+    for document_id in master.get("documents_read") or []:
+        record = document_analysis.generated_record(current, str(document_id))
+        if record is None or not document_schemas.is_current_for(
+            current, record.get("schema_ref"), target.document_type
+        ):
+            return ExecutorReconciliation("not_applied")
     target.workspace = current
     return ExecutorReconciliation(
         "already_applied",
@@ -1232,6 +1266,7 @@ def reconcile_document_stamp(
             revision_before=current.revision,
             record=stored,
         ),
+        reason="This type's schema and every reading under it already hold.",
     )
 
 

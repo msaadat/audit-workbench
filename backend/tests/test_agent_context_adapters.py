@@ -601,8 +601,14 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
         "rcm_row",
         "table_metadata",
         "transaction_evidence",
-        "documents",
-        # What a document of each supplied type states, once per type rather
+        # Planning material only. Transaction evidence is named by type below,
+        # because a document step names a type and the workspace resolves the
+        # documents when the test runs.
+        "planning_documents",
+        # What this engagement holds, once per type: the type a population step
+        # names, with how many records of it there are.
+        "evidence_types",
+        # What a record of each supplied type states, once per type rather
         # than once per document.
         "evidence_schemas",
         "methodology",
@@ -612,7 +618,7 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
     # The one target row is required; every material source is not, since the
     # model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, True, False, False, False, False,
+        True, True, False, True, False, False, False, False, False,
     ]
     # Generation reads schema metadata and document text — never a table row —
     # since it decides both Data and Document Test sources itself.
@@ -702,7 +708,7 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
         "rcm_row",
         "table_metadata",
         "transaction_evidence",
-        "documents",
+        "planning_documents",
     }
     table_names = {
         candidate.metadata.get("table") for candidate in scope.candidates["table_metadata"]
@@ -710,26 +716,21 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
     assert "transactions" in table_names
     supplied = {
         candidate.metadata["category"]: candidate.representations["summary"]
-        for candidate in scope.candidates["documents"]
+        for candidate in scope.candidates["planning_documents"]
     }
-    # A document with no analysis and no planning-relevant flag is still
-    # selectable evidence for a step, and still carries the identity a step
-    # names it by.
-    assert supplied["evidence"]["id"]
-    # Transaction evidence contributes identity and type only: what a document
-    # of that type states is the ``evidence_schemas`` source's answer, given
-    # once per type instead of once per document.
-    assert "summary" not in supplied["evidence"]
-    assert "citations" not in supplied["evidence"]
-    assert "document_type" in supplied["evidence"]
     # Planning material keeps its prose. A policy has no induced schema that
     # could stand in for it, and its text is the thing being reasoned about
     # rather than one sample of a population.
     assert supplied["policy"]["summary"] == ""
     assert "citations" in supplied["policy"]
-    # This engagement has induced no schema, so the new source is simply absent
-    # and the turn writes its questions from the identities alone.
+    # Transaction evidence is not here at all. A step names a type and the
+    # workspace resolves the documents at run time, so listing them would spend
+    # the prompt on ids no step is allowed to write.
+    assert "evidence" not in supplied
+    # This engagement has induced no schema and read no record, so neither
+    # type-level source has anything to say and both are simply absent.
     assert scope.candidates["evidence_schemas"] == ()
+    assert scope.candidates["evidence_types"] == ()
 
 
 _GENERATE_INVOICE_FIELDS = [
@@ -827,15 +828,16 @@ def test_test_generate_schema_candidates_narrow_by_name_not_by_field_label():
     assert candidates[0].metadata["document_types"] == ["vendor_invoice"]
 
 
-def test_test_generate_documents_retain_evidence_the_query_does_not_match():
-    """An evidence document the row shares no word with is still nameable.
+def test_test_generate_evidence_reaches_the_turn_as_a_type_the_query_never_scores():
+    """Evidence a row shares no word with is still nameable — as a *type*.
 
-    ``documents.lexical`` filters, which was right while a document's summary
-    was the thing being matched. Identity-only evidence offers a title and a
-    type, so filtering on that emptied the document list: measured on the
-    expenses engagement, 50 of 60 evidence documents across six rows, leaving
-    every unit able to name a policy and not one voucher. The retaining
-    selector ranks them instead.
+    A lexical selector over per-document identity items emptied the document
+    list: measured on the expenses engagement, 50 of 60 evidence documents
+    across six rows, leaving every unit able to name a policy and not one
+    voucher. Retaining them ranked instead of dropped was the first repair;
+    this is the second and the durable one. A step names the type, the type is
+    supplied whole with its record count, and no selector scores it at all —
+    so a voucher sharing no term with the row cannot be ranked out of the turn.
     """
     workspace = workspaces.create_workspace("Retained evidence")
     documents.add_document(
@@ -863,11 +865,10 @@ def test_test_generate_documents_retain_evidence_the_query_does_not_match():
     supplied = {
         str(item.content.get("category"))
         for item in bundle.items
-        if item.source_id == "documents"
+        if item.source_id == "planning_documents"
     }
-    # The voucher shares no term with the row and is retained anyway; a
-    # document the turn cannot see is a document no step can name.
-    assert supplied == {"evidence", "policy"}
+    # Only planning material travels per document now.
+    assert supplied == {"policy"}
 
 
 def test_test_generate_schema_candidates_supply_every_type_when_none_is_named():
@@ -1043,6 +1044,81 @@ def test_test_generate_metadata_supplies_category_values_but_never_row_values():
     assert "values" not in columns["order_id"]
 
 
+def test_test_generate_metadata_withholds_a_repeating_free_text_column():
+    """Free text repeats when the data is small; that does not make it a domain.
+
+    The row and repetition bounds were meant to make a free-text field fail by
+    construction, and on real data they do not. A treasury engagement's
+    ``DISCREPANCY_NOTE`` holds three sentences across 997 rows, and its complete
+    text travelled to the provider as a category domain. An expenses engagement
+    supplied ``business_purpose`` and ``description`` the same way, and the
+    generation turn read the exception straight off the list: it filtered on
+    ``business_purpose == "Ride to personal residence"``, which selects the row
+    it was shown rather than testing the control.
+    """
+    workspace = workspaces.create_workspace("Repeating free text")
+    confirmations = pl.DataFrame(
+        {
+            "confirmation_id": [f"C{index:03d}" for index in range(40)],
+            "desk": ["Middle Office"] * 20 + ["Front Office"] * 20,
+            "discrepancy_note": (
+                ["Counterparty confirms value date one business day later than booked."] * 20
+                + ["Counterparty reference not quoted; amount agreed verbally."] * 20
+            ),
+        }
+    )
+    workspace.add_table("confirmations.csv", confirmations.write_csv().encode())
+
+    candidates = context_adapters.test_generate_table_metadata_candidates(workspace)
+    columns = {
+        column["name"]: column
+        for column in candidates[0].representations["table_metadata"]["columns"]
+    }
+
+    # Prose has no domain, however often it repeats.
+    assert "values" not in columns["discrepancy_note"]
+    assert columns["discrepancy_note"]["distinct"] == 2
+    # A label of the same shape and cardinality still travels: the bound is
+    # about what the values are, not how many of them there are.
+    assert sorted(columns["desk"]["values"]) == ["Front Office", "Middle Office"]
+
+
+def test_a_long_unbroken_code_is_still_a_domain():
+    """The length bound applies to phrases, not to codes.
+
+    ``MM_PLACEMENT;MM_BORROWING;TBILL_PURCHASE`` is forty characters and is
+    exactly the vocabulary a predicate has to name; a job title carrying a dash
+    qualifier — ``Chief Dealer - Money Market`` — is a label too. Both would be
+    lost to a cruder bound.
+    """
+    workspace = workspaces.create_workspace("Coded domains")
+    limits = pl.DataFrame(
+        {
+            "dealer_id": [f"D{index:03d}" for index in range(40)],
+            "authorised_products": (
+                ["MM_PLACEMENT;MM_BORROWING;TBILL_PURCHASE"] * 20 + ["FX_SPOT"] * 20
+            ),
+            "job_title": ["Chief Dealer - Money Market"] * 20 + ["Sr. Dealer"] * 20,
+        }
+    )
+    workspace.add_table("limits.csv", limits.write_csv().encode())
+
+    candidates = context_adapters.test_generate_table_metadata_candidates(workspace)
+    columns = {
+        column["name"]: column
+        for column in candidates[0].representations["table_metadata"]["columns"]
+    }
+
+    assert sorted(columns["authorised_products"]["values"]) == [
+        "FX_SPOT",
+        "MM_PLACEMENT;MM_BORROWING;TBILL_PURCHASE",
+    ]
+    assert sorted(columns["job_title"]["values"]) == [
+        "Chief Dealer - Money Market",
+        "Sr. Dealer",
+    ]
+
+
 def test_test_generate_metadata_withholds_a_truncated_category_vocabulary():
     """An incomplete list is worse than none — it licenses excluding a real value."""
     workspace = workspaces.create_workspace("Truncated vocabulary")
@@ -1092,6 +1168,12 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
         ),
         evidence={"records": []},
     )
+    policy = documents.add_document(
+        workspace,
+        "Purchasing-policy.txt",
+        b"Purchase orders require approval before issue.",
+        category="policy",
+    )
     row = workspace.add_rcm(
         {
             "process": "Purchasing",
@@ -1103,12 +1185,18 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
     scope = context_adapters.test_generate_scope(
         workspaces.load_workspace(workspace.id),
         row["id"],
-        document_ids=[document["id"]],
+        document_ids=[document["id"], policy["id"]],
     )
 
     table = scope.candidates["table_metadata"][0].source
     assert "vouch_anchor_candidates" not in table
-    document_context = scope.candidates["documents"][0].source
+    # The purchase order is transaction evidence and no longer travels per
+    # document at all; the policy does, and carries no vouch vocabulary.
+    assert [
+        candidate.metadata["document_id"]
+        for candidate in scope.candidates["planning_documents"]
+    ] == [policy["id"]]
+    document_context = scope.candidates["planning_documents"][0].source
     assert "vouch_profile" not in document_context
     # No approved ruleset, so there is nothing to build a cycle test on and
     # the scope says which of the two reasons it is rather than offering an
@@ -1149,7 +1237,7 @@ def test_test_generate_scope_supplies_the_process_description_without_the_audit_
         workspace, row["id"], document_ids=[document["id"]]
     )
 
-    summary = scope.candidates["documents"][0].source["summary"]
+    summary = scope.candidates["planning_documents"][0].source["summary"]
     assert "requisition, approval, and purchase order issue" in summary
     assert "AUDIT NOTES" not in summary
     assert "Missing thresholds" not in summary

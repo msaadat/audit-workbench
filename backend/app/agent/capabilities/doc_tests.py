@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from ... import doc_tests as doc_test_service
 from ...text import counted, verb
-from ... import cycle_vouching
+from ... import cycle_vouching, document_population
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import doc_tests as doc_tests_workflow
@@ -223,6 +223,24 @@ DOCUMENT_TEST_CONTEXT = {
 }
 
 
+def assessment_pairs(tests) -> int:
+    """One bounded model turn per assessment unit, across the supplied tests.
+
+    The number every Q&A budget is sized from, and the one place that knows a
+    unit is a *record* rather than a document. Four callers computed it as
+    ``len(item['document_ids'])``; on a population item that undercounts by the
+    number of line items each voucher holds, which is precisely the run that
+    would then stop half-way through for want of turns.
+    """
+
+    return sum(
+        len(document_population.assessment_units(item))
+        for test in tests
+        if test.get("kind") == "qa"
+        for item in test.get("items") or []
+    )
+
+
 def document_test_units(
     workspace: Workspace,
     test_id: str,
@@ -268,22 +286,36 @@ def document_test_units(
         llm_units = []
         for item in test.get("items") or []:
             answered = set((item.get("llm_answers") or item.get("qa_answers") or {}).keys())
-            for document_id in item.get("document_ids") or []:
-                if document_id in answered and not forced:
+            for assessment in document_population.assessment_units(item):
+                if assessment["key"] in answered and not forced:
                     continue
+                document_id = assessment["document_id"]
+                record_index = assessment["record_index"]
                 unit_kind = "document_qa_execution" if test.get("kind") == "qa" else "document_llm_execution"
+                # A record-grained unit carries the record in both its identity
+                # and its lineage, so re-running answers only the records that
+                # are unanswered and a receipt says which record it settled.
+                record_refs = (
+                    (f"record:{document_id}:{record_index}",)
+                    if record_index is not None
+                    else ()
+                )
+                identity = (test_id, item["id"], document_id) + (
+                    (str(record_index),) if record_index is not None else ()
+                )
+                label = (
+                    f"{document_id} record {record_index}"
+                    if record_index is not None
+                    else document_id
+                )
                 llm_units.append(
                     UnitSpec(
-                        semantic_unit_id(
-                            unit_kind,
-                            test_id,
-                            item["id"],
-                            document_id,
-                        ),
+                        semantic_unit_id(unit_kind, *identity),
                         unit_kind,
-                        f"Assess {item.get('label') or item['id']} — {document_id}",
+                        f"Assess {item.get('label') or item['id']} — {label}",
                         test_refs
-                        + (f"docitem:{item['id']}", f"document:{document_id}"),
+                        + (f"docitem:{item['id']}", f"document:{document_id}")
+                        + record_refs,
                         {
                             "test_sha1": test.get("sha1"),
                             "question": item.get("question"),
@@ -295,6 +327,7 @@ def document_test_units(
                                 ),
                                 None,
                             ),
+                            "record_index": record_index,
                         },
                     )
                 )
@@ -624,6 +657,7 @@ __all__ = [
     "DISPOSED_STATES",
     "MAX_SCOPE_TESTS",
     "DocTestScope",
+    "assessment_pairs",
     "capabilities",
     "document_test_units",
     "unexecuted_items",

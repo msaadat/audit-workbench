@@ -420,6 +420,14 @@ Three properties matter for reading a run afterwards:
 - **A rejected response is kept.** The final invalid response is persisted as a
   rejection sidecar and seeded back into an exact-identity retry, so the next
   attempt edits what the last one produced instead of starting over.
+- **A fresh commit publishes a revision; a reconciled one need not.** Step 10
+  mutates, so its receipt must show `workspace_revision_after >
+  workspace_revision_before` — a receipt for a commit that left no trace is a
+  receipt for nothing. Step 9 commits nothing: the work it describes already
+  landed, possibly in an earlier run, so `before == after` is what happened and
+  `reconciled: true` is how the receipt says so. Holding reconciliations to the
+  execute-path rule failed twelve settled evidence readings on a forced run and
+  blocked the schema stamp behind them.
 
 ### Repair, not retry
 
@@ -588,16 +596,23 @@ candidates and admitted **none** of them raises a run warning
 Degradation is acceptable; silent degradation is not — this is how a planning
 turn came to describe populations it had never been shown.
 
-### Privacy
+### Context permissions
+
+Named `ContextPrivacy` in code, and the name predates the reasoning. What these
+permissions bound is not confidentiality but *what a turn is asked to compute
+from*: a model handed 997 rows answers a counting question approximately,
+expensively, and differently on the next run, where Polars answers it exactly
+and repeatably — and what fits in the window is a truncated sample that reads
+like a population. The default is to compute locally and send the result.
 
 Permissions default to deny. A representation kind maps structurally to a
-permission (`_REPRESENTATION_PRIVACY_FIELD`), so a declaration cannot make
-sensitive content permissible by renaming it.
+permission (`_REPRESENTATION_PRIVACY_FIELD`), so a declaration cannot admit
+row-level content by renaming it.
 
 `allow_table_rows` is denied everywhere and the model layer rejects the
-`table_rows` representation before a bundle can reach a worker. Row-level
-engagement data reaches a provider through exactly three narrower doors, each
-its own permission and its own cap:
+`table_rows` representation before a bundle can reach a worker. Rows reach a
+turn through exactly three narrower doors — each where the individual row *is*
+the answer rather than an input to one, each its own permission, each capped:
 
 | Permission | What it admits | Who declares it |
 | --- | --- | --- |
@@ -605,11 +620,43 @@ its own permission and its own cap:
 | `allow_analysis_exception_rows` | The rows a saved exploratory procedure flagged, capped per procedure. | `analysis.summary` |
 | `allow_datatest_exception_rows` | The rows a durable, RCM-linked Data Test flagged, capped by row count and serialized size in the adapter. | `reporting.finding_draft` |
 
-The last two are separate on purpose, so revoking one never silently revokes
-the other. The Data Test projection reports `rows_withheld`, so a truncated
-table cannot be drafted as a complete population; the analysis-exception
-projection reports `rows_supplied` and `exception_count` and leaves the
-subtraction to the reader.
+The last two are separate on purpose, so widening one never silently widens the
+other. Each projection reports what it left out: the Data Test projection
+reports `rows_withheld`, so a truncated table cannot be drafted as a complete
+population, and the analysis-exception projection reports `rows_supplied` and
+`exception_count` and leaves the subtraction to the reader. That reporting,
+rather than the cap alone, is the property worth having — a bounded sample
+presented as the whole is worse than no sample.
+
+**A column's value domain is the fourth door, row-*derived* rather than
+row-level, and it rides under `allow_table_metadata`.** A generated Polars step is a predicate, so a turn
+given names and dtypes alone has to guess what a status column holds — and a
+wrong guess matches every row or none, both of which read as a control
+conclusion. The complete value set is therefore supplied where it is a
+*domain* rather than the rows restated. Three bounds decide that, and the third
+was added after the first two were found not to hold:
+
+- `MIN_CATEGORY_ROWS` (20) — the table has a population at all.
+- `MIN_CATEGORY_REPETITION` (4) — each value recurs across it.
+- `MAX_CATEGORY_LABEL_CHARACTERS` (32), applied only to values containing a
+  space — the values read as labels rather than prose.
+
+The first two were documented as making "an identifier, a name, or a free-text
+field fail by construction", and they do not: free text written from a handful
+of templates repeats often enough to pass. Measured across the engagements on
+this machine, 551 columns disclosed their complete value set, among them a
+treasury `DISCREPANCY_NOTE` whose three values are full exception sentences on
+a 997-row table. Length is applied only to phrases because a long unbroken token
+is a code, and codes are what the domain exists to supply —
+`MM_PLACEMENT;MM_BORROWING;TBILL_PURCHASE` is forty characters and is exactly
+the vocabulary a predicate has to name. The bound sits in a real gap rather than
+on a tuned threshold: every genuine label domain measured tops out at 27
+characters and the next value up is 44. It withholds 13 columns and keeps 538.
+
+A domain is not a criterion, and the generation prompt says so, because the
+turn that had `business_purpose: [..., "Ride to personal residence"]` filtered
+on that literal — selecting the row it was shown rather than testing the
+control.
 
 `allow_document_schemas` is the deliberate middle term between those and
 nothing. It admits the field names, roles and value types an induced schema
@@ -639,8 +686,8 @@ Budgets below are `items / characters`.
 | `planning.rcm` | 255 / 138k | planning_context, template_text, document_text, table_metadata, table_profiles, **small_table_rows**, auditor_instruction | `planning_context`, three required templates (`rcm`, `rcm_controls`, `rcm_attributes`), `current_apm` (**req, 60k**), `current_rcm` (opt, 200/40k), `table_metadata`, `table_profiles`, `small_table_rows` (8/16k), `documents` (lexical), `methodology` (lexical), `instruction` |
 | `planning.delta` | 210 / 120k | planning_context, document_text, auditor_instruction | `new_document_analyses` (**req**, 8/40k), `current_apm` (opt, 32k), `current_rcm` (opt, 200/40k), `planning_context` (req), `instruction` |
 | `tests.cycle_linkage` | 2 / 88k | planning_context, **document_schemas** | `cycle_schemas` (req, 1 item carrying every induced type, 64k), `cycle_requirements` (opt, 24k). The schemas and what the matrix asks of them — nothing either was induced or drafted from. |
-| `tests.generate` | 184 / 162k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `documents` (**lexical_retained**, 12/26k — evidence documents carry identity and type only), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
-| `fieldwork.document_qa` | 61 / 30k | document_text | `qa_item` (req, 4k), `document_pages` (req, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
+| `tests.generate` | 180 / 160k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `planning_documents` (**lexical_retained**, 8/20k — planning material only), `evidence_types` (opt, 1/4k — one item per document type, with how many records of it), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
+| `fieldwork.document_qa` | 66 / 44k | document_text | `qa_item` (req, 4k), `document_reading` (opt, 1/4k — one record's structured reading), `criteria_excerpt` (opt, 4/12k — the policy the answer is judged against), `document_pages` (opt, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
 | `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
 | `reporting.finding_draft` | 7 / 44k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction` |
 | `documents.category` | 1 / 6k | document_text | `document_category` (req) — the opening page |
@@ -913,7 +960,7 @@ The two run modes part here:
 | Readiness | every scoped row has at least one executable test; a row declaring transaction-cycle evidence that still holds a pre-ruleset test is `missing` |
 | Units | **one per RCM row** (`test_generation:<row>`) |
 | Binding | pipeline — worker `tests.generate`, executor `tests.generate` |
-| Context | `tests.generate` (184 / 162k) |
+| Context | `tests.generate` (180 / 160k) |
 | Input | the RCM row — or `{row, regenerate_test_ids[]}` when the request named specific tests, which is part of the unit's input identity so a whole-row proposal is never reused as a single-test rewrite |
 | Output | `{tests[]}` |
 | Repairs | **2** |
@@ -929,7 +976,7 @@ tests already written for them, a unit cannot see what its siblings produce,
 and it cost a third of the prompt. Deduplication needs a pass that can see every
 generated test at once.
 
-**Evidence documents travel as identity and type; the schema says what they
+**Evidence documents stopped travelling as prose; the schema says what they
 contain.** This is the one capability that read transaction-evidence prose for
 something other than reading that document, and it was the largest document
 consumer in the system: measured over 83 units in the shipped workspaces,
@@ -943,9 +990,47 @@ that type *states*, once per type, through the same `schema_catalog` projection
 induced schema, and its prose is the thing being reasoned about rather than one
 sample of a population.
 
+**And then they stopped travelling at all.** Withholding an evidence document's
+prose was the first half; a document step naming a *type* rather than a list of
+ids is the second, and it removes the identity items too. The workspace resolves
+the type when the test runs, so listing eleven vouchers — or eighty-four — spent
+the prompt on ids no step is allowed to write. `planning_documents` therefore
+carries planning material only, and `evidence_types` says what the engagement
+holds once per type: the type, how many documents carry it, how many *records*
+they hold between them, and three sample ids. The record count is the number
+that changes a decision, because a requirement written against a population
+cannot be answered by a type carrying one record. See
+[document-test-population-design.md](document-test-population-design.md).
+
 The schema is always available. `documents.schemas_stamped` sits at index 11 of
 this capability's dependency closure and `tests.specified` at 14, so no ordering
 changed and no edge was added.
+
+**A document step names one source.** Either `population`
+— `{document_type, fields[], criteria_refs[], selection?}` — or `document_ids`,
+never both: an item carrying both cannot be re-resolved without either dropping
+the hand-picked ids or holding documents the type no longer reaches, and nothing
+says which was meant. `document_ids` is now for a question about one *named
+planning document*; evidence is named by type. The step's validation refuses a
+type no supplied schema covers ("names a type this engagement holds no schema
+for") and a field outside that schema — both being honest gaps stated from the
+side they are actually on, where the old contract could only say
+`missing_evidence`, and the model reached for "no documents record expense
+categories" in a workspace holding twelve of them. `criteria_refs` name a
+supplied planning document with an optional section, or `rcm:<id>#criteria`
+where the criterion exists only in the matrix row.
+
+**A Data Test is a predicate; a criterion is not.** `evidence_kind` on a control
+attribute says where the requirement's *population* lives, not which test shape
+answers it. A tabular attribute produces a Data Test where the requirement is
+computable from the columns — an amount over a limit, an approval absent, two
+columns that must agree — and a document question where it turns on reading the
+criteria against a record. The rule exists because the closing instruction used
+to read "a tabular attribute normally produces a Data Test", and a row whose
+three attributes all said `tabular_population` produced a Polars step that
+encoded the expense policy as an invented category whitelist and filtered on two
+literals lifted from the value domains it had been shown. It validated cleanly
+and established nothing.
 
 **Scoped to the row, not the engagement.** Selection is the row's own naming
 first — a `transaction_cycle` attribute states the types its comparisons read,
@@ -968,6 +1053,12 @@ every unit able to name a policy and not one voucher. This source therefore uses
 unmatched ones at the tail in source-ref order. It is the case `tables.lexical`
 already answers, one noun over: a document the turn cannot see is a document no
 step can name.
+
+Retaining them was the repair; naming the type is the settlement. `evidence_types`
+is one item selected by `documents.all`, so no selector scores it and a voucher
+sharing no term with the row cannot be ranked out of the turn at all. The
+retaining selector still governs `planning_documents`, where the same argument
+holds for a policy the row does not happen to quote.
 
 Scoping is what makes the substitution pay on an engagement whose documents do
 *not* collapse into a handful of types. Measured through the resolver — what
@@ -1026,7 +1117,7 @@ not been carried anywhere.
 | --- | --- |
 | `data_test_execution` | deterministic — `run_data_test` |
 | `document_test_execution` | deterministic — `run_document_test` (also the shape used when a worklist is blocked on requested evidence, so the run records the block against the evidence request instead of pretending to test) |
-| `document_qa_execution` / `document_llm_execution` | **pipeline** — worker `fieldwork.document_qa`, executor `fieldwork.document_qa`. One unit per unanswered item/document pair. Output `{answer, conclusion, control_conclusion, outcome, citations[]}`, and the worker binds every citation to a page it was actually supplied. |
+| `document_qa_execution` / `document_llm_execution` | **pipeline** — worker `fieldwork.document_qa`, executor `fieldwork.document_qa`. One unit per unanswered *assessment unit*: an attached document, or one **record** of a resolved population. Output `{answer, conclusion, control_conclusion, outcome, citations[]}`, and the worker binds every citation to a page — or a reading field — it was actually supplied. |
 | `cycle_vouch_execution` | **pipeline** — worker `fieldwork.cycle_vouch`, executor `fieldwork.cycle_vouch`. Output `{cells[]: check_id, verdict, compared, reason}`. |
 | `document_test_review` | deterministic, settles immediately — only an auditor can dispose of it |
 
@@ -1034,8 +1125,38 @@ Every Document Test unit is bound by `doc_tests_execution.bind_document_test_uni
 and expanded by `capabilities.doc_tests.document_test_units` — the same two
 functions the standalone `doc_tests_workflow_v2` graph uses. A worklist behaves
 identically whichever graph scheduled it, and a Q&A test reaches the provider
-only through the registered `fieldwork.document_qa` worker and the declared page
+only through the registered `fieldwork.document_qa` worker and its declared
 context.
+
+**The unit of assessment is the record.** A Q&A item that names a *population*
+rather than a list of ids fans out one unit per record, not per document,
+because a voucher pack's three line items are three transactions and assessing
+them together lets two clean lines carry a third that is not. The record is in
+the unit's identity and in its lineage (`record:<document>:<index>`), so a
+re-run answers only what is unanswered and a receipt says which record it
+settled. Answers are keyed `<document id>#<record index>`; a bare document id
+still means the whole document, so every stored `qa_answers` map keeps
+resolving. `capabilities.doc_tests.assessment_pairs` is the one place that
+counts these, and the four budget sites read it rather than
+`len(item["document_ids"])`.
+
+**What one assessment reads.** For a population unit the primary evidence is the
+record's own structured reading, projected to the fields the question names plus
+the ones that identify it, with the citation the reading recorded for each —
+a few hundred characters where a page excerpt was twenty-six thousand.
+`criteria_excerpt` carries the policy the answer is judged against, and is never
+cited as evidence about the record. Pages are fetched *only* where the reading is
+silent about a named field, because silence about a field is not a value. A
+citation may name a field, which the executor resolves to the page the reading
+read it from — so an answer grounded in a field is grounded in a real page the
+model was never shown.
+
+Because the stage fans out one unit per assessment, `max_units_per_stage` is
+raised from its 250 default to what the engagement's populations actually
+resolve to (`assessment_pairs` plus headroom, in `routing` and in both
+`_refresh_dynamic_limits`). A resolved population is bounded — by
+`document_population.MAX_POPULATION_RECORDS` and by the auditor's own selection
+— so refusing to schedule it would refuse the feature rather than bound it.
 
 ### `results.rolled_up` — Results and observations
 

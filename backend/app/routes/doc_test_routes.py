@@ -13,6 +13,7 @@ from .. import (
     cycle_vouching,
     doc_tests,
     document_classification,
+    document_population,
     document_schemas,
     projection_cache,
     working_papers,
@@ -153,6 +154,57 @@ def get_document_test_meta(workspace_id: str):
     return doc_tests.meta_payload()
 
 
+@router.get("/doc-tests/population-options")
+def get_population_options(workspace_id: str):
+    """What a population may be written against, in one call.
+
+    The authoring form needs three things the engagement decides rather than the
+    engine: which types it holds and how many records of each, what fields a
+    record of each type states, and which documents a criterion can be cited
+    from. The record count is the one that changes an auditor's mind — a type
+    carrying one record cannot answer a question written against a population.
+    """
+
+    ws = _ws(workspace_id)
+    schemas = {
+        str(entry.get("document_type") or ""): entry
+        for entry in document_schemas.list_schemas(ws)
+    }
+    types = []
+    for entry in document_population.evidence_type_items(ws):
+        document_type = str(entry.get("document_type") or "")
+        schema = schemas.get(document_type)
+        types.append(
+            {
+                **entry,
+                "fields": [
+                    {
+                        key: field.get(key)
+                        for key in ("name", "role", "value_type", "label")
+                    }
+                    for field in (schema or {}).get("fields") or []
+                ],
+                "identifier_fields": document_population.identifier_fields(schema),
+            }
+        )
+    return {
+        "types": types,
+        "criteria_documents": [
+            {
+                "id": str(document.get("id") or ""),
+                "title": str(document.get("title") or document.get("source") or ""),
+                "category": str(document.get("category") or ""),
+            }
+            for document in ws.documents
+            if str(document.get("category") or "") != "evidence"
+        ],
+        "selection_modes": sorted(document_population.SELECTION_MODES),
+        "sampling_methods": sorted(document_population.SAMPLING_METHODS),
+        "max_records": document_population.MAX_POPULATION_RECORDS,
+        "max_fields": document_population.MAX_POPULATION_FIELDS,
+    }
+
+
 @router.post("/doc-tests/build/vouching")
 async def build_vouching_test(workspace_id: str, payload: dict = Body(...)):
     return await asyncio.to_thread(doc_tests.build_vouching, _ws(workspace_id), payload)
@@ -255,6 +307,50 @@ def get_cycle_vouch_grid(
         )
     except cycle_vouching.CycleSchemaError as error:
         raise WorkspaceError(str(error)) from error
+
+
+@router.get("/doc-tests/{test_id}/items/{item_id}/grid")
+def get_population_grid(
+    workspace_id: str,
+    test_id: str,
+    item_id: str,
+    offset: int = 0,
+    limit: int = 100,
+    outcome: str | None = None,
+):
+    """Project one population item as a table of records, without executing.
+
+    The population is re-resolved on the read that loads the test, so the rows
+    are the corpus as it stands: a voucher imported since the last run appears
+    here as unassessed rather than being absent until somebody re-runs.
+    """
+
+    workspace = _ws(workspace_id)
+    test = doc_tests.load_test(workspace, test_id)
+    return doc_tests.population_grid(
+        workspace, test, item_id, offset=offset, limit=limit, outcome=outcome
+    )
+
+
+@router.post("/doc-tests/{test_id}/items/{item_id}/resolve")
+def resolve_population(workspace_id: str, test_id: str, item_id: str):
+    """Redraw one item's population and persist it. The same path a run takes."""
+
+    return doc_tests.resolve_item_population(_ws(workspace_id), test_id, item_id)
+
+
+@router.post("/doc-tests/{test_id}/items/{item_id}/record-dispositions")
+def post_record_dispositions(
+    workspace_id: str, test_id: str, item_id: str, payload: dict = Body(...)
+):
+    """Record an auditor's call on named records of one population item."""
+
+    return doc_tests.update_population_dispositions(
+        _ws(workspace_id),
+        test_id,
+        item_id,
+        list(payload.get("dispositions") or []),
+    )
 
 
 @router.post("/doc-tests/{test_id}/assertions")

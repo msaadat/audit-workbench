@@ -200,6 +200,19 @@ def apply_reading(
     declared ``rate`` as ``one``, the second states it twice, and the second
     document failed outright and blocked its type's stamp.
 
+    **Folding the same document in twice costs nothing.** ``documents_read``
+    keeps its position, cardinality only ever widens, and a fill is counted once
+    per document — so a re-reading restates what that document contributed
+    rather than adding to it. Both callers need that. A forced ``refresh``
+    re-reads a document the master already lists and would otherwise push
+    ``fill_count`` past ``len(documents_read)``, which is the denominator the
+    vocabulary view divides by. And the master is written outside the workspace
+    transaction journal, so a commit interrupted between this call and the
+    reading's own persistence leaves the fold applied with no artifact to prove
+    it; the reconciler answers "not applied" and the executor folds again. Both
+    are the same requirement, and meeting it is what lets the reconciler stop
+    treating master membership as proof of *whose* commit landed.
+
     Renames are applied before additions, so a document may rename a field and
     add another in one reading without the two colliding. Both are recorded:
     the rename log is what makes 4c's re-sweep able to say *why* a prior reading
@@ -218,7 +231,9 @@ def apply_reading(
         rename_log = [dict(item) for item in record.get("renames") or []]
         by_name = {str(field.get("name")): field for field in fields}
 
-        index = read.index(str(document_id)) if str(document_id) in read else len(read)
+        rereading = str(document_id) in read
+        index = read.index(str(document_id)) if rereading else len(read)
+        introduced: set[str] = set()
 
         applied_renames: dict[str, str] = {}
         for position, item in enumerate(renames):
@@ -291,6 +306,7 @@ def apply_reading(
             field["introduced_at"] = index
             fields.append(field)
             by_name[name] = field
+            introduced.add(name)
             stated[name] = max(stated.get(name, 1), _highest_entry(item))
 
         widened: list[dict] = []
@@ -298,7 +314,12 @@ def apply_reading(
             field = by_name.get(name)
             if field is None:
                 continue
-            field["fill_count"] = int(field.get("fill_count") or 0) + 1
+            # Counted once per document, which is what makes a re-reading safe
+            # to fold in twice. A field this call introduced is the exception and
+            # not one: it entered at zero and this document is its first filler,
+            # whether or not the document itself is being read again.
+            if not rereading or name in introduced:
+                field["fill_count"] = int(field.get("fill_count") or 0) + 1
             if entry > 1 and str(field.get("cardinality") or "one") == "one":
                 field["cardinality"] = "many"
                 widened.append(

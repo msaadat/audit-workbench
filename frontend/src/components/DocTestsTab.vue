@@ -36,6 +36,7 @@ import type { DocTestDraft } from './doc-tests/DocTestDefinitionForm.vue'
 import CycleVouchGrid from './doc-tests/CycleVouchGrid.vue'
 import CycleRulesetReview from './doc-tests/CycleRulesetReview.vue'
 import DocTestItemDetail from './doc-tests/DocTestItemDetail.vue'
+import PopulationGrid from './doc-tests/PopulationGrid.vue'
 import DocTestItemList from './doc-tests/DocTestItemList.vue'
 import UiDefinitionDrawer from './ui/UiDefinitionDrawer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -124,9 +125,13 @@ const visibleItems = computed(() => {
   })
 })
 // Cycle tests are dispositioned in their own grid, so only item rows are
-// selectable here — a mixed selection would need two different mutations.
+// selectable here — a mixed selection would need two different mutations. A
+// population item is out for the same reason: its own call is folded from the
+// calls on its records, so bulk-signing the row would be reversed the next
+// time a record was dispositioned.
 const selectableItems = computed<DocTestSummaryItem[]>(() =>
-  visibleItems.value.filter((entry): entry is DocTestSummaryItem => entry.entry_type === 'item'))
+  visibleItems.value.filter((entry): entry is DocTestSummaryItem =>
+    entry.entry_type === 'item' && !entry.population))
 const selectedItems = computed<DocTestSummaryItem[]>(() =>
   selectableItems.value.filter(entry => selectedIds.value.includes(entry.item_id)))
 const allSelected = computed(() =>
@@ -142,6 +147,13 @@ function toggleSelectAll() {
 }
 const currentItem = computed<DocTestItem | null>(() =>
   currentTest.value?.items.find(item => item.id === selectedItemId.value) ?? null)
+/**
+ * An item written against a document *type* reads as a table of records, not as
+ * a stack of answer cards. The item list stays one row per item, which is
+ * right; what changes is the detail, because eighty-four records behind one
+ * card is a card nobody can review.
+ */
+const currentPopulation = computed(() => currentItem.value?.population ?? null)
 const selectedCycleEntry = computed<DocTestSummaryCycleTest | null>(() => {
   const entry = summary.value?.entries.find(item =>
     item.entry_type === 'cycle_test' && item.test_id === selectedCycleTestId.value,
@@ -342,6 +354,9 @@ function emptyDocDraft(): DocTestDraft {
     title: '', rcmId: requestedRcmId, table: '', size: 10, seed: 42,
     frozenFields: [], identifierFields: [], requiredDocumentTypes: [],
     evidenceAware: true, attributes: [], documentId: '', pages: '', questions: '',
+    qaScope: 'documents', populationType: '', populationFields: [],
+    populationCriteria: [], populationAll: true, populationSize: 25,
+    populationSeed: 42,
     procedureKey: 'cycle-vouch', selectionMode: 'evidence_linked',
     sampleMethod: 'random', stratifyBy: '',
   }
@@ -371,6 +386,9 @@ async function createTest({ kind, direction, draft }: {
     frozenFields: string[]; identifierFields: string[]; requiredDocumentTypes: string[]
     evidenceAware: boolean; attributes: string[]; documentId: string; pages: string; questions: string
     procedureKey: string
+    /** Present when the Q&A form asked for every record of a type instead of
+     *  one named document. The two are alternatives, never a merge. */
+    population?: Record<string, unknown>
     cycleRulesetDefinition?: CycleRulesetDefinition
     requirementRefs?: string[]
   }
@@ -429,7 +447,11 @@ async function createTest({ kind, direction, draft }: {
     } else if (kind === 'qa') {
       created = await api.post(`/api/workspaces/${props.workspace.id}/doc-tests/build/qa`, {
         ...common,
-        document_ids: draft.documentId ? [draft.documentId] : [],
+        // One source per test: a population resolves its own documents, so
+        // sending both would be sending two answers to the same question.
+        ...(draft.population
+          ? { population: draft.population }
+          : { document_ids: draft.documentId ? [draft.documentId] : [] }),
         questions: draft.questions.split('\n').map(value => value.trim()).filter(Boolean),
       })
     } else {
@@ -708,6 +730,9 @@ async function prepareTests() {
 function openRcm(rcmId: string) {
   void nav.replace('rcm', { rcm: rcmId })
 }
+function openDocument(documentId: string) {
+  void nav.replace('documents', { doc: documentId })
+}
 function showAnchor(value: EvidenceRef) {
   anchor.value = value
   anchorOpen.value = true
@@ -929,8 +954,26 @@ function onRulesetApproved(): void {
           </button>
         </section>
 
+        <PopulationGrid
+          v-if="currentTest && currentItem && currentPopulation"
+          :key="`population:${currentItem.id}`"
+          :workspaceId="workspace.id"
+          :testId="currentTest.id"
+          :itemId="currentItem.id"
+          :test="currentTest"
+          :findings="linkedFindings"
+          :running="running"
+          :busy="agent.isActive.value"
+          @error="fail"
+          @changed="refresh"
+          @run="runTest"
+          @openDocument="openDocument"
+          @saveConclusion="saveConclusion"
+          @generateFinding="generateFinding"
+          @openFinding="openFinding"
+        />
         <DocTestItemDetail
-          v-if="currentTest && currentItem"
+          v-else-if="currentTest && currentItem"
           :key="currentItem.id"
           :test="currentTest"
           :workspaceId="workspace.id"

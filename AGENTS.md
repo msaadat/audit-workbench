@@ -13,25 +13,50 @@ Workspace state and generated artifacts live under `Workspaces/<id>/`.
 XlsxWriter/fastexcel for Excel I/O. The frontend is Vue 3 + TypeScript + Vite +
 PrimeVue 4. There is no Tailwind, pandas, or DuckDB in the core path.
 
-**Privacy boundary:** Computation runs on the user's machine. The read-only
-assistant and the audit agent can call local tools, and row-level table data is
-withheld from the model provider with exactly two declared exceptions, each
-carrying its own permission and its own cap:
+**Context boundary:** Computation runs on the user's machine and row-level table
+data stays there — not as a confidentiality measure, but because a model is the
+wrong instrument for computing over rows and the context window is finite.
+Polars answers "which invoices were paid twice" exactly, cheaply, and the same
+way on every run; a model handed 997 rows answers it approximately, expensively,
+and differently next time — and what would actually fit in the window is a
+truncated sample that reads like a population. The default is therefore to
+compute locally and send the result. `allow_table_rows` is denied everywhere and
+the resolver rejects the `table_rows` representation structurally.
 
-1. The rows a saved analysis *flagged as exceptions* reach the EDA-summary
-   capability, capped per procedure, under `allow_analysis_exception_rows`.
-2. The rows a durable Data Test *flagged as exceptions* reach the finding-draft
-   capability, capped by row count and serialized size in the adapter
-   (`FINDING_EXCEPTION_ROW_LIMIT`), under `allow_datatest_exception_rows`. This
-   is what lets a finding name the invoice that failed instead of only counting
-   it; the projection always reports how many rows were withheld so a truncated
-   table cannot be drafted as a complete population.
+Three declared permissions admit rows where the individual row *is* the answer
+rather than an input to one. Each is declared by exactly one preset and carries
+its own cap:
 
-The two are deliberately separate permissions so revoking one never silently
-revokes the other. Nothing else may request rows — `allow_table_rows` is denied
-everywhere and the resolver rejects the `table_rows` representation
-structurally. The privacy choke points
-are the assistant context builders and the bounded agent context bundles.
+1. `allow_small_table_rows` — a whole table, only below the adapter's row-count
+   ceiling, for `planning.rcm`. A four-row delegation matrix's aggregates cannot
+   say what its one exceptional row contains.
+2. `allow_analysis_exception_rows` — the rows a saved analysis *flagged as
+   exceptions*, capped per procedure, for the EDA-summary capability.
+3. `allow_datatest_exception_rows` — the rows a durable Data Test flagged,
+   capped by row count and serialized size (`FINDING_EXCEPTION_ROW_LIMIT`), for
+   finding drafting. This is what lets a finding name the invoice that failed
+   instead of only counting it.
+
+They are separate permissions so that widening one never silently widens
+another, and each projection reports what it left out — `rows_withheld`,
+`rows_supplied` beside `exception_count` — so a truncated set is never drafted
+as a complete population. That reporting, not the cap alone, is the property
+worth having: a bounded sample presented as the whole is worse than no sample.
+
+A fourth channel is row-*derived* rather than row-level and rides under
+`allow_table_metadata`: a column's complete value set, supplied so a generated
+predicate names a real value instead of guessing one. Three bounds decide when a
+value set is a domain rather than the rows restated — `MIN_CATEGORY_ROWS`,
+`MIN_CATEGORY_REPETITION`, and `MAX_CATEGORY_LABEL_CHARACTERS`, the last added
+after free text written from a few templates was found to repeat often enough to
+pass the first two. See `docs/audit-workflow-graph.md`.
+
+The choke points are the assistant context builders and the bounded agent
+context bundles. The machinery is named `ContextPrivacy` in code, which predates
+this framing. The one boundary here that *is* a security boundary is the
+multi-user sandbox under **Sandboxed execution** below, which runs
+auditor- and model-authored Python with no network and no access to the dotenv
+file or the workspace tree.
 
 **Current product shape:** The original data-workbench surfaces still exist
 (`Data`, `Query`, saved analyses), but the shipped product is
@@ -111,6 +136,12 @@ backend/app/
 |- document_search.py          - retrieval helpers over extracted docs
 |- document_analysis.py        - document-analysis jobs and conflict model
 |- doc_tests.py                - durable document test definitions and runs
+|- document_population.py      - a document step's typed record population: the
+|                                type and schema fields it is written against,
+|                                the resolution of that type against the corpus
+|                                on every run, the record as the unit of
+|                                assessment, and the coverage a partial run
+|                                must state
 |- cycle_vouching.py           - domain-neutral cycle-test contracts,
 |                                registry-reference validation, and shared
 |                                execution/disposition state accessors

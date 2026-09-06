@@ -215,7 +215,16 @@ class ExecutorRequest:
 
 @dataclass(frozen=True, init=False)
 class ExecutorResult:
-    """Implementation result describing the committed workspace postcondition."""
+    """Implementation result describing the committed workspace postcondition.
+
+    A result states *where the postcondition holds*, not what this call had to
+    do to make it hold. That is why the revision pair only has to be monotone
+    here: a reconciler describing a commit an earlier run already made publishes
+    no revision of its own, and ``before == after`` is the truthful thing for it
+    to say. The stricter reading — an execution must advance the revision — is a
+    property of *executing*, so :class:`ExecutorReceipt` enforces it there,
+    where the distinction between a fresh commit and a reconciled one exists.
+    """
 
     executor_id: str
     capability_id: str
@@ -246,9 +255,9 @@ class ExecutorResult:
         after = _revision(
             workspace_revision_after, "executor_result.workspace_revision_after"
         )
-        if after <= before:
+        if after < before:
             raise ValueError(
-                "executor_result.workspace_revision_after must be greater than "
+                "executor_result.workspace_revision_after must not be older than "
                 "workspace_revision_before."
             )
         if not isinstance(artifact_refs, (tuple, list)):
@@ -464,7 +473,23 @@ def _validate_execution_contract(
 
 @dataclass(frozen=True, init=False)
 class ExecutorReceipt:
-    """Immutable, hash-identified proof of a validated executor commit."""
+    """Immutable, hash-identified proof of a validated executor commit.
+
+    **A fresh commit publishes a revision; a reconciled one need not.** An
+    executor that ran and mutated advances the workspace, so a receipt claiming
+    a commit that left no trace is a receipt for nothing and is refused. A
+    reconciliation is the other case entirely: the commit it describes already
+    landed — in an earlier stage, an earlier run, or an earlier process — and
+    this call published nothing, so ``before == after`` is what happened and the
+    receipt says so rather than inventing a revision to look like a commit.
+
+    That distinction is the whole reason the check lives here and not on
+    :class:`ExecutorResult`. Three reconcilers reported the truthful equal pair
+    and were rejected by an invariant written for the execute path, which turned
+    a settled workspace into a failed stage: a forced run over an engagement
+    whose twelve payment vouchers were already read failed all twelve and
+    blocked the schema stamp behind them.
+    """
 
     executor_id: str
     executor_definition_hash: str
@@ -500,6 +525,14 @@ class ExecutorReceipt:
         if not isinstance(reconciled, bool):
             raise ValueError("executor_receipt.reconciled must be a boolean.")
         _validate_execution_contract(request, definition, result)
+        if (
+            not reconciled
+            and result.workspace_revision_after <= result.workspace_revision_before
+        ):
+            raise ValueError(
+                "executor_receipt.workspace_revision_after must be greater than "
+                "workspace_revision_before unless the receipt is reconciled."
+            )
         object.__setattr__(self, "executor_id", request.executor_id)
         object.__setattr__(
             self, "executor_definition_hash", definition.definition_hash

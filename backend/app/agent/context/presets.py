@@ -1214,37 +1214,44 @@ PRESETS.register(
                     representations=(ContextRepresentation("table_metadata"),),
                     budget=ContextBudget(max_items=1, max_characters=40_000),
                 ),
+                # Planning material — the policies, SOPs and memoranda a
+                # question is judged against, and the only documents a step may
+                # still name by id. Transaction evidence left this source when a
+                # step started naming a *type*: its identity items were twelve,
+                # or eighty-four, lines saying what ``evidence_types`` says in
+                # one, and no step is allowed to write those ids any more.
+                #
+                # ``_retained`` because ranking a document out of the list is
+                # not the same as it being irrelevant: a document the turn
+                # cannot see is a document no step can name, so an unmatched
+                # candidate keeps its place at the tail.
                 ContextSource(
-                    id="documents",
+                    id="planning_documents",
                     source_type="documents",
                     required=False,
-                    # The single document source for the merged capability: every
-                    # candidate document with its citation identity, not the
-                    # planning-relevant-filtered set ``tests.draft`` used. A
-                    # Document Test step must be able to name transaction-level
-                    # evidence a planning-relevant filter would withhold.
-                    #
-                    # Transaction evidence now travels as identity and type
-                    # only; its prose is displaced by ``evidence_schemas``
-                    # below. Planning material keeps its summary, so the budget
-                    # stays sized for the prose that is still carried here.
-                    #
-                    # ``_retained`` because this source stopped being scored on
-                    # what a document says. Ranking still puts what the row
-                    # names first; an evidence document that matches nothing
-                    # keeps its place at the tail instead of being dropped,
-                    # because a document the turn cannot see is a document no
-                    # step can name.
                     selector=AutoSelect(
                         selector_id="documents.lexical_retained",
-                        item_limit=12,
+                        item_limit=8,
                         configuration={"query_fields": ["test_generate_query"]},
                     ),
                     representations=(
                         ContextRepresentation("summary"),
                         ContextRepresentation("excerpt"),
                     ),
-                    budget=ContextBudget(max_items=12, max_characters=26_000),
+                    budget=ContextBudget(max_items=8, max_characters=20_000),
+                ),
+                # One item per document type: what this engagement holds and how
+                # much of it. A step names a type from here; the workspace
+                # resolves the documents when the test runs, so a voucher
+                # imported after generation joins the population without the
+                # test being rewritten.
+                ContextSource(
+                    id="evidence_types",
+                    source_type="documents",
+                    required=False,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("cycle_schema"),),
+                    budget=ContextBudget(max_items=1, max_characters=4_000),
                 ),
                 # What this engagement's evidence documents *state*, once per
                 # type instead of once per document. The pairing is the point:
@@ -1297,8 +1304,11 @@ PRESETS.register(
             # Data Test code is validated against schema-only empty frames, so
             # profiles are not needed to generate a valid executable procedure.
             # Keep the overall ceiling aligned with the remaining source limits.
-            # The schema source adds one item and its own 32k ceiling.
-            budget=ContextBudget(max_items=184, max_characters=162_000),
+            # The schema source adds one item and its own 32k ceiling; splitting
+            # the document source returned four items and 2k to the ceiling,
+            # which is small — the saving that mattered was per-document
+            # identity items leaving the prompt altogether.
+            budget=ContextBudget(max_items=180, max_characters=160_000),
             privacy=ContextPrivacy(
                 allow_auditor_instruction=True,
                 allow_planning_context=True,
@@ -1328,10 +1338,38 @@ PRESETS.register(
                     representations=(ContextRepresentation("current_artifact"),),
                     budget=ContextBudget(max_items=1, max_characters=4_000),
                 ),
+                # One record's structured reading, projected to the fields the
+                # question names plus the ones that identify it. Optional
+                # because a question over named documents has no record grain;
+                # supplied for every population unit, where it is the primary
+                # evidence and the pages below are the exception.
+                ContextSource(
+                    id="document_reading",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=4_000),
+                ),
+                # The policy or matrix text the answer is judged against. Not
+                # evidence about the record and never cited as such — which is
+                # why it is a source of its own rather than more document text.
+                ContextSource(
+                    id="criteria_excerpt",
+                    source_type="documents",
+                    required=False,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("excerpt"),),
+                    budget=ContextBudget(max_items=4, max_characters=12_000),
+                ),
                 ContextSource(
                     id="document_pages",
                     source_type="documents",
-                    required=True,
+                    # Required until a reading could answer instead. A
+                    # population unit supplies pages only for a field the
+                    # reading does not state, so an ordinary answer over
+                    # eighty-four records fetches no page at all.
+                    required=False,
                     selector=ContextSelector(selector_id="documents.all"),
                     # One page per item, so the pages an auditor scoped are
                     # ``raw_pages`` and an unscoped question's retrieved passages
@@ -1348,7 +1386,7 @@ PRESETS.register(
             # omits the pages that do not fit and records the omission, and the
             # worker binds every citation to a page it was actually supplied, so
             # a bounded answer stays grounded rather than failing the unit.
-            budget=ContextBudget(max_items=61, max_characters=30_000),
+            budget=ContextBudget(max_items=66, max_characters=44_000),
             privacy=ContextPrivacy(allow_document_text=True),
         ),
     )

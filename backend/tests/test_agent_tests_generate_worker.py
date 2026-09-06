@@ -78,6 +78,8 @@ def _bundle(
     table_anchor_candidates=None,
     transaction_manifest=None,
     rcm_payload=None,
+    evidence_types=None,
+    evidence_schemas=None,
 ):
     values = [
         (
@@ -162,10 +164,28 @@ def _bundle(
             document_content["vouch_profile"] = profiles[document_id]
         values.append(
             (
-                "documents",
+                "planning_documents",
                 f"document:{document_id}",
                 ContextRepresentation("summary"),
                 document_content,
+            )
+        )
+    if evidence_types:
+        values.append(
+            (
+                "evidence_types",
+                "evidence-types:workspace",
+                ContextRepresentation("cycle_schema"),
+                {"types": list(evidence_types)},
+            )
+        )
+    if evidence_schemas:
+        values.append(
+            (
+                "evidence_schemas",
+                "workspace:schemas",
+                ContextRepresentation("cycle_schema"),
+                {"schemas": list(evidence_schemas)},
             )
         )
     for index, section in enumerate(methodology, start=1):
@@ -454,7 +474,7 @@ def test_generate_worker_keeps_document_fallback_when_cycle_has_no_candidates():
     WORKERS.execute(_request(bundle), gateway)
 
     payload = json.loads(gateway.calls[0]["user"])
-    assert payload["documents"]
+    assert payload["planning_documents"]
     assert payload["table_schemas"] == []
     assert payload["allowed_test_variants"] == ["document_question"]
 
@@ -588,7 +608,7 @@ def test_generate_worker_bounds_document_projection():
     WORKERS.execute(_request(bundle), gateway)
 
     payload = json.loads(gateway.calls[0]["user"])
-    assert len(payload["documents"]) == 6
+    assert len(payload["planning_documents"]) == 6
     assert payload["allowed_test_variants"] == ["document_question"]
 
 
@@ -1934,3 +1954,225 @@ def test_a_turn_with_no_instruction_carries_no_empty_key():
 def test_the_generation_prompt_states_where_an_instruction_ranks():
     assert "auditor_instruction" in tests_workers.GENERATE_SYSTEM
     assert "never over the response contract" in tests_workers.GENERATE_SYSTEM
+
+
+# --------------------------------------------------------------------------- #
+# A document step names a type, and the workspace resolves it
+# --------------------------------------------------------------------------- #
+_VOUCHER_TYPE = {
+    "document_type": "payment_voucher",
+    "documents": 12,
+    "records": 27,
+    "sample_document_ids": ["40dbbb06cd", "5c7badb914", "9a11bb02cc"],
+    "schema_ref": {
+        "document_type": "payment_voucher",
+        "schema_version": 1,
+        "schema_hash": "h",
+    },
+}
+_VOUCHER_SCHEMA = {
+    "document_type": "payment_voucher",
+    "discriminator": "An employee expense payment voucher.",
+    "documents": 12,
+    "fields": [
+        {"name": "expense_category", "role": "attribute", "value_type": "text",
+         "label": "Expense category"},
+        {"name": "expense_description", "role": "attribute", "value_type": "text",
+         "label": "Expense description"},
+    ],
+}
+
+
+def _population_bundle(**overrides):
+    return _bundle(
+        evidence_types=[_VOUCHER_TYPE],
+        evidence_schemas=[_VOUCHER_SCHEMA],
+        **overrides,
+    )
+
+
+def _population_step(**overrides):
+    value = {
+        "label": "Verify expense classification",
+        "instruction": "Check the category and description against the SOP.",
+        "mode": "question",
+        "question": "Does expense_description describe an expense the SOP permits?",
+        "population": {
+            "document_type": "payment_voucher",
+            "fields": ["expense_category", "expense_description"],
+            "criteria_refs": [{"document_id": "DOC-1", "section": "4"}],
+        },
+    }
+    value.update(overrides)
+    return value
+
+
+def test_a_document_step_may_name_a_type_instead_of_listing_ids():
+    bundle = _population_bundle()
+    gateway = _Gateway(
+        [json.dumps({"tests": [_document_test(steps=[_population_step()])]})]
+    )
+
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    step = tests_workers._plain_json(result.proposal["tests"][0]["steps"][0])
+    assert step["document_ids"] == []
+    assert step["population"] == {
+        "document_type": "payment_voucher",
+        "fields": ["expense_category", "expense_description"],
+        "criteria_refs": [{"document_id": "DOC-1", "section": "4"}],
+    }
+
+
+def test_the_turn_is_shown_the_types_and_their_counts_not_the_documents():
+    """The count is what decides whether the question is worth asking."""
+
+    gateway = _Gateway(
+        [json.dumps({"tests": [_document_test(steps=[_population_step()])]})]
+    )
+
+    WORKERS.execute(_request(_population_bundle()), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert payload["evidence_types"] == [_VOUCHER_TYPE]
+    # Planning material still travels per document; it is what a criterion is
+    # cited from and the only thing a step may still name by id.
+    assert [item["id"] for item in payload["planning_documents"]] == ["DOC-1"]
+
+
+def test_a_population_over_a_type_with_no_supplied_schema_is_refused_by_name():
+    bundle = _bundle(evidence_types=[_VOUCHER_TYPE])
+    step = _population_step(
+        population={"document_type": "delivery_note", "fields": ["carrier"]}
+    )
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[step])]}),
+            json.dumps({"tests": [_document_test(steps=[_question_step()])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "holds no schema for" in guidance
+
+
+def test_a_population_reading_a_field_the_schema_lacks_is_refused_as_a_field():
+    step = _population_step(
+        population={
+            "document_type": "payment_voucher",
+            "fields": ["expense_category", "approved_by"],
+        }
+    )
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[step])]}),
+            json.dumps({"tests": [_document_test(steps=[_population_step()])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(_population_bundle()), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "not a field of the 'payment_voucher' schema" in guidance
+
+
+def test_a_step_names_a_population_or_documents_but_not_both():
+    step = _population_step(document_ids=["DOC-1"])
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[step])]}),
+            json.dumps({"tests": [_document_test(steps=[_population_step()])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(_population_bundle()), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "names one or the other" in guidance
+
+
+def test_criteria_may_point_at_the_rcm_row_when_the_rule_lives_only_there():
+    step = _population_step(
+        population={
+            "document_type": "payment_voucher",
+            "fields": ["expense_category"],
+            "criteria_refs": ["rcm:RCM-1#criteria"],
+        }
+    )
+    gateway = _Gateway(
+        [json.dumps({"tests": [_document_test(steps=[step])]})]
+    )
+
+    result = WORKERS.execute(_request(_population_bundle()), gateway)
+
+    step = tests_workers._plain_json(result.proposal["tests"][0]["steps"][0])
+    assert step["population"]["criteria_refs"] == ["rcm:RCM-1#criteria"]
+
+
+def test_a_document_question_is_allowed_on_types_alone_with_no_planning_document():
+    """An engagement holding vouchers and no policy can still be tested."""
+
+    bundle = _bundle(
+        documents=(),
+        evidence_types=[_VOUCHER_TYPE],
+        evidence_schemas=[_VOUCHER_SCHEMA],
+    )
+    step = _population_step(
+        population={
+            "document_type": "payment_voucher",
+            "fields": ["expense_category"],
+            "criteria_refs": ["rcm:RCM-1#criteria"],
+        }
+    )
+    gateway = _Gateway([json.dumps({"tests": [_document_test(steps=[step])]})])
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert payload["planning_documents"] == []
+    assert "document_question" in payload["allowed_test_variants"]
+
+
+def test_the_turn_is_told_the_question_is_put_to_one_record_at_a_time():
+    """A population step's question is asked per record, not over the set.
+
+    Named because the first engagement measured against this shape produced
+    "Do all payment vouchers carry every required claim field…", which each
+    record's answer can only guess at.
+    """
+
+    assert "Write the question about **one record**" in tests_workers.GENERATE_SYSTEM
+    assert "never \"do all vouchers…\"" in tests_workers.GENERATE_SYSTEM
+
+
+def test_a_criteria_judgement_is_steered_away_from_polars():
+    """Named after DAT-C46F9873D7 on the expenses engagement.
+
+    Every attribute of its row said ``tabular_population``, so the turn wrote a
+    Data Test — and because "is this expense permitted?" is not computable from
+    the columns, it wrote the policy in as literals, excluding "Alcohol" from an
+    invented whitelist. It validated cleanly and established nothing.
+    """
+
+    system = tests_workers.GENERATE_SYSTEM
+    assert "A Data Test is a *predicate over columns*" in system
+    assert "Encoding the criteria as literals in the code writes the policy" in system
+    # The RCM's evidence_kind was what pinned the choice, so it is demoted from
+    # a verdict to a statement about where the population lives.
+    assert "the kind says\n   where the population lives" in system
+    assert "not which shape answers it" in system
+
+
+def test_a_supplied_value_domain_is_not_the_answer():
+    """The same test filtered on `business_purpose == "Ride to personal residence"`.
+
+    That literal was handed to the turn in the column's own `values` list. The
+    domain is disclosed so a predicate can name a real value; naming the value
+    that is visibly the exception selects the rows it was shown.
+    """
+
+    system = tests_workers.GENERATE_SYSTEM
+    assert "It is neither the criterion nor the\n   answer." in system
+    assert "the particular values you can see\n   are the exceptions" in system

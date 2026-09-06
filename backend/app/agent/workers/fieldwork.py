@@ -58,23 +58,46 @@ DOCUMENT_QA_CONTROL_CONCLUSIONS = frozenset(
     {"effective", "partially_effective", "ineffective", "no_conclusion", "not_applicable"}
 )
 DOCUMENT_QA_SYSTEM = """[agent:document_qa]
-Answer or assess only from the included pages. Return one JSON object only, with
-`answer` as a string, `outcome` as one of `accepted`, `exception`, or
+Answer or assess only from the supplied evidence. Return one JSON object only,
+with `answer` as a string, `outcome` as one of `accepted`, `exception`, or
 `needs_manual_check`, `conclusion` as a concise statement of what this result
 means for the test item, `control_conclusion` as one of `effective`,
 `partially_effective`, `ineffective`, `no_conclusion`, or `not_applicable`, and
-`citations` as an array of objects. Each citation object has `page` as an
-integer and `excerpt` as a short verbatim string.
+`citations` as an array of objects.
+
+The evidence comes in up to three parts, and what you may cite follows from
+which parts you were given.
+
+`Record` is one document's reading: the fields already extracted from it under
+this document type's schema, each with the value as printed. Cite a field with
+`{"field": "<field name>"}`. `missing_fields` lists the fields the reading does
+not state — that is a silence about the field, not a value, and a question that
+turns on one of them is `needs_manual_check` unless the pages settle it.
+
+`Criteria` is the policy, SOP, or matrix text the answer is judged against. It
+is what the question means by permitted, approved, or in accordance; it is not
+evidence about this record and it is never cited.
+
+`Document pages` are page text. Cite a page with `{"page": <integer>,
+"excerpt": "<short verbatim string>"}`.
 
 Choose `accepted` when the evidence affirmatively satisfies the question or
 expected condition, `exception` when it affirmatively does not, and
 `needs_manual_check` when the evidence is absent, ambiguous, or inconclusive.
 Use `no_conclusion` when evidence is inconclusive; do not choose a conclusion
-outside the fixed list. Do not invent facts. Do not return prose outside the JSON
-object or a Markdown fence."""
+outside the fixed list. Judge this record only: say nothing about the other
+records of its type or about the population. Do not invent facts. Do not return
+prose outside the JSON object or a Markdown fence."""
 
 DOCUMENT_QA_QUESTION_SOURCE_ID = "qa_item"
 DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"
+#: One record's structured reading — the fields the evidence-read stage already
+#: extracted, with the citation each was read from. A few hundred characters
+#: where a page excerpt was twenty-six thousand.
+DOCUMENT_QA_READING_SOURCE_ID = "document_reading"
+#: The policy text the answer is judged against. Present when the item's
+#: population names criteria; absent otherwise.
+DOCUMENT_QA_CRITERIA_SOURCE_ID = "criteria_excerpt"
 # A citation excerpt that is not verbatim in its page is replaced by the page's
 # opening text rather than rejected, matching the established anchor contract.
 _DOCUMENT_QA_FALLBACK_EXCERPT_CHARACTERS = 240
@@ -88,8 +111,38 @@ def _fallback_control_conclusion(outcome: str) -> str:
     }.get(outcome, "no_conclusion")
 
 
+def _supplied_reading(request: WorkerRequest) -> Mapping[str, Any] | None:
+    """The one record reading supplied to this worker, or None.
+
+    Absent on a document-grained question, which reads pages as it always has.
+    """
+
+    for item in request.context.items:
+        if item.source_id != DOCUMENT_QA_READING_SOURCE_ID:
+            continue
+        if not isinstance(item.content, Mapping):
+            raise WorkerContractError("Document reading context must be an object.")
+        return item.content
+    return None
+
+
+def _supplied_criteria(request: WorkerRequest) -> list[Mapping[str, Any]]:
+    return [
+        item.content
+        for item in request.context.items
+        if item.source_id == DOCUMENT_QA_CRITERIA_SOURCE_ID
+        and isinstance(item.content, Mapping)
+    ]
+
+
 def _supplied_pages(request: WorkerRequest) -> dict[int, str]:
-    """Return the exact page text supplied to this worker, keyed by page."""
+    """Return the exact page text supplied to this worker, keyed by page.
+
+    Empty is legitimate now, and only when a reading was supplied instead: the
+    fields were already extracted with their citations, so a question the
+    reading answers costs no page at all. With neither, the worker has nothing
+    to answer from and says so rather than guessing.
+    """
     pages: dict[int, str] = {}
     for item in request.context.items:
         if item.source_id != DOCUMENT_QA_PAGE_SOURCE_ID:
@@ -106,11 +159,41 @@ def _supplied_pages(request: WorkerRequest) -> dict[int, str]:
                 "Document page context must not supply the same page more than once."
             )
         pages[page] = str(content.get("text") or "")
-    if not pages:
+    if not pages and _supplied_reading(request) is None:
         raise WorkerContractError(
-            "The document Q&A worker requires at least one supplied page."
+            "The document Q&A worker requires a supplied page or record reading."
         )
     return pages
+
+
+def _stated_fields(reading: Mapping[str, Any] | None) -> set[str]:
+    """Field names the supplied reading actually states a value for."""
+
+    fields = (reading or {}).get("fields")
+    if not isinstance(fields, Mapping):
+        return set()
+    return {str(name) for name in fields}
+
+
+def _reading_markdown(reading: Mapping[str, Any]) -> str:
+    lines = [
+        f"Document: {reading.get('document_title') or reading.get('document_id')} "
+        f"({reading.get('document_id')}), read as {reading.get('document_type')}",
+        f"Record {reading.get('record_index')}",
+    ]
+    fields = reading.get("fields")
+    if isinstance(fields, Mapping):
+        for name, entries in fields.items():
+            values = "; ".join(
+                str((entry or {}).get("value") or "")
+                for entry in entries or []
+                if isinstance(entry, Mapping)
+            )
+            lines.append(f"- {name}: {values}")
+    missing = [str(value) for value in reading.get("missing_fields") or []]
+    if missing:
+        lines.append(f"- not stated by this reading: {', '.join(missing)}")
+    return "\n".join(lines)
 
 
 def _document_qa_response_schema(response: str) -> Mapping[str, Any]:
@@ -162,11 +245,25 @@ def validate_document_qa_proposal(
     this worker saw. The excerpt is normalized against the exact supplied text so
     the executor can turn it into an evidence anchor without re-reading the
     document.
+
+    A field citation is bound the same way, against the fields the supplied
+    reading states. It resolves to a page and an excerpt in the executor,
+    through the citation the reading already carries — so an answer grounded in
+    a field is grounded in a real page without the model having seen one.
     """
     pages = _supplied_pages(request)
+    stated = _stated_fields(_supplied_reading(request))
     citations: list[dict[str, Any]] = []
     seen: set[int] = set()
+    seen_fields: set[str] = set()
     for raw in proposal.get("citations") or []:
+        field = str(raw.get("field") or "").strip()
+        if field:
+            if field not in stated or field in seen_fields:
+                continue
+            seen_fields.add(field)
+            citations.append({"field": field})
+            continue
         try:
             page = int(raw.get("page"))
         except (TypeError, ValueError):
@@ -195,7 +292,17 @@ def validate_document_qa_proposal(
         "conclusion": str(proposal.get("conclusion") or proposal.get("answer") or ""),
         "control_conclusion": control_conclusion,
         "outcome": outcome,
-        "citations": sorted(citations, key=lambda item: item["page"]),
+        # Fields first, then pages in page order: the reading is the primary
+        # evidence for a population answer, and a stable order is what makes the
+        # committed anchor list comparable between runs.
+        "citations": sorted(
+            citations,
+            key=lambda item: (
+                0 if "field" in item else 1,
+                str(item.get("field") or ""),
+                int(item.get("page") or 0),
+            ),
+        ),
     }
 
 
@@ -212,10 +319,26 @@ def run_document_qa_worker(
     if not question:
         raise WorkerContractError("The document Q&A item context requires a question.")
     pages = _supplied_pages(request)
-    page_text = "\n\n".join(
-        f"--- Page {page} ---\n{pages[page]}" for page in sorted(pages)
-    )
-    user = f"Question: {question}\n\nIncluded document pages:\n{page_text}"
+    sections = [f"Question: {question}"]
+    reading = _supplied_reading(request)
+    if reading is not None:
+        sections.append(f"Record:\n{_reading_markdown(reading)}")
+    criteria = _supplied_criteria(request)
+    if criteria:
+        sections.append(
+            "Criteria:\n"
+            + "\n\n".join(
+                f"[{excerpt.get('label') or excerpt.get('document_id')}]\n"
+                f"{excerpt.get('text') or ''}"
+                for excerpt in criteria
+            )
+        )
+    if pages:
+        page_text = "\n\n".join(
+            f"--- Page {page} ---\n{pages[page]}" for page in sorted(pages)
+        )
+        sections.append(f"Included document pages:\n{page_text}")
+    user = "\n\n".join(sections)
     if attempt.is_repair:
         user += (
             "\n\nYour previous response could not be used: "
@@ -272,8 +395,10 @@ WORKERS.register(DOCUMENT_QA_WORKER)
 __all__ = [
     "DOCUMENT_QA_OUTCOMES",
     "DOCUMENT_QA_CONTROL_CONCLUSIONS",
+    "DOCUMENT_QA_CRITERIA_SOURCE_ID",
     "DOCUMENT_QA_PAGE_SOURCE_ID",
     "DOCUMENT_QA_QUESTION_SOURCE_ID",
+    "DOCUMENT_QA_READING_SOURCE_ID",
     "DOCUMENT_QA_RESPONSE_SCHEMA",
     "DOCUMENT_QA_SYSTEM",
     "DOCUMENT_QA_WORKER",

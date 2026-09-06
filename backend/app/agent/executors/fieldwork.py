@@ -26,7 +26,14 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ... import cycle_vouching, data_tests, doc_tests, rcm_execution
+from ... import (
+    cycle_vouching,
+    data_tests,
+    doc_tests,
+    document_population,
+    document_schemas,
+    rcm_execution,
+)
 from ...evidence import document_anchor
 from ...workspace_transactions import (
     ParentConflict,
@@ -285,21 +292,33 @@ def run_document_test(
 # fieldwork.document_qa executor (P7F.3)
 # --------------------------------------------------------------------------- #
 DOCUMENT_QA_EXECUTOR_ID = "fieldwork.document_qa"
-def document_qa_answer_ref(test_id: str, item_id: str, document_id: str) -> str:
-    """The stable reference for one item/document Q&A answer."""
+def document_qa_answer_ref(
+    test_id: str,
+    item_id: str,
+    document_id: str,
+    *,
+    record_index: object = None,
+) -> str:
+    """The stable reference for one assessment unit's Q&A answer."""
 
-    return f"doctest:{test_id}:item:{item_id}:document:{document_id}"
+    reference = f"doctest:{test_id}:item:{item_id}:document:{document_id}"
+    if record_index is None:
+        return reference
+    return f"{reference}:record:{int(record_index)}"
 
 
 @dataclass
 class DocumentQaExecutorTarget:
-    """Mutable target for one item/document Q&A answer commit."""
+    """Mutable target for one assessment unit's Q&A answer commit."""
 
     workspace: Workspace
     run_id: str
     test_id: str
     item_id: str
     document_id: str
+    #: Which record of the document this answer settles. ``None`` for a
+    #: document-grained question, whose unit of assessment is the whole file.
+    record_index: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, Workspace):
@@ -311,6 +330,8 @@ class DocumentQaExecutorTarget:
                     f"Document Q&A executor target requires a {field_name}."
                 )
             setattr(self, field_name, value)
+        if self.record_index is not None:
+            self.record_index = int(self.record_index)
 
 
 def _validated_document_qa(
@@ -346,9 +367,17 @@ def _validated_document_qa(
     if outcome not in {"accepted", "exception", "needs_manual_check"}:
         raise WorkspaceError("The accepted document Q&A proposal has no valid outcome.")
     citations = [
-        {"page": int(citation["page"]), "excerpt": str(citation.get("excerpt") or "")}
+        (
+            {"field": str(citation["field"])}
+            if citation.get("field")
+            else {
+                "page": int(citation["page"]),
+                "excerpt": str(citation.get("excerpt") or ""),
+            }
+        )
         for citation in _plain_json(request.proposal.get("citations") or [])
-        if isinstance(citation, Mapping) and citation.get("page") is not None
+        if isinstance(citation, Mapping)
+        and (citation.get("field") or citation.get("page") is not None)
     ]
     return target, answer, str(conclusion or answer), control_conclusion, outcome, citations
 
@@ -377,12 +406,48 @@ def _document_qa_result(
             "item_id": target.item_id,
             "document_id": target.document_id,
             "answer_ref": document_qa_answer_ref(
-                target.test_id, target.item_id, target.document_id
+                target.test_id,
+                target.item_id,
+                target.document_id,
+                record_index=target.record_index,
             ),
+            "record_index": target.record_index,
             "state": str(item.get("state") or ""),
             "action": "answered",
         },
     )
+
+
+def _field_citation_id(
+    workspace: Workspace,
+    target: DocumentQaExecutorTarget,
+    field_name: str,
+) -> str:
+    """The citation id the reading recorded for one field of this record."""
+
+    test = doc_tests.load_test(workspace, target.test_id)
+    item = next(
+        (
+            value
+            for value in test.get("items") or []
+            if str(value.get("id")) == target.item_id
+        ),
+        {},
+    )
+    population = item.get("population") or {}
+    projection = document_population.record_projection(
+        workspace,
+        target.document_id,
+        int(target.record_index or 0),
+        fields=[str(value) for value in population.get("fields") or []],
+        identifiers=document_population.identifier_fields(
+            document_schemas.load_schema(
+                workspace, str(population.get("document_type") or "")
+            )
+        ),
+    )
+    entries = (projection.get("fields") or {}).get(field_name) or []
+    return str((entries[0] if entries else {}).get("citation") or "")
 
 
 def execute_document_qa(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
@@ -411,15 +476,31 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
         )
         if document is None:
             raise WorkspaceError(f"Document '{target.document_id}' not found.")
-        anchors = [
-            document_anchor(
-                document,
-                int(citation["page"]),
-                str(citation["excerpt"]),
-                generated_by=target.run_id,
+        anchors = []
+        for citation in citations:
+            resolved = citation
+            if citation.get("field"):
+                # A field citation names something the *reading* said, and the
+                # reading recorded which page and excerpt it read it from. That
+                # is what turns it into an anchor, so an answer grounded in a
+                # field is grounded in a page the model was never shown.
+                resolved = document_population.citation_anchor(
+                    fresh,
+                    target.document_id,
+                    _field_citation_id(
+                        fresh, target, str(citation["field"])
+                    ),
+                )
+                if resolved is None:
+                    continue
+            anchors.append(
+                document_anchor(
+                    document,
+                    int(resolved["page"]),
+                    str(resolved["excerpt"]),
+                    generated_by=target.run_id,
+                )
             )
-            for citation in citations
-        ]
         return doc_tests.commit_llm_assessment(
             fresh,
             target.test_id,
@@ -432,6 +513,7 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
                 "outcome": outcome,
                 "citations": anchors,
             },
+            record_index=target.record_index,
         )
 
     committed = mutate(
@@ -487,7 +569,11 @@ def reconcile_document_qa(
         ),
         None,
     )
-    durable = ((item or {}).get("llm_answers") or (item or {}).get("qa_answers") or {}).get(target.document_id) or {}
+    durable = (
+        (item or {}).get("llm_answers") or (item or {}).get("qa_answers") or {}
+    ).get(
+        document_population.unit_key(target.document_id, target.record_index)
+    ) or {}
     if str(durable.get("answer") or "") != answer:
         return ExecutorReconciliation(
             "conflict",

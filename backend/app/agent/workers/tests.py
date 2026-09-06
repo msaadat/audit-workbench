@@ -83,6 +83,22 @@ def _source_items(request: WorkerRequest, source_id: str) -> list[object]:
     return [item.content for item in request.context.items if item.source_id == source_id]
 
 
+def _supplied_evidence_types(request: WorkerRequest) -> list[object]:
+    """What evidence this engagement holds, one entry per document type.
+
+    The source a population step names its type from. Absent on an engagement
+    that holds no transaction evidence, which is what forbids a population step
+    there rather than letting one be written against a type nothing carries.
+    """
+
+    for item in _source_items(request, GENERATE_EVIDENCE_TYPE_SOURCE_ID):
+        if isinstance(item, Mapping):
+            types = item.get("types")
+            if isinstance(types, (list, tuple)):
+                return [_plain_json(entry) for entry in types]
+    return []
+
+
 def _supplied_evidence_schemas(request: WorkerRequest) -> list[object]:
     """The induced field vocabulary supplied for this row's document types.
 
@@ -303,14 +319,19 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         if needs_documents
         else []
     )
-    # What a document of each supplied type states. Withheld with the documents
+    # The types this engagement holds, with how many records of each. A
+    # population step names one of these; it never names a document id.
+    evidence_types = _supplied_evidence_types(request) if needs_documents else []
+    # What a record of each supplied type states. Withheld with the types
     # themselves: a vocabulary for records this row was not given is a set of
     # fields the turn can name and nothing to attach them to.
-    evidence_schemas = _supplied_evidence_schemas(request) if documents else []
+    evidence_schemas = (
+        _supplied_evidence_schemas(request) if (documents or evidence_types) else []
+    )
     allowed_variants = []
     if table_schemas:
         allowed_variants.append("data")
-    if documents:
+    if documents or evidence_types:
         allowed_variants.append("document_question")
     if cycle_available:
         allowed_variants.append("cycle_vouch")
@@ -324,9 +345,10 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         variant_instruction = (
             "Cycle Vouch is forbidden because transaction_evidence supplies no "
             "prevalidated candidates. For a document_question omit kind and use "
-            "steps shaped as {label, instruction, mode:'question', document_ids, "
-            "question}; question may repeat instruction. Never return an empty "
-            "tests array."
+            "steps shaped as {label, instruction, mode:'question', population, "
+            "question}, or {label, instruction, mode:'question', document_ids, "
+            "question} for a question about one named planning document; "
+            "question may repeat instruction. Never return an empty tests array."
         )
     regenerate = _generation_regenerate_ids(request)
     instruction = auditor_instruction(request)
@@ -338,7 +360,8 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         "target_rcm_row": rcm_row,
         "planning_context": planning,
         "table_schemas": table_schemas,
-        "documents": documents,
+        "planning_documents": documents,
+        "evidence_types": evidence_types,
         "evidence_schemas": evidence_schemas,
         "transaction_evidence": _model_transaction_manifest(transaction_evidence),
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
@@ -489,17 +512,67 @@ Return JSON with a non-empty `tests` array. A test is one of:
    that never became a purchase order, so no invoice-grained frame contained
    it. Join outward from the population you are asserting about; never anchor
    on one population to make a claim about another.
-2. Document question: source `document`, title, objective, and non-empty
-   question-mode steps using only supplied document ids. A missing-evidence step
-   has an empty document_ids array and a specific missing_evidence string.
 
-   `documents` says which documents exist, and each carries `document_type`.
-   `evidence_schemas` says what a document of that type states: every field it
-   carries, with its role and value type. Write the question against the
-   schema's field names, and name the documents of that type in document_ids.
-   A field the schema does not list is a field no document of that type
-   records, so a question about it is unanswerable — say so with
-   missing_evidence rather than asking it.
+   A Data Test is a *predicate over columns*, so write one only when the
+   requirement can be decided from the values themselves: an amount over a
+   limit, an approval that is absent, a date outside a window, two columns that
+   must agree. A requirement that turns on reading the criteria against a
+   record — whether an expense is *permitted*, whether a purpose is a
+   *business* one, whether a description matches the transaction — is not a
+   predicate. Encoding the criteria as literals in the code writes the policy
+   into the test, where nobody can check it against the source and nobody can
+   see it has changed. Ask that as a document question over the type that
+   carries the field, and cite the policy in `criteria_refs`. This holds even
+   where the attribute's `evidence_kind` is `tabular_population`: the kind says
+   where the population lives, not that the judgement is computable.
+
+   A column's `values` is the domain that column holds, supplied so a predicate
+   names a real value rather than a guess. It is neither the criterion nor the
+   answer. Never write a filter that names the particular values you can see
+   are the exceptions: that selects the rows you were shown instead of testing
+   the control, and it passes every check while establishing nothing.
+2. Document question: source `document`, title, objective, and non-empty
+   question-mode steps. Each step carries exactly one of `population` or
+   `document_ids`.
+
+   `evidence_types` says which record kinds this engagement holds and how many
+   of each. `evidence_schemas` says what a record of one of those types states:
+   every field it carries, with its role and value type. Write the question
+   against the schema's field names and name the **type** in
+   `population.document_type`; the workspace supplies every document of that
+   type when the test runs, so the question covers documents imported after you
+   write it. Do not list document ids for evidence. A population step is shaped
+   as:
+
+   {{"label":"...","instruction":"...","mode":"question",
+    "question":"Does expense_description, read with expense_category, describe
+     an expense the SOP permits?",
+    "population":{{"document_type":"payment_voucher",
+      "fields":["expense_category","expense_description"],
+      "criteria_refs":[{{"document_id":"f408fb18a7","section":"4"}}]}}}}
+
+   Write the question about **one record**, because that is how it is asked:
+   the runner puts it separately to every record of the type and each answer
+   settles that record alone. "Does this voucher's expense_description describe
+   a permitted expense?" — never "do all vouchers…", "what share of…", or
+   "summarise across the population". The population-level counts are computed
+   from the answers; a question that asks for them makes every record's answer
+   a guess about the other records.
+
+   `criteria_refs` name the text the answer is judged against — a supplied
+   planning document, with the section where you can name one, or
+   "rcm:<RCM id>#criteria" when the criterion exists only in the matrix row.
+   Name it rather than restating the rule inside the question.
+
+   `document_ids` is for a question about one *named planning document* — a
+   policy, a memorandum, a signed approval — and may only use ids from
+   `planning_documents`.
+
+   A field no supplied schema lists is a field no record of that type states, so
+   a question about it is unanswerable. Say so with `missing_evidence` on a step
+   carrying neither population nor document_ids, and name the field and the type
+   it is missing from. "No documents" is never the reason: the types and their
+   counts are in front of you.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
    requirement_refs, procedure_key, and selection. It has no assertions,
    definition, roles, or steps: the roles, the join keys and the assertions were
@@ -542,24 +615,28 @@ from an addition: identity is not inferred from your title, so a re-worded
 version of an existing test without `revises` is stored as a second test
 alongside the first rather than replacing it.
 
-Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
-normally produces a Data Test; document-content, inspection, inquiry, and mixed
-attributes use the evidence that is actually supplied. One durable test has one
-source. Use only supplied table/column/document ids. {JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
+Keep non-cycle attributes independent of cycle vocabulary. `evidence_kind` says
+where a requirement's population lives, not which shape answers it: a tabular
+attribute produces a Data Test where the requirement is computable from the
+columns, and a document question where it turns on the criteria.
+document-content, inspection, inquiry, and mixed attributes use the evidence
+that is actually supplied. One durable test has one source. Use only supplied table and column names, supplied planning document
+ids, and supplied document types. {JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 GENERATE_ROW_SOURCE_ID = "rcm_row"
 GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
 GENERATE_TABLE_SOURCE_ID = "table_metadata"
-GENERATE_DOCUMENT_SOURCE_ID = "documents"
+GENERATE_DOCUMENT_SOURCE_ID = "planning_documents"
+GENERATE_EVIDENCE_TYPE_SOURCE_ID = "evidence_types"
 GENERATE_SCHEMA_SOURCE_ID = "evidence_schemas"
 GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID = "transaction_evidence"
 _GENERATE_SOURCES = {"data", "document"}
 _GENERATE_COMMON_FIELDS = ("source", "title", "objective", "steps")
 _GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "population", "code")
 _GENERATE_DOCUMENT_STEP_FIELDS = (
-    "label", "instruction", "mode", "document_ids", "question", "checks",
-    "missing_evidence", "scope_limitation", "anchor_table", "anchor_key",
-    "document_roles",
+    "label", "instruction", "mode", "document_ids", "population", "question",
+    "checks", "missing_evidence", "scope_limitation", "anchor_table",
+    "anchor_key", "document_roles",
 )
 _GENERATE_MODES = {"question"}
 _UNKNOWN_COLUMN_ERROR_RE = re.compile(
@@ -655,6 +732,30 @@ def _generate_supplied_grains(request: WorkerRequest) -> dict[str, str]:
 def _empty_schema_frames(tables: Mapping[str, Mapping[str, str]]) -> dict:
     """Build zero-row frames that preserve the supplied table schemas only."""
     return sandbox.empty_schema_frames(tables)
+
+
+def _generate_supplied_schema_fields(request: WorkerRequest) -> dict[str, set[str]]:
+    """The field vocabulary of each supplied type, keyed by type.
+
+    What a population step's ``document_type`` and ``fields`` are checked
+    against. Empty on an engagement with no induced schema, which forbids a
+    population step outright rather than letting one name a type nothing was
+    read under.
+    """
+
+    vocabulary: dict[str, set[str]] = {}
+    for schema in _supplied_evidence_schemas(request):
+        if not isinstance(schema, Mapping):
+            continue
+        document_type = str(schema.get("document_type") or "").strip()
+        if not document_type:
+            continue
+        vocabulary[document_type] = {
+            str(field.get("name") or "")
+            for field in schema.get("fields") or []
+            if isinstance(field, Mapping) and str(field.get("name") or "")
+        }
+    return vocabulary
 
 
 def _generate_supplied_document_ids(request: WorkerRequest) -> set[str]:
@@ -1129,11 +1230,110 @@ def _validate_generate_data_step(
     }
 
 
+#: What a population step may say, so a foreign key is reported by name rather
+#: than silently carried into a durable test.
+_GENERATE_POPULATION_FIELDS = ("document_type", "fields", "criteria_refs", "selection")
+
+
+def _validate_generate_population(
+    path: str,
+    raw: object,
+    schema_fields: Mapping[str, set[str]],
+    known_document_ids: set[str],
+    known_rcm_ids: set[str],
+    errors: list[str],
+) -> dict | None:
+    """Validate one declared population against the schemas actually supplied.
+
+    Every refusal here says the same thing from a different side: the question
+    must be answerable *by the evidence this engagement holds*. A type with no
+    supplied schema is a type nothing was read against; a field outside that
+    schema is a field no record of the type states. Both are honest gaps and
+    both are reported as such, which is what the old "no documents record
+    expense categories" was standing in for while twelve of them did.
+    """
+
+    if not isinstance(raw, Mapping):
+        errors.append(f"{path}.population must be an object")
+        return None
+    population = _plain_json(raw)
+    foreign = [key for key in population if key not in _GENERATE_POPULATION_FIELDS]
+    if foreign:
+        errors.append(f"{path}.population has unknown field '{sorted(foreign)[0]}'")
+    document_type = str(population.get("document_type") or "").strip()
+    if not document_type:
+        errors.append(f"{path}.population needs a document_type")
+        return None
+    if document_type not in schema_fields:
+        errors.append(
+            f"{path}.population names '{document_type}', a type this engagement "
+            "holds no schema for"
+        )
+        return None
+    known_fields = schema_fields[document_type]
+    fields = [str(value or "").strip() for value in population.get("fields") or []]
+    fields = [value for value in fields if value]
+    if not fields:
+        errors.append(
+            f"{path}.population must name at least one field of the "
+            f"'{document_type}' schema"
+        )
+    unknown = [value for value in fields if value not in known_fields]
+    if unknown:
+        errors.append(
+            f"{path}.population reads '{unknown[0]}', which is not a field of the "
+            f"'{document_type}' schema"
+        )
+    criteria_refs = []
+    for index, ref in enumerate(population.get("criteria_refs") or []):
+        label = f"{path}.population.criteria_refs[{index}]"
+        if isinstance(ref, str):
+            kind, separator, rest = ref.partition(":")
+            if separator and kind == "rcm":
+                rcm_id = rest.partition("#")[0].strip()
+                if rcm_id not in known_rcm_ids:
+                    errors.append(f"{label} names unknown RCM row '{rcm_id}'")
+                    continue
+                criteria_refs.append(ref)
+                continue
+            ref = {"document_id": ref}
+        if not isinstance(ref, Mapping):
+            errors.append(f"{label} must be an object or an 'rcm:<id>#criteria' string")
+            continue
+        rcm_id = str(ref.get("rcm_id") or "").strip()
+        if rcm_id:
+            if rcm_id not in known_rcm_ids:
+                errors.append(f"{label} names unknown RCM row '{rcm_id}'")
+                continue
+            criteria_refs.append(
+                {"rcm_id": rcm_id, "field": str(ref.get("field") or "criteria")}
+            )
+            continue
+        document_id = str(ref.get("document_id") or "").strip()
+        if document_id not in known_document_ids:
+            errors.append(f"{label} names unknown document '{document_id}'")
+            continue
+        criteria_refs.append(
+            {"document_id": document_id, "section": str(ref.get("section") or "")}
+        )
+    normalized = {
+        "document_type": document_type,
+        "fields": list(dict.fromkeys(fields)),
+        "criteria_refs": criteria_refs,
+    }
+    if population.get("selection"):
+        normalized["selection"] = population["selection"]
+    return normalized
+
+
 def _validate_generate_document_step(
     path: str,
     raw_step: object,
     known_document_ids: set[str],
     errors: list[str],
+    *,
+    schema_fields: Mapping[str, set[str]] | None = None,
+    known_rcm_ids: set[str] | None = None,
 ) -> tuple[dict | None, str | None]:
     if not isinstance(raw_step, Mapping):
         errors.append(f"{path} must be an object")
@@ -1175,6 +1375,25 @@ def _validate_generate_document_step(
     unknown = [value for value in document_ids if value not in known_document_ids]
     if unknown:
         errors.append(f"{path} references unknown document '{unknown[0]}'")
+    population = None
+    if step.get("population") is not None:
+        population = _validate_generate_population(
+            path,
+            step["population"],
+            schema_fields or {},
+            known_document_ids,
+            known_rcm_ids or set(),
+            errors,
+        )
+    if population and document_ids:
+        # One source per step. A step carrying both cannot be re-resolved
+        # without either dropping the hand-picked ids or holding on to
+        # documents the type no longer reaches, and there is no reading of it
+        # that says which was meant.
+        errors.append(
+            f"{path} carries both document_ids and a population; a step names "
+            "one or the other"
+        )
     question = str(step.get("question") or step.get("instruction") or "").strip()
     missing_evidence = str(step.get("missing_evidence") or "").strip()
     scope_limitation = str(step.get("scope_limitation") or "").strip()
@@ -1192,16 +1411,21 @@ def _validate_generate_document_step(
     # evidence remained unavailable. Preserve that meaning as the explicit
     # sourced-question scope limitation instead of spending a repair turn on a
     # harmless field-name mismatch.
-    if document_ids and missing_evidence:
+    if (document_ids or population) and missing_evidence:
         if not scope_limitation:
             scope_limitation = missing_evidence
         missing_evidence = ""
-    if not document_ids and not missing_evidence:
-        errors.append(f"{path} has no documents; missing_evidence must name what is required")
+    if not document_ids and not population and not missing_evidence:
+        errors.append(
+            f"{path} names neither a population nor a document; missing_evidence "
+            "must name the field and the type it is missing from"
+        )
     normalized.update(
         document_ids=document_ids,
         missing_evidence=missing_evidence,
     )
+    if population:
+        normalized["population"] = population
     if scope_limitation:
         normalized["scope_limitation"] = scope_limitation
     if mode == "question":
@@ -1228,10 +1452,16 @@ def validate_generate_proposal(
     known_tables = _generate_supplied_tables(request)
     table_grains = _generate_supplied_grains(request)
     known_document_ids = _generate_supplied_document_ids(request)
+    schema_fields = _generate_supplied_schema_fields(request)
+    known_rcm_ids = {rcm_id}
     available = {
         "data": bool(known_tables),
+        # A document test can be written from a named planning document or from
+        # a typed population, and an engagement may hold one without the other.
         "document": any(
-            item.source_id == GENERATE_DOCUMENT_SOURCE_ID for item in request.context.items
+            item.source_id
+            in {GENERATE_DOCUMENT_SOURCE_ID, GENERATE_EVIDENCE_TYPE_SOURCE_ID}
+            for item in request.context.items
         ),
     }
     errors: list[str] = []
@@ -1346,6 +1576,8 @@ def validate_generate_proposal(
                     raw_step,
                     known_document_ids,
                     errors,
+                    schema_fields=schema_fields,
+                    known_rcm_ids=known_rcm_ids,
                 )
                 if normalized_step is not None:
                     steps.append(normalized_step)

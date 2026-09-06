@@ -12,7 +12,8 @@ import Textarea from 'primevue/textarea'
 import { api } from '../../api'
 import type {
   AuditDocument, ColumnSchema, CycleRulesetCandidate, CycleRulesetDefinition,
-  CycleVouchMetadata, DocTestKind, PlanningPayload, WorkspaceSummary,
+  CycleVouchMetadata, DocTestKind, PlanningPayload, PopulationOptions,
+  WorkspaceSummary,
 } from '../../types'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 
@@ -39,6 +40,15 @@ export interface DocTestDraft {
   documentId: string
   pages: string
   questions: string
+  /** Q&A only. `documents` asks one named document; `population` asks every
+   *  record of a type, and the workspace resolves it on every run. */
+  qaScope: 'documents' | 'population'
+  populationType: string
+  populationFields: string[]
+  populationCriteria: string[]
+  populationAll: boolean
+  populationSize: number
+  populationSeed: number
   procedureKey: string
   selectionMode: 'evidence_linked' | 'sample'
   sampleMethod: 'random' | 'interval' | 'stratified'
@@ -74,6 +84,7 @@ const shapes = [
 ]
 
 const schema = ref<ColumnSchema[]>([])
+const populationOptions = ref<PopulationOptions | null>(null)
 const attributeSuggestions = ref<string[]>([])
 const rulesetCandidate = ref<CycleRulesetCandidate | null>(null)
 const cycleLoading = ref(false)
@@ -107,6 +118,52 @@ const oversizedEvidenceSelection = computed(
     && (rulesetReach.value?.linked_rows ?? 0) > (props.cycleMetadata?.limits.max_items ?? 500),
 )
 
+const isQa = computed(() => kind.value === 'qa')
+const isPopulation = computed(() => isQa.value && draft.value.qaScope === 'population')
+const populationTypeOptions = computed(() =>
+  (populationOptions.value?.types ?? []).map(type => ({
+    label: `${type.document_type} · ${type.records} record${type.records === 1 ? '' : 's'} in ${type.documents} document${type.documents === 1 ? '' : 's'}`,
+    value: type.document_type,
+  })),
+)
+const selectedPopulationType = computed(() =>
+  (populationOptions.value?.types ?? []).find(
+    type => type.document_type === draft.value.populationType,
+  ) ?? null,
+)
+const populationFieldOptions = computed(() =>
+  (selectedPopulationType.value?.fields ?? []).map(field => ({
+    label: field.label ? `${field.name} — ${field.label}` : field.name,
+    value: field.name,
+  })),
+)
+const criteriaOptions = computed(() =>
+  (populationOptions.value?.criteria_documents ?? []).map(document => ({
+    label: document.title || document.id,
+    value: document.id,
+  })),
+)
+/**
+ * What the population resolves to before it is saved.
+ *
+ * The count is what changes an auditor's mind: a type carrying one record
+ * cannot answer a question written against a population, and a sample of 25
+ * over 12 is a sample of 12.
+ */
+const populationPreview = computed(() => {
+  const type = selectedPopulationType.value
+  if (!type) return null
+  const drawn = draft.value.populationAll
+    ? type.records
+    : Math.min(draft.value.populationSize, type.records)
+  return {
+    records: type.records,
+    documents: type.documents,
+    drawn,
+    full: drawn === type.records,
+  }
+})
+
 const derivedTitle = computed(() => draft.value.title.trim() || `${selectedShape.value.label} test`)
 const ready = computed(() => {
   if (isCycle.value) {
@@ -118,7 +175,12 @@ const ready = computed(() => {
     )
   }
   if (isVouching.value) return Boolean(draft.value.table)
-  if (kind.value === 'qa') return Boolean(draft.value.documentId) && Boolean(draft.value.questions.trim())
+  if (isQa.value) {
+    if (!draft.value.questions.trim()) return false
+    return isPopulation.value
+      ? Boolean(draft.value.populationType && draft.value.populationFields.length)
+      : Boolean(draft.value.documentId)
+  }
   return Boolean(draft.value.documentId)
 })
 watch(ready, value => emit('valid', value), { immediate: true })
@@ -157,6 +219,15 @@ function confirmSuggestedSample() {
   draft.value.seed = 42
 }
 
+async function loadPopulationOptions() {
+  if (populationOptions.value) return
+  try {
+    populationOptions.value = await api.get<PopulationOptions>(
+      `/api/workspaces/${props.workspace.id}/doc-tests/population-options`,
+    )
+  } catch (error) { emit('error', 'Could not read the document types this engagement holds', error) }
+}
+
 async function loadSchema(table: string) {
   schema.value = []
   if (!table) return
@@ -176,11 +247,29 @@ function searchAttributes(event: { query: string }) {
 }
 
 watch(() => draft.value.table, table => void loadSchema(table))
+watch(isQa, value => { if (value) void loadPopulationOptions() }, { immediate: true })
 // Immediate, because the drawer can open already answering both — the RCM
 // row's "Add test" link carries the row over, and the shape can be restored.
 watch([shape, () => draft.value.rcmId], () => void loadCycleCandidates(), { immediate: true })
 
 /** What the tab posts. Built here because only this form knows the shape. */
+/** The population, in the shape the build endpoint reads. */
+function populationPayload() {
+  return {
+    document_type: draft.value.populationType,
+    fields: [...draft.value.populationFields],
+    criteria_refs: draft.value.populationCriteria.map(document_id => ({ document_id })),
+    selection: draft.value.populationAll
+      ? { mode: 'all' as const }
+      : {
+          mode: 'sample' as const,
+          method: 'random' as const,
+          size: draft.value.populationSize,
+          seed: draft.value.populationSeed,
+        },
+  }
+}
+
 function payload() {
   return {
     kind: kind.value,
@@ -188,6 +277,7 @@ function payload() {
     draft: {
       ...draft.value,
       title: derivedTitle.value,
+      ...(isPopulation.value ? { population: populationPayload() } : {}),
       ...(isCycle.value
         ? {
             cycleRulesetDefinition: {
@@ -346,7 +436,86 @@ defineExpose({ payload })
     </template>
 
     <template v-else>
-      <label :data-missing="!draft.documentId">
+      <!-- A Q&A test asks one named document, or every record of a type. The
+           second is not a longer list of the first: the workspace resolves the
+           type on every run, so a document imported next week is covered
+           without the test being rewritten. -->
+      <div v-if="isQa" class="scope-choice" role="radiogroup" aria-label="What this test asks">
+        <button
+          type="button"
+          :aria-pressed="draft.qaScope === 'documents'"
+          :class="{ chosen: draft.qaScope === 'documents' }"
+          @click="draft.qaScope = 'documents'"
+        >
+          <strong>One document</strong>
+          <small>Ask a named policy, memorandum, or approval.</small>
+        </button>
+        <button
+          type="button"
+          :aria-pressed="draft.qaScope === 'population'"
+          :class="{ chosen: draft.qaScope === 'population' }"
+          :disabled="!populationTypeOptions.length"
+          @click="draft.qaScope = 'population'"
+        >
+          <strong>Every record of a type</strong>
+          <small v-if="populationTypeOptions.length">Resolved from the workspace on every run.</small>
+          <small v-else>This engagement has read no typed evidence yet.</small>
+        </button>
+      </div>
+
+      <template v-if="isPopulation">
+        <label :data-missing="!draft.populationType">
+          Document type
+          <Select
+            v-model="draft.populationType"
+            :options="populationTypeOptions"
+            optionLabel="label"
+            optionValue="value"
+            filter
+            placeholder="Choose the record kind this question is about"
+          />
+        </label>
+        <label :data-missing="!draft.populationFields.length">
+          Fields the question reads
+          <MultiSelect
+            v-model="draft.populationFields"
+            :options="populationFieldOptions"
+            optionLabel="label"
+            optionValue="value"
+            :disabled="!selectedPopulationType"
+            display="chip"
+            placeholder="Pick the schema fields the answer is judged on"
+          />
+        </label>
+        <label>
+          Judged against
+          <MultiSelect
+            v-model="draft.populationCriteria"
+            :options="criteriaOptions"
+            optionLabel="label"
+            optionValue="value"
+            display="chip"
+            placeholder="The policy or SOP the answer is measured by"
+          />
+        </label>
+        <div class="check">
+          <Checkbox v-model="draft.populationAll" :binary="true" inputId="population-all" />
+          <label for="population-all">Test every record</label>
+        </div>
+        <div v-if="!draft.populationAll" class="pair">
+          <label>Sample size<InputNumber v-model="draft.populationSize" :min="1" /></label>
+          <label>Seed<InputNumber v-model="draft.populationSeed" :useGrouping="false" /></label>
+        </div>
+        <p v-if="populationPreview" class="note">
+          This resolves to <strong>{{ populationPreview.drawn }}</strong> of
+          {{ populationPreview.records }} record{{ populationPreview.records === 1 ? '' : 's' }}
+          across {{ populationPreview.documents }} document{{ populationPreview.documents === 1 ? '' : 's' }}
+          — {{ populationPreview.full ? 'full population' : 'a sample, reported as one' }}.
+          One model call per record.
+        </p>
+      </template>
+
+      <label v-else :data-missing="!draft.documentId">
         Document
         <Select
           v-model="draft.documentId"
@@ -407,4 +576,15 @@ label[data-missing='true'] :deep(.p-textarea),
 .approved-cycle code { font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }
 .gaps, .rules { display: flex; flex-direction: column; gap: .25rem; margin: 0; padding-left: 1.1rem; font-size: var(--aw-text-sm); }
 .rules li { display: flex; flex-direction: column; }
+
+.scope-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.scope-choice button {
+  display: flex; flex-direction: column; gap: .15rem;
+  padding: .6rem; border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-control); background: var(--aw-panel);
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.scope-choice button.chosen { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
+.scope-choice button:disabled { opacity: .55; cursor: not-allowed; }
+.scope-choice small { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 </style>

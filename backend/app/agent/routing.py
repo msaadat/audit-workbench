@@ -418,17 +418,42 @@ def _explanation(
     )
 
 
+#: Room in the execution stage for the units that are not one record's
+#: assessment — a blocked worklist, a deterministic comparison, a review.
+_DOC_TEST_UNIT_HEADROOM = 50
+
+
+def _document_test_unit_ceiling(workspace: Workspace, scope: dict) -> int:
+    """The per-stage unit cap a Q&A population needs, or zero for the default.
+
+    The 250-unit cap is a guard against an unbounded expansion, and a resolved
+    population is bounded — by ``document_population.MAX_POPULATION_RECORDS``,
+    and by the auditor's own selection. Refusing to schedule it would refuse the
+    feature rather than bound it, so the cap is raised to what this engagement's
+    populations actually resolve to and the run pays for exactly that.
+    """
+
+    from .capabilities.doc_tests import assessment_pairs, scoped_tests
+
+    try:
+        pairs = assessment_pairs(scoped_tests(workspace, scope))
+    except WorkspaceError:
+        return 0
+    if not pairs:
+        return 0
+    return pairs + _DOC_TEST_UNIT_HEADROOM
+
+
 def _audit_model_turns(workspace: Workspace) -> int:
     """Size the audit model budget from real RCM, test, and Q&A counts."""
 
     from .. import doc_tests as doc_test_service
+    from .capabilities.doc_tests import assessment_pairs
 
     test_count = len(workspace.data_tests) + len(doc_test_service.list_tests(workspace))
-    qa_pairs = sum(
-        len(item.get("document_ids") or [])
+    qa_pairs = assessment_pairs(
+        doc_tests.load_test(workspace, summary["id"])
         for summary in doc_tests.list_tests(workspace)
-        for item in doc_tests.load_test(workspace, summary["id"]).get("items") or []
-        if summary.get("kind") == "qa"
     )
     eligible_findings = sum(
         item.get("outcome") == "exception"
@@ -519,21 +544,16 @@ def _document_model_turns(workspace: Workspace, scope: dict) -> int:
 
 
 def _doc_test_model_turns(workspace: Workspace, scope: dict) -> int:
-    """Size the document-test budget from the Q&A pairs actually in scope.
+    """Size the document-test budget from the assessments actually in scope.
 
-    Only the Q&A unit kind calls the model, once per unanswered item/document
-    pair; deterministic comparison and review units never do.
+    Only the Q&A unit kind calls the model, once per unanswered assessment unit
+    — an attached document, or one record of a resolved population;
+    deterministic comparison and review units never do.
     """
 
-    from .capabilities.doc_tests import scoped_tests
+    from .capabilities.doc_tests import assessment_pairs, scoped_tests
 
-    qa_pairs = sum(
-        len(item.get("document_ids") or [])
-        for test in scoped_tests(workspace, scope)
-        if test.get("kind") == "qa"
-        for item in test.get("items") or []
-    )
-    return 4 + 2 * qa_pairs
+    return 4 + 2 * assessment_pairs(scoped_tests(workspace, scope))
 
 
 def _analysis_model_turns(workspace: Workspace, scope: dict) -> int:
@@ -678,7 +698,10 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         generation_mode=generation_mode,
     )
     resolved, stages, reused = plan.resolved, plan.stages, plan.reused
-    maximum_units = int(run.get("limits", {}).get("max_units_per_stage") or 250)
+    maximum_units = max(
+        int(run.get("limits", {}).get("max_units_per_stage") or 250),
+        _document_test_unit_ceiling(workspace, scope),
+    )
     oversized = next(
         (stage for stage in stages if len(stage.get("units") or []) > maximum_units),
         None,

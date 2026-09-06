@@ -589,10 +589,10 @@ The audit lifecycle continues to schedule document tests through
 (`capabilities.doc_tests.document_test_units`) and bind its units through one
 function (`doc_tests_execution.bind_document_test_unit`), so a worklist cannot
 behave one way standalone and another way inside an audit. A Q&A test fans out
-one `document_qa_execution` unit per unanswered item/document pair and reaches
-the provider only through the registered `fieldwork.document_qa` worker and its
-declared page context; `run_document_test` raises rather than making an
-unbudgeted call.
+one `document_qa_execution` unit per unanswered *assessment unit* — an attached
+document, or one record of a typed population — and reaches the provider only
+through the registered `fieldwork.document_qa` worker and its declared context;
+`run_document_test` raises rather than making an unbudgeted call.
 
 Nothing the agent does satisfies `doc_tests.dispositioned`. Its units settle as
 `awaiting_confirmation`, because a deterministic comparison or a cited answer is
@@ -948,7 +948,9 @@ and statistical profiles into data-only candidates for a normalized
 handling to `document_context`, methodology section loading to `methodology`,
 and table projection to the existing assistant/model-context builders, so
 retrieval, indexing, and profiling policy remain at the existing privacy choke
-points. Table profiles omit category literals and never use the row-preview
+points. Table profiles carry a column's literal value set only where it passes
+the bounded category-domain gate — a population, each value recurring, and the
+values reading as labels rather than prose — and never use the row-preview
 projection. Row-level `table_rows` candidates, manifest selections, and local
 bundle items are structurally rejected before worker invocation. Resolver
 integration records selection, omission, and truncation without persisting

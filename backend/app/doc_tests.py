@@ -21,7 +21,14 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from . import analytics, cycle_vouching, documents, explore
+from . import (
+    analytics,
+    cycle_vouching,
+    document_population,
+    document_schemas,
+    documents,
+    explore,
+)
 from .text import counted, verb
 from .evidence import document_anchor, normalize_many
 from .workspaces import (
@@ -46,6 +53,13 @@ DIRECTIONS = {"vouching", "tracing"}
 STATES = {"pending", "agent_checked", "confirmed", "exception", "manual_review"}
 EVALUATION_STATES = {"not_run", "agent_checked", "passed", "failed", "inconclusive"}
 DISPOSITION_STATES = {"pending", "confirmed", "exception", "needs_review"}
+
+#: Where an auditor's per-record calls live on a population item. The item keeps
+#: its own ``disposition`` — every existing reader, rollup and RCM projection is
+#: written against it — and that one is *folded* from these rather than typed
+#: separately, so signing off eighty rows cannot leave the item saying something
+#: the rows do not.
+POPULATION_DISPOSITIONS_KEY = "record_dispositions"
 METHODS = {
     "exact",
     "normalized",
@@ -120,7 +134,27 @@ _TEST_EVIDENCE_FIELDS = (
     "spec",
 )
 _ITEM_ANNOTATION_FIELDS = frozenset(
-    {"disposition", "evaluation", "runner_note", "qa_answers", "evidence_refs"}
+    {
+        "disposition",
+        # The auditor's per-record calls on a population item. An annotation for
+        # exactly the reason ``disposition`` is one: signing off eighty rows is
+        # a ruling about the evidence, not a change to it, and counting it here
+        # would make a finding read "the evidence changed" because somebody
+        # confirmed what it already said.
+        "record_dispositions",
+        "evaluation",
+        # Derived from the two above and from nothing else, so carrying it here
+        # let a sign-off move the hash through the back door the two exclusions
+        # were closing.
+        "state",
+        "runner_note",
+        "qa_answers",
+        # The same store under the other kind's name. Its omission was an
+        # oversight rather than a distinction: an attribute or review test's
+        # answers moved the evidence hash where a Q&A test's did not.
+        "llm_answers",
+        "evidence_refs",
+    }
 )
 
 
@@ -359,8 +393,67 @@ def item_input_sha1(
             "question": str(item.get("question") or ""),
             "page": _json_value(item.get("page")),
             "pages": [_json_value(value) for value in item.get("pages") or []],
+            # A typed population is evidence like an attached document is, and
+            # it moves for more reasons: a voucher imported, a reading re-run,
+            # the policy the answers were judged against edited. Its fingerprint
+            # stands for all of them, so a run made over a population that has
+            # since changed goes stale by the same rule an attachment does.
+            "population": str((item.get("population") or {}).get("inputs_sha1") or ""),
         }
     )
+
+
+def population_items(test: Mapping[str, object]) -> list[dict]:
+    """The items of this test that name a type rather than a list of ids."""
+
+    return [
+        item
+        for item in test.get("items") or []
+        if document_population.has_population(item)
+    ]
+
+
+def _resolve_populations(workspace: Workspace, test: dict) -> bool:
+    """Re-resolve every population item against the corpus as it stands.
+
+    The population is re-resolved on read, the way a cycle test's items are
+    re-materialized on read, and for the same reason: a test that enumerated its
+    evidence when it was written is a test that silently stops covering the
+    engagement the moment a document arrives. A voucher imported after the test
+    was generated joins it here; one whose reading was re-run rejoins it with a
+    new fingerprint, which is what retires the answer made against the old one.
+
+    Answers for records that have left the population are dropped rather than
+    kept: they are assessments of evidence this test no longer speaks about, and
+    leaving them in the map would let a settled item be settled by them.
+    """
+
+    changed = False
+    for item in population_items(test):
+        stored = item.get("population") or {}
+        try:
+            resolved = document_population.resolved_population(workspace, stored)
+        except WorkspaceError:
+            # A schema withdrawn or a type retired underneath a stored test.
+            # ``execution_issues`` reports it by name; a read must not fail.
+            continue
+        if resolved["inputs_sha1"] == str(stored.get("inputs_sha1") or ""):
+            continue
+        item["population"] = resolved
+        item["document_ids"] = list(resolved["resolved_document_ids"])
+        _drop_departed_answers(item)
+        changed = True
+    return changed
+
+
+def _drop_departed_answers(item: dict) -> None:
+    current = {unit["key"] for unit in document_population.assessment_units(item)}
+    for key in ("qa_answers", "llm_answers", POPULATION_DISPOSITIONS_KEY):
+        answers = item.get(key)
+        if not isinstance(answers, dict):
+            continue
+        for stored_key in [value for value in answers if value not in current]:
+            answers.pop(stored_key, None)
 
 
 def _refresh_staleness(test: dict, sha1_by_document: Mapping[str, str]) -> None:
@@ -557,6 +650,10 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
             check.setdefault("comparisons", [])
             check["evidence_refs"] = normalize_many(check.get("evidence_refs") or [])
     if kind != "cycle_vouch" and workspace is not None and test["items"]:
+        # Before staleness, not after: re-resolving is what *discovers* that the
+        # population moved, and computing the input hash first would compare a
+        # run against the corpus as it was when the run happened.
+        _resolve_populations(workspace, test)
         _refresh_staleness(test, _document_sha1_index(workspace))
         # A read may discover that evidence moved under a signed-off test, but
         # it must not promote a test nobody has touched. Only the downgrade is
@@ -943,6 +1040,27 @@ def _new_item(payload: dict | None = None, *, cycle: bool = False) -> dict:
     return item
 
 
+def _apply_population(workspace: Workspace, item: dict, raw: object) -> None:
+    """Resolve a declared population onto one Q&A item, or leave it as it is.
+
+    ``document_ids`` stays the executable list every existing reader iterates;
+    the population is what *produces* it. An item carrying both is refused
+    rather than merged: one source per item, or nobody can say afterwards
+    whether an id is there because the type resolved to it or because somebody
+    attached it by hand, and a re-resolution would silently drop the second.
+    """
+
+    if not raw:
+        return
+    if item.get("document_ids"):
+        raise WorkspaceError(
+            "A Document Test item names a population or attaches documents, not both."
+        )
+    resolved = document_population.resolved_population(workspace, raw)
+    item["population"] = resolved
+    item["document_ids"] = list(resolved["resolved_document_ids"])
+
+
 def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
     """Normalize one payload's items onto a test according to its kind."""
     kind = test["kind"]
@@ -987,6 +1105,7 @@ def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
             item.update(page=raw.get("page"), review_kind=str(raw.get("review_kind") or "general"), summary=str(raw.get("summary") or ""), excerpt=str(raw.get("excerpt") or ""))
         elif kind == "qa":
             item.update(question=str(raw.get("question") or ""), response=str(raw.get("response") or ""), citations=normalize_many(raw.get("citations") or []))
+            _apply_population(workspace, item, raw.get("population"))
         else:
             raise WorkspaceError(f"Unsupported Document Test kind '{kind}'.")
         test["items"].append(item)
@@ -1536,7 +1655,18 @@ def build_review(workspace: Workspace, payload: dict) -> dict:
 
 
 def build_qa(workspace: Workspace, payload: dict) -> dict:
+    """Build a Q&A test over named documents, or over a typed population.
+
+    The two are alternatives, not a merge: a population names a document type
+    and the workspace resolves it every run, so an item that also carried
+    hand-attached ids would lose them the first time the type was re-resolved.
+    """
     document_ids = [str(value) for value in (payload.get("document_ids") or [])]
+    population = payload.get("population")
+    if population and document_ids:
+        raise WorkspaceError(
+            "A Q&A test names a population or attaches documents, not both."
+        )
     known = {doc["id"] for doc in workspace.documents}
     missing = [value for value in document_ids if value not in known]
     if missing:
@@ -1546,8 +1676,40 @@ def build_qa(workspace: Workspace, payload: dict) -> dict:
         raise WorkspaceError("Add at least one question to a Q&A test.")
     return create_test(workspace, {
         **payload, "kind": "qa",
-        "items": [{"label": question, "question": question, "document_ids": document_ids} for question in questions],
+        "items": [
+            {
+                "label": question,
+                "question": question,
+                "document_ids": document_ids,
+                **({"population": population} if population else {}),
+            }
+            for question in questions
+        ],
     })
+
+
+def resolve_item_population(workspace: Workspace, test_id: str, item_id: str) -> dict:
+    """Redraw one item's population on demand and persist the result.
+
+    The same code path a read and an expansion take, made durable. An auditor
+    reaches for it after importing evidence, when they want the test's stored
+    coverage to say so before the next run rather than after it.
+    """
+
+    test = load_test(workspace, test_id)
+    item = _item(test, item_id)
+    if not document_population.has_population(item):
+        raise WorkspaceError(
+            f"Document Test item '{item_id}' names no population to resolve."
+        )
+    resolved = document_population.resolved_population(workspace, item["population"])
+    item["population"] = resolved
+    item["document_ids"] = list(resolved["resolved_document_ids"])
+    _drop_departed_answers(item)
+    _refresh_staleness(test, _document_sha1_index(workspace))
+    refresh_test_status(test)
+    save_test(workspace, test)
+    return population_summary(test, _item(load_test(workspace, test_id), item_id))
 
 
 def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
@@ -1622,6 +1784,24 @@ def _item(test: dict, item_id: str) -> dict:
     return item
 
 
+def _refuse_population_attachment(item: dict, verb_phrase: str) -> None:
+    """A population item's documents are resolved, never hand-edited.
+
+    Silently allowing it would be worse than refusing: the next read re-resolves
+    the type and the hand-attached document disappears, with nothing on the
+    record saying it was ever there.
+    """
+
+    if not document_population.has_population(item):
+        return
+    document_type = str((item.get("population") or {}).get("document_type") or "the type")
+    raise WorkspaceError(
+        f"This item is written against every '{document_type}' record, so evidence "
+        f"cannot be {verb_phrase} it by hand. Change the population, or import "
+        "the document and it joins on the next run."
+    )
+
+
 def attach_document(workspace: Workspace, test_id: str, item_id: str, document_id: str) -> dict:
     test = load_test(workspace, test_id)
     if is_cycle_test(test):
@@ -1629,6 +1809,7 @@ def attach_document(workspace: Workspace, test_id: str, item_id: str, document_i
             "Cycle evidence is attached to a typed role binding, not a flat document list."
         )
     item = _item(test, item_id)
+    _refuse_population_attachment(item, "attached to")
     document = next((value for value in workspace.documents if value.get("id") == document_id), None)
     if document is None:
         raise WorkspaceError(f"Document '{document_id}' not found.")
@@ -1654,6 +1835,7 @@ def detach_document(workspace: Workspace, test_id: str, item_id: str, document_i
             "Cycle evidence is detached from a typed role binding, not a flat document list."
         )
     item = _item(test, item_id)
+    _refuse_population_attachment(item, "detached from")
     item["document_ids"] = [value for value in item["document_ids"] if value != document_id]
     invalidate_evaluation(test, item, "Evidence detached; re-run the item.")
     return save_test(workspace, test)
@@ -1810,12 +1992,113 @@ def update_item(
                 "An auditor may only set a document-test item to confirmed, "
                 "exception, needs_review, or pending."
             )
+        if document_population.has_population(item):
+            # A population item's own call is folded from the record calls, so
+            # setting it here is a decision the next record disposition would
+            # silently reverse.
+            raise WorkspaceError(
+                "This item covers a whole population; record your call on the "
+                "records, and the item follows."
+            )
         note = str(changes.get("disposition_note") or "").strip()
         record_disposition(workspace, test, item, state, note=note)
         refresh_test_status(test)
     if runner_note is not None:
         item["runner_note"] = runner_note
     return save_test(workspace, test)
+
+
+def record_disposition_state(item: Mapping[str, object], key: str) -> str:
+    stored = (item.get(POPULATION_DISPOSITIONS_KEY) or {}).get(str(key)) or {}
+    return str(stored.get("state") or "pending")
+
+
+def _fold_population_disposition(
+    workspace: Workspace, test: dict, item: dict, *, actor: str
+) -> None:
+    """Roll the per-record calls into the item's one disposition.
+
+    Any exception wins, then any needs-review, and only a fully confirmed
+    population confirms the item. An undecided row leaves the item pending —
+    which is what keeps ``doc_tests.dispositioned`` owing the auditor the rest of
+    the grid instead of settling on the majority they happened to click first.
+    """
+
+    units = document_population.assessment_units(item)
+    states = [record_disposition_state(item, unit["key"]) for unit in units]
+    if not units or any(state == "pending" for state in states):
+        record_disposition(workspace, test, item, "pending")
+        return
+    folded = (
+        "exception"
+        if "exception" in states
+        else "needs_review"
+        if "needs_review" in states
+        else "confirmed"
+    )
+    decided = sum(state != "confirmed" for state in states)
+    record_disposition(
+        workspace,
+        test,
+        item,
+        folded,
+        note=(
+            f"{counted(len(units), 'record')} dispositioned; "
+            f"{decided} not confirmed."
+        ),
+        actor=actor,
+    )
+
+
+def update_population_dispositions(
+    workspace: Workspace,
+    test_id: str,
+    item_id: str,
+    entries: list[dict],
+    *,
+    actor: str = "auditor",
+) -> dict:
+    """Record an auditor's call on named records of one population item.
+
+    ``entries`` are ``{key, state, note}``. The item's own disposition is folded
+    from the result, so a grid where the five flagged rows are dispositioned and
+    the seventy-nine accepted ones are confirmed settles the item exactly once.
+    """
+
+    test = load_test(workspace, test_id)
+    item = _item(test, item_id)
+    if not document_population.has_population(item):
+        raise WorkspaceError(
+            f"Document Test item '{item_id}' has no population to disposition."
+        )
+    valid = {unit["key"] for unit in document_population.assessment_units(item)}
+    stored = item.setdefault(POPULATION_DISPOSITIONS_KEY, {})
+    for entry in entries or []:
+        key = str(entry.get("key") or "")
+        if key not in valid:
+            raise WorkspaceError(
+                f"'{key}' is not a record of Document Test item '{item_id}'."
+            )
+        state = str(entry.get("state") or "")
+        if state not in MANUAL_SIGNOFF_STATES:
+            raise WorkspaceError(
+                "An auditor may only set a population record to confirmed, "
+                "exception, needs_review, or pending."
+            )
+        note = str(entry.get("note") or "").strip()
+        if state == "pending":
+            stored.pop(key, None)
+            continue
+        stored[key] = {
+            "state": state,
+            "note": note,
+            "actor": actor,
+            "at": utcnow(),
+        }
+    _fold_population_disposition(workspace, test, item, actor=actor)
+    refresh_test_status(test)
+    save_test(workspace, test)
+    return population_summary(test, _item(load_test(workspace, test_id), item_id))
 
 
 def update_dispositions(workspace: Workspace, entries: list[dict]) -> dict:
@@ -1848,10 +2131,19 @@ def update_dispositions(workspace: Workspace, entries: list[dict]) -> dict:
                     "An auditor may only set a document-test item to confirmed, "
                     "exception, needs_review, or pending."
                 )
+            item = _item(test, str(entry["item_id"]))
+            if document_population.has_population(item):
+                # Same rule as the single-item path: a population item's call is
+                # folded from the records, so bulk-signing the item itself would
+                # be reversed by the next record disposition.
+                raise WorkspaceError(
+                    f"Document Test item '{item['id']}' covers a whole population; "
+                    "record the call on its records."
+                )
             record_disposition(
                 workspace,
                 test,
-                _item(test, str(entry["item_id"])),
+                item,
                 state,
                 note=str(entry.get("disposition_note") or "").strip(),
             )
@@ -1940,25 +2232,25 @@ def settle_llm_assessment(
 ) -> dict | None:
     """Apply the worker's outcome to a complete LLM assessment.
 
-    Multiple attached documents settle conservatively: any exception wins,
-    otherwise any manual-check outcome wins, otherwise every answer must be
-    accepted. Incomplete results remain available for an auditor.
+    Multiple assessments settle conservatively: any exception wins, otherwise
+    any manual-check outcome wins, otherwise every answer must be accepted.
+    Incomplete results remain available for an auditor.
+
+    What "every answer" means is whatever the item's unit of assessment is —
+    one per attached document, or one per record of a resolved population.
     """
     test = load_test(workspace, test_id)
     item = _item(test, item_id)
     answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
     answers = item.get(answer_key) or {}
-    document_ids = list(item.get("document_ids") or [])
+    keys = [unit["key"] for unit in document_population.assessment_units(item)]
     if (
         str((item.get("evaluation") or {}).get("state") or "not_run") != "agent_checked"
-        or not document_ids
-        or any(document_id not in answers for document_id in document_ids)
+        or not keys
+        or any(key not in answers for key in keys)
     ):
         return None
-    outcomes = {
-        str(answers[document_id].get("outcome") or "")
-        for document_id in document_ids
-    }
+    outcomes = {str(answers[key].get("outcome") or "") for key in keys}
     if "exception" in outcomes:
         assessment_outcome = "exception"
     elif "needs_manual_check" in outcomes or outcomes != {"accepted"}:
@@ -1985,12 +2277,14 @@ def llm_assessment_outcome(
     test_id: str,
     item_id: str,
     document_id: str,
+    record_index: object = None,
 ) -> str:
-    """Return the persisted worker outcome for one item/document assessment."""
+    """Return the persisted worker outcome for one assessment unit."""
     test = load_test(workspace, test_id)
     item = _item(test, item_id)
     answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
-    answer = (item.get(answer_key) or {}).get(document_id) or {}
+    key = document_population.unit_key(document_id, record_index)
+    answer = (item.get(answer_key) or {}).get(key) or {}
     return str(answer.get("outcome") or "needs_manual_check")
 
 
@@ -2232,22 +2526,39 @@ def _llm_control_conclusion(answer: dict) -> str:
     return conclusion
 
 
+def _assessment_key(item: dict, document_id: str, record_index: object) -> str:
+    """The key one assessment belongs under, refusing anything off the item."""
+
+    key = document_population.unit_key(document_id, record_index)
+    units = document_population.assessment_units(item)
+    if key not in {unit["key"] for unit in units}:
+        if document_population.has_population(item):
+            raise WorkspaceError(
+                f"Record {record_index} of document '{document_id}' is not in the "
+                f"resolved population of Document Test item '{item['id']}'."
+            )
+        raise WorkspaceError(
+            f"Document '{document_id}' is not attached to Document Test item "
+            f"'{item['id']}'."
+        )
+    return key
+
+
 def commit_qa_answer(
     workspace: Workspace,
     test_id: str,
     item_id: str,
     document_id: str,
     answer: dict,
+    *,
+    record_index: object = None,
 ) -> dict:
-    """Merge one immutable item/document Q&A candidate in document order."""
+    """Merge one immutable Q&A candidate in assessment-unit order."""
     test = load_test(workspace, test_id)
     if test.get("kind") != "qa":
         raise WorkspaceError("Q&A answers can only be committed to a Q&A Document Test.")
     item = _item(test, item_id)
-    if document_id not in item.get("document_ids", []):
-        raise WorkspaceError(
-            f"Document '{document_id}' is not attached to Document Test item '{item_id}'."
-        )
+    key = _assessment_key(item, document_id, record_index)
     candidate = {
         "answer": str(answer.get("answer") or ""),
         "conclusion": str(answer.get("conclusion") or answer.get("answer") or ""),
@@ -2256,11 +2567,11 @@ def commit_qa_answer(
         "citations": normalize_many(answer.get("citations") or []),
     }
     answers = item.setdefault("qa_answers", {})
-    answers[document_id] = candidate
+    answers[key] = candidate
     ordered = [
-        answers[value]
-        for value in item.get("document_ids") or []
-        if value in answers
+        answers[unit["key"]]
+        for unit in document_population.assessment_units(item)
+        if unit["key"] in answers
     ]
     item.update(
         response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
@@ -2277,26 +2588,37 @@ def commit_qa_answer(
 
 
 def commit_llm_assessment(
-    workspace: Workspace, test_id: str, item_id: str, document_id: str, answer: dict,
+    workspace: Workspace,
+    test_id: str,
+    item_id: str,
+    document_id: str,
+    answer: dict,
+    *,
+    record_index: object = None,
 ) -> dict:
     """Persist one cited LLM assessment for a Q&A, attribute, or review item."""
     test = load_test(workspace, test_id)
     if test.get("kind") not in {"qa", "attribute", "review"}:
         raise WorkspaceError("This Document Test kind does not support an LLM assessment.")
     if test.get("kind") == "qa":
-        return commit_qa_answer(workspace, test_id, item_id, document_id, answer)
+        return commit_qa_answer(
+            workspace, test_id, item_id, document_id, answer, record_index=record_index
+        )
     item = _item(test, item_id)
-    if document_id not in item.get("document_ids", []):
-        raise WorkspaceError(f"Document '{document_id}' is not attached to Document Test item '{item_id}'.")
+    key = _assessment_key(item, document_id, record_index)
     answers = item.setdefault("llm_answers", {})
-    answers[document_id] = {
+    answers[key] = {
         "answer": str(answer.get("answer") or ""),
         "conclusion": str(answer.get("conclusion") or answer.get("answer") or ""),
         "control_conclusion": _llm_control_conclusion(answer),
         "outcome": str(answer.get("outcome") or "needs_manual_check"),
         "citations": normalize_many(answer.get("citations") or []),
     }
-    ordered = [answers[value] for value in item.get("document_ids") or [] if value in answers]
+    ordered = [
+        answers[unit["key"]]
+        for unit in document_population.assessment_units(item)
+        if unit["key"] in answers
+    ]
     item.update(
         response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
         citations=[citation for value in ordered for citation in value["citations"]],
@@ -2334,7 +2656,17 @@ def execution_issues(test: dict) -> list[str]:
     for index, item in enumerate(items, start=1):
         prefix = f"item {index}"
         if not item.get("document_ids"):
-            issues.append(f"{prefix} has no attached document")
+            population = item.get("population") or {}
+            if population:
+                # The honest report for a population is about the *type*: this
+                # engagement holds no readable record of it, which an auditor
+                # fixes by importing or re-reading, not by attaching a file.
+                issues.append(
+                    f"{prefix} resolves no current "
+                    f"{population.get('document_type') or 'document'} record"
+                )
+            else:
+                issues.append(f"{prefix} has no attached document")
         if kind == "vouching" and not item.get("checks"):
             issues.append(f"{prefix} has no comparison checks")
         elif kind == "attribute" and not item.get("attributes"):
@@ -2361,6 +2693,60 @@ def evidence_blocked(test: dict) -> bool:
             for item in test.get("items") or []
         )
     )
+
+
+#: How one assessment's outcome reads in a population count. The worker's
+#: vocabulary and the auditor's are deliberately different words for different
+#: acts, and the grid shows the worker's until a disposition overrides it.
+_POPULATION_OUTCOMES = ("accepted", "exception", "needs_manual_check")
+
+
+def item_answers(item: Mapping[str, object]) -> dict:
+    """The stored assessments for one item, whichever store its kind uses."""
+
+    return dict(item.get("qa_answers") or item.get("llm_answers") or {})
+
+
+def population_summary(test: Mapping[str, object], item: Mapping[str, object]) -> dict:
+    """What one population item covered, and what it did not.
+
+    ``assessed`` against ``resolved`` is the fraction the run actually reached;
+    ``resolved`` against ``population_records`` is what the selection or the cap
+    left out; and ``unread_documents`` is the third gap — documents of the type
+    that produced no reading at all, which no count over records could show.
+    """
+
+    population = item.get("population") or {}
+    units = document_population.assessment_units(item)
+    answers = item_answers(item)
+    assessed = [answers[unit["key"]] for unit in units if unit["key"] in answers]
+    counts = {
+        outcome: sum(
+            str(answer.get("outcome") or "") == outcome for answer in assessed
+        )
+        for outcome in _POPULATION_OUTCOMES
+    }
+    return {
+        "item_id": str(item.get("id") or ""),
+        "label": str(item.get("label") or ""),
+        "document_type": str(population.get("document_type") or ""),
+        "fields": [str(value) for value in population.get("fields") or []],
+        "selection": dict(population.get("selection") or {"mode": "all"}),
+        "assurance_scope": document_population.assurance_scope(population),
+        "population_records": int(population.get("population_records") or 0),
+        "population_documents": int(population.get("population_documents") or 0),
+        "resolved": len(units),
+        "resolved_documents": len(population.get("resolved_document_ids") or []),
+        "assessed": len(assessed),
+        "omitted_records": int(population.get("omitted_records") or 0),
+        "capped": bool(population.get("capped")),
+        "unread_documents": list(population.get("unread_documents") or []),
+        "resolved_at": str(population.get("resolved_at") or ""),
+        "outcome_counts": counts,
+        # After a read the resolution is current by construction; what an
+        # auditor needs to know is whether the *run* caught up with it.
+        "run_current": len(assessed) == len(units) and bool(units),
+    }
 
 
 def result_rollup(test: dict) -> dict:
@@ -2438,8 +2824,16 @@ def result_rollup(test: dict) -> dict:
             if scope == "targeted_evidence_only"
             else "Sampled population"
             if scope == "sampled_population"
+            else "Full population"
+            if scope == "full_population"
             else None
         ),
+        # One entry per item that names a type rather than a list of ids. What
+        # the run covered and what it did not, stated rather than derivable, so
+        # a partial run is never read as complete coverage.
+        "populations": [
+            population_summary(test, item) for item in population_items(test)
+        ],
         "conclusion_eligible": conclusion_eligible,
         # `conclusion_eligible` still means "clean": every item resolved and
         # every check usable. Reporting the conclusion is a weaker test — an
@@ -2455,6 +2849,146 @@ def result_rollup(test: dict) -> dict:
     }
 
 
+MAX_POPULATION_GRID_PAGE = 200
+
+#: Exceptions, then the ones nobody could settle, then what has not run, then
+#: the accepted majority. Eighty-four rows have to read as *the five that
+#: matter, then the rest*, or the grid is a list nobody scrolls.
+_POPULATION_ROW_RANK = {
+    "exception": 0,
+    "needs_manual_check": 1,
+    "not_run": 2,
+    "accepted": 3,
+}
+
+
+def population_grid(
+    workspace: Workspace,
+    test: dict,
+    item_id: str,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    outcome: str | None = None,
+) -> dict:
+    """One population item as a table: one row per record, bounded and paged."""
+
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise WorkspaceError("Grid offset must be a non-negative integer.")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 1
+        or limit > MAX_POPULATION_GRID_PAGE
+    ):
+        raise WorkspaceError(
+            f"Grid limit must be between 1 and {MAX_POPULATION_GRID_PAGE}."
+        )
+    item = _item(test, item_id)
+    if not document_population.has_population(item):
+        raise WorkspaceError(
+            f"Document Test item '{item_id}' names no population."
+        )
+    population = item["population"]
+    document_type = str(population.get("document_type") or "")
+    schema = document_schemas.load_schema(workspace, document_type)
+    identifiers = document_population.identifier_fields(schema)
+    fields = [str(value) for value in population.get("fields") or []]
+    columns = list(dict.fromkeys([*identifiers, *fields]))
+
+    from . import cycle_linking
+
+    records, _hashes = cycle_linking.structured_evidence(workspace)
+    by_key = {
+        (str(row.get("document_id") or ""), int(row.get("record_index") or 0)): row
+        for row in records
+    }
+    titles = {
+        str(document.get("id")): str(
+            document.get("title") or document.get("source") or ""
+        )
+        for document in workspace.documents
+    }
+    answers = item_answers(item)
+    rows = []
+    for unit in document_population.assessment_units(item):
+        record = by_key.get((unit["document_id"], unit["record_index"])) or {}
+        answer = answers.get(unit["key"]) or {}
+        values, citations, missing = {}, {}, []
+        for name in columns:
+            stated = [
+                field
+                for field in record.get("fields") or []
+                if str(field.get("name") or "") == name
+                and str(field.get("value") or "").strip()
+            ]
+            if not stated:
+                missing.append(name)
+                continue
+            values[name] = str(stated[0].get("value") or "")
+            citations[name] = str(stated[0].get("citation") or "")
+        rows.append(
+            {
+                "key": unit["key"],
+                "document_id": unit["document_id"],
+                "record_index": unit["record_index"],
+                "document_title": titles.get(unit["document_id"], ""),
+                "values": values,
+                "field_citations": citations,
+                # Named, never blank: a field the reading does not state is the
+                # answer to a different question than a field it states as empty.
+                "missing_fields": missing,
+                "outcome": str(answer.get("outcome") or "") or "not_run",
+                "answer": str(answer.get("answer") or ""),
+                "conclusion": str(answer.get("conclusion") or ""),
+                "evidence_refs": list(answer.get("citations") or []),
+                "disposition": record_disposition_state(item, unit["key"]),
+                "disposition_note": str(
+                    (
+                        (item.get(POPULATION_DISPOSITIONS_KEY) or {}).get(unit["key"])
+                        or {}
+                    ).get("note")
+                    or ""
+                ),
+            }
+        )
+    if outcome:
+        rows = [row for row in rows if row["outcome"] == outcome]
+    rows.sort(
+        key=lambda row: (
+            _POPULATION_ROW_RANK.get(row["outcome"], 4),
+            row["document_title"],
+            row["document_id"],
+            row["record_index"],
+        )
+    )
+    total = len(rows)
+    summary = population_summary(test, item)
+    return {
+        "test_id": str(test.get("id") or ""),
+        "test_sha1": str(test.get("sha1") or ""),
+        "item_id": str(item.get("id") or ""),
+        "label": str(item.get("label") or ""),
+        "question": str(item.get("question") or ""),
+        "document_type": document_type,
+        "identifier_columns": identifiers,
+        "field_columns": fields,
+        # Every field of the type, so the column picker offers what the schema
+        # holds rather than only what the question happened to name.
+        "available_columns": document_population.schema_field_names(schema),
+        "criteria": document_population.criteria_excerpts(
+            workspace,
+            population.get("criteria_refs") or [],
+            question=str(item.get("question") or ""),
+        ),
+        "summary": summary,
+        "assurance_scope": summary["assurance_scope"],
+        "rows": rows[offset : offset + limit],
+        "page": {"offset": offset, "limit": limit, "total": total},
+        "truncated": offset + len(rows[offset : offset + limit]) < total,
+    }
+
+
 def assurance_scope(test: dict) -> str | None:
     """Return structural population assurance without trusting display metadata."""
 
@@ -2463,6 +2997,17 @@ def assurance_scope(test: dict) -> str | None:
             "selection"
         ) or {}
         return cycle_vouching.assurance_scope_for(selection)
+    populations = [item["population"] for item in population_items(test)]
+    if populations:
+        # Every item must be full for the test to be. One sampled item, one
+        # capped item, or one document of the type carrying no current reading
+        # is enough to make the test's coverage partial, and saying otherwise is
+        # the specific overstatement this field exists to prevent.
+        scopes = {
+            document_population.assurance_scope(population)
+            for population in populations
+        }
+        return "full_population" if scopes == {"full_population"} else "sampled_population"
     if test.get("kind") != "vouching":
         return None
     method = str(
@@ -2666,7 +3211,19 @@ def _cycle_test_classification(test: dict, rollup: dict) -> str:
 
 
 def summary_payload(workspace: Workspace) -> dict:
-    """Return discriminated Cycle-test and ordinary-item triage entries."""
+    """Return discriminated Cycle-test and ordinary-item triage entries.
+
+    Read-only from end to end, so it opens the request cache scope itself:
+    every test it hydrates re-materializes its cycle items and re-resolves its
+    populations, and both read the same corpus. Without the scope one summary
+    request walked every document's extraction once per test.
+    """
+
+    with request_cache_scope():
+        return _summary_payload(workspace)
+
+
+def _summary_payload(workspace: Workspace) -> dict:
 
     entry_counts = {name: 0 for name in SUMMARY_CLASSES}
     test_counts = {
@@ -2813,6 +3370,14 @@ def summary_payload(workspace: Workspace) -> dict:
                 "image_only": bool(coverage.get("image_only")),
                 "evidence_request_count": len(item.get("evidence_request_ids") or []),
                 "has_conflict": bool(conflicts.get("duplicate_documents")),
+                # One row per item still, which is right — but the row has to
+                # say what the item is *over*. Eighty-four records behind one
+                # row reads as one document without this.
+                "population": (
+                    population_summary(test, item)
+                    if document_population.has_population(item)
+                    else None
+                ),
                 "updated": test.get("updated"),
             })
     # Stable sorts: title/label within severity, with the most urgent first.

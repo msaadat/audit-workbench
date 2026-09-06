@@ -59,7 +59,8 @@ from .capabilities._shared import (
     named_test_ids_for_row,
     target_rcm_ids,
 )
-from .doc_tests_execution import bind_document_test_unit
+from .capabilities.doc_tests import assessment_pairs
+from .doc_tests_execution import DOC_TEST_UNIT_HEADROOM, bind_document_test_unit
 from .documents_execution import (
     DocumentWorkflowExecution,
     build_document_capability_executions,
@@ -433,11 +434,9 @@ class AuditWorkflowExecution(ActionExecution):
     # ------------------------------------------------------------ ledger
     def _refresh_dynamic_limits(self) -> None:
         test_count = len(self.ws.data_tests) + len(doc_tests.list_tests(self.ws))
-        qa_pairs = sum(
-            len(item.get("document_ids") or [])
+        qa_pairs = assessment_pairs(
+            doc_tests.load_test(self.ws, summary["id"])
             for summary in doc_tests.list_tests(self.ws)
-            if summary.get("kind") == "qa"
-            for item in doc_tests.load_test(self.ws, summary["id"]).get("items") or []
         )
         eligible_findings = sum(
             item.get("outcome") == "exception"
@@ -491,6 +490,10 @@ class AuditWorkflowExecution(ActionExecution):
                 "max_prepared_image_pixels": max(
                     12_000_000, visual_units * 12_000_000
                 ),
+                # ``fieldwork.executed`` fans out one unit per assessment, so a
+                # typed population raises the stage's unit ceiling as well as
+                # its turn budget.
+                "max_units_per_stage": qa_pairs + DOC_TEST_UNIT_HEADROOM,
             },
             grow_only=True,
         )

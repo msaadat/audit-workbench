@@ -751,3 +751,100 @@ def test_naming_one_auditor_test_is_not_permission_over_another():
 
     assert receipt.output["tests"][0]["action"] == "preserved"
     assert target.workspace.data_tests[0]["objective"] == "Auditor objective"
+
+
+# --------------------------------------------------------------------------- #
+# A document step that names a type, resolved at commit
+# --------------------------------------------------------------------------- #
+def _population_test(**overrides):
+    value = {
+        "source": "document",
+        "title": "Expense classification verification",
+        "objective": "Determine whether expenses are classified as the SOP permits.",
+        "steps": [
+            {
+                "label": "Verify expense classification",
+                "instruction": "Check the category against the SOP.",
+                "mode": "question",
+                "question": "Does expense_description describe a permitted expense?",
+                "population": {
+                    "document_type": "payment_voucher",
+                    "fields": ["expense_category", "expense_description"],
+                    "criteria_refs": [],
+                },
+            }
+        ],
+        "methodology_refs": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _voucher_workspace(name, *, with_vouchers=True):
+    from app import document_classification as dc
+    from app import document_schemas
+
+    from test_document_population import VOUCHER_FIELDS, _voucher
+
+    workspace = workspaces.create_workspace(name)
+    document_schemas.save_schema(workspace, "payment_voucher", VOUCHER_FIELDS)
+    if with_vouchers:
+        _voucher(
+            workspace,
+            "PV-2025-001.txt",
+            [{
+                "voucher_id": "PV-2025-001",
+                "employee_name": "Ayesha Khan",
+                "expense_category": "Transport",
+                "expense_description": "Client meeting travel",
+                "amount_paid": "4500",
+            }],
+        )
+    workspace = workspaces.load_workspace(workspace.id)
+    workspace.add_rcm({
+        "process": "Expenses",
+        "risk": "Non-reimbursable expenses are paid",
+        "control": "Category review",
+        "risk_rating": "high",
+    })
+    return workspace, workspace.rcm[0]["id"]
+
+
+def test_a_population_step_resolves_at_commit_and_requests_no_evidence():
+    workspace, rcm_id = _voucher_workspace("Population commit")
+    target = TestGenerateExecutorTarget(workspace, "run-population", rcm_id)
+
+    EXECUTORS.execute(
+        _request(workspace, rcm_id, [_population_test()]), target
+    )
+
+    test = doc_tests.load_test(
+        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
+    )
+    item = test["items"][0]
+    assert test["status"] == "ready"
+    assert item["population"]["document_type"] == "payment_voucher"
+    assert item["document_ids"]
+    # The failure this replaces: a blocked test and an evidence request whose
+    # missing type was the placeholder ``supporting_evidence``, raised in an
+    # engagement that held the documents it asked for.
+    assert target.workspace.evidence_requests == []
+    assert doc_tests.execution_issues(test) == []
+
+
+def test_a_population_over_a_type_the_engagement_holds_none_of_names_the_type():
+    workspace, rcm_id = _voucher_workspace("Empty population", with_vouchers=False)
+    target = TestGenerateExecutorTarget(workspace, "run-empty", rcm_id)
+
+    EXECUTORS.execute(
+        _request(workspace, rcm_id, [_population_test()]), target
+    )
+
+    test = doc_tests.load_test(
+        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
+    )
+    request = target.workspace.evidence_requests[0]
+    assert test["status"] == "blocked"
+    assert request["missing_document_types"] == ["payment_voucher"]
+    assert "payment_voucher" in request["reason"]
+    assert request["item_id"] == test["items"][0]["id"]
