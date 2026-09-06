@@ -58,7 +58,11 @@ _PHASE_OF_DOMAIN = {
     "sources": "sources",
     "data": "sources",
     "analysis": "sources",
-    "documents": "documents",
+    # Reading the documents is understanding the same engagement, from the
+    # other half of what was imported. Drawn as a phase of its own it read as a
+    # separate errand between the tables and the plan, on an engagement where
+    # the two are one question: what did we get, and what does it say.
+    "documents": "sources",
     "planning": "planning",
     "tests": "planning",
     "doc_tests": "fieldwork",
@@ -78,12 +82,10 @@ PLAN_PHASES: tuple[dict[str, str], ...] = (
     {
         "id": "sources",
         "title": "Understand the data",
-        "summary": "Profile the tables, work out how they join, and summarise what the population shows.",
-    },
-    {
-        "id": "documents",
-        "title": "Read the documents",
-        "summary": "Extract the text, analyse each source, and keep every citation anchored to its page.",
+        "summary": (
+            "Profile the tables, read the documents, work out how they join, "
+            "and summarise what the sources show."
+        ),
     },
     {
         "id": "planning",

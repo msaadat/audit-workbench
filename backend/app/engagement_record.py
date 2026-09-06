@@ -160,11 +160,20 @@ _SPINE: dict[str, dict[str, Any]] = {
         "headline": "Build the risk and control matrix",
         "prompt": "Generate the RCM.", "live_body": True,
     },
+    # Two registers, one programme. The row is sized by both — `tests` is the
+    # data and document registers added together — so a single door to one of
+    # them said 54 and opened 32. It gets the treatment `sources.imported`
+    # gets: no door of its own, and one per register beside it, each carrying
+    # the count that door actually leads to.
     "tests.specified": {
-        "label": "Test programme", "destination": "data-tests",
+        "label": "Test programme", "destination": "",
         "unit": "test", "count": "tests",
         "headline": "Specify the tests each control needs",
         "prompt": "Draft the tests the RCM rows still need.", "live_body": True,
+        "links": (
+            {"label": "Data tests", "destination": "data-tests", "count": "data_tests"},
+            {"label": "Document tests", "destination": "doc-tests", "count": "document_tests"},
+        ),
     },
     # Held by the results its register carries, never by the register's size —
     # see `_doc_tests_ran`. `count` still names the whole register, which is
@@ -185,11 +194,30 @@ _SPINE: dict[str, dict[str, Any]] = {
     # register of its own to size. Counting the document-test register here
     # claimed the same artifact twice, the second time with a number fieldwork
     # never produced.
+    #
+    # Its doors are counted by *results* for the same reason, never by the size
+    # of the register they open: the programme above already states 22 document
+    # tests, and repeating that figure on the row below would report an
+    # engagement that has executed none of them as holding 22 results. `count`
+    # over `total` is what fieldwork produced over what it was given, which is
+    # the one number this row has of its own. It runs both registers, so it
+    # draws a door to each — pointing only at the document tests hid half of
+    # what the button beside it had just run.
     "fieldwork.executed": {
-        "label": "Fieldwork results", "destination": "doc-tests",
+        "label": "Fieldwork results", "destination": "",
         "unit": "", "count": None,
         "headline": "Run the tests against the data and documents",
         "prompt": "Run the tests.",
+        "links": (
+            {
+                "label": "Data tests", "destination": "data-tests",
+                "count": "data_test_results", "total": "data_tests",
+            },
+            {
+                "label": "Document tests", "destination": "doc-tests",
+                "count": "document_test_results", "total": "document_tests",
+            },
+        ),
     },
     "results.rolled_up": {
         "label": "Control conclusions", "destination": "rcm",
@@ -243,6 +271,9 @@ def _counts(workspace: Workspace) -> dict[str, int]:
         "data_tests": data_tests,
         "document_tests": document_tests,
         "tests": data_tests + document_tests,
+        # What ran, as against what was written. Only the fieldwork row reads
+        # these, and only as the numerator of its doors — see `_results`.
+        **_results(workspace),
         "findings": len(workspace.findings),
     }
 
@@ -435,6 +466,28 @@ def _completion(workspace: Workspace) -> dict:
     return _once("completion", lambda: rcm_execution.completion(workspace))
 
 
+def _results(workspace: Workspace) -> dict[str, int]:
+    """How many tests in each register hold a durable result.
+
+    One walk, read by both the fieldwork row's doors and its presence test, so
+    the number the row states and the colour it is drawn in cannot come from
+    two different readings of what "ran" means.
+    """
+    def read() -> dict[str, int]:
+        return {
+            "data_test_results": sum(
+                1 for item in workspace.data_tests
+                if rcm_execution.data_test_has_durable_result(item)
+            ),
+            "document_test_results": sum(
+                1 for item in _loaded_document_tests(workspace)
+                if rcm_execution.doc_test_has_durable_result(item)
+            ),
+        }
+
+    return _once("results", read)
+
+
 def _fieldwork_ran(workspace: Workspace) -> bool:
     """Whether any test in either register has a durable result.
 
@@ -453,13 +506,7 @@ def _fieldwork_ran(workspace: Workspace) -> bool:
     The predicate is the manifest's own, so the row and the readiness sentence
     beside it cannot disagree about what "ran" means.
     """
-    return any(
-        rcm_execution.data_test_has_durable_result(item)
-        for item in workspace.data_tests
-    ) or any(
-        rcm_execution.doc_test_has_durable_result(item)
-        for item in _loaded_document_tests(workspace)
-    )
+    return any(_results(workspace).values())
 
 
 def _doc_tests_ran(workspace: Workspace) -> bool | None:
@@ -891,7 +938,7 @@ def _stages(
             # Its place on the ledger, which is the plan's order where the plan
             # has one — see `_positions`.
             "order": order.get(capability),
-            # Which of the five audit phases the row is drawn under. The record
+            # Which of the audit phases the row is drawn under. The record
             # asks `engagement` rather than keeping a second table, so the phase
             # a stage sits in here and the phase the brief previews it in are
             # the same answer.
@@ -935,6 +982,11 @@ def _stages(
                     "label": str(link.get("label") or ""),
                     "destination": str(link.get("destination") or ""),
                     "count": counts.get(link["count"]) if link.get("count") else None,
+                    # What the count is out of, where the two are different
+                    # questions: fieldwork's doors state results over the
+                    # register they ran, and "0" alone beside a programme of 22
+                    # reads as an empty register rather than an unstarted one.
+                    "total": counts.get(link["total"]) if link.get("total") else None,
                     "kind": str(link.get("kind") or "artifact"),
                 }
                 for link in spec.get("links") or ()

@@ -2388,6 +2388,12 @@ export interface EngagementStage {
     label: string
     destination: string
     count: number | null
+    /**
+     * What `count` is out of, where the door counts something other than the
+     * size of what it opens: fieldwork's doors state results over the register
+     * they ran. Null wherever the count is the whole of what is there.
+     */
+    total: number | null
     kind: 'artifact' | 'tool' | string
   }>
   /** Null for a capability the record has no artifact mapping for. */

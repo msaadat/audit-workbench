@@ -249,7 +249,10 @@ def test_no_stage_on_the_default_spine_falls_into_the_catch_all(stub_store):
     assert engagement._UNGROUPED_PHASE not in {phase["id"] for phase in result["phases"]}
 
 
-def test_the_default_spine_groups_into_the_five_audit_phases(stub_store):
+def test_the_default_spine_groups_into_the_four_audit_phases(stub_store):
+    """Reading the documents is part of understanding the sources, not a phase
+    between them and the plan: both halves of what was imported answer the same
+    question, and splitting them drew one engagement as two errands."""
     stub_store([])
     result = engagement_record.record(_Workspace())
     grouped: dict[str, list[str]] = {}
@@ -257,8 +260,9 @@ def test_the_default_spine_groups_into_the_five_audit_phases(stub_store):
         grouped.setdefault(stage["phase"], []).append(stage["capability"])
 
     assert grouped == {
-        "sources": ["sources.imported", "analysis.executed"],
-        "documents": ["documents.analysis_generated"],
+        "sources": [
+            "sources.imported", "analysis.executed", "documents.analysis_generated",
+        ],
         "planning": [
             "planning.apm_ready",
             # The shape of the process, between the memorandum it is read from
@@ -557,6 +561,74 @@ def test_fieldwork_does_not_borrow_the_document_test_registers_size(stub_store):
     assert rows["fieldwork.executed"]["filed"]["count"] is None
     assert rows["fieldwork.executed"]["filed"]["label"] == "Fieldwork results"
     assert rows["doc_tests.executed"]["filed"]["count"] == 0
+
+
+def test_the_test_programme_opens_both_registers_it_is_sized_by(stub_store):
+    """One count over two registers needs a door to each.
+
+    The row is sized by `tests` — data and document tests added together — and
+    had a single door to the data tests, so it stated 3 and opened 2 of them.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        rcm=[{"id": "R1"}],
+        data_tests=[{"id": "T1"}, {"id": "T2"}],
+        doc_tests=[{"id": "D1"}],
+    )
+    row = _rows(engagement_record.record(workspace))["tests.specified"]
+
+    assert row["filed"]["count"] == 3
+    # No door of its own, the way `sources.imported` has none: there is no one
+    # page holding both registers.
+    assert row["filed"]["destination"] == ""
+    assert [(link["label"], link["destination"], link["count"], link["total"])
+            for link in row["links"]] == [
+        ("Data tests", "data-tests", 2, None),
+        ("Document tests", "doc-tests", 1, None),
+    ]
+
+
+def test_the_fieldwork_doors_count_results_rather_than_the_registers_they_open(
+    stub_store,
+):
+    """The row above states how many tests exist; this one states how many have
+    an answer.
+
+    Counting the registers here would put the same figures on both rows and
+    report an engagement that has executed nothing as holding a full set of
+    results — the mistake `filed.count` is already `None` to avoid. The
+    denominator stays so a bare `0` is not read as an empty register.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        rcm=[{"id": "R1"}],
+        data_tests=[_ran({"id": "T1"}), {"id": "T2"}],
+        doc_tests=[{"id": "D1", "status": "ready"}, {"id": "D2", "status": "ready"}],
+    )
+    row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
+
+    assert row["filed"]["count"] is None
+    assert row["filed"]["destination"] == ""
+    assert [(link["label"], link["destination"], link["count"], link["total"])
+            for link in row["links"]] == [
+        ("Data tests", "data-tests", 1, 2),
+        ("Document tests", "doc-tests", 0, 2),
+    ]
+
+
+def test_the_fieldwork_doors_and_its_colour_read_the_same_results(stub_store):
+    """The number the row states and the side of the ledger it is drawn on come
+    from one walk of both registers, so they cannot disagree on screen."""
+    stub_store([])
+    workspace = _Workspace(
+        rcm=[{"id": "R1"}],
+        data_tests=[{"id": "T1"}],
+        doc_tests=[{"id": "D1", "status": "completed"}],
+    )
+    row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
+
+    assert row["held"] is True
+    assert [link["count"] for link in row["links"]] == [0, 1]
 
 
 def _with_documents(root, count, *, analysed=0):

@@ -991,7 +991,8 @@ function phaseNames(group: PhaseGroup): string {
                       :data-kind="link.kind"
                     >
                       <i v-if="link.kind === 'tool'" class="pi pi-wrench" aria-hidden="true" />
-                      {{ link.label }}<b v-if="link.count !== null">{{ link.count }}</b>
+                      {{ link.label }}<b v-if="link.count !== null">{{ link.count
+                      }}<span v-if="link.total" class="of">/{{ link.total }}</span></b>
                     </component>
                   </template>
                 </span>
@@ -1472,6 +1473,12 @@ a.wp:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; bor
   font-size: var(--aw-text-sm); font-weight: 600; text-decoration: none; white-space: nowrap;
 }
 .door b { font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Fieldwork's doors count results over the register they ran. The denominator
+   is drawn back because it belongs to the row above — the programme is what
+   states how many tests exist; this row states how many of them have an
+   answer. An empty register has none to state: "0 of 0" is a ratio over
+   nothing, so the door falls back to the bare count. */
+.door .of { font-weight: 500; opacity: .65; }
 a.door:hover { background: var(--aw-teal-soft); }
 a.door:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
 .door[data-kind='tool'] {

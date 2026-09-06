@@ -1012,9 +1012,11 @@ describe('EngagementRecordTab', () => {
   })
 
   /**
-   * Sources is the head of the chain and the only row that opens two things:
-   * there is no single Sources page, so the doors go to the two catalogues the
-   * engagement actually keeps.
+   * Sources is the head of the chain, and one of the three rows that open two
+   * things: there is no single Sources page, so the doors go to the two
+   * catalogues the engagement actually keeps. The test programme and the
+   * fieldwork results are the other two, for the same reason — the tests live
+   * in two registers.
    */
   it('draws both doors on a row that opens more than one thing', async () => {
     const wrapper = await render([filed({
@@ -1022,8 +1024,8 @@ describe('EngagementRecordTab', () => {
       capability: 'sources.imported',
       filed: { label: 'Sources', destination: '', unit: '', unit_plural: '', count: null },
       links: [
-        { label: 'Documents', destination: 'documents', count: 8, kind: 'artifact' },
-        { label: 'Tables', destination: 'data', count: 6, kind: 'artifact' },
+        { label: 'Documents', destination: 'documents', count: 8, total: null, kind: 'artifact' },
+        { label: 'Tables', destination: 'data', count: 6, total: null, kind: 'artifact' },
       ],
     })])
 
@@ -1036,6 +1038,47 @@ describe('EngagementRecordTab', () => {
   })
 
   /**
+   * Fieldwork ran the registers it did not write, so its doors count results
+   * over what each register holds. The bare numerator would read as an empty
+   * register on a row whose whole point is that the tests exist and have not
+   * been answered yet.
+   */
+  it('states a door counting something other than the size of what it opens', async () => {
+    const wrapper = await render([filed({
+      id: 'stage:fieldwork.executed',
+      capability: 'fieldwork.executed',
+      filed: { label: 'Fieldwork results', destination: '', unit: '', unit_plural: '', count: null },
+      links: [
+        { label: 'Data tests', destination: 'data-tests', count: 12, total: 32, kind: 'artifact' },
+        { label: 'Document tests', destination: 'doc-tests', count: 0, total: 22, kind: 'artifact' },
+      ],
+    })])
+
+    const doors = wrapper.findAll('.door')
+    expect(doors.map(door => door.text())).toEqual(['Data tests12/32', 'Document tests0/22'])
+    expect(doors.map(door => door.attributes('href'))).toEqual(['/data-tests', '/doc-tests'])
+    wrapper.unmount()
+  })
+
+  /** "0 of 0" is a ratio over nothing: an engagement with no document test at
+   *  all has no denominator to state, only the count. */
+  it('drops the denominator on a door whose register is empty', async () => {
+    const wrapper = await render([filed({
+      id: 'stage:fieldwork.executed',
+      capability: 'fieldwork.executed',
+      filed: { label: 'Fieldwork results', destination: '', unit: '', unit_plural: '', count: null },
+      links: [
+        { label: 'Data tests', destination: 'data-tests', count: 15, total: 15, kind: 'artifact' },
+        { label: 'Document tests', destination: 'doc-tests', count: 0, total: 0, kind: 'artifact' },
+      ],
+    })])
+
+    expect(wrapper.findAll('.door').map(door => door.text()))
+      .toEqual(['Data tests15/15', 'Document tests0'])
+    wrapper.unmount()
+  })
+
+  /**
    * A query files nothing, so the record must not draw it in the teal it uses
    * for work the engagement holds — that would be a claim it cannot support.
    */
@@ -1044,7 +1087,7 @@ describe('EngagementRecordTab', () => {
       id: 'stage:analysis.executed',
       capability: 'analysis.executed',
       filed: { label: 'Analysis library', destination: 'analysis', unit: 'analysis', unit_plural: 'analyses', count: 24 },
-      links: [{ label: 'Query', destination: 'query', count: null, kind: 'tool' }],
+      links: [{ label: 'Query', destination: 'query', count: null, total: null, kind: 'tool' }],
     })])
 
     const door = wrapper.find('.door')
