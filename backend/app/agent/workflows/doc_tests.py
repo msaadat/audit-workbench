@@ -39,6 +39,19 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "doc_tests.dispositioned": ("doc_tests.executed",),
 }
 
+# Which capabilities write each artifact an ``invalidate_on`` key names — see
+# ``workflows.audit.BASIS_PRODUCERS`` for what the mapping is for. A test's
+# ``definition`` and the ``evidence`` it reads are both written outside this
+# graph — by the audit lifecycle and by the auditor's import — so no run of
+# this workflow can invalidate them.
+BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
+    "definition": (),
+    "evidence": (),
+    "evaluation": ("doc_tests.executed",),
+    "disposition": ("doc_tests.dispositioned",),
+}
+
+
 # "Run this document test" requests execution.
 FULL_DOC_TEST_OUTCOMES = ["doc_tests.executed"]
 
@@ -64,8 +77,10 @@ def definition_hash() -> str:
     """Hash-identify the authoritative document-test workflow definition.
 
     The hash covers the workflow identity and the full normalized dependency
-    graph, so any edge change, capability addition, or reordering of a
-    capability's dependencies changes the workflow definition hash. Behavior
+    graph and the basis-producer mapping that decides what a run's own writes
+    invalidate, so any edge change, capability addition, reordering of a
+    capability's dependencies, or change to which capability writes a basis
+    changes the workflow definition hash. Behavior
     attached to capability IDs (readiness, workers, executors) is hashed
     separately at the capability level and is intentionally not folded in here.
     """
@@ -76,6 +91,10 @@ def definition_hash() -> str:
             "dependencies": {
                 capability_id: list(deps)
                 for capability_id, deps in DEPENDENCIES.items()
+            },
+            "basis_producers": {
+                key: list(producers)
+                for key, producers in BASIS_PRODUCERS.items()
             },
         }
     )

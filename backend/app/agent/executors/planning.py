@@ -113,6 +113,11 @@ def execute_apm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                 "workflow_basis_sha1": audit_hashes.planning_basis_sha1(
                     fresh
                 ),
+                # The hashes this commit was guarded on, kept on the artifact.
+                # Staleness and commit conflicts then agree by construction:
+                # the memorandum is stale exactly when redrafting it would have
+                # conflicted had the draft been in flight.
+                "workflow_parents": dict(request.expected_parents),
             },
             agent=True,
         )
@@ -293,7 +298,14 @@ def execute_cycle(request: ExecutorRequest, raw_target: object) -> ExecutorResul
         # turn was handed; between the two a type could have been retyped or a
         # table dropped, and this is where that is caught rather than stored.
         fresh.update_planning(
-            {"cycle": {**shape, "agent_run_id": target.run_id, "created_by": "agent"}},
+            {
+                "cycle": {
+                    **shape,
+                    "agent_run_id": target.run_id,
+                    "created_by": "agent",
+                    "workflow_parents": dict(request.expected_parents),
+                }
+            },
             agent=True,
         )
 
@@ -811,7 +823,13 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
 
     def commit(fresh: Workspace) -> list[dict]:
         state["revision_before"] = fresh.revision
-        parent_sha1 = audit_hashes.apm_sha1(fresh)
+        # Both parents the matrix declares, from the same projection the commit
+        # is guarded on. This replaces ``apm_sha1`` as the row stamp: that hash
+        # folded in ``workflow_basis_sha1``, so it moved when a table was
+        # imported and said the matrix was drafted against a memorandum that
+        # had not changed a word.
+        stamps = parent_hashes(fresh, [RCM_PARENT_REF, CYCLE_ARTIFACT_REF])
+        parent_sha1 = stamps[RCM_PARENT_REF]
         outcomes: list[dict] = []
         for spec in rows:
             # Resolved inside the transaction, against the documents as they
@@ -854,6 +872,7 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                             )
                         },
                         "workflow_parent_sha1": parent_sha1,
+                        "workflow_parents": stamps,
                     },
                     agent=True,
                 )
@@ -870,6 +889,7 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                     **spec,
                     "agent_run_id": target.run_id,
                     "workflow_parent_sha1": parent_sha1,
+                    "workflow_parents": stamps,
                 }
             )
             outcomes.append(
@@ -924,7 +944,10 @@ def reconcile_rcm(
                 )
             ),
         )
-    parent_sha1 = audit_hashes.apm_sha1(current)
+    # Both stamps are accepted. Rows committed before the matrix moved onto
+    # parent-ref hashes carry ``apm_sha1``, and an interrupted commit from that
+    # build must still be recognised as applied rather than replayed.
+    accepted_parents = {current_parent, audit_hashes.apm_sha1(current)}
     outcomes: list[dict] = []
     for spec in rows:
         existing, ambiguous = match_rcm_revision(current, spec, spec["semantic_id"])
@@ -950,7 +973,7 @@ def reconcile_rcm(
                 _plain_json(existing.get(key)) == _plain_json(spec.get(key))
                 for key in RCM_ROW_FIELDS
             )
-            and existing.get("workflow_parent_sha1") == parent_sha1
+            and existing.get("workflow_parent_sha1") in accepted_parents
         )
         if not applied:
             return ExecutorReconciliation("not_applied")

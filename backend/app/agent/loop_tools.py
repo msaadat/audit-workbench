@@ -183,9 +183,11 @@ def tool_schemas() -> list[dict]:
         _function(
             "plan_outcomes",
             "Show what running these outcomes would schedule: the stages, how "
-            "many units each would expand into, what is already done and would "
-            "be reused, and what is blocked and why. Reads only; starts "
-            "nothing. Call this before the first run_outcomes.",
+            "many units each would expand into, why each one is scheduled "
+            "(missing, out of date, or being redone because something it reads "
+            "is being rewritten), what is already done and would be reused, and "
+            "what is blocked and why. Reads only; starts nothing. Call this "
+            "before the first run_outcomes.",
             {
                 "type": "object",
                 "properties": {
@@ -485,9 +487,10 @@ class LoopTools:
             },
         )
         registry = audit_capabilities.REGISTRY_BY_WORKFLOW[definition_id]
-        resolved, stages, reused = workflow.materialize(
+        plan = workflow.materialize(
             registry, self.ws, outcomes, scope, generation_mode=mode
         )
+        resolved, stages, reused = plan.resolved, plan.stages, plan.reused
         blocked = []
         for stage in stages:
             readiness = stage.get("readiness_before") or {}
@@ -508,11 +511,20 @@ class LoopTools:
                     "title": stage.get("title"),
                     "units": len(stage.get("units") or []),
                     "readiness_before": stage.get("readiness_before") or {},
+                    # Why this stage is in the plan at all. The loop asks
+                    # before it commits, and "the matrix is being redrafted
+                    # because the memorandum moved" is the answer it needs to
+                    # relay rather than a bare list of stages.
+                    "scheduled_because": stage.get("scheduled_because"),
+                    "scheduled_because_refs": list(
+                        stage.get("scheduled_because_refs") or []
+                    ),
                 }
                 for stage in stages
             ],
             "resolved": list(resolved),
             "reused": list(reused),
+            "reused_details": list(plan.reused_details),
             "blocked": blocked,
             # A stage that expands no units will run and change nothing. It is
             # not an error and it will report success, so it is named here

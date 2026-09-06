@@ -230,15 +230,38 @@ def _count(number: int, singular: str, plural: str | None = None) -> str:
     return f"{number} {singular if number == 1 else (plural or singular + 's')}"
 
 
+#: Parent artifacts a stale capability can name, as they read mid-sentence.
+#: Only artifacts a capability can be stamped against appear here; anything
+#: else falls back to its own ref, humanized.
+_STALE_PARENT_PHRASES: dict[str, str] = {
+    "planning:context": "planning context",
+    "planning:apm": "audit planning memorandum",
+    "planning:cycle": "cycle design",
+}
+
+
+def _parent_phrase(ref: str) -> str:
+    return _STALE_PARENT_PHRASES.get(
+        str(ref), humanize(str(ref).replace(":", "."))
+    )
+
+
 def plan_sentence(
     running_titles: list[str],
     reused_titles: list[str],
     *,
     added_prerequisites: bool = False,
+    stale_titles: list[str] | None = None,
+    stale_parents: list[str] | None = None,
 ) -> str:
     """The opening 'here is what I'll do' line shown on the run card.
 
     Replaces the capability-id listing that used to reach the UI verbatim.
+
+    Stale work is named separately from the rest of the plan. "I'll do the
+    risk and control matrix" is true but says nothing about why an artifact
+    that already exists is being written again, and the auditor who edited the
+    memorandum an hour ago is exactly the reader who needs to be told.
     """
     parts: list[str] = []
     if running_titles:
@@ -247,6 +270,21 @@ def plan_sentence(
         parts.append(f"{prefix}{work}.")
     else:
         parts.append("Everything this needs is already in place.")
+    if stale_titles:
+        subject = _joined([title.strip().lower() for title in stale_titles], "and")
+        single = len(stale_titles) == 1
+        against = _joined(
+            [
+                _parent_phrase(ref)
+                for ref in dict.fromkeys(stale_parents or [])
+            ],
+            "and",
+        )
+        parts.append(
+            f"{_sentence(subject)} {'was' if single else 'were'} drafted against "
+            f"{f'an earlier {against}' if against else 'earlier work'}, so I'll "
+            f"redraft {'it' if single else 'them'}."
+        )
     if reused_titles:
         reuse = _joined([title.strip().lower() for title in reused_titles], "and")
         single = len(reused_titles) == 1

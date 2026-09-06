@@ -78,6 +78,16 @@ AUDIT_CAPABILITY_IDS: tuple[str, ...] = (
     "documents.analysis_generated",
 )
 
+# Which capabilities write each artifact an ``invalidate_on`` key names — see
+# ``workflows.audit.BASIS_PRODUCERS`` for what the mapping is for. Every
+# capability here reads ``documents``, and the generation chain is what writes
+# it; auditor review settles a judgement about an analysis and produces no
+# document artifact anything downstream reads.
+BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
+    "documents": AUDIT_CAPABILITY_IDS,
+}
+
+
 # "Analyze these documents" requests the generated outcome. Auditor review is
 # never requested on the agent's behalf.
 FULL_DOCUMENT_OUTCOMES = [
@@ -108,8 +118,10 @@ def definition_hash() -> str:
     """Hash-identify the authoritative document workflow definition.
 
     The hash covers the workflow identity and the full normalized dependency
-    graph, so any edge change, capability addition, or reordering of a
-    capability's dependencies changes the workflow definition hash. Behavior
+    graph and the basis-producer mapping that decides what a run's own writes
+    invalidate, so any edge change, capability addition, reordering of a
+    capability's dependencies, or change to which capability writes a basis
+    changes the workflow definition hash. Behavior
     attached to capability IDs (readiness, workers, executors) is hashed
     separately at the capability level and is intentionally not folded in here.
     """
@@ -120,6 +132,10 @@ def definition_hash() -> str:
             "dependencies": {
                 capability_id: list(deps)
                 for capability_id, deps in DEPENDENCIES.items()
+            },
+            "basis_producers": {
+                key: list(producers)
+                for key, producers in BASIS_PRODUCERS.items()
             },
         }
     )

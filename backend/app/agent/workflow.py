@@ -6,7 +6,7 @@ import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from ..workspaces import Workspace, WorkspaceError, slugify
 from . import store
@@ -195,8 +195,39 @@ def capability_definition_hash(capability: Capability) -> str:
 
 
 class CapabilityRegistry:
-    def __init__(self) -> None:
+    """A workflow's capabilities, plus which of them write each basis key.
+
+    ``basis_producers`` maps an ``invalidate_on`` key to the capabilities that
+    write the artifact behind it. It is what lets the scheduler stay
+    domain-neutral while still knowing that a run redrafting the memorandum has
+    invalidated the matrix: the audit domain declares the mapping next to its
+    edges (``workflows.audit.BASIS_PRODUCERS``) and hands it here by
+    composition, exactly as it hands over the capabilities themselves.
+    """
+
+    def __init__(
+        self, basis_producers: Mapping[str, Iterable[str]] | None = None
+    ) -> None:
         self._values: dict[str, Capability] = {}
+        self._basis_producers: dict[str, tuple[str, ...]] = {
+            str(key): tuple(str(value) for value in producers)
+            for key, producers in dict(basis_producers or {}).items()
+        }
+
+    @property
+    def basis_producers(self) -> dict[str, tuple[str, ...]]:
+        return dict(self._basis_producers)
+
+    def producers_of(self, key: str) -> tuple[str, ...]:
+        """Capabilities that write the artifact behind one basis key.
+
+        Unknown keys produce nothing rather than raising: composition
+        validation is where an undeclared key is refused, and a registry built
+        without a mapping at all (a test's synthetic graph) must still
+        schedule.
+        """
+
+        return self._basis_producers.get(str(key), ())
 
     def register(self, capability: Capability) -> Capability:
         if capability.id in self._values:
@@ -290,6 +321,34 @@ def new_unit(spec: UnitSpec, capability_id: str) -> dict:
     }
 
 
+#: Why a capability was scheduled rather than reused, recorded on its stage.
+SCHEDULED_BECAUSE = {
+    #: The auditor asked for the work again.
+    "forced",
+    #: Readiness is missing, blocked, or review_required — there is no usable
+    #: artifact to reuse.
+    "not_satisfied",
+    #: A usable artifact exists but was committed against a parent that has
+    #: since moved.
+    "stale",
+    #: A usable artifact exists and its parent has not moved *yet*, because a
+    #: producer of that parent is being rewritten in this same run.
+    "parent_rescheduled",
+}
+#: Currency of a reused artifact, reported on ``reused_capability_details``.
+CURRENCY_STATUSES = {"current", "unstamped", "not_assessed"}
+
+
+@dataclass(frozen=True)
+class Materialization:
+    """The scheduling decision for one closure: what runs, what is reused."""
+
+    resolved: list[str]
+    stages: list[dict]
+    reused: list[str]
+    reused_details: list[dict]
+
+
 def materialize(
     registry: CapabilityRegistry,
     workspace: Workspace,
@@ -297,40 +356,59 @@ def materialize(
     scope: dict | None = None,
     *,
     generation_mode: str = "reuse_existing",
-) -> tuple[list[str], list[dict], list[str]]:
-    """Resolve closure and materialize missing or explicitly forced outcomes.
+) -> Materialization:
+    """Resolve closure and materialize missing, stale, or forced outcomes.
 
     This is where the "action plan" for an audit command comes from — a
     dependency closure plus deterministic readiness, not a model. Walking the
     closure in topological order lets each decision see what earlier
     capabilities already scheduled.
+
+    Under ``reuse_existing`` a satisfied capability is redone for exactly two
+    reasons, and ``depends_on`` is neither of them. Either its own readiness
+    says ``stale`` — it carries a parent stamp that no longer matches the
+    artifact it was committed against — or a *producer* of one of the parents
+    it declares in ``invalidate_on`` is being rewritten in this same run, so
+    the stamp that is current now will not be by the time this capability's
+    turn comes. Depending is not reading: the planning chain depends on the
+    documents so it runs *after* them, and a newly imported document is not a
+    reason to redraft a memorandum that never mentioned one.
     """
     scope = dict(scope or {})
     mode = normalize_generation_mode(generation_mode)
     resolved = registry.closure(requested_outcomes)
     stages: list[dict] = []
     reused: list[str] = []
+    reused_details: list[dict] = []
     scheduled: set[str] = set()
     for capability_id in resolved:
         capability = registry.get(capability_id)
         readiness = capability.readiness(workspace, scope)
-        # A legacy stale signal describes currency, not structural usability.
-        # The target scheduler never turns that signal into automatic work.
-        # Committed usable output is reused unless the auditor explicitly
-        # requested force; currency is deliberately reported as not assessed.
-        dependency_will_materialize = any(
-            dependency in scheduled for dependency in capability.depends_on
+        # Producers of this capability's declared parents that this run is
+        # already rewriting. Ordered and de-duplicated so the recorded reason
+        # reads the same on every resolution of the same closure.
+        invalidated_by = tuple(
+            dict.fromkeys(
+                producer
+                for key in capability.invalidate_on
+                for producer in registry.producers_of(key)
+                if producer in scheduled
+            )
         )
-        if mode == "reuse_existing" and (
-            readiness.state == "stale"
-            or (readiness.satisfied and not dependency_will_materialize)
-        ):
+        if mode == "reuse_existing" and readiness.satisfied and not invalidated_by:
             reused.append(capability_id)
+            reused_details.append(
+                {
+                    "capability": capability_id,
+                    "currency_status": _currency_status(readiness),
+                }
+            )
             continue
         # Fan the capability out into concrete units against the *current*
         # workspace. Unit ids are semantic (semantic_unit_id), so re-expanding
         # after a resume produces the same ids and the same work.
         specs = capability.expand_units(workspace, scope)
+        because, because_refs = _scheduled_because(mode, readiness, invalidated_by)
         stages.append(
             {
                 "id": capability.stage_id,
@@ -340,10 +418,38 @@ def materialize(
                 "barrier": capability.barrier,
                 "units": [new_unit(spec, capability.id) for spec in specs],
                 "readiness_before": readiness.payload(),
+                "scheduled_because": because,
+                "scheduled_because_refs": list(because_refs),
             }
         )
         scheduled.add(capability_id)
-    return resolved, stages, reused
+    return Materialization(resolved, stages, reused, reused_details)
+
+
+def _currency_status(readiness: Readiness) -> str:
+    """How the reused artifact answered the currency question, if it was asked.
+
+    Most capabilities do not carry a parent stamp and never will — nothing
+    produces the sources they read — so ``not_assessed`` remains the honest
+    default rather than a claim of freshness nobody checked.
+    """
+
+    value = str(readiness.details.get("currency") or "not_assessed")
+    return value if value in CURRENCY_STATUSES else "not_assessed"
+
+
+def _scheduled_because(
+    mode: str, readiness: Readiness, invalidated_by: tuple[str, ...]
+) -> tuple[str, tuple[str, ...]]:
+    if mode == "force":
+        return "forced", ()
+    if readiness.state == "stale":
+        return "stale", tuple(
+            str(ref) for ref in readiness.details.get("moved") or ()
+        )
+    if not readiness.satisfied:
+        return "not_satisfied", ()
+    return "parent_rescheduled", invalidated_by
 
 
 def recovery(workflow: dict) -> None:

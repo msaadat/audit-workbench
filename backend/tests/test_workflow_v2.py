@@ -394,7 +394,7 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "analysis.summarized": ("analysis.executed",),
         "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
         "planning.apm_ready": ("planning.context_ready",),
-        "planning.change_assessed": (),
+        "planning.change_assessed": ("planning.apm_ready", "planning.rcm_ready"),
         "planning.cycle_ready": (
             "planning.apm_ready",
             "sources.imported",
@@ -501,12 +501,13 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
 
 def test_partial_goal_prunes_current_prerequisites():
     ws = _planning_workspace()
-    resolved, stages, reused = workflow.materialize(
+    plan = workflow.materialize(
         audit_capabilities.REGISTRY,
         ws,
         ["tests.specified"],
         {"target_refs": ["workspace:current"]},
     )
+    resolved, stages, reused = plan.resolved, plan.stages, plan.reused
 
     assert resolved == [
         "sources.imported",
@@ -561,7 +562,7 @@ def test_repeated_materialization_preserves_semantic_unit_identity():
     )
 
     def identities(materialized):
-        _resolved, stages, _reused = materialized
+        stages = materialized.stages
         return [
             (
                 stage["capability"],
@@ -1405,9 +1406,13 @@ def test_reused_apm_artifact_does_not_run_context_selection():
 
     assert command.run["status"] == "completed"
     assert "planning.apm_ready" in command.run["workflow"]["reused_capabilities"]
+    # ``unstamped``, not ``current``: this memorandum was written straight into
+    # the fixture rather than committed by the executor, so it carries no record
+    # of what it was drafted against. That is reported rather than guessed at,
+    # and it is never a reason to redraft.
     assert {
         "capability": "planning.apm_ready",
-        "currency_status": "not_assessed",
+        "currency_status": "unstamped",
     } in command.run["workflow"]["reused_capability_details"]
 
 
@@ -2049,10 +2054,12 @@ def test_document_qa_expands_per_document_and_merges_in_attachment_order():
 
 
 def test_output_readiness_is_existence_structural_and_not_currency():
-    # P7.2A: readiness reports existence and structural usability only. Changing
-    # an output's source parents does not make an existing, structurally usable
-    # output "stale"; currency is not assessed by the framework. The auditor
-    # forces regeneration when changed sources warrant it.
+    # Working papers and the report carry no parent stamp, so for them readiness
+    # is still existence and structural usability only: changing an output's
+    # sources does not make an existing, usable output "stale", and the auditor
+    # forces regeneration when changed sources warrant it. The planning chain is
+    # the exception and says so through its own stamps — see the two tests
+    # below.
     ws = _planning_workspace("Output invalidation")
     row_id = ws.rcm[0]["id"]
     working_papers.generate_rcm(ws, row_id)
@@ -2068,6 +2075,172 @@ def test_output_readiness_is_existence_structural_and_not_currency():
     # satisfied — no "stale" state is produced by the audit declarations.
     for outcome in ("working_papers.generated", "report.working_draft"):
         assert audit_capabilities.REGISTRY.get(outcome).readiness(ws, {}).state == "satisfied"
+
+
+PLANNING_CAPABILITIES = (
+    "planning.context_ready",
+    "planning.apm_ready",
+    "planning.cycle_ready",
+    "planning.rcm_ready",
+)
+
+
+def _stamp_planning_parents(ws: workspaces.Workspace) -> workspaces.Workspace:
+    """Stamp the planning chain the way its executors do on commit.
+
+    A fixture writes planning straight into the workspace, which leaves every
+    artifact unstamped — honest, and deliberately never a reason to redraft.
+    These tests are about what a *committed* chain does, so they record the same
+    parent hashes the executors record, in the same order: the memorandum first,
+    because stamping it bumps ``planning["updated"]`` and so moves the very hash
+    the cycle is about to be stamped against.
+    """
+
+    ws.update_planning(
+        {"workflow_parents": parent_hashes(ws, ["planning:context"])}, agent=True
+    )
+    ws = workspaces.load_workspace(ws.id)
+    ws.update_planning(
+        {
+            "cycle": {
+                **ws.planning["cycle"],
+                "workflow_parents": parent_hashes(ws, ["planning:apm"]),
+            }
+        },
+        agent=True,
+    )
+    ws = workspaces.load_workspace(ws.id)
+    parents = parent_hashes(ws, ["planning:apm", "planning:cycle"])
+    for row in list(ws.rcm):
+        ws.update_rcm(row["id"], {"workflow_parents": parents}, agent=True)
+    return workspaces.load_workspace(ws.id)
+
+
+def _readiness(ws: workspaces.Workspace, capability_id: str):
+    return audit_capabilities.REGISTRY.get(capability_id).readiness(ws, {})
+
+
+def test_an_imported_document_leaves_settled_planning_alone():
+    """The cascade this fixes: one import used to redraft the whole chain.
+
+    Planning depends on the documents so that it runs *after* them. It does not
+    read them as a declared parent, so a document arriving is not a reason to
+    rewrite a memorandum that never mentioned one — and every planning outcome
+    stays reused with not one unit expanded.
+    """
+
+    ws = _planning_workspace("Import leaves planning alone")
+    documents.add_document(
+        ws,
+        "Procurement Policy.txt",
+        b"Purchases above 10,000 require documented approval.",
+        category="policy",
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    plan = workflow.materialize(
+        audit_capabilities.REGISTRY,
+        ws,
+        ["planning.rcm_ready"],
+        {"target_refs": ["workspace:current"]},
+    )
+
+    assert set(PLANNING_CAPABILITIES) <= set(plan.reused)
+    assert [
+        stage["capability"]
+        for stage in plan.stages
+        if stage["capability"].startswith("planning.")
+    ] == []
+    # The documents themselves are exactly what does run.
+    assert any(
+        stage["capability"].startswith("documents.") for stage in plan.stages
+    )
+
+
+def test_a_memorandum_edit_stales_the_cycle_and_matrix_and_an_import_does_not():
+    ws = _stamp_planning_parents(_planning_workspace("Memorandum currency"))
+
+    for capability_id in PLANNING_CAPABILITIES:
+        assert _readiness(ws, capability_id).state == "satisfied", capability_id
+
+    # A source arriving moves no parent either artifact declares.
+    ws.add_table("vendors.csv", b"id,vendor\nV1,Acme\n")
+    documents.add_document(
+        ws, "Board minutes.txt", b"The board approved the payments policy.",
+        category="minutes",
+    )
+    ws = workspaces.load_workspace(ws.id)
+    for capability_id in PLANNING_CAPABILITIES:
+        assert _readiness(ws, capability_id).state == "satisfied", capability_id
+
+    # The auditor rewrites the memorandum. Now both artifacts read *out of* it
+    # say so, and name what moved.
+    ws.update_planning(
+        {"apm_markdown": "# A different memorandum\n\n## Scope\nPayroll."}
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    cycle = _readiness(ws, "planning.cycle_ready")
+    matrix = _readiness(ws, "planning.rcm_ready")
+    assert cycle.state == "stale"
+    assert cycle.details["moved"] == ["planning:apm"]
+    assert matrix.state == "stale"
+    assert matrix.details["moved"] == ["planning:apm"]
+    # The memorandum itself is what the auditor wrote, and stays.
+    assert _readiness(ws, "planning.apm_ready").state == "satisfied"
+
+
+def test_a_stale_cycle_and_matrix_are_scheduled_and_the_memorandum_is_reused():
+    ws = _stamp_planning_parents(_planning_workspace("Stale scheduling"))
+    ws.update_planning(
+        {"apm_markdown": "# A different memorandum\n\n## Scope\nPayroll."}
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    plan = workflow.materialize(
+        audit_capabilities.REGISTRY,
+        ws,
+        ["tests.specified"],
+        {"target_refs": ["workspace:current"]},
+    )
+
+    scheduled = {
+        stage["capability"]: stage.get("scheduled_because") for stage in plan.stages
+    }
+    assert scheduled["planning.cycle_ready"] == "stale"
+    # The matrix is stale in its own right, and would have been scheduled by the
+    # cycle anyway; the reason recorded is the stronger one.
+    assert scheduled["planning.rcm_ready"] == "stale"
+    assert "planning.apm_ready" in plan.reused
+    assert "planning.context_ready" in plan.reused
+
+    explanation = routing._explanation(
+        audit_capabilities.REGISTRY,
+        plan.resolved,
+        plan.stages,
+        plan.reused,
+        ["tests.specified"],
+    )
+    assert (
+        "were drafted against an earlier audit planning memorandum, so I'll "
+        "redraft them" in explanation
+    )
+
+
+def test_forcing_the_memorandum_still_redrafts_the_whole_closure():
+    ws = _stamp_planning_parents(_planning_workspace("Forced closure"))
+
+    plan = workflow.materialize(
+        audit_capabilities.REGISTRY,
+        ws,
+        ["planning.apm_ready"],
+        {"target_refs": ["workspace:current"]},
+        generation_mode="force",
+    )
+
+    assert plan.reused == []
+    assert [stage["capability"] for stage in plan.stages] == plan.resolved
+    assert {stage["scheduled_because"] for stage in plan.stages} == {"forced"}
 
 
 def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypatch):

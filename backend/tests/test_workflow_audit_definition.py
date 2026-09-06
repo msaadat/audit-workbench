@@ -43,7 +43,7 @@ EXPECTED_DEPENDENCIES = {
     "analysis.summarized": ("analysis.executed",),
     "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
     "planning.apm_ready": ("planning.context_ready",),
-    "planning.change_assessed": (),
+    "planning.change_assessed": ("planning.apm_ready", "planning.rcm_ready"),
     "planning.cycle_ready": (
         "planning.apm_ready",
         "sources.imported",

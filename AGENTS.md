@@ -987,8 +987,14 @@ npm run build
   `transaction_cycle` comparisons name, else a weighted lexical match over type
   name, discriminator and field labels, else every type. Scoping is what makes
   the trade pay where documents do not collapse into a few types; unscoped it
-  cost more than it saved on a 1:1 engagement. `documents.schemas_stamped` was
-  already in `tests.specified`'s dependency closure, so no edge was added.
+  cost more than it saved on a 1:1 engagement. The source also moved to
+  `documents.lexical_retained`: the ordinary lexical selector *filters*, and an
+  identity-only candidate matches almost nothing, so it dropped 50 of 60
+  evidence documents and left units able to name a policy and not one voucher.
+  Retaining them raised evidence coverage above where it started — 56 documents
+  to 80 on the treasury engagement, because the same budget now buys population
+  instead of repetition. `documents.schemas_stamped` was already in
+  `tests.specified`'s dependency closure, so no edge was added.
   Details and the measured per-workspace effect are in
   [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md).
 - The matrix is written against a **cycle**, and its transaction-cycle evidence

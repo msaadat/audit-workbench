@@ -7,21 +7,28 @@ rather than being duplicated per group.
 The material artifact hashes below are the audit domain's provenance identities.
 Registered executors stamp them on committed artifacts (``workflow_parent_sha1``,
 ``workflow_basis_sha1``) and compare them during interrupted-commit
-reconciliation. They deliberately do **not** drive readiness or scheduling:
-readiness is existence and structural usability only, and the auditor decides
-when to regenerate.
+reconciliation.
+
+``currency`` is the one that *does* drive scheduling, and it is deliberately not
+one of them: it re-computes ``parent_hashes`` — the same projection the commit
+was guarded on — and compares it to the ``workflow_parents`` the executor
+stamped. An artifact is stale exactly when redrafting it would have conflicted
+had the draft been in flight. Everything else stays existence and structural
+usability, and the auditor decides when to regenerate.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ... import methodology
+from ...artifact_hashes import parent_hashes
 from ...workspaces import Workspace
-from ..workflow import UnitSpec, canonical_sha1
+from ..workflow import Readiness, UnitSpec, canonical_sha1
 
 
-# Mirrors ``workspace_transactions._RCM_MATERIAL_FIELDS``, including its
+# Mirrors ``artifact_hashes._RCM_MATERIAL_FIELDS``, including its
 # omission of ``review_status``: sign-off says who has read the row, not what
 # the row asserts, so it must not invalidate work generated from the row's
 # risk-and-control definition.
@@ -86,6 +93,70 @@ def apm_sha1(workspace: Workspace) -> str:
 
 def rcm_row_sha1(row: dict) -> str:
     return canonical_sha1(_rcm_material_projection(row))
+
+
+# --------------------------------------------------------------------------- #
+# Currency: has a committed artifact's declared parent moved since?
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Currency:
+    """What an artifact's own parent stamp says about its currency.
+
+    ``current`` — every stamped parent still hashes to what it hashed to when
+    the artifact was committed. ``stale`` — at least one has moved, and
+    ``moved`` names them. ``unstamped`` — the artifact carries no stamp, which
+    is what every artifact committed before stamping existed looks like; those
+    are treated as current and never redone by inference, because "we cannot
+    tell" is not evidence that something is wrong.
+    """
+
+    state: str
+    moved: tuple[str, ...] = ()
+
+    @property
+    def stale(self) -> bool:
+        return self.state == "stale"
+
+    @property
+    def details(self) -> dict:
+        return {
+            "currency": self.state,
+            **({"moved": list(self.moved)} if self.moved else {}),
+        }
+
+
+def currency(workspace: Workspace, stamp: Mapping[str, str] | None) -> Currency:
+    """Compare an artifact's stamped parents against the workspace's now.
+
+    The stamp is written by the executor from the very ``parent_hashes`` call
+    its commit was guarded on, so staleness and commit conflicts agree by
+    construction: an artifact is stale exactly when re-running its producer
+    would have conflicted had it been in flight.
+    """
+
+    parents = {
+        str(ref): str(value)
+        for ref, value in dict(stamp or {}).items()
+        if str(ref).strip()
+    }
+    if not parents:
+        return Currency("unstamped")
+    now = parent_hashes(workspace, list(parents))
+    moved = tuple(ref for ref, value in parents.items() if now.get(ref) != value)
+    return Currency("stale", moved) if moved else Currency("current")
+
+
+def with_currency(readiness: Readiness, state: Currency) -> Readiness:
+    """Fold a currency verdict into an otherwise-satisfied readiness."""
+
+    if state.stale:
+        raise ValueError("A stale artifact cannot report satisfied readiness.")
+    return Readiness(
+        readiness.state,
+        readiness.reasons,
+        readiness.blocking_on,
+        {**readiness.details, **state.details},
+    )
 
 
 

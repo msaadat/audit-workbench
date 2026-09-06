@@ -795,6 +795,41 @@ def test_plan_sentence_reads_as_prose():
     assert not re.search(r"[a-z_]+\.[a-z_]+", text)
 
 
+def test_plan_sentence_says_why_settled_work_is_being_redrafted():
+    """Rework the auditor did not ask for has to explain itself.
+
+    "I'll do the risk and control matrix" is true and useless next to an
+    artifact that already exists: the reader edited the memorandum an hour ago
+    and is owed the connection.
+    """
+
+    text = narration.plan_sentence(
+        ["Cycle design", "Risk and control matrix"],
+        ["Audit planning memorandum"],
+        stale_titles=["Risk and control matrix"],
+        stale_parents=["planning:apm"],
+    )
+
+    assert (
+        "Risk and control matrix was drafted against an earlier audit planning "
+        "memorandum, so I'll redraft it." in text
+    )
+    assert "Audit planning memorandum is already done" in text
+    assert not re.search(r"[a-z_]+\.[a-z_]+", text)
+
+
+def test_plan_sentence_names_an_unlabelled_parent_without_leaking_its_ref():
+    text = narration.plan_sentence(
+        ["Executable test specifications"],
+        [],
+        stale_titles=["Executable test specifications"],
+        stale_parents=["rcm:RCM-01"],
+    )
+
+    assert "so I'll redraft it." in text
+    assert "rcm:RCM-01" not in text
+
+
 # --------------------------------------------------------------------------- #
 # Context notes: which sources a step read, and which it declined
 # --------------------------------------------------------------------------- #

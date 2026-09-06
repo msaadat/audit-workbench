@@ -160,8 +160,8 @@ def grouped_analysis_capability_ids() -> tuple[str, ...]:
     return _group_ids(ANALYSIS_CAPABILITY_GROUPS)
 
 
-def _build_registry(groups: tuple) -> CapabilityRegistry:
-    registry = CapabilityRegistry()
+def _build_registry(groups: tuple, basis_producers: dict) -> CapabilityRegistry:
+    registry = CapabilityRegistry(basis_producers)
     for group in groups:
         for capability in group.capabilities():
             registry.register(capability)
@@ -171,25 +171,31 @@ def _build_registry(groups: tuple) -> CapabilityRegistry:
 def build_audit_registry() -> CapabilityRegistry:
     """Compose the audit capability registry from the grouped modules."""
 
-    return _build_registry(CAPABILITY_GROUPS)
+    return _build_registry(CAPABILITY_GROUPS, audit_workflow.BASIS_PRODUCERS)
 
 
 def build_analysis_registry() -> CapabilityRegistry:
     """Compose the analysis capability registry from the grouped modules."""
 
-    return _build_registry(ANALYSIS_CAPABILITY_GROUPS)
+    return _build_registry(
+        ANALYSIS_CAPABILITY_GROUPS, analysis_workflow.BASIS_PRODUCERS
+    )
 
 
 def build_documents_registry() -> CapabilityRegistry:
     """Compose the document capability registry from the grouped modules."""
 
-    return _build_registry(DOCUMENT_CAPABILITY_GROUPS)
+    return _build_registry(
+        DOCUMENT_CAPABILITY_GROUPS, documents_workflow.BASIS_PRODUCERS
+    )
 
 
 def build_doc_tests_registry() -> CapabilityRegistry:
     """Compose the document-test capability registry from the grouped modules."""
 
-    return _build_registry(DOC_TEST_CAPABILITY_GROUPS)
+    return _build_registry(
+        DOC_TEST_CAPABILITY_GROUPS, doc_tests_workflow.BASIS_PRODUCERS
+    )
 
 
 def _registered_preset_ids() -> frozenset[str]:
@@ -209,8 +215,10 @@ def validate_composition(
     Checks that the grouped modules partition the graph exactly once, that the
     composed registry declares precisely the authoritative capabilities with the
     authoritative edges, that the dependency closure is acyclic, that every
-    declared context preset is registered, and — when supplied — that an
-    execution binding exists for each capability.
+    declared ``invalidate_on`` key names a basis the graph maps to producers,
+    that every producer is a registered capability, that every declared context
+    preset is registered, and — when supplied — that an execution binding exists
+    for each capability.
     """
 
     authoritative_ids = frozenset(dependencies)
@@ -251,6 +259,35 @@ def validate_composition(
 
     # Acyclicity: closure over every capability raises on a dependency cycle.
     registry.closure(declared)
+
+    # The invalidation model, checked in both directions. A key with no entry
+    # in the graph's ``BASIS_PRODUCERS`` would silently never invalidate
+    # anything, which is precisely the decorative ``invalidate_on`` this
+    # validation exists to prevent from coming back; a producer naming a
+    # capability this graph does not register would silently never fire.
+    producers = registry.basis_producers
+    for capability in registry.all():
+        undeclared = [
+            key for key in capability.invalidate_on if key not in producers
+        ]
+        if undeclared:
+            raise AuditCompositionError(
+                f"Capability '{capability.id}' declares invalidate_on key "
+                f"'{undeclared[0]}', which the {label} graph maps to no "
+                "producer. Add it to BASIS_PRODUCERS, with an empty tuple if "
+                "nothing in this graph writes it."
+            )
+    for key, capability_ids in sorted(producers.items()):
+        unknown = [
+            capability_id
+            for capability_id in capability_ids
+            if capability_id not in declared_set
+        ]
+        if unknown:
+            raise AuditCompositionError(
+                f"Basis '{key}' names producer '{unknown[0]}', which is not a "
+                f"registered {label} capability."
+            )
 
     known_presets = _registered_preset_ids()
     for capability in registry.all():

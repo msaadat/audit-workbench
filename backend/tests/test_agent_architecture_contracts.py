@@ -107,7 +107,7 @@ def test_composition_rejects_missing_bindings_and_unknown_context_presets():
         else capability
         for capability in capabilities.REGISTRY.all()
     ]
-    registry = CapabilityRegistry()
+    registry = CapabilityRegistry(audit_workflow.BASIS_PRODUCERS)
     for capability in altered:
         registry.register(capability)
     with pytest.raises(capabilities.AuditCompositionError, match="does.not.exist"):

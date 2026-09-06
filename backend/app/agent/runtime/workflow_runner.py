@@ -332,7 +332,7 @@ class WorkflowRunner:
         """Install a deterministic capability closure on the durable run."""
 
         normalized_scope = dict(scope or {})
-        resolved, stages, reused = workflow.materialize(
+        plan = workflow.materialize(
             self.registry,
             self.subject,
             list(requested_outcomes),
@@ -342,18 +342,16 @@ class WorkflowRunner:
         state = {
             "id": workflow_id,
             "requested_outcomes": list(requested_outcomes),
-            "resolved_outcomes": resolved,
+            "resolved_outcomes": plan.resolved,
             "scope": normalized_scope,
             "generation_mode": workflow.normalize_generation_mode(generation_mode),
-            "reused_outcomes": reused,
-            "reused_outcome_details": [
-                {
-                    "capability": capability_id,
-                    "currency_status": "not_assessed",
-                }
-                for capability_id in reused
-            ],
-            "stages": stages,
+            # One name for reuse across every path that materializes a graph:
+            # the audit route wrote ``reused_capabilities`` and this one wrote
+            # ``reused_outcomes`` for the same list, and the UI only ever read
+            # the first.
+            "reused_capabilities": plan.reused,
+            "reused_capability_details": plan.reused_details,
+            "stages": plan.stages,
             "next_outcomes": [],
         }
         self.run["workflow"] = state

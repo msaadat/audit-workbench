@@ -277,7 +277,13 @@ def test_rcm_executor_creates_rows_with_parent_hash_and_receipt_postcondition():
     created = rows[0]
     assert created["created_by"] == "agent"
     assert created["agent_run_id"] == "run-rcm"
-    assert created["workflow_parent_sha1"] == audit_capabilities.apm_sha1(target.workspace)
+    # The row's stamp is the memorandum's *artifact* hash — the same identity
+    # the commit was guarded on, and the same one readiness re-computes. It was
+    # ``apm_sha1`` once, which folded in the planning basis and so moved when a
+    # table was imported without the memorandum changing a word.
+    parents = parent_hashes(target.workspace, [RCM_PARENT_REF, "planning:cycle"])
+    assert created["workflow_parent_sha1"] == parents[RCM_PARENT_REF]
+    assert created["workflow_parents"] == parents
     assert receipt.artifact_refs == (f"rcm:{created['id']}",)
     assert receipt.postcondition_hashes == parent_hashes(
         target.workspace, [f"rcm:{created['id']}"]

@@ -29,7 +29,7 @@ def _sha256() -> str:
 
 
 def _registry_of(capabilities_list) -> CapabilityRegistry:
-    registry = CapabilityRegistry()
+    registry = CapabilityRegistry(audit_workflow.BASIS_PRODUCERS)
     for capability in capabilities_list:
         registry.register(capability)
     return registry
@@ -351,3 +351,50 @@ def test_only_independent_non_committing_unit_expansions_declare_the_parallel_ba
         "tests.specified",
         "tests.promoted_from_analysis",
     }
+
+
+def test_an_invalidate_on_key_with_no_declared_producer_fails_startup():
+    """The check that stops ``invalidate_on`` from going decorative again.
+
+    A key nothing maps to producers would silently never invalidate anything,
+    which is exactly the state the field was in before it drove scheduling: a
+    declaration that looked like the invalidation model and did nothing.
+    """
+
+    tampered = [
+        dataclasses.replace(
+            capability, invalidate_on=(*capability.invalidate_on, "not:a:basis")
+        )
+        if capability.id == "planning.rcm_ready"
+        else capability
+        for capability in capabilities.REGISTRY.all()
+    ]
+    with pytest.raises(capabilities.AuditCompositionError, match="not:a:basis"):
+        capabilities.validate_audit_composition(_registry_of(tampered))
+
+
+def test_a_basis_producer_that_is_not_a_registered_capability_fails_startup():
+    registry = CapabilityRegistry(
+        {
+            **audit_workflow.BASIS_PRODUCERS,
+            "rcm": ("planning.rcm_ready", "planning.renamed_away"),
+        }
+    )
+    for capability in capabilities.REGISTRY.all():
+        registry.register(capability)
+    with pytest.raises(
+        capabilities.AuditCompositionError, match="planning.renamed_away"
+    ):
+        capabilities.validate_audit_composition(registry)
+
+
+def test_every_graph_maps_every_basis_its_capabilities_read():
+    """The live compositions already satisfy the rule the two tests above pin."""
+
+    for registry in capabilities.REGISTRY_BY_WORKFLOW.values():
+        declared = {capability.id for capability in registry.all()}
+        mapped = registry.basis_producers
+        for capability in registry.all():
+            for key in capability.invalidate_on:
+                assert key in mapped, (capability.id, key)
+                assert set(mapped[key]) <= declared, (capability.id, key)

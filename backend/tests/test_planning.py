@@ -432,13 +432,27 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
     ]
 
     # Partial, not failed — which is the same point the checkpoint assertions
-    # below make: this run committed an APM and an RCM before it stopped.
+    # below make: this run committed a cycle and an RCM before it stopped.
     assert completed["status"] == "completed_with_failures"
     assert any(unit["kind"] == "test_generation" and unit["status"] == "failed" for unit in units)
-    # The APM and RCM this run committed before the failure are checkpoints: a
-    # later failed stage never rolls them back, and the auditor's own row
-    # survives untouched alongside them.
-    assert reloaded.planning["apm_markdown"].startswith("# Audit Planning Memorandum")
+    # The memorandum is not one of the things this run wrote. It is settled, and
+    # the new document is a *source* rather than a parent it declares, so a run
+    # that reaches past it hands it on exactly as the auditor left it.
+    assert reloaded.planning["apm_markdown"] == "# Original APM"
+    assert "planning.apm_ready" in completed["workflow"]["reused_capabilities"]
+    # The matrix is redrafted, and for a reason it declares: this engagement had
+    # no cycle, the cycle is being designed in this run, and the matrix names
+    # ``planning:cycle`` in ``invalidate_on``.
+    matrix = next(
+        stage
+        for stage in completed["workflow"]["stages"]
+        if stage["capability"] == "planning.rcm_ready"
+    )
+    assert matrix["scheduled_because"] == "parent_rescheduled"
+    assert matrix["scheduled_because_refs"] == ["planning.cycle_ready"]
+    # The RCM this run committed before the failure is a checkpoint: a later
+    # failed stage never rolls it back, and the auditor's own row survives
+    # untouched alongside it.
     assert any(row["control"] == "Purchases require approval" for row in reloaded.rcm)
     assert all(row["test_refs"] == [] for row in reloaded.rcm)
 
@@ -1315,9 +1329,13 @@ def test_the_matrix_takes_its_process_names_from_the_cycle(monkeypatch):
 
 
 def test_a_cycle_current_with_the_memorandum_is_not_redesigned(monkeypatch):
-    """Readiness is currency here, unlike every other planning capability: the
-    shape is a reading *of* the memorandum, so it is stale exactly when the
-    memorandum has moved and current otherwise."""
+    """The shape is a reading *of* the memorandum, so it is stale exactly when
+    the memorandum has moved and current otherwise.
+
+    This cycle carries no ``workflow_parents`` — it was written straight to the
+    workspace, as every cycle committed before parents were stamped was — so
+    the answer comes from the ``apm_sha1`` fallback, which is the whole point
+    of keeping it."""
 
     from app.agent.capabilities.planning import _cycle_ready
 
@@ -1343,4 +1361,9 @@ def test_a_cycle_current_with_the_memorandum_is_not_redesigned(monkeypatch):
 
     ws = workspaces.load_workspace(ws.id)
     ws.update_planning({"apm_markdown": "# A different memorandum"}, agent=True)
-    assert _cycle_ready(workspaces.load_workspace(ws.id), {}).state == "missing"
+    outdated = _cycle_ready(workspaces.load_workspace(ws.id), {})
+    # ``stale``, not ``missing``: a shape describing the wrong process is not an
+    # absent shape, and the scheduler now has a state that says so and redraws
+    # it for that reason.
+    assert outdated.state == "stale"
+    assert outdated.details["moved"] == ["planning:apm"]

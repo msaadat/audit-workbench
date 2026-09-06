@@ -29,7 +29,7 @@ there. It sits in three places the document does not foreground:
 
 1. **Invalidation is implicit.** The rule that decides when existing work is
    redone is a side effect of materialization order, not a declaration, and
-   the codebase has already had to route around it.
+   the codebase has already had to route around it. **Fixed — see §3.1.**
 2. **The architecture lives in the adapters.** The glue between the graph and
    the workspace is roughly seven times the size of the scheduler, is split
    across three execution adapters that share one workspace object by manual
@@ -64,29 +64,35 @@ there. It sits in three places the document does not foreground:
 
 Ordered by how much they matter.
 
-### 3.1 Invalidation is implicit and cascades
+### 3.1 Invalidation is implicit and cascades — **fixed**
 
-`workflow.materialize` reschedules any *satisfied* capability whose dependency
-is being materialized in the same run (`dependency_will_materialize`,
-`backend/app/agent/workflow.py`). Every planning capability expands one unit
-unconditionally (`_shared.single_unit`). Together that means: import one
-document, ask for any lifecycle outcome, and `documents.text_ready` goes
-missing, which schedules `categorized`, which schedules the analysis chain,
-which schedules `planning.context_ready`, then `apm_ready`, `cycle_ready`, and
-`rcm_ready`, each redrafted, with the auditor-edit conflict path
-(`awaiting_confirmation`) as the only backstop. An unedited memorandum is
-silently rewritten.
+*Was:* `workflow.materialize` rescheduled any *satisfied* capability whose
+dependency was being materialized in the same run
+(`dependency_will_materialize`, `backend/app/agent/workflow.py`). Every planning
+capability expands one unit unconditionally (`_shared.single_unit`). Together
+that meant: import one document, ask for any lifecycle outcome, and
+`documents.text_ready` went missing, which scheduled `categorized`, which
+scheduled the analysis chain, which scheduled `planning.context_ready`, then
+`apm_ready`, `cycle_ready`, and `rcm_ready`, each redrafted, with the
+auditor-edit conflict path (`awaiting_confirmation`) as the only backstop. An
+unedited memorandum was silently rewritten. `Capability.invalidate_on` was
+declared on every capability and read nowhere except
+`capability_definition_hash` — the field that looked like the invalidation
+model was documentation. `planning.change_assessed` declared **no edges**
+precisely to escape it.
 
-`Capability.invalidate_on` is declared on every capability and read nowhere
-except `capability_definition_hash`. The field that looks like the invalidation
-model is documentation.
-
-The codebase has already collided with this. `planning.change_assessed`
-declares **no edges** precisely so that asking "does this new evidence change
-the memorandum?" does not rewrite the memorandum first; its comment in
-`workflows/audit.py` says so. A capability that must omit its true
-dependencies to be usable is the signal that the invalidation model is
-missing, not that the capability is odd.
+*Now:* `depends_on` orders and blocks; it never causes rework. Under
+`reuse_existing` a satisfied capability is redone only when a producer of a
+basis it declares in `invalidate_on` is scheduled in the same run, or when its
+own readiness returns `stale` — which the planning chain does by comparing the
+`workflow_parents` its executor stamped inside the guarded commit against
+`parent_hashes` now. `workflows/<graph>.py:BASIS_PRODUCERS` maps each basis to
+its producers, startup validation refuses an unmapped key or an unregistered
+producer, and every scheduled stage records `scheduled_because`. Sources are
+deliberately not parents: `sources`, `tables` and `evidence` map to no producer,
+so an import never restates the plan. `planning.change_assessed` now declares
+the memorandum and the matrix it reads. See §2, §3 and §12 of
+[audit-workflow-graph.md](audit-workflow-graph.md).
 
 ### 3.2 The architecture lives in the adapters, not the framework
 
@@ -325,11 +331,12 @@ Readings:
 
 In order.
 
-1. **Make invalidation explicit.** Have `materialize` consume `invalidate_on`
-   (or edge-level annotations) instead of the "dependency will materialize"
-   cascade, so a satisfied capability is redone only when something it
-   declares it reads has moved. Then either delete `planning.change_assessed`'s
-   edge-less workaround or document it as the intended shape.
+1. ~~**Make invalidation explicit.**~~ **Done.** `materialize` consumes
+   `invalidate_on` through a per-graph `BASIS_PRODUCERS` mapping instead of the
+   "dependency will materialize" cascade, planning artifacts stamp the parent
+   hashes their commits were guarded on so they can report themselves `stale`,
+   and `planning.change_assessed`'s edge-less workaround is gone — it declares
+   the memorandum and the matrix it reads.
 2. **Move partial flags into `DEPENDENCIES`.** An edge should say whether it
    is partial where it is declared, validated at startup with the rest of the
    graph, and tested per edge. Fix the `analysis_chunks_ready → categorized`

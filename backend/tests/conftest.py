@@ -253,8 +253,8 @@ def stamp_planning_cycle(workspace, *, steps=None):
     A fixture that builds a matrix by hand has, in effect, an engagement whose
     process structure is already settled — but no ``planning["cycle"]`` saying
     so. Without one the cycle stage materializes inside any run that reaches the
-    matrix, and a capability whose dependency materializes is not reused, so the
-    matrix is regenerated too. That is right for a real engagement designing its
+    matrix, and the matrix declares ``planning:cycle`` in ``invalidate_on``, so
+    it is redrafted behind it. That is right for a real engagement designing its
     cycle for the first time and wrong for a fixture about something else.
 
     The steps default to the matrix's own distinct ``process`` values, which is

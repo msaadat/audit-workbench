@@ -80,6 +80,28 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "analysis.summarized": ("analysis.executed",),
 }
 
+# Which capabilities write each artifact an ``invalidate_on`` key names — see
+# ``workflows.audit.BASIS_PRODUCERS`` for what the mapping is for. This graph
+# keeps its own map rather than sharing the audit one because it registers a
+# capability the audit composition does not: ``analysis.inputs_ready`` loads
+# the accepted definitions' alignment recipes, and validation refuses a
+# producer that is not registered in the graph being validated.
+#
+# ``tables`` is empty, and that is design decision 3 restated for this graph:
+# importing a table is the auditor's act, and a relationship map already drawn
+# is not made wrong by it.
+BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
+    "tables": (),
+    "joins": ("data.joins_ready",),
+    "analyses": (
+        "analysis.register_ready",
+        "analysis.definitions_ready",
+        "analysis.inputs_ready",
+        "analysis.executed",
+    ),
+}
+
+
 # Complete-analysis outcome set requested by "analyze these tables" style goals.
 # The transitive closure of this outcome is the whole graph above.
 #
@@ -128,8 +150,10 @@ def definition_hash() -> str:
     """Hash-identify the authoritative analysis workflow definition.
 
     The hash covers the workflow identity and the full normalized dependency
-    graph, so any edge change, capability addition, or reordering of a
-    capability's dependencies changes the workflow definition hash. Behavior
+    graph and the basis-producer mapping that decides what a run's own writes
+    invalidate, so any edge change, capability addition, reordering of a
+    capability's dependencies, or change to which capability writes a basis
+    changes the workflow definition hash. Behavior
     attached to capability IDs (readiness, workers, executors) is hashed
     separately at the capability level and is intentionally not folded in here.
     """
@@ -141,6 +165,10 @@ def definition_hash() -> str:
             "dependencies": {
                 capability_id: list(deps)
                 for capability_id, deps in DEPENDENCIES.items()
+            },
+            "basis_producers": {
+                key: list(producers)
+                for key, producers in BASIS_PRODUCERS.items()
             },
         }
     )

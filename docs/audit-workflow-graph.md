@@ -37,7 +37,7 @@ behaviour, one capability at a time. Where the two disagree, the code wins.
 | **Capability** | One outcome the workflow can bring about (`planning.apm_ready`). Carries its dependencies, a readiness function, a unit expansion, a context declaration, a barrier, and an invalidation key. | `capabilities/*.py` |
 | **Stage** | One capability's slot in a materialized run. Holds its units, its status, and the readiness snapshot taken before it ran. | `workflow.materialize` |
 | **Unit** | The smallest thing that runs: one RCM row's tests, one document's category, one Q&A item against one document. Unit IDs are *semantic* (`test_generation:dt-014`), so re-expanding after a resume yields the same work. | `workflow.UnitSpec` |
-| **Readiness** | A deterministic, model-free verdict on whether a capability's outcome already exists: `satisfied`, `missing`, `stale`, `blocked`, `review_required`. Existence and structural usability only — *currency* is deliberately not assessed. | `workflow.Readiness` |
+| **Readiness** | A deterministic, model-free verdict on whether a capability's outcome already exists and is usable: `satisfied`, `missing`, `stale`, `blocked`, `review_required`. Existence and structural usability, plus — where the artifact carries a `workflow_parents` stamp — whether a declared parent has moved since it was committed. `stale` schedules work. | `workflow.Readiness` |
 | **Barrier** | How a stage's units may run. `all_settled_then_validate` (default) runs them one at a time; `all_settled_parallel` fans them out. | `workflow.BARRIERS` |
 | **Binding** | How a capability's units execute: a **pipeline binder** (context → worker → proposal → executor) or a **deterministic executor** (local computation, no model). Exactly one per capability. | `runtime.CapabilityExecution` |
 | **Worker** | The only thing that talks to a model. Hash-identified by its prompt, response schema, and repair policy. Cannot reach a workspace, transaction, or run store. | `workers/model.py` |
@@ -113,7 +113,7 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                                        ▼
                                  audit.verified
 
-  planning.change_assessed   (declares no edges; only ever asked for by name — §8)
+  planning.change_assessed   (← apm_ready, rcm_ready; only ever asked for by name — §8)
 ```
 
 The parallel branches after `results.rolled_up` are intentional; the graph is a
@@ -145,13 +145,15 @@ DAG, not a chain.
 - **Dashboard curation is not on the graph.** Arranging tiles changes how an
   engagement is read, not what it establishes; nothing downstream ever consumed
   it.
-- **`planning.change_assessed` has no edges, and that is the whole design of
-  it.** It *reads* the document analyses, the memorandum, and the matrix, but
-  reading is not depending: materialization schedules a satisfied capability
-  whenever anything in its closure is materializing, so an edge to the
-  planning chain would have rewritten the memorandum before answering whether
-  it needs rewriting. Existence of the two artifacts is a readiness question
-  (`blocked`, naming what is missing) rather than an edge. It is on no template
+- **`planning.change_assessed` depends on the memorandum and the matrix**, and
+  for most of this graph's life it could not. Materialization used to schedule
+  a satisfied capability whenever a `depends_on` neighbour was scheduled, so
+  naming the memorandum would have rewritten it before answering whether it
+  needed rewriting; the capability declared no edges at all to escape that.
+  Now that only a moved `invalidate_on` parent causes rework (§3 step 2), the
+  edges say what they always meant: an assessment cannot run before the things
+  it assesses exist, and a request for one on an unplanned engagement plans it
+  first instead of reporting itself blocked and stopping. It is on no template
   and outside `FULL_AUDIT_OUTCOMES`; the steering loop requests it by name.
 
 ### Outcome sets
@@ -235,15 +237,25 @@ the registry, not from a model**:
    - walk the transitive `depends_on` closure in topological order;
    - for each capability, run its deterministic `readiness()`;
    - under `reuse_existing`, **skip** any capability that is already satisfied
-     (and whose dependencies are not themselves being rebuilt) or merely
-     `stale`, recording it in `reused_capabilities` with
-     `currency_status: "not_assessed"`;
-   - otherwise call `expand_units()` and fan it into a stage. Note the
-     converse: a satisfied capability **is** re-expanded whenever one of its
-     dependencies is being materialized. That is how a newly imported document
-     reaches the planning chain, and it is the reason `planning.change_assessed`
-     declares no edges. `Capability.invalidate_on` is declared for the
-     definition hash only; materialization does not read it.
+     and none of whose declared parents is being rewritten in this run,
+     recording it in `reused_capabilities` with a `currency_status` of
+     `current`, `unstamped`, or `not_assessed`;
+   - otherwise call `expand_units()` and fan it into a stage, stamped with
+     `scheduled_because`: `not_satisfied`, `stale`, `parent_rescheduled` (with
+     the producers in `scheduled_because_refs`), or `forced`.
+
+   **`depends_on` orders; `invalidate_on` invalidates.** They are different
+   questions and the scheduler no longer conflates them. A capability's
+   `invalidate_on` names the *bases* it reads; `workflows/audit.py:
+   BASIS_PRODUCERS` maps each basis to the capabilities that write it; and a
+   satisfied capability is redone only when one of those producers is scheduled
+   in the same run, or when its own readiness returns `stale` — which it does by
+   comparing the `workflow_parents` its executor stamped at commit against
+   `parent_hashes` now. Depending is not reading: planning depends on the
+   documents so it runs *after* them, and an imported document is a source
+   rather than a parent, so it never restates the plan. Startup validation
+   refuses an `invalidate_on` key absent from `BASIS_PRODUCERS` and a producer
+   that is not a registered capability, so the field cannot go decorative again.
 3. Reject the run if any stage exceeds `max_units_per_stage` (default 250).
    This raises inside `start_command_run` after the `queued` record has been
    saved and before the thread launches; `recover_orphans` later relabels that
@@ -252,9 +264,9 @@ the registry, not from a model**:
    `run["workflow"]` with the definition id, definition hash, scope, resolved
    capabilities, `reused_capabilities`, a `state_at_resolution` readiness
    snapshot of every capability, stages, and a human-readable
-   `workflow_explanation`. (`WorkflowRunner.materialize` writes the same state
-   under `reused_outcomes`; the sibling-graph and test path uses that name, the
-   audit route path uses `reused_capabilities`, and the UI reads the latter.)
+   `workflow_explanation`. `WorkflowRunner.materialize` writes the same state
+   under the same names; the split where the sibling-graph path said
+   `reused_outcomes` and the audit route said `reused_capabilities` is gone.
 
 `generation_mode` is `reuse_existing` unless the command says otherwise —
 `workflow.command_generation_mode` reads `improve `, `regenerate`, `refresh `,
@@ -627,7 +639,7 @@ Budgets below are `items / characters`.
 | `planning.rcm` | 255 / 138k | planning_context, template_text, document_text, table_metadata, table_profiles, **small_table_rows**, auditor_instruction | `planning_context`, three required templates (`rcm`, `rcm_controls`, `rcm_attributes`), `current_apm` (**req, 60k**), `current_rcm` (opt, 200/40k), `table_metadata`, `table_profiles`, `small_table_rows` (8/16k), `documents` (lexical), `methodology` (lexical), `instruction` |
 | `planning.delta` | 210 / 120k | planning_context, document_text, auditor_instruction | `new_document_analyses` (**req**, 8/40k), `current_apm` (opt, 32k), `current_rcm` (opt, 200/40k), `planning_context` (req), `instruction` |
 | `tests.cycle_linkage` | 2 / 88k | planning_context, **document_schemas** | `cycle_schemas` (req, 1 item carrying every induced type, 64k), `cycle_requirements` (opt, 24k). The schemas and what the matrix asks of them — nothing either was induced or drafted from. |
-| `tests.generate` | 184 / 162k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `documents` (lexical, 12/26k — evidence documents carry identity and type only), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
+| `tests.generate` | 184 / 162k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `documents` (**lexical_retained**, 12/26k — evidence documents carry identity and type only), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
 | `fieldwork.document_qa` | 61 / 30k | document_text | `qa_item` (req, 4k), `document_pages` (req, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
 | `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
 | `reporting.finding_draft` | 7 / 44k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction` |
@@ -849,8 +861,8 @@ embed directives already flattened to citations.
 
 | | |
 | --- | --- |
-| Depends on | — (see §2: reading is not depending) |
-| Readiness | `blocked` until the request names documents (`document:` refs) and both a memorandum and a matrix exist; `missing` when no assessment exists for this exact basis; `satisfied` otherwise. The basis is a hash over the named documents' analyses, the memorandum, and the matrix rows, so changing any of the three re-asks the question. |
+| Depends on | `planning.apm_ready`, `planning.rcm_ready` (see §2 — the edges went in once a scheduled dependency stopped being a reason to rewrite) |
+| Readiness | `blocked` until the request names documents (`document:` refs); `missing` when no assessment exists for this exact basis; `satisfied` otherwise. The basis is a hash over the named documents' analyses, the memorandum, and the matrix rows, so changing any of the three re-asks the question. That the memorandum and matrix *exist* is the graph's job now, not a second check written out here. |
 | Units | one (`change_assessment`), parents `document:<id>` for each named document, input `{document_ids, basis_sha1}` |
 | Binding | pipeline — worker `planning.delta_review`, executor `planning.delta` |
 | Context | `planning.delta` — the named documents' generated analyses (required), the current memorandum and matrix, the planning context, and the auditor's instruction |
@@ -946,15 +958,36 @@ The final fallback is deliberate — a row that needs documents and matched no
 type by name is the row whose author could not say which record answers it, and
 withholding the vocabulary there would have the turn invent a field.
 
-Scoping is what makes the substitution pay on an engagement whose documents do
-*not* collapse into a handful of types. Measured on the shipped workspaces,
-document-source bytes per unit:
+**The document source retains what it cannot rank.** `documents.lexical`
+*filters*: a candidate sharing no term with the query is dropped. That was right
+while a document's summary was the thing being matched. Identity-only evidence
+offers a title and a type, and filtering on that emptied the list — measured on
+the expenses engagement, 50 of 60 evidence documents across six rows, leaving
+every unit able to name a policy and not one voucher. This source therefore uses
+`documents.lexical_retained`, which ranks the same candidates and keeps the
+unmatched ones at the tail in source-ref order. It is the case `tables.lexical`
+already answers, one noun over: a document the turn cannot see is a document no
+step can name.
 
-| workspace | evidence docs : types | before → after | |
-| --- | --- | --- | --- |
-| `treasuryfull` | 82 : 6 | 185,836 → 43,520 | **−77%** |
-| `treasury` | 8 : 4 | 22,126 → 11,466 | **−49%** |
-| `procurement` | 5 : 5 | 20,147 → 18,725 | −8% |
+Scoping is what makes the substitution pay on an engagement whose documents do
+*not* collapse into a handful of types. Measured through the resolver — what
+actually reaches a turn after the per-source budgets, not the candidate pool —
+summed over eight rows per workspace:
+
+| workspace | evidence docs : types | before → after | | evidence supplied |
+| --- | --- | --- | --- | --- |
+| `expenses` | 12 : 1 | 197,615 → 87,368 | **−56%** | 80 → 80 |
+| `treasury` | 8 : 4 | 150,448 → 75,201 | **−51%** | 64 → 64 |
+| `treasuryfull` | 82 : 6 | 207,173 → 170,711 | **−18%** | 56 → **80** |
+| `procurement` | 5 : 5 | 155,424 → 142,849 | −9% | 40 → 40 |
+
+Two things the raw candidate pool hides and the resolved figure does not.
+Treasuryfull saves least because its 12-item/26k source budget was *already*
+truncating the prose, so the old turn was budget-limited rather than
+document-limited — the redundancy was being paid for in coverage instead of
+characters. And its evidence coverage goes up, from 56 documents to 80, because
+the retaining selector admits what the filter dropped: the same budget now buys
+more of the population and none of the repetition.
 
 Procurement is close to a wash, and honestly so: where each document is its own
 type there is no redundancy to collapse. The token saving is the secondary
@@ -1193,7 +1226,9 @@ content-free; the workspace's telemetry is not.
 
 | To change… | Edit | Consequence |
 | --- | --- | --- |
-| a dependency edge, or add a capability | `agent/workflows/audit.py` | changes `definition_hash()`; startup validation fails until the grouped modules partition the new graph exactly |
+| a dependency edge, or add a capability | `agent/workflows/audit.py` | changes `definition_hash()`; startup validation fails until the grouped modules partition the new graph exactly. An edge only *orders* work — it never causes a rewrite |
+| what makes settled work be redone | that capability's `invalidate_on` in `agent/capabilities/<group>.py`, plus `BASIS_PRODUCERS` in `agent/workflows/<graph>.py` | changes `definition_hash()`; startup validation refuses a key with no producers and a producer that is not a capability. A capability whose producer runs is re-expanded with `scheduled_because: "parent_rescheduled"` |
+| whether an artifact can report itself out of date | the `workflow_parents` its executor stamps at commit, plus `_shared.currency` in that capability's `readiness` | a moved parent becomes `stale`, which schedules the work and says so in the run explanation |
 | what an outcome means / when it is done | that capability's `readiness` in `agent/capabilities/<group>.py` | changes what materialization skips |
 | how work fans out | that capability's `expand_units` | changes unit IDs, so proposals stop being reused if the ID changes |
 | what a stage is shown | the preset in `agent/context/presets.py` and the scope function in `agent/context/adapters.py` | moves the `context_manifest_hash`, which rejects persisted proposals and re-bills |
@@ -1208,8 +1243,9 @@ content-free; the workspace's telemetry is not.
 Startup validation (`capabilities/__init__.py`) runs at import and refuses:
 overlapping groups, a partition that does not cover the graph, a capability
 whose declared edges disagree with the authoritative graph, a dependency cycle,
-an unregistered context preset, and — when executions are supplied — a
-capability with no binding.
+an `invalidate_on` key the graph maps to no producer, a producer that is not a
+registered capability, an unregistered context preset, and — when executions are
+supplied — a capability with no binding.
 
 ### Durable architectural gates
 

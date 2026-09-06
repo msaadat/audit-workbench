@@ -17,6 +17,7 @@ from app import (
     templates_store,
     workspaces,
 )
+from app.agent import capabilities as agent_capabilities
 from app.agent import context as agent_context
 from app.agent.context import ContextResolver, PRESETS
 import app.agent.context.adapters as context_adapters
@@ -824,6 +825,49 @@ def test_test_generate_schema_candidates_narrow_by_name_not_by_field_label():
     candidates = context_adapters.test_generate_schema_candidates(workspace, row)
 
     assert candidates[0].metadata["document_types"] == ["vendor_invoice"]
+
+
+def test_test_generate_documents_retain_evidence_the_query_does_not_match():
+    """An evidence document the row shares no word with is still nameable.
+
+    ``documents.lexical`` filters, which was right while a document's summary
+    was the thing being matched. Identity-only evidence offers a title and a
+    type, so filtering on that emptied the document list: measured on the
+    expenses engagement, 50 of 60 evidence documents across six rows, leaving
+    every unit able to name a policy and not one voucher. The retaining
+    selector ranks them instead.
+    """
+    workspace = workspaces.create_workspace("Retained evidence")
+    documents.add_document(
+        workspace, "Voucher.txt", b"Paid.", category="evidence"
+    )
+    documents.add_document(
+        workspace,
+        "Policy.txt",
+        b"Reimbursement requires a receipt.",
+        category="policy",
+    )
+    row = workspace.add_rcm({
+        "process": "Reimbursement",
+        "risk": "Reimbursement is paid without a receipt.",
+        "control": "Receipt check",
+    })
+
+    scope = context_adapters.test_generate_scope(workspace, row["id"])
+    resolver = ContextResolver()
+    capability = agent_capabilities.AUDIT_REGISTRY.get("tests.specified")
+    _manifest, bundle = resolver.resolve(
+        workspace, capability, {"id": f"test_generation:{row['id']}"}, scope
+    )
+
+    supplied = {
+        str(item.content.get("category"))
+        for item in bundle.items
+        if item.source_id == "documents"
+    }
+    # The voucher shares no term with the row and is retained anyway; a
+    # document the turn cannot see is a document no step can name.
+    assert supplied == {"evidence", "policy"}
 
 
 def test_test_generate_schema_candidates_supply_every_type_when_none_is_named():

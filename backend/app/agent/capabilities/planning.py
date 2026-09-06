@@ -5,10 +5,20 @@ Owns the planning outcomes of the authoritative audit graph:
 and ``planning.rcm_ready``.
 Drafting the tests an RCM row needs belongs to the tests capability group.
 
-Each capability is declared here: its readiness (existence and structural
-usability only), its semantic unit expansion, and the registry keys for its
-declared context. The dependency edges come from the authoritative graph in
-:mod:`agent.workflows.audit`; this module never restates them.
+Each capability is declared here: its readiness, its semantic unit expansion,
+and the registry keys for its declared context. The dependency edges come from
+the authoritative graph in :mod:`agent.workflows.audit`; this module never
+restates them.
+
+Readiness in this group is existence, structural usability, *and* currency —
+alone among the capability groups, because alone among them these artifacts
+carry a ``workflow_parents`` stamp written by their executors inside the guarded
+commit. A memorandum that has been rewritten leaves the shape and the matrix
+read out of it describing a process the engagement no longer says it audits, and
+that is a thing a stamp can prove rather than a thing to guess at. What still
+never makes them stale is a *source*: a table or a document arriving is the
+auditor's act, nothing in the graph produces it, and no planning artifact
+declares it as a parent.
 """
 
 from __future__ import annotations
@@ -18,8 +28,11 @@ from ...text import counted, verb
 from ...workspaces import Workspace, planning_apm_sha1
 from ..workflow import Capability, Readiness, UnitSpec
 from ..workflows import audit as audit_workflow
+from ._shared import Currency
+from ._shared import currency as _currency
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
+from ._shared import with_currency as _with_currency
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "planning.context_ready",
@@ -85,10 +98,18 @@ def _apm_ready(workspace: Workspace, _scope: dict) -> Readiness:
         return Readiness("missing", ("APM content is empty",))
     if not any(line.lstrip().startswith("#") for line in markdown.splitlines()):
         return Readiness("review_required", ("APM has no structured headings",))
-    # Existence and structural usability only. Whether the APM is substantively
-    # current with respect to changed planning sources is not assessed by the
-    # framework; the auditor decides when to force a regeneration.
-    return Readiness("satisfied", details={"artifact_count": 1})
+    # Existence, structural usability — and currency against the one parent
+    # the memorandum declares. Not against its *sources*: a table or a document
+    # arriving does not make a memorandum wrong, and the whole point of the
+    # invalidation model is that only a declared parent moving does.
+    state = _currency(workspace, workspace.planning.get("workflow_parents"))
+    if state.stale:
+        return Readiness(
+            "stale",
+            ("the memorandum was drafted against an earlier planning context",),
+            details={"artifact_count": 1, **state.details},
+        )
+    return _with_currency(Readiness("satisfied", details={"artifact_count": 1}), state)
 
 
 def _planning_apm_ready() -> Capability:
@@ -123,19 +144,40 @@ def _cycle_ready(workspace: Workspace, _scope: dict) -> Readiness:
     An auditor's edit is the confirmation and keeps the hash it was drafted
     against, so edits survive until the memorandum itself moves. Nothing waits
     on a review that may never come.
+
+    It reports ``stale`` rather than ``missing``, which it used to: a shape
+    that exists and describes the wrong process is not an absent shape, and the
+    scheduler now has a state that says exactly that.
     """
     cycle = workspace.planning.get("cycle") or {}
-    if not cycle.get("steps"):
+    steps = cycle.get("steps") or []
+    if not steps:
         return Readiness("missing", ("no cycle has been designed",))
-    if str(cycle.get("apm_sha1") or "") != planning_apm_sha1(workspace):
+    reason = "the cycle was designed against an earlier memorandum"
+    state = _currency(workspace, cycle.get("workflow_parents"))
+    if state.stale:
         return Readiness(
-            "missing",
-            ("the cycle was designed against a different memorandum",),
-            details={"artifact_count": 1},
+            "stale",
+            (reason,),
+            details={"artifact_count": len(steps), **state.details},
         )
-    return Readiness(
-        "satisfied",
-        details={"artifact_count": len(cycle.get("steps") or [])},
+    # A shape committed before parents were stamped still has the memorandum
+    # text hash it was drafted against, so it can answer the same question —
+    # narrowly, and only for itself.
+    if state.state == "unstamped" and str(
+        cycle.get("apm_sha1") or ""
+    ) != planning_apm_sha1(workspace):
+        return Readiness(
+            "stale",
+            (reason,),
+            details={
+                "artifact_count": len(steps),
+                "currency": "stale",
+                "moved": ["planning:apm"],
+            },
+        )
+    return _with_currency(
+        Readiness("satisfied", details={"artifact_count": len(steps)}), state
     )
 
 
@@ -179,9 +221,35 @@ def _rcm_ready(workspace: Workspace, scope: dict) -> Readiness:
             (f"{counted(len(invalid), 'RCM row')} {verb(len(invalid), 'lacks', 'lack')} a risk or control",),
             details={"artifact_count": len(rows)},
         )
-    # Structurally usable RCM rows exist; currency relative to the APM is not
-    # assessed. Parent hashes remain on the rows for executor CAS/provenance.
-    return Readiness("satisfied", details={"artifact_count": len(rows)})
+    # Currency is per row, because the matrix is committed per row and the
+    # executor reconciles per row. Readiness is whole-matrix — one stale row
+    # schedules the stage — and the stage then redrafts the matrix, preserving
+    # every auditor-owned row exactly as it does today.
+    states = [_currency(workspace, row.get("workflow_parents")) for row in rows]
+    outdated = [row["id"] for row, state in zip(rows, states) if state.stale]
+    if outdated:
+        return Readiness(
+            "stale",
+            (
+                f"{counted(len(outdated), 'RCM row')} "
+                f"{verb(len(outdated), 'was', 'were')} drafted against earlier "
+                "planning",
+            ),
+            details={
+                "artifact_count": len(rows),
+                "currency": "stale",
+                "moved": list(
+                    dict.fromkeys(ref for state in states for ref in state.moved)
+                ),
+                "stale_rows": outdated,
+            },
+        )
+    return _with_currency(
+        Readiness("satisfied", details={"artifact_count": len(rows)}),
+        Currency("current")
+        if any(state.state == "current" for state in states)
+        else Currency("unstamped"),
+    )
 
 
 def _planning_rcm_ready() -> Capability:
@@ -231,24 +299,12 @@ def _change_assessed(workspace: Workspace, scope: dict) -> Readiness:
             ("name the documents to assess",),
             details={"assessed": 0},
         )
-    # What the assessment compares against has to exist. This is a readiness
-    # question rather than a dependency edge because the capability *reads*
-    # these artifacts; depending on the capabilities that write them would
-    # schedule a rewrite of both before answering whether either needs one.
-    missing = [
-        name
-        for name, present in (
-            ("memorandum", bool(str(workspace.planning.get("apm_markdown") or "").strip())),
-            ("matrix", bool(workspace.rcm)),
-        )
-        if not present
-    ]
-    if missing:
-        return Readiness(
-            "blocked",
-            (f"there is no {' or '.join(missing)} to assess a change against",),
-            blocking_on=("planning.apm_ready", "planning.rcm_ready"),
-        )
+    # What the assessment compares against is now a pair of dependency edges
+    # rather than a second existence check written out here. The edges could
+    # not be declared while a scheduled dependency was itself a reason to
+    # rewrite settled work — naming the memorandum would have rewritten it —
+    # and now that only a declared parent moving does that, the graph says it
+    # once and the projection reports it blocked for free.
     basis = planning_delta.basis_sha1(workspace, list(documents))
     assessment = planning_delta.load(workspace, basis)
     if assessment is None:

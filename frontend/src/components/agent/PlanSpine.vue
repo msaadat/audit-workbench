@@ -123,6 +123,21 @@ const HALTED_RUN_STATE: Record<string, SpineState> = {
 
 const stages = computed<WorkflowStage[]>(() => workflow.value?.stages ?? [])
 
+/**
+ * Why a stage that was already settled is being done again.
+ *
+ * Only for `parent_rescheduled`: readiness said `satisfied` and so left no
+ * reason, yet the stage is in the plan — the run is rewriting something it
+ * reads. Every other cause already speaks for itself, through the readiness
+ * reason (`missing`, `stale`) or through the request (`forced`).
+ */
+function rescheduledBecause(stage: WorkflowStage) {
+  if (stage.scheduled_because !== 'parent_rescheduled') return ''
+  const producers = stage.scheduled_because_refs ?? []
+  if (!producers.length) return ''
+  return `being redone because ${capabilityClause(producers)} ${verb(producers.length, 'is', 'are')} being rewritten in this run`
+}
+
 function elapsed(stage: WorkflowStage) {
   const started = stage.started_at ? Date.parse(stage.started_at) : NaN
   const finished = stage.finished_at ? Date.parse(stage.finished_at) : NaN
@@ -174,7 +189,9 @@ const rows = computed(() => {
       // Readiness is what the runtime saw *before* the stage began, so it is
       // only current for a stage that has not started. On a stage that already
       // ran it is stale, and it contradicts what the run went on to do.
-      reason: stage.started_at ? '' : stage.readiness_before?.reasons?.[0] ?? '',
+      reason: stage.started_at
+        ? ''
+        : stage.readiness_before?.reasons?.[0] ?? rescheduledBecause(stage),
     }
   })
 })

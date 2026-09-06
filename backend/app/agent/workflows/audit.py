@@ -96,23 +96,20 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # population, and nothing else — which is what lets it sit here, in front of
     # the matrix, rather than after the schemas with the field-level half.
     # What new evidence changes, if anything. Off every template and outside
-    # ``FULL_AUDIT_OUTCOMES`` on purpose: it exists to be *asked for*. The
-    # framework does not assess currency on its own, and a capability that ran
-    # as part of a lifecycle request would be doing exactly that.
+    # ``FULL_AUDIT_OUTCOMES`` on purpose: it exists to be *asked for*, and a
+    # capability that ran as part of a lifecycle request would be assessing
+    # currency nobody asked about.
     #
-    # It declares no dependency, and that is the whole design of it. The plan
-    # for this step gave it three — the document analyses, the memorandum and
-    # the matrix — which is what it *reads*, and reading is not depending.
-    # Materialization schedules a satisfied capability whenever anything in its
-    # closure is materializing, so a new document (which by definition has no
-    # analysis yet) reached the document capabilities, and through them the
-    # planning chain: asking "does this change the memorandum?" would have
-    # rewritten the memorandum before answering. What the assessment actually
-    # requires is that the two artifacts *exist*, which is a readiness question
-    # and is answered there — blocked, naming what is missing, so the loop runs
-    # planning first if it must. Asking for an assessment schedules exactly one
-    # unit and never anything else.
-    "planning.change_assessed": (),
+    # It declares the two artifacts it compares against, which it could not do
+    # while a scheduled dependency was itself a reason to rewrite: the edges
+    # went in, a new document reached the document capabilities, and the
+    # planning chain came with them — so asking "does this change the
+    # memorandum?" rewrote the memorandum before answering. The edges are safe
+    # now that only a declared parent moving causes rework. They buy what the
+    # readiness check used to fake: an assessment cannot run before the things
+    # it assesses exist, and a request for one on an unplanned engagement plans
+    # it first rather than reporting itself blocked and stopping.
+    "planning.change_assessed": ("planning.apm_ready", "planning.rcm_ready"),
     "planning.cycle_ready": (
         "planning.apm_ready",
         "sources.imported",
@@ -206,6 +203,56 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Which capabilities write each artifact a capability declares in
+# ``invalidate_on``. This is the other half of the invalidation model: the
+# declaration says what a capability *reads*, and this says who *writes* it, so
+# the scheduler can decide that a run already redrafting the memorandum has
+# invalidated the matrix — without importing a single audit concept.
+#
+# It is deliberately not derived from ``Capability.produces``. Those are
+# artifact *kinds* ("planning", "rcm"), several capabilities share one, and a
+# run redrafting the planning context would then be read as invalidating the
+# memorandum, the cycle and the matrix alike. The keys here are bases, which is
+# a finer thing than a kind, and the mapping between them is a judgement this
+# module owns rather than a projection anything can compute.
+#
+# An empty tuple is a statement, not an omission: nothing in the graph produces
+# it, so nothing in a *run* can invalidate what reads it. ``sources``,
+# ``tables`` and ``evidence`` are the auditor's own acts — importing a table or
+# a document — and design decision 3 is that sources are not parents: a new
+# voucher does not make a memorandum wrong. That is what keeps the fix from
+# reintroducing the cascade through the hash door.
+#
+# ``validate_composition`` refuses an ``invalidate_on`` key that has no entry
+# here and a producer that is not a registered capability, so a new key or a
+# renamed capability fails at import rather than silently disabling rework.
+BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
+    "sources": (),
+    "tables": (),
+    "evidence": (),
+    # The whole document chain, which keeps today's behaviour inside it: the
+    # chain is linear and expands per document, so a new import already limits
+    # the work to the new document rather than re-reading the corpus.
+    "documents": documents_workflow.AUDIT_CAPABILITY_IDS,
+    "joins": ("data.joins_ready",),
+    "analyses": (
+        "analysis.register_ready",
+        "analysis.definitions_ready",
+        "analysis.executed",
+    ),
+    "planning:context": ("planning.context_ready",),
+    "planning:apm": ("planning.apm_ready",),
+    "planning:cycle": ("planning.cycle_ready",),
+    "rcm": ("planning.rcm_ready",),
+    "test": ("tests.specified", "tests.promoted_from_analysis"),
+    "execution": ("fieldwork.executed",),
+    "rollup": ("results.rolled_up",),
+    "observation": ("results.rolled_up",),
+    "findings": ("findings.drafted",),
+    "outputs": ("working_papers.generated", "report.working_draft"),
+}
+
+
 # Complete-audit outcome set requested by "complete the audit" style goals. The
 # transitive closure of these outcomes is the whole graph above.
 FULL_AUDIT_OUTCOMES = [
@@ -252,8 +299,10 @@ def definition_hash() -> str:
     """Hash-identify the authoritative audit workflow definition.
 
     The hash covers the workflow identity and the full normalized dependency
-    graph, so any edge change, capability addition, or reordering of a
-    capability's dependencies changes the workflow definition hash. Behavior
+    graph and the basis-producer mapping that decides what a run's own writes
+    invalidate, so any edge change, capability addition, reordering of a
+    capability's dependencies, or change to which capability writes a basis
+    changes the workflow definition hash. Behavior
     attached to capability IDs (readiness, workers, executors) is hashed
     separately at the capability level and is intentionally not folded in here.
     """
@@ -264,6 +313,10 @@ def definition_hash() -> str:
             "dependencies": {
                 capability_id: list(deps)
                 for capability_id, deps in DEPENDENCIES.items()
+            },
+            "basis_producers": {
+                key: list(producers)
+                for key, producers in BASIS_PRODUCERS.items()
             },
         }
     )

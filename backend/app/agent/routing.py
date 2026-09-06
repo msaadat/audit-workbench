@@ -397,10 +397,24 @@ def _explanation(
             return narration.humanize(capability_id)
 
     named_reuse = [item for item in reused if item in set(requested)]
+    # Stale work is named wherever it appears, requested or not: an artifact
+    # being rewritten because its parent moved is the one thing in the plan the
+    # auditor did not ask for and would otherwise not expect.
+    stale = [
+        stage for stage in stages if stage.get("scheduled_because") == "stale"
+    ]
     return narration.plan_sentence(
         [str(stage.get("title") or title(stage["capability"])) for stage in stages],
         [title(item) for item in named_reuse],
         added_prerequisites=any(item not in requested for item in resolved),
+        stale_titles=[
+            str(stage.get("title") or title(stage["capability"])) for stage in stale
+        ],
+        stale_parents=[
+            str(ref)
+            for stage in stale
+            for ref in stage.get("scheduled_because_refs") or []
+        ],
     )
 
 
@@ -656,13 +670,14 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     document_scope_route = document_route or definition_id == audit_workflow.WORKFLOW_ID
     generation_mode = scope["generation_mode"]
     requested = list(resolution.get("requested_outcomes") or [])
-    resolved, stages, reused = workflow.materialize(
+    plan = workflow.materialize(
         registry,
         workspace,
         requested,
         scope,
         generation_mode=generation_mode,
     )
+    resolved, stages, reused = plan.resolved, plan.stages, plan.reused
     maximum_units = int(run.get("limits", {}).get("max_units_per_stage") or 250)
     oversized = next(
         (stage for stage in stages if len(stage.get("units") or []) > maximum_units),
@@ -728,13 +743,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "pending_checkpoint": None,
         "resolved_capabilities": resolved,
         "reused_capabilities": reused,
-        "reused_capability_details": [
-            {
-                "capability": capability_id,
-                "currency_status": "not_assessed",
-            }
-            for capability_id in reused
-        ],
+        "reused_capability_details": plan.reused_details,
         "workspace_revision": workspace.revision,
         "state_at_resolution": registry.workflow_state(workspace, scope),
         "stages": stages,

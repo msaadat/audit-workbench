@@ -1834,12 +1834,19 @@ class Workspace:
     def update_planning(self, changes: dict, *, agent: bool = False) -> dict:
         allowed = {
             "context", "apm_markdown", "cycle", "agent_run_id", "created_by",
-            "workflow_basis_sha1",
+            "workflow_basis_sha1", "workflow_parents",
         }
         unknown = set(changes) - allowed
         if unknown:
             raise WorkspaceError(f"Unknown planning field: {sorted(unknown)[0]}.")
-        if not agent and ({"agent_run_id", "created_by", "workflow_basis_sha1"} & set(changes)):
+        # ``workflow_parents`` is the memorandum's record of which artifacts it
+        # was drafted against, written by the executor from the very hashes its
+        # commit was guarded on. It is provenance, so an auditor's own save
+        # never touches it and never clears it.
+        if not agent and (
+            {"agent_run_id", "created_by", "workflow_basis_sha1", "workflow_parents"}
+            & set(changes)
+        ):
             raise WorkspaceError("Planning provenance is managed by the workbench.")
         apm_changed = (
             "apm_markdown" in changes
@@ -1852,9 +1859,16 @@ class Workspace:
             self.planning["context"].update(context)
         if "cycle" in changes:
             self.planning["cycle"] = self._stamped_cycle(changes["cycle"], agent=agent)
-        for key in ("apm_markdown", "agent_run_id", "created_by", "workflow_basis_sha1"):
+        for key in (
+            "apm_markdown", "agent_run_id", "created_by", "workflow_basis_sha1",
+        ):
             if key in changes:
                 self.planning[key] = changes[key]
+        if "workflow_parents" in changes:
+            self.planning["workflow_parents"] = {
+                str(ref): str(value)
+                for ref, value in dict(changes["workflow_parents"] or {}).items()
+            }
         if not agent and apm_changed and self.planning.get("created_by") == "agent":
             self.planning["created_by"] = "user"
         # ``updated`` is part of the ``planning:apm`` artifact projection, so
@@ -1884,6 +1898,10 @@ class Workspace:
         cycle = validate_cycle(self, payload)
         stored = self.planning.get("cycle") or {}
         supplied = payload if isinstance(payload, dict) else {}
+        # ``workflow_parents`` follows ``apm_sha1`` exactly: the agent writes
+        # the parent hashes its commit was guarded on, and an auditor's edit
+        # keeps the ones the shape was drafted against rather than silently
+        # re-basing it onto whatever the memorandum says now.
         if agent:
             cycle["created_by"] = str(supplied.get("created_by") or "agent")
             cycle["agent_run_id"] = supplied.get("agent_run_id") or stored.get(
@@ -1892,12 +1910,19 @@ class Workspace:
             cycle["apm_sha1"] = str(
                 supplied.get("apm_sha1") or planning_apm_sha1(self)
             )
+            parents = supplied.get("workflow_parents") or stored.get(
+                "workflow_parents"
+            )
         else:
             cycle["created_by"] = "user"
             cycle["agent_run_id"] = stored.get("agent_run_id")
             cycle["apm_sha1"] = str(
                 stored.get("apm_sha1") or planning_apm_sha1(self)
             )
+            parents = stored.get("workflow_parents")
+        cycle["workflow_parents"] = {
+            str(ref): str(value) for ref, value in dict(parents or {}).items()
+        }
         cycle["updated"] = self._updated_now()
         return cycle
 
@@ -1935,6 +1960,13 @@ class Workspace:
             "prepared_by": payload.get("prepared_by"),
             "review_status": str(payload.get("review_status") or "draft"),
             "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
+            # Which artifacts this row was drafted against, keyed by parent
+            # ref. Deliberately outside the material projection that defines a
+            # row's identity: stamping a row must not restamp it.
+            "workflow_parents": {
+                str(ref): str(value)
+                for ref, value in dict(payload.get("workflow_parents") or {}).items()
+            },
             "updated": now,
         }
         if item["risk_rating"] not in ("low", "medium", "high", "critical"):
@@ -1952,9 +1984,12 @@ class Workspace:
             "control", "control_type",
             "control_owner", "criteria", "criteria_refs", "test_refs",
             "evidence_refs", "prepared_by", "review_status",
-            "workflow_parent_sha1",
+            "workflow_parent_sha1", "workflow_parents",
         }
-        if set(changes) - allowed or ("workflow_parent_sha1" in changes and not agent):
+        if set(changes) - allowed or (
+            {"workflow_parent_sha1", "workflow_parents"} & set(changes)
+            and not agent
+        ):
             raise WorkspaceError("Unknown RCM field.")
         if "risk_rating" in changes and changes["risk_rating"] not in ("low", "medium", "high", "critical"):
             raise WorkspaceError("Risk rating must be low, medium, high, or critical.")
@@ -1983,6 +2018,11 @@ class Workspace:
                 item[key] = normalize_many(value or [], require_hash=True)
             elif key == "prepared_by":
                 item[key] = str(value).strip() if value not in (None, "") else None
+            elif key == "workflow_parents":
+                item[key] = {
+                    str(ref): str(parent)
+                    for ref, parent in dict(value or {}).items()
+                }
             else:
                 item[key] = str(value or "")
         if not agent:

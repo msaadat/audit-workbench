@@ -501,6 +501,33 @@ _register_selectors(
             configuration_keys=("category", "planning_relevant", "query_fields"),
         ),
         SelectorDefinition(
+            # ``documents.lexical`` filters: a document sharing no term with the
+            # query is dropped, which was right while every document carried its
+            # summary — the summary was the thing being matched. Test generation
+            # no longer supplies one for transaction evidence, so an evidence
+            # document offers the selector its title and its type and little
+            # else, and filtering on that removed 50 of 60 evidence documents
+            # across six rows in the expenses engagement: every unit reached the
+            # turn able to name a policy and not one voucher.
+            #
+            # This is the same case ``tables.lexical`` already answers, one noun
+            # over. An evidence document that shares no term is still evidence
+            # the turn may have to name, and dropping it empties the document
+            # list — the one input that decides whether a document question can
+            # be written at all. Unmatched candidates keep their place at the
+            # tail in source-ref order rather than leaving the result.
+            selector_id="documents.lexical_retained",
+            selector_kind="auto",
+            supported_source_types=("documents",),
+            implementation_hash=_implementation_hash(
+                "documents.lexical_retained:stable-local-lexical-score"
+                ":retain-unmatched:source-ref-ascending"
+            ),
+            strategy="lexical",
+            configuration_keys=("category", "planning_relevant", "query_fields"),
+            retain_unmatched=True,
+        ),
+        SelectorDefinition(
             selector_id="methodology.explicit_refs",
             selector_kind="deterministic",
             supported_source_types=("methodology",),
@@ -1201,8 +1228,15 @@ PRESETS.register(
                     # only; its prose is displaced by ``evidence_schemas``
                     # below. Planning material keeps its summary, so the budget
                     # stays sized for the prose that is still carried here.
+                    #
+                    # ``_retained`` because this source stopped being scored on
+                    # what a document says. Ranking still puts what the row
+                    # names first; an evidence document that matches nothing
+                    # keeps its place at the tail instead of being dropped,
+                    # because a document the turn cannot see is a document no
+                    # step can name.
                     selector=AutoSelect(
-                        selector_id="documents.lexical",
+                        selector_id="documents.lexical_retained",
                         item_limit=12,
                         configuration={"query_fields": ["test_generate_query"]},
                     ),

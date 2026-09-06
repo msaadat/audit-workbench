@@ -2799,6 +2799,11 @@ export interface WorkflowStage {
   barrier: string
   units: WorkflowUnit[]
   readiness_before?: { state: WorkflowReadinessState; reasons?: string[]; blocking_on?: string[] }
+  // Why this stage is in the plan rather than reused. `parent_rescheduled`
+  // carries the producer capability ids in `scheduled_because_refs`; `stale`
+  // carries the parent artifact refs that moved.
+  scheduled_because?: 'not_satisfied' | 'stale' | 'parent_rescheduled' | 'forced'
+  scheduled_because_refs?: string[]
   started_at?: string | null
   finished_at?: string | null
 }
@@ -2824,7 +2829,13 @@ export interface AgentWorkflow {
   pending_checkpoint: string | null
   resolved_capabilities: string[]
   reused_capabilities: string[]
-  reused_capability_details: Array<{ capability: string; currency_status: 'not_assessed' }>
+  // `current` and `unstamped` come from an artifact's own `workflow_parents`
+  // stamp; `not_assessed` is the honest answer for a capability that carries no
+  // stamp because nothing in the graph writes what it reads.
+  reused_capability_details: Array<{
+    capability: string
+    currency_status: 'current' | 'unstamped' | 'not_assessed'
+  }>
   workspace_revision: number
   stages: WorkflowStage[]
 }

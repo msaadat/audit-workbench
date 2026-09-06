@@ -318,7 +318,7 @@ def test_synthetic_materialization_and_semantic_units_are_golden_and_stable():
     )
     second = workflow.materialize(registry, reordered, [PUBLISHED])
 
-    resolved, stages, reused = first
+    resolved, stages, reused = first.resolved, first.stages, first.reused
     assert resolved == [
         SOURCES_READY,
         RECORDS_READY,
@@ -385,7 +385,7 @@ def test_synthetic_materialization_and_semantic_units_are_golden_and_stable():
             ],
         ),
     ]
-    assert _unit_projection(second[1]) == _unit_projection(stages)
+    assert _unit_projection(second.stages) == _unit_projection(stages)
 
 
 def test_synthetic_stable_all_settled_is_ordered_and_failure_isolated():
@@ -544,7 +544,7 @@ def test_extracted_scheduler_materializes_transitions_and_finishes_generically()
         INDEX_READY,
         PUBLISHED,
     ]
-    assert state["reused_outcomes"] == [SOURCES_READY]
+    assert state["reused_capabilities"] == [SOURCES_READY]
     assert [stage["status"] for stage in state["stages"]] == [
         "succeeded",
         "succeeded",
@@ -759,7 +759,15 @@ def test_extracted_scheduler_preserves_domain_projected_next_outcomes():
     assert run["command"]["status"] == "completed_with_open_items"
 
 
-def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
+def test_generation_modes_redo_stale_reuse_current_and_force_full_closure():
+    """``stale`` is a scheduling state, not a reuse state.
+
+    It was the other way round until the invalidation model was wired up:
+    ``stale`` described currency, nothing produced it, and the scheduler
+    deliberately reused it. Now an artifact that says its parent has moved is
+    the one thing besides a missing artifact that a ``reuse_existing`` run
+    redoes on its own, and the run records why.
+    """
     catalog = SyntheticCatalog(
         ready_outcomes=frozenset(
             {SOURCES_READY, RECORDS_READY, PREVIEW_READY, INDEX_READY}
@@ -780,17 +788,17 @@ def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
     reused = reuse_runner.materialize([PUBLISHED])
 
     assert reused["generation_mode"] == "reuse_existing"
-    assert reused["stages"] == []
-    assert reused["reused_outcomes"] == [
+    assert [stage["capability"] for stage in reused["stages"]] == [PUBLISHED]
+    assert reused["stages"][0]["scheduled_because"] == "stale"
+    assert reused["reused_capabilities"] == [
         SOURCES_READY,
         RECORDS_READY,
         PREVIEW_READY,
         INDEX_READY,
-        PUBLISHED,
     ]
-    assert reused["reused_outcome_details"] == [
+    assert reused["reused_capability_details"] == [
         {"capability": capability_id, "currency_status": "not_assessed"}
-        for capability_id in reused["reused_outcomes"]
+        for capability_id in reused["reused_capabilities"]
     ]
 
     force_run = {"id": "force", "command": {"status": "queued"}}
@@ -806,7 +814,7 @@ def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
     forced = force_runner.materialize([PUBLISHED], generation_mode="force")
 
     assert forced["generation_mode"] == "force"
-    assert forced["reused_outcomes"] == []
+    assert forced["reused_capabilities"] == []
     assert [stage["capability"] for stage in forced["stages"]] == [
         SOURCES_READY,
         RECORDS_READY,
@@ -814,6 +822,92 @@ def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
         INDEX_READY,
         PUBLISHED,
     ]
+    assert {stage["scheduled_because"] for stage in forced["stages"]} == {"forced"}
+
+
+SOURCES_BASIS = "catalog:sources"
+
+
+def _edge_registry(invalidate_on: tuple[str, ...]) -> workflow.CapabilityRegistry:
+    """Two capabilities and one edge, with the read relationship a parameter.
+
+    ``RECORDS_READY`` always *depends on* ``SOURCES_READY``. Whether it also
+    declares the basis that capability writes is what these tests vary, because
+    that — and not the edge — is what decides whether settled work is redone.
+    """
+    registry = workflow.CapabilityRegistry({SOURCES_BASIS: (SOURCES_READY,)})
+    registry.register(
+        workflow.Capability(
+            id=SOURCES_READY,
+            stage_id="stage:catalog-sources",
+            title="Discover catalog sources",
+            worker_kind="synthetic.discover_sources",
+            depends_on=(),
+            readiness=_readiness(SOURCES_READY),
+            expand_units=_single_unit(
+                "source:catalog", "catalog_source", "Discover", {"source": "catalog"}
+            ),
+        )
+    )
+    registry.register(
+        workflow.Capability(
+            id=RECORDS_READY,
+            stage_id="stage:catalog-records",
+            title="Normalize catalog records",
+            worker_kind="synthetic.normalize_record",
+            depends_on=(SOURCES_READY,),
+            readiness=_readiness(RECORDS_READY),
+            expand_units=_single_unit(
+                "record:catalog", "catalog_record", "Normalize", {"record": "all"}
+            ),
+            invalidate_on=invalidate_on,
+        )
+    )
+    return registry
+
+
+def test_every_recorded_reason_is_one_the_scheduler_declares():
+    """The four reasons are a closed set, and the frontend types mirror it."""
+
+    for mode, catalog in (
+        ("reuse_existing", SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))),
+        ("force", SyntheticCatalog(ready_outcomes=frozenset())),
+    ):
+        plan = workflow.materialize(
+            synthetic_registry(), catalog, [PUBLISHED], generation_mode=mode
+        )
+        assert plan.stages
+        for stage in plan.stages:
+            assert stage["scheduled_because"] in workflow.SCHEDULED_BECAUSE
+        for detail in plan.reused_details:
+            assert detail["currency_status"] in workflow.CURRENCY_STATUSES
+
+
+def test_a_scheduled_dependency_that_is_not_a_declared_parent_is_still_reused():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({RECORDS_READY}))
+
+    plan = workflow.materialize(_edge_registry(()), catalog, [RECORDS_READY])
+
+    # The edge orders the run and nothing more: sources are being discovered,
+    # and the settled records are handed on untouched.
+    assert [stage["capability"] for stage in plan.stages] == [SOURCES_READY]
+    assert plan.reused == [RECORDS_READY]
+
+
+def test_a_scheduled_producer_of_a_declared_parent_redoes_the_work():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({RECORDS_READY}))
+
+    plan = workflow.materialize(
+        _edge_registry((SOURCES_BASIS,)), catalog, [RECORDS_READY]
+    )
+
+    assert [stage["capability"] for stage in plan.stages] == [
+        SOURCES_READY,
+        RECORDS_READY,
+    ]
+    assert plan.reused == []
+    assert plan.stages[1]["scheduled_because"] == "parent_rescheduled"
+    assert plan.stages[1]["scheduled_because_refs"] == [SOURCES_READY]
 
 
 def test_generation_mode_normalization_is_explicit_and_deterministic():

@@ -14,7 +14,7 @@ import pytest
 from app import assistant, assistant_chats, llm, workspaces
 from app.agent import agent_loop, loop_tools, routing, runner, store
 from app.workspaces import WorkspaceError
-from conftest import FakeAgentLLM, wait_run
+from conftest import FakeAgentLLM, stamp_planning_cycle, wait_run
 
 
 APM_OUTCOME = "planning.apm_ready"
@@ -590,7 +590,15 @@ NO_CHANGE = {
 
 
 def _assessed_workspace(ws):
-    """A workspace with a memorandum, a matrix row, and a new document."""
+    """A settled plan — memorandum, cycle, matrix row — and a new document.
+
+    The cycle is part of what "settled" means now. ``planning.change_assessed``
+    declares the memorandum and the matrix as dependencies, so a request for an
+    assessment carries their closure: an engagement whose cycle had never been
+    designed would have one designed, and the matrix redrawn from it, before
+    anything was assessed. That is the right answer for a half-planned
+    engagement and the wrong fixture for a question about assessment.
+    """
 
     from app import documents
 
@@ -608,6 +616,7 @@ def _assessed_workspace(ws):
             "risk_rating": "high",
         }
     )
+    stamp_planning_cycle(ws)
     document = documents.add_document(
         ws, "policy.txt", b"Approvals above 50,000 require two signatures."
     )
