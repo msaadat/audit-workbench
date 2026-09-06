@@ -827,6 +827,11 @@ onMounted(() => { void focusAssertion() })
   border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
   background: var(--aw-panel);
 }
+/* The detail is the scroll container, and a flex column shrinks its items
+   before it agrees to scroll: the verdict bar, which clips its own overflow,
+   flattened to its two borders and the blocks below it rode up over the text
+   above them. Nothing in this column compresses — it scrolls instead. */
+.detail > * { flex: none; }
 .detail-head { display: flex; align-items: flex-start; gap: 1rem; min-width: 0; }
 .head-copy { display: flex; flex-direction: column; gap: .25rem; flex: 1; min-width: 0; }
 .eyebrow { margin: 0; }
