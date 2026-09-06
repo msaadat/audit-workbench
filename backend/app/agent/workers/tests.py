@@ -83,6 +83,24 @@ def _source_items(request: WorkerRequest, source_id: str) -> list[object]:
     return [item.content for item in request.context.items if item.source_id == source_id]
 
 
+def _supplied_evidence_schemas(request: WorkerRequest) -> list[object]:
+    """The induced field vocabulary supplied for this row's document types.
+
+    One source item carrying the scoped set, so this unwraps rather than
+    collects. Absent on an engagement that has induced no schema, which is the
+    ordinary state of one holding no transaction evidence; the turn then writes
+    its questions from the document identities alone, as it did before this
+    source existed.
+    """
+
+    for item in _source_items(request, GENERATE_SCHEMA_SOURCE_ID):
+        if isinstance(item, Mapping):
+            schemas = item.get("schemas")
+            if isinstance(schemas, (list, tuple)):
+                return [_plain_json(entry) for entry in schemas]
+    return []
+
+
 def _model_transaction_manifest(value: object) -> object:
     """Project only decision-relevant facts about the approved rules.
 
@@ -210,7 +228,14 @@ def _relevant_table_schemas(
 
 
 def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[object]:
-    """Keep the six documents with the strongest lexical fit to one RCM row."""
+    """Keep the six documents with the strongest lexical fit to one RCM row.
+
+    ``document_type`` joined the scored fields when evidence documents stopped
+    carrying a summary. It is the stronger signal of the two in any case: a
+    filename is whatever the entity's file server called it, while the type is
+    what this engagement decided the document *is*, and it is the term a row's
+    requirement uses when it names a record.
+    """
     if not isinstance(rcm_row, Mapping):
         return [_plain_json(value) for value in raw_documents[:6]]
     query_parts = [
@@ -228,7 +253,7 @@ def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[ob
         document_tokens = set().union(
             *(
                 relevance_tokens(raw.get(key))
-                for key in ("title", "source", "category", "summary")
+                for key in ("title", "source", "category", "document_type", "summary")
             )
         )
         ranked.append((len(query_tokens & document_tokens), -index, raw))
@@ -278,6 +303,10 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         if needs_documents
         else []
     )
+    # What a document of each supplied type states. Withheld with the documents
+    # themselves: a vocabulary for records this row was not given is a set of
+    # fields the turn can name and nothing to attach them to.
+    evidence_schemas = _supplied_evidence_schemas(request) if documents else []
     allowed_variants = []
     if table_schemas:
         allowed_variants.append("data")
@@ -310,6 +339,7 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         "planning_context": planning,
         "table_schemas": table_schemas,
         "documents": documents,
+        "evidence_schemas": evidence_schemas,
         "transaction_evidence": _model_transaction_manifest(transaction_evidence),
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
         "allowed_test_variants": allowed_variants,
@@ -462,6 +492,14 @@ Return JSON with a non-empty `tests` array. A test is one of:
 2. Document question: source `document`, title, objective, and non-empty
    question-mode steps using only supplied document ids. A missing-evidence step
    has an empty document_ids array and a specific missing_evidence string.
+
+   `documents` says which documents exist, and each carries `document_type`.
+   `evidence_schemas` says what a document of that type states: every field it
+   carries, with its role and value type. Write the question against the
+   schema's field names, and name the documents of that type in document_ids.
+   A field the schema does not list is a field no document of that type
+   records, so a question about it is unanswerable — say so with
+   missing_evidence rather than asking it.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
    requirement_refs, procedure_key, and selection. It has no assertions,
    definition, roles, or steps: the roles, the join keys and the assertions were
@@ -513,6 +551,7 @@ GENERATE_ROW_SOURCE_ID = "rcm_row"
 GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
 GENERATE_TABLE_SOURCE_ID = "table_metadata"
 GENERATE_DOCUMENT_SOURCE_ID = "documents"
+GENERATE_SCHEMA_SOURCE_ID = "evidence_schemas"
 GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID = "transaction_evidence"
 _GENERATE_SOURCES = {"data", "document"}
 _GENERATE_COMMON_FIELDS = ("source", "title", "objective", "steps")

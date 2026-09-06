@@ -219,6 +219,64 @@ def test_steps_endpoint_pairs_each_stage_with_its_rollback_target(
     assert all(step["settled"] for step in payload["steps"])
 
 
+def test_workspace_steps_consolidate_every_run_into_one_ledger(
+    client, workspace_with_data,
+):
+    """The list rollback is offered from is the workspace's, not one run's.
+
+    Two runs, one of which re-runs a stage the other already ran. The console
+    used to show whichever run was selected — one step under a badge counting
+    every restore point in the workspace — so the consolidation is what the
+    numbers agreeing again depends on.
+    """
+    ws = workspace_with_data
+    from app.agent import store as agent_store
+
+    def _run(stage_id, capability, title):
+        run = agent_store.new_command_run(ws, "auto", {"source": "chat", "text": "go"})
+        run["engine"] = "workflow"
+        run["workflow"] = {"stages": [{
+            "id": stage_id, "capability": capability, "title": title,
+            "status": "succeeded", "units": [{"id": "u", "result_refs": []}],
+        }]}
+        agent_store.save_run(ws, run)
+        _capture(ws, run_id=run["id"], stage_id=stage_id, capability=capability)
+        return run["id"]
+
+    first = _run("cycle", "planning.cycle_ready", "Cycle design")
+    second = _run("rcm", "planning.rcm_ready", "Matrix")
+    third = _run("cycle", "planning.cycle_ready", "Cycle design")
+
+    payload = client.get(f"/api/workspaces/{ws.id}/debug/steps").json()
+
+    assert payload["scope"] == "workspace"
+    assert [step["run_id"] for step in payload["steps"]] == [first, second, third]
+    assert payload["step_count"] == 3
+    assert payload["rollback_count"] == 3
+    assert payload["usage"]["checkpoints"] == 3
+    # A re-run stage keeps both attempts: each has its own restore point.
+    cycles = [step for step in payload["steps"] if step["stage_id"] == "cycle"]
+    assert [(step["attempt"], step["attempts"], step["latest"]) for step in cycles] == [
+        (1, 2, False), (2, 2, True),
+    ]
+    assert [step["index"] for step in payload["steps"]] == [0, 1, 2]
+
+
+def test_workspace_steps_still_offer_a_checkpoint_whose_run_record_is_gone(
+    client, workspace_with_data,
+):
+    """A restore point the list does not draw is a restore point nobody has."""
+    ws = workspace_with_data
+    _capture(ws, run_id="run-deleted", stage_id="stage-9", label="Orphaned step")
+
+    payload = client.get(f"/api/workspaces/{ws.id}/debug/steps").json()
+
+    assert [step["stage_id"] for step in payload["steps"]] == ["stage-9"]
+    assert payload["steps"][0]["orphan"] is True
+    assert payload["steps"][0]["checkpoint"]["run_id"] == "run-deleted"
+    assert payload["rollback_count"] == payload["usage"]["checkpoints"] == 1
+
+
 def test_restore_over_the_api_requires_the_typed_confirmation(
     client, workspace_with_data,
 ):

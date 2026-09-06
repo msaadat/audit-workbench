@@ -494,7 +494,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   audit-shaped glue: which worker/executor and declared context a unit uses,
   approval items, post-commit bookkeeping, checkpoint handlers, and the audit
   completion projection.
-- The audit graph is 29 capabilities and is documented stage by stage —
+- The audit graph is 30 capabilities and is documented stage by stage —
   dependencies, readiness rules, unit expansions, per-stage context, worker and
   executor bindings, input/output shapes, budgets, and the on-disk sidecars — in
   [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md). Its structure in
@@ -972,6 +972,25 @@ npm run build
   (the `attribute` and `review` builders always route to manual review, so
   generating them buys nothing). `SCHEMA_VERSION` is 3 and there is no
   migration — a pre-3 workspace keeps its rows and loses its planned tests.
+- **Test generation reads evidence documents as schemas, not as prose.**
+  `tests.generate` was the one turn that read transaction-evidence text for
+  something other than reading that document, and it was the largest document
+  consumer in the system — measured over the shipped workspaces, 1,026,773
+  characters of evidence summaries and citations across 83 units. Its
+  `documents` source now carries an evidence document's identity and its
+  `document_type`; a second declared source, `evidence_schemas`, carries what a
+  document of that type *states*, once per type, under
+  `allow_document_schemas` and through the same `schema_catalog` projection
+  `tests.cycle_linkage` uses. Planning material keeps its summary — a policy has
+  no induced schema, and its prose is the thing being reasoned about rather than
+  one sample of a population. The schemas are scoped to the row: the types its
+  `transaction_cycle` comparisons name, else a weighted lexical match over type
+  name, discriminator and field labels, else every type. Scoping is what makes
+  the trade pay where documents do not collapse into a few types; unscoped it
+  cost more than it saved on a 1:1 engagement. `documents.schemas_stamped` was
+  already in `tests.specified`'s dependency closure, so no edge was added.
+  Details and the measured per-workspace effect are in
+  [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md).
 - The matrix is written against a **cycle**, and its transaction-cycle evidence
   is contracted by a **ruleset**. `planning.cycle_ready` reads the process flow
   out of the memorandum alone — no extraction, so it sits in front of the matrix

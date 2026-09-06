@@ -74,13 +74,15 @@ function severity(status: string) {
 async function loadAll() {
   loading.value = true
   try {
-    const [summary, runPage, callPage, eventPage] = await Promise.all([
+    const [summary, runPage, callPage, eventPage, stepPage] = await Promise.all([
       api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/overview`),
       api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs?limit=250`),
       api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/calls?limit=250`),
       api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/events?limit=250`),
+      api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/steps`),
     ])
     overview.value = summary; runs.value = runPage.items; calls.value = callPage.items; events.value = eventPage.items
+    steps.value = stepPage
     if (!selectedRunId.value && runs.value.length) selectedRunId.value = runs.value[0].id
     await loadRun()
     const callId = String(route.query.call || '')
@@ -91,11 +93,8 @@ async function loadAll() {
   finally { loading.value = false }
 }
 async function loadRun() {
-  if (!selectedRunId.value) { detail.value = null; steps.value = null; return }
-  ;[detail.value, steps.value] = await Promise.all([
-    api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs/${selectedRunId.value}`),
-    api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs/${selectedRunId.value}/steps`),
-  ])
+  if (!selectedRunId.value) { detail.value = null; return }
+  detail.value = await api.get<AnyRecord>(`/api/workspaces/${props.id}/debug/runs/${selectedRunId.value}`)
 }
 
 function formatBytes(value: unknown) {
@@ -103,6 +102,30 @@ function formatBytes(value: unknown) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * The consolidated step ledger: every step this engagement has taken, in the
+ * order it took them, whichever run ran it.
+ *
+ * Rollback rewinds the *workspace*, so the list it is offered from is the
+ * workspace's. Scoping it to the selected run reported sixteen restore points
+ * over a list of one step, which read as a bug in the console rather than as
+ * two different questions being answered in one header.
+ */
+const stepList = computed<AnyRecord[]>(() => steps.value?.steps || [])
+
+/** Unique per execution: a stage that ran twice is two rows, not one. */
+function stepKey(step: AnyRecord) { return `${step.run_id}:${step.stage_id}:${step.index}` }
+
+/** The run a step came from, in the same clock format the run picker uses. */
+function stepRunLabel(step: AnyRecord) {
+  const match = String(step.run_id || '').match(/^\d{8}-(\d{2})(\d{2})(\d{2})-/)
+  return match ? `${match[1]}:${match[2]}:${match[3]}` : String(step.run_id || '').slice(0, 12)
+}
+async function openRun(step: AnyRecord) {
+  if (!step.run_id) return
+  selectedRunId.value = String(step.run_id); view.value = 'timeline'; await syncQuery()
 }
 
 /**
@@ -129,11 +152,17 @@ async function rollBack(step: AnyRecord) {
     plan.removed.length ? `${plan.removed.length} created since then deleted` : '',
   ].filter(Boolean)
   const sample = plan.removed.slice(0, 3).join(', ')
+  // The ledger is consolidated, so a row is rarely the last thing that ran.
+  // Everything below it in the list is undone with it, and the count of those
+  // steps is the part an auditor recognises — file counts alone do not say
+  // "this also discards the report".
+  const later = stepList.value.filter(item => item.index > step.index).length
   confirm.require({
     header: `Roll back “${step.title || step.capability}”?`,
     icon: 'pi pi-history',
     message: [
       `The engagement returns to the state it was in before this step ran: ${parts.join(', ')}.`,
+      later ? ` The ${later} step${later === 1 ? '' : 's'} that ran after it ${later === 1 ? 'is' : 'are'} undone with it.` : '',
       plan.removed.length ? ` Deleted: ${sample}${plan.removed.length > 3 ? ` and ${plan.removed.length - 3} more` : ''}.` : '',
       ' Imported data, agent run history and chats are not affected.',
     ].filter(Boolean).join(''),
@@ -141,7 +170,7 @@ async function rollBack(step: AnyRecord) {
     rejectLabel: 'Cancel',
     acceptProps: { severity: 'danger' },
     accept: async () => {
-      rollingBack.value = String(step.stage_id || '')
+      rollingBack.value = stepKey(step)
       try {
         const result = await api.post<AnyRecord>(
           `/api/workspaces/${props.id}/debug/checkpoints/${checkpoint.id}/restore?confirm=${encodeURIComponent(props.id)}`,
@@ -261,25 +290,35 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
           <div class="section-head">
             <div>
               <h2>Steps</h2>
-              <p>Each workflow step, and the checkpoint taken before it ran. Rolling one back returns the engagement's artifacts to that state.</p>
+              <p>Every step this engagement has taken, in the order it took them, and the checkpoint captured before each one ran. Rolling one back returns the engagement's artifacts to that state.</p>
             </div>
             <Tag
-              :value="steps?.checkpointing_enabled ? `${steps?.usage?.checkpoints || 0} checkpoints · ${formatBytes(steps?.usage?.blob_bytes)}` : 'Checkpointing off'"
+              :value="steps?.checkpointing_enabled ? `${steps?.rollback_count ?? 0} of ${steps?.step_count ?? 0} steps restorable · ${formatBytes(steps?.usage?.blob_bytes)}` : 'Checkpointing off'"
               :severity="steps?.checkpointing_enabled ? 'info' : 'warn'"
             />
           </div>
           <p v-if="steps?.notice" class="notice"><i class="pi pi-info-circle"/>{{ steps.notice }}</p>
           <article class="panel step-list">
-            <div v-for="step in steps?.steps || []" :key="step.stage_id" class="step" :class="{ settled: step.settled }">
+            <!-- Not scoped to the run picker: rollback rewinds the workspace,
+                 so the ledger it is offered from is the workspace's. Each row
+                 names the run it came from and links to it. -->
+            <div v-for="step in stepList" :key="stepKey(step)" class="step" :class="{ settled: step.settled, superseded: step.attempts > 1 && !step.latest }">
               <span class="step-index">{{ step.index + 1 }}</span>
               <div class="step-body">
-                <strong>{{ step.title || step.capability }}</strong>
+                <strong>
+                  {{ step.title || step.capability }}
+                  <span v-if="step.attempts > 1" class="attempt" v-tooltip.top="'This step ran more than once. Each attempt keeps its own restore point.'">attempt {{ step.attempt }} of {{ step.attempts }}</span>
+                </strong>
                 <small>
+                  <button class="run-chip" v-tooltip.top="`${step.run_id} · ${step.run_status || 'unknown'}`" @click="openRun(step)">
+                    <i class="pi pi-play-circle"/>{{ stepRunLabel(step) }}
+                  </button>
                   <code>{{ step.capability }}</code>
                   · {{ step.unit_count }} unit{{ step.unit_count === 1 ? '' : 's' }}
                   <template v-if="step.result_refs.length"> · {{ step.result_refs.length }} artifact{{ step.result_refs.length === 1 ? '' : 's' }}</template>
                   <template v-if="step.duration_ms"> · {{ formatMs(step.duration_ms) }}</template>
                 </small>
+                <small v-if="step.orphan" class="step-error"><i class="pi pi-info-circle"/>The run record for this step is gone; its restore point still works.</small>
                 <small v-if="step.error" class="step-error"><i class="pi pi-exclamation-triangle"/>{{ step.error }}</small>
               </div>
               <Tag :value="step.status" :severity="severity(step.status)"/>
@@ -290,7 +329,7 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
                 severity="danger"
                 outlined
                 size="small"
-                :loading="rollingBack === step.stage_id"
+                :loading="rollingBack === stepKey(step)"
                 v-tooltip.left="`Restore the ${step.checkpoint.file_count} files captured before this step ran`"
                 @click="rollBack(step)"
               />
@@ -301,7 +340,7 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
                 <i class="pi pi-ban"/>No checkpoint
               </span>
             </div>
-            <p v-if="!(steps?.steps || []).length && !steps?.notice" class="empty">This run scheduled no workflow steps.</p>
+            <p v-if="!stepList.length && !steps?.notice" class="empty">This workspace has run no workflow steps.</p>
           </article>
         </section>
 
@@ -349,5 +388,10 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
 .step-body code{font-size:var(--aw-text-xs)}
 .step-error{color:var(--aw-danger)!important;display:flex;gap:.35rem;align-items:baseline}
 .no-checkpoint{display:flex;gap:.35rem;align-items:center;color:var(--aw-muted);font-size:var(--aw-text-xs);white-space:nowrap}
+.step.superseded .step-index{background:var(--aw-canvas);color:var(--aw-muted)}
+.step-body strong{display:flex;gap:.5rem;align-items:baseline;min-width:0}
+.attempt{flex:0 0 auto;color:var(--aw-muted);font-size:var(--aw-text-2xs);font-weight:600}
+.run-chip{display:inline-flex;gap:.3rem;align-items:center;margin-right:.35rem;padding:.05rem .35rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:var(--aw-canvas);color:var(--aw-muted-strong);font:11px 'JetBrains Mono Variable',monospace;cursor:pointer}
+.run-chip:hover{border-color:var(--aw-teal-600);color:var(--aw-teal)}
 @media(max-width:950px){.step{grid-template-columns:1.75rem minmax(0,1fr);row-gap:.4rem}.step>:nth-child(3),.step>:nth-child(4){grid-column:2}}
 </style>

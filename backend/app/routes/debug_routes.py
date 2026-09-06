@@ -38,6 +38,18 @@ def run_detail(workspace_id: str, run_id: str):
     return debug_service.run_detail(workspaces.load_workspace(workspace_id), run_id)
 
 
+@router.get("/steps")
+def workspace_steps(workspace_id: str, limit: int = 200):
+    """Every step this engagement has taken, consolidated across its runs.
+
+    Rollback is a workspace operation, so the list the console offers it from
+    is a workspace list. The per-run projection below still exists for callers
+    that ask about one run.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    return debug_service.workspace_steps(ws, limit=max(1, min(500, limit)))
+
+
 @router.get("/runs/{run_id}/steps")
 def run_steps(workspace_id: str, run_id: str):
     """The run's workflow steps, each joined to the checkpoint that precedes it."""

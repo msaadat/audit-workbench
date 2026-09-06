@@ -303,8 +303,139 @@ def run_detail(workspace: Workspace, run_id: str) -> dict:
     }
 
 
+def _stage_step(position: int, stage: dict, checkpoint: dict | None) -> dict:
+    """One workflow stage, projected into the row the console draws."""
+    units = stage.get("units") or []
+    return {
+        "index": position,
+        "stage_id": stage.get("id"),
+        "capability": stage.get("capability"),
+        "title": stage.get("title"),
+        "status": stage.get("status"),
+        "settled": stage.get("status") in SETTLED_STAGE_STATUSES,
+        "started_at": stage.get("started_at"),
+        "finished_at": stage.get("finished_at"),
+        "duration_ms": _ms(stage.get("started_at"), stage.get("finished_at")),
+        "unit_count": len(units),
+        "result_refs": [ref for unit in units for ref in unit.get("result_refs") or []],
+        "error": next(
+            (unit.get("error") for unit in units if unit.get("error")), None
+        ),
+        "checkpoint": checkpoint,
+    }
+
+
+def _rollback_targets(workspace: Workspace, run_id: str) -> dict[str, dict]:
+    """A run's checkpoints keyed by the stage each one precedes.
+
+    Oldest first, so a re-run stage keeps the earliest restore point it still
+    has: that is the state before the step first touched anything.
+    """
+    by_stage: dict[str, dict] = {}
+    for item in checkpoints.list_for_run(workspace, run_id):
+        by_stage.setdefault(str(item.get("stage_id") or ""), item)
+    return by_stage
+
+
+def _run_ref(summary: dict) -> dict:
+    """Which run a step came from — carried on the row, not around the list."""
+    return {
+        "run_id": summary.get("id"),
+        "run_status": summary.get("status"),
+        "run_kind": summary.get("kind"),
+        "run_at": summary.get("started") or summary.get("created"),
+    }
+
+
+def _orphan_step(checkpoint: dict) -> dict:
+    """A restore point whose step can no longer be described.
+
+    Its run record was deleted, or the stage it names is no longer in that
+    run's workflow. The checkpoint itself is intact and restoring it still
+    works, so it is drawn from what the checkpoint row knows rather than
+    dropped — a rollback target the console does not list is a rollback target
+    the operator does not have.
+    """
+    return {
+        "index": 0,
+        "stage_id": checkpoint.get("stage_id"),
+        "capability": checkpoint.get("capability"),
+        "title": checkpoint.get("label") or checkpoint.get("stage_id"),
+        "status": "unknown",
+        "settled": False,
+        "started_at": checkpoint.get("captured_at"),
+        "finished_at": None,
+        "duration_ms": 0.0,
+        "unit_count": 0,
+        "result_refs": [],
+        "error": None,
+        "checkpoint": checkpoint,
+        "run_id": checkpoint.get("run_id"),
+        "run_status": None,
+        "run_kind": None,
+        "run_at": checkpoint.get("captured_at"),
+        "orphan": True,
+    }
+
+
+def _utc(value: str | None) -> datetime | None:
+    parsed = _dt(value)
+    if parsed is None: return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _step_order(step: dict, sequence: dict[str, int]):
+    """Wall-clock order, which is also rollback order.
+
+    Restoring a checkpoint undoes everything that happened after it, so the
+    list has to run in the order the workspace actually moved through — not in
+    per-run order, which would interleave two runs into nonsense.
+
+    Two runs can share a timestamp to the millisecond, and a stage that never
+    started has only its run's clock to go on. The tiebreak is the order the
+    checkpoint store wrote its rows, which is monotonic and real: it is the
+    order the steps actually took their restore points. A step with no
+    checkpoint has no such evidence and sorts after the ones that do.
+    """
+    when = (
+        _utc(step.get("started_at"))
+        or _utc(step.get("run_at"))
+        or _utc((step.get("checkpoint") or {}).get("captured_at"))
+    )
+    checkpoint = step.get("checkpoint") or {}
+    return (
+        when or _EPOCH,
+        sequence.get(str(checkpoint.get("id")), len(sequence)),
+        str(step.get("run_id") or ""),
+        int(step.get("index") or 0),
+    )
+
+
+def _number_attempts(rows: list[dict]) -> None:
+    """Mark each row as attempt *n* of *m* for its stage.
+
+    A stage that ran twice is two rows, not one. Each attempt captured its own
+    restore point and they land the workspace in different states, so folding
+    them together would quietly retire the older one.
+    """
+    totals: dict[str, int] = {}
+    for step in rows:
+        key = str(step.get("stage_id") or step.get("capability") or "")
+        totals[key] = totals.get(key, 0) + 1
+    seen: dict[str, int] = {}
+    for step in rows:
+        key = str(step.get("stage_id") or step.get("capability") or "")
+        seen[key] = seen.get(key, 0) + 1
+        step["attempt"] = seen[key]
+        step["attempts"] = totals[key]
+        step["latest"] = seen[key] == totals[key]
+
+
 def run_steps(workspace: Workspace, run_id: str) -> dict:
-    """A run's steps in execution order, each with its rollback target.
+    """One run's steps in execution order, each with its rollback target.
 
     "Step" is the workflow stage — one capability of the audit graph — which is
     what the engagement is actually built out of. The console's plan graph reads
@@ -317,36 +448,22 @@ def run_steps(workspace: Workspace, run_id: str) -> dict:
     or whose restore point has aged out under the retention cap — is reported
     with ``checkpoint: None`` rather than being hidden, because a step that
     cannot be rolled back is exactly what an operator needs told.
+
+    This is the single-run scope, kept for callers that ask about one run.
+    The console draws `workspace_steps` instead.
     """
     run = agent_store.load_run(workspace, run_id)
     stages = list((run.get("workflow") or {}).get("stages") or [])
-    by_stage: dict[str, dict] = {}
-    for item in checkpoints.list_for_run(workspace, run_id):
-        # Oldest first, so a re-run stage keeps the earliest restore point it
-        # still has: that is the state before the step first touched anything.
-        by_stage.setdefault(str(item.get("stage_id") or ""), item)
-    steps = []
-    for position, stage in enumerate(stages):
-        units = stage.get("units") or []
-        steps.append({
-            "index": position,
-            "stage_id": stage.get("id"),
-            "capability": stage.get("capability"),
-            "title": stage.get("title"),
-            "status": stage.get("status"),
-            "settled": stage.get("status") in SETTLED_STAGE_STATUSES,
-            "started_at": stage.get("started_at"),
-            "finished_at": stage.get("finished_at"),
-            "duration_ms": _ms(stage.get("started_at"), stage.get("finished_at")),
-            "unit_count": len(units),
-            "result_refs": [ref for unit in units for ref in unit.get("result_refs") or []],
-            "error": next(
-                (unit.get("error") for unit in units if unit.get("error")), None
-            ),
-            "checkpoint": by_stage.get(str(stage.get("id") or "")),
-        })
+    by_stage = _rollback_targets(workspace, run_id)
+    steps = [
+        _stage_step(position, stage, by_stage.get(str(stage.get("id") or "")))
+        for position, stage in enumerate(stages)
+    ]
+    _number_attempts(steps)
     return {
+        "scope": "run",
         "run_id": run_id,
+        "run_count": 1,
         "engine": run.get("engine"),
         "status": run.get("status"),
         "steps": steps,
@@ -357,6 +474,66 @@ def run_steps(workspace: Workspace, run_id: str) -> dict:
         "notice": None if stages else (
             "This run has no workflow stages. Action-ledger and intake runs record"
             " their work as actions, which the plan graph shows."
+        ),
+    }
+
+
+def workspace_steps(workspace: Workspace, limit: int = 200) -> dict:
+    """Every step this engagement has taken, oldest first, across all runs.
+
+    The unit of rollback is the *workspace*. A checkpoint restores the
+    engagement's artifacts; the run that captured it is only where it came
+    from, and by the time an auditor wants a step undone they are thinking
+    about the engagement record, not about which of five runs happened to
+    write it. Scoping the list to one selected run therefore answered a
+    question nobody asked — sixteen restore points reported above a list of
+    one step — so the record is consolidated the way the engagement record is:
+    one row per step the engagement actually took, in the order it took them.
+
+    Ordering is wall-clock rather than per-run, because that is the order a
+    rollback reasons about: restoring row *n* discards everything below it.
+    """
+    summaries = agent_store.list_runs(workspace)[:limit]
+    stored = checkpoints.list_all(workspace)
+    sequence = {str(item.get("id")): position for position, item in enumerate(stored)}
+    rows: list[dict] = []
+    claimed: set[str] = set()
+    for summary in summaries:
+        run_id = str(summary.get("id") or "")
+        try:
+            run = agent_store.load_run(workspace, run_id)
+        except WorkspaceError:
+            continue
+        by_stage = _rollback_targets(workspace, run_id)
+        for position, stage in enumerate((run.get("workflow") or {}).get("stages") or []):
+            checkpoint = by_stage.get(str(stage.get("id") or ""))
+            step = _stage_step(position, stage, checkpoint)
+            step.update(_run_ref(summary))
+            if checkpoint:
+                claimed.add(str(checkpoint.get("id")))
+            rows.append(step)
+    for checkpoint in stored:
+        if str(checkpoint.get("id")) not in claimed:
+            rows.append(_orphan_step(checkpoint))
+    rows.sort(key=lambda step: _step_order(step, sequence))
+    for position, step in enumerate(rows):
+        step["index"] = position
+    _number_attempts(rows)
+    return {
+        "scope": "workspace",
+        "run_id": None,
+        "run_count": len(summaries),
+        "steps": rows,
+        # What the list holds against what the store holds. They differ when a
+        # stage captured more than one checkpoint in a single run, and saying
+        # both is cheaper than explaining the gap.
+        "step_count": len(rows),
+        "rollback_count": sum(1 for step in rows if step.get("checkpoint")),
+        "checkpointing_enabled": checkpoints.enabled(),
+        "usage": checkpoints.usage(workspace),
+        "notice": None if rows else (
+            "No workflow steps have run in this workspace yet. Action-ledger and"
+            " intake runs record their work as actions, which the plan graph shows."
         ),
     }
 

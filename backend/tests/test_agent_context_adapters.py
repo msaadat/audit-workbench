@@ -11,6 +11,7 @@ from app import (
     doc_tests,
     document_analysis,
     document_context,
+    document_schemas,
     documents,
     methodology,
     templates_store,
@@ -600,6 +601,9 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
         "table_metadata",
         "transaction_evidence",
         "documents",
+        # What a document of each supplied type states, once per type rather
+        # than once per document.
+        "evidence_schemas",
         "methodology",
         # Optional, and absent on every run the workflow schedules for itself.
         "instruction",
@@ -607,7 +611,7 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
     # The one target row is required; every material source is not, since the
     # model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, True, False, False, False,
+        True, True, False, True, False, False, False, False,
     ]
     # Generation reads schema metadata and document text — never a table row —
     # since it decides both Data and Document Test sources itself.
@@ -615,6 +619,8 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
     assert spec.privacy.allow_table_profiles is False
     assert spec.privacy.allow_document_text is True
     assert spec.privacy.allow_table_rows is False
+    # The induced field vocabulary, and never the text it was induced from.
+    assert spec.privacy.allow_document_schemas is True
 
 
 def test_test_generate_scope_supplies_one_target_row_and_citable_methodology():
@@ -680,6 +686,10 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
     documents.add_document(
         workspace, "Approval.txt", b"Management approved.", category="evidence"
     )
+    documents.add_document(
+        workspace, "Policy.txt", b"Payments are approved by two people.",
+        category="policy",
+    )
     row = workspace.add_rcm(
         {"process": "AP", "risk": "Duplicate payments", "control": "Duplicate check"}
     )
@@ -688,20 +698,151 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
 
     assert {key for key, value in scope.candidates.items() if value} == {
         "planning_context",
-            "rcm_row",
-            "table_metadata",
-            "transaction_evidence",
-            "documents",
-        }
+        "rcm_row",
+        "table_metadata",
+        "transaction_evidence",
+        "documents",
+    }
     table_names = {
         candidate.metadata.get("table") for candidate in scope.candidates["table_metadata"]
     }
     assert "transactions" in table_names
+    supplied = {
+        candidate.metadata["category"]: candidate.representations["summary"]
+        for candidate in scope.candidates["documents"]
+    }
     # A document with no analysis and no planning-relevant flag is still
-    # selectable evidence for a step.
-    supplied = scope.candidates["documents"][0].representations["summary"]
-    assert supplied["summary"] == ""
-    assert supplied["id"]
+    # selectable evidence for a step, and still carries the identity a step
+    # names it by.
+    assert supplied["evidence"]["id"]
+    # Transaction evidence contributes identity and type only: what a document
+    # of that type states is the ``evidence_schemas`` source's answer, given
+    # once per type instead of once per document.
+    assert "summary" not in supplied["evidence"]
+    assert "citations" not in supplied["evidence"]
+    assert "document_type" in supplied["evidence"]
+    # Planning material keeps its prose. A policy has no induced schema that
+    # could stand in for it, and its text is the thing being reasoned about
+    # rather than one sample of a population.
+    assert supplied["policy"]["summary"] == ""
+    assert "citations" in supplied["policy"]
+    # This engagement has induced no schema, so the new source is simply absent
+    # and the turn writes its questions from the identities alone.
+    assert scope.candidates["evidence_schemas"] == ()
+
+
+_GENERATE_INVOICE_FIELDS = [
+    {"name": "invoice_number", "role": "identifier", "value_type": "identifier",
+     "cardinality": "one", "verbatim": True, "confidence": "high",
+     "label": "Invoice number"},
+    {"name": "total_amount", "role": "attribute", "value_type": "number",
+     "cardinality": "one", "verbatim": True, "confidence": "high",
+     "label": "Total amount"},
+]
+_GENERATE_RECEIPT_FIELDS = [
+    {"name": "receipt_number", "role": "identifier", "value_type": "identifier",
+     "cardinality": "one", "verbatim": True, "confidence": "high",
+     "label": "Goods receipt number"},
+]
+
+
+def _generate_schema_workspace(name):
+    """A workspace holding two induced types and one imported population."""
+
+    workspace = workspaces.create_workspace(name)
+    document_schemas.save_schema(
+        workspace, "vendor_invoice", _GENERATE_INVOICE_FIELDS
+    )
+    document_schemas.save_schema(
+        workspace, "goods_receipt", _GENERATE_RECEIPT_FIELDS
+    )
+    return workspace
+
+
+def test_test_generate_schema_candidates_take_the_types_the_row_names():
+    # A ``transaction_cycle`` attribute states the types its comparisons read.
+    # That is the row saying what it is about, so it is taken exactly and the
+    # lexical score never runs.
+    workspace = _generate_schema_workspace("Named types")
+    row = workspace.add_rcm({
+        "process": "Procure to pay",
+        "risk": "An invoice is paid for more than was received.",
+        "control": "Three-way match",
+        "control_attributes": [{
+            "key": "a1",
+            "assertion": "Existence",
+            "evidence_kind": "transaction_cycle",
+            "requirement": "Every paid invoice is matched to a goods receipt.",
+            "required_comparisons": [{
+                "key": "invoice_receipt_amount",
+                "left": {"document_type": "vendor_invoice", "field": "total_amount"},
+                "right": {"document_type": "goods_receipt", "field": "receipt_number"},
+                "rationale": (
+                    "The amount billed must be the amount the receipt records "
+                    "as delivered."
+                ),
+            }],
+        }],
+    })
+
+    candidates = context_adapters.test_generate_schema_candidates(workspace, row)
+
+    assert len(candidates) == 1
+    assert candidates[0].metadata["document_types"] == [
+        "vendor_invoice",
+        "goods_receipt",
+    ]
+    supplied = candidates[0].representations["cycle_schema"]["schemas"]
+    # The field vocabulary travels; nothing the schema was induced from does.
+    assert {entry["document_type"] for entry in supplied} == {
+        "vendor_invoice",
+        "goods_receipt",
+    }
+    assert {field["name"] for field in supplied[0]["fields"]} == {
+        "invoice_number",
+        "total_amount",
+    }
+
+
+def test_test_generate_schema_candidates_narrow_by_name_not_by_field_label():
+    # Field labels are generic — "amount" and "number" occur on both types —
+    # so an unweighted overlap would admit every type for every row. Only the
+    # type a row is *named* for clears the floor.
+    workspace = _generate_schema_workspace("Scored types")
+    row = workspace.add_rcm({
+        "process": "Procure to pay",
+        "risk": "A vendor invoice is paid twice.",
+        "control": "Duplicate invoice check",
+        "control_attributes": [{
+            "key": "a1",
+            "assertion": "Existence",
+            "evidence_kind": "document_content",
+            "requirement": "Each vendor invoice is matched before payment.",
+        }],
+    })
+
+    candidates = context_adapters.test_generate_schema_candidates(workspace, row)
+
+    assert candidates[0].metadata["document_types"] == ["vendor_invoice"]
+
+
+def test_test_generate_schema_candidates_supply_every_type_when_none_is_named():
+    # A row that needs documents and matched no type by name is the row whose
+    # author could not say which record answers it. Withholding the vocabulary
+    # there would have the turn invent a field, so the whole set is supplied.
+    workspace = _generate_schema_workspace("Unnamed types")
+    row = workspace.add_rcm({
+        "process": "Monitoring",
+        "risk": "Exceptions are not reviewed on a timely basis.",
+        "control": "Periodic review",
+    })
+
+    candidates = context_adapters.test_generate_schema_candidates(workspace, row)
+
+    assert sorted(candidates[0].metadata["document_types"]) == [
+        "goods_receipt",
+        "vendor_invoice",
+    ]
 
 
 def _vendor_workspace(name):

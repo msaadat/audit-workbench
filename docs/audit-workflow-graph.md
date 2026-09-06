@@ -4,7 +4,7 @@ What each stage of an audit run actually does: what it waits for, what it is
 shown, what it asks a model, what it writes back, and what it costs.
 
 This is a reference for the **executable** audit lifecycle as the code declares
-it today — `audit_workflow_v3`, 29 capabilities. It is derived from
+it today — `audit_workflow_v3`, 30 capabilities. It is derived from
 `backend/app/agent/workflows/audit.py`, the grouped capability declarations
 under `backend/app/agent/capabilities/`, the context presets in
 `backend/app/agent/context/presets.py`, and the execution bindings in
@@ -112,6 +112,8 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                        └──────────────►│◄───────────────┘
                                        ▼
                                  audit.verified
+
+  planning.change_assessed   (declares no edges; only ever asked for by name — §8)
 ```
 
 The parallel branches after `results.rolled_up` are intentional; the graph is a
@@ -143,6 +145,14 @@ DAG, not a chain.
 - **Dashboard curation is not on the graph.** Arranging tiles changes how an
   engagement is read, not what it establishes; nothing downstream ever consumed
   it.
+- **`planning.change_assessed` has no edges, and that is the whole design of
+  it.** It *reads* the document analyses, the memorandum, and the matrix, but
+  reading is not depending: materialization schedules a satisfied capability
+  whenever anything in its closure is materializing, so an edge to the
+  planning chain would have rewritten the memorandum before answering whether
+  it needs rewriting. Existence of the two artifacts is a readiness question
+  (`blocked`, naming what is missing) rather than an edge. It is on no template
+  and outside `FULL_AUDIT_OUTCOMES`; the steering loop requests it by name.
 
 ### Outcome sets
 
@@ -193,7 +203,7 @@ graph hangs it off `data.joins_ready`.
 assistant_chats._process_message
   └─ act intent
      └─ runner.start_command_run       one live run per workspace (AgentBusyError)
-        ├─ store.new_run               creates run.json
+        ├─ store.new_command_run       creates run.json (store.new_run is intake-only)
         ├─ routing.resolve_route       classify ONCE; persist run["route"] + run["engine"]
         │    └─ routing.classify_command   pure, deterministic, no model turn:
         │         1. source == "loop"          -> the steering loop
@@ -226,13 +236,25 @@ the registry, not from a model**:
    - for each capability, run its deterministic `readiness()`;
    - under `reuse_existing`, **skip** any capability that is already satisfied
      (and whose dependencies are not themselves being rebuilt) or merely
-     `stale`, recording it in `reused_outcomes` with
+     `stale`, recording it in `reused_capabilities` with
      `currency_status: "not_assessed"`;
-   - otherwise call `expand_units()` and fan it into a stage.
+   - otherwise call `expand_units()` and fan it into a stage. Note the
+     converse: a satisfied capability **is** re-expanded whenever one of its
+     dependencies is being materialized. That is how a newly imported document
+     reaches the planning chain, and it is the reason `planning.change_assessed`
+     declares no edges. `Capability.invalidate_on` is declared for the
+     definition hash only; materialization does not read it.
 3. Reject the run if any stage exceeds `max_units_per_stage` (default 250).
+   This raises inside `start_command_run` after the `queued` record has been
+   saved and before the thread launches; `recover_orphans` later relabels that
+   record `interrupted`.
 4. Size the model budget from real counts (§9) and persist
    `run["workflow"]` with the definition id, definition hash, scope, resolved
-   capabilities, stages, and a human-readable `workflow_explanation`.
+   capabilities, `reused_capabilities`, a `state_at_resolution` readiness
+   snapshot of every capability, stages, and a human-readable
+   `workflow_explanation`. (`WorkflowRunner.materialize` writes the same state
+   under `reused_outcomes`; the sibling-graph and test path uses that name, the
+   audit route path uses `reused_capabilities`, and the UI reads the latter.)
 
 `generation_mode` is `reuse_existing` unless the command says otherwise —
 `workflow.command_generation_mode` reads `improve `, `regenerate`, `refresh `,
@@ -259,12 +281,18 @@ capability registry, the execution bindings, a `RunRuntime`, and a
 For each stage, in materialized order:
 
 1. `checkpoint()` — honours cancel/pause and the runtime deadline.
-2. `_refresh()` — reload the workspace; project its revision on the run.
+2. `_refresh()` — reload the workspace, project its revision on the run, and
+   recompute the dynamic limits (§9). It also runs after `before_stage`, after
+   every serialized unit, and after every stage.
 3. `before_stage` — in permission mode, fire any scope checkpoint the stage
-   declares (document scope, analysis scope).
+   declares (document scope, analysis scope); then the stage review, if the
+   run asked for one.
 4. Check dependencies. A dependency that was scheduled in this run and did not
    settle blocks the stage — **unless the edge is declared partial**.
-5. `ensure_stage_units` — re-expand if the unit list is empty.
+5. `ensure_stage_units` — re-expand against the current workspace on every
+   call (not only when the list is empty), merge by unit ID, refresh any unit
+   still `queued`, and re-apply `max_units_per_stage`. A stage that grew past
+   the cap mid-run fails the run here, not at routing.
 6. **If there are no units, settle the stage from its own readiness alone**
    (`succeeded` if satisfied, else `blocked`). This is how an audit with no
    documents walks straight through the document capabilities, and how the
@@ -288,12 +316,18 @@ the dependent can still do.*
 | `results.rolled_up` | `fieldwork.executed` | |
 | `report.working_draft` | `findings.drafted` | |
 | `audit.verified` | `working_papers.generated`, `report.working_draft` | |
-| `documents.analysis_chunks_ready` / `analysis_generated` | the previous document step | One unanalyzable document must not withhold the others. |
-| the analysis chain | the previous analysis step | One procedure that would not execute must not withhold the memo. |
+| `documents.analysis_chunks_ready` | `documents.text_ready` only | One unextractable document must not withhold the others. The `documents.categorized` edge is **blocking**: a failed category unit withholds chunk analysis. |
+| `documents.analysis_generated` | `documents.analysis_chunks_ready` | One unanalyzable document must not withhold the others. |
+| `data.join_utility_ready` | `data.relationships_inferred` | Diagnosis is local and per pair. |
+| `analysis.register_ready` / `definitions_ready` / `executed` / `summarized` | the previous analysis step | One procedure that would not execute must not withhold the memo. |
 
 Deliberately **not** partial: `data.joins_ready` on `data.join_utility_ready`.
 A pair whose utility gate never answered has nothing admitting it, and
 materializing the join anyway would bypass the gate outright.
+
+The table lives in `_PARTIAL_DEPENDENCIES`, apart from the edges in
+`workflows/audit.py`; startup validation does not cross-check it, and only the
+`tests.specified` entry has a test.
 
 ### Barriers
 
@@ -348,8 +382,10 @@ binder supplies the domain parts; the pipeline owns the order.
  7. approval_provider(proposal) permission mode only; returns None → "approval_rejected"
        └─ accepted → proposal re-persisted with status "accepted"
  8. executor_id is None?        proposal-only unit — the proposal IS the durable
-                                outcome (document chunk analyses, join utility).
-                                Return "proposed". No commit, no receipt.
+                                outcome (document chunk analyses, join utility,
+                                the assertion-register reading turn, intake
+                                classification). Return "proposed". No commit,
+                                no receipt, and no readiness re-evaluation.
  9. executors.reconcile(...)    interrupted-commit check
        ├─ already_applied → synthesize a receipt, do not re-commit
        ├─ conflict        → raise UnitPipelineConflict
@@ -381,6 +417,16 @@ on the proposal as `worker_attempts`. `WorkerAttempt` enforces the contract: the
 first attempt may carry no guidance and no previous response; a repair attempt
 must carry both.
 
+Two details the lifecycle above elides:
+
+- On the final attempt, a validator that can supply `error.partial` makes the
+  worker return a *partial* result instead of raising. The pipeline persists it
+  as an ordinary `proposed` proposal; the sidecar does not record that it was
+  salvaged.
+- `documents.schemas_stamped` commits through `UnitPipeline.commit_local`, which
+  resolves no context and returns an empty `manifest_reference`, so that unit's
+  record carries no `context_manifest`.
+
 ### Mixed-kind capabilities
 
 `fieldwork.executed` is the one capability whose units are of several kinds, and
@@ -394,9 +440,11 @@ how a capability with mixed units still carries exactly one binding.
 ## 6. The provider call
 
 `runtime/model_gateway.py:DefaultModelGateway.complete` is the only path from
-the agent to a provider. Everything else reaches it through
-`BaseRunner._llm_content`. A static test confines direct provider calls to this
-module.
+the agent to a provider. Workers reach it through `BaseRunner._llm_content`;
+the steering loop through `BaseRunner._llm_message`. A static test confines
+direct provider calls *within `app/agent`* to this module; the report,
+assistant, and document modules outside the agent package call `llm.chat` on
+their own.
 
 Per call it:
 
@@ -413,18 +461,27 @@ Per call it:
 5. Derive the `[agent:<stage>]` tag from the first line of the system prompt.
    This tag drives the UI stage label, per-worker accounting, streamed
    progress, and the "this is taking a while" heartbeat.
-6. Hold a process-wide semaphore keyed on `provider:model`.
+6. Hold a process-wide semaphore keyed on `provider:model`, capacity
+   `AGENT_PROVIDER_MAX_CONCURRENCY` (default 4), shared by every run in the
+   process.
 7. Make the call inside a `debug_store.trace_context` carrying run id, stage,
-   unit id, parent refs, document ids and artifact refs.
-8. Reconcile actual token usage against the reservation and append **hash-only**
+   unit id, parent refs, document ids and artifact refs. The debug store
+   records the **full** request and raw response in the workspace's
+   `telemetry.db` (`llm_calls`), sanitised for secrets and image bodies only.
+8. Reconcile actual token usage against the reservation, append **hash-only**
+   provenance to the workspace's telemetry `activity_events`, and record the
+   spend in the per-user usage ledger. `run.json` holds usage counters, not
    provenance.
 
-An empty or unusable completion is retried exactly once, here and nowhere else:
-the bounded repair loop corrects a response by quoting it back, and an empty
+An empty or unusable completion is retried exactly once *at this layer*: the
+bounded repair loop corrects a response by quoting it back, and an empty
 completion gives it nothing to quote. The retry is metered like any other turn
 and is distinguishable in the debug console by carrying the same
 `retry_number` with `retry_reason: "unusable"` (a repair carries a *higher*
-`retry_number` and a different prompt).
+`retry_number` and a different prompt). Two other retry layers exist around
+it: `llm.chat` retries transport and rate-limit errors up to
+`MAX_REQUEST_ATTEMPTS` (3) below the gateway, and the scheduler allows
+`max_execution_attempts` (2) per unit above it.
 
 ### Registered workers
 
@@ -434,6 +491,7 @@ and is distinguishable in the debug console by carrying the same
 | `planning.apm` | Markdown memorandum | **no** | 1 | — | yes |
 | `planning.cycle` | `{name, steps[], cross_cutting}` | yes | 1 | — | yes |
 | `planning.rcm` | `{rows[], quarantined[]?}` | yes | 1 | — | yes |
+| `planning.delta_review` | `{impact: none\|apm\|rcm\|both, summary, apm_changes[], rcm_changes[]}` | yes | 1 | — | yes |
 | `tests.cycle_linkage` | `{roles[], join_keys[], assertions[]}` | yes | 1 | — | yes |
 | `tests.generate` | `{tests[]}` | yes | **2** | — | yes |
 | `fieldwork.document_qa` | `{answer, conclusion, control_conclusion, outcome, citations[]}` | yes | 1 | — | yes |
@@ -462,14 +520,14 @@ heading with an empty body and fails every section check at once.
 
 ### Registered executors
 
-All twenty audit-reachable executors use `parent_hashes` concurrency: they
+All twenty-one audit-reachable executors use `parent_hashes` concurrency: they
 guard the specific material parents they are about to overwrite and permit
 unrelated workspace revisions to advance. (The alternative,
 `workspace_revision`, is strict compare-and-swap; nothing in the audit graph
 uses it.)
 
 `planning.apm`, `planning.cycle`, `planning.context`, `planning.rcm`,
-`tests.cycle_ruleset`, `tests.generate`, `fieldwork.document_qa`,
+`planning.delta`, `tests.cycle_ruleset`, `tests.generate`, `fieldwork.document_qa`,
 `fieldwork.cycle_vouch`, `reporting.finding`, `documents.category`,
 `documents.classification`, `documents.read`, `documents.stamp`,
 `documents.analysis`, `analysis.join`, `analysis.register`,
@@ -536,8 +594,26 @@ its own permission and its own cap:
 | `allow_datatest_exception_rows` | The rows a durable, RCM-linked Data Test flagged, capped by row count and serialized size in the adapter. | `reporting.finding_draft` |
 
 The last two are separate on purpose, so revoking one never silently revokes
-the other. The projection always reports how many rows were withheld, so a
-truncated table cannot be drafted as a complete population.
+the other. The Data Test projection reports `rows_withheld`, so a truncated
+table cannot be drafted as a complete population; the analysis-exception
+projection reports `rows_supplied` and `exception_count` and leaves the
+subtraction to the reader.
+
+`allow_document_schemas` is the deliberate middle term between those and
+nothing. It admits the field names, roles and value types an induced schema
+states — never a value any document printed — so a context permitted to see a
+schema is not thereby permitted to see the text it was induced from. Two presets
+declare it: `tests.cycle_linkage`, which writes the cycle rules against that
+vocabulary, and `tests.generate`, which uses it in place of evidence-document
+prose (see below). `allow_file_metadata` is used only by the intake sibling
+graph.
+
+The structural mapping constrains *declarations*. It is keyed on the
+representation label an adapter attaches, and adapters choose labels: RCM
+requirements travel as `planning_context`, observation, row, test, and
+execution projections as `current_artifact` under `allow_document_text`. A
+reviewer checking what a preset admits should read the adapter's scope
+function as well as the preset.
 
 ### Preset inventory (audit graph)
 
@@ -549,8 +625,9 @@ Budgets below are `items / characters`.
 | `planning.apm` | 47 / 96k | planning_context, template_text, document_text, table_metadata, table_profiles, analysis_summary, auditor_instruction | `planning_context` (req), `apm_template` (req), `current_apm` (opt, 32k), `analysis_summary` (opt, 24k), `population_summary` (opt), `table_metadata` (12/8k), `table_profiles` (12/16k), `documents` (lexical, 12/40k), `methodology` (lexical, 5/8k), `instruction` (opt) |
 | `planning.cycle` | 26 / 86k | planning_context, document_text, table_metadata | `planning_context` (req), `current_apm` (**req, 60k**), `table_metadata` (24/16k). Names and shapes only — no document source is declared, so no evidence text can reach this turn. |
 | `planning.rcm` | 255 / 138k | planning_context, template_text, document_text, table_metadata, table_profiles, **small_table_rows**, auditor_instruction | `planning_context`, three required templates (`rcm`, `rcm_controls`, `rcm_attributes`), `current_apm` (**req, 60k**), `current_rcm` (opt, 200/40k), `table_metadata`, `table_profiles`, `small_table_rows` (8/16k), `documents` (lexical), `methodology` (lexical), `instruction` |
+| `planning.delta` | 210 / 120k | planning_context, document_text, auditor_instruction | `new_document_analyses` (**req**, 8/40k), `current_apm` (opt, 32k), `current_rcm` (opt, 200/40k), `planning_context` (req), `instruction` |
 | `tests.cycle_linkage` | 2 / 88k | planning_context, **document_schemas** | `cycle_schemas` (req, 1 item carrying every induced type, 64k), `cycle_requirements` (opt, 24k). The schemas and what the matrix asks of them — nothing either was induced or drafted from. |
-| `tests.generate` | 183 / 130k | planning_context, document_text, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `documents` (lexical, 12/26k), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
+| `tests.generate` | 184 / 162k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `documents` (lexical, 12/26k — evidence documents carry identity and type only), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
 | `fieldwork.document_qa` | 61 / 30k | document_text | `qa_item` (req, 4k), `document_pages` (req, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
 | `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
 | `reporting.finding_draft` | 7 / 44k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction` |
@@ -705,7 +782,7 @@ reads it — but neither planning capability *depends* on it.
 | `data.relationships_inferred` | deterministic | — | Relationship facts are never model-generated: they come from the deterministic Polars diagnostics in `agent/joins.py`. |
 | `data.join_utility_ready` | pipeline, **proposal-only** | `analysis.join_utility` / — | Gates which candidate joins are worth materializing. |
 | `data.joins_ready` | deterministic | — / `analysis.join` | A join is applied automatically only on a single strong candidate. |
-| `analysis.register_ready` | pipeline | `analysis.reading` / `analysis.register` | The one cross-cutting turn. Its **floor is a deterministic sweep**, so a run whose reading turn is skipped or fails still holds a complete, committable register. |
+| `analysis.register_ready` | pipeline | `analysis.reading` / `analysis.register` | The one cross-cutting turn. Its **floor is a deterministic sweep**, so a run whose reading turn is skipped or fails still holds a complete, committable register. The reading turn itself is bound proposal-only; the adapter merges the proposal over the floor and writes the register through executor `analysis.register` in a separate commit. |
 | `analysis.definitions_ready` | pipeline | `analysis.definitions` / `analysis.definitions` | Authors specs only for work the register could not already express. |
 | `analysis.executed` | deterministic | — / `analysis.execution` | Local execution. Records a bounded `last_result` (shape, verdict, statistics, flagged-row count) — never result data. Flagged rows live in an evidence sidecar. |
 | `analysis.summarized` | pipeline | `analysis.summary` / `analysis.summary` | The EDA memo. The one place `allow_analysis_exception_rows` is granted. |
@@ -768,6 +845,21 @@ embed directives already flattened to citations.
 | Output | `{rows[], quarantined[]?}` — rows the worker could not repair within its allowance are quarantined and recorded for the auditor rather than failing the run and discarding every correct row |
 | Repairs | row-scoped: guidance is grouped per row, with a raised ceiling (20 errors / 4,000 characters) so a document with several bad rows does not have its errors dropped |
 
+### `planning.change_assessed` — Change assessment
+
+| | |
+| --- | --- |
+| Depends on | — (see §2: reading is not depending) |
+| Readiness | `blocked` until the request names documents (`document:` refs) and both a memorandum and a matrix exist; `missing` when no assessment exists for this exact basis; `satisfied` otherwise. The basis is a hash over the named documents' analyses, the memorandum, and the matrix rows, so changing any of the three re-asks the question. |
+| Units | one (`change_assessment`), parents `document:<id>` for each named document, input `{document_ids, basis_sha1}` |
+| Binding | pipeline — worker `planning.delta_review`, executor `planning.delta` |
+| Context | `planning.delta` — the named documents' generated analyses (required), the current memorandum and matrix, the planning context, and the auditor's instruction |
+| Output | `{impact: none\|apm\|rcm\|both, summary, apm_changes[], rcm_changes[]}`; the worker rejects an impact that disagrees with its own lists, an APM section that does not exist, or an RCM id not in the matrix |
+| Commit | `Planning/.delta/<basis_sha1>.json`, guarded on the memorandum's parent hash. Nothing else moves: the assessment is what the auditor acts on, and the revision it recommends is a separate request. |
+
+Off every template. The steering loop asks for it by name when an auditor asks
+what new evidence changes.
+
 ### `tests.cycle_ruleset_proposed` — Cycle rules proposed for review
 
 | | |
@@ -809,7 +901,7 @@ The two run modes part here:
 | Readiness | every scoped row has at least one executable test; a row declaring transaction-cycle evidence that still holds a pre-ruleset test is `missing` |
 | Units | **one per RCM row** (`test_generation:<row>`) |
 | Binding | pipeline — worker `tests.generate`, executor `tests.generate` |
-| Context | `tests.generate` (183 / 130k) |
+| Context | `tests.generate` (184 / 162k) |
 | Input | the RCM row — or `{row, regenerate_test_ids[]}` when the request named specific tests, which is part of the unit's input identity so a whole-row proposal is never reused as a single-test rewrite |
 | Output | `{tests[]}` |
 | Repairs | **2** |
@@ -824,6 +916,53 @@ achieve it: the projection carried the other rows' *risks* rather than the
 tests already written for them, a unit cannot see what its siblings produce,
 and it cost a third of the prompt. Deduplication needs a pass that can see every
 generated test at once.
+
+**Evidence documents travel as identity and type; the schema says what they
+contain.** This is the one capability that read transaction-evidence prose for
+something other than reading that document, and it was the largest document
+consumer in the system: measured over 83 units in the shipped workspaces,
+1,026,773 characters of evidence summaries and citations, 7k–15.5k per RCM row.
+Those two fields were 83% of the projection's bytes and said the same thing once
+per document — eighteen payment instructions describing what a payment
+instruction is. The `documents` source now carries an evidence document's
+identity and its `document_type`; `evidence_schemas` carries what a document of
+that type *states*, once per type, through the same `schema_catalog` projection
+`tests.cycle_linkage` uses. Planning material is untouched: a policy has no
+induced schema, and its prose is the thing being reasoned about rather than one
+sample of a population.
+
+The schema is always available. `documents.schemas_stamped` sits at index 11 of
+this capability's dependency closure and `tests.specified` at 14, so no ordering
+changed and no edge was added.
+
+**Scoped to the row, not the engagement.** Selection is the row's own naming
+first — a `transaction_cycle` attribute states the types its comparisons read,
+and that is the row saying it — then a weighted lexical score over the type's
+name, its discriminator and its field labels, and only then every type. The
+weighting mirrors `TABLE_NAME_WEIGHT`/`MIN_TABULAR_RELEVANCE` in the RCM worker
+and exists for the reason that made those necessary: field labels are generic,
+and unweighted overlap admitted six types out of six for half the rows measured.
+The final fallback is deliberate — a row that needs documents and matched no
+type by name is the row whose author could not say which record answers it, and
+withholding the vocabulary there would have the turn invent a field.
+
+Scoping is what makes the substitution pay on an engagement whose documents do
+*not* collapse into a handful of types. Measured on the shipped workspaces,
+document-source bytes per unit:
+
+| workspace | evidence docs : types | before → after | |
+| --- | --- | --- | --- |
+| `treasuryfull` | 82 : 6 | 185,836 → 43,520 | **−77%** |
+| `treasury` | 8 : 4 | 22,126 → 11,466 | **−49%** |
+| `procurement` | 5 : 5 | 20,147 → 18,725 | −8% |
+
+Procurement is close to a wash, and honestly so: where each document is its own
+type there is no redundancy to collapse. The token saving is the secondary
+benefit in any case. The worker keeps six of twelve candidates and ranks them on
+identity alone — it never read the prose — so on treasuryfull the six it kept
+were arbitrary representatives of 82 near-identical documents. A schema names
+all 25 fields of `treasury_deal_ticket` with their roles; six sampled summaries
+name the fields six particular tickets happened to fill.
 
 ### `tests.promoted_from_analysis` — Analyses placed in the matrix
 
@@ -932,31 +1071,44 @@ At route installation (`routing.install_resolution`):
 
 ```python
 audit_turns    = 20 + 4*len(rcm) + 4*test_count + 2*qa_pairs + 2*eligible_findings
-document_turns = preparation_turns + one turn per chunk + one reduction per document
+document_turns = 4 + chunks + 2*max(1, len(scoped_documents)) + preparation_turns
 analysis_turns = 10 + 2*max(1, len(scoped_frames))
 
 max_model_turns              = audit_turns + document_turns + analysis_turns
-max_estimated_prompt_tokens  = max_model_turns * 10_000
-max_completion_tokens        = max_model_turns *  4_000
+max_estimated_prompt_tokens  = max(existing, max_model_turns * 10_000)
+max_completion_tokens        = max(existing, max_model_turns *  4_000)
 max_units_per_stage          = 250        # a stage above this refuses to launch
 max_llm_concurrency          = default_llm_concurrency()
 max_compute_concurrency      = 2
 max_execution_attempts       = 2
 ```
 
-`AuditWorkflowExecution._refresh_dynamic_limits` recomputes this **before every
-stage**, grow-only, and adds vision allowances from the real visual-unit count
-(`max_image_parts`, `max_prepared_image_bytes`, `max_prepared_image_pixels`,
-and a prompt allowance of `turns*10k + text_units*2k + visual_units*10,480`).
-This matters because the arithmetic depends on counts the run itself creates:
-an RCM drafted mid-run changes how many test-generation turns the budget must
-buy.
+`AuditWorkflowExecution._refresh_dynamic_limits` recomputes a *different* sum
+on every `_refresh()` (§4), grow-only, and adds vision allowances from the
+real visual-unit count (`max_image_parts`, `max_prepared_image_bytes`,
+`max_prepared_image_pixels`, and a prompt allowance of
+`turns*10k + text_units*2k + visual_units*10,480`). Its document term is
+`len(analysis_unit_specs) + max(1, documents)` with no base and no preparation
+turns, and it carries no `analysis_turns` term at all; grow-only means the
+installed value is never lowered, but analysis work that grows mid-run does
+not raise it. This matters because the arithmetic depends on counts the run
+itself creates: an RCM drafted mid-run changes how many test-generation turns
+the budget must buy. The document, analysis, and doc-test execution adapters
+each carry their own `_refresh_dynamic_limits` for their own graphs.
+
+Two things the ceilings are not. They are not sent to the provider:
+`max_completion_tokens` is checked cumulatively after each call, never passed
+as `max_tokens`. And they are not the constraint that ends long runs in
+practice — recorded runs use a small fraction of their turn ceilings; what
+ends an 84-document engagement is the deadline.
 
 `DefaultRunRuntime` owns the durable ledger, the dynamic limit updates, the
 runtime deadline (extended by time spent blocked on the auditor), checkpoints,
 live inbox draining, approval batches, and structured-interaction waits.
 Offline auditor responses are persisted before wakeup and consumed on
-same-schema restart.
+same-schema restart. The deadline is an in-memory monotonic value seeded at
+runner construction (3,600 s) and is not persisted: a resumed run, and every
+child run a steering loop starts, gets a fresh one.
 
 One budget subtlety worth knowing: `READ_REPAIR_ATTEMPTS = 2` lives in
 `workflow.py` rather than beside the evidence-read worker, because two layers
@@ -997,29 +1149,43 @@ mode — `tests.cycle_ruleset_approved`.
 Workspaces/<id>/AgentRuns/<run_id>/
 ├── run.json          the durable record: route, engine, limits, workflow state
 │                     (definition, definition_hash, scope, resolved_capabilities,
-│                     stages[{id, capability, barrier, status, units[],
-│                     readiness_before}], reused_outcomes, next_outcomes),
-│                     plan, approvals, artifacts, milestones, narration,
-│                     warnings, usage, model provenance (hash-only)
+│                     state_at_resolution, stages[{id, capability, barrier,
+│                     status, units[], readiness_before}], reused_capabilities,
+│                     next_outcomes, workflow_explanation), plan, approvals,
+│                     artifacts, milestones, narration, warnings, usage counters
 ├── contexts/<unit>.json    ContextManifest — content-free: hashes, sizes,
 │                           selections, omissions, truncations, privacy decisions
 ├── proposals/<unit>.json   the model's proposal + its ProposalExecutionIdentity
 │                           + worker_attempts + response/schema hashes
-├── rejections/<unit>.json  the final invalid response, its validation errors,
-│                           and the identity it was produced under
-└── receipts/<unit>.json    ExecutorReceipt — proposal hash, concurrency mode,
-                            revision before/after, artifact refs,
-                            postcondition hashes, reconciled flag
+├── rejections/<unit>.json  the final invalid response verbatim, its validation
+│                           errors, and the identity it was produced under
+├── receipts/<unit>.json    ExecutorReceipt — proposal hash, concurrency mode,
+│                           revision before/after, artifact refs,
+│                           postcondition hashes, reconciled flag
+├── sidecars/<sha1>.json    large or sensitive interaction/undo payloads,
+│                           stored by content hash
+└── conversation.json       steering-loop runs only: the loop's own model
+                            conversation, rewritten after every turn
 ```
 
 A unit record in `run.json` carries only *references* to these sidecars
-(`context_manifest`, `proposal_sidecar`, `receipt_sidecar`) plus `input_sha1`,
-`parent_refs`, `status`, `attempts`, `result_refs`, and timings — never
-content.
+(`context_manifest`, `proposal_sidecar`, `receipt_sidecar`,
+`rejected_response_sidecar`) plus `input_sha1`, `parent_refs`, `status`,
+`attempts`, `result_refs`, and timings — never content.
 
-The replayable event stream lives in the workspace's `telemetry.db`, keyed by
-run, so reading forward from a cursor is an indexed range read. The UI consumes
-it as SSE from `agent_routes.py`, replayable by cursor or `Last-Event-ID`.
+Sidecars are keyed by run, so proposal reuse (§5 step 4) can only happen when
+the *same* run is resumed. A follow-up run started from `next_outcomes` is a
+new run with an empty sidecar folder; what it avoids repeating, it avoids
+through readiness, not through proposal identity.
+
+The workspace's `telemetry.db` holds the rest, keyed by run: the replayable
+event stream (`run_events`, indexed so reading forward from a cursor is a range
+read; the UI consumes it as SSE from `agent_routes.py`, replayable by cursor or
+`Last-Event-ID`), the hash-only model provenance (`activity_events`), the
+stage restore points the scheduler's `stage_checkpoint` takes
+(`checkpoints`, `checkpoint_files`), and the debug store's `llm_calls`, which
+carry every provider request and raw response in full. The run record is
+content-free; the workspace's telemetry is not.
 
 ---
 
@@ -1050,8 +1216,19 @@ capability with no binding.
 - `test_agent_final_boundaries.py` — workflow definitions import only graph
   primitives; capabilities never schedule or persist; workers cannot reach a
   workspace, transaction, or run store; executors cannot reach a worker or the
-  gateway; context cannot call a provider; one provider call site.
-- `test_agent_v1_retirement.py` — no v1 caller, engine, import, API response, or
-  UI path.
-- `test_agent_definition_of_done.py` — one test per definition-of-done bullet.
-- `test_workflow_scheduler_golden.py` — golden scheduler behaviour.
+  gateway; context cannot call a provider; one provider call site. All of it
+  is enforced by import and call-site scans of the source, so it sees imports,
+  not private-attribute reaches or writes made through domain modules.
+- `test_agent_runtime_import_boundaries.py` — `runtime/` imports no audit or
+  product module; `WorkflowRunner` has no action inheritance or domain stage
+  methods.
+- `test_workflow_audit_definition.py` — `DEPENDENCIES` pinned edge for edge,
+  template membership, topological closure, definition-hash stability.
+- `test_agent_capability_composition.py` — groups partition the graph exactly
+  once, the startup registry matches, declared identity fields are pinned,
+  presets are registered, and only independent non-committing expansions
+  declare the parallel barrier.
+- `test_workflow_scheduler_golden.py` — golden scheduler behaviour against a
+  **synthetic** DAG: closure order, readiness blocking, stable materialization,
+  all-settled ordering, recovery, deterministic folding, binding validation. It
+  never loads the audit registry or `_PARTIAL_DEPENDENCIES`.

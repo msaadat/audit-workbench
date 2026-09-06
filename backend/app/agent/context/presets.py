@@ -1196,6 +1196,11 @@ PRESETS.register(
                     # planning-relevant-filtered set ``tests.draft`` used. A
                     # Document Test step must be able to name transaction-level
                     # evidence a planning-relevant filter would withhold.
+                    #
+                    # Transaction evidence now travels as identity and type
+                    # only; its prose is displaced by ``evidence_schemas``
+                    # below. Planning material keeps its summary, so the budget
+                    # stays sized for the prose that is still carried here.
                     selector=AutoSelect(
                         selector_id="documents.lexical",
                         item_limit=12,
@@ -1206,6 +1211,27 @@ PRESETS.register(
                         ContextRepresentation("excerpt"),
                     ),
                     budget=ContextBudget(max_items=12, max_characters=26_000),
+                ),
+                # What this engagement's evidence documents *state*, once per
+                # type instead of once per document. The pairing is the point:
+                # the source above says which documents exist and what type each
+                # one is, and this says what a document of that type contains.
+                # Measured on the treasury engagement, the summaries and
+                # citations of 82 evidence documents cost 145k characters to say
+                # what six schemas say in 25k — and say it completely, because a
+                # schema names every field of the type while a sample names only
+                # the fields that one document happened to fill.
+                #
+                # Scoped to the row by the adapter, not to the engagement. One
+                # item, following ``tests.cycle_linkage``: a partial vocabulary
+                # is a question written against a field list with a hole in it.
+                ContextSource(
+                    id="evidence_schemas",
+                    source_type="documents",
+                    required=False,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("cycle_schema"),),
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
                 ),
                 ContextSource(
                     id="methodology",
@@ -1237,12 +1263,18 @@ PRESETS.register(
             # Data Test code is validated against schema-only empty frames, so
             # profiles are not needed to generate a valid executable procedure.
             # Keep the overall ceiling aligned with the remaining source limits.
-            budget=ContextBudget(max_items=183, max_characters=130_000),
+            # The schema source adds one item and its own 32k ceiling.
+            budget=ContextBudget(max_items=184, max_characters=162_000),
             privacy=ContextPrivacy(
                 allow_auditor_instruction=True,
                 allow_planning_context=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
+                # The induced field vocabulary, and never the text it was
+                # induced from. A context permitted to see a schema is not
+                # thereby permitted to see the documents behind it — which is
+                # exactly the trade this source makes.
+                allow_document_schemas=True,
             ),
         ),
     )

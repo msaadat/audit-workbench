@@ -18,6 +18,7 @@ from ... import (
     cycle_linking,
     cycle_vouching,
     doc_tests,
+    document_classification,
     document_context,
     documents,
     intake,
@@ -1240,6 +1241,7 @@ def document_test_document_candidates(
     *,
     document_ids: Iterable[str] | None = None,
     include_audit_notes: bool = True,
+    evidence_identity_only: bool = False,
 ) -> tuple[ContextCandidate, ...]:
     """Expose every document with the identity and citations an item may cite.
 
@@ -1248,18 +1250,42 @@ def document_test_document_candidates(
     when no summary exists. Content is still composed through
     :func:`document_context.apm_document_context`, the single model-facing
     document boundary.
+
+    ``evidence_identity_only`` withholds the summary and citations of documents
+    this engagement holds as *transaction evidence*, leaving their identity and
+    their induced type. It exists because those two fields were 83% of this
+    projection's bytes and said the same thing once per document: measured on
+    the treasury engagement, 82 evidence documents carried 145k characters of
+    prose across six types. A turn writing a question about a payment
+    instruction needs to know what a payment instruction *states*, which is the
+    type's schema, not what one of eighteen of them happened to say. Planning
+    material keeps its summary — a policy has no schema to stand in for it, and
+    its prose is the thing being reasoned about rather than a sample of a
+    population.
     """
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
     candidates = []
     for document_id in _normalized_document_ids(workspace, document_ids):
         document = documents_by_id[document_id]
-        context = document_context.apm_document_context(
-            workspace, document_id, include_audit_notes=include_audit_notes
+        category = str(document.get("category") or "")
+        # An evidence document's type is what connects it to the schema that
+        # replaced its prose. Supplied for every document so a question can name
+        # a document and a schema in the same breath; empty where nothing was
+        # typed, which is what an untyped document honestly offers.
+        document_type = document_classification.document_type(workspace, document_id)
+        identity_only = bool(evidence_identity_only and category == "evidence")
+        context = (
+            {}
+            if identity_only
+            else document_context.apm_document_context(
+                workspace, document_id, include_audit_notes=include_audit_notes
+            )
         )
         metadata = {
             "document_id": document_id,
             "title": _document_display_name(document, document_id),
-            "category": document.get("category") or "",
+            "category": category,
+            "document_type": document_type,
             "text_state": document.get("text_state") or "",
         }
         content = {
@@ -1267,28 +1293,40 @@ def document_test_document_candidates(
             # The worker is handed both fields; naming them the same thing
             # removes the chance of it quoting the slug as the document's name.
             "title": metadata["title"],
-            "analysis_id": context.get("analysis_id"),
-            "citations": [
-                {key: citation.get(key) for key in ("id", "page", "excerpt")}
-                for citation in (context.get("citations") or [])[
-                    :_MAX_DOCUMENT_TEST_CITATIONS
-                ]
-            ],
-            "summary": context.get("content") or "",
+            "document_type": document_type,
         }
+        if not identity_only:
+            content.update(
+                {
+                    "analysis_id": context.get("analysis_id"),
+                    "citations": [
+                        {key: citation.get(key) for key in ("id", "page", "excerpt")}
+                        for citation in (context.get("citations") or [])[
+                            :_MAX_DOCUMENT_TEST_CITATIONS
+                        ]
+                    ],
+                    "summary": context.get("content") or "",
+                }
+            )
         candidates.append(
             ContextCandidate(
                 source_ref=f"document:{document_id}",
                 source=content,
                 representations={"summary": content},
                 metadata=metadata,
+                # Withheld prose is withheld from the *selector* too, so an
+                # evidence document is ranked on what it is rather than on a
+                # summary the turn will never be shown. The type carries that
+                # weight now: a row asking about payment instructions ranks the
+                # payment instructions.
                 lexical_text="\n".join(
                     str(value or "")
                     for value in (
                         metadata["title"],
                         document.get("title"),
                         metadata["category"],
-                        content["summary"],
+                        document_type,
+                        content.get("summary") or "",
                     )
                 ),
             )
@@ -1298,6 +1336,152 @@ def document_test_document_candidates(
 
 TEST_GENERATE_PLANNING_SOURCE_ID = "planning_context"
 TEST_GENERATE_ROW_SOURCE_ID = "rcm_row"
+TEST_GENERATE_SCHEMA_SOURCE_ID = "evidence_schemas"
+
+
+def _row_named_document_types(row: Mapping[str, object]) -> list[str]:
+    """Document types this row's attributes name outright.
+
+    A ``transaction_cycle`` attribute states its comparisons as operand pairs,
+    each carrying the type it reads. Those are not a guess about what the row is
+    about — they are the row saying it, so they are taken exactly and never
+    scored.
+    """
+
+    named: list[str] = []
+    for attribute in row.get("control_attributes") or []:
+        if not isinstance(attribute, Mapping):
+            continue
+        for comparison in attribute.get("required_comparisons") or []:
+            if not isinstance(comparison, Mapping):
+                continue
+            for side in ("left", "right"):
+                operand = comparison.get(side)
+                if isinstance(operand, Mapping):
+                    value = str(operand.get("document_type") or "").strip()
+                    if value:
+                        named.append(value)
+    return list(dict.fromkeys(named))
+
+
+#: How much a hit on the type's own name or discriminator outweighs one on a
+#: field label, and how much a type must score before the row is held to be
+#: about it. Mirrors ``TABLE_NAME_WEIGHT``/``MIN_TABULAR_RELEVANCE`` in the RCM
+#: worker, and for the reason that made those numbers necessary there: field
+#: labels are generic. "Amount", "Date" and "Reference" occur on every induced
+#: type in every engagement, so unweighted overlap admitted six types out of six
+#: for half the rows measured — which is the fallback wearing a scoring
+#: function's clothes. The floor is one name hit: a type *named* for what the
+#: row asks about, or four field labels' worth of corroboration.
+_TYPE_NAME_WEIGHT = 4
+_MIN_TYPE_RELEVANCE = _TYPE_NAME_WEIGHT
+
+
+def _scored_document_types(
+    row: Mapping[str, object], catalog: list[dict]
+) -> list[str]:
+    """Types whose vocabulary overlaps what this row asks about.
+
+    Scored on the type's own name and discriminator, weighted, plus its field
+    labels — the same shape the table selector uses, and for the same reason: a
+    requirement names the record it is about ("the payment instruction is
+    authorised") far more often than the row narrative does.
+    """
+
+    query = set().union(
+        *(
+            relevance_tokens(value)
+            for value in (
+                row.get("process"),
+                row.get("risk"),
+                row.get("control"),
+                row.get("criteria"),
+                *(
+                    str(attribute.get(key) or "")
+                    for attribute in row.get("control_attributes") or []
+                    if isinstance(attribute, Mapping)
+                    for key in ("key", "requirement")
+                ),
+            )
+        )
+    )
+    if not query:
+        return []
+    scored = []
+    for index, entry in enumerate(catalog):
+        name_terms = set().union(
+            *(
+                relevance_tokens(value)
+                for value in (entry.get("document_type"), entry.get("discriminator"))
+            )
+        )
+        field_terms = set().union(
+            *(
+                relevance_tokens(field.get("label"))
+                for field in entry.get("fields") or []
+                if isinstance(field, Mapping)
+            ),
+            set(),
+        )
+        score = (
+            _TYPE_NAME_WEIGHT * len(query & name_terms)
+            + len(query & (field_terms - name_terms))
+        )
+        if score >= _MIN_TYPE_RELEVANCE:
+            scored.append((score, -index, str(entry.get("document_type") or "")))
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    return [name for _, _, name in scored if name]
+
+
+def test_generate_schema_candidates(
+    workspace: Workspace, row: Mapping[str, object]
+) -> tuple[ContextCandidate, ...]:
+    """The induced vocabulary one RCM row's tests may be written against.
+
+    Scoped to the row, not to the engagement. A treasury engagement induces six
+    schemas and a row about settlement authorisation reads two of them; shipping
+    all six would spend more than the document summaries this source replaces —
+    measured, the full set costs 25k where the summaries it displaces cost 15k
+    per unit. Scoping is what makes the substitution pay on an engagement whose
+    documents do not collapse into a handful of types.
+
+    Selection is the row's own naming first (``required_comparisons`` operands),
+    then lexical overlap, and only then everything. The last case is deliberate
+    and is not a failure: a row that needs documents and matched no type by name
+    is exactly the row whose author could not say which record answers it, and
+    withholding the vocabulary there would have it invent a field instead.
+
+    One atomic candidate carrying the scoped set, following
+    :func:`cycle_linkage_scope`: a budget that dropped one schema would leave a
+    turn writing questions against a vocabulary with a hole in it and nothing
+    saying where. Starved, the source reports as starved.
+    """
+
+    catalog = cycle_linking.schema_catalog(workspace)
+    if not catalog:
+        return ()
+    by_type = {str(entry.get("document_type") or ""): entry for entry in catalog}
+    chosen = [name for name in _row_named_document_types(row) if name in by_type]
+    if not chosen:
+        chosen = _scored_document_types(row, catalog)
+    if not chosen:
+        chosen = [str(entry.get("document_type") or "") for entry in catalog]
+    scoped = [by_type[name] for name in dict.fromkeys(chosen) if name in by_type]
+    if not scoped:
+        return ()
+    content = {"schemas": scoped}
+    return (
+        ContextCandidate(
+            source_ref="workspace:schemas",
+            source=content,
+            representations={"cycle_schema": content},
+            metadata={
+                "document_types": [
+                    str(entry.get("document_type") or "") for entry in scoped
+                ]
+            },
+        ),
+    )
 TEST_GENERATE_TABLE_METADATA_SOURCE_ID = "table_metadata"
 TEST_GENERATE_DOCUMENT_SOURCE_ID = "documents"
 TEST_GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
@@ -1535,6 +1719,13 @@ def test_generate_scope(
                 workspace,
                 document_ids=document_ids,
                 include_audit_notes=False,
+                # Evidence documents contribute identity and type here; what
+                # they *state* comes from the schema source below, once per
+                # type rather than once per document.
+                evidence_identity_only=True,
+            ),
+            TEST_GENERATE_SCHEMA_SOURCE_ID: test_generate_schema_candidates(
+                workspace, row
             ),
             TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
                 workspace

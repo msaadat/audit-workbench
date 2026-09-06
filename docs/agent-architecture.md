@@ -266,7 +266,7 @@ reports.
 
 ### Audit Workflow
 
-`audit_workflow_v3`, 29 capabilities. The authoritative executable lifecycle
+`audit_workflow_v3`, 30 capabilities. The authoritative executable lifecycle
 exists only in `workflows/audit.py`. A stage-by-stage reference — readiness
 rules, unit expansions, per-stage context, worker and executor bindings, and
 input/output shapes — is in

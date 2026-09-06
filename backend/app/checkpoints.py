@@ -252,6 +252,21 @@ def list_for_run(workspace: Workspace, run_id: str) -> list[dict]:
     ]
 
 
+def list_all(workspace: Workspace) -> list[dict]:
+    """Every checkpoint the workspace holds, oldest first.
+
+    The consolidated step list reads this to prove it is hiding nothing: a
+    checkpoint whose run record is gone, or whose stage no longer appears in
+    the run's workflow, is still a restore point and still has to be offered.
+    """
+    return [
+        _summary_row(row)
+        for row in debug_store.connection(workspace.id).execute(
+            "SELECT * FROM checkpoints ORDER BY captured_at, rowid"
+        )
+    ]
+
+
 def get(workspace: Workspace, checkpoint_id: str) -> dict:
     if not str(checkpoint_id).startswith("ckpt_"):
         raise WorkspaceError("Invalid checkpoint reference.")
