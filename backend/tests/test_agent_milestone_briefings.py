@@ -219,6 +219,44 @@ def test_a_risk_assessment_argued_as_prose_says_so_rather_than_counting_zero():
     assert milestone["status"] == "completed"
 
 
+def test_one_risk_section_enumerating_and_another_not_is_reported_as_partial():
+    """The count came from the section that enumerated; the other went unsaid.
+
+    Read per memorandum, this row called the case healthy: three fraud themes
+    were found, so the seven key risks argued as prose beneath them were never
+    mentioned, and the cycle was designed against a third of the plan.
+    """
+    memo = (
+        "# APM\n\n## Fraud risk and management override\n\n"
+        "- **Incentive and pressure.** Non-reimbursable lines appear in the "
+        "claims population.\n\n"
+        "## Key risks and planned response\n\n"
+        + "Approvals may exceed the limits the entity states, the recorded "
+        "population may be incomplete, and incompatible duties may sit with one "
+        "person. Each will be tested substantively against the transactions "
+        "received rather than by reliance on controls, because no control has "
+        "been walked through and none has been evidenced as operating.\n"
+    )
+    workspace = _Workspace(_documents(), planning={"apm_markdown": memo})
+
+    milestone = _apm_milestone(workspace)
+
+    assert _metric(milestone, "Risks assessed") == 1
+    assert "\u201cKey risks and planned response\u201d is argued as prose" in (
+        milestone["summary"]
+    )
+    assert milestone["status"] == "completed_with_issues"
+    assert milestone["headline"] == (
+        "Audit planning memorandum ready — part of the risk assessment "
+        "enumerates nothing"
+    )
+    # It leads the highlights: unlike a matter, it is not something the
+    # memorandum knows it owes.
+    assert milestone["highlights"][0]["label"] == (
+        "\u201cKey risks and planned response\u201d enumerates no risk theme"
+    )
+
+
 def test_a_memorandum_that_assesses_no_risk_is_not_reported_as_clean():
     workspace = _Workspace(_documents(), planning={"apm_markdown": "# APM\n"})
 

@@ -1678,13 +1678,48 @@ def _normalized_rcm_row(
     }
 
 
-# A memo names a risk theme in one of two shapes: a sub-heading, or a list
-# item that leads with the theme in bold. Both are enumerations; which one a
-# given memo uses is a formatting choice the reconciliation must not depend on.
-# It did depend on it once — a regenerated APM moved its fraud risks from
-# sub-headings to bold bullets, and the coverage check went from enforcing six
-# themes to enforcing none without saying so.
+# A memo names a risk theme in one of three shapes: a sub-heading, a list item
+# that leads with the theme in bold, or a paragraph that leads with it in bold.
+# All three are enumerations; which one a given memo uses is a formatting choice
+# the reconciliation must not depend on. It has depended on it twice — a
+# regenerated APM moved its fraud risks from sub-headings to bold bullets, and
+# the coverage check went from enforcing six themes to enforcing none without
+# saying so; then an expenses APM wrote its seven key risks as bold-led
+# paragraphs and the cycle was designed against the three fraud themes alone.
 _BOLD_LED_ITEM = re.compile(r"^\s*[-*]\s+\*\*\s*(.+?)\s*:?\s*\*\*", re.MULTILINE)
+# The paragraph shape numbers its themes where the bullet shape lets the marker
+# do it, so the enumerator is part of the formatting and not of the theme:
+# "**1. Authorisation...**" is the same theme as "- **Authorisation...**", and a
+# theme carrying a "1. " no matrix row will ever write is owned by nothing.
+_BOLD_LED_PARAGRAPH = re.compile(
+    r"^\*\*\s*(?:\d+[.)]\s*)?(.+?)\s*:?\s*\*\*", re.MULTILINE
+)
+
+
+def _section_themes(body: str) -> list[str]:
+    """The themes one risk section enumerates, by the first shape it uses.
+
+    A section enumerates at one level. Where it has sub-headings those are its
+    themes, and the bullets beneath them are detail within a theme — reading
+    both turns a per-theme checklist into nine more themes, each demanding its
+    own row. So the shapes are a ladder and not a union: each rung is consulted
+    only where every rung above it found nothing.
+
+    The ordering is what keeps the widest rung safe. Bold-led paragraphs are
+    also how a memo writes a labelled aside — "**Planned response.** ..." — and
+    reading those as themes puts a theme nobody will ever own into the cycle's
+    partition. Every memo observed that carries such an aside enumerates its
+    actual themes as headings or bullets, so the ladder settles above the
+    paragraph rung and never sees it.
+    """
+    headed = [
+        match.group(2).strip()
+        for match in _HEADING.finditer(body)
+        if len(match.group(1)) == 3
+    ]
+    bulleted = [match.group(1).strip() for match in _BOLD_LED_ITEM.finditer(body)]
+    lead = [match.group(1).strip() for match in _BOLD_LED_PARAGRAPH.finditer(body)]
+    return headed or bulleted or lead
 
 
 def planned_risk_themes(apm_markdown: str) -> list[str]:
@@ -1700,20 +1735,7 @@ def planned_risk_themes(apm_markdown: str) -> list[str]:
     for heading, body in _section_bodies(apm_markdown).items():
         if "risk" not in heading:
             continue
-        # A section enumerates at one level. Where it has sub-headings those are
-        # its themes, and the bullets beneath them are detail within a theme —
-        # reading both turns a per-theme checklist into nine more themes, each
-        # demanding its own row. Bullets are the enumeration only when nothing
-        # else is.
-        headed = [
-            match.group(2).strip()
-            for match in _HEADING.finditer(body)
-            if len(match.group(1)) == 3
-        ]
-        themes.extend(
-            headed
-            or [match.group(1).strip() for match in _BOLD_LED_ITEM.finditer(body)]
-        )
+        themes.extend(_section_themes(body))
     return _distinct_themes(dict.fromkeys(theme for theme in themes if theme))
 
 
@@ -1858,12 +1880,17 @@ def unstructured_risk_sections(apm_markdown: str) -> list[str]:
     a matrix built from that is not thereby incomplete. It is a degradation of
     what the reconciliation can check, and degradation that says nothing is how
     this check silently stopped covering fraud.
+
+    Read through the same ladder as :func:`planned_risk_themes`, so the two can
+    never disagree about whether a section enumerated: a section this function
+    stays quiet about is one that section contributed themes from, and a shape
+    the ladder cannot read is named here rather than passing as coverage.
     """
     quiet = []
     for heading, body in _section_bodies(apm_markdown).items():
         if "risk" not in heading or len(body.split()) < 40:
             continue
-        if not _HEADING.search(body) and not _BOLD_LED_ITEM.search(body):
+        if not _section_themes(body):
             quiet.append(heading)
     return quiet
 
@@ -3181,6 +3208,12 @@ Return {{"name": ..., "steps": [...], "cross_cutting": {{...}}}}.
 - `name` is the cycle as a whole, in the entity's own words where the
   memorandum gives them ("Procure-to-pay", "Treasury dealing and settlement").
 - Each step has `name`, `roles`, `populations` and `themes`.
+- Every name — the cycle's, each step's, the cross-cutting bucket's — is a
+  label of at most {planning_cycle.MAX_CYCLE_NAME_CHARACTERS} characters,
+  not the memorandum's sentence. Keep the memorandum's own wording where it
+  fits and shorten to the action and its object where it does not ("Finance
+  prepares and releases voucher"), keeping the order of the steps and what
+  separates one from the next.
 - `roles` are the document types that record the step, chosen from DOCUMENT
   TYPES HELD and spelled exactly as listed. A role's `name` is a short
   lowercase identifier for the position it fills in the cycle (`order`,

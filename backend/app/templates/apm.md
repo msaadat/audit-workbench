@@ -24,7 +24,9 @@
 
 ## Fraud risk and management override
 
-<!-- section: The fraud risks considered for this engagement and the response planned for each. Address management override of controls explicitly: it is presumed present on every engagement regardless of what the entity asserts, so state how the plan responds to it rather than whether it applies. Consider at least incentive and pressure, opportunity created by the control environment described above, and the transaction patterns a party circumventing these controls would produce. Where a fraud risk is considered and judged not applicable, say so and say why — an unstated risk is not the same as a dismissed one. -->
+<!-- section: The fraud risks considered for this engagement and the response planned for each. Address management override of controls explicitly: it is presumed present on every engagement regardless of what the entity asserts, so state how the plan responds to it rather than whether it applies. Consider at least incentive and pressure, opportunity created by the control environment described above, and the transaction patterns a party circumventing these controls would produce. Where a fraud risk is considered and judged not applicable, say so and say why — an unstated risk is not the same as a dismissed one.
+
+Name each fraud risk as a `###` sub-heading and write the response beneath it. The sub-headings are read as the enumeration of what this section covers, so a risk buried in continuous prose is not counted as considered. -->
 
 ## Key risks and planned response
 
@@ -41,7 +43,9 @@ For each significant process, state whether each of the following was considered
 - economy of the amounts committed, judged against comparable transactions in the same population;
 - compliance with the entity's own stated policy, including whether the evidence that policy requires exists in the populations received at all.
 
-A lens with no applicable risk on this engagement is recorded as considered and not applicable, with the reason. Name the risk in the entity's own terms rather than restating the lens. -->
+A lens with no applicable risk on this engagement is recorded as considered and not applicable, with the reason. Name the risk in the entity's own terms rather than restating the lens.
+
+Name each risk as a `###` sub-heading and write the planned response beneath it. The sub-headings are read as the enumeration of what this section covers: they become the themes the cycle design assigns to its steps and the matrix answers row by row, so a risk written as a bold lead-in inside a paragraph of prose reaches neither. -->
 
 ## Planning assumptions and matters reported
 

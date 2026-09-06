@@ -442,6 +442,54 @@ def test_bullets_under_a_headed_section_are_detail_not_themes():
     assert planning.planned_risk_themes(memo) == ["Accounts payable"]
 
 
+def test_a_risk_named_by_a_bold_led_paragraph_is_a_theme():
+    """The third shape a memo enumerates in, and the one that cost a cycle.
+
+    An expenses APM wrote its seven key risks as numbered bold-led paragraphs
+    rather than bullets. The section read as prose, the cycle was designed
+    against the three fraud themes alone, and nothing said so.
+    """
+    memo = (
+        "# APM\n\n## Key risks and planned response\n\n"
+        "**1. Authorisation against stated limits — risk evidenced.** One "
+        "claim was approved above the approver's delegation.\n\n"
+        "**2. Timing and sequence across the lifecycle.** One payment was "
+        "released before its recorded approval.\n"
+    )
+
+    # The trailing stop is kept, as it is on the bullet rung: the theme is
+    # copied verbatim into the cycle and matched verbatim against the matrix,
+    # so both rungs have to spell one theme the same way.
+    assert planning.planned_risk_themes(memo) == [
+        "Authorisation against stated limits — risk evidenced.",
+        "Timing and sequence across the lifecycle.",
+    ]
+    assert planning.unstructured_risk_sections(memo) == []
+
+
+def test_a_bold_led_aside_is_not_a_theme_where_the_section_enumerates_above_it():
+    """The paragraph rung is reached only where the ones above find nothing.
+
+    "**Planned response.**" leading a paragraph is how a memo labels an aside,
+    not how it names a risk. Read as a union rather than a ladder it becomes a
+    theme the cycle must place and no matrix row will ever own.
+    """
+    memo = (
+        "# APM\n\n## Fraud risk and management override\n\n"
+        "- **Incentive and pressure.** Non-reimbursable lines appear in the "
+        "claims population.\n"
+        "- **Opportunity in the control environment.** The review flag never "
+        "held a claim.\n\n"
+        "**Planned response.** Re-test the population against per-person "
+        "limits once the delegation master is obtained.\n"
+    )
+
+    assert planning.planned_risk_themes(memo) == [
+        "Incentive and pressure.",
+        "Opportunity in the control environment.",
+    ]
+
+
 def test_a_risk_section_that_enumerates_nothing_is_reported_not_ignored():
     prose = (
         "# APM\n\n## Fraud risk and management override\n\n"

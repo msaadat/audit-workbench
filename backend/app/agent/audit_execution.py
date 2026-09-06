@@ -551,6 +551,19 @@ class AuditWorkflowExecution(ActionExecution):
                     f", and sets a planned response against "
                     f"{counted(len(risks), 'risk')}."
                 )
+                if argued:
+                    # Reported per section rather than per memorandum. A memo
+                    # that enumerates in one risk section and argues in prose in
+                    # another is the case this row used to call healthy: the
+                    # count came from whichever section did enumerate, and the
+                    # one that did not was never mentioned. That is how a cycle
+                    # was designed against three fraud themes while the seven
+                    # key risks beneath them reached nothing.
+                    summary += (
+                        f" {_quoted_headings(argued)} is argued as prose and "
+                        f"enumerates none of them, so the themes the cycle and "
+                        f"the matrix are built from omit that section."
+                    )
             elif argued:
                 # Prose is a legitimate way to argue a risk assessment. It is
                 # also the shape the RCM cannot build rows from, so a reader
@@ -566,6 +579,10 @@ class AuditWorkflowExecution(ActionExecution):
             # A memorandum that assesses no risk at all is not a plan anyone can
             # work from, whatever else it covers.
             thin = not risks and not argued
+            # Nor is one whose risk assessment only partly reaches the matrix:
+            # the count looks healthy, and everything built downstream from the
+            # themes is silently working from a subset of the plan.
+            partial = bool(risks and argued)
             metrics = [
                 {"label": "Risks assessed", "value": len(risks)},
                 {"label": "Governing documents", "value": len(governing)},
@@ -576,18 +593,39 @@ class AuditWorkflowExecution(ActionExecution):
             # section for matters: "0" is an answer this one never gave.
             if matters is not None:
                 metrics.insert(1, {"label": "Matters to confirm", "value": len(matters)})
+            headline = "Audit planning memorandum ready"
+            if thin:
+                headline += " — no risk assessed"
+            elif partial:
+                headline += " — part of the risk assessment enumerates nothing"
             return {
-                "status": "completed_with_issues" if thin else state,
-                "headline": (
-                    "Audit planning memorandum ready — no risk assessed"
-                    if thin else "Audit planning memorandum ready"
+                "status": (
+                    "completed_with_issues" if thin or partial else state
                 ),
+                "headline": headline,
                 "summary": summary,
                 "metrics": metrics,
                 # What the memorandum itself says it could not settle. Same
                 # shape as any other highlight — a statement to scan and the
                 # reason under it — but sourced from the artifact on this row.
-                "highlights": [
+                # A risk section that enumerated nothing leads, because unlike
+                # the matters it is not something the memorandum knows it owes.
+                "highlights": ([
+                    {
+                        "severity": "warning",
+                        "label": (
+                            f"{_quoted_headings(argued)} enumerates no risk "
+                            "theme"
+                        ),
+                        "detail": (
+                            "Its risks are argued as prose, so they are not "
+                            "among the themes the cycle design and the matrix "
+                            "are built from. Name each risk as a sub-heading "
+                            "or a bold-led item to bring the section in."
+                        ),
+                        "artifact_ref": "planning:apm",
+                    }
+                ] if partial else []) + [
                     {
                         "severity": "warning",
                         "label": statement,
