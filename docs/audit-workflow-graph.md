@@ -1,0 +1,1057 @@
+# The Audit Workflow Graph
+
+What each stage of an audit run actually does: what it waits for, what it is
+shown, what it asks a model, what it writes back, and what it costs.
+
+This is a reference for the **executable** audit lifecycle as the code declares
+it today — `audit_workflow_v3`, 29 capabilities. It is derived from
+`backend/app/agent/workflows/audit.py`, the grouped capability declarations
+under `backend/app/agent/capabilities/`, the context presets in
+`backend/app/agent/context/presets.py`, and the execution bindings in
+`backend/app/agent/audit_execution.py`.
+
+It is the **stage-level** companion to [agent-architecture.md](agent-architecture.md),
+which states the contracts and boundaries the framework holds to. That document
+gives each declared graph's structure; this one gives the audit graph's
+behaviour, one capability at a time. Where the two disagree, the code wins.
+
+- [1. Vocabulary](#1-vocabulary)
+- [2. The graph](#2-the-graph)
+- [3. From a request to a plan](#3-from-a-request-to-a-plan)
+- [4. Scheduling](#4-scheduling)
+- [5. What one unit does — the LLM call mechanism](#5-what-one-unit-does--the-llm-call-mechanism)
+- [6. The provider call](#6-the-provider-call)
+- [7. Context: what a stage is shown](#7-context-what-a-stage-is-shown)
+- [8. Stage reference](#8-stage-reference)
+- [9. Budgets](#9-budgets)
+- [10. Approvals, gates, and modes](#10-approvals-gates-and-modes)
+- [11. What lands on disk](#11-what-lands-on-disk)
+- [12. Where to change what](#12-where-to-change-what)
+
+---
+
+## 1. Vocabulary
+
+| Term | Meaning | Declared in |
+| --- | --- | --- |
+| **Capability** | One outcome the workflow can bring about (`planning.apm_ready`). Carries its dependencies, a readiness function, a unit expansion, a context declaration, a barrier, and an invalidation key. | `capabilities/*.py` |
+| **Stage** | One capability's slot in a materialized run. Holds its units, its status, and the readiness snapshot taken before it ran. | `workflow.materialize` |
+| **Unit** | The smallest thing that runs: one RCM row's tests, one document's category, one Q&A item against one document. Unit IDs are *semantic* (`test_generation:dt-014`), so re-expanding after a resume yields the same work. | `workflow.UnitSpec` |
+| **Readiness** | A deterministic, model-free verdict on whether a capability's outcome already exists: `satisfied`, `missing`, `stale`, `blocked`, `review_required`. Existence and structural usability only — *currency* is deliberately not assessed. | `workflow.Readiness` |
+| **Barrier** | How a stage's units may run. `all_settled_then_validate` (default) runs them one at a time; `all_settled_parallel` fans them out. | `workflow.BARRIERS` |
+| **Binding** | How a capability's units execute: a **pipeline binder** (context → worker → proposal → executor) or a **deterministic executor** (local computation, no model). Exactly one per capability. | `runtime.CapabilityExecution` |
+| **Worker** | The only thing that talks to a model. Hash-identified by its prompt, response schema, and repair policy. Cannot reach a workspace, transaction, or run store. | `workers/model.py` |
+| **Executor** | The only thing that mutates the workspace. Hash-identified by its id and concurrency mode. Cannot reach a worker or the gateway. | `executors/model.py` |
+
+Two invariants hold the shape in place, and both have durable tests
+(`test_agent_final_boundaries.py`):
+
+- A workflow definition imports only graph primitives. Capabilities never
+  schedule or persist. Workers never see a workspace. Executors never see a
+  model. Context never calls a provider.
+- There is exactly one provider call site in the whole agent:
+  `runtime/model_gateway.py`.
+
+---
+
+## 2. The graph
+
+`workflows/audit.py:DEPENDENCIES` is the single source of truth for the edges.
+Capability modules attach behaviour to these IDs; they never restate an edge.
+
+```text
+                       sources.imported ───────────────┐
+                              │                        │
+  documents.text_ready        │                        │
+        ├──► documents.categorized ──► documents.types_classified
+        │            │                          │      │
+        │            │                  documents.evidence_read
+        │            │                          │
+        │            │                  documents.schemas_stamped ──┐
+        │            │                                              │
+        └──► documents.analysis_chunks_ready                        │
+                     │                                              │
+             documents.analysis_generated ───┐                      │
+                                             │                      │
+  data.relationships_inferred                │                      │
+        └──► data.join_utility_ready         │                      │
+                 └──► data.joins_ready       │                      │
+                          └──► analysis.register_ready              │
+                                   └──► analysis.definitions_ready  │
+                                            └──► analysis.executed  │
+                                                     └──► analysis.summarized
+                                             │                      │
+                              planning.context_ready ◄──────────────┘ (sources +
+                                             │                         generated
+                                  planning.apm_ready                   analyses)
+                                       │           │
+                          planning.cycle_ready ◄───┤ (+ sources.imported,
+                                       │           │   documents.types_classified)
+                                       ▼           ▼
+                                  planning.rcm_ready
+                                    (+ documents.categorized,
+                                       documents.types_classified)
+                                       │
+                     tests.cycle_ruleset_proposed
+                        (+ planning.cycle_ready,
+                           documents.schemas_stamped)
+                                       │
+                     tests.cycle_ruleset_approved   ← auditor gate in permission mode
+                                       │
+                                 tests.specified  (+ planning.rcm_ready)
+                                       │
+                          tests.promoted_from_analysis
+                                       │
+                              fieldwork.executed
+                                       │
+                                results.rolled_up
+                       ┌───────────────┼───────────────┐
+                       ▼               ▼               ▼
+             findings.drafted   working_papers.   report.working_draft
+                       │          generated        (+ planning.apm_ready)
+                       └──────────────►│◄───────────────┘
+                                       ▼
+                                 audit.verified
+```
+
+The parallel branches after `results.rolled_up` are intentional; the graph is a
+DAG, not a chain.
+
+### Notable edges, and why they are there
+
+- **`sources.imported` is the head, and the agent can never perform it.** It
+  expands no units and resolves no worker; it exists so an engagement holding
+  nothing reports planning as *waiting* rather than offering to write a
+  memorandum about nothing.
+- **`planning.context_ready → documents.analysis_generated`** grounds planning
+  in generated document analyses rather than raw text. It is *not* a universal
+  prerequisite: with no planning-relevant document in scope, every document
+  capability's readiness is satisfied, no unit expands, and the audit runs
+  unchanged.
+- **`planning.cycle_ready` sits in front of the matrix, not behind the
+  schemas.** The cycle shape is read out of the memorandum alone, so it costs no
+  extraction; its step names become the vocabulary a matrix row's `process` is
+  chosen from.
+- **There is no schema edge into `planning.rcm_ready`.** A matrix row says a
+  requirement needs linked source records and stops; *which* fields must agree
+  is decided downstream by the cycle ruleset, where the induced schemas are in
+  hand. That keeps a re-derived schema from invalidating the whole matrix.
+- **`tests.specified` does not depend on `analysis.executed`**, and
+  `planning.apm_ready` does not depend on the analysis branch. Making either an
+  edge would drag the whole exploratory branch into every request that reaches
+  fieldwork. Ordering is handled by declaration order in the registry instead.
+- **Dashboard curation is not on the graph.** Arranging tiles changes how an
+  engagement is read, not what it establishes; nothing downstream ever consumed
+  it.
+
+### Outcome sets
+
+`workflows/audit.py:TEMPLATE_OUTCOMES` maps a goal template to the outcomes a
+request asks for. The transitive closure of those outcomes is the plan.
+
+| Template | Requested outcomes |
+| --- | --- |
+| `full_audit_working_draft` | `analysis.summarized`, `findings.drafted`, `working_papers.generated`, `report.working_draft`, `audit.verified` |
+| `planning` | `planning.apm_ready`, `planning.rcm_ready`, `tests.specified` |
+| `apm_only` | `planning.apm_ready` |
+| `rcm_only` | `planning.rcm_ready` |
+| `finding_draft` | `findings.drafted` |
+| `document_test_preparation` | `tests.specified` |
+| `report` | `report.working_draft`, `audit.verified` |
+
+Running one named Document Test is deliberately absent: that is a request
+against the standalone `doc_tests_workflow_v2` graph, which reaches the same
+units through the same binder.
+
+### Sibling graphs
+
+Three other graphs run on the same scheduler and share declarations with this
+one:
+
+| Workflow | Chain |
+| --- | --- |
+| `analysis_workflow_v1` | `data.relationships_inferred` → `data.join_utility_ready` → `data.joins_ready`; `analysis.register_ready` → `analysis.definitions_ready` → `analysis.inputs_ready` → `analysis.executed` → `analysis.summarized` |
+| `documents_workflow_v1` | `documents.text_ready` → `categorized` → `types_classified` → `evidence_read` → `schemas_stamped`; `analysis_chunks_ready` → `analysis_generated` → `analysis_reviewed` |
+| `doc_tests_workflow_v2` | `doc_tests.definitions_ready` → `doc_tests.executed` → `doc_tests.dispositioned` |
+
+The audit graph composes the document capabilities through
+`CapabilityGroupView` (generation only — never auditor review) and the analysis
+capabilities through `AuditAnalysisGroup` (everything except
+`analysis.inputs_ready`, and with the audit graph's own edges substituted).
+There is one implementation of each; the audit graph reuses it rather than
+restating it.
+
+Note the one deliberate edge difference: standalone analysis hangs
+`analysis.register_ready` off `data.relationships_inferred`, while the audit
+graph hangs it off `data.joins_ready`.
+
+---
+
+## 3. From a request to a plan
+
+```text
+assistant_chats._process_message
+  └─ act intent
+     └─ runner.start_command_run       one live run per workspace (AgentBusyError)
+        ├─ store.new_run               creates run.json
+        ├─ routing.resolve_route       classify ONCE; persist run["route"] + run["engine"]
+        │    └─ routing.classify_command   pure, deterministic, no model turn:
+        │         1. source == "loop"          -> the steering loop
+        │         2. explicit requested_outcomes -> workflow
+        │         3. a registered goal template  -> workflow
+        │         4. a lifecycle phrase          -> workflow
+        │         anything else — a sentence — -> the steering loop, which reads
+        │                                         the workspace before deciding
+        ├─ routing.install_resolution  materialize the graph, size the budgets
+        └─ daemon thread ──► runner._run_engine ──► engine switch on run["engine"]
+```
+
+`resolve_route` always returns an engine. There is no pending route and no
+router turn: the phrase tables that used to guess an outcome set from wording,
+and the bounded router turn that guessed when they could not, decided nothing
+across 45 recorded runs and are gone. A sentence is the loop's, and the loop
+decides the same question with the workspace in front of it — and can ask.
+`clarification` and `unsupported` routes are legacy only: nothing produces them
+any more, and `finish_without_engine` exists to bring an already-persisted
+record carrying one to a terminal status with a reply.
+
+`routing.install_resolution` is where the plan comes from, and **it comes from
+the registry, not from a model**:
+
+1. Resolve the requested outcomes to a workflow definition
+   (`workflow_for_outcomes` picks the *narrowest* registry that declares all of
+   them).
+2. `workflow.materialize(registry, workspace, outcomes, scope, generation_mode)`:
+   - walk the transitive `depends_on` closure in topological order;
+   - for each capability, run its deterministic `readiness()`;
+   - under `reuse_existing`, **skip** any capability that is already satisfied
+     (and whose dependencies are not themselves being rebuilt) or merely
+     `stale`, recording it in `reused_outcomes` with
+     `currency_status: "not_assessed"`;
+   - otherwise call `expand_units()` and fan it into a stage.
+3. Reject the run if any stage exceeds `max_units_per_stage` (default 250).
+4. Size the model budget from real counts (§9) and persist
+   `run["workflow"]` with the definition id, definition hash, scope, resolved
+   capabilities, stages, and a human-readable `workflow_explanation`.
+
+`generation_mode` is `reuse_existing` unless the command says otherwise —
+`workflow.command_generation_mode` reads `improve `, `regenerate`, `refresh `,
+or `generate … again` out of the request text and returns `force`, which makes
+materialization re-expand satisfied capabilities.
+
+The scope resolved here (`target_refs`, `generation_mode`, `instruction`,
+`tables`, `test_ids`, …) is durable on the run and is what every readiness and
+expansion function reads. `_shared.target_scope` resolves `rcm:`, `datatest:`,
+`doctest:`, `observation:`, `finding:`, and `document:` refs, and — importantly
+— rolls anything below a row *up* to its row, so a stage that expands per row
+still works when the auditor named one test.
+
+---
+
+## 4. Scheduling
+
+`runtime/workflow_runner.py:WorkflowRunner` is domain-neutral: it receives the
+capability registry, the execution bindings, a `RunRuntime`, and a
+`UnitPipeline` by composition, and imports no audit module.
+
+**Stages run strictly in dependency order.** Parallelism lives *inside* a stage.
+
+For each stage, in materialized order:
+
+1. `checkpoint()` — honours cancel/pause and the runtime deadline.
+2. `_refresh()` — reload the workspace; project its revision on the run.
+3. `before_stage` — in permission mode, fire any scope checkpoint the stage
+   declares (document scope, analysis scope).
+4. Check dependencies. A dependency that was scheduled in this run and did not
+   settle blocks the stage — **unless the edge is declared partial**.
+5. `ensure_stage_units` — re-expand if the unit list is empty.
+6. **If there are no units, settle the stage from its own readiness alone**
+   (`succeeded` if satisfied, else `blocked`). This is how an audit with no
+   documents walks straight through the document capabilities, and how the
+   permission-mode approval gate reports without acting.
+7. Run the units through the capability's one binding.
+8. `_refresh()`, fold the unit statuses into a stage status, emit
+   `stage_summary`.
+
+### Partial dependencies
+
+`audit_execution._PARTIAL_DEPENDENCIES` lists edges that order work without
+withholding it. The rule is: *a failure in the dependency must not destroy work
+the dependent can still do.*
+
+| Dependent | Partial on | Because |
+| --- | --- | --- |
+| `planning.context_ready` | `sources.imported`, `documents.analysis_generated` | An auditor may ask for a memorandum from a brief alone, before importing anything. |
+| `planning.cycle_ready` | `sources.imported` | A step may legitimately have no imported population. |
+| `tests.specified` | `tests.cycle_ruleset_approved` | Generation has always been able to proceed without a cycle — it writes document-question tests instead. Blocking here would withhold every test in the engagement, data tests included, to wait on an approval permission mode is not allowed to make. |
+| `fieldwork.executed` | `tests.specified`, `tests.promoted_from_analysis` | One unsatisfiable promotion must not block every test that already exists. |
+| `results.rolled_up` | `fieldwork.executed` | |
+| `report.working_draft` | `findings.drafted` | |
+| `audit.verified` | `working_papers.generated`, `report.working_draft` | |
+| `documents.analysis_chunks_ready` / `analysis_generated` | the previous document step | One unanalyzable document must not withhold the others. |
+| the analysis chain | the previous analysis step | One procedure that would not execute must not withhold the memo. |
+
+Deliberately **not** partial: `data.joins_ready` on `data.join_utility_ready`.
+A pair whose utility gate never answered has nothing admitting it, and
+materializing the join anyway would bypass the gate outright.
+
+### Barriers
+
+- **`all_settled_then_validate`** (the default, and every capability that
+  commits): units run one at a time, and the workspace is reloaded between them
+  so the next unit binds against what its predecessor committed. This is not a
+  concession — for `documents.evidence_read` it *is* the mechanism, because a
+  per-document read can only agree with its siblings about a vocabulary if it
+  can see what they settled.
+- **`all_settled_parallel`**: only for capabilities whose units are independent
+  and commit nothing. Currently `tests.specified`,
+  `tests.promoted_from_analysis`, and `documents.analysis_chunks_ready`.
+  `workflow.stable_all_settled` fans them out under `max_llm_concurrency`,
+  never fail-fast, and returns results in unit-ID order so the durable
+  transcript is identical regardless of completion timing.
+
+`tests.specified` is parallel for a hard reason: serialized, one unit per RCM
+row, seventy turns at a minute each exhausts the run's deadline before the
+stage completes.
+
+### Recovery
+
+`workflow.recovery` re-queues any unit left `running` by a crash. Because unit
+IDs are semantic and proposals/receipts are sidecar-persisted, a resumed run
+picks up at the next uncommitted unit without re-billing the provider.
+
+---
+
+## 5. What one unit does — the LLM call mechanism
+
+`runtime/unit_pipeline.py:UnitPipeline.run` is the whole model-call lifecycle,
+and it is the same for every pipeline-backed capability in every graph. The
+binder supplies the domain parts; the pipeline owns the order.
+
+```text
+ 1. context_provider()          resolve declared context → (ContextManifest, ContextBundle)
+ 2. persist_context_manifest    content-free manifest sidecar written BEFORE any model call
+ 3. build ProposalExecutionIdentity
+       capability_definition_hash + unit_input_hash + context_manifest_hash
+       + worker_definition_hash + model_profile_hash + input_modalities
+       + prepared_media_hashes + media_policy_hash
+ 4. load_proposal(unit)         is there a persisted proposal with this exact identity?
+       ├─ yes → reuse it. No provider call. No re-bill.
+       └─ no  → 5
+ 5. workers.execute(...)        ──► ModelGateway.complete()   ← the only provider call
+       ├─ response validated against the worker's response schema
+       ├─ invalid → bounded repair: the response is quoted back with its
+       │            validation errors (1 attempt for most workers, 2 for
+       │            documents.evidence_read and tests.generate)
+       └─ still invalid → persist a REJECTION sidecar and raise
+ 6. persist_proposal            exact-identity proposal sidecar, status "proposed"
+ 7. approval_provider(proposal) permission mode only; returns None → "approval_rejected"
+       └─ accepted → proposal re-persisted with status "accepted"
+ 8. executor_id is None?        proposal-only unit — the proposal IS the durable
+                                outcome (document chunk analyses, join utility).
+                                Return "proposed". No commit, no receipt.
+ 9. executors.reconcile(...)    interrupted-commit check
+       ├─ already_applied → synthesize a receipt, do not re-commit
+       ├─ conflict        → raise UnitPipelineConflict
+       └─ not_applied     → 10
+10. executors.execute(...)      the ONE place the workspace is mutated
+11. persist_receipt             hash-identified proof of the commit
+12. readiness_provider()        re-evaluate the capability. Committed but not
+                                satisfied → the unit fails.
+```
+
+Three properties matter for reading a run afterwards:
+
+- **The manifest is written before the model call.** Whatever a turn was shown
+  is recorded even if the turn crashed.
+- **The proposal is written before approval or mutation.** A crash between
+  generation and commit resumes from the sidecar. When any of the eight
+  identity fields moves, the reuse is rejected with a named reason
+  (`exact_context_changed`, `worker_definition_changed`,
+  `unit_input_changed`, …) and the turn is paid for again — which is the point.
+- **A rejected response is kept.** The final invalid response is persisted as a
+  rejection sidecar and seeded back into an exact-identity retry, so the next
+  attempt edits what the last one produced instead of starting over.
+
+### Repair, not retry
+
+A repair happens *inside* one worker call. The unit's `attempts` counter stays
+at 1 however many turns the response took; the worker's own count is recorded
+on the proposal as `worker_attempts`. `WorkerAttempt` enforces the contract: the
+first attempt may carry no guidance and no previous response; a repair attempt
+must carry both.
+
+### Mixed-kind capabilities
+
+`fieldwork.executed` is the one capability whose units are of several kinds, and
+only one of them talks to a model. Its binder returns a `BoundUnitPipeline` for
+document Q&A / LLM assessment / cycle vouching, and a `DeterministicUnitResult`
+for data-test runs, deterministic document-test runs, and review units. That is
+how a capability with mixed units still carries exactly one binding.
+
+---
+
+## 6. The provider call
+
+`runtime/model_gateway.py:DefaultModelGateway.complete` is the only path from
+the agent to a provider. Everything else reaches it through
+`BaseRunner._llm_content`. A static test confines direct provider calls to this
+module.
+
+Per call it:
+
+1. `checkpoint()` — cancel/pause/deadline.
+2. Resolve the model profile (`text` or `vision`, selected by the worker's
+   `required_model_capabilities`) and refuse if the configured profile lacks a
+   required capability or is unconfigured.
+3. Verify every prepared-media handle from the cache **before** reserving
+   budget, so a preparation failure never spends model budget.
+4. Estimate `request_characters`, `text_token_estimate` (chars / 4), and
+   `image_token_estimate`, then **reserve turn and token budget through
+   `RunRuntime` before calling**. An estimated overage never spends provider
+   tokens.
+5. Derive the `[agent:<stage>]` tag from the first line of the system prompt.
+   This tag drives the UI stage label, per-worker accounting, streamed
+   progress, and the "this is taking a while" heartbeat.
+6. Hold a process-wide semaphore keyed on `provider:model`.
+7. Make the call inside a `debug_store.trace_context` carrying run id, stage,
+   unit id, parent refs, document ids and artifact refs.
+8. Reconcile actual token usage against the reservation and append **hash-only**
+   provenance.
+
+An empty or unusable completion is retried exactly once, here and nowhere else:
+the bounded repair loop corrects a response by quoting it back, and an empty
+completion gives it nothing to quote. The retry is metered like any other turn
+and is distinguishable in the debug console by carrying the same
+`retry_number` with `retry_reason: "unusable"` (a repair carries a *higher*
+`retry_number` and a different prompt).
+
+### Registered workers
+
+| Worker | Response | JSON | Repairs | Model caps | Semantic check |
+| --- | --- | --- | --- | --- | --- |
+| `planning.context` | `{context: {...}}` | yes | 1 | — | yes |
+| `planning.apm` | Markdown memorandum | **no** | 1 | — | yes |
+| `planning.cycle` | `{name, steps[], cross_cutting}` | yes | 1 | — | yes |
+| `planning.rcm` | `{rows[], quarantined[]?}` | yes | 1 | — | yes |
+| `tests.cycle_linkage` | `{roles[], join_keys[], assertions[]}` | yes | 1 | — | yes |
+| `tests.generate` | `{tests[]}` | yes | **2** | — | yes |
+| `fieldwork.document_qa` | `{answer, conclusion, control_conclusion, outcome, citations[]}` | yes | 1 | — | yes |
+| `fieldwork.cycle_vouch` | `{cells[]: check_id, verdict, compared, reason}` | yes | 1 | — | yes |
+| `reporting.finding` | Markdown draft (title / severity / narrative) | **no** | 1 | — | yes |
+| `documents.category` | `{category, confidence, rationale}` | yes | 1 | — | no |
+| `documents.classification` | document type assignment | yes | 1 | — | yes |
+| `documents.evidence_read` | `{records[]: fields[], new_fields[]}` | yes | **2** | — | yes |
+| `documents.analysis_chunk` | `{summary_markdown, audit_notes_markdown, citations[]}` | yes | 1 | — | yes |
+| `documents.analysis_structured` | structured chunk analysis | yes | 1 | — | yes |
+| `documents.analysis_visual_page` | page analysis | yes | 1 | **vision** | yes |
+| `documents.analysis_reduction` | `{derived_text_markdown, summary_markdown, audit_notes_markdown}` | yes | 1 | — | yes |
+| `analysis.join_utility` | join utility verdicts | yes | 1 | — | yes |
+| `analysis.reading` | assertion register decisions | yes | 1 | — | yes |
+| `analysis.definitions` | analysis specs | yes | 1 | — | yes |
+| `analysis.summary` | EDA memo | yes | 1 | — | yes |
+| `analysis.promotion` | RCM placement for a saved analysis | yes | 1 | — | yes |
+| `intake.classification` | staged-file classification | yes | 1 | — | yes |
+
+Two workers return Markdown rather than JSON, and both for the same measured
+reason. The APM: constraining it to JSON produced a complete 16,000-character
+memorandum filed under a key the model chose for itself, which then failed the
+template check. The finding: a model that will not emit a newline inside a JSON
+string delivers every section flattened onto one line, which parses as a single
+heading with an empty body and fails every section check at once.
+
+### Registered executors
+
+All twenty audit-reachable executors use `parent_hashes` concurrency: they
+guard the specific material parents they are about to overwrite and permit
+unrelated workspace revisions to advance. (The alternative,
+`workspace_revision`, is strict compare-and-swap; nothing in the audit graph
+uses it.)
+
+`planning.apm`, `planning.cycle`, `planning.context`, `planning.rcm`,
+`tests.cycle_ruleset`, `tests.generate`, `fieldwork.document_qa`,
+`fieldwork.cycle_vouch`, `reporting.finding`, `documents.category`,
+`documents.classification`, `documents.read`, `documents.stamp`,
+`documents.analysis`, `analysis.join`, `analysis.register`,
+`analysis.definitions`, `analysis.execution`, `analysis.summary`,
+`analysis.promotion`.
+
+---
+
+## 7. Context: what a stage is shown
+
+Context is **declaration-only**. A capability names a registered preset; the
+preset is authoritative. Auditor curation and explicit regeneration can change
+which candidates are resolved *under* that policy, but cannot widen the policy.
+Startup validation refuses a capability that names an unregistered preset.
+
+```text
+Capability.context ──► ContextPreset (presets.py)
+                          ├─ sources[]: id, source_type, required, selector,
+                          │             representations[], per-source budget
+                          ├─ budget: max_items, max_characters (global ceiling)
+                          └─ privacy: explicit per-content-class permissions
+
+adapter scope fn ──► ContextScope (candidates per source id)
+       │
+       ▼
+ContextResolver.resolve(workspace, capability, unit, scope)
+       ├─ walk sources in DECLARATION ORDER
+       ├─ required source with no candidates  → hard error
+       ├─ optional source with no candidates  → omission record
+       ├─ apply the selector (metadata | lexical | local embeddings — all local)
+       ├─ apply per-source and global budgets; truncate or omit, and RECORD it
+       └─ enforce privacy structurally
+       │
+       ├──► ContextManifest  content-free. Hashes, sizes, selections, omissions,
+       │                     truncations, privacy decisions. Persisted.
+       └──► ContextBundle    the actual content. Local-only. Never persisted,
+                             never provenance.
+```
+
+The manifest/bundle split is the auditability boundary: the durable record says
+*what* a turn was shown and how much of it, and never the words.
+
+`execution_support.resolve_context` adds one thing on top: a source that had
+candidates and admitted **none** of them raises a run warning
+("had candidates but none fitted its budget, so the turn ran without it").
+Degradation is acceptable; silent degradation is not — this is how a planning
+turn came to describe populations it had never been shown.
+
+### Privacy
+
+Permissions default to deny. A representation kind maps structurally to a
+permission (`_REPRESENTATION_PRIVACY_FIELD`), so a declaration cannot make
+sensitive content permissible by renaming it.
+
+`allow_table_rows` is denied everywhere and the model layer rejects the
+`table_rows` representation before a bundle can reach a worker. Row-level
+engagement data reaches a provider through exactly three narrower doors, each
+its own permission and its own cap:
+
+| Permission | What it admits | Who declares it |
+| --- | --- | --- |
+| `allow_small_table_rows` | A whole table, only when the table is below the adapter's row-count ceiling — a 4-row approval matrix whose aggregate statistics cannot say what its one exceptional row contains. | `planning.rcm` |
+| `allow_analysis_exception_rows` | The rows a saved exploratory procedure flagged, capped per procedure. | `analysis.summary` |
+| `allow_datatest_exception_rows` | The rows a durable, RCM-linked Data Test flagged, capped by row count and serialized size in the adapter. | `reporting.finding_draft` |
+
+The last two are separate on purpose, so revoking one never silently revokes
+the other. The projection always reports how many rows were withheld, so a
+truncated table cannot be drafted as a complete population.
+
+### Preset inventory (audit graph)
+
+Budgets below are `items / characters`.
+
+| Preset | Global budget | Permissions | Sources |
+| --- | --- | --- | --- |
+| `planning.context` | 9 / 50k | planning_context, document_text | `current_planning_context` (opt, 1/10k), `planning_documents` (**req**, 8/40k, deterministic category rule, `summary` or `raw_pages`) |
+| `planning.apm` | 47 / 96k | planning_context, template_text, document_text, table_metadata, table_profiles, analysis_summary, auditor_instruction | `planning_context` (req), `apm_template` (req), `current_apm` (opt, 32k), `analysis_summary` (opt, 24k), `population_summary` (opt), `table_metadata` (12/8k), `table_profiles` (12/16k), `documents` (lexical, 12/40k), `methodology` (lexical, 5/8k), `instruction` (opt) |
+| `planning.cycle` | 26 / 86k | planning_context, document_text, table_metadata | `planning_context` (req), `current_apm` (**req, 60k**), `table_metadata` (24/16k). Names and shapes only — no document source is declared, so no evidence text can reach this turn. |
+| `planning.rcm` | 255 / 138k | planning_context, template_text, document_text, table_metadata, table_profiles, **small_table_rows**, auditor_instruction | `planning_context`, three required templates (`rcm`, `rcm_controls`, `rcm_attributes`), `current_apm` (**req, 60k**), `current_rcm` (opt, 200/40k), `table_metadata`, `table_profiles`, `small_table_rows` (8/16k), `documents` (lexical), `methodology` (lexical), `instruction` |
+| `tests.cycle_linkage` | 2 / 88k | planning_context, **document_schemas** | `cycle_schemas` (req, 1 item carrying every induced type, 64k), `cycle_requirements` (opt, 24k). The schemas and what the matrix asks of them — nothing either was induced or drafted from. |
+| `tests.generate` | 183 / 130k | planning_context, document_text, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `documents` (lexical, 12/26k), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
+| `fieldwork.document_qa` | 61 / 30k | document_text | `qa_item` (req, 4k), `document_pages` (req, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
+| `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
+| `reporting.finding_draft` | 7 / 44k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction` |
+| `documents.category` | 1 / 6k | document_text | `document_category` (req) — the opening page |
+| `documents.classification` | 1 / 6k | document_text | `document_classification` (req) |
+| `documents.evidence_read` | 7 / 49k | document_text, document_images | `document_pages` (req, 48k), `document_page_images` (opt, 6) |
+| `documents.analysis_chunk` | 2 / 34k | document_text | `document_metadata` (req), `document_chunk` (req, 32k) |
+| `documents.analysis_structured` | 1 / 32k | document_text | `document_structured_chunk` (req) |
+| `documents.analysis_visual_page` | 5 / 2k | document_text, **document_images** | `document_metadata`, `document_page_images` (req, 4 images) |
+| `documents.analysis_reduction` | 201 / 62k | document_text | `document_metadata`, `chunk_analyses` (req, 200/60k) |
+| `analysis.join_utility` | 13 / 44k | document_text, table_metadata, table_aggregates | `join_candidates` (req), `join_tables` |
+| `analysis.reading` | 577 / 180k | table_metadata, table_profiles, table_aggregates, value_domains | `frame_map` (req, 224/60k), `nominations`, `relationship_map`, `join_hypotheses`, `value_domains`, `analytics_registry` (req) |
+| `analysis.definitions` | 96 / 88k | table_metadata, table_profiles, table_aggregates, value_domains, auditor_instruction | `target_schema` (req), `target_profile`, `target_aggregates`, `related_frames`, `join_hypotheses`, `relationship_evidence`, `analytics_registry` (req), `lookup_candidates`, `probe_findings`, `value_domains`, `current_analyses`, `instruction` |
+| `analysis.summary` | 250 / 170k | planning_context, table_metadata, table_profiles, analysis_results, **analysis_exception_rows** | `analysis_results` (req, 120/60k), `analysis_exceptions` (40/45k), `analysis_anomalies`, `coverage_gaps`, `table_joins`, `table_metadata`, `table_profiles`, `planning_context` |
+| `analysis.promotion` | 105 / 80k | document_text, table_metadata, analysis_results | `promotion_subject` (req), `rcm_rows` (req, 80/48k), `table_metadata` |
+
+A few of these budgets are load-bearing and were set from observed failures.
+`planning.rcm`'s `current_apm` sits at 60k because at 32k a 53.5k-character
+memorandum lost 21.5k of its tail — and the coverage gate, reading the same
+truncated copy, enforced 7 of 14 themes while reporting nothing about the 7 it
+could not see. `planning.apm`'s `current_apm` sits at 32k because text
+truncates rather than drops: a revision turn that cannot see the end of what it
+is revising rewrites it, silently.
+
+---
+
+## 8. Stage reference
+
+Order below is the registry's declaration order, which is also the order a
+full-audit closure schedules them in.
+
+### `sources.imported` — Sources
+
+| | |
+| --- | --- |
+| Depends on | — (graph head) |
+| Readiness | Satisfied if the workspace holds **any** document or table. Either kind alone is a real engagement. |
+| Units | **None, ever.** Importing is the auditor's act. |
+| Binding | `_bind_unreachable` — registered so every capability has one, and raises if it is ever called |
+| Context | none |
+| Invalidated by | `sources` |
+
+### `documents.text_ready` — Document content
+
+| | |
+| --- | --- |
+| Depends on | — |
+| Units | one per document (`document_text:<doc>`) |
+| Binding | **deterministic** (`documents.extract`) — local text extraction |
+| Context | none: no model sees this capability's inputs |
+| Output | cached document text under `Documents/` |
+
+### `documents.categorized` — Document classification
+
+| | |
+| --- | --- |
+| Depends on | `documents.text_ready` |
+| Units | one per uncategorized document (`document_category:<doc>`) |
+| Binding | pipeline — worker `documents.category`, executor `documents.category` |
+| Context | `documents.category` — the document's **opening page** only (1 item / 6k) |
+| Input | the first page's raw text |
+| Output | `{category, confidence: high\|medium\|low, rationale}` |
+| Commit | category mirrored onto the shared `documents` collection |
+| Barrier | sequential — independence of *inputs* is not independence of *commits*; two units landing at once would race on the shared collection |
+
+What a document is *to this engagement* — planning material or transaction
+evidence. It precedes the type because the type is only asked of evidence, and
+because a category guessed from a filename put policy material under voucher
+fields and left evidence out of scope entirely.
+
+### `documents.types_classified` — Document types
+
+| | |
+| --- | --- |
+| Depends on | `documents.categorized` |
+| Units | one per evidence document (`document_classification:<doc>`) |
+| Binding | pipeline — worker `documents.classification`, executor `documents.classification` |
+| Context | `documents.classification` — opening page only (1 / 6k) |
+| Output | a type from the closed global catalog |
+| Barrier | sequential (shared collection commit) |
+
+### `documents.evidence_read` — Evidence readings
+
+| | |
+| --- | --- |
+| Depends on | `documents.types_classified` |
+| Units | one per evidence document, keyed by type (`evidence_read:<type>:<doc>`) |
+| Binding | pipeline — worker `documents.evidence_read`, executor `documents.read` |
+| Context | `documents.evidence_read` — the document's pages (48k) plus up to 6 page images |
+| Output | `{records[]: {fields[]}, new_fields[]}` — field values read against the type's accumulating master |
+| Repairs | **2**, not the usual 1 |
+| Barrier | **sequential, and here that is the mechanism.** A serialized unit sees its predecessor's work by rebinding against committed state; the parallel path binds every unit before running any of them. Per-document calls can only agree about a vocabulary if they are not independent — "make the read parallel and lock the master" is not an option, because the reads would not be *wrong* about the master, they would never have been shown it. |
+
+The double repair allowance is earned: this worker's refusals are precise and
+recoverable ("you returned 18 citations and not one field value"), and what a
+lost read costs is not one document but its type's whole vocabulary, because a
+type with an unread document is never stamped.
+
+### `documents.schemas_stamped` — Document schemas
+
+| | |
+| --- | --- |
+| Depends on | `documents.evidence_read` |
+| Units | one per document type (`document_schema:<type>`) |
+| Binding | pipeline binding with **no worker** — it commits through `UnitPipeline.commit_local` with executor `documents.stamp` |
+| Context | none — no model turn. The stamp reads the finished master, calls `save_schema` once, and back-stamps the type's readings. |
+| Output | one frozen schema per document type |
+
+### `documents.analysis_chunks_ready` — Document chunk analysis
+
+| | |
+| --- | --- |
+| Depends on | `documents.text_ready`, `documents.categorized` |
+| Units | one per bounded source chunk (`document_chunk:<doc>:<chunk>`), in three kinds: `document_chunk_analysis`, `document_visual_page_analysis`, `document_structured_analysis` |
+| Binding | pipeline, **proposal-only** (`executor_id=None`) — a chunk analysis is run-local; its durable home is the unit's proposal sidecar, not a workspace collection |
+| Context | one preset per unit kind: `documents.analysis_chunk` / `documents.analysis_visual_page` / `documents.analysis_structured` |
+| Output | `{summary_markdown, audit_notes_markdown, citations[]}` |
+| Barrier | **parallel** — independent, and they commit nothing |
+
+The category edge is not optional here. This pass excludes transaction
+evidence *by category*, so a document whose category has not been read yet
+would be chunked as prose and then read again as evidence — one document
+analysed twice under two vocabularies.
+
+### `documents.analysis_generated` — Document analysis
+
+| | |
+| --- | --- |
+| Depends on | `documents.analysis_chunks_ready` |
+| Units | one per document (`document_analysis:<doc>`) |
+| Binding | pipeline — worker `documents.analysis_reduction`, executor `documents.analysis` |
+| Context | `documents.analysis_reduction` — up to 200 chunk proposals (60k) plus document metadata |
+| Output | `{derived_text_markdown, summary_markdown, audit_notes_markdown}` |
+| Commit | `Documents/.analysis` sidecars under the document's material parent hash, stamped with run/unit/content provenance so an interrupted commit is reconciled rather than repeated |
+
+Only the *reduced* analysis is an engagement artifact.
+`documents.analysis_reviewed` — the auditor's own review — is on the document
+graph and deliberately **not** on the audit graph: nothing the agent does
+satisfies it, and an audit run must never wait on or imply it.
+
+### The exploratory analysis branch
+
+The audit graph schedules `data.relationships_inferred` →
+`data.join_utility_ready` → `data.joins_ready` → `analysis.register_ready` →
+`analysis.definitions_ready` → `analysis.executed` → `analysis.summarized`.
+The full-audit outcome set requests the memo *before* the planning outcomes, so
+the sequential scheduler completes it and the memo exists by the time planning
+reads it — but neither planning capability *depends* on it.
+
+| Capability | Binding | Worker / Executor | Notes |
+| --- | --- | --- | --- |
+| `data.relationships_inferred` | deterministic | — | Relationship facts are never model-generated: they come from the deterministic Polars diagnostics in `agent/joins.py`. |
+| `data.join_utility_ready` | pipeline, **proposal-only** | `analysis.join_utility` / — | Gates which candidate joins are worth materializing. |
+| `data.joins_ready` | deterministic | — / `analysis.join` | A join is applied automatically only on a single strong candidate. |
+| `analysis.register_ready` | pipeline | `analysis.reading` / `analysis.register` | The one cross-cutting turn. Its **floor is a deterministic sweep**, so a run whose reading turn is skipped or fails still holds a complete, committable register. |
+| `analysis.definitions_ready` | pipeline | `analysis.definitions` / `analysis.definitions` | Authors specs only for work the register could not already express. |
+| `analysis.executed` | deterministic | — / `analysis.execution` | Local execution. Records a bounded `last_result` (shape, verdict, statistics, flagged-row count) — never result data. Flagged rows live in an evidence sidecar. |
+| `analysis.summarized` | pipeline | `analysis.summary` / `analysis.summary` | The EDA memo. The one place `allow_analysis_exception_rows` is granted. |
+
+Three analytics tests are excluded from autonomous proposal —
+`period_compare`, `stratify`, `sampling` — because all three are *descriptive*:
+they have no exception concept, so proposing one spends a definition turn and
+an execution to produce a chart nothing downstream can promote or conclude
+from.
+
+### `planning.context_ready` — Planning context
+
+| | |
+| --- | --- |
+| Depends on | `sources.imported`, `documents.analysis_generated` (both **partial**) |
+| Readiness | satisfied when any planning-context field is non-empty, or interview answers exist |
+| Units | one (`planning_context`) |
+| Binding | pipeline — worker `planning.context`, executor `planning.context` |
+| Context | `planning.context` — current context plus planning-relevant documents. Planning relevance is a **deterministic category rule**, not a model judgment and not a lexical score: at this point there is no stated objective to score against — producing one is what this capability is for. |
+| Output | `{context: {...}}` — the engagement's objective, scope, period, and so on |
+
+### `planning.apm_ready` — Audit planning memorandum
+
+| | |
+| --- | --- |
+| Depends on | `planning.context_ready` |
+| Readiness | non-empty markdown; `review_required` if it carries no `#` headings. Currency vs. changed sources is **not** assessed — the auditor decides when to force. |
+| Units | one (`apm`), parent `planning:context` |
+| Binding | pipeline — worker `planning.apm`, executor `planning.apm` |
+| Context | `planning.apm` (47 / 96k) — planning context, the APM template, the current APM, the EDA memo, a population summary, table metadata and profiles, lexically-selected documents and methodology, and the auditor's instruction |
+| Input | `{kind, input_sha1, parent_refs}` |
+| Output | **Markdown**, not JSON |
+| Guard | `expected_parents = parent_hashes(ws, ["planning:context"])` |
+| Conflict | An auditor-edited APM is preserved: the unit goes `awaiting_confirmation` and the proposal is recorded under `run["planning_revisions"]` rather than overwriting |
+
+Planning sees the EDA *memo*, never the flagged rows themselves — and with
+embed directives already flattened to citations.
+
+### `planning.cycle_ready` — Cycle design
+
+| | |
+| --- | --- |
+| Depends on | `planning.apm_ready`, `sources.imported` (partial), `documents.types_classified` |
+| Readiness | **the one planning capability that assesses currency**: a cycle whose `apm_sha1` no longer matches the memorandum is `missing`. The shape is a reading *of* the memorandum's process flow, and the matrix downstream takes its `process` vocabulary from it. An auditor's edit keeps the hash it was drafted against, so edits survive until the memorandum itself moves. |
+| Units | one (`cycle`), parent `planning:apm` |
+| Binding | pipeline — worker `planning.cycle`, executor `planning.cycle` |
+| Context | `planning.cycle` (26 / 86k) — planning context, the **whole** memorandum (60k), table metadata. Names and shapes only. |
+| Output | `{name, steps[]: {name, roles[], populations[], themes[]}, cross_cutting}` — roles are document types chosen from the types held, spelled exactly; populations are tables whose rows *are* that step |
+
+### `planning.rcm_ready` — Risk and control matrix
+
+| | |
+| --- | --- |
+| Depends on | `planning.apm_ready`, `planning.cycle_ready`, `documents.categorized`, `documents.types_classified` |
+| Readiness | rows exist; `review_required` if any row lacks a risk or a control |
+| Units | one (`rcm`), parents `planning:apm`, `planning:cycle` |
+| Binding | pipeline — worker `planning.rcm`, executor `planning.rcm` |
+| Context | `planning.rcm` (255 / 138k) — see §7 |
+| Prompt | **three prompts in sequence** (risks, controls, attributes); the worker's `prompt_hash` covers all three, because the sequence is what decides what reaches the model |
+| Output | `{rows[], quarantined[]?}` — rows the worker could not repair within its allowance are quarantined and recorded for the auditor rather than failing the run and discarding every correct row |
+| Repairs | row-scoped: guidance is grouped per row, with a raised ceiling (20 errors / 4,000 characters) so a document with several bad rows does not have its errors dropped |
+
+### `tests.cycle_ruleset_proposed` — Cycle rules proposed for review
+
+| | |
+| --- | --- |
+| Depends on | `planning.rcm_ready`, `planning.cycle_ready`, `documents.schemas_stamped` |
+| Readiness | **satisfied where nothing asks** — an engagement whose matrix classifies no attribute as `transaction_cycle` needs no rules. Where the matrix asks and no schema has been induced: `review_required`. |
+| Units | one, and only when the matrix asks and no ruleset exists |
+| Binding | pipeline — worker `tests.cycle_linkage`, executor `tests.cycle_ruleset` |
+| Context | `tests.cycle_linkage` — the induced schemas as **one atomic item** (a cycle is a statement about how the whole set relates, so a budget that admitted some of it would produce a proposal missing a role with nothing saying which), plus the matrix's requirements |
+| Input | the schema hashes ride on the unit's `input_sha1`, so a re-derived schema re-proposes rather than leaving an auditor approving rules against a vocabulary that moved |
+| Output | `{roles[], join_keys[], assertions[]}` |
+
+This is the only stage that sees the matrix's requirements, the cycle's roles,
+*and* the induced field vocabulary at once, which is why the evidence contract
+is authored here.
+
+### `tests.cycle_ruleset_approved` — Cycle rules made effective
+
+| | |
+| --- | --- |
+| Depends on | `tests.cycle_ruleset_proposed` |
+| Binding | **deterministic** (`tests.cycle_ruleset_approval`) |
+| Context | none — and no worker. The judgement this gate exists for was made when the auditor chose the mode; re-asking a model to bless its own rules would add ceremony, not a check. |
+
+The two run modes part here:
+
+- **permission mode**: expands **no units**. The stage settles from its own
+  readiness (`review_required`), the run carries on, and `tests.specified`
+  proceeds on its partial edge to write document-question tests instead.
+- **auto mode**: the auditor has delegated the run's approvals, so an
+  unapproved proposal is work. One unit approves it and the cycle test becomes
+  generatable.
+
+### `tests.specified` — Executable test specifications
+
+| | |
+| --- | --- |
+| Depends on | `planning.rcm_ready`, `tests.cycle_ruleset_approved` (**partial**) |
+| Readiness | every scoped row has at least one executable test; a row declaring transaction-cycle evidence that still holds a pre-ruleset test is `missing` |
+| Units | **one per RCM row** (`test_generation:<row>`) |
+| Binding | pipeline — worker `tests.generate`, executor `tests.generate` |
+| Context | `tests.generate` (183 / 130k) |
+| Input | the RCM row — or `{row, regenerate_test_ids[]}` when the request named specific tests, which is part of the unit's input identity so a whole-row proposal is never reused as a single-test rewrite |
+| Output | `{tests[]}` |
+| Repairs | **2** |
+| Barrier | **parallel** |
+
+Naming a test *is* the instruction: it says the row is not settled whatever the
+manifest reports, and which test is wrong — so neither the coverage gate nor
+the auditor-draft gate applies, and `force` need not be asked for separately.
+
+Every other RCM row used to be supplied here as duplicate avoidance and did not
+achieve it: the projection carried the other rows' *risks* rather than the
+tests already written for them, a unit cannot see what its siblings produce,
+and it cost a third of the prompt. Deduplication needs a pass that can see every
+generated test at once.
+
+### `tests.promoted_from_analysis` — Analyses placed in the matrix
+
+| | |
+| --- | --- |
+| Depends on | `tests.specified` |
+| Readiness | satisfied when nothing is pending — **including when no analysis ever ran**. Deliberately not scoped by table. |
+| Units | one per candidate saved analysis (`analysis_promotion:<id>`) |
+| Binding | pipeline — worker `analysis.promotion`, executor `analysis.promotion` |
+| Context | `analysis.promotion` — the procedure and its result, the RCM rows (80/48k), table metadata |
+| Barrier | **parallel** — each unit commits under its own analysis's parent hash |
+
+It sits *after* generation so a promoted test is written against a matrix whose
+own tests already exist, and *before* fieldwork so a promoted test is executed
+with everything else — a procedure carried into a test and then never run has
+not been carried anywhere.
+
+### `fieldwork.executed` — Fieldwork execution
+
+| | |
+| --- | --- |
+| Depends on | `tests.specified`, `tests.promoted_from_analysis` (both **partial**) |
+| Readiness | reads the scoped test manifest: `missing` while anything is pending, `review_required` for non-executable or evidence-blocked tests |
+| Units | **mixed kinds**, one binding |
+| Context | per unit kind: `fieldwork.document_qa` for `document_qa_execution` and `document_llm_execution`, `fieldwork.cycle_vouch` for `cycle_vouch_execution` |
+
+| Unit kind | Execution |
+| --- | --- |
+| `data_test_execution` | deterministic — `run_data_test` |
+| `document_test_execution` | deterministic — `run_document_test` (also the shape used when a worklist is blocked on requested evidence, so the run records the block against the evidence request instead of pretending to test) |
+| `document_qa_execution` / `document_llm_execution` | **pipeline** — worker `fieldwork.document_qa`, executor `fieldwork.document_qa`. One unit per unanswered item/document pair. Output `{answer, conclusion, control_conclusion, outcome, citations[]}`, and the worker binds every citation to a page it was actually supplied. |
+| `cycle_vouch_execution` | **pipeline** — worker `fieldwork.cycle_vouch`, executor `fieldwork.cycle_vouch`. Output `{cells[]: check_id, verdict, compared, reason}`. |
+| `document_test_review` | deterministic, settles immediately — only an auditor can dispose of it |
+
+Every Document Test unit is bound by `doc_tests_execution.bind_document_test_unit`
+and expanded by `capabilities.doc_tests.document_test_units` — the same two
+functions the standalone `doc_tests_workflow_v2` graph uses. A worklist behaves
+identically whichever graph scheduled it, and a Q&A test reaches the provider
+only through the registered `fieldwork.document_qa` worker and the declared page
+context.
+
+### `results.rolled_up` — Results and observations
+
+| | |
+| --- | --- |
+| Depends on | `fieldwork.executed` (partial) |
+| Units | one (`rollup`) |
+| Binding | **deterministic** (`fieldwork.rollup`) |
+| Output | each row's derived result and its observations, recomputed from current execution artifacts. Observation identities are keyed on `execution_ref`, so a repeated roll-up reuses rows rather than duplicating them. |
+
+Roll-up is the first point that can see the fieldwork as a whole, and so the
+only one that can warn about populations no executed data test makes a
+statement about. A per-row conclusion cannot: every row concluded on the tests
+it had.
+
+### `findings.drafted` — Eligible finding drafts
+
+| | |
+| --- | --- |
+| Depends on | `results.rolled_up` |
+| Readiness | every eligible exception observation has a supported finding; `review_required` when a linked finding has support issues |
+| Units | one per eligible exception observation (`finding:<obs>`), parents `observation:`, `rcm:`, and the execution ref |
+| Binding | pipeline — worker `reporting.finding`, executor `reporting.finding` |
+| Context | `reporting.finding_draft` — observation, RCM row, test, execution result, the firm's finding template, and (for a Data Test) the **flagged rows** |
+| Output | **Markdown**: a title line, a severity line, and everything from the first `##` heading onward as the narrative — the prose copied into the report unchanged |
+
+The narrative's sections are the firm's, so the template is required *context*
+rather than a constant in the worker: a firm changes what a finding must say by
+editing the template, not the code.
+
+### `working_papers.generated` — RCM working papers
+
+| | |
+| --- | --- |
+| Depends on | `results.rolled_up` |
+| Units | one per RCM row (`working_paper:<row>`) |
+| Binding | **deterministic** (`reporting.working_paper`) |
+| Output | `WorkingPapers/<row>.json`, a pure projection of current RCM/execution state, parent-hash guarded |
+
+### `report.working_draft` — Report working draft
+
+| | |
+| --- | --- |
+| Depends on | `planning.apm_ready`, `results.rolled_up`, `findings.drafted` (partial) |
+| Units | one (`report`) |
+| Binding | **deterministic** (`reporting.report_draft`) — no worker, no model call |
+| Output | the assembled draft. An auditor-edited draft is preserved and its regenerated candidate left for reconciliation, recorded as `awaiting_confirmation`. |
+
+### `audit.verified` — Audit verification
+
+| | |
+| --- | --- |
+| Depends on | `working_papers.generated`, `report.working_draft` (both partial) |
+| Units | one (`verify`) |
+| Binding | **deterministic** (`reporting.verify`), read-only |
+| Output | the completion/quality/output outcome, recorded on the run. `succeeded` when complete, `blocked` with the completion status, report-quality error count, and output-gate count otherwise. |
+
+---
+
+## 9. Budgets
+
+Backpressure is **budgetary, not queue-based**: per-workspace serialization,
+`pending_commands` FIFO between runs, and per-run ceilings.
+
+At route installation (`routing.install_resolution`):
+
+```python
+audit_turns    = 20 + 4*len(rcm) + 4*test_count + 2*qa_pairs + 2*eligible_findings
+document_turns = preparation_turns + one turn per chunk + one reduction per document
+analysis_turns = 10 + 2*max(1, len(scoped_frames))
+
+max_model_turns              = audit_turns + document_turns + analysis_turns
+max_estimated_prompt_tokens  = max_model_turns * 10_000
+max_completion_tokens        = max_model_turns *  4_000
+max_units_per_stage          = 250        # a stage above this refuses to launch
+max_llm_concurrency          = default_llm_concurrency()
+max_compute_concurrency      = 2
+max_execution_attempts       = 2
+```
+
+`AuditWorkflowExecution._refresh_dynamic_limits` recomputes this **before every
+stage**, grow-only, and adds vision allowances from the real visual-unit count
+(`max_image_parts`, `max_prepared_image_bytes`, `max_prepared_image_pixels`,
+and a prompt allowance of `turns*10k + text_units*2k + visual_units*10,480`).
+This matters because the arithmetic depends on counts the run itself creates:
+an RCM drafted mid-run changes how many test-generation turns the budget must
+buy.
+
+`DefaultRunRuntime` owns the durable ledger, the dynamic limit updates, the
+runtime deadline (extended by time spent blocked on the auditor), checkpoints,
+live inbox draining, approval batches, and structured-interaction waits.
+Offline auditor responses are persisted before wakeup and consumed on
+same-schema restart.
+
+One budget subtlety worth knowing: `READ_REPAIR_ATTEMPTS = 2` lives in
+`workflow.py` rather than beside the evidence-read worker, because two layers
+must agree on it and neither may import the other — the worker *spends* the
+attempts and `preparation_model_turns` has to *buy* them. A budget sized at one
+turn per read that then spends three is precisely the failure the budget exists
+to prevent.
+
+---
+
+## 10. Approvals, gates, and modes
+
+**Auto mode** delegates the run's approvals. **Permission mode** asks.
+
+- **Per-proposal approval.** A pipeline binding supplies an
+  `approval_provider` only in permission mode. It builds proposal items, calls
+  `request_approval`, and returns the accepted spec — or `None`, which settles
+  the unit as `approval_rejected` with the proposal already durable.
+- **Stage review.** A run whose context carries `review_each_stage` is asked
+  before each stage runs (`audit_execution.stage_review`): **continue**,
+  **skip**, or **stop**. An auto run never waits there.
+- **Scope checkpoints.** In permission mode, the document and analysis stages
+  fire a scope checkpoint through `before_stage` so the auditor can narrow what
+  the branch will touch.
+- **Auditor-edit preservation.** Executors reconcile rather than overwrite. An
+  edited APM, cycle, planning context, or report yields
+  `awaiting_confirmation` and a preserved candidate, never a silent overwrite.
+
+Three outcomes are structurally **not** the agent's to settle:
+`documents.analysis_reviewed`, `doc_tests.dispositioned`, and — in permission
+mode — `tests.cycle_ruleset_approved`.
+
+---
+
+## 11. What lands on disk
+
+```text
+Workspaces/<id>/AgentRuns/<run_id>/
+├── run.json          the durable record: route, engine, limits, workflow state
+│                     (definition, definition_hash, scope, resolved_capabilities,
+│                     stages[{id, capability, barrier, status, units[],
+│                     readiness_before}], reused_outcomes, next_outcomes),
+│                     plan, approvals, artifacts, milestones, narration,
+│                     warnings, usage, model provenance (hash-only)
+├── contexts/<unit>.json    ContextManifest — content-free: hashes, sizes,
+│                           selections, omissions, truncations, privacy decisions
+├── proposals/<unit>.json   the model's proposal + its ProposalExecutionIdentity
+│                           + worker_attempts + response/schema hashes
+├── rejections/<unit>.json  the final invalid response, its validation errors,
+│                           and the identity it was produced under
+└── receipts/<unit>.json    ExecutorReceipt — proposal hash, concurrency mode,
+                            revision before/after, artifact refs,
+                            postcondition hashes, reconciled flag
+```
+
+A unit record in `run.json` carries only *references* to these sidecars
+(`context_manifest`, `proposal_sidecar`, `receipt_sidecar`) plus `input_sha1`,
+`parent_refs`, `status`, `attempts`, `result_refs`, and timings — never
+content.
+
+The replayable event stream lives in the workspace's `telemetry.db`, keyed by
+run, so reading forward from a cursor is an indexed range read. The UI consumes
+it as SSE from `agent_routes.py`, replayable by cursor or `Last-Event-ID`.
+
+---
+
+## 12. Where to change what
+
+| To change… | Edit | Consequence |
+| --- | --- | --- |
+| a dependency edge, or add a capability | `agent/workflows/audit.py` | changes `definition_hash()`; startup validation fails until the grouped modules partition the new graph exactly |
+| what an outcome means / when it is done | that capability's `readiness` in `agent/capabilities/<group>.py` | changes what materialization skips |
+| how work fans out | that capability's `expand_units` | changes unit IDs, so proposals stop being reused if the ID changes |
+| what a stage is shown | the preset in `agent/context/presets.py` and the scope function in `agent/context/adapters.py` | moves the `context_manifest_hash`, which rejects persisted proposals and re-bills |
+| a prompt or response schema | `agent/workers/<group>.py` | moves `worker_definition_hash`, which rejects persisted proposals and re-bills |
+| how a commit is guarded | `agent/executors/<group>.py` | moves `executor_definition_hash` |
+| which worker/executor a capability uses | `_PIPELINE_BINDERS` / `_DETERMINISTIC_BINDERS` in `agent/audit_execution.py` | |
+| which edges tolerate an unsettled dependency | `_PARTIAL_DEPENDENCIES` in `agent/audit_execution.py` | |
+| how a request maps to outcomes | `TEMPLATE_OUTCOMES` in `agent/workflows/audit.py` and `agent/routing.py` | |
+| run budgets | `routing.install_resolution` and `AuditWorkflowExecution._refresh_dynamic_limits` | |
+| scheduling itself | `agent/runtime/workflow_runner.py` | domain-neutral — it must not learn about audits |
+
+Startup validation (`capabilities/__init__.py`) runs at import and refuses:
+overlapping groups, a partition that does not cover the graph, a capability
+whose declared edges disagree with the authoritative graph, a dependency cycle,
+an unregistered context preset, and — when executions are supplied — a
+capability with no binding.
+
+### Durable architectural gates
+
+- `test_agent_final_boundaries.py` — workflow definitions import only graph
+  primitives; capabilities never schedule or persist; workers cannot reach a
+  workspace, transaction, or run store; executors cannot reach a worker or the
+  gateway; context cannot call a provider; one provider call site.
+- `test_agent_v1_retirement.py` — no v1 caller, engine, import, API response, or
+  UI path.
+- `test_agent_definition_of_done.py` — one test per definition-of-done bullet.
+- `test_workflow_scheduler_golden.py` — golden scheduler behaviour.
