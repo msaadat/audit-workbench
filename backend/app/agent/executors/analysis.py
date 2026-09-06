@@ -1434,9 +1434,34 @@ def reconcile_analysis_promotion(
         return ExecutorReconciliation(
             "conflict", reason=f"Analysis '{target.analysis_id}' no longer exists."
         )
-    if analysis_promotion.disposition(analysis) is not None:
+    disposition = analysis_promotion.disposition(analysis)
+    if disposition is not None:
+        # The commit landed. Rebuild the result it would have returned from the
+        # disposition it wrote, which carries the test it created and the
+        # ``result_sha1`` it answered.
+        test_id = str((disposition or {}).get("test_id") or "")
+        refs = [parent_ref, *([f"datatest:{test_id}"] if test_id else [])]
         return ExecutorReconciliation(
-            "applied", postcondition_hashes=parent_hashes(current, [parent_ref])
+            "already_applied",
+            result=ExecutorResult(
+                executor_id=request.executor_id,
+                capability_id=request.capability_id,
+                unit_id=request.unit_id,
+                workspace_revision_before=max(
+                    request.expected_revision, current.revision - 1
+                ),
+                workspace_revision_after=current.revision,
+                artifact_refs=refs,
+                applied_parents=dict(request.expected_parents),
+                postcondition_hashes=parent_hashes(current, refs),
+                output={
+                    "status": "committed",
+                    "analysis_id": target.analysis_id,
+                    "state": str(disposition.get("state") or analysis_promotion.PROMOTED),
+                    "test_id": test_id,
+                },
+            ),
+            reason="The promotion disposition is already written.",
         )
     return ExecutorReconciliation("not_applied")
 

@@ -872,6 +872,22 @@ classes); loop turns and provider tokens per request.
 Builds on 4, 3, and 2. This step is mostly `prompts.LOOP_SYSTEM` plus the
 guards that make the prompt unable to overreach.
 
+**Landed with step 4**, 6 September 2026 — the prompt was written when the loop
+was, and a loop with no operating rules would have been a loop nobody could
+measure. Every guard this step names is in code: the per-unit rerun cap, the
+child-run budget, the whole-workspace force refusal, the question cap, and the
+refusal to `finish` with a live child. Two guards were added afterwards, from
+what the live runs did rather than from this plan: `max_read_turns`, because
+reading always looks like progress and never commits, and the receipt-derived
+closing account, because a model asked to summarize its own work will describe
+what it set out to do. The prompt gained a matching rule for each.
+
+What is **not** done is this step's measure — the fraction of validation-class
+failures resolved with no person involved, on a full treasuryfull
+`findings.drafted` and `tests.specified` regeneration. Two narrow live runs are
+not that, and the sequencing note above asks for it before step 7, which was
+built anyway on an explicit decision.
+
 Rules, in the prompt:
 
 - Read before acting: `get_audit_progress` or `inspect_audit_artifacts` first

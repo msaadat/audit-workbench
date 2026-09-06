@@ -1209,6 +1209,74 @@ def test_join_commit_is_parent_guarded_and_reconciles_an_interrupted_attempt(
     assert "table:customers" in str(conflicted.reason)
 
 
+def test_an_interrupted_promotion_reconciles_instead_of_crashing(workspace_with_data):
+    """Found by the step 5 measurement, in a path that had never run.
+
+    A promotion whose commit is interrupted — a restarted process, in this case
+    a dev server reloading mid-run — is reconciled on the next attempt. The
+    reconciler returned a disposition that does not exist (``applied``) with a
+    keyword the type does not take, so the unit failed with a ``TypeError``
+    every time and no instruction could repair it: the loop reran it once,
+    got the identical crash, and correctly stopped.
+    """
+
+    ws = workspace_with_data
+    ws.add_rcm({"process": "AP", "risk": "Duplicates", "control": "Check", "risk_rating": "high"})
+    row_id = str(workspaces.load_workspace(ws.id).rcm[0]["id"])
+    analysis = ws.add_analysis(
+        {
+            "title": "Duplicate invoice numbers",
+            "kind": "python",
+            "table": "transactions",
+            "spec": {"code": "result = transactions.head(0)"},
+            "source": "ai",
+        }
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    target = analysis_executors.PromotionExecutorTarget(ws, "run-promote", analysis["id"])
+    request = ExecutorRequest(
+        executor_id="analysis.promotion",
+        capability_id="tests.promoted_from_analysis",
+        unit_id=f"analysis_promotion:{analysis['id']}",
+        proposal={
+            "promote": True,
+            "title": "Duplicate invoice numbers",
+            "objective": "Confirm duplicates are investigated.",
+            "rcm_id": row_id,
+            "step": {
+                "label": "Duplicate invoice numbers",
+                "instruction": "Flag invoices whose number repeats.",
+                "code": "result = transactions.head(0)",
+            },
+        },
+        expected_revision=ws.revision,
+        expected_parents=parent_hashes(ws, [target.parent_ref]),
+    )
+
+    # Nothing committed yet: the reconciler says so rather than raising.
+    assert (
+        analysis_executors.reconcile_analysis_promotion(request, target).disposition
+        == "not_applied"
+    )
+
+    analysis_executors.execute_analysis_promotion(request, target)
+
+    replay = analysis_executors.PromotionExecutorTarget(
+        workspaces.load_workspace(ws.id), "run-promote", analysis["id"]
+    )
+    reconciliation = analysis_executors.reconcile_analysis_promotion(request, replay)
+
+    assert reconciliation.disposition == "already_applied"
+    assert reconciliation.result is not None
+    assert reconciliation.result.output["status"] == "committed"
+    # The rebuilt result names the test the interrupted commit created.
+    assert reconciliation.result.output["test_id"]
+    assert any(
+        ref.startswith("datatest:") for ref in reconciliation.result.artifact_refs
+    )
+
+
 # --------------------------------------------------------------------------- #
 # P8.6 — declared context and privacy
 # --------------------------------------------------------------------------- #

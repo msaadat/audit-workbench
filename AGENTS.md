@@ -547,9 +547,11 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   crash, and in its `finally` starts the next `pending_commands` entry. Control
   flows through a `RunHandle` (cancel, pause, resume, inbox, interaction
   responses) held in the `_HANDLES` registry.
-- Because a pending-route command run has no engine yet, "is this a command
-  run?" is `store.is_command_run(run)` — a record-shape test — in `steer`,
-  `retry_run`, and the queued-command launcher.
+- "Is this a command run?" is `store.is_command_run(run)` — a record-shape test,
+  not an engine test — in `steer`, `retry_run`, and the queued-command launcher.
+  It predates the engine always being known and outlived it for a better reason:
+  command-ness is what the record *is*, and asking the engine would couple three
+  control-surface decisions to a dispatch value none of them acts on.
 - v3 derives its plan from the registry, not the model.
   `workflow.materialize(...)` takes the transitive `depends_on` closure over
   `audit_capabilities.REGISTRY`, skips any capability whose deterministic
