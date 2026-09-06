@@ -35,7 +35,6 @@ def _execution_registry(ids: list[str]) -> CapabilityExecutionRegistry:
 def test_declared_engines_are_the_only_writable_run_engines(workspace_with_data):
     assert set(store.RUN_ENGINES) == {
         store.WORKFLOW_ENGINE,
-        store.ACTION_ENGINE,
         store.AGENT_ENGINE,
         store.INTAKE_ENGINE,
     }

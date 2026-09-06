@@ -8,7 +8,7 @@ declared context scope it resolves, the approval items an auditor sees, the
 post-commit bookkeeping, the declared checkpoint handlers, and the audit
 completion projection.
 
-The class still inherits ``ActionRunner`` for the shared task, artifact, and
+The class still inherits ``ActionExecution`` for the shared task, artifact, and
 approval helpers that Phase 12 consolidates; it no longer implements any stage
 handler.
 """
@@ -40,7 +40,7 @@ from ..workspaces import (
 )
 from . import capabilities as audit_capabilities
 from . import narration, store, workflow
-from .action_runner import ActionRunner
+from .action_execution import ActionExecution
 from .analysis_execution import AnalysisWorkflowExecution
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
@@ -392,7 +392,7 @@ def _category_breakdown(documents: list[dict]) -> str:
     return f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
-class AuditWorkflowExecution(ActionRunner):
+class AuditWorkflowExecution(ActionExecution):
     """Per-unit audit execution bindings and projections for the scheduler."""
 
     def __init__(

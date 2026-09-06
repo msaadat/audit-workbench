@@ -127,14 +127,14 @@ def _commander(**overrides) -> assistant.Commander:
         calls.append(("command", command_id))
         return {"kind": "run_started", "run_id": "20260801-000000-abcdef"}
 
-    def launch_action(request):
-        calls.append(("action", request))
+    def launch_loop(brief):
+        calls.append(("loop", brief))
         return {"kind": "run_started", "run_id": "20260801-000000-abcdef"}
 
     return assistant.Commander(
         catalog=({"id": "generate_report", "label": "Generate report", "description": "…"},),
         launch_command=overrides.get("launch_command", launch_command),
-        launch_action=overrides.get("launch_action", launch_action),
+        launch_loop=overrides.get("launch_loop", launch_loop),
     )
 
 
@@ -142,7 +142,7 @@ def test_command_schemas_are_offered_only_when_a_commander_is_lent():
     commander = _commander()
     schemas = assistant._command_schemas(commander)
 
-    assert [item["function"]["name"] for item in schemas] == ["start_command", "start_action"]
+    assert [item["function"]["name"] for item in schemas] == ["start_command", "take_action"]
     enum = schemas[0]["function"]["parameters"]["properties"]["command_id"]["enum"]
     assert enum == ["generate_report"]
     # The catalog is described to the model, not just enumerated.
@@ -181,15 +181,32 @@ def test_mutating_tools_are_unavailable_without_a_commander(workspace_with_data)
     with pytest.raises(WorkspaceError, match="cannot change the workspace"):
         session.dispatch("start_command", {"command_id": "generate_report"})
     with pytest.raises(WorkspaceError, match="cannot change the workspace"):
-        session.dispatch("start_action", {"request": "delete the Q3 join"})
+        session.dispatch("take_action", {"brief": "Redraft the Q3 join"})
     assert session.started_run is None
 
 
-def test_start_action_requires_a_request(workspace_with_data):
+def test_take_action_requires_a_brief(workspace_with_data):
     session = assistant._Session(workspace_with_data, commander=_commander())
 
-    with pytest.raises(WorkspaceError, match="needs a request"):
-        session.dispatch("start_action", {"request": "  "})
+    with pytest.raises(WorkspaceError, match="what the agent should carry out"):
+        session.dispatch("take_action", {"brief": "  "})
+
+
+def test_take_action_hands_the_brief_to_the_loop(workspace_with_data):
+    """Everything a registered command does not cover goes to the agent."""
+
+    calls: list = []
+    session = assistant._Session(workspace_with_data, commander=_commander(calls=calls))
+
+    content, artifact = session.dispatch(
+        "take_action", {"brief": "Redraft test DT-1 and check the result."}
+    )
+
+    assert content["kind"] == "run_started"
+    assert artifact is None
+    assert calls == [("loop", "Redraft test DT-1 and check the result.")]
+    with pytest.raises(WorkspaceError, match="already started"):
+        session.dispatch("take_action", {"brief": "And another thing."})
 
 
 def test_ask_loop_can_start_a_run_and_reports_it(monkeypatch, workspace_with_data):
@@ -224,7 +241,7 @@ def test_ask_loop_can_start_a_run_and_reports_it(monkeypatch, workspace_with_dat
     assert result["started_run"] == {"kind": "run_started", "run_id": "20260801-000000-abcdef"}
     assert launched == [("command", "generate_report")]
     offered = [item["function"]["name"] for item in calls[0]["tools"]]
-    assert "start_command" in offered and "start_action" in offered
+    assert "start_command" in offered and "take_action" in offered
     assert "start a run only when" in calls[0]["messages"][0]["content"].casefold()
 
 

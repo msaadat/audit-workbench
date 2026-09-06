@@ -1,53 +1,45 @@
 """Command routing: one classification, one persisted route, one engine.
 
-This module is the only place a request is turned into an execution decision.
-It has two halves and a strict boundary between them:
+This module is the only place a request is turned into an execution decision,
+and since step 7 of ``docs/agent-loop-redesign.md`` it makes that decision
+without a model turn and without guessing from wording.
 
 * **Deterministic classification** (:func:`classify_command` and the pure
   helpers above it) reads only the durable command dict. It never loads a
   workspace, executes an action, gathers domain context, or mutates anything.
-  It returns a normalized route or ``None`` — ``None`` means "the bounded
-  router worker has to decide".
-* **Route installation** (:func:`resolve_route`, :func:`resolve_pending_route`,
-  :func:`install_resolution`) persists exactly one normalized route and the
-  selected engine on the durable run. ``resolve_route`` runs synchronously in
-  ``runner.start_command_run`` before the worker thread launches;
-  ``resolve_pending_route`` runs on the worker thread and is the *only* path
-  that spends a model turn on routing.
+  It always returns a normalized route.
+* **Route installation** (:func:`resolve_route`, :func:`install_resolution`)
+  persists exactly one normalized route and the selected engine on the durable
+  run, synchronously in ``runner.start_command_run``, before the worker thread
+  launches.
 
-A request is classified once. Deterministic classification happens in
-``start_command_run``; the bounded router runs only when it returned ``None``,
-and it never re-runs the deterministic pass. Neither scheduler classifies, and
-neither scheduler calls the other.
+Routing precedence:
 
-Routing precedence (``agent-architecture.md`` §Routing):
+1. ``source == "loop"`` — the coordinator handed this to the steering loop.
+2. Explicit registered outcomes.
+3. A registered goal template.
+4. A lifecycle-wide completion request.
+5. Anything else — a sentence — routes to the steering loop, which reads the
+   workspace before deciding and can ask.
 
-1. Explicit registered outcomes.
-2. A registered goal template.
-3. A lifecycle-wide completion request.
-4. Generation or refresh of a workflow-owned deliverable.
-5. A target-specific operation — CRUD, attach/detach, pin, manual edit, or a
-   rerun of one identified existing artifact.
-6. Scope-wide declared execution.
-7. A weak isolated-operation marker (the last deterministic fallback).
-8. Otherwise the bounded router worker.
+Everything between 4 and 5 used to be phrase tables: generation and refresh
+rules, target-operation markers, scope-wide execution rules, isolated-operation
+markers, a compound-request splitter, and a bounded router worker for whatever
+was left. Across 45 recorded runs none of them decided anything a person had
+typed. They are gone, and the decision they were making badly is now made by
+something that can look at the engagement first.
 
-A compound request whose segments genuinely need both engines is never split
-by a scheduler: it resolves to ``clarification`` so the auditor restates it as
-separate runs.
+Neither scheduler classifies, and neither scheduler calls the other.
 """
 
 from __future__ import annotations
 
 import os
-import re
-import uuid
 
 from .. import doc_tests
-from ..workspaces import Workspace, WorkspaceError, load_workspace
-from . import actions as action_catalog
+from ..workspaces import Workspace, WorkspaceError
 from . import capabilities as audit_capabilities
-from . import context_bundles, narration, prompts, store, workflow
+from . import narration, store, workflow
 from .base import BaseRunner, LimitExceeded
 from .workflows import analysis as analysis_workflow
 from .workflows import audit as audit_workflow
@@ -66,7 +58,6 @@ WORKFLOW_MODULES = {
 # select an engine; ``clarification`` and ``unsupported`` finish the run without
 # one.
 ROUTE_WORKFLOW = "workflow"
-ROUTE_ACTION = "action"
 # The steering loop. Unlike the other two engine routes this one is never
 # inferred from what a request says: the coordinator asks for it explicitly by
 # handing the request over as a ``loop`` command, and the classification below
@@ -76,7 +67,6 @@ ROUTE_CLARIFICATION = "clarification"
 ROUTE_UNSUPPORTED = "unsupported"
 ROUTES = (
     ROUTE_WORKFLOW,
-    ROUTE_ACTION,
     ROUTE_AGENT,
     ROUTE_CLARIFICATION,
     ROUTE_UNSUPPORTED,
@@ -84,17 +74,10 @@ ROUTES = (
 TERMINAL_ROUTES = frozenset({ROUTE_CLARIFICATION, ROUTE_UNSUPPORTED})
 ENGINE_BY_ROUTE = {
     ROUTE_WORKFLOW: store.WORKFLOW_ENGINE,
-    ROUTE_ACTION: store.ACTION_ENGINE,
     ROUTE_AGENT: store.AGENT_ENGINE,
     ROUTE_CLARIFICATION: None,
     ROUTE_UNSUPPORTED: None,
 }
-
-# The deterministic intent an action route carries when no single registered
-# action type names the request. The action interpreter still plans the DAG;
-# this is the routing-level assertion that the request is an isolated mutation.
-ISOLATED_ACTION_INTENT = "isolated_mutation"
-
 
 # --------------------------------------------------------------------------- #
 # Registered goal templates
@@ -186,10 +169,15 @@ def template_outcomes(template: str) -> list[str] | None:
 
 
 # --------------------------------------------------------------------------- #
-# Deterministic phrase tables
+# The one deterministic phrase table
 # --------------------------------------------------------------------------- #
-
-# 3. Lifecycle-wide completion.
+# "Do the whole audit" names the entire registered lifecycle and nothing else
+# could mean anything different, so it is worth answering without a model turn.
+# Every other phrase table this module used to carry — generation, scope-wide
+# execution, target operations, isolated operations, compound separators —
+# decided nothing across 45 recorded runs and is gone; a request those tables
+# would have argued over now goes to the steering loop, which can read the
+# workspace before deciding rather than guessing from the words alone.
 LIFECYCLE_PHRASES = (
     "full audit",
     "complete the audit",
@@ -198,274 +186,6 @@ LIFECYCLE_PHRASES = (
     "end-to-end audit",
     "end to end audit",
 )
-
-# 4. Generation or refresh of a workflow-owned deliverable. Ordered: the first
-# matching rule wins, so a narrower deliverable is declared before a broader
-# phrase that would also match it.
-GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
-    (
-        (
-            "draft the apm",
-            "update the apm",
-            "generate apm",
-            "generate the apm",
-            "regenerate the apm",
-            "refresh the apm",
-            "improve the apm",
-            "audit planning memorandum",
-        ),
-        audit_workflow.WORKFLOW_ID,
-        ["planning.apm_ready"],
-    ),
-    (
-        (
-            "generate the rcm",
-            "draft the rcm",
-            "update the rcm",
-            "regenerate the rcm",
-            "refresh the rcm",
-            "risk and control matrix",
-        ),
-        audit_workflow.WORKFLOW_ID,
-        ["planning.rcm_ready"],
-    ),
-    (
-        (
-            "prepare engagement planning",
-            "prepare the engagement planning",
-            "prepare planning",
-            "plan the audit",
-        ),
-        audit_workflow.WORKFLOW_ID,
-        [
-            "planning.apm_ready",
-            "planning.rcm_ready",
-            "tests.specified",
-        ],
-    ),
-    # Historical wording from the two-pass draft/spec flow is still accepted,
-    # but every phrase now resolves to the single merged capability rather
-    # than a removed ``tests.drafted`` outcome.
-    (
-        (
-            "translate planned",
-            "executable tests",
-            "execution definitions",
-            "prepare document tests",
-            "prepare the document tests",
-            "prepare the next required document tests",
-            "required document tests",
-            "testing procedures",
-            "planned procedures",
-            "planned tests",
-            "draft the tests",
-            "plan the tests",
-        ),
-        audit_workflow.WORKFLOW_ID,
-        ["tests.specified"],
-    ),
-    (
-        ("draft eligible findings", "draft findings"),
-        audit_workflow.WORKFLOW_ID,
-        ["findings.drafted"],
-    ),
-    (
-        ("generate the report", "draft the report", "audit report"),
-        audit_workflow.WORKFLOW_ID,
-        ["report.working_draft"],
-    ),
-    # Document analysis is workflow-owned generation. "Attach", "upload", and
-    # "delete" a document stay isolated operations and are deliberately absent.
-    (
-        (
-            "analyse the documents",
-            "analyze the documents",
-            "analyse these documents",
-            "analyze these documents",
-            "analyse the selected documents",
-            "analyze the selected documents",
-            "analyse this document",
-            "analyze this document",
-            "document analysis",
-            "analyse the policies",
-            "analyze the policies",
-            "summarise the documents",
-            "summarize the documents",
-            "read the documents",
-        ),
-        documents_workflow.WORKFLOW_ID,
-        list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
-    ),
-    # Bringing the saved analyses up to date is workflow-owned and scope-wide.
-    # Like the document-test rule below it, this is execution rather than
-    # generation, and it is declared here so it outranks the target-specific
-    # "run the saved"/"rerun" markers. Every phrase is plural on purpose:
-    # "rerun this saved analysis" names one artifact and stays an isolated
-    # operation for the action catalog.
-    (
-        (
-            "run the saved analyses",
-            "run the analyses",
-            "run all the analyses",
-            "run all analyses",
-            "execute the analyses",
-            "execute the saved analyses",
-            "run the analysis procedures",
-            "execute the analysis procedures",
-            "refresh the analysis results",
-            "update the analysis results",
-            "bring the analyses up to date",
-        ),
-        analysis_workflow.WORKFLOW_ID,
-        ["analysis.executed"],
-    ),
-    # Executing a named Document Test is workflow-owned: the worklist fans out
-    # into declared units, and a Q&A item reaches the provider only through the
-    # registered ``fieldwork.document_qa`` worker. The action catalog no longer
-    # registers ``run_document_test`` (P11.2A), so these phrases must be
-    # declared above the target-specific "rerun"/"run this" markers.
-    (
-        (
-            "run document test",
-            "run the document test",
-            "run this document test",
-            "run these document tests",
-            "rerun document test",
-            "rerun the document test",
-            "re-run the document test",
-            "execute document test",
-            "execute the document test",
-            "run the document tests",
-            "execute the document tests",
-        ),
-        doc_tests_workflow.WORKFLOW_ID,
-        list(doc_tests_workflow.FULL_DOC_TEST_OUTCOMES),
-    ),
-)
-
-# A generation phrase is vetoed when the request names one concrete part of the
-# artifact: "replace this APM paragraph" is a target-specific edit even though
-# it mentions the APM.
-SPECIFIC_EDIT_VERBS = (
-    "replace",
-    "edit",
-    "rename",
-    "remove",
-    "delete",
-    "attach",
-    "detach",
-)
-SPECIFIC_TARGET_MARKERS = (
-    "paragraph",
-    "sentence",
-    "section",
-    "field",
-    "row",
-    "title",
-    "item",
-)
-
-# "Prepare the tests" is generation; "run the tests" is
-# execution and belongs to the scope-wide rule below.
-EXECUTION_VERBS = ("run ", "execute ")
-
-# Historical two-pass wording ("plan the tests", "draft the tests", ...) reads
-# as ambiguous with an execution verb in a way "translate planned"/"executable
-# tests" phrasing does not, so only this subset vetoes generation in favor of
-# scope-wide execution routing below.
-_TEST_GENERATION_EXECUTION_VETO_PHRASES = frozenset(
-    {"testing procedures", "planned procedures", "planned tests", "draft the tests", "plan the tests"}
-)
-
-# 5. Target-specific operations on one identified artifact.
-TARGET_OPERATION_MARKERS = (
-    "pin ",
-    "rerun ",
-    "re-run ",
-    "run this",
-    "run the saved",
-    "run the existing",
-    "delete ",
-    "remove ",
-    "rename ",
-    "undo ",
-)
-
-# 6. Scope-wide declared execution.
-SCOPE_EXECUTION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
-    (
-        (
-            "run the rcm tests",
-            "execute the rcm tests",
-            "run rcm tests",
-            "execute planned tests",
-            "run the planned tests",
-        ),
-        audit_workflow.WORKFLOW_ID,
-        ["fieldwork.executed", "results.rolled_up"],
-    ),
-    (
-        (
-            "relevant joins",
-            "perform relevant joins",
-            "joins and data analysis",
-            "join the tables",
-            "join these tables",
-            "relationships between tables",
-            "relationships between the tables",
-            "relate the tables",
-            "data analysis",
-            "analyse the data",
-            "analyze the data",
-            "analyse the tables",
-            "analyze the tables",
-            "analyse these tables",
-            "analyze these tables",
-            "analyse the two tables",
-            "analyze the two tables",
-            "explore the data",
-            "explore the tables",
-        ),
-        analysis_workflow.WORKFLOW_ID,
-        list(analysis_workflow.FULL_ANALYSIS_OUTCOMES),
-    ),
-)
-
-# 7. The weak fallback: recognizable isolated-operation vocabulary that has not
-# matched anything stronger. Everything here is an artifact operation the action
-# catalog can plan; a miss here falls through to the bounded router worker.
-ISOLATED_OPERATION_MARKERS = (
-    "join ",
-    "add a finding",
-    "create a finding",
-    "validate ",
-    "validation",
-    "check report quality",
-    # The *noun* stays: "create a custom analysis", "pin this analysis" are
-    # artifact operations. The verb deliberately does not. "Analyze the vendor
-    # master" names one frame rather than the plural scope the rules above
-    # match, and forcing it onto the action catalog was answering a declared
-    # analysis request with an isolated mutation. Unmatched, it reaches the
-    # bounded router, which can resolve the frame it names into target refs.
-    "analysis",
-    "upload ",
-    "attach ",
-    "detach ",
-    "document test",
-    "prepare report",
-    "finding",
-    " undo ",
-    "review the apm",
-)
-
-# Strong separators for a compound request. A bare " and " is deliberately not
-# one: "join the tables and analyse them" is a single scope-wide analysis
-# request, not two runs.
-COMPOUND_SEPARATORS = re.compile(
-    r"(?:\s+and\s+then\s+|\s+then\s+|\s*;\s*|\s+also\s+|\.\s+|\n)"
-)
-
-
 # --------------------------------------------------------------------------- #
 # Pure validation
 # --------------------------------------------------------------------------- #
@@ -500,22 +220,6 @@ def validate_requested_outcomes(outcomes: list[str]) -> str:
     return definition
 
 
-def validate_action_intent(intent: object) -> str:
-    """Normalize an action intent against the registered action catalog.
-
-    A router-proposed intent must name a registered action type. The
-    deterministic classifier does not choose a type — it asserts only that the
-    request is an isolated mutation — so the generic sentinel is accepted too.
-    """
-
-    value = str(intent or "").strip() or ISOLATED_ACTION_INTENT
-    if value == ISOLATED_ACTION_INTENT:
-        return value
-    if value not in {definition.type for definition in action_catalog.REGISTRY.all()}:
-        raise WorkspaceError(f"Unknown action intent '{value}'.")
-    return value
-
-
 def normalize_route(
     route: str,
     *,
@@ -546,10 +250,11 @@ def normalize_route(
     else:
         definition = None
         outcomes = []
-    if route == ROUTE_ACTION:
-        intent = validate_action_intent(action_intent)
-    if route == ROUTE_AGENT and action_intent:
-        raise WorkspaceError("An agent route carries no action intent.")
+    if action_intent:
+        raise WorkspaceError(
+            "No route carries an action intent: registered actions are tools "
+            "the steering loop calls, not an engine."
+        )
     text = str(clarification or "").strip() or None
     if route == ROUTE_CLARIFICATION and not text:
         raise WorkspaceError("A clarification route needs a clarification question.")
@@ -569,36 +274,11 @@ def normalize_route(
     }
 
 
-def pending_route() -> dict:
-    """The persisted shape of a run whose route the bounded router still owns."""
-
-    return {
-        "status": "pending",
-        "route": None,
-        "engine": None,
-        "decided_by": None,
-        "workflow_definition": None,
-        "requested_outcomes": [],
-        "objective": "",
-        "target_refs": [],
-        "generation_mode": "reuse_existing",
-        "action_intent": None,
-        "constraints": [],
-        "clarification": None,
-    }
-
-
 # --------------------------------------------------------------------------- #
 # Deterministic classification (pure)
 # --------------------------------------------------------------------------- #
 def _target_refs(command: dict) -> list[str]:
     return [str(item) for item in command.get("target_refs") or ["workspace:current"]]
-
-
-def _specific_artifact_operation(text: str) -> bool:
-    return any(verb in text for verb in SPECIFIC_EDIT_VERBS) and any(
-        marker in text for marker in SPECIFIC_TARGET_MARKERS
-    )
 
 
 def _workflow_route(
@@ -621,76 +301,29 @@ def _workflow_route(
     )
 
 
-def _action_route(command: dict, decided_by: str) -> dict:
-    return normalize_route(
-        ROUTE_ACTION,
-        decided_by=decided_by,
-        objective=str(command.get("text") or ""),
-        action_intent=ISOLATED_ACTION_INTENT,
-    )
+def classify_command(command: dict) -> dict:
+    """Classify one command into exactly one route. Pure.
 
+    Four cases, in this order, and no model turn in any of them:
 
-def _single_intent(text: str, command: dict) -> dict | None:
-    """Classify one request segment through precedence steps 3-7."""
+    1. ``source == "loop"`` — the coordinator has already decided this needs
+       the steering loop, and everything below reads the request's *words*.
+    2. Explicit ``requested_outcomes`` — a tab button or a suggestion naming
+       what it wants.
+    3. A registered goal template — a slash command or a chat shortcut.
+    4. A lifecycle phrase — "do the full audit" can mean nothing else.
 
-    if any(phrase in text for phrase in LIFECYCLE_PHRASES):
-        return _workflow_route(
-            command,
-            audit_workflow.WORKFLOW_ID,
-            list(audit_capabilities.FULL_AUDIT_OUTCOMES),
-            "lifecycle_completion",
-        )
-    specific = _specific_artifact_operation(text)
-    if not specific:
-        for phrases, definition, outcomes in GENERATION_RULES:
-            matched_phrase = next((phrase for phrase in phrases if phrase in text), None)
-            if matched_phrase is None:
-                continue
-            # "Run the tests" is execution, not generation.
-            if (
-                matched_phrase in _TEST_GENERATION_EXECUTION_VETO_PHRASES
-                and any(verb in text for verb in EXECUTION_VERBS)
-            ):
-                continue
-            return _workflow_route(
-                command, definition, outcomes, "workflow_generation"
-            )
-    # A named part of an artifact — "replace this APM paragraph" — is a manual
-    # edit, which is why the same test also vetoes the generation rules above.
-    if specific or any(marker in text for marker in TARGET_OPERATION_MARKERS):
-        return _action_route(command, "target_operation")
-    for phrases, definition, outcomes in SCOPE_EXECUTION_RULES:
-        if any(phrase in text for phrase in phrases):
-            return _workflow_route(command, definition, outcomes, "scope_execution")
-    if any(marker in text for marker in ISOLATED_OPERATION_MARKERS):
-        return _action_route(command, "isolated_operation")
-    return None
+    Anything else is a sentence, and a sentence is the loop's. That is the
+    whole of the change step 7 makes: the phrase tables that used to guess an
+    outcome set from wording, and the bounded router turn that guessed when
+    they could not, decided nothing across the recorded history. The loop
+    decides the same question with the workspace in front of it, and can ask.
 
-
-def _segments(text: str) -> list[str]:
-    return [segment.strip() for segment in COMPOUND_SEPARATORS.split(text) if segment.strip()]
-
-
-def classify_command(command: dict) -> dict | None:
-    """Deterministically classify one command, or ``None`` for the router.
-
-    Pure: reads the command dict only. It never loads a workspace, executes an
-    action, or mutates state.
+    It never loads a workspace, executes an action, or mutates state.
     """
 
-    # The coordinator has already decided this one needs the loop. It is read
-    # first because everything below reads the request's *words*, and the words
-    # of a request handed to the loop are exactly the ones no phrase table could
-    # classify.
     if str(command.get("source") or "") == store.LOOP_COMMAND_SOURCE:
-        return normalize_route(
-            ROUTE_AGENT,
-            decided_by="loop_source",
-            objective=str(command.get("text") or ""),
-            target_refs=_target_refs(command),
-            generation_mode=workflow.command_generation_mode(command),
-            constraints=list(command.get("constraints") or []),
-        )
+        return _agent_route(command, "loop_source")
     direct = command.get("requested_outcomes")
     if isinstance(direct, list) and direct:
         return _workflow_route(
@@ -713,111 +346,27 @@ def classify_command(command: dict) -> dict | None:
             default_objective=template.replace("_", " "),
         )
     text = str(command.get("text") or "").casefold()
-    segments = _segments(text)
-    if len(segments) > 1:
-        routed = [
-            result
-            for result in (_single_intent(segment, command) for segment in segments)
-            if result is not None
-        ]
-        engines = {result["route"] for result in routed}
-        if ROUTE_WORKFLOW in engines and ROUTE_ACTION in engines:
-            return normalize_route(
-                ROUTE_CLARIFICATION,
-                decided_by="compound_request",
-                objective=str(command.get("text") or ""),
-                clarification=(
-                    "This request combines declared workflow outcomes with an "
-                    "isolated artifact operation. Send them as two requests so "
-                    "each runs as its own durable run."
-                ),
-            )
-    return _single_intent(text, command)
-
-
-def workflow_owned_request(command: dict) -> bool:
-    """True when a command must not be planned as an isolated action graph.
-
-    The action scheduler calls this as its defensive boundary. It is the same
-    deterministic classification the router uses, so the guard and the route can
-    never disagree.
-    """
-
-    if isinstance(command.get("requested_outcomes"), list) and command["requested_outcomes"]:
-        return True
-    template = str(command.get("goal_template") or "").strip()
-    if template and template_outcomes(template) is not None:
-        return True
-    try:
-        route = classify_command({**command, "goal_template": None})
-    except WorkspaceError:
-        return False
-    return bool(route and route["route"] == ROUTE_WORKFLOW)
-
-
-# --------------------------------------------------------------------------- #
-# Bounded router worker
-#
-# Single-turn classifier over the command and the current capability readiness
-# projection. It proposes no actions, workers, or dependencies, and it only ever
-# names registered outcome IDs or registered action types.
-# --------------------------------------------------------------------------- #
-ROUTER_SYSTEM = f"""[agent:workflow_router]
-Classify one audit-assistant command. You are a router, not a planner. Return
-route (workflow|action|clarification|unsupported), requested_outcomes (only
-supported outcome IDs, required and non-empty when route is workflow),
-objective, target_refs, generation_mode (reuse_existing|force), action_intent
-(a registered action type, or null), constraints, and clarification (required
-when route is clarification). Never propose actions, workers, dependencies,
-tests, columns, or execution steps. {prompts.JSON_RULES} {prompts.LANGUAGE_RULES}"""
-
-
-def validate_router_result(payload: dict, supported: set[str]) -> dict:
-    """Validate one bounded router-worker result into a normalized route."""
-
-    route = str(payload.get("route") or "")
-    if route not in ROUTES:
-        raise ValueError("route is unsupported")
-    outcomes = payload.get("requested_outcomes") or []
-    if not isinstance(outcomes, list) or any(
-        str(item) not in supported for item in outcomes
-    ):
-        raise ValueError("requested_outcomes contains an unsupported capability")
-    generation_mode = str(payload.get("generation_mode") or "reuse_existing")
-    if generation_mode not in store.GENERATION_MODES:
-        raise ValueError("generation_mode is unsupported")
-    if route == ROUTE_WORKFLOW and not outcomes:
-        raise ValueError("a workflow route needs at least one requested outcome")
-    if route == ROUTE_CLARIFICATION and not str(payload.get("clarification") or "").strip():
-        raise ValueError("a clarification route needs a clarification question")
-    try:
-        return normalize_route(
-            route,
-            decided_by="router_worker",
-            requested_outcomes=[str(item) for item in outcomes],
-            objective=str(payload.get("objective") or ""),
-            target_refs=[str(item) for item in payload.get("target_refs") or []],
-            generation_mode=generation_mode,
-            action_intent=payload.get("action_intent"),
-            constraints=[str(item) for item in payload.get("constraints") or []],
-            clarification=payload.get("clarification"),
+    if any(phrase in text for phrase in LIFECYCLE_PHRASES):
+        return _workflow_route(
+            command,
+            audit_workflow.WORKFLOW_ID,
+            list(audit_capabilities.FULL_AUDIT_OUTCOMES),
+            "lifecycle_completion",
         )
-    except WorkspaceError as error:
-        raise ValueError(str(error)) from error
+    return _agent_route(command, "text_request")
 
 
-def _resolve_command(runner, bundle: context_bundles.ContextBundle, supported: set[str]) -> dict:
-    return runner.llm_json(
-        ROUTER_SYSTEM,
-        bundle.serialized(),
-        activity={"context_metrics": bundle.metrics()},
-        validator=lambda payload: validate_router_result(payload, supported),
+def _agent_route(command: dict, decided_by: str) -> dict:
+    return normalize_route(
+        ROUTE_AGENT,
+        decided_by=decided_by,
+        objective=str(command.get("text") or ""),
+        target_refs=_target_refs(command),
+        generation_mode=workflow.command_generation_mode(command),
+        constraints=list(command.get("constraints") or []),
     )
 
 
-# --------------------------------------------------------------------------- #
-# Route installation
-# --------------------------------------------------------------------------- #
 def _explanation(
     registry: workflow.CapabilityRegistry,
     resolved: list[str],
@@ -1235,20 +784,15 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     )
 
 
-def resolve_route(workspace: Workspace, run: dict) -> str | None:
+def resolve_route(workspace: Workspace, run: dict) -> str:
     """Classify once and persist the route and engine before thread launch.
 
-    Returns the selected engine, or ``None`` when the deterministic pass could
-    not decide (the bounded router owns the run) or decided the request needs a
-    clarification instead of an engine.
+    Always returns an engine. Since step 7 there is no pending route and no
+    router turn: every command is one of the four cases
+    :func:`classify_command` decides, and a sentence is the loop's.
     """
 
     route = classify_command(run.get("command") or {})
-    if route is None:
-        run["route"] = pending_route()
-        run["engine"] = None
-        store.save_run(workspace, run)
-        return None
     run["route"] = route
     run["engine"] = route["engine"]
     if route["route"] == ROUTE_WORKFLOW:
@@ -1257,94 +801,19 @@ def resolve_route(workspace: Workspace, run: dict) -> str | None:
     return route["engine"]
 
 
-class CommandRouter(BaseRunner):
-    """Bounded pre-dispatch router using the shared runtime and gateway."""
+class _TerminalRouteRun(BaseRunner):
+    """Just enough runner to finish a record whose route selects no engine.
 
-    def resolve(self) -> dict:
-        self.set_status("interpreting")
-        # The router classifies against every registered workflow, so an
-        # unresolved data-analysis request can name an analysis outcome instead
-        # of falling through to the generic action interpreter.
-        supported = supported_outcomes()
-        state = self._state(self.ws)
-        bundle = context_bundles.command_router(
-            self.run.get("command") or {},
-            state,
-            sorted(supported),
-            permission_mode=self.run["mode"],
-        )
-        resolution = _resolve_command(self, bundle, supported)
-        if resolution["route"] == ROUTE_CLARIFICATION:
-            answer = self._clarification(str(resolution["clarification"]))
-            command = dict(self.run.get("command") or {})
-            command["text"] = (
-                f"{command.get('text') or ''}\n\nClarification: {answer}".strip()
-            )
-            fresh = self.ws.reload()
-            bundle = context_bundles.command_router(
-                command,
-                self._state(fresh),
-                sorted(supported),
-                permission_mode=self.run["mode"],
-            )
-            resolution = _resolve_command(self, bundle, supported)
-            if resolution["route"] == ROUTE_CLARIFICATION:
-                raise WorkspaceError(
-                    "The command still needs clarification after the supplied answer."
-                )
-        return resolution
+    Nothing produces a ``clarification`` or ``unsupported`` route any more —
+    the compound-request rule and the router worker that raised them are gone.
+    A record persisted before that still carries one, and must reach a terminal
+    status with a reply rather than failing closed on an engine it never had.
+    """
 
-    @staticmethod
-    def _state(workspace: Workspace) -> dict:
-        return {
-            **audit_capabilities.workflow_state(workspace),
-            **audit_capabilities.analysis_workflow_state(workspace),
-            **audit_capabilities.documents_workflow_state(workspace),
-            **audit_capabilities.doc_tests_workflow_state(workspace),
-        }
+    def execute(self) -> None:  # pragma: no cover - not scheduled
+        raise NotImplementedError
 
-    def _clarification(self, prompt: str) -> str:
-        interaction = next(
-            (
-                item
-                for item in self.run.get("interactions") or []
-                if item.get("type") == "clarification"
-                and item.get("status") == "pending"
-            ),
-            None,
-        )
-        if interaction is None:
-            interaction = {
-                "id": f"int_{uuid.uuid4().hex[:12]}",
-                "action_id": "workflow:resolver",
-                "type": "clarification",
-                "prompt": prompt,
-                "options": [],
-                "payload": {
-                    "original_command": (self.run.get("command") or {}).get("text")
-                },
-                "policy_reason": (
-                    "The answer materially changes the requested audit outcome."
-                ),
-                "status": "pending",
-                "response": None,
-                "actor": None,
-                "created_at": store.utcnow(),
-                "resolved_at": None,
-            }
-            self.run.setdefault("interactions", []).append(interaction)
-            self.save()
-            self.emit("checkpoint_request", {"interaction": interaction})
-        response = self.runtime.wait_for_interaction(interaction)
-        text = str(response.get("text") or "").strip()
-        if not text:
-            raise WorkspaceError("A clarification response is required.")
-        self.runtime.resolve_interaction(interaction, response)
-        return text
-
-    def finish_without_engine(self, route: dict) -> None:
-        """Complete a run whose route selects no engine."""
-
+    def finish(self, route: dict) -> None:
         if not self.run.get("started"):
             self.mark_started()
         text = route.get("clarification") or (
@@ -1362,32 +831,10 @@ class CommandRouter(BaseRunner):
         self.save()
 
 
-def resolve_pending_route(workspace: Workspace, run: dict, handle: object) -> str | None:
-    """Spend one bounded router turn, persist the route, and return its engine.
+def finish_without_engine(workspace: Workspace, run: dict, handle: object) -> None:
+    """Complete a persisted run whose route selects no engine."""
 
-    This is the only routing path that calls the provider, and it runs only for
-    a command the deterministic pass could not classify. It does not repeat the
-    deterministic pass.
-    """
-
-    router = CommandRouter(workspace, run, handle)
-    if not run.get("started"):
-        router.mark_started()
-    route = router.resolve()
-    run["route"] = route
-    run["engine"] = route["engine"]
-    if route["route"] in TERMINAL_ROUTES:
-        router.finish_without_engine(route)
-        return None
-    if route["route"] == ROUTE_WORKFLOW:
-        install_resolution(workspace, run, route)
-        router.save()
-        router.emit("workflow_resolved", {"workflow": run["workflow"]})
-        router.emit("workflow_explanation", {"text": run["workflow_explanation"]})
-        return store.WORKFLOW_ENGINE
-    run["schema_version"] = 2
-    router.save()
-    return store.ACTION_ENGINE
+    _TerminalRouteRun(workspace, run, handle).finish(run.get("route") or {})
 
 
 def dispatch_engine(workspace: Workspace, run: dict, handle: object) -> str | None:
@@ -1400,12 +847,9 @@ def dispatch_engine(workspace: Workspace, run: dict, handle: object) -> str | No
     """
 
     route = run.get("route")
-    if isinstance(route, dict):
-        if route.get("status") == "pending":
-            return resolve_pending_route(workspace, run, handle)
-        if route.get("route") in TERMINAL_ROUTES:
-            CommandRouter(workspace, run, handle).finish_without_engine(route)
-            return None
+    if isinstance(route, dict) and route.get("route") in TERMINAL_ROUTES:
+        finish_without_engine(workspace, run, handle)
+        return None
     engine = run.get("engine")
     if engine not in store.RUN_ENGINES:
         label = "missing" if engine is None else repr(engine)
@@ -1414,7 +858,6 @@ def dispatch_engine(workspace: Workspace, run: dict, handle: object) -> str | No
 
 
 __all__ = [
-    "CommandRouter",
     "GOAL_TEMPLATES",
     "ROUTE_AGENT",
     "ROUTES",
@@ -1422,14 +865,10 @@ __all__ = [
     "classify_command",
     "dispatch_engine",
     "install_resolution",
+    "finish_without_engine",
     "normalize_route",
-    "pending_route",
     "resolution_scope",
-    "resolve_pending_route",
     "resolve_route",
     "template_outcomes",
-    "validate_action_intent",
     "validate_requested_outcomes",
-    "validate_router_result",
-    "workflow_owned_request",
 ]

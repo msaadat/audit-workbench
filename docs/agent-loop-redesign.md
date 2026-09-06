@@ -1,8 +1,8 @@
 # Agent loop redesign: a steering model over gated capabilities, in small steps
 
-**Status:** steps 0 to 3 landed at commit `0fffce7` (5 September 2026); steps 4,
-5 and 6 are built and under test (6 September 2026), with step 4 measured on one
-live run; steps 7 to 9 are still design. This is the
+**Status:** steps 0 to 3 landed at commit `0fffce7` (5 September 2026); steps 4
+to 8 are built and under test (6 September 2026), with step 4 measured on two
+live runs; step 9 is still design. This is the
 handoff for replacing the fixed request-to-closure pipeline in front of the
 workflow engine with a budgeted model loop that plans, runs capability units,
 reads what happened, repairs what it can, and asks when it cannot. Each step
@@ -983,6 +983,27 @@ fields.
 Builds on 4 and 5. Removes the routing that the evidence shows no one used, and
 gives every typed request one path.
 
+**Landed**, 6 September 2026, as specified. `classify_command` now decides four
+cases without a model turn — a `loop` source, explicit outcomes, a registered
+goal template, a lifecycle phrase — and everything else routes `agent`. Deleted:
+`GENERATION_RULES`, `SCOPE_EXECUTION_RULES`, `TARGET_OPERATION_MARKERS`,
+`ISOLATED_OPERATION_MARKERS`, `SPECIFIC_EDIT_VERBS`, `SPECIFIC_TARGET_MARKERS`,
+`COMPOUND_SEPARATORS`, `_segments`, `_single_intent`, `CommandRouter`,
+`resolve_pending_route`, `ROUTER_SYSTEM`, `validate_router_result`,
+`pending_route`, and `agent/context_bundles.py`. `resolve_route` always returns
+an engine; `dispatch_engine` lost its pending branch and keeps a small
+`finish_without_engine` for records persisted before this step.
+
+Two notes on what this cost outside routing. First, `start_action` is gone from
+the coordinator, so a chat turn now has exactly two mutating tools —
+`start_command` for a registered command, `take_action` for everything else.
+Second, roughly a hundred tests drove runs from free text through
+`start_command_run`, bypassing the chat layer that would have supplied a goal
+template; those now name their outcomes, which is what a tab button or a
+suggestion actually sends. The invariant held throughout: `commands.match_phrase`
+still short-circuits "Draft the APM" and every other registered phrase to a
+workflow run with no model turn.
+
 #### 7a. The coordinator
 
 `_process_message`: unchanged order of precedence (local slash commands,
@@ -1031,6 +1052,41 @@ functions with no state.
 ### Step 8. Retire the action engine
 
 Builds on 7. The action catalog stays; its scheduler goes.
+
+**Landed**, 6 September 2026, with one deviation, which is the interesting part.
+The plan had `action_tools()` call `actions._execute` directly with an approval
+in front of it. That would have dropped target resolution, the optimistic
+precondition, the conflict path when the workspace moved under a planned action,
+and the postcondition — everything between "the model named an action" and "the
+action may safely run", none of which was the *scheduler's* to begin with.
+
+So `action_runner.py` became `action_execution.py`: same code for the parts that
+gate and commit one action — `_resolve_and_gate`, `_execute_action`,
+`_wait_interaction`, the reconcilers, undo — with the engine cut out of it. Gone
+are `execute()`, the interpreter (`_command_interpreter_json`, `_interpret`, the
+catalog and table-profile builders), the adaptive planning wave (`_expand_after`),
+the workflow-ownership guard, and the run-finishing projection, along with
+`prompts.COMMAND_INTERPRETER_SYSTEM` and `prompts.COMMAND_PLANNER_SYSTEM`. What
+is left is not an engine: it has no `execute`, and nothing dispatches to it.
+
+`loop_tools.action_tools()` derives one tool per registered action from its own
+definition — 34 of them — and `run_registered_action` appends one to the loop
+run's ledger, canonicalizes it, and drives it through `ActionExecution` on the
+loop's own runtime, so an approval it raises is an interaction on the loop's
+record. `store.ACTION_ENGINE`, `ROUTE_ACTION`, `validate_action_intent`,
+`ISOLATED_ACTION_INTENT`, `workflow_owned_request` and the `run_action` tool are
+deleted; `RUN_ENGINES` is final at `{workflow, agent, intake}`.
+`AuditWorkflowExecution` inherits `ActionExecution` as before — the plan's "make
+them inherit `BaseRunner` directly" is not worth the churn while they still use
+its action bookkeeping, and the inheritance no longer drags an engine behind it.
+
+`tests/test_command_agent.py` became `tests/test_agent_actions.py`: the ledger,
+canonicalization, resolution, conflict and reconciler tests kept; the twenty
+interpreter, planner and ownership-guard tests deleted with their subject; and
+three rewritten to drive the loop — a destructive action in auto mode, the same
+action waiting on an approval in permission mode, and an undo. One new test
+holds the seam: every registered action except the unoffered set is reachable as
+a tool, and each tool's arguments are the action's own declared schema.
 
 - `agent/loop_tools.py` `action_tools()`: one tool per registered action in
   `actions.REGISTRY`, name equal to the action type, parameters equal to its

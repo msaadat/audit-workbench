@@ -1,21 +1,27 @@
-"""Durable unified action-graph runner."""
+"""Execution for one registered action: resolve, gate, commit, receipt.
+
+Not an engine. Until step 8 of ``docs/agent-loop-redesign.md`` this module also
+held a scheduler — a model wrote a DAG of actions from the command text, and a
+planning wave grew it from results — which is the shape the v3 migration was
+built to escape. The steering loop decides what to run now, one action at a
+time, and this is what it drives: the ledger, target resolution, the optimistic
+precondition, the approval interaction, the executor, the receipt, and the
+conflict path when the workspace moved underneath.
+
+Everything an action was subject to before still applies, because it is the
+same code that applied it.
+"""
 
 from __future__ import annotations
 
 import json
 import time
 
-from .. import analytics, assistant, debug_store, llm, sandbox, validation
-from ..text import counted
+from .. import analytics, assistant, debug_store, sandbox, validation
 from ..workspaces import Workspace, WorkspaceError
-from . import action_tools, actions, artifact_index, ledger, narration, prompts, routing, store
-from .base import BaseRunner, Cancelled, LimitExceeded
+from . import actions, artifact_index, ledger, prompts, store
+from .base import BaseRunner
 from .runtime import RunRuntime
-
-# Goal templates, deterministic phrase tables, and the workflow-ownership rule
-# all live in `agent/routing.py`. The action scheduler classifies nothing; it
-# only re-asks routing whether a record it was handed is one it may plan.
-GOAL_TEMPLATES = routing.GOAL_TEMPLATES
 
 SEMANTIC_PROPOSAL_ATTEMPTS = 2
 
@@ -25,7 +31,7 @@ def _text_list(value: object) -> list[str]:
     return [str(item) for item in values]
 
 
-class ActionRunner(BaseRunner):
+class ActionExecution(BaseRunner):
     def __init__(
         self,
         workspace: Workspace,
@@ -45,237 +51,6 @@ class ActionRunner(BaseRunner):
     def _drain_inbox(self) -> None:
         """General chat is durable follow-up work, never active-graph steering."""
         self.runtime.drain_inbox(queue_commands=True)
-
-    def execute(self) -> None:
-        """Interpret the command into an action graph, then drive it to done.
-
-        Re-entrant: a resumed run finds its actions already on the ledger and
-        skips straight to driving the graph.
-        """
-        if not self.run.get("started"):
-            self.mark_started()
-        try:
-            self._guard_isolated_action_request()
-            self._recover_running_actions()
-            if not self.run.get("actions"):
-                self._interpret()
-            self._drive_graph()
-            self._finish()
-        except Cancelled:
-            for action in self.run.get("actions") or []:
-                if action["status"] in {
-                    "proposed", "ready", "awaiting_input", "awaiting_confirmation", "blocked",
-                }:
-                    ledger.transition(action, "cancelled")
-            ledger.project_action_plan(self.run)
-            self.mark_finished()
-            self.run["command"]["status"] = "cancelled"
-            context = dict(self.handle.cancel_context or {})
-            self.run["cancellation"] = {
-                "actor": context.get("actor") or "orchestrator",
-                "source": context.get("source") or "checkpoint",
-                "reason": context.get("reason"),
-                "requested_at": context.get("requested_at"),
-                "cancelled_at": self.run["finished"],
-            }
-            self.set_status("cancelled")
-        except (LimitExceeded, llm.LLMError) as error:
-            self.warn(str(error))
-            self._finish(force_issue=True)
-        except Exception as error:
-            self._fail_run(str(error))
-
-    def _guard_isolated_action_request(self) -> None:
-        """Reject workflow-owned requests before planning or action execution.
-
-        Routing normally selects ``WorkflowRunner`` before launch. This is the
-        defensive boundary for a malformed record or a bounded-router miss: a
-        request for a workflow-owned deliverable must fail without invoking the
-        action interpreter or executing a pre-populated action graph. The rule
-        is the routing module's own classification, so the guard and the
-        persisted route can never disagree.
-        """
-        if routing.workflow_owned_request(self.run.get("command") or {}):
-            raise WorkspaceError(
-                "Broad audit and planning requests must use workflow routing; "
-                "the action runner accepts only isolated artifact operations."
-            )
-
-    def _fail_run(self, error: str) -> None:
-        self.run["error"] = error
-        self.mark_finished()
-        self.run["command"]["status"] = "failed"
-        self.set_status("failed")
-
-    def _catalog(self) -> list[dict]:
-        return [
-            {
-                "type": value.type, "version": value.version,
-                "description": value.description, "input_schema": value.input_schema,
-                "target_kinds": list(value.target_kinds), "risk": value.risk,
-                "model_usage": value.model_usage,
-            }
-            for value in actions.REGISTRY.all()
-            if value.type not in {
-                "create_procedure", "edit_procedure", "delete_procedure",
-                "generate_working_paper",
-            }
-        ]
-
-    def _table_profiles(self) -> list[dict]:
-        profiles = []
-        for name in self.ws.table_names():
-            try:
-                profiles.append(assistant.table_metadata(self.ws, name))
-            except Exception as error:
-                self.warn(f"Could not profile '{name}' for command planning: {error}")
-        return profiles
-
-    def _command_interpreter_json(self, user: str) -> dict:
-        """Run a bounded local-read tool loop for one command proposal."""
-        session = action_tools.ActionToolSession(self.ws, self._catalog())
-        conversation = [{"role": "user", "content": user}]
-        tool_calls = 0
-        parse_attempts = 0
-        tool_limit_announced = False
-        while True:
-            message = self._llm_message(
-                prompts.COMMAND_INTERPRETER_SYSTEM,
-                conversation,
-                action_tools.TOOL_SCHEMAS,
-                attempt=tool_calls + parse_attempts + 1,
-            )
-            raw_calls = message.get("tool_calls")
-            calls = raw_calls if isinstance(raw_calls, list) else []
-            conversation.append({
-                "role": "assistant",
-                "content": str(message.get("content") or ""),
-                **({"tool_calls": calls} if calls else {}),
-            })
-            if not calls:
-                try:
-                    return prompts.parse_json_object(str(message.get("content") or ""))
-                except (ValueError, json.JSONDecodeError) as error:
-                    parse_attempts += 1
-                    if parse_attempts >= 2:
-                        raise llm.LLMError(f"The model did not return usable JSON: {error}") from error
-                    conversation.append({
-                        "role": "user",
-                        "content": (
-                            "Your previous response could not be used: "
-                            f"{error}. {prompts.JSON_RULES}"
-                        ),
-                    })
-                    continue
-            if tool_limit_announced:
-                raise llm.LLMError(
-                    "Action-planning tool-call limit reached before a usable action graph was returned."
-                )
-            for call in calls:
-                function = call.get("function") if isinstance(call, dict) else {}
-                name = str(function.get("name") or "") if isinstance(function, dict) else ""
-                raw_args = function.get("arguments") if isinstance(function, dict) else "{}"
-                try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                    if not isinstance(args, dict):
-                        raise ValueError("Tool arguments must be an object.")
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    args = {}
-                tool_calls += 1
-                if tool_calls <= action_tools.MAX_TOOL_CALLS:
-                    self.set_activity(
-                        "command.interpret",
-                        action_tools.describe_tool_call(name, args),
-                        detail="Reviewing the command, available artifacts, and table schemas…",
-                    )
-                    result = session.dispatch(name, args)
-                else:
-                    result = {"error": "Action-planning tool-call limit reached; return the action graph now."}
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": str(call.get("id") or f"action-tool-{tool_calls}"),
-                    "content": json.dumps(result, default=str),
-                })
-            self.run.setdefault("usage", {}).setdefault("tool_calls", 0)
-            self.run["usage"]["tool_calls"] += len(calls)
-            self.save()
-            if tool_calls >= action_tools.MAX_TOOL_CALLS:
-                tool_limit_announced = True
-                conversation.append({
-                    "role": "user",
-                    "content": "The local read limit is reached. Return the complete action graph now without more tool calls.",
-                })
-
-    def _interpret(self) -> None:
-        """Turn one command into a validated action DAG through bounded reads.
-
-        The interpreter starts from a compact manifest and uses only the local
-        read tools it needs. Everything after its proposal remains deterministic
-        — the ledger, not the model, decides what is legal and in what order it
-        runs.
-        """
-        self.set_status("interpreting")
-        self.set_activity(
-            "command.interpret", "Preparing the action plan",
-            detail="Reviewing the command, available artifacts, and table schemas…",
-        )
-        command = self.run["command"]
-        template = GOAL_TEMPLATES.get(command.get("goal_template"))
-        if command.get("goal_template") and template is None:
-            raise WorkspaceError("Unknown goal template.")
-        base_user = prompts.command_interpreter_user(
-            command, template, action_tools.workspace_manifest(self.ws), self.run["limits"],
-        )
-        # One repair round: a batch rejected by the action contracts or graph
-        # validator is fed back with the specific error rather than discarded.
-        attempt_user = base_user
-        created = []
-        payload = {}
-        for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
-            if attempt:
-                self.set_activity(
-                    "command.interpret.repair", "Repairing the action plan",
-                    detail="The first proposal did not satisfy the registered action contracts.",
-                    attempt=attempt + 1,
-                )
-            payload = self._command_interpreter_json(attempt_user)
-            objective = str(payload.get("objective") or (template or {}).get("objective") or command.get("text") or "").strip()
-            goal = {
-                "objective": objective,
-                "constraints": _text_list(
-                    payload.get("constraints") or (template or {}).get("constraints") or []
-                ),
-                "completion_criteria": _text_list(payload.get("completion_criteria")),
-            }
-            self.run["goal"] = goal
-            proposals = payload.get("actions") or []
-            try:
-                if not isinstance(proposals, list):
-                    raise WorkspaceError("Command interpreter actions must be a list.")
-                self._canonicalize_proposals(proposals)
-                created = ledger.append_actions(self.run, proposals)
-                break
-            except WorkspaceError as error:
-                self._record_rejected_proposals("command_interpreter", proposals, error)
-                if attempt + 1 >= SEMANTIC_PROPOSAL_ATTEMPTS:
-                    raise
-                attempt_user = self._proposal_repair_user(base_user, payload, error)
-        # The model asked for a replanning wave but marked nothing significant;
-        # promote the last read/compute action so the wave can actually fire.
-        if payload.get("needs_planning_wave") and not any(item.get("planning_significant") for item in created):
-            for item in reversed(created):
-                definition = actions.REGISTRY.get(item["type"], item["definition_version"])
-                if definition.risk in {"read", "compute"}:
-                    item["planning_significant"] = True
-                    break
-        self.run["command"]["status"] = "planned"
-        self.save()
-        self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
-        self.set_activity(
-            "command.plan.ready", "Action plan ready",
-            detail=f"Prepared {len(created)} action{'s' if len(created) != 1 else ''} for execution.",
-            current=0, total=len(created),
-        )
 
     def _resolve_rcm_refs(self, refs: list) -> list[str]:
         resolved = []
@@ -402,8 +177,8 @@ class ActionRunner(BaseRunner):
         if changed:
             ledger.project_action_plan(self.run); self.save()
 
-    def _drive_graph(self) -> None:
-        """Single-threaded scheduler over the action ledger.
+    def drive_actions(self) -> None:
+        """Single-threaded pump over this run's action ledger.
 
         Each pass re-reads the ledger and takes the highest-priority eligible
         item, so the loop stays correct after a resume, an out-of-band
@@ -758,7 +533,7 @@ class ActionRunner(BaseRunner):
                 and action["status"] == "failed"
                 and not deterministic
             ):
-                self._expand_after(action, {"error": str(error)})
+                pass
             elif deterministic:
                 self.warn(
                     f"Skipped adaptive replanning after deterministic failure in "
@@ -799,7 +574,7 @@ class ActionRunner(BaseRunner):
             kind, _, item_id = ref.partition(":")
             self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": "removed" if definition.risk == "destructive" else "updated"})
         if action.get("planning_significant"):
-            self._expand_after(action)
+            pass
 
     def _repair_custom_analysis(self, action: dict, error: Exception) -> bool:
         """Replace failed custom code before the executor's one permitted retry."""
@@ -829,92 +604,6 @@ class ActionRunner(BaseRunner):
             return False
         spec["code"] = repaired
         return True
-
-    def _expand_after(self, action: dict, safe_result: dict | None = None) -> None:
-        """Run one adaptive planning wave against a locally computed result.
-
-        The only place the graph grows in response to data. Bounded twice — by
-        `max_waves` and by the remaining action budget — and fed a *safe*
-        result (aggregates, never raw rows), which is also why a failure passes
-        `{"error": ...}` rather than the receipt.
-        """
-        if self.run.get("planning_expansion_disabled"):
-            return
-        usage = self.run["usage"]
-        if usage["planner_waves"] >= int(self.run["limits"].get("max_waves", 8)):
-            self.warn("Planning-wave limit reached; the current graph will finish without further expansion.")
-            return
-        remaining_actions = max(
-            0,
-            int(self.run["limits"].get("max_actions", 60))
-            - len(self.run.get("actions") or []),
-        )
-        if remaining_actions == 0:
-            self.run["planning_expansion_disabled"] = True
-            self.warn("Action limit reached; adaptive planning is disabled for this run.")
-            return
-        safe_result = safe_result if safe_result is not None else ((action.get("receipt") or {}).get("result") or {})
-        usage["planner_waves"] += 1; self.save()
-        failed_result = bool(safe_result.get("error"))
-        max_waves = int(self.run["limits"].get("max_waves", 8))
-        self.set_activity(
-            "command.replan" if failed_result else "command.expand",
-            "Replanning after an action failure" if failed_result else "Reviewing results for follow-up work",
-            detail=f"Planning wave {usage['planner_waves']} of {max_waves}…",
-            current=usage["planner_waves"], total=max_waves, action_id=action["id"],
-        )
-        index = artifact_index.build(self.ws)
-        base_user = prompts.command_planner_user(
-            self.run["goal"],
-            [{"id": item["id"], "type": item["type"], "status": item["status"], "result_refs": item["result_refs"]} for item in self.run["actions"]],
-            [{"action_id": action["id"], "result": safe_result}],
-            artifact_index.compact(index), self._catalog(),
-            {**self.run["limits"], "remaining_actions": remaining_actions},
-            assistant.schema_brief(self.ws),
-            self._table_profiles(),
-        )
-        attempt_user = base_user
-        for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
-            if attempt:
-                self.set_activity(
-                    "command.replan.repair", "Repairing the follow-up action plan",
-                    detail="The previous follow-up proposal did not satisfy the action contracts.",
-                    attempt=attempt + 1, action_id=action["id"],
-                )
-            try:
-                payload = self.llm_json(prompts.COMMAND_PLANNER_SYSTEM, attempt_user)
-            except (LimitExceeded, llm.LLMError) as error:
-                # The initial graph is already validated and may contain
-                # independent local work. Adaptive expansion is optional, so
-                # a provider outage must not strand that work in ready state.
-                self.run["planning_expansion_disabled"] = True
-                self.warn(f"Further planning expansion skipped: {error}")
-                return
-            proposals = payload.get("actions") or []
-            if not proposals:
-                return
-            # Expansion is opportunistic follow-up planning; even repeated
-            # invalid proposals must not fail work that already committed.
-            try:
-                self._canonicalize_proposals(proposals)
-                created = ledger.append_actions(
-                    self.run, proposals, depth=action["depth"] + 1,
-                )
-            except WorkspaceError as error:
-                self._record_rejected_proposals("command_planner", proposals, error)
-                if attempt + 1 >= SEMANTIC_PROPOSAL_ATTEMPTS:
-                    signature = str(error)
-                    failures = self.run.setdefault("planning_failure_signatures", {})
-                    failures[signature] = int(failures.get(signature) or 0) + 1
-                    if failures[signature] >= 2:
-                        self.run["planning_expansion_disabled"] = True
-                    self.warn(f"Discarded an invalid planning proposal: {error}")
-                    return
-                attempt_user = self._proposal_repair_user(base_user, payload, error)
-                continue
-            self.save()
-            self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
-            return
 
     def _wait_interaction(self, action: dict, interaction: dict) -> None:
         waiting_status = (
@@ -1020,55 +709,3 @@ class ActionRunner(BaseRunner):
     def _save_action(self, action: dict) -> None:
         ledger.project_action_plan(self.run); self.save()
         self.emit("action_update", {"action": {k: action.get(k) for k in ("id", "type", "status", "error", "result_refs", "attempts")}})
-
-    def _finish(self, force_issue: bool = False) -> None:
-        if self.run["status"] in store.TERMINAL_STATUSES:
-            return
-        self._drain_inbox()
-        self.set_status("verifying")
-        self.set_activity(
-            "command.verify", "Verifying fieldwork results",
-            detail="Checking committed, failed, blocked, and skipped actions before summary.",
-        )
-        failed = [item for item in self.run.get("actions") or [] if item["status"] in {"failed", "blocked", "cancelled"}]
-        succeeded = [item for item in self.run.get("actions") or [] if item["status"] == "succeeded"]
-        skipped = [item for item in self.run.get("actions") or [] if item["status"] == "skipped"]
-        lines = [f"## Command result", "", self.run["goal"].get("objective") or self.run["command"].get("text") or "Audit command", ""]
-        lines.append(f"Completed {counted(len(succeeded), 'action')}; {len(failed)} failed or blocked; {len(skipped)} skipped.")
-        if succeeded:
-            lines.extend(["", "### Committed work", *[f"- {actions.REGISTRY.get(item['type'], item['definition_version']).description}" for item in succeeded]])
-        if failed:
-            lines.extend(["", "### Issues", *[f"- {item['type']}: {item.get('error') or item['status']}" for item in failed]])
-        lines.extend(["", "This is assistant working content, not a formal audit-stage conclusion or audit opinion."])
-        self.run["summary_markdown"] = "\n".join(lines)
-        narration.milestone(
-            self.run,
-            self.emit,
-            capability="action.command",
-            stage_id="action:result",
-            status="completed_with_issues" if force_issue or failed else "completed",
-            headline="Requested action complete",
-            summary=(
-                f"Completed {counted(len(succeeded), 'action')}; {len(failed)} failed or "
-                f"were blocked; {len(skipped)} were skipped."
-            ),
-            metrics=[
-                {"label": "Completed", "value": len(succeeded)},
-                {"label": "Failed or blocked", "value": len(failed)},
-                {"label": "Skipped", "value": len(skipped)},
-            ],
-            highlights=[
-                {
-                    "severity": "error",
-                    "label": str(item.get("type") or "Action"),
-                    "detail": str(item.get("error") or item.get("status") or ""),
-                }
-                for item in failed[:3]
-            ],
-            artifact_refs=[
-                ref for item in succeeded for ref in item.get("result_refs") or []
-            ],
-        )
-        self.mark_finished(); self.run["command"]["status"] = "completed"
-        status = "completed_with_issues" if force_issue or failed else "completed"
-        self.set_status(status); self.emit("summary_ready", {"run_id": self.run["id"]})

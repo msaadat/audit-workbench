@@ -130,7 +130,11 @@ class AgentLoop(BaseRunner):
         self.conversation: list[dict] = []
         self.reads = ReadToolSession(workspace, chat_id=run.get("chat_id"))
         self.tools = loop_tools.LoopTools(self)
-        self._tool_schemas = [*loop_tool_schemas(), *loop_tools.tool_schemas()]
+        self._tool_schemas = [
+            *loop_tool_schemas(),
+            *loop_tools.tool_schemas(),
+            *loop_tools.action_tools(),
+        ]
         self._read_names = {
             str(schema["function"]["name"]) for schema in loop_tool_schemas()
         }
@@ -139,6 +143,9 @@ class AgentLoop(BaseRunner):
         # cheapest thing a model can always do next, and a request no outcome
         # can carry out gives it no reason to stop; see ``_note_read_only_turn``.
         self._read_only_turns = 0
+        # Built on first use: an action tool call is the only thing that needs
+        # it, and most requests never make one.
+        self._action_execution = None
         # The count of user messages already delivered into the conversation.
         # Steering arrives as run messages through the runtime's inbox drain,
         # and the loop reads forward from here at the top of every turn.
@@ -461,6 +468,22 @@ class AgentLoop(BaseRunner):
             raise WorkspaceError("A clarification response is required.")
         self._mark_messages_delivered()
         return answer
+
+    def action_execution(self):
+        """The action executor bound to this run, created once.
+
+        It shares the loop's runtime and state lock, so an approval it raises
+        is an interaction on the loop's own record and both write the durable
+        run under one lock.
+        """
+
+        from .action_execution import ActionExecution
+
+        if self._action_execution is None:
+            self._action_execution = ActionExecution(
+                self.ws, self.run, self.handle, runtime=self.runtime
+            )
+        return self._action_execution
 
     def request_finish(self, summary: str, suggestions: list[dict]) -> None:
         self._finish = {"summary": summary, "suggestions": list(suggestions)}

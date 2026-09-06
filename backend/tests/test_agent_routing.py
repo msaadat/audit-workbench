@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from app import llm, workspaces
-from app.agent import action_runner, actions, routing, runner, store
+from app.agent import action_execution, actions, routing, runner, store
 from app.agent import capabilities as audit_capabilities
 from app.agent.runtime import WorkflowRunner
 from app.workspaces import WorkspaceError
@@ -42,122 +42,87 @@ def _configured(monkeypatch, overrides: dict | None = None) -> FakeAgentLLM:
 
 
 # --------------------------------------------------------------------------- #
-# P11.2 / P11.2A — the routing matrix
+# The routing matrix, after step 7: four deterministic cases, then the loop
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
-    ("text", "route", "definition", "outcomes", "generation_mode"),
+    ("command", "route", "definition", "outcomes", "decided_by"),
     [
-        # Prepare a planning deliverable → workflow with reuse_existing.
-        ("Draft the APM", "workflow", AUDIT, ["planning.apm_ready"], "reuse_existing"),
-        ("Generate the RCM", "workflow", AUDIT, ["planning.rcm_ready"], "reuse_existing"),
-        # Improve / regenerate / refresh → workflow with explicit force.
-        ("Regenerate the APM", "workflow", AUDIT, ["planning.apm_ready"], "force"),
-        ("Refresh the RCM", "workflow", AUDIT, ["planning.rcm_ready"], "force"),
-        ("Improve the APM", "workflow", AUDIT, ["planning.apm_ready"], "force"),
-        # Lifecycle-wide completion.
+        # 1. The coordinator handed it to the loop.
         (
-            "Complete the audit",
-            "workflow",
-            AUDIT,
-            audit_capabilities.FULL_AUDIT_OUTCOMES,
-            "reuse_existing",
+            {"source": "loop", "text": "Redraft DT-1 and check it"},
+            "agent", None, [], "loop_source",
         ),
-        # Infer joins and analyze tables.
-        ("Perform relevant joins and data analysis", "workflow", ANALYSIS, ["analysis.summarized"], "reuse_existing"),
-        # Analyze selected documents.
-        ("Analyse the selected documents", "workflow", DOCUMENTS, [
-        "documents.categorized",
-        "documents.types_classified",
-        "documents.schemas_stamped",
-        "documents.analysis_generated",
-    ], "reuse_existing"),
-        # Declared RCM fieldwork.
+        # 2. Explicit outcomes — a tab button, a suggestion, a queued follow-up.
         (
-            "Run the RCM tests",
-            "workflow",
-            AUDIT,
-            ["fieldwork.executed", "results.rolled_up"],
-            "reuse_existing",
+            {"source": "tab_button", "text": "Draft the APM",
+             "requested_outcomes": ["planning.apm_ready"]},
+            "workflow", AUDIT, ["planning.apm_ready"], "explicit_outcomes",
         ),
-        # Executing one named Document Test is workflow-owned (P11.2A).
-        ("Run document test DT-1", "workflow", DOC_TESTS, ["doc_tests.executed"], "reuse_existing"),
-        # Attach / detach / rename / delete / manually edit / pin → action.
-        ("Attach this invoice to DT-1", "action", None, [], "reuse_existing"),
-        ("Detach the policy from DT-1", "action", None, [], "reuse_existing"),
-        ("Delete the duplicate invoices analysis", "action", None, [], "reuse_existing"),
-        ("Rename the transactions ruleset", "action", None, [], "reuse_existing"),
-        ("Replace this APM paragraph with a shorter one", "action", None, [], "reuse_existing"),
-        ("Pin this result to the dashboard", "action", None, [], "reuse_existing"),
-        # Rerun one identified existing test → action.
-        ("Rerun the saved analysis for transactions", "action", None, [], "reuse_existing"),
+        (
+            {"source": "follow_up", "text": "pin this result to the dashboard",
+             "requested_outcomes": ["planning.apm_ready"]},
+            "workflow", AUDIT, ["planning.apm_ready"], "explicit_outcomes",
+        ),
+        # 3. A registered goal template — a slash command or a chat phrase.
+        (
+            {"source": "goal_template", "text": "Draft the APM",
+             "goal_template": "apm_only"},
+            "workflow", AUDIT, ["planning.apm_ready"], "goal_template",
+        ),
+        # 4. The one phrase that can mean nothing else.
+        (
+            {"source": "chat", "text": "Complete the audit"},
+            "workflow", AUDIT, list(audit_capabilities.FULL_AUDIT_OUTCOMES),
+            "lifecycle_completion",
+        ),
+        # 5. Everything else is a sentence, and a sentence is the loop's. Each
+        # of these used to be decided by a phrase table that guessed an outcome
+        # set from wording without ever reading the workspace.
+        ({"source": "chat", "text": "Draft the APM"}, "agent", None, [], "text_request"),
+        ({"source": "chat", "text": "Regenerate the RCM"}, "agent", None, [], "text_request"),
+        ({"source": "chat", "text": "Run the RCM tests"}, "agent", None, [], "text_request"),
+        ({"source": "chat", "text": "Attach this invoice to DT-1"}, "agent", None, [], "text_request"),
+        ({"source": "chat", "text": "Rename the transactions ruleset"}, "agent", None, [], "text_request"),
+        ({"source": "chat", "text": "Regenerate the APM. Then pin the revenue tile."},
+         "agent", None, [], "text_request"),
+        ({"source": "chat", "text": "Please handle the outstanding work appropriately"},
+         "agent", None, [], "text_request"),
     ],
 )
-def test_routing_matrix(text, route, definition, outcomes, generation_mode):
-    resolved = routing.classify_command({"source": "chat", "text": text})
+def test_routing_matrix(command, route, definition, outcomes, decided_by):
+    resolved = routing.classify_command(command)
 
-    assert resolved is not None, text
     assert resolved["route"] == route
+    assert resolved["decided_by"] == decided_by
     assert resolved["workflow_definition"] == definition
     assert resolved["requested_outcomes"] == outcomes
-    assert resolved["generation_mode"] == generation_mode
     assert resolved["engine"] == routing.ENGINE_BY_ROUTE[route]
 
 
-def test_compound_cross_engine_request_is_clarified_not_split():
+def test_every_command_resolves_to_an_engine():
+    """There is no pending route and no router turn to wait for."""
+
+    for text in (
+        "Please handle the outstanding work appropriately",
+        "I uploaded document XX, revise the APM and RCM as appropriate",
+        "",
+    ):
+        resolved = routing.classify_command({"source": "chat", "text": text})
+        assert resolved["engine"] in (store.WORKFLOW_ENGINE, store.AGENT_ENGINE)
+    assert not hasattr(routing, "pending_route")
+    assert not hasattr(routing, "CommandRouter")
+    assert not hasattr(routing, "resolve_pending_route")
+
+
+def test_a_forced_regeneration_still_travels_with_the_request():
+    """The loop reads the auditor's own force phrase off the route it was given."""
+
     resolved = routing.classify_command(
-        {"source": "chat", "text": "Regenerate the APM. Then pin the revenue tile."}
+        {"source": "loop", "text": "Regenerate the APM from scratch"}
     )
 
-    assert resolved["route"] == "clarification"
-    assert resolved["decided_by"] == "compound_request"
-    assert resolved["engine"] is None
-    assert "two requests" in resolved["clarification"]
-
-
-def test_a_single_scope_wide_request_is_not_treated_as_compound():
-    """A bare "and" joins one request; only strong separators split segments."""
-    resolved = routing.classify_command(
-        {"source": "chat", "text": "Join the tables and analyse them"}
-    )
-
-    assert resolved["route"] == "workflow"
-    assert resolved["workflow_definition"] == ANALYSIS
-
-
-def test_an_unrecognized_request_defers_to_the_bounded_router():
-    assert routing.classify_command(
-        {"source": "chat", "text": "Please handle the outstanding work appropriately"}
-    ) is None
-
-
-def test_explicit_outcomes_outrank_every_phrase_rule():
-    resolved = routing.classify_command(
-        {
-            "source": "follow_up",
-            "text": "pin this result to the dashboard",
-            "requested_outcomes": ["planning.apm_ready"],
-        }
-    )
-
-    assert resolved["route"] == "workflow"
-    assert resolved["decided_by"] == "explicit_outcomes"
-    assert resolved["requested_outcomes"] == ["planning.apm_ready"]
-
-
-def test_next_step_outcome_bypasses_text_reparsing():
-    resolved = routing.classify_command(
-        {
-            "source": "tab_button",
-            "text": "Generate each executable test the RCM rows need.",
-            "requested_outcomes": ["tests.specified"],
-            "generation_mode": "reuse_existing",
-        }
-    )
-
-    assert resolved["route"] == "workflow"
-    assert resolved["decided_by"] == "explicit_outcomes"
-    assert resolved["requested_outcomes"] == ["tests.specified"]
-    assert resolved["generation_mode"] == "reuse_existing"
+    assert resolved["route"] == "agent"
+    assert resolved["generation_mode"] == "force"
 
 
 def test_classification_is_pure(monkeypatch, workspace_with_data):
@@ -222,98 +187,19 @@ def test_every_registered_goal_template_names_a_declared_outcome_set():
 
 
 # --------------------------------------------------------------------------- #
-# P11.3 — the bounded router-worker result schema
-# --------------------------------------------------------------------------- #
-def _router_payload(**overrides) -> dict:
-    return {
-        "route": "workflow",
-        "requested_outcomes": ["planning.apm_ready"],
-        "objective": "Draft the APM",
-        "target_refs": [],
-        "generation_mode": "reuse_existing",
-        "action_intent": None,
-        "constraints": [],
-        "clarification": None,
-        **overrides,
-    }
-
-
-def test_router_result_schema_accepts_the_four_declared_results():
-    supported = routing.supported_outcomes()
-
-    workflow = routing.validate_router_result(_router_payload(), supported)
-    action = routing.validate_router_result(
-        _router_payload(
-            route="action", requested_outcomes=[], action_intent="run_report_quality"
-        ),
-        supported,
-    )
-    clarification = routing.validate_router_result(
-        _router_payload(
-            route="clarification", requested_outcomes=[], clarification="Which test?"
-        ),
-        supported,
-    )
-    unsupported = routing.validate_router_result(
-        _router_payload(route="unsupported", requested_outcomes=[]), supported
-    )
-
-    assert workflow["engine"] == store.WORKFLOW_ENGINE
-    assert workflow["workflow_definition"] == AUDIT
-    assert action["engine"] == store.ACTION_ENGINE
-    assert action["action_intent"] == "run_report_quality"
-    assert clarification["engine"] is None
-    assert unsupported["engine"] is None
-    assert all(
-        result["decided_by"] == "router_worker"
-        for result in (workflow, action, clarification, unsupported)
-    )
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        _router_payload(route="generic_action"),
-        _router_payload(requested_outcomes=["planning.not_a_capability"]),
-        _router_payload(requested_outcomes=[]),
-        _router_payload(generation_mode="always"),
-        _router_payload(route="clarification", requested_outcomes=[], clarification=""),
-        _router_payload(
-            route="action", requested_outcomes=[], action_intent="write_json"
-        ),
-    ],
-)
-def test_router_result_schema_rejects_unsupported_results(payload):
-    with pytest.raises(ValueError):
-        routing.validate_router_result(payload, routing.supported_outcomes())
-
-
-def test_router_result_accepts_the_audit_owned_apm_and_analysis_scope():
-    resolved = routing.validate_router_result(
-        _router_payload(
-            requested_outcomes=["planning.apm_ready", "analysis.executed"]
-        ),
-        routing.supported_outcomes(),
-    )
-
-    assert resolved["workflow_definition"] == AUDIT
-
-
-def test_action_intent_is_validated_against_the_action_registry():
-    assert routing.validate_action_intent(None) == "isolated_mutation"
-    assert routing.validate_action_intent("edit_finding") == "edit_finding"
-    with pytest.raises(WorkspaceError):
-        routing.validate_action_intent("regenerate_everything")
-
-
-# --------------------------------------------------------------------------- #
 # P11.4 — one normalized route and engine before thread launch
 # --------------------------------------------------------------------------- #
 def test_a_workflow_route_is_persisted_and_materialized_before_launch(
     workspace_with_data,
 ):
     run = store.new_command_run(
-        workspace_with_data, "auto", {"source": "chat", "text": "Draft the APM"}
+        workspace_with_data,
+        "auto",
+        {
+            "source": "goal_template",
+            "text": "Draft the APM",
+            "goal_template": "apm_only",
+        },
     )
 
     assert routing.resolve_route(workspace_with_data, run) == store.WORKFLOW_ENGINE
@@ -323,52 +209,63 @@ def test_a_workflow_route_is_persisted_and_materialized_before_launch(
     assert persisted["schema_version"] == 3
     assert persisted["route"]["status"] == "resolved"
     assert persisted["route"]["route"] == "workflow"
-    assert persisted["route"]["decided_by"] == "workflow_generation"
+    assert persisted["route"]["decided_by"] == "goal_template"
     assert persisted["workflow"]["definition"] == AUDIT
     assert persisted["usage"]["llm_turns"] == 0
     # The projection the API and drawer read carries the same route.
     assert store.run_summary(persisted)["route"] == persisted["route"]
 
 
-def test_a_clarification_route_persists_no_engine_and_finishes_the_run(
-    monkeypatch, workspace_with_data
+def test_a_text_request_is_persisted_as_an_agent_route_before_launch(
+    workspace_with_data,
 ):
-    fake = _configured(monkeypatch)
+    """A sentence resolves to the loop with no model turn and no pending state."""
 
-    started = runner.start_command_run(
+    run = store.new_command_run(
         workspace_with_data,
         "auto",
         {"source": "chat", "text": "Regenerate the APM. Then pin the revenue tile."},
     )
-    completed = wait_run(workspace_with_data, started["id"])
 
-    assert completed["engine"] is None
-    assert completed["route"]["route"] == "clarification"
+    assert routing.resolve_route(workspace_with_data, run) == store.AGENT_ENGINE
+    persisted = store.load_run(workspace_with_data, run["id"])
+
+    assert persisted["engine"] == store.AGENT_ENGINE
+    assert persisted["route"]["status"] == "resolved"
+    assert persisted["route"]["decided_by"] == "text_request"
+    assert persisted["usage"]["llm_turns"] == 0
+    # A compound request is no longer a clarification: it is one request the
+    # loop can carry out as two children.
+    assert "workflow" not in persisted
+
+
+def test_a_persisted_clarification_route_still_finishes_its_run(
+    monkeypatch, workspace_with_data
+):
+    """Nothing produces one any more; a record written before step 7 might."""
+
+    fake = _configured(monkeypatch)
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "Something ambiguous"}
+    )
+    run["route"] = routing.normalize_route(
+        "clarification",
+        decided_by="compound_request",
+        clarification="Send them as two requests.",
+    )
+    run["engine"] = None
+    store.save_run(workspace_with_data, run)
+
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    assert routing.dispatch_engine(
+        workspace_with_data, store.load_run(workspace_with_data, run["id"]), handle
+    ) is None
+
+    completed = store.load_run(workspace_with_data, run["id"])
     assert completed["status"] == "completed_with_open_items"
     assert completed["command"]["status"] == "completed"
     assert "two requests" in completed["summary_markdown"]
-    assert completed["actions"] == []
     assert fake.calls == []
-
-
-def test_a_deterministic_route_never_spends_a_router_turn(
-    monkeypatch, workspace_with_data
-):
-    fake = _configured(monkeypatch, {"agent:command_interpreter": {
-        "objective": "Attach the invoice", "constraints": [],
-        "completion_criteria": [], "needs_planning_wave": False, "actions": [],
-    }})
-
-    started = runner.start_command_run(
-        workspace_with_data,
-        "auto",
-        {"source": "chat", "text": "Attach the invoice to DT-1"},
-    )
-    completed = wait_run(workspace_with_data, started["id"])
-
-    assert completed["engine"] == store.ACTION_ENGINE
-    assert completed["route"]["decided_by"] == "isolated_operation"
-    assert [call["tag"] for call in fake.calls] == ["agent:command_interpreter"]
 
 
 # --------------------------------------------------------------------------- #
@@ -414,34 +311,37 @@ def test_supported_engine_set_matches_the_phase_10_decision_record():
     # Phase 12 retired the legacy ``analysis`` pipeline, and the agent-loop
     # step added the steering loop: three schedulers plus the one justified
     # protocol engine.
-    assert store.RUN_ENGINES == frozenset({"workflow", "action", "agent", "intake"})
-    assert store.COMMAND_ENGINES == frozenset({"workflow", "action", "agent"})
+    assert store.RUN_ENGINES == frozenset({"workflow", "agent", "intake"})
+    assert store.COMMAND_ENGINES == frozenset({"workflow", "agent"})
     assert set(store.PROTOCOL_ENGINE_BY_RUN_KIND) == {"intake"}
 
 
 # --------------------------------------------------------------------------- #
 # P11.6 — no duplicated local resolution, no cross-scheduler fallback
 # --------------------------------------------------------------------------- #
-def test_no_scheduler_classifies_or_calls_the_other_scheduler():
-    for scheduler in (WorkflowRunner, action_runner.ActionRunner):
-        source = inspect.getsource(scheduler)
+def test_no_engine_classifies_or_reaches_into_another():
+    from app.agent import agent_loop
+
+    for engine in (WorkflowRunner, agent_loop.AgentLoop, action_execution.ActionExecution):
+        source = inspect.getsource(engine)
         assert "classify_command" not in source
         assert "resolve_route" not in source
-        assert "resolve_pending_route" not in source
         assert "dispatch_engine" not in source
 
-    workflow_source = inspect.getsource(WorkflowRunner)
-    assert "ActionRunner(" not in workflow_source
-    action_source = inspect.getsource(action_runner.ActionRunner)
-    assert "WorkflowRunner(" not in action_source
-    # The action scheduler's only routing dependency is the shared ownership
-    # rule, so its guard and the persisted route can never disagree.
-    assert "routing.workflow_owned_request" in action_source
+    assert "AgentLoop(" not in inspect.getsource(WorkflowRunner)
+    # The steering loop composes the other two through their own entry points
+    # and imports no capability, worker or executor module of its own.
+    loop_source = inspect.getsource(agent_loop)
+    assert "WorkflowRunner(" not in loop_source
+    assert "from .capabilities" not in loop_source
+    assert "from .workers" not in loop_source
+    assert "from .executors" not in loop_source
+    # Action execution is no longer an engine: it has no ``execute`` of its own
+    # and nothing dispatches to it.
+    assert not hasattr(action_execution.ActionExecution, "execute")
 
 
-def test_the_deterministic_pass_runs_exactly_once_per_run(
-    monkeypatch, workspace_with_data
-):
+def test_the_classification_runs_exactly_once_per_run(monkeypatch, workspace_with_data):
     calls: list[str] = []
     original = routing.classify_command
 
@@ -452,23 +352,7 @@ def test_the_deterministic_pass_runs_exactly_once_per_run(
     monkeypatch.setattr(routing, "classify_command", counting)
     _configured(
         monkeypatch,
-        {
-            "agent:workflow_router": {
-                "route": "action",
-                "requested_outcomes": [],
-                "objective": "Check report quality",
-                "target_refs": [],
-                "generation_mode": "reuse_existing",
-                "action_intent": "run_report_quality",
-                "constraints": [],
-                "clarification": None,
-            },
-            "agent:command_interpreter": {
-                "objective": "Check report quality", "constraints": [],
-                "completion_criteria": [], "needs_planning_wave": False,
-                "actions": [{"id": "quality", "type": "run_report_quality", "args": {}}],
-            },
-        },
+        {"agent:loop": {"content": "Nothing needed doing."}},
     )
 
     started = runner.start_command_run(
@@ -478,14 +362,11 @@ def test_the_deterministic_pass_runs_exactly_once_per_run(
     )
     completed = wait_run(workspace_with_data, started["id"])
 
-    assert completed["engine"] == store.ACTION_ENGINE
-    assert completed["route"]["decided_by"] == "router_worker"
-    # Routing classifies once, at creation. The bounded router does not repeat
-    # the deterministic pass, and the only other caller is the action
-    # scheduler's defensive ownership guard.
-    assert calls == ["resolve_route", "workflow_owned_request"]
-    assert "classify_command" not in inspect.getsource(routing.CommandRouter.resolve)
-    assert "classify_command" not in inspect.getsource(routing.resolve_pending_route)
+    assert completed["engine"] == store.AGENT_ENGINE
+    assert completed["route"]["decided_by"] == "text_request"
+    # Once, at creation. Nothing downstream re-classifies: there is no router
+    # turn to spend and no second opinion to take.
+    assert calls == ["resolve_route"]
 
 
 # --------------------------------------------------------------------------- #
@@ -525,7 +406,9 @@ def test_queued_commands_keep_fifo_order_and_survive_a_terminal_crash(
 ):
     _configured(monkeypatch)
     started = store.new_command_run(
-        workspace_with_data, "auto", {"source": "chat", "text": "Draft the APM"}
+        workspace_with_data,
+        "auto",
+        {"source": "goal_template", "text": "Draft the APM", "goal_template": "apm_only"},
     )
     routing.resolve_route(workspace_with_data, started)
     started = store.load_run(workspace_with_data, started["id"])
@@ -551,7 +434,8 @@ def test_queued_commands_keep_fifo_order_and_survive_a_terminal_crash(
         for item in store.list_runs(workspace_with_data)
         if item["parent_run_id"] == started["id"]
     )
-    assert follow_up["route"]["route"] == "action"
+    # A queued follow-up is a sentence, so it drains to the steering loop.
+    assert follow_up["route"]["route"] == "agent"
 
 
 def test_retry_and_continue_link_to_their_parent_run(monkeypatch, workspace_with_data):
@@ -559,7 +443,9 @@ def test_retry_and_continue_link_to_their_parent_run(monkeypatch, workspace_with
     monkeypatch.setattr(runner, "_launch", lambda *args: None)
 
     failed = store.new_command_run(
-        workspace_with_data, "permission", {"source": "chat", "text": "Draft the APM"}
+        workspace_with_data,
+        "permission",
+        {"source": "goal_template", "text": "Draft the APM", "goal_template": "apm_only"},
     )
     routing.resolve_route(workspace_with_data, failed)
     failed = store.load_run(workspace_with_data, failed["id"])
@@ -584,8 +470,8 @@ def test_retry_and_continue_link_to_their_parent_run(monkeypatch, workspace_with
     assert continued["workflow"]["requested_outcomes"] == ["planning.rcm_ready"]
 
 
-def test_a_pending_route_run_can_still_queue_and_be_retried(workspace_with_data):
-    """Command-ness is the record shape, not the engine (which is not yet set)."""
+def test_a_text_run_can_still_queue_and_be_retried(workspace_with_data):
+    """Command-ness is the record shape, and a text run is one like any other."""
     run = store.new_command_run(
         workspace_with_data,
         "auto",
@@ -594,9 +480,10 @@ def test_a_pending_route_run_can_still_queue_and_be_retried(workspace_with_data)
     routing.resolve_route(workspace_with_data, run)
     persisted = store.load_run(workspace_with_data, run["id"])
 
-    assert persisted["engine"] is None
+    assert persisted["engine"] == store.AGENT_ENGINE
     assert store.is_command_run(persisted) is True
 
+    # With no live handle the message is persisted for the run to pick up.
     queued = runner.steer(workspace_with_data, run["id"], "and pin the result")
     assert queued["handled"] == "queued_command"
     assert store.load_run(workspace_with_data, run["id"])["pending_commands"]

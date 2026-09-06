@@ -35,9 +35,15 @@ are the assistant context builders and the bounded agent context bundles.
 
 **Current product shape:** The original data-workbench surfaces still exist
 (`Data`, `Query`, saved analyses), but the shipped product is
-now centered on an RCM-driven audit workflow: planning context and APM, RCM
-rows, the Document and Data Tests that cover them, execution rollups,
-working-paper generation, findings, and report drafting. A test is one durable
+now centered on an RCM-driven audit workflow: planning context and APM, the
+*cycle design* read out of the memorandum, RCM rows written against that cycle's
+step names, the cycle ruleset that contracts a row's transaction-cycle evidence
+against induced document schemas, the Document and Data Tests that cover the
+rows, execution rollups, working-paper generation, findings, and report
+drafting. Alongside it a document pipeline categorizes each document, types the
+evidence, reads every evidence document against its type's accumulating master,
+and freezes one schema per type — that induced field vocabulary is what a cycle
+ruleset is written in. A test is one durable
 record with one source: an RCM row links to its tests through ``test_refs`` and
 holds no test description of its own. A finding is a typed spine — severity,
 provenance, and its RCM/test/execution/evidence references — carrying one
@@ -173,13 +179,14 @@ backend/app/
    |                             each with its workflow id and hash-identified
    |                             metadata
    |- capabilities/            - grouped capability composition
-   |                             (documents/planning/fieldwork/reporting for
-   |                             audit, analysis for data analysis, documents for
-   |                             document analysis, doc_tests for document tests)
-   |                             with startup validation against the
-   |                             authoritative graphs
+   |                             (sources/documents/analysis/planning/tests/
+   |                             fieldwork/reporting for audit, analysis for
+   |                             data analysis, documents for document
+   |                             analysis, doc_tests for document tests) with
+   |                             startup validation against the authoritative
+   |                             graphs
    |- routing.py               - the only classifier: pure deterministic
-   |                             precedence, the bounded router worker, and
+   |                             precedence over four cases, no model turn, and
    |                             route/engine persistence
    |- store.py                 - durable run records in AgentRuns/; the run's
    |                             event stream lives in telemetry_db
@@ -191,7 +198,7 @@ backend/app/
    |                             one-live-run rule, thread launch, the
    |                             active-handle registry, recovery, and
    |                             pause/resume/cancel/retry/continue
-   |- action_runner.py         - action-graph runner for isolated mutations
+   |- action_execution.py      - one registered action: resolve, gate, commit
    |- workflow.py              - generic capability graph primitives
    |- workflow_dispatch.py     - selects a workflow composition from the run's
    |                             persisted workflow definition id
@@ -211,9 +218,10 @@ backend/app/
    |- artifact_index.py        - artifact selectors and canonical resolution
    |- joins.py                 - deterministic join inference/diagnostics
    |- suggest.py               - deterministic validation rule suggestions
-   |- prompts.py               - the action engine's own bounded prompts, keyed
-   |                             by [agent:<stage>] tags; every capability
-   |                             prompt lives with its registered worker
+   |- prompts.py               - the loop's system prompt and the few shared
+   |                             bounded prompts, keyed by [agent:<stage>]
+   |                             tags; every capability prompt lives with its
+   |                             registered worker
    `- intake_runner.py         - retained single-unit folder-intake protocol
                                  runner (RunRuntime, registered worker, declared
                                  context, proposal-only pipeline unit)
@@ -388,17 +396,20 @@ frontend/src/
 
 ### Engines
 
-One durable run store, three scheduling engines, and one retained protocol
-runner. `store.RUN_ENGINES` is `{workflow, action, agent, intake}` and will be
-`{workflow, agent, intake}` once the action engine retires; a record whose
-engine is absent or outside that set fails closed.
+One durable run store, two scheduling engines, and one retained protocol
+runner. `store.RUN_ENGINES` is `{workflow, agent, intake}`; a record whose
+engine is absent or outside that set fails closed. The action engine has been
+retired — `ActionRunner`, the `action` engine value and the `action` route are
+gone, and isolated mutations are registered actions the steering loop calls
+through its own tools.
 
 ```text
 BaseRunner                  shared run projections (plan/tasks, artifacts,
 |                           approvals, proposal items, model provenance)
 |- IntakeRunner             one staged import batch (retained protocol runner)
-|- ActionRunner             action graph
 |- AgentLoop                the steering loop: model turns over gated tools
+|- ActionExecution          one registered action, driven by the loop; not an
+|                           engine, and the workflow adapters inherit it
 |- AuditWorkflowExecution   audit execution bindings and projections
 |- AnalysisWorkflowExecution analysis execution bindings and projections
 |- DocumentWorkflowExecution document execution bindings and projections
@@ -436,14 +447,20 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   nothing it could carry out. Reading always looks like progress and never
   commits, so a request no outcome can satisfy would otherwise spend the whole
   turn budget on it.
-- `ActionRunner` is still used for isolated mutations and repairable action
-  graphs. `IntakeRunner` is the one retained protocol runner: folder intake is a
+- Registered actions are tools the loop calls one at a time through
+  `ActionExecution` (`agent/action_execution.py`) — the same ledger, target
+  resolution, optimistic precondition, approval interaction, receipt and
+  reconciler the action engine used, without the model-written DAG in front of
+  it. `loop_tools.action_tools()` derives one tool per registered action from
+  its own definition, so adding an action to the catalog offers it to the loop
+  and nothing is written twice. `IntakeRunner` is the one retained protocol
+  runner: folder intake is a
   single-unit protocol over a staged batch whose authoritative state lives under
   `Imports/`, not a capability graph over the workspace. The decision, and the
   document-test migration that deleted `DocTestRunner`, are recorded in
   `docs/agent-protocol-runner-decisions.md`.
 - `WorkflowRunner` is the main capability scheduler and now serves four declared
-  workflows: the RCM audit lifecycle (`audit_workflow_v2`), the exploratory
+  workflows: the RCM audit lifecycle (`audit_workflow_v3`), the exploratory
   data-analysis workflow (`analysis_workflow_v1`, which infers table
   relationships, materializes only evidence-supported joins, proposes rerunnable
   analysis definitions, and executes them locally), the document-analysis
@@ -461,16 +478,32 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   audit-shaped glue: which worker/executor and declared context a unit uses,
   approval items, post-commit bookkeeping, checkpoint handlers, and the audit
   completion projection.
+- The audit graph is 29 capabilities and is documented stage by stage —
+  dependencies, readiness rules, unit expansions, per-stage context, worker and
+  executor bindings, input/output shapes, budgets, and the on-disk sidecars — in
+  [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md). Its structure in
+  one line: `sources.imported` heads the graph and the agent can never perform
+  it; the document branch (`text_ready` → `categorized` → `types_classified` →
+  `evidence_read` → `schemas_stamped`, and `text_ready`+`categorized` →
+  `analysis_chunks_ready` → `analysis_generated`) and the exploratory-analysis
+  branch both run ahead of planning; planning is `context_ready` → `apm_ready` →
+  `cycle_ready` → `rcm_ready`; testing is `cycle_ruleset_proposed` →
+  `cycle_ruleset_approved` → `tests.specified` → `tests.promoted_from_analysis`
+  → `fieldwork.executed` → `results.rolled_up`; and findings, working papers and
+  the report branch off the roll-up into `audit.verified`.
 - `routing.classify_command(...)` is the deterministic pass and it is pure: it
   reads the command dict only, and never loads a workspace, executes an action,
-  or mutates state. A command whose `source` is `loop` is an `agent` route
-  before anything else is read: the coordinator has already decided that one,
-  and every rule below reads the request's words. Otherwise it applies one
-  precedence order — explicit outcomes, a
-  registered goal template, a lifecycle-wide phrase, workflow-owned
-  generation/refresh, a target-specific operation, scope-wide execution, then a
-  weak isolated-operation marker. If it matches nothing, a bounded router worker
-  resolves the command on the worker thread.
+  or mutates state. Four cases, in order, and no model turn in any of them: a
+  command whose `source` is `loop` is an `agent` route before anything else is
+  read (the coordinator has already decided that one, and every rule below reads
+  the request's words); then explicit `requested_outcomes`; then a registered
+  goal template; then a lifecycle-wide phrase. Anything else is a sentence, and
+  a sentence is the steering loop's. The phrase tables that used to sit between
+  the last two — generation/refresh rules, target-operation markers, scope-wide
+  execution, isolated-operation markers, the compound-request splitter — and the
+  bounded router turn that guessed when they could not, decided nothing across
+  45 recorded runs and are gone. The loop decides the same question with the
+  workspace in front of it, and can ask.
 
 ### From command to execution
 
@@ -478,14 +511,15 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `runner.start_command_run`, which enforces one live run per workspace
   (`AgentBusyError`; `AGENT_MAX_CONCURRENT` caps the process), creates the run
   document, calls `routing.resolve_route(...)`, then launches a daemon thread.
-- A request is classified exactly once. `resolve_route` persists the normalized
-  `run["route"]` and the selected `run["engine"]` before the thread starts, and
-  installs the materialized graph for a workflow route. A `clarification` or
-  `unsupported` route selects no engine and finishes the run without mutation. A
-  command the deterministic pass cannot classify launches with
-  `route.status == "pending"`; `routing.resolve_pending_route(...)` then spends
-  one bounded router turn — the only routing path that calls the provider — and
-  it never repeats the deterministic pass.
+- A request is classified exactly once, and `resolve_route` **always returns an
+  engine**. It persists the normalized `run["route"]` and the selected
+  `run["engine"]` before the thread starts, and installs the materialized graph
+  for a workflow route. There is no pending route and no router turn left, so no
+  routing path calls the provider. `clarification` and `unsupported` are legacy
+  route values: nothing produces them any more, and
+  `routing.finish_without_engine(...)` exists so an already-persisted record
+  carrying one still reaches a terminal status with a reply instead of failing
+  closed on an engine it never had.
 - `runner._run_engine` calls `routing.dispatch_engine(...)` and then dispatches
   on the explicit `run["engine"]`. It is the one engine switch in the process: a
   top-level run reaches it on its own thread through `_execute`, and a child run
@@ -548,7 +582,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   projections, budgets, dynamic limits, deadlines, checkpoints, controls,
   inbox draining, approvals, and auditor interactions. `BaseRunner` forwards to
   that surface and owns only the shared durable *projections*: the task/stage
-  plan, artifact entries, approval batches, and proposal items. `ActionRunner`,
+  plan, artifact entries, approval batches, and proposal items. `ActionExecution`,
   `IntakeRunner`, and every workflow execution adapter accept an injected
   `RunRuntime` while preserving their existing default construction. The
   domain-neutral `WorkflowRunner` receives `RunRuntime` and all scheduler
@@ -606,9 +640,10 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   deleted. Runtime import-boundary tests reject planning, RCM, document,
   finding, report, and audit-domain imports.
 - Phase 7 completed with the audit lifecycle declared in exactly one place. The
-  dependency graph lives in `agent/workflows/audit.py`; the twelve capability
+  dependency graph lives in `agent/workflows/audit.py`; the capability
   declarations live in the grouped `agent/capabilities/` package, which is the
-  live registry; and each capability's execution is a registered worker/executor
+  live registry (twelve at the time, 29 today — see the audit-graph note under
+  §6); and each capability's execution is a registered worker/executor
   pair or a deterministic local computation under `agent/workers/` and
   `agent/executors/`, with declared context presets in `agent/context/`. Every
   model-facing input is resolved from a declared preset, so no capability builds
@@ -635,7 +670,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `agent/joins.py`, and a join is applied automatically only on a single strong
   candidate. Requests such as "perform relevant joins and data analysis" and the
   `data_analysis` goal template now route to this workflow; "run this saved
-  analysis" and "pin this result" stay with `ActionRunner`.
+  analysis" and "pin this result" stay registered actions the loop calls.
 - Phase 9 unified document analysis on the same scheduler:
   `documents.text_ready` → `documents.analysis_chunks_ready` →
   `documents.analysis_generated` → `documents.analysis_reviewed`. There is now
@@ -680,11 +715,13 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   the only classifier: the goal templates and phrase tables moved out of
   `action_runner.py` into pure functions, `ActionRunner`'s defensive guard is
   now `routing.workflow_owned_request(...)` (the same classification, so the
-  guard and the persisted route cannot disagree), and the bounded router returns
+  guard and the persisted route cannot disagree), and the bounded router returned
   exactly `workflow | action | clarification | unsupported` with outcomes
   validated against the registered workflows and `action_intent` against the
-  action registry. `store.RUN_ENGINES` is final at
-  `{workflow, action, intake, analysis}`. Eight workflow-owned generators left
+  action registry. (The phrase tables and the router turn were later removed
+  outright — see the routing bullet under §3.) `store.RUN_ENGINES` was narrowed
+  here, again by Phase 12, and again when the action engine retired; it is now
+  `{workflow, agent, intake}`. Eight workflow-owned generators left
   the action catalog — `generate_apm`, `infer_relationships`,
   `run_document_test`, `rollup_rcm_results`, `generate_all_rcm_working_papers`,
   `generate_report`, `verify_audit_completion` — so no
@@ -917,6 +954,32 @@ npm run build
   (the `attribute` and `review` builders always route to manual review, so
   generating them buys nothing). `SCHEMA_VERSION` is 3 and there is no
   migration — a pre-3 workspace keeps its rows and loses its planned tests.
+- The matrix is written against a **cycle**, and its transaction-cycle evidence
+  is contracted by a **ruleset**. `planning.cycle_ready` reads the process flow
+  out of the memorandum alone — no extraction, so it sits in front of the matrix
+  rather than behind the schemas — and its step names are the vocabulary a row's
+  `process` is chosen from. `tests.cycle_ruleset_proposed` is then the only
+  stage that sees the matrix's requirements, the cycle's roles, and the induced
+  field vocabulary at once, which is why the evidence contract is authored
+  there. It is the one planning artifact whose readiness assesses *currency*: a
+  cycle whose `apm_sha1` no longer matches the memorandum is `missing`, because
+  the shape is a reading *of* that memorandum. An auditor's edit keeps the hash
+  it was drafted against, so edits survive until the memorandum itself moves.
+- `tests.cycle_ruleset_approved` is a gate, and the two run modes part there. In
+  `permission` mode it expands no unit: the stage reports from its own readiness
+  and the run carries on without a cycle. In `auto` mode the auditor has
+  delegated the run's approvals, so one unit makes the rules effective. Its edge
+  into `tests.specified` is partial and must stay partial — generation has
+  always been able to proceed without a cycle by writing document-question tests
+  instead, and making an unapproved ruleset withhold every test in the
+  engagement would break permission-mode runs to serve auto-mode ones.
+- Dashboard curation is no longer a workflow stage. Arranging tiles over results
+  the roll-up already produced changes how an engagement is *read*, not what it
+  establishes: nothing downstream ever took it as an input, and it was already
+  excluded from verification's prerequisites, which left it a leaf the
+  full-audit template scheduled and nothing consumed. The dashboard and its
+  tiles are untouched; only the mid-audit obligation is gone, and pinning a tile
+  remains a registered action the steering loop calls.
 - Exploratory data analysis is a declared workflow too. `POST /agent/runs`
   without a command no longer starts a fixed pipeline: it requests
   `analysis.executed` through the `data_analysis` goal template. There is no

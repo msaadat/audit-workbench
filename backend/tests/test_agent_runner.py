@@ -25,7 +25,8 @@ import pytest
 import app.agent as agent_package
 from app import documents, intake, llm, workspaces
 from app.agent import (
-    action_runner,
+    action_execution,
+    agent_loop,
     base,
     intake_runner,
     ledger,
@@ -45,7 +46,7 @@ def _command_run(ws, text="run a bounded action", mode="auto"):
 
 
 def _scheduler(ws, run):
-    return action_runner.ActionRunner(ws, run, runner.RunHandle(ws.id, run["id"]))
+    return action_execution.ActionExecution(ws, run, runner.RunHandle(ws.id, run["id"]))
 
 
 def _intake_batch(ws, mode="auto", relative_path="Audit/guidance.txt"):
@@ -212,7 +213,7 @@ def test_provider_concurrency_is_shared_and_bounded_across_runs(
 # ------------------------------------------------ explicit engine dispatch
 def test_action_runner_has_no_legacy_module_or_class_alias():
     assert importlib.util.find_spec("app.agent.command_runner") is None
-    assert not hasattr(action_runner, "CommandRunner")
+    assert not hasattr(action_execution, "CommandRunner")
     assert not hasattr(agent_package, "CommandRunner")
 
 
@@ -223,7 +224,7 @@ def test_old_workflow_scheduler_module_was_deleted_without_an_adapter():
 def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
     workspace_with_data,
 ):
-    package_dir = Path(action_runner.__file__).parent
+    package_dir = Path(action_execution.__file__).parent
     forbidden_paths = {
         path
         for path in package_dir.iterdir()
@@ -253,7 +254,7 @@ def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
             "build_workflow_runner",
             "workflow",
         ),
-        (store.ACTION_ENGINE, action_runner, "ActionRunner", "action"),
+        (store.AGENT_ENGINE, agent_loop, "AgentLoop", "agent"),
         (store.INTAKE_ENGINE, intake_runner, "IntakeRunner", "intake"),
     ],
 )
@@ -331,13 +332,13 @@ def test_terminal_crash_still_launches_the_next_queued_follow_up(
         "auto",
         {"source": "chat", "text": "run the first action"},
     )
-    run["engine"] = store.ACTION_ENGINE
+    run["engine"] = store.AGENT_ENGINE
     run["status"] = "executing"
     run["pending_commands"] = [queued]
     store.save_run(workspace_with_data, run)
     launched = []
 
-    class CrashingActionRunner:
+    class CrashingLoop:
         def __init__(self, _workspace, _run, _handle):
             pass
 
@@ -356,7 +357,7 @@ def test_terminal_crash_still_launches_the_next_queued_follow_up(
         )
         return {"id": "captured-follow-up"}
 
-    monkeypatch.setattr(action_runner, "ActionRunner", CrashingActionRunner)
+    monkeypatch.setattr(agent_loop, "AgentLoop", CrashingLoop)
     monkeypatch.setattr(runner, "start_command_run", capture_start)
 
     runner._execute(

@@ -989,6 +989,6 @@ def test_unit_pipeline_module_has_no_scheduler_or_audit_domain_dependency():
         Path(__file__).parents[1] / "app" / "agent" / "runtime" / "unit_pipeline.py"
     ).read_text(encoding="utf-8")
     assert "workflow_runner" not in source
-    assert "action_runner" not in source
+    assert "action_execution" not in source
     assert "audit_capabilities" not in source
     assert "audit_workers" not in source

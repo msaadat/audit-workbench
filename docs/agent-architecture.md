@@ -7,11 +7,21 @@ context selection, model prompting, and workspace mutation. The architecture
 has two scheduling engines:
 
 - `WorkflowRunner` executes declared capability dependency graphs.
-- `ActionRunner` executes small model-generated DAGs of registered isolated
-  actions.
+- `AgentLoop` steers one request, running workflow work as child command runs.
+  It is a second scheduler, not a second way to commit.
+
+One protocol runner, `IntakeRunner`, is retained by recorded decision. The
+`ActionRunner` engine has been retired; isolated mutations are registered
+actions the steering loop calls through its own tools.
 
 Domain concepts such as APM generation, RCM generation, table analysis, and
 document analysis are capabilities and workers, not specialized runners.
+
+This document is the *architecture*: the contracts, the boundaries, and the
+shape of each declared graph. For the audit lifecycle stage by stage — what each
+capability waits for, what it is shown, what it asks a model, what it writes
+back, and what it costs — see
+[audit-workflow-graph.md](audit-workflow-graph.md).
 
 ## Clean-Slate Cutover Assumption
 
@@ -34,9 +44,10 @@ package is required before the first release.
 ```text
 Request
   -> Router
-  -> AgentLoop, WorkflowRunner or ActionRunner
-       AgentLoop plans, then runs a child command run of one of the other two,
-       reads the result, and repairs or asks; every effect below is the child's
+  -> AgentLoop or WorkflowRunner
+       AgentLoop plans, then runs a child command run of the other, reads the
+       result, and repairs or asks; every effect below is the child's. A
+       registered action is a tool it calls directly, through ActionExecution.
   -> ContextResolver
   -> Worker
   -> proposal sidecar / approval
@@ -51,9 +62,10 @@ Request
 |---|---|
 | `RunRuntime` | Persistence, events, budgets, checkpoints, pause/cancel, deadlines, approvals, and provider accounting |
 | `WorkflowRunner` | Materialize and schedule declared capability dependency graphs |
-| `ActionRunner` | Execute small model-generated DAGs of registered isolated actions |
+| `ActionExecution` | Execute one registered action: resolve its target, hold the optimistic precondition, raise the approval, commit, receipt, reconcile. Not an engine — the loop drives it one action at a time |
 | `AgentLoop` | Steer one request: plan, run child command runs, read results, repair once, ask, and close — bounded by durable budgets and gated tools |
-| `Capability` | Specify an outcome: dependencies, readiness, units, context, worker, executor, and approval |
+| `Capability` | Specify an outcome: dependencies, readiness, unit expansion, declared context, barrier, and invalidation keys |
+| `CapabilityExecution` | Bind one capability to *how* its units run: a pipeline binder (worker + executor) or a deterministic per-unit computation |
 | `ContextResolver` | Build bounded context strictly from a capability's `ContextSpec` |
 | `Worker` | Build prompts from the supplied context bundle and validate model output |
 | `Executor` | Deterministically commit accepted proposals with CAS and receipts |
@@ -69,25 +81,50 @@ outcome.
 
 ```python
 Capability(
-    id="planning.apm_ready",
-    depends_on=("planning.context_ready",),
-    readiness="planning.apm_usable",
-    expand_units="workflow.single_workspace",
-    context="planning.apm_context",
-    worker="planning.apm",
-    executor="planning.commit_apm",
-    approval="approval.artifact_change",
+    "planning.apm_ready",              # id
+    "apm",                             # stage_id
+    "Audit planning memorandum",       # title
+    "apm",                             # worker_kind (a UI/accounting label)
+    audit_workflow.dependencies("planning.apm_ready"),
+    _apm_ready,                        # readiness(workspace, scope) -> Readiness
+    _single("apm", "Draft audit planning memorandum", "planning:context"),
+    context="planning.apm",            # a registered preset id
+    barrier="all_settled_then_validate",
+    invalidate_on=("planning:context",),
 )
 ```
 
 The capability declares what context is permitted. It does not gather context,
-call the model, or mutate the workspace. All executable behaviors use stable
-registry keys. Runtime callables are resolved from those keys and are not
-serialized as identities. The capability identity is a hash of the normalized
-declaration and the content/implementation hashes of its registered components;
-manual `_v1` suffixes and component version counters are not required.
-The initial target uses one persisted shape selected by explicit engine and does
-not carry a schema-version field before release.
+call the model, or mutate the workspace — and it does **not** name its worker or
+executor. That binding lives separately, in the `CapabilityExecutionRegistry`
+that `build_audit_workflow_runner` composes, so the same capability declaration
+can be bound by more than one graph without restating it:
+
+```python
+CapabilityExecution(
+    capability_id="planning.apm_ready",
+    implementation_hash=canonical_sha256(
+        {"capability": "planning.apm_ready",
+         "worker": "planning.apm", "executor": "planning.apm"}
+    ),
+    pipeline_binder=adapter._bind_apm,   # or deterministic_executor=...
+)
+```
+
+Exactly one binding kind is supplied per capability. A capability whose units
+are of mixed kinds — `fieldwork.executed` — binds each unit at its own boundary
+inside the one binder, returning a `BoundUnitPipeline` for the units that need a
+model and a `DeterministicUnitResult` for the ones that do not.
+
+Identity is hashed at three separate levels, and deliberately not folded
+together: `workflows/*.py:definition_hash()` covers the workflow id and the
+normalized dependency graph; `capability_definition_hash` covers one
+capability's normalized declaration; and worker, executor, context-spec and
+resolver hashes cover the components. Worker and executor identities are
+*authored*, not derived from `inspect.getsource` — an earlier design hashed
+source text, which made reformatting a docstring invalidate persisted proposals
+and force a re-billed model call. Manual `_v1` suffixes and component version
+counters are not required.
 
 ## Context Model
 
@@ -229,66 +266,150 @@ reports.
 
 ### Audit Workflow
 
+`audit_workflow_v3`, 29 capabilities. The authoritative executable lifecycle
+exists only in `workflows/audit.py`. A stage-by-stage reference — readiness
+rules, unit expansions, per-stage context, worker and executor bindings, and
+input/output shapes — is in
+[audit-workflow-graph.md](audit-workflow-graph.md); this section states only the
+structure.
+
 ```text
-planning.context_ready
+sources.imported ────────────────────────────────┐
+                                                 │
+documents.text_ready                             │
+   ├─> documents.categorized                     │
+   │      -> documents.types_classified          │
+   │            -> documents.evidence_read       │
+   │                  -> documents.schemas_stamped
+   └─> documents.analysis_chunks_ready
+          -> documents.analysis_generated ───┐   │
+                                             │   │
+data.relationships_inferred                  │   │
+   -> data.join_utility_ready                │   │
+      -> data.joins_ready                    │   │
+         -> analysis.register_ready          │   │
+            -> analysis.definitions_ready    │   │
+               -> analysis.executed          │   │
+                  -> analysis.summarized     │   │
+                                             │   │
+planning.context_ready  <────────────────────┴───┘
   -> planning.apm_ready
-     -> planning.rcm_ready
-        -> planning.planned_tests_ready
-           -> fieldwork.definitions_ready
-              -> fieldwork.executed
-                 -> results.rolled_up
+     -> planning.cycle_ready        (+ sources.imported,
+     |                                 documents.types_classified)
+     -> planning.rcm_ready          (+ planning.cycle_ready,
+           |                            documents.categorized,
+           |                            documents.types_classified)
+           -> tests.cycle_ruleset_proposed  (+ planning.cycle_ready,
+              |                                documents.schemas_stamped)
+              -> tests.cycle_ruleset_approved
+                 -> tests.specified          (+ planning.rcm_ready)
+                    -> tests.promoted_from_analysis
+                       -> fieldwork.executed
+                          -> results.rolled_up
 
-results.rolled_up -> findings.drafted
-results.rolled_up -> working_papers.generated
-results.rolled_up -> dashboard.curated
+results.rolled_up  -> findings.drafted
+results.rolled_up  -> working_papers.generated
 planning.apm_ready -> report.working_draft
-results.rolled_up -> report.working_draft
-findings.drafted -> report.working_draft
+results.rolled_up  -> report.working_draft
+findings.drafted   -> report.working_draft
 working_papers.generated -> audit.verified
-dashboard.curated -> audit.verified
-report.working_draft -> audit.verified
+report.working_draft     -> audit.verified
 ```
 
-This is the baseline graph migrated from the current registry in Phase 7; its
-parallel branches are intentional. Phase 9 added the scoped document-analysis
-dependency, which changed the graph definition hash:
+The parallel branches after `results.rolled_up` are intentional; the graph is a
+DAG, not a chain.
 
-```text
-documents.text_ready
-  -> documents.analysis_chunks_ready
-     -> documents.analysis_generated
-        -> planning.context_ready
-```
+**`sources.imported` is the head, and the one capability the agent can never
+perform.** It expands no units and resolves no worker. It earns an edge rather
+than living as a condition inside planning so that an engagement holding nothing
+reports planning as *waiting* rather than offering to write a memorandum about
+nothing.
 
-Document analysis is not a global prerequisite for every audit. Only
-`planning.context_ready` declares the edge, and with no planning-relevant
-document in scope every document capability's readiness is satisfied and no unit
-expands, so an audit that carries no documents runs the graph above unchanged.
-The three document capabilities are declared once, in `workflows/documents.py`
-and `capabilities/documents.py`; the audit registry composes that same
-declaration rather than restating it. The authoritative executable audit
-lifecycle exists only in `workflows/audit.py`.
+**Document analysis is not a global prerequisite.** Only
+`planning.context_ready` declares the generation edge, and with no
+planning-relevant document in scope every document capability's readiness is
+satisfied and no unit expands, so an audit that carries no documents runs the
+rest of the graph unchanged. The document capabilities are declared once, in
+`workflows/documents.py` and `capabilities/documents.py`; the audit registry
+composes seven of the eight through `CapabilityGroupView` — generation only,
+never auditor review — rather than restating them.
 
-A full-audit request also includes the exploratory-analysis chain below. Its
-stages are materialized before APM preparation as an audit scheduling policy,
-but `planning.apm_ready` does not depend on that chain: a standalone APM request
-still needs only `planning.context_ready`.
+**The cycle sits in front of the matrix, not behind the schemas.**
+`planning.cycle_ready` reads the process flow out of the memorandum alone, so it
+costs no extraction, and its step names become the vocabulary a matrix row's
+`process` is chosen from. There is deliberately *no* schema edge into
+`planning.rcm_ready`: a matrix row says a requirement needs linked source
+records and stops, and which fields must then agree is decided downstream by
+`tests.cycle_ruleset_proposed`, where the induced schemas are in hand. That
+keeps a re-derived schema from invalidating the whole matrix.
+
+**`tests.cycle_ruleset_approved` is a gate, not work.** In `permission` mode it
+expands no unit, settles from its own readiness, and the run carries on without
+a cycle; in `auto` mode the auditor has delegated the run's approvals and one
+unit makes the proposed rules effective. Its edge into `tests.specified` is
+partial and must stay partial: generation has always been able to proceed
+without a cycle — it writes document-question tests instead — and making an
+unapproved ruleset withhold every test in the engagement would break
+permission-mode runs to serve auto-mode ones.
+
+A full-audit request also schedules the exploratory-analysis chain below, ahead
+of APM preparation, so the EDA memo exists by the time planning reads it. It is
+still *not* a dependency of either planning capability: a standalone APM request
+needs only `planning.context_ready`, and `tests.specified` deliberately does not
+depend on `analysis.executed` — an edge there would drag the whole branch into
+every request that reaches fieldwork.
+
+**Dashboard curation was a stage here once, and is not one now.** Arranging
+tiles over results the roll-up already produced changes how an engagement is
+*read*, not what it establishes: no audit conclusion rests on it, and nothing
+downstream ever took it as an input. The dashboard and its tiles are untouched;
+only the obligation to arrange them mid-audit is gone.
 
 ### Exploratory Analysis Workflow
 
 ```text
 data.relationships_inferred
 -> data.join_utility_ready
--> data.joins_ready
--> analysis.definitions_ready
--> analysis.executed
+   -> data.joins_ready
+
+data.relationships_inferred
+-> analysis.register_ready
+   -> analysis.definitions_ready
+      -> analysis.inputs_ready
+         -> analysis.executed
+            -> analysis.summarized
 ```
+
+Two branches, not one chain. The durable-join branch remains available for
+explicit requests to create joins; full EDA does not depend on it. The terminal
+outcome of `data_analysis` is the **memo**, not the results: a request to
+analyse the data is answered by what the analysis *found*, and a screen of
+executed procedures is not that answer.
 
 This workflow handles requests such as "review these two tables, infer relevant
 joins, and perform useful analysis." It uses the same scheduler as the audit
 workflow but a different requested outcome set. The authoritative graph lives in
 `workflows/analysis.py`; the grouped declarations live in
 `capabilities/analysis.py`.
+
+The audit graph composes this group through `AuditAnalysisGroup`, with two
+deliberate differences: it omits `analysis.inputs_ready` (EDA alignment recipes
+are opt-in to their own graph; audit retains its durable-join inputs), and it
+substitutes its own edge so `analysis.register_ready` depends on
+`data.joins_ready` rather than on `data.relationships_inferred`.
+
+`analysis.register_ready` is the only capability in this graph whose model turn
+is optional to its own outcome. Its floor is the deterministic sweep, so a run
+whose reading turn is skipped or fails still holds a complete, committable
+register — which is what makes one turn over the whole engagement safe to depend
+on rather than a single point of failure.
+
+Three analytics tests are excluded from autonomous proposal
+(`EXCLUDED_ANALYTICS_TEST_IDS`: `period_compare`, `stratify`, `sampling`). All
+three are `descriptive` in the registry's own classification: a stratification, a
+period trend and a drawn sample have no exception concept at all, so proposing
+one spends a definition turn and an execution to produce a chart nothing
+downstream can promote, cite, or conclude from.
 
 **Scope.** Every capability in the group is scoped the same way, in this order:
 explicitly named tables, the base tables behind a selected join or saved
@@ -307,8 +428,11 @@ function reports existence and structural usability only — never currency:
 | `data.relationships_inferred` | Run-durable evidence on `run["analysis"]["relationships"]`; unit result refs are `relationship:<left>:<right>:<left_on>:<right_on>` | Fewer than two scoped tables, or every scoped pair is already connected by a join |
 | `data.join_utility_ready` | Run-durable decisions on `run["analysis"]["join_utility"]`; proposal-only, no workspace mutation | Same predicate — the gate is intermediate work, so it stays missing while any scoped pair is unjoined |
 | `data.joins_ready` | `workspace.joins` via `Workspace.add_join`, agent-provenanced | Same predicate — a materialized join is what "resolved" means for a pair |
+| `analysis.register_ready` | `workspace.analyses`, committed in one transaction across every frame, plus per-frame settled markers | Every scoped frame is either analysed or deliberately settled without an analysis |
 | `analysis.definitions_ready` | `workspace.analyses` (kinds `analytics` and `python`), keyed by a semantic id derived from the canonical spec | Every scoped frame has at least one workflow-authored analysis |
+| `analysis.inputs_ready` | The accepted definitions' saved alignment recipes, validated and loaded (not composed into the audit graph) | Every scoped definition's alignment validates |
 | `analysis.executed` | A bounded `last_result` record on the analysis, following the `data_tests` `last_run` precedent | Every scoped workflow-authored analysis carries a result |
+| `analysis.summarized` | `workspace.analysis_summary` — the EDA memo | A current memo exists over the executed results |
 
 **What the gate decides, and what it therefore schedules.** Each retained
 decision carries a stated hypothesis, the columns naming it, and `requires` —
@@ -348,22 +472,64 @@ the data is seen. A spec that errors records its error and settles as
 `awaiting_confirmation` rather than failing the run.
 
 Isolated "run this saved analysis" and "pin this result" operations remain
-`ActionRunner` requests.
+registered actions, which the steering loop calls as tools.
 
 ### Document Analysis Workflow
 
 ```text
 documents.text_ready
+-> documents.categorized
+   -> documents.types_classified
+      -> documents.evidence_read
+         -> documents.schemas_stamped
+
+documents.text_ready + documents.categorized
 -> documents.analysis_chunks_ready
--> documents.analysis_generated
--> documents.analysis_reviewed
+   -> documents.analysis_generated
+      -> documents.analysis_reviewed
 ```
+
+Two branches. The **reading** branch establishes what each document is and what
+it says in field terms; the **analysis** branch summarizes prose. Both start
+from extracted text, and both need the category, which is why the category edge
+into chunking is not optional: this pass excludes transaction evidence *by
+category*, so a document whose category has not been read yet would be chunked
+as prose and then read again as evidence — one document analysed twice under two
+vocabularies.
 
 Document map and reduce operations are separate unit types with separate
 workers. The runner owns chunk fan-out, concurrency, progress, resumption, and
 reduce ordering. A generated analysis and an auditor-reviewed analysis are
 distinct outcomes. The authoritative graph lives in `workflows/documents.py`; the
 grouped declarations live in `capabilities/documents.py`.
+
+`documents.categorized` asks what a document is *to this engagement* — planning
+material or transaction evidence — from its opening page. It precedes the type
+because the type is only asked of evidence, and because a category guessed from
+a filename put policy material under voucher fields and left evidence out of
+scope entirely.
+
+`documents.evidence_read` is the one capability whose sequential barrier *is*
+the mechanism rather than a concession. A serialized unit sees its predecessor's
+work by rebinding against committed workspace state; the parallel path binds
+every unit before running any of them, so a unit's input would be resolved at
+stage start and could never see what a sibling settled. Per-document calls can
+only agree about a vocabulary if they are not independent — which is why "make
+the read parallel and lock the master" is not an option: the reads would not be
+*wrong* about the master, they would never have been shown it. It is also the
+one worker with two repair attempts rather than one, because what a lost read
+costs is not one document but its type's whole vocabulary.
+
+`documents.schemas_stamped` takes no model turn at all: it reads the finished
+master, calls `save_schema` once, and back-stamps the type's readings through
+`commit_local`. It is a dependent capability rather than the last unit of the
+read because units within a stage execute in sorted id order, so a capability
+holding both the readings and the freeze would bind the freeze first and read
+back nothing.
+
+The audit graph composes seven of these eight capabilities through
+`CapabilityGroupView` — everything except `documents.analysis_reviewed`, because
+an audit run must never wait on, or imply, an auditor's review.
 
 **Scope.** Explicitly named documents win; a request that names none falls back
 to a bounded set of planning-relevant documents under the same declared category
@@ -375,6 +541,10 @@ scope checkpoint rather than silently analysing an arbitrary subset.
 | Outcome | Persisted artifact | Readiness satisfied when |
 |---|---|---|
 | `documents.text_ready` | The existing extraction cache, content-addressed by source hash | Every scoped document has a cached extraction for its current source |
+| `documents.categorized` | The `category` field mirrored onto the shared `documents` collection | Every scoped document carries a category |
+| `documents.types_classified` | The document-type assignment, from the closed global catalog | Every scoped evidence document carries a type |
+| `documents.evidence_read` | The type's accumulating field master | Every scoped evidence document has been read against its type |
+| `documents.schemas_stamped` | One frozen schema per document type, plus back-stamped readings | Every read type carries a current schema |
 | `documents.analysis_chunks_ready` | Run-local: one `proposals/<unit_id>.json` sidecar per chunk | Every scoped, analyzable document already has a generated analysis |
 | `documents.analysis_generated` | The existing `Documents/.analysis` sidecars, plus run/unit/content provenance | Every scoped document has a generated analysis |
 | `documents.analysis_reviewed` | The existing review sidecar | Every generated analysis carries the auditor's own `reviewed` decision |
@@ -446,9 +616,9 @@ content-free manifest before the call, and runs classification as a proposal-onl
 `UnitPipeline` unit so a restart reuses the proposal instead of re-billing. Its
 explicit engine value `intake` is part of the target schema.
 
-## ActionRunner
+## Registered actions
 
-`ActionRunner` handles bounded imperative requests that do not represent
+The action catalog handles bounded imperative operations that do not represent
 durable workflow outcomes. Examples include:
 
 - Attach a document and rerun a test.
@@ -457,56 +627,76 @@ durable workflow outcomes. Examples include:
 - Remove a validation rule.
 - Reconcile a specific report edit.
 
-A bounded planner may generate an action DAG from registered action types. The
-action ledger validates dependencies, targets, preconditions, idempotency, and
-receipts. It contains no audit lifecycle policy.
+Each registered action is a tool the steering loop calls, named and shaped by
+its own definition: the tool's arguments *are* the action's declared input
+schema, and its risk, approval rule, reconciler and receipt still apply.
+`ActionExecution` runs one at a time on the loop's own ledger, which validates
+dependencies, targets, preconditions, idempotency and receipts. It contains no
+audit lifecycle policy.
+
+There is no longer a planner in front of it. Step 8 of
+[agent-loop-redesign.md](agent-loop-redesign.md) deleted the model-written
+action DAG and the adaptive planning wave that grew it from results: deciding
+what to do next, having read what the last thing did, is the steering loop's
+job, and doing it one action at a time is what makes each decision reviewable.
 
 ## Routing
 
 Routing lives entirely in `agent/routing.py` and classifies a request exactly
 once. `runner.start_command_run` runs the deterministic pass before the worker
 thread launches and persists one normalized route plus the selected engine on
-the run. Only a command the deterministic pass cannot classify launches with
-`route.status == "pending"`, and only that case spends a bounded router turn.
-Neither scheduler classifies, and neither calls the other.
+the run. **`resolve_route` always returns an engine, and no routing path calls
+the provider.** Neither scheduler classifies, and neither calls the other.
 
 | Request | Route |
 |---|---|
 | Prepare the RCM | `WorkflowRunner` requesting `planning.rcm_ready` |
-| Analyze these two tables | `WorkflowRunner` requesting `analysis.executed` |
+| Analyze these two tables | `WorkflowRunner` requesting `analysis.summarized` |
 | Analyze these documents | `WorkflowRunner` requesting `documents.analysis_generated` |
 | Run this document test | `WorkflowRunner` requesting `doc_tests.executed` |
 | Complete the audit | `WorkflowRunner` requesting `audit.verified` |
-| Attach this file to that test | `ActionRunner` |
-| Pin this analysis | `ActionRunner` |
+| Attach this file to that test | `AgentLoop`, calling the registered action |
+| Pin this analysis | `AgentLoop`, calling the registered action |
 | Anything the coordinator hands over with `take_action` | `AgentLoop` |
+| Anything else typed as a sentence | `AgentLoop` |
 
 A command whose `source` is `loop` routes to the agent engine before any phrase
 is read. That is not a classification of the request's words — it is reading
 back a decision the coordinator already made, which is why it sits first and
 why nothing else can produce that route.
 
-The routing rule is:
+`classify_command` is pure — it reads the command dict only, and never loads a
+workspace, executes an action, or mutates state — and it decides four cases in
+this order:
 
-> Requests for durable outcomes use `WorkflowRunner`. Requests for specific
-> operations on artifacts use `ActionRunner`.
+1. `source == "loop"` routes to `AgentLoop`.
+2. Explicit `requested_outcomes` routes to `WorkflowRunner`.
+3. A registered goal template routes to `WorkflowRunner`.
+4. A lifecycle-wide completion phrase routes to `WorkflowRunner` requesting the
+   full-audit outcome set.
 
-Apply that rule using this precedence:
+**Anything else is a sentence, and a sentence is the steering loop's.** The
+phrase tables that used to sit between 3 and 4 — generation/refresh rules,
+target-operation markers, scope-wide execution rules, isolated-operation
+markers, the compound-request splitter — and the bounded router turn that
+guessed when they could not, are gone. Across 45 recorded runs none of them
+decided anything a person had typed, and the decision they were making badly is
+now made by something that reads the workspace first and can ask.
 
-1. An explicit registered outcome, goal template, or lifecycle-wide completion
-   request routes to `WorkflowRunner`.
-2. Improve, generate again, regenerate, or refresh a workflow-owned deliverable
-   routes to `WorkflowRunner` with the relevant outcome and `force` mode.
-3. Explicit CRUD, attachment, pinning, manual edits, or execution of one
-   identified existing test routes to `ActionRunner`.
-4. Scope-wide execution such as declared RCM fieldwork routes to
-   `WorkflowRunner`; target-specific reruns remain actions.
-5. A compound request that genuinely requires both engines is clarified or
-   split into separately persisted queued runs. Neither scheduler calls the
-   other.
+That is what replaced the older written rule ("requests for durable outcomes use
+`WorkflowRunner`; requests for specific operations on artifacts use
+`ActionRunner`") as an attempt to classify wording. The distinction still holds
+as a description of what each *kind of work* is — "regenerate the APM" is a
+workflow outcome and "replace this APM paragraph" is a registered action — but
+it is the loop, not a phrase table, that decides which of the two a sentence is
+asking for, and it now does both itself: outcomes as child runs, actions as
+tools.
 
-An artifact name alone does not decide the engine: "regenerate the APM" is a
-workflow request, while "replace this APM paragraph" is an action. The action
+`generation_mode` remains deterministic and is read from the text on every
+route: `improve `, `regenerate`, `refresh `, or "generate … again" yields
+`force`, otherwise `reuse_existing`.
+
+The action
 catalog may contain bounded model-backed operations, but it cannot generate or
 refresh an artifact family owned by a registered workflow outcome. Applying that
 rule removed eight generators from the catalog — `generate_apm`,
@@ -524,10 +714,13 @@ catalog: an isolated artifact operation is described by its own text, not by a
 lifecycle goal. A template may declare which run-context keys it accepts, and
 run context is scope only — it can never widen or override a route.
 
-Compound detection splits a request only on strong separators (`; `, `. `,
-` then `, ` and then `, ` also `, newline). A bare "and" does not split, so
-"join the tables and analyse them" stays one scope-wide analysis request, while
-"Regenerate the APM. Then pin the revenue tile." resolves to `clarification`.
+Compound detection is gone with the phrase tables. A request that genuinely
+needs both engines is no longer split or clarified by the classifier: it reaches
+the steering loop, which reads the workspace and decides what to run — and can
+ask the auditor rather than guessing. `clarification` and `unsupported` survive
+only as legacy route values on already-persisted records;
+`routing.finish_without_engine(...)` brings those to a terminal status with a
+reply.
 
 ## Persistence And Recovery
 
@@ -565,7 +758,7 @@ capability unless its size independently justifies it.
   context.
 - Executors cannot call the model.
 - Capabilities cannot perform work directly.
-- A runner outside `WorkflowRunner`/`ActionRunner` exists only with a recorded
+- A runner outside `WorkflowRunner`/`AgentLoop` exists only with a recorded
   decision that names the scheduling feature justifying it, and it still uses
   `RunRuntime`, `ModelGateway`, and declared context/worker contracts.
 - `ContextResolver` cannot exceed declared source, privacy, representation, or
@@ -582,22 +775,21 @@ capability unless its size independently justifies it.
 
 ## Migration Direction
 
-There are three scheduling engines — `WorkflowRunner`, `ActionRunner` and
-`AgentLoop` — plus one protocol runner, `IntakeRunner`, retained by the
+There are two scheduling engines — `WorkflowRunner` and `AgentLoop` — plus one
+protocol runner, `IntakeRunner`, retained by the
 recorded decision in
 [agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
 `DocumentAnalysisRunner` and `DocTestRunner` migrated into capabilities,
 workers, and executors and were deleted; Phase 12 deleted the fixed-stage v1
 analysis runner outright, and an exploratory-analysis request is now the
-declared `analysis_workflow_v1` graph. `store.RUN_ENGINES` is
-`{workflow, action, agent, intake}` and becomes `{workflow, agent, intake}`
-when the action engine retires
-([agent-loop-redesign.md](agent-loop-redesign.md) step 8); a record whose engine
-is absent or outside that set fails closed. Duplicate execution logic is not
+declared `analysis_workflow_v1` graph. `ActionRunner` has since retired too
+([agent-loop-redesign.md](agent-loop-redesign.md) step 8), so
+`store.RUN_ENGINES` is `{workflow, agent, intake}`; a record whose engine is
+absent or outside that set fails closed. Duplicate execution logic is not
 retained.
 
-`AgentLoop` is a third *scheduler*, not a third way to commit. It is composed
-with `RunRuntime` and `ModelGateway` like the other two, and it reaches the
+`AgentLoop` is a *scheduler*, not a second way to commit. It is composed
+with `RunRuntime` and `ModelGateway` like the other, and it reaches the
 workspace only by starting child command runs of them — same materialization,
 same unit pipeline, same approvals, same receipts. What it may decide is gated
 by the tools in `agent/loop_tools.py`; what it may spend is four durable budgets
@@ -625,20 +817,22 @@ planning. Two remain, and they are the two target engines:
 | Generation | Implementation | Plan source | Work unit | Scheduler |
 |---|---|---|---|---|
 | ~~v1~~ | ~~`_Runner` in `agent/runner.py`~~ | Hard-coded stages | Task | **Deleted in Phase 12** |
-| v2 | `ActionRunner` | Model-generated action DAG | Action | Priority loop over the action ledger |
+| ~~v2~~ | ~~`ActionRunner`~~ | ~~Model-generated action DAG~~ | Action | **Retired in step 8**; the catalog stayed, the DAG and its scheduler went |
 | v3 | runtime `WorkflowRunner` plus registered executions | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
+| v4 | `AgentLoop` plus `loop_tools` | The model, one decision at a time, against read state | Child run or one registered action | Budgeted tool loop over gated capabilities |
 
 The audit, analysis, document-analysis, and document-test paths are all v3 on
 one scheduler. The runtime `WorkflowRunner` is domain-neutral, receives its
 runtime and registries through composition, and does not inherit from
-`ActionRunner`. The `*_execution.py` adapters supply only domain-shaped glue:
+`ActionExecution`. The `*_execution.py` adapters supply only domain-shaped glue:
 which worker/executor and declared context a unit uses, its approval items,
 post-commit bookkeeping, and the workflow's own completion projection.
 
-`ActionRunner` remains useful for isolated mutations, including attaching a
-document, pinning a dashboard tile, renaming an artifact, or composing a small
-bounded series of registered actions. It should not plan or enforce a complete
-audit lifecycle.
+The action *catalog* remains useful for isolated mutations, including attaching
+a document, pinning a dashboard tile, or renaming an artifact. Its scheduler
+does not: step 8 replaced the model-generated series with the steering loop
+calling one registered action at a time, having read what the last one did.
+Neither planned nor enforced a complete audit lifecycle, and neither should.
 
 The small intake, document-test, and document-analysis runners had their own
 durable run behavior. They were not simply copies of the general graph runners.
@@ -658,7 +852,7 @@ both inbox-draining modes, approval batches, free-text input waits, and
 structured-interaction transitions. `runtime/interactions.py` persists auditor
 responses before waking a live worker, restores responses submitted while no
 worker is attached, and extends the monotonic deadline by time blocked on the
-auditor. `ActionRunner` and the temporary audit execution adapter accept an
+auditor. `ActionExecution` and the temporary audit execution adapter accept an
 optional `RunRuntime` and otherwise use the default runtime through the
 temporary `BaseRunner` facade. `WorkflowRunner` receives the runtime directly
 along with capability execution, refresh, dependency, checkpoint, and finish
@@ -800,12 +994,11 @@ The v2 full-audit orchestration has been deleted from
 
 This machinery existed to force a model-generated action graph through a safe
 audit lifecycle. V3 replaced that responsibility with deterministic capability
-dependencies. Deterministic routing catches known full-audit phrases and goal
-templates before the action interpreter runs, and `ActionRunner` retains a
-defensive fail-closed guard for malformed records and bounded-router misses.
-Since Phase 11 that guard is `routing.workflow_owned_request(...)` — the same
-classification the router uses — so the guard and the persisted route cannot
-disagree.
+dependencies, and step 8 removed the action graph itself: there is no
+interpreter to guard against any more, and `workflow_owned_request(...)` went
+with it. What stops the loop reaching workflow-owned work through an action is
+the same thing that always did — the catalog contains no generator for a
+family a registered outcome owns.
 
 The audit lifecycle was encoded in two places at the Phase 1 boundary:
 `ledger.AUDIT_LIFECYCLE_STAGES` and the audit capability registry. Both are
@@ -836,15 +1029,15 @@ raw document text.
   should not be an `APMRunner` or `RCMRunner`.
 - APM, RCM, planned tests, exploratory analysis, document analysis, findings,
   and reporting are capabilities executed by the generic `WorkflowRunner`.
-- `ActionRunner` is retained for imperative artifact operations and bounded
-  model-generated action DAGs.
-- `WorkflowRunner` and `ActionRunner` share `RunRuntime` services through
-  composition; neither inherits from the other.
+- The action catalog is retained for imperative artifact operations, called one
+  at a time by the steering loop through `ActionExecution`.
+- `WorkflowRunner`, `AgentLoop` and `ActionExecution` share `RunRuntime`
+  services through composition; no scheduler inherits from another.
 - Generic data analysis is an outcome workflow, not merely an isolated action.
   A request to inspect tables, infer joins, and perform useful analyses requests
   `analysis.executed`.
 - RCM-linked audit testing requests audit capabilities such as
-  `fieldwork.definitions_ready` and `fieldwork.executed` rather than the generic
+  `tests.specified` and `fieldwork.executed` rather than the generic
   analysis workflow alone.
 - Document analysis is a capability workflow. Standalone document-analysis UI
   operations and audit planning should request the same underlying outcomes.
@@ -942,7 +1135,7 @@ The migration is complete when:
 - The audit lifecycle has one declaration.
 - `WorkflowRunner` contains no APM-, RCM-, document-, analysis-, or report-
   specific handlers.
-- `WorkflowRunner` does not inherit from `ActionRunner`.
+- `WorkflowRunner` does not inherit from `ActionExecution`.
 - The action ledger has no audit lifecycle normalization.
 - No legacy run reader, conversion path, compatibility classifier, or
   compatibility package remains.

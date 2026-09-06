@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 
 from app import data_tests, doc_tests, document_analysis, document_classification, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
-from app.agent import action_runner, context_bundles, routing, runner, store, workflow
+from app.agent import action_execution, routing, runner, store, workflow
 from app.agent import capabilities as audit_capabilities
 from app.agent.audit_execution import (
     AuditWorkflowExecution,
@@ -257,166 +257,91 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
     assert resolution["requested_outcomes"] == outcomes
 
 
-def test_known_isolated_action_is_persisted_as_action_before_launch(workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data,
-        "auto",
-        {"source": "chat", "text": "Attach the signed policy document to DT-1"},
-    )
+def test_a_sentence_is_persisted_as_an_agent_route_before_launch(workspace_with_data):
+    """Step 7: an isolated operation and an unclassifiable request are one case.
 
-    assert resolve_route(workspace_with_data, run) == store.ACTION_ENGINE
-    persisted = store.load_run(workspace_with_data, run["id"])
-    assert persisted["engine"] == store.ACTION_ENGINE
-    assert persisted["route"]["status"] == "resolved"
-    assert persisted["route"]["route"] == "action"
-    assert persisted["route"]["action_intent"] == "isolated_mutation"
+    "Attach the signed policy to DT-1" used to be read by a marker table and
+    handed to the action interpreter; "please handle the outstanding work"
+    used to launch with a pending route and spend a router turn. Both are
+    sentences, and a sentence goes to the loop, which reads the workspace
+    before deciding and can ask.
+    """
 
+    for text in (
+        "Attach the signed policy document to DT-1",
+        "Please handle the outstanding work appropriately",
+    ):
+        run = store.new_command_run(
+            workspace_with_data, "auto", {"source": "chat", "text": text}
+        )
 
-def test_unclassifiable_command_launches_with_a_pending_route(workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data,
-        "auto",
-        {"source": "chat", "text": "Please handle the outstanding work appropriately"},
-    )
-
-    assert resolve_route(workspace_with_data, run) is None
-    persisted = store.load_run(workspace_with_data, run["id"])
-    assert persisted["engine"] is None
-    assert persisted["route"]["status"] == "pending"
-    assert persisted["route"]["route"] is None
+        assert resolve_route(workspace_with_data, run) == store.AGENT_ENGINE
+        persisted = store.load_run(workspace_with_data, run["id"])
+        assert persisted["engine"] == store.AGENT_ENGINE
+        assert persisted["route"]["status"] == "resolved"
+        assert persisted["route"]["route"] == "agent"
+        assert persisted["route"]["action_intent"] is None
+        assert persisted["usage"]["llm_turns"] == 0
 
 
 @pytest.mark.parametrize(
-    ("text", "outcomes"),
+    "text",
     [
-        ("Do a full audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
-        ("Complete the audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
-        ("Perform the entire audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
-        ("Run an end-to-end audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
-        ("Plan the audit", [
-            "planning.apm_ready",
-            "planning.rcm_ready",
-            "tests.specified",
-        ]),
-        ("Draft the audit planning memorandum", ["planning.apm_ready"]),
-        ("Generate the risk and control matrix", ["planning.rcm_ready"]),
-        ("Create the planned procedures", ["tests.specified"]),
-        ("Translate planned work into executable tests", ["tests.specified"]),
-        ("Execute the RCM tests", ["fieldwork.executed", "results.rolled_up"]),
-        ("Draft eligible findings", ["findings.drafted"]),
-        ("Generate the audit report", ["report.working_draft"]),
+        "Do a full audit",
+        "Complete the audit",
+        "Perform the entire audit",
+        "Run an end-to-end audit",
     ],
 )
-def test_common_broad_audit_phrases_fail_closed_to_workflow(text, outcomes):
+def test_lifecycle_phrases_still_fail_closed_to_the_whole_workflow(text):
+    """The one phrase table left: "do the whole audit" can mean nothing else."""
+
     resolution = _classify_command({"source": "chat", "text": text})
 
-    assert resolution is not None
     assert resolution["route"] == "workflow"
-    assert resolution["requested_outcomes"] == outcomes
+    assert resolution["decided_by"] == "lifecycle_completion"
+    assert resolution["requested_outcomes"] == list(
+        audit_capabilities.FULL_AUDIT_OUTCOMES
+    )
     assert resolution["action_intent"] is None
 
 
-def test_workflow_routes_use_normalized_generation_modes():
-    ordinary = _classify_command({"source": "chat", "text": "Draft the APM"})
-    forced = _classify_command(
-        {"source": "chat", "text": "Regenerate the APM"}
-    )
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Plan the audit",
+        "Draft the audit planning memorandum",
+        "Generate the risk and control matrix",
+        "Create the planned procedures",
+        "Translate planned work into executable tests",
+        "Execute the RCM tests",
+        "Draft eligible findings",
+        "Generate the audit report",
+    ],
+)
+def test_narrower_audit_phrases_are_the_loops_to_decide(text):
+    """Each of these had a table entry guessing its outcome set from wording.
 
-    assert ordinary is not None
+    The chat's own registered phrases still short-circuit the ones a person
+    actually types as commands (``agent/commands.py``); anything else reaches
+    the loop, which can see whether the RCM exists before deciding to draft
+    tests for it.
+    """
+
+    resolution = _classify_command({"source": "chat", "text": text})
+
+    assert resolution["route"] == "agent"
+    assert resolution["requested_outcomes"] == []
+
+
+def test_routes_use_normalized_generation_modes():
+    ordinary = _classify_command({"source": "chat", "text": "Draft the APM"})
+    forced = _classify_command({"source": "chat", "text": "Regenerate the APM"})
+
     assert ordinary["generation_mode"] == "reuse_existing"
-    assert forced is not None
     assert forced["generation_mode"] == "force"
     assert "refresh_policy" not in ordinary
     assert "refresh_policy" not in forced
-
-
-def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
-    monkeypatch, workspace_with_data
-):
-    def interpret(user):
-        assert "prepared_planning" not in json.loads(user)
-        return {
-            "objective": "Check the report quality",
-            "constraints": [],
-            "completion_criteria": ["Quality results are recorded"],
-            "needs_planning_wave": False,
-            "actions": [
-                {"id": "quality", "type": "run_report_quality", "args": {}}
-            ],
-        }
-
-    fake = FakeAgentLLM(
-        {
-            "agent:workflow_router": {
-                "route": "action",
-                "requested_outcomes": [],
-                "objective": "Check the report quality",
-                "target_refs": [],
-                "generation_mode": "reuse_existing",
-                "action_intent": "run_report_quality",
-                "constraints": [],
-                "clarification": None,
-            },
-            "agent:command_interpreter": interpret,
-        }
-    )
-    monkeypatch.setattr(llm, "chat", fake)
-    monkeypatch.setattr(
-        llm,
-        "agent_status",
-        lambda: {"configured": True, "backend": "fake", "model": "fake"},
-    )
-
-    started = runner.start_command_run(
-        workspace_with_data,
-        "auto",
-        {"source": "chat", "text": "Please handle the outstanding work appropriately"},
-    )
-    completed = wait_run(workspace_with_data, started["id"])
-
-    assert completed["status"] in {"completed", "completed_with_issues"}
-    assert completed["schema_version"] == 2
-    assert completed["engine"] == store.ACTION_ENGINE
-    assert completed["route"]["route"] == "action"
-    assert completed["route"]["decided_by"] == "router_worker"
-    assert [call["tag"] for call in fake.calls] == [
-        "agent:workflow_router",
-        "agent:command_interpreter",
-    ]
-    assert [action["type"] for action in completed["actions"]] == [
-        "run_report_quality"
-    ]
-
-
-def test_action_runner_rejects_a_workflow_owned_record(monkeypatch, workspace_with_data):
-    """The scheduler's defensive boundary, not a second classification.
-
-    Routing never persists this shape. If a malformed record still reaches the
-    action scheduler carrying a workflow-owned request, it fails before the
-    action interpreter is invoked and without spending a model turn.
-    """
-    fake = FakeAgentLLM({})
-    monkeypatch.setattr(llm, "chat", fake)
-
-    run = store.new_command_run(
-        workspace_with_data,
-        "auto",
-        {"source": "chat", "text": "Perform the entire audit"},
-    )
-    run["engine"] = store.ACTION_ENGINE
-    run["route"] = routing.normalize_route(
-        "action", decided_by="malformed_record_fixture"
-    )
-    store.save_run(workspace_with_data, run)
-
-    handle = runner.RunHandle(workspace_with_data.id, run["id"])
-    action_runner.ActionRunner(workspace_with_data, run, handle).execute()
-
-    completed = store.load_run(workspace_with_data, run["id"])
-    assert completed["status"] == "failed"
-    assert "must use workflow routing" in completed["error"]
-    assert completed["actions"] == []
-    assert fake.calls == []
 
 
 def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
@@ -425,8 +350,9 @@ def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
         ws,
         "auto",
         {
-            "source": "chat",
+            "source": "goal_template",
             "text": "generate the APM",
+            "goal_template": "apm_only",
         },
     )
 
@@ -706,26 +632,6 @@ def test_workflow_test_generate_repair_reports_all_contract_errors(monkeypatch):
     assert attempts == 2
     assert current.data_tests[0]["title"] == "Test duplicate payments"
     assert current.data_tests[0]["status"] == "ready"
-
-
-def test_router_bundle_is_small_and_excludes_domain_catalogs():
-    state = {
-        capability.id: capability.readiness(workspaces.create_workspace(f"Router {index}"), {}).payload()
-        for index, capability in enumerate(audit_capabilities.REGISTRY.all())
-    }
-    bundle = context_bundles.command_router(
-        {"text": "Complete the RCM testing procedures", "context_refs": []},
-        state,
-        [capability.id for capability in audit_capabilities.REGISTRY.all()],
-        permission_mode="permission",
-    )
-    serialized = bundle.serialized()
-
-    assert bundle.total_characters <= 6_000
-    assert "analytics_registry" not in serialized
-    assert "validation_registry" not in serialized
-    assert "column_profiles" not in serialized
-    assert "artifact_index" not in serialized
 
 
 def test_test_generate_definition_context_has_schema_metadata_but_no_table_rows():

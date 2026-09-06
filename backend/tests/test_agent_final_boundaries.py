@@ -24,7 +24,7 @@ import ast
 from pathlib import Path
 
 import app.agent as agent_package
-from app.agent import action_runner, runner, store
+from app.agent import action_execution, runner, store
 from app.agent.runtime import WorkflowRunner
 
 
@@ -123,7 +123,7 @@ def test_a_capability_declaration_neither_schedules_nor_persists():
         "capabilities",
         (
             "app.agent.runner",
-            "app.agent.action_runner",
+            "app.agent.action_execution",
             "app.agent.intake_runner",
             "app.agent.store",
             "app.agent.workers",
@@ -146,7 +146,7 @@ def test_a_worker_cannot_reach_a_workspace_a_transaction_or_the_run_store():
             "app.workspace_transactions",
             "app.agent.store",
             "app.agent.runner",
-            "app.agent.action_runner",
+            "app.agent.action_execution",
             "app.agent.intake_runner",
             "app.agent.executors",
             "app.agent.capabilities",
@@ -162,7 +162,7 @@ def test_an_executor_cannot_reach_a_worker_or_the_model_gateway():
             "app.agent.workers",
             "app.agent.runtime",
             "app.agent.runner",
-            "app.agent.action_runner",
+            "app.agent.action_execution",
             "app.agent.intake_runner",
             "app.agent.context.resolver",
             "app.agent.base",
@@ -193,7 +193,7 @@ def test_context_resolution_cannot_call_a_provider_or_a_worker():
             "app.agent.workers",
             "app.agent.executors",
             "app.agent.runner",
-            "app.agent.action_runner",
+            "app.agent.action_execution",
             "app.agent.runtime",
             "app.agent.base",
         ),
@@ -203,15 +203,33 @@ def test_context_resolution_cannot_call_a_provider_or_a_worker():
 # --------------------------------------------------------------------------- #
 # Schedulers
 # --------------------------------------------------------------------------- #
-def test_the_two_schedulers_do_not_import_each_other():
-    action = _module_imports(Path(action_runner.__file__))
+def test_the_schedulers_do_not_import_each_other():
+    action = _module_imports(Path(action_execution.__file__))
     assert "app.agent.runtime.workflow_runner" not in action
     assert "app.agent.workflow_dispatch" not in action
 
     workflow = _module_imports(
         AGENT_ROOT / "runtime" / f"{WorkflowRunner.__module__.rsplit('.', 1)[-1]}.py"
     )
-    assert "app.agent.action_runner" not in workflow
+    assert "app.agent.action_execution" not in workflow
+
+    # The steering loop drives both, and knows the internals of neither: it
+    # composes them through ``runner.run_child_run`` and ``loop_tools``.
+    loop = _module_imports(AGENT_ROOT / "agent_loop.py")
+    assert not {
+        name
+        for name in loop
+        if name.startswith(
+            (
+                "app.agent.capabilities",
+                "app.agent.workflows",
+                "app.agent.workers",
+                "app.agent.executors",
+                "app.agent.runtime.workflow_runner",
+                "app.agent.workflow_dispatch",
+            )
+        )
+    }
 
 
 def test_the_process_layer_dispatches_to_engines_and_owns_no_scheduling():
@@ -222,7 +240,7 @@ def test_the_process_layer_dispatches_to_engines_and_owns_no_scheduling():
         for name in imported
         if name.startswith(("app.agent.capabilities", "app.agent.workflows", "app.agent.workers", "app.agent.executors"))
     }
-    assert store.RUN_ENGINES == frozenset({"workflow", "action", "agent", "intake"})
+    assert store.RUN_ENGINES == frozenset({"workflow", "agent", "intake"})
 
 
 # --------------------------------------------------------------------------- #

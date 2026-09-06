@@ -7,7 +7,7 @@ tabular analysis are peer capabilities, and a question is never equated with
 data analysis.
 
 The loop is read-only by default. A caller that lends a :class:`Commander` also
-gets ``start_command`` and ``start_action``, letting the same turn decide by
+gets ``start_command`` and ``take_action``, letting the same turn decide by
 ordinary tool-calling whether to answer or to hand work to the agent runner —
 which is why no separate ask/act classification step exists ahead of it.
 
@@ -396,16 +396,14 @@ class Commander:
 
     catalog: tuple[dict, ...]
     launch_command: Callable[[str], dict]
-    launch_action: Callable[[str], dict]
-    # The hand-off to the steering loop. Optional so a caller that has not
-    # opted into it — and every existing test — gets exactly the two mutating
-    # tools it had before, schemas included.
+    # The hand-off to the steering loop, and the only way this turn reaches
+    # anything a registered command does not already cover. Optional so a
+    # caller that has not opted into it gets the single mutating tool.
     launch_loop: Callable[[str], dict] | None = None
 
 
 _COMMAND_TOOL_HANDLERS = {
     "start_command": "start_command",
-    "start_action": "start_action",
     "take_action": "take_action",
 }
 
@@ -441,32 +439,6 @@ def _command_schemas(commander: Commander | None) -> list[dict]:
                         },
                     },
                     "required": ["command_id"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "start_action",
-                "description": (
-                    "Start a durable run for an isolated artifact operation that "
-                    "no registered workflow owns — renaming, pinning, deleting, "
-                    "attaching, or rerunning one existing artifact. Prefer "
-                    "start_command whenever a registered workflow covers the "
-                    "request."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "request": {
-                            "type": "string",
-                            "description": (
-                                "The operation to perform, in one imperative "
-                                "sentence naming the artifact it applies to."
-                            ),
-                        },
-                    },
-                    "required": ["request"],
                 },
             },
         },
@@ -985,14 +957,6 @@ class _Session:
         self.started_run = self.commander.launch_command(command_id)
         return dict(self.started_run), None
 
-    def start_action(self, args: dict):
-        self._guard_single_run()
-        request = str(args.get("request") or "").strip()
-        if not request:
-            raise WorkspaceError("An action needs a request describing what to do.")
-        self.started_run = self.commander.launch_action(request)
-        return dict(self.started_run), None
-
     def take_action(self, args: dict):
         self._guard_single_run()
         if self.commander.launch_loop is None:
@@ -1065,14 +1029,13 @@ Workspace manifest:
 # mutating tool at all, so these rules would describe capabilities that are
 # absent.
 COMMAND_RULES = """
-You can also carry work out, not only describe it. Three tools start durable
-background runs: start_command for a registered audit workflow, start_action
-for an isolated operation on one existing artifact, and take_action to hand the
-request to the durable agent, which plans it, runs it, checks the result and
-corrects what it can.
+You can also carry work out, not only describe it. Two tools start durable
+background runs: start_command for a registered audit workflow, and take_action
+to hand the request to the durable agent, which plans it, runs it, checks the
+result and corrects what it can.
 
 Rules for starting work:
-- Choose between them by what the request needs. One registered command that covers the whole request: start_command. One operation on one artifact: start_action. Anything else that changes the workspace — several steps, a named row or test to redo, work whose result has to be read and corrected — take_action, with a brief in the auditor's own terms.
+- Choose between them by what the request needs. One registered command that covers the whole request: start_command. Anything else that changes the workspace — an operation on one artifact, several steps, a named row or test to redo, work whose result has to be read and corrected — take_action, with a brief in the auditor's own terms.
 - "Review run <id>" is a request to carry work out: call take_action with a \
 brief telling the agent to inspect that run, say what went wrong, and repair \
 what it can.
@@ -1083,8 +1046,7 @@ starting a run.
 - Starting a run changes the workspace and is not silently undoable. When a \
 request could be either a question or an instruction, answer it and ask which \
 they meant rather than guessing.
-- Prefer start_command whenever a registered command covers the request. Use \
-start_action only for an operation no registered workflow owns.
+- Prefer start_command whenever a registered command covers the whole request.
 - Start at most one run per message. Once a run has started, stop calling \
 tools and reply with one short sentence naming what is now running.
 - The run continues in the background after you reply. Do not poll it, and \

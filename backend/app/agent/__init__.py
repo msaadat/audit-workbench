@@ -7,7 +7,7 @@ launches the thread and owns the control surface, and the engine does the work:
     routing              one classifier, one normalized route, one engine
     runtime/             RunRuntime, ModelGateway, the domain-neutral
                          WorkflowRunner, the unit pipeline, and interactions
-    action_runner        the bounded action-DAG scheduler
+    action_execution     one registered action: resolve, gate, commit, receipt
     intake_runner        the one retained protocol runner (folder intake)
     workflows/           authoritative capability graphs
     capabilities/        readiness and semantic unit expansion per graph

@@ -335,7 +335,7 @@ def test_planning_worker_has_no_workspace_store_resolver_or_scheduler_dependency
                 "store",
                 "resolver",
                 "workflow_runner",
-                "action_runner",
+                "action_execution",
             )
         )
         for name in imported

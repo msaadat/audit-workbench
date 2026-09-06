@@ -26,8 +26,9 @@ import uuid
 from typing import Any
 
 from ..workspaces import Workspace, WorkspaceError
+from . import actions as action_catalog
 from . import capabilities as audit_capabilities
-from . import narration, routing, store, workflow
+from . import ledger, narration, routing, store, workflow
 from .runtime.unit_pipeline import UnitSidecarStore, UnitSidecarValidationError
 
 #: How much of a rejected response the loop is shown. Enough to see the shape
@@ -37,6 +38,20 @@ MAX_VALIDATION_ERRORS = 8
 MAX_VALIDATION_ERROR_CHARS = 2_000
 #: A whole-workspace target. Named because it is what the force guard is about.
 WORKSPACE_TARGET = "workspace:current"
+
+#: Registered actions the loop is not offered. The two import actions belong to
+#: the intake protocol runner, which owns the staged batch they read; the
+#: procedure trio is the legacy shape the workflow's test capabilities replaced.
+UNOFFERED_ACTIONS = frozenset(
+    {
+        "classify_import_batch",
+        "apply_import_batch",
+        "create_procedure",
+        "edit_procedure",
+        "delete_procedure",
+        "generate_working_paper",
+    }
+)
 
 _UNSETTLED_UNIT_STATUSES = frozenset(
     {"failed", "conflict", "blocked", "awaiting_input", "awaiting_confirmation"}
@@ -244,26 +259,6 @@ def tool_schemas() -> list[dict]:
             },
         ),
         _function(
-            "run_action",
-            "Run one isolated artifact operation that no workflow outcome owns "
-            "— renaming, pinning, linking, deleting one existing artifact — as "
-            "a child run. Anything a workflow owns must go through "
-            "run_outcomes.",
-            {
-                "type": "object",
-                "properties": {
-                    "request": {
-                        "type": "string",
-                        "description": (
-                            "The operation, in one imperative sentence naming "
-                            "the artifact it applies to."
-                        ),
-                    }
-                },
-                "required": ["request"],
-            },
-        ),
-        _function(
             "ask_auditor",
             "Ask the auditor one question and wait for the answer. Use only "
             "when the answer changes what you would do next.",
@@ -319,12 +314,67 @@ def _function(name: str, description: str, parameters: dict) -> dict:
     }
 
 
+def action_tools() -> list[dict]:
+    """One tool per registered action, named and shaped by its definition.
+
+    The catalog is the contract. A tool here takes the action's own declared
+    argument schema plus the artifact it applies to, and nothing about it is
+    written twice: adding an action to the registry offers it to the loop, and
+    the risk, approval rule, reconciler and receipt it declared all still apply
+    when the loop calls it.
+
+    This is what replaced the action engine. The interpreter used to write a
+    whole DAG of these from the command text before anything ran; the loop
+    calls them one at a time, having read the workspace, and reads each result
+    before deciding the next.
+    """
+
+    schemas = []
+    for definition in action_catalog.REGISTRY.all():
+        if definition.type in UNOFFERED_ACTIONS:
+            continue
+        properties = {
+            "args": {
+                **definition.input_schema,
+                "description": f"Arguments for {definition.type}.",
+            }
+        }
+        required = ["args"]
+        if definition.target_kinds:
+            properties["target"] = {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": list(definition.target_kinds)},
+                    "id": {
+                        "type": "string",
+                        "description": "The artifact's bare id, for example RCM-123.",
+                    },
+                },
+                "required": ["kind", "id"],
+                "description": "Which existing artifact this applies to.",
+            }
+            required.append("target")
+        schemas.append(
+            _function(
+                definition.type,
+                f"{definition.description} ({definition.risk} action)",
+                {"type": "object", "properties": properties, "required": required},
+            )
+        )
+    return schemas
+
+
+def action_tool_names() -> set[str]:
+    return {
+        str(schema["function"]["name"]) for schema in action_tools()
+    }
+
+
 TOOL_LABELS = {
     "plan_outcomes": "Working out what this would run",
     "run_outcomes": "Running audit work",
     "inspect_run": "Reading what happened",
     "rerun_units": "Trying the failed work again",
-    "run_action": "Carrying out an artifact operation",
     "ask_auditor": "Asking you a question",
     "finish": "Wrapping up",
 }
@@ -558,19 +608,47 @@ class LoopTools:
         rerun = self.loop.child_run(command, context)
         return {"rerun_of": child["id"], "units": wanted, **self._run_report(rerun)}
 
-    def run_action(self, args: dict) -> dict:
-        request = str(args.get("request") or "").strip()
-        if not request:
-            raise ToolError("Say what the action should do.")
-        command = {"source": "follow_up", "text": request}
-        if routing.workflow_owned_request(command):
-            raise ToolError(
-                "That request is owned by a workflow outcome. Use plan_outcomes "
-                "and run_outcomes for it."
-            )
-        self._guard_child_budget()
-        child = self.loop.child_run(command, {})
-        return self._run_report(child)
+    def run_registered_action(self, name: str, args: dict) -> dict:
+        """Append one registered action to this run's ledger and drive it.
+
+        Everything an action was subject to under the action engine still
+        applies — target resolution, the optimistic precondition, the approval
+        interaction in permission mode, the executor's own receipt, the
+        reconciler, undo — because this drives the same code. What is gone is
+        the model-written DAG in front of it.
+        """
+
+        target = args.get("target") if isinstance(args.get("target"), dict) else {}
+        proposal = {
+            "type": name,
+            "args": dict(args.get("args") or {}),
+            "target": {
+                "kind": str(target.get("kind") or "") or None,
+                "resolved_id": str(target.get("id") or target.get("resolved_id") or "") or None,
+                "selector": target.get("selector"),
+            },
+        }
+        execution = self.loop.action_execution()
+        try:
+            created = ledger.append_actions(self.run, [proposal])
+        except WorkspaceError as error:
+            raise ToolError(str(error)) from error
+        action = created[0]
+        action_catalog.canonicalize_action_fields(self.ws, action)
+        self.loop.save()
+        execution.drive_actions()
+        settled = next(
+            (item for item in self.run.get("actions") or [] if item["id"] == action["id"]),
+            action,
+        )
+        return {
+            "action_id": settled["id"],
+            "type": settled["type"],
+            "status": settled["status"],
+            "error": settled.get("error"),
+            "result_refs": list(settled.get("result_refs") or []),
+            "receipt": settled.get("receipt"),
+        }
 
     def ask_auditor(self, args: dict) -> dict:
         question = str(args.get("question") or "").strip()
@@ -713,10 +791,11 @@ class LoopTools:
 def dispatch(tools: LoopTools, name: str, args: dict) -> dict:
     """Run one loop tool by name, or raise :class:`ToolError` for an unknown."""
 
-    handler = getattr(tools, name, None) if name in LOOP_TOOL_NAMES else None
-    if handler is None:
-        raise ToolError(f"Unknown tool '{name}'.")
-    return handler(args)
+    if name in LOOP_TOOL_NAMES:
+        return getattr(tools, name)(args)
+    if name in action_tool_names():
+        return tools.run_registered_action(name, args)
+    raise ToolError(f"Unknown tool '{name}'.")
 
 
 def _string_list(value: object) -> list[str]:
@@ -804,7 +883,12 @@ def describe_tool_call(name: str, args: dict) -> str:
     if label is None:
         from ..assistant_tools import TOOL_LABELS as READ_LABELS
 
-        label = READ_LABELS.get(name, "Reading the workspace")
+        label = READ_LABELS.get(name)
+    if label is None:
+        try:
+            label = action_catalog.REGISTRY.get(name).description
+        except WorkspaceError:
+            label = "Working"
     outcomes = _string_list(args.get("requested_outcomes"))
     if outcomes:
         return f"{label}: {', '.join(narration.humanize(item) for item in outcomes[:3])}"
@@ -826,6 +910,7 @@ def json_result(payload: object, limit: int) -> str:
 
 __all__ = [
     "LOOP_TOOL_NAMES",
+    "action_tools",
     "LoopTools",
     "ToolError",
     "describe_tool_call",

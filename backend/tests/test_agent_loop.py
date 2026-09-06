@@ -124,10 +124,12 @@ def test_a_loop_command_routes_to_the_agent_engine_before_any_phrase_match():
     assert persisted["engine"] == store.AGENT_ENGINE
     assert persisted["route"]["decided_by"] == "loop_source"
     assert persisted["route"]["requested_outcomes"] == []
-    # Same text without the loop source still routes to the workflow engine.
-    assert routing.classify_command({"source": "chat", "text": "Draft the APM"})[
-        "engine"
-    ] == store.WORKFLOW_ENGINE
+    # Since step 7 a sentence is the loop's whatever its source; what still
+    # routes deterministically to the workflow engine is a command that names
+    # its outcomes, which is what the chat's own phrase table supplies.
+    assert routing.classify_command(
+        {"source": "tab_button", "text": "Draft the APM", "requested_outcomes": [APM_OUTCOME]}
+    )["engine"] == store.WORKFLOW_ENGINE
 
 
 def test_a_loop_run_carries_its_own_budgets():
@@ -968,9 +970,14 @@ def test_the_coordinator_is_lent_take_action_and_seeds_the_loop(
         for schema in coordinator_calls[0]["tools"] or []
     ]
     assert "take_action" in names
-    assert assistant._command_schemas(
-        assistant.Commander(catalog=(), launch_command=lambda _: {}, launch_action=lambda _: {})
-    )[-1]["function"]["name"] == "start_action"
+    # Without a bound loop launcher the coordinator keeps the one cheap path
+    # and is offered nothing else.
+    assert [
+        schema["function"]["name"]
+        for schema in assistant._command_schemas(
+            assistant.Commander(catalog=(), launch_command=lambda _: {})
+        )
+    ] == ["start_command"]
 
 
 def test_the_finished_loops_offers_come_before_readiness_suggestions(

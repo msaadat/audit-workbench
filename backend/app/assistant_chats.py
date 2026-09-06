@@ -750,10 +750,10 @@ def _launch_command(
     """Start or queue one command run, and report where it landed.
 
     Shared by the deterministic entry points (slash commands, tab buttons,
-    exact phrases) and by the assistant tool loop's ``start_command`` /
-    ``start_action`` tools, so run policy — the agent-model requirement, the
-    single-live-run rule, queueing behind an active run — is written once and
-    cannot drift between them. Refusals are raised as
+    exact phrases) and by the coordinator's ``start_command`` / ``take_action``
+    tools, so run policy — the agent-model requirement, the single-live-run
+    rule, queueing behind an active run — is written once and cannot drift
+    between them. Refusals are raised as
     :class:`CommandLaunchError`: a deterministic caller turns one into a
     clarification message, while the tool loop hands it back to the model as a
     tool error so it can explain or choose differently.
@@ -927,11 +927,6 @@ def _commander(
             goal_template=commands.COMMANDS[command_id].goal_template,
         )
 
-    def launch_action(request: str) -> dict:
-        return _launch_command(
-            workspace, chat_id, user, record, mode, text=request,
-        )
-
     def launch_loop(brief: str) -> dict:
         return _launch_command(
             workspace, chat_id, user, record, mode, text=brief,
@@ -959,7 +954,6 @@ def _commander(
             if item.goal_template
         ),
         launch_command=launch_command,
-        launch_action=launch_action,
         launch_loop=launch_loop,
     )
 

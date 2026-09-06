@@ -9,7 +9,7 @@ import pytest
 
 from app import assistant_settings, documents, llm
 from app.agent import (
-    action_runner,
+    action_execution,
     audit_execution,
     doc_tests_execution,
     documents_execution,
@@ -41,7 +41,7 @@ def _base_runner(workspace_with_data):
 
 
 def _active_runner(workspace, runner_type, engine):
-    if engine in {store.ACTION_ENGINE, store.WORKFLOW_ENGINE}:
+    if engine in {store.AGENT_ENGINE, store.WORKFLOW_ENGINE}:
         run = store.new_command_run(
             workspace,
             "auto",
@@ -62,7 +62,7 @@ def _active_runner(workspace, runner_type, engine):
 
 
 ACTIVE_RUNNER_CASES = (
-    (action_runner.ActionRunner, store.ACTION_ENGINE),
+    (action_execution.ActionExecution, store.AGENT_ENGINE),
     (audit_execution.build_audit_workflow_runner, store.WORKFLOW_ENGINE),
     (intake_runner.IntakeRunner, store.INTAKE_ENGINE),
     (doc_tests_execution.build_doc_tests_workflow_runner, store.WORKFLOW_ENGINE),
@@ -177,7 +177,7 @@ def test_action_runner_accepts_an_injected_runtime_without_changing_default_api(
         lambda status: calls.append(("status", status)),
     )
 
-    active = action_runner.ActionRunner(
+    active = action_execution.ActionExecution(
         workspace_with_data,
         injected_run,
         injected_handle,
@@ -193,7 +193,7 @@ def test_action_runner_accepts_an_injected_runtime_without_changing_default_api(
         "auto",
         {"source": "chat", "text": "rename this artifact"},
     )
-    default_active = action_runner.ActionRunner(
+    default_active = action_execution.ActionExecution(
         workspace_with_data,
         default_run,
         runner.RunHandle(workspace_with_data.id, default_run["id"]),
@@ -333,7 +333,7 @@ def test_active_leaf_runners_share_runtime_without_graph_runner_inheritance():
 
     for leaf_runner in leaf_runners:
         assert issubclass(leaf_runner, base.BaseRunner)
-        assert not issubclass(leaf_runner, action_runner.ActionRunner)
+        assert not issubclass(leaf_runner, action_execution.ActionExecution)
         assert not issubclass(leaf_runner, WorkflowRunner)
         assert not issubclass(WorkflowRunner, leaf_runner)
 
@@ -852,8 +852,8 @@ def test_runtime_owns_approval_and_structured_interaction_transitions():
     )
     action_wait = inspect.getsource(
         __import__(
-            "app.agent.action_runner", fromlist=["ActionRunner"]
-        ).ActionRunner._wait_interaction
+            "app.agent.action_execution", fromlist=["ActionExecution"]
+        ).ActionExecution._wait_interaction
     )
     approval_submit = inspect.getsource(runner.resolve_approval)
     interaction_submit = inspect.getsource(runner.resolve_interaction)

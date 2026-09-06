@@ -204,10 +204,10 @@ def start_command_run(
     Creates a schema-v2 run and classifies it exactly once, here, before the
     worker thread starts: `routing.resolve_route` persists one normalized route
     and the selected engine, promoting the record to schema-v3 when the route is
-    a workflow. A recognized command therefore reaches the UI with its full
-    stage list already visible and without spending a model turn; a command the
-    deterministic pass cannot classify launches with `route.status == "pending"`
-    and the bounded router worker decides on the thread.
+    a workflow. A command naming outcomes therefore reaches the UI with its full
+    stage list already visible and without spending a model turn; a command that
+    is a sentence reaches the steering loop, which decides on the thread with
+    the workspace in front of it.
     """
     recover_workspace(workspace)
     if not llm.agent_status()["configured"]:
@@ -753,10 +753,6 @@ def _run_engine(workspace: Workspace, run: dict, handle: RunHandle) -> None:
         from .workflow_dispatch import build_workflow_runner
 
         build_workflow_runner(workspace, run, handle).execute()
-    elif engine == store.ACTION_ENGINE:
-        from .action_runner import ActionRunner
-
-        ActionRunner(workspace, run, handle).execute()
     elif engine == store.AGENT_ENGINE:
         from .agent_loop import AgentLoop
 

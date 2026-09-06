@@ -270,19 +270,30 @@ def test_document_requests_route_to_the_narrowest_declaring_workflow():
         == audit_workflow.WORKFLOW_ID
     )
 
-    resolved = classify_command({"source": "chat", "text": "analyse these documents"})
+    # A caller that names the outcomes — a tab button, a suggestion, the
+    # steering loop — still resolves to the narrowest workflow that declares
+    # them, with no model turn.
+    resolved = classify_command(
+        {
+            "source": "tab_button",
+            "text": "Analyse these documents",
+            "requested_outcomes": [
+                "documents.categorized",
+                "documents.types_classified",
+                "documents.schemas_stamped",
+                "documents.analysis_generated",
+            ],
+        }
+    )
     assert resolved["route"] == "workflow"
     assert resolved["workflow_definition"] == documents_workflow.WORKFLOW_ID
-    assert resolved["requested_outcomes"] == [
-        "documents.categorized",
-        "documents.types_classified",
-        "documents.schemas_stamped",
-        "documents.analysis_generated",
-    ]
 
-    # Isolated document operations stay ActionRunner requests.
+    # Since step 7 the same request typed as a sentence is the loop's, which
+    # requests those outcomes itself after reading what the workspace holds.
+    typed = classify_command({"source": "chat", "text": "analyse these documents"})
+    assert typed["route"] == "agent"
     attached = classify_command({"source": "chat", "text": "attach this file to DT-1"})
-    assert attached["route"] == "action"
+    assert attached["route"] == "agent"
 
 
 def test_declared_context_presets_are_registered_and_document_scoped():

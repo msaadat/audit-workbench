@@ -37,7 +37,6 @@ RUNS_DIRNAME = "AgentRuns"
 MODES = ("auto", "permission")
 GENERATION_MODES = ("reuse_existing", "force")
 WORKFLOW_ENGINE = "workflow"
-ACTION_ENGINE = "action"
 
 # ``intake`` is a justified protocol engine in the target schema: folder intake
 # is a single-unit protocol over a staged batch rather than a capability graph
@@ -53,7 +52,7 @@ INTAKE_RUN_KIND = "intake"
 # way to commit: every artifact it produces is committed by a unit pipeline.
 AGENT_ENGINE = "agent"
 
-COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE, AGENT_ENGINE})
+COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, AGENT_ENGINE})
 # The final supported engine set (P11.1, narrowed by P12.2). Dispatch accepts
 # exactly these values; a record whose engine is missing or outside this set
 # fails closed.
@@ -310,9 +309,8 @@ def new_command_run(
         "schema_version": 2,
         # No engine is chosen at creation. ``routing.resolve_route`` classifies
         # the command and persists both the normalized route and the selected
-        # engine before the worker thread launches; a command the deterministic
-        # pass cannot classify keeps ``route.status == "pending"`` until the
-        # bounded router worker decides on the thread.
+        # engine before the worker thread launches. Every command resolves to
+        # an engine there; a sentence resolves to the steering loop.
         "engine": None,
         "route": None,
         "id": run_id,

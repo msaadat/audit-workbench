@@ -218,18 +218,15 @@ const note = computed(() => {
       ? { title: 'Loading the plan', detail: 'Fetching the run this chat started.' }
       : { title: 'No run yet', detail: 'Ask the agent to start, and its plan appears here.' }
   }
-  if (value.route?.status === 'pending') {
-    return { title: 'Working out the plan', detail: 'Deciding how to handle this request.' }
-  }
   if (value.engine === 'intake') {
     return { title: 'Importing files', detail: 'Staging and routing an audit folder. This run has no capability graph.' }
   }
-  if (value.engine === 'action') {
+  // The steering loop's plan is the runs it starts, each of which has its own
+  // spine; its own record carries no capability graph.
+  if (value.engine === 'agent') {
     return {
-      title: 'Direct action',
-      detail: value.route?.action_intent
-        ? `Running ${value.route.action_intent.replaceAll('_', ' ')} rather than a workflow.`
-        : 'A single action, not a workflow.',
+      title: 'Working it out',
+      detail: 'The agent is deciding what to run. Each run it starts shows its own plan.',
     }
   }
   if (workflow.value && !stages.value.length) {

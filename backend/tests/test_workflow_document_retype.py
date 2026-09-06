@@ -17,6 +17,8 @@ the turn allowance was sized from the targeted documents alone.
 
 from __future__ import annotations
 
+import pytest
+
 from app import document_analysis, document_classification as dc
 from app import document_schemas, documents, llm, workspaces
 from app.agent import routing, runner
@@ -604,7 +606,11 @@ def test_the_run_record_reports_the_mode_the_run_actually_used(
     run = store.new_command_run(
         workspace_with_data,
         "auto",
-        {"source": "tab_button", "text": "Analyse the documents"},
+        {
+            "source": "tab_button",
+            "text": "Analyse the documents",
+            "requested_outcomes": ["documents.analysis_generated"],
+        },
     )
     routing.resolve_route(workspace_with_data, run)
     persisted = store.load_run(workspace_with_data, run["id"])

@@ -90,9 +90,10 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
 FULL_ANALYSIS_OUTCOMES = ["analysis.summarized"]
 
 # Goal-template routing to requested outcome sets. ``data_analysis`` was
-# previously an isolated ActionRunner intent; Phase 8 makes it a declared
+# previously an isolated action-engine intent; Phase 8 makes it a declared
 # workflow goal. Isolated "run this saved analysis" and "pin this result"
-# operations stay with ``ActionRunner`` and are intentionally absent here.
+# operations stay registered actions the steering loop calls, and are
+# intentionally absent here.
 #
 # ``analysis_execution`` requests the same terminal outcome as ``data_analysis``
 # but is not a synonym for it: the scheduler reuses every earlier capability

@@ -121,16 +121,23 @@ def _fake_model(monkeypatch, script=None) -> FakeAgentLLM:
     return fake
 
 
+#: What an analysis request names now that no phrase table reads its wording.
+#: A tab button, a suggestion chip and the steering loop all name outcomes;
+#: only a sentence typed into the chat is decided by the loop, and these tests
+#: are about the analysis composition rather than about who asked for it.
+ANALYSIS_OUTCOMES = ["analysis.summarized"]
+
+
 def _analysis_run(workspace, *, mode="auto", text=None, command=None) -> dict:
-    run = store.new_command_run(
-        workspace,
-        mode,
+    command = dict(
         command
         or {
             "source": "chat",
             "text": text or "See the two tables, perform relevant joins and data analysis",
-        },
+        }
     )
+    command.setdefault("requested_outcomes", list(ANALYSIS_OUTCOMES))
+    run = store.new_command_run(workspace, mode, command)
     assert resolve_route(workspace, run) == "workflow"
     return store.load_run(workspace, run["id"])
 
@@ -2513,29 +2520,41 @@ def test_what_the_validator_removed_travels_on_the_path_every_run_takes(
         "Join the tables and show the relationships between tables",
         "Explore the data in this workspace",
         "Analyse the two tables",
-    ],
-)
-def test_data_analysis_requests_route_to_the_analysis_workflow(text):
-    resolution = classify_command({"source": "chat", "text": text})
-    assert resolution is not None
-    assert resolution["route"] == "workflow"
-    assert resolution["workflow_definition"] == analysis_workflow.WORKFLOW_ID
-    assert resolution["requested_outcomes"] == ["analysis.summarized"]
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
         "Pin this result to the dashboard",
         "Rerun the saved analysis for transactions",
         "Delete the duplicate invoices analysis",
     ],
 )
-def test_isolated_analysis_operations_still_route_to_the_action_runner(text):
+def test_analysis_requests_typed_as_sentences_go_to_the_steering_loop(text):
+    """Step 7: no phrase table guesses an analysis outcome from wording.
+
+    Every one of these used to be decided by a table — the first four to the
+    analysis workflow, the last three to the action engine — from the words
+    alone, without reading whether the workspace had tables, joins or a saved
+    analysis to act on. The loop decides the same question having looked.
+    """
+
     resolution = classify_command({"source": "chat", "text": text})
-    assert resolution is not None
-    assert resolution["route"] == "action"
+
+    assert resolution["route"] == "agent"
+    assert resolution["decided_by"] == "text_request"
     assert resolution["requested_outcomes"] == []
+
+
+def test_an_analysis_outcome_still_routes_without_a_model_turn():
+    """What a suggestion chip or the loop itself sends still resolves locally."""
+
+    resolution = classify_command(
+        {
+            "source": "tab_button",
+            "text": "Analyse the tables",
+            "requested_outcomes": ["analysis.summarized"],
+        }
+    )
+
+    assert resolution["route"] == "workflow"
+    assert resolution["workflow_definition"] == analysis_workflow.WORKFLOW_ID
+    assert resolution["requested_outcomes"] == ["analysis.summarized"]
 
 
 def test_a_materialized_analysis_run_selects_the_analysis_composition(
@@ -2572,6 +2591,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
         {
             "source": "chat",
             "text": "See the two tables, perform relevant joins and data analysis",
+            "requested_outcomes": list(ANALYSIS_OUTCOMES),
         },
     )
     completed = wait_run(ws, started["id"], timeout=60)
@@ -2637,6 +2657,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
         "auto",
         {
             "source": "chat",
+            "requested_outcomes": list(ANALYSIS_OUTCOMES),
             "text": "See the two tables, perform relevant joins and data analysis",
         },
     )
