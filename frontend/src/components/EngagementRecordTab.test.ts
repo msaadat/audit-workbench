@@ -166,7 +166,7 @@ function documentsOwed(): EngagementStage {
     id: 'stage:documents.analysis_generated',
     capability: 'documents.analysis_generated',
     order: 2,
-    phase: 'documents',
+    phase: 'sources',
     headline: 'Analyse the imported documents',
     start: {
       prompt: 'Analyse the documents.',
@@ -192,11 +192,10 @@ function documentsOwed(): EngagementStage {
 const PLAN: Array<[phase: string, capability: string, label: string]> = [
   ['sources', 'sources.imported', 'Sources'],
   ['sources', 'analysis.executed', 'Analysis library'],
-  ['documents', 'documents.analysis_generated', 'Document analyses'],
+  ['sources', 'documents.analysis_generated', 'Document analyses'],
   ['planning', 'planning.apm_ready', 'Audit planning memorandum'],
   ['planning', 'planning.rcm_ready', 'Risk and control matrix'],
   ['planning', 'tests.specified', 'Test programme'],
-  ['fieldwork', 'doc_tests.executed', 'Document test results'],
   ['fieldwork', 'fieldwork.executed', 'Fieldwork results'],
   ['fieldwork', 'results.rolled_up', 'Control conclusions'],
   ['fieldwork', 'findings.drafted', 'Findings register'],
@@ -208,7 +207,7 @@ const PLAN: Array<[phase: string, capability: string, label: string]> = [
 const HELD = ['sources.imported', 'analysis.executed', 'documents.analysis_generated']
 
 /**
- * The whole plan as one payload — twelve stages across five phases, the named
+ * The whole plan as one payload — eleven stages across four phases, the named
  * ones held and the first stage after them the lead. The phase sections are
  * about the shape of the whole record, so they are the one thing that cannot
  * be tested on a two-row fixture.
@@ -266,8 +265,9 @@ function point(overrides: Partial<EngagementOpenPoint> = {}): EngagementOpenPoin
 
 /** The phases the server ships, in the order it ships them. */
 const PHASE_TITLES: Array<[string, string]> = [
+  // Reading the documents is part of understanding the sources, not a phase
+  // between them and the plan.
   ['sources', 'Understand the data'],
-  ['documents', 'Read the documents'],
   ['planning', 'Plan the engagement'],
   ['fieldwork', 'Do the fieldwork'],
   ['writeup', 'Write it up'],
@@ -1189,7 +1189,7 @@ describe('EngagementRecordTab', () => {
 
   /* --- the whole plan, as one strip ---------------------------------------- */
   /*
-   * The phases fold, so four of the five say nothing about their size. The
+   * The phases fold, so three of the four say nothing about their size. The
    * strip is where the whole engagement stays visible: one segment per stage,
    * each phase as wide as the number of stages it holds.
    */
@@ -1197,13 +1197,13 @@ describe('EngagementRecordTab', () => {
   it('draws one segment per stage, each phase as wide as the stages it holds', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
-    expect(wrapper.findAll('.seg')).toHaveLength(12)
+    expect(wrapper.findAll('.seg')).toHaveLength(11)
     expect(wrapper.findAll('.sphase').map(phase =>
       phase.findAll('.seg').map(segment => segment.attributes('data-state')).join(','),
     )).toEqual([
-      'held,held', 'held', 'lead,owed,owed', 'owed,owed,owed,owed', 'owed,owed',
+      'held,held,held', 'lead,owed,owed', 'owed,owed,owed', 'owed,owed',
     ])
-    expect(wrapper.find('.segs').attributes('style')).toContain('2fr 1fr 3fr 4fr 2fr')
+    expect(wrapper.find('.segs').attributes('style')).toContain('3fr 3fr 3fr 2fr')
   })
 
   it('names the phase being worked under the stretch of strip that is its', async () => {
@@ -1211,18 +1211,17 @@ describe('EngagementRecordTab', () => {
     const labels = wrapper.findAll('.slabels span')
 
     expect(labels.map(label => label.text())).toEqual([
-      'Understand the data', 'Read the documents', 'Plan the engagement',
-      'Do the fieldwork', 'Write it up',
+      'Understand the data', 'Plan the engagement', 'Do the fieldwork', 'Write it up',
     ])
     expect(labels.map(label => label.attributes('data-current')))
-      .toEqual([undefined, undefined, 'true', undefined, undefined])
+      .toEqual([undefined, 'true', undefined, undefined])
   })
 
   it('colours a stage under way rather than leaving it grey in the plan', async () => {
     liveRun([{ capability: 'planning.apm_ready', status: 'running' }])
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
-    expect(wrapper.findAll('.sphase')[2].findAll('.seg').map(s => s.attributes('data-state')))
+    expect(wrapper.findAll('.sphase')[1].findAll('.seg').map(s => s.attributes('data-state')))
       .toEqual(['live', 'owed', 'owed'])
     wrapper.unmount()
   })
@@ -1234,7 +1233,7 @@ describe('EngagementRecordTab', () => {
     // Teal is what the engagement holds; work happening now is neither that
     // nor what it owes, so the segment leaves the teal while it runs.
     expect(wrapper.findAll('.sphase')[0].findAll('.seg').map(s => s.attributes('data-state')))
-      .toEqual(['live', 'held'])
+      .toEqual(['live', 'held', 'held'])
     wrapper.unmount()
   })
 
@@ -1245,7 +1244,7 @@ describe('EngagementRecordTab', () => {
     expect(strip.exists()).toBe(true)
     // The phase names, and nothing else: no count, no clock, no run tally.
     expect(strip.text()).not.toMatch(/\d/)
-    expect(strip.findAll('.slabels span')).toHaveLength(5)
+    expect(strip.findAll('.slabels span')).toHaveLength(4)
   })
 
   it('shows how far through the run it is, as the number its step count is', async () => {
@@ -1292,11 +1291,10 @@ describe('EngagementRecordTab', () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
     expect(wrapper.findAll('.phase .pt').map(title => title.text())).toEqual([
-      'Understand the data', 'Read the documents', 'Plan the engagement',
-      'Do the fieldwork', 'Write it up',
+      'Understand the data', 'Plan the engagement', 'Do the fieldwork', 'Write it up',
     ])
     expect(wrapper.findAll('.phase').map(phase => phase.attributes('data-state')))
-      .toEqual(['done', 'done', 'current', 'later', 'later'])
+      .toEqual(['done', 'current', 'later', 'later'])
   })
 
   it('folds away only the phases whose turn has not come', async () => {
@@ -1305,7 +1303,7 @@ describe('EngagementRecordTab', () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
     expect(wrapper.findAll('.phead').map(header => header.attributes('aria-expanded')))
-      .toEqual(['true', 'true', 'true', 'false', 'false'])
+      .toEqual(['true', 'true', 'false', 'false'])
     expect(wrapper.findAll('.row .wp').map(label => label.text())).toEqual([
       'Sources', 'Analysis library', 'Document analyses',
       'Audit planning memorandum', 'Risk and control matrix', 'Test programme',
@@ -1314,7 +1312,7 @@ describe('EngagementRecordTab', () => {
 
   it('badges the phase being worked, and it holds the only call to action', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
-    const current = wrapper.findAll('.phase')[2]
+    const current = wrapper.findAll('.phase')[1]
 
     expect(wrapper.findAll('.pnext')).toHaveLength(1)
     expect(current.find('.pnext').text()).toBe('Next')
@@ -1327,34 +1325,41 @@ describe('EngagementRecordTab', () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
     const phases = wrapper.findAll('.phase')
 
-    expect(phases[0].find('.pst').text()).toBe('2/2')
+    expect(phases[0].find('.pst').text()).toBe('3/3')
+    expect(phases[1].find('.pst').text()).toBe('0/3')
+    expect(phases[2].find('.pst').text()).toBe('3 stages · after planning')
+    expect(phases[3].find('.pst').text()).toBe('2 stages · after fieldwork')
+  })
+
+  it('states no fraction for a phase of one stage', async () => {
     // `1/1` is a fraction with nothing to compare, on a header read down a
-    // column of five.
-    expect(phases[1].find('.pst').exists()).toBe(false)
-    expect(phases[2].find('.pst').text()).toBe('0/3')
-    expect(phases[3].find('.pst').text()).toBe('4 stages · after planning')
-    expect(phases[4].find('.pst').text()).toBe('2 stages · after fieldwork')
+    // column of four.
+    const alone = spine(HELD).filter(stage =>
+      !['analysis.executed', 'documents.analysis_generated'].includes(stage.capability))
+    const wrapper = await render(alone, {}, { phases: 'as drawn' })
+
+    expect(wrapper.findAll('.phase')[0].find('.pst').exists()).toBe(false)
   })
 
   it('says what a folded phase covers rather than hiding it', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
-    const later = wrapper.findAll('.phase')[3]
+    const later = wrapper.findAll('.phase')[2]
 
     expect(later.find('.pnames').text()).toBe(
-      'Document test results · Fieldwork results · Control conclusions · Findings register',
+      'Fieldwork results · Control conclusions · Findings register',
     )
     expect(later.findAll('.row')).toHaveLength(0)
   })
 
   it('opens a phase whose turn has not come when its header is clicked', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
-    const header = wrapper.findAll('.phead')[3]
+    const header = wrapper.findAll('.phead')[2]
     expect(header.attributes('aria-expanded')).toBe('false')
 
     await header.trigger('click')
 
     expect(header.attributes('aria-expanded')).toBe('true')
-    expect(wrapper.findAll('.phase')[3].findAll('.row')).toHaveLength(4)
+    expect(wrapper.findAll('.phase')[2].findAll('.row')).toHaveLength(3)
   })
 
   it('folds a finished phase away when its header is clicked', async () => {
@@ -1370,12 +1375,12 @@ describe('EngagementRecordTab', () => {
 
   it('puts the phase with the run in flight forward, not the one that is next', async () => {
     // Nothing is the lead stage while a run is in flight, so the phase being
-    // worked is the one the run is in — even where it is the last of the five.
+    // worked is the one the run is in — even where it is the last of them.
     liveRun([{ capability: 'report.working_draft', status: 'running' }])
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
     expect(wrapper.findAll('.phase').map(phase => phase.attributes('data-state')))
-      .toEqual(['done', 'done', 'later', 'later', 'current'])
-    expect(wrapper.findAll('.phase')[4].find('.pnext').exists()).toBe(true)
+      .toEqual(['done', 'later', 'later', 'current'])
+    expect(wrapper.findAll('.phase')[3].find('.pnext').exists()).toBe(true)
   })
 })

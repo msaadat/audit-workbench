@@ -194,21 +194,31 @@ def test_stages_come_back_in_plan_order(stub_store):
     assert order.index("planning.rcm_ready") < order.index("tests.specified")
 
 
-def test_a_stage_outside_the_audit_plan_sits_beside_the_work_it_belongs_to(stub_store):
-    """Document tests are their own workflow, so the plan gives them no place.
+def test_a_stage_outside_the_audit_plan_sits_beside_the_work_it_belongs_to(
+    monkeypatch,
+):
+    """A row from another workflow is placed where it is declared.
 
-    Sorting them last put a register of executed document tests below the
-    stages that have not run. They take the place after the stage declared
-    before them instead, which is the work they are part of.
+    The plan gives it no order of its own, and sorting those last put a
+    register of executed document tests below stages that had not run. The
+    default spine has no such row any more — the document-test register is two
+    doors on the fieldwork row — so the rule is exercised where it lives.
     """
-    stub_store([])
-    result = engagement_record.record(_Workspace())
-    rows = _rows(result)
-    order = [stage["capability"] for stage in result["stages"]]
+    spine = dict(engagement_record._SPINE)
+    rebuilt = {}
+    for capability, spec in spine.items():
+        rebuilt[capability] = spec
+        if capability == "tests.specified":
+            rebuilt["doc_tests.dispositioned"] = {
+                "label": "Document test dispositions", "destination": "doc-tests",
+                "unit": "test", "count": "document_tests",
+            }
+    monkeypatch.setattr(engagement_record, "_SPINE", rebuilt)
 
-    assert rows["doc_tests.executed"]["filed"]["label"] == "Document test results"
-    assert order.index("tests.specified") < order.index("doc_tests.executed")
-    assert order.index("doc_tests.executed") < order.index("fieldwork.executed")
+    order = sorted(engagement_record._positions(), key=engagement_record._positions().get)
+
+    assert order.index("tests.specified") < order.index("doc_tests.dispositioned")
+    assert order.index("doc_tests.dispositioned") < order.index("fieldwork.executed")
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +282,6 @@ def test_the_default_spine_groups_into_the_four_audit_phases(stub_store):
             "tests.specified",
         ],
         "fieldwork": [
-            "doc_tests.executed",
             "fieldwork.executed",
             "results.rolled_up",
             "findings.drafted",
@@ -281,11 +290,12 @@ def test_the_default_spine_groups_into_the_four_audit_phases(stub_store):
     }
 
 
-def test_the_document_test_register_is_part_of_the_fieldwork(stub_store):
-    stub_store([])
-    rows = _rows(engagement_record.record(_Workspace()))
-
-    assert rows["doc_tests.executed"]["phase"] == "fieldwork"
+def test_the_document_test_domain_is_part_of_the_fieldwork():
+    """No row on the default spine carries it any more — the register is two
+    doors on the fieldwork row — but a document-test capability drawn from
+    somewhere else must still land in the fieldwork rather than in the
+    catch-all."""
+    assert engagement.phase_of_capability("doc_tests.executed") == "fieldwork"
 
 
 def test_phases_come_back_in_plan_order_and_only_where_stages_sit(stub_store):
@@ -482,6 +492,54 @@ def test_every_stage_row_carries_the_same_keys(stub_store):
         assert isinstance(row["action"], str), f"{capability}.action"
 
 
+def test_a_document_test_run_is_read_onto_the_row_that_carries_the_register(
+    stub_store,
+):
+    """Document tests are their own workflow, so a run started from their
+    register files against `doc_tests.executed` — which is not a row.
+
+    Left to the unplaced-row fallback it would be drawn labelless at the bottom
+    of the ledger, below the write-up, on every engagement that ever ran one.
+    It is fieldwork, and the fieldwork row is what carries both registers now.
+    """
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("fieldwork.executed", "2026-08-14T06:02:00+00:00",
+                         headline="Fieldwork ran")]),
+        _run("r2", "2026-08-15T06:00:00+00:00",
+             [_milestone("doc_tests.executed", "2026-08-15T06:01:00+00:00",
+                         headline="Document testing complete")]),
+    ])
+    rows = _rows(engagement_record.record(_Workspace(
+        apm="# APM", rcm=[{"id": "R1"}],
+        doc_tests=[{"id": "D1", "status": "completed"}],
+    )))
+
+    assert "doc_tests.executed" not in rows
+    assert all(not row.startswith("doc_tests.") for row in rows)
+    history = rows["fieldwork.executed"]["history"]
+    # Both attempts, and the account of whichever settled last.
+    assert [attempt["run_id"] for attempt in history["attempts"]] == ["r1", "r2"]
+    assert history["headline"] == "Document testing complete"
+
+
+def test_preparing_document_tests_is_read_onto_the_test_programme(stub_store):
+    """The other half of the same workflow. `doc_tests.definitions_ready` files
+    "Document tests prepared" and has never had a row, so it was drawn nameless
+    below the write-up; writing the document tests is the test programme."""
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("doc_tests.definitions_ready", "2026-08-14T06:01:00+00:00",
+                         headline="Document tests prepared")]),
+    ])
+    rows = _rows(engagement_record.record(_Workspace(
+        apm="# APM", rcm=[{"id": "R1"}], doc_tests=[{"id": "D1", "status": "ready"}],
+    )))
+
+    assert "doc_tests.definitions_ready" not in rows
+    assert rows["tests.specified"]["history"]["headline"] == "Document tests prepared"
+
+
 def test_a_stage_the_workflows_no_longer_declare_is_not_drawn(stub_store):
     """Dashboard curation was retired from the audit graph.
 
@@ -560,7 +618,6 @@ def test_fieldwork_does_not_borrow_the_document_test_registers_size(stub_store):
 
     assert rows["fieldwork.executed"]["filed"]["count"] is None
     assert rows["fieldwork.executed"]["filed"]["label"] == "Fieldwork results"
-    assert rows["doc_tests.executed"]["filed"]["count"] == 0
 
 
 def test_the_test_programme_opens_both_registers_it_is_sized_by(stub_store):
@@ -846,18 +903,16 @@ def test_a_stage_with_no_work_product_is_owed(stub_store):
 
 
 def test_a_stage_the_record_cannot_ask_for_is_never_drawn_as_owed(stub_store):
-    """Verification commits nothing and document tests narrate nothing here.
+    """Verification commits nothing.
 
-    As rows they belong on the ledger; as debts they would be permanent, since
-    no button and no absence a reader could act on corresponds to them.
+    As a row it belongs on the ledger; as a debt it would be permanent, since
+    no button and no absence a reader could act on corresponds to it.
     """
     stub_store([])
     result = engagement_record.record(_Workspace())
-    owed = _owed(result)
 
-    for capability in ("audit.verified", "doc_tests.executed"):
-        assert capability not in owed, capability
-        assert _rows(result)[capability]["runnable"] is False
+    assert "audit.verified" not in _owed(result)
+    assert _rows(result)["audit.verified"]["runnable"] is False
 
 
 def test_a_stage_with_nothing_of_its_kind_is_neither_held_nor_owed(stub_store, tmp_path):
@@ -1189,14 +1244,15 @@ def test_a_data_test_completed_without_a_result_has_not_run(stub_store):
     assert _rows(engagement_record.record(workspace))["fieldwork.executed"]["held"] is False
 
 
-def test_document_test_results_are_not_sized_by_the_tests_that_were_specified(
-    stub_store,
-):
-    """The row is labelled "Document test results" and fell through to its
-    `count` — `document_tests`, the size of the register `tests.specified`
-    fills. It went green, stating the number of results it held, the moment the
-    tests were *written*: 32 specifications drawn as 32 results on an
-    engagement that had executed none of them.
+def test_written_document_tests_are_never_drawn_as_document_test_results(stub_store):
+    """The register's size is not a result count.
+
+    A "Document test results" row fell through to its `count` — the size of the
+    register `tests.specified` fills — and went green stating the number of
+    results it held the moment the tests were *written*: 32 specifications
+    drawn as 32 results on an engagement that had executed none of them. The
+    row is gone and the door that replaced it states the same register as a
+    numerator it has to earn.
     """
     stub_store([])
     specified = _Workspace(
@@ -1208,8 +1264,13 @@ def test_document_test_results_are_not_sized_by_the_tests_that_were_specified(
         doc_tests=[{"id": "D1", "status": "completed"}, {"id": "D2", "status": "ready"}],
     )
 
-    assert _rows(engagement_record.record(specified))["doc_tests.executed"]["held"] is False
-    assert _rows(engagement_record.record(executed))["doc_tests.executed"]["held"] is True
+    def door(workspace):
+        row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
+        link = next(item for item in row["links"] if item["label"] == "Document tests")
+        return row["held"], link["count"], link["total"]
+
+    assert door(specified) == (False, 0, 2)
+    assert door(executed) == (True, 1, 2)
 
 
 def test_a_cycle_test_that_ran_is_read_from_its_items_not_its_summary(stub_store):
@@ -1230,12 +1291,12 @@ def test_a_cycle_test_that_ran_is_read_from_its_items_not_its_summary(stub_store
             "items": [{"id": "I1", "evaluation": {"state": "passed"}}],
         }],
     )
-    rows = _rows(engagement_record.record(workspace))
+    row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
+    link = next(item for item in row["links"] if item["label"] == "Document tests")
 
-    assert rows["doc_tests.executed"]["held"] is True
-    assert rows["fieldwork.executed"]["held"] is True
+    assert row["held"] is True
     # The register is still sized by what it contains, not by what has run.
-    assert rows["doc_tests.executed"]["filed"]["count"] == 1
+    assert (link["count"], link["total"]) == (1, 1)
 
 
 def test_the_register_is_read_once_in_both_of_its_shapes(stub_store, monkeypatch):
@@ -1267,22 +1328,16 @@ def test_the_register_is_read_once_in_both_of_its_shapes(stub_store, monkeypatch
     assert calls == {"list": 1, "load": 1}
 
 
-def test_an_engagement_with_no_document_test_neither_holds_nor_owes_results(
-    stub_store,
-):
-    """The same answer `analysis.executed` gives an engagement with no tables:
-    a stage with nothing of its kind to work on is not a debt."""
+def test_an_engagement_with_no_document_test_states_no_ratio_over_nothing(stub_store):
+    """A register that does not exist has no denominator to state, and the row
+    is still measured by the register that does."""
     stub_store([])
-    result = engagement_record.record(
-        _Workspace(apm="# APM", rcm=[{"id": "R1"}], data_tests=[{"id": "T1"}]),
-    )
-    row = _rows(result)["doc_tests.executed"]
+    row = _rows(engagement_record.record(
+        _Workspace(apm="# APM", rcm=[{"id": "R1"}], data_tests=[_ran({"id": "T1"})]),
+    ))["fieldwork.executed"]
 
-    assert row["held"] is False
-    assert "doc_tests.executed" not in _owed(result)
-    assert row["capability"] not in {
-        stage["capability"] for stage in result["stages"] if stage["runnable"]
-    }
+    assert row["held"] is True
+    assert [(link["count"], link["total"]) for link in row["links"]] == [(1, 1), (0, 0)]
 
 
 def test_an_empty_matrix_is_not_a_matrix_whose_rows_are_concluded(stub_store):

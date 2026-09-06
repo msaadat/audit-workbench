@@ -69,7 +69,6 @@ const FILED_ICONS: Record<string, string> = {
   'Risk and control matrix': 'pi pi-table',
   'Control conclusions': 'pi pi-check-square',
   'Test programme': 'pi pi-shield',
-  'Document test results': 'pi pi-verified',
   'Fieldwork results': 'pi pi-briefcase',
   'Findings register': 'pi pi-flag',
   'Document analyses': 'pi pi-file',

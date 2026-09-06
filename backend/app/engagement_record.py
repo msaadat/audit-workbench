@@ -175,21 +175,6 @@ _SPINE: dict[str, dict[str, Any]] = {
             {"label": "Document tests", "destination": "doc-tests", "count": "document_tests"},
         ),
     },
-    # Held by the results its register carries, never by the register's size —
-    # see `_doc_tests_ran`. `count` still names the whole register, which is
-    # what the pill shows once the row is held; an unheld row shows "not yet"
-    # rather than a number, so the specified count is never read as a result
-    # count.
-    #
-    # No `headline`, so the row is never drawn as work to start: the button that
-    # runs these lives on `fieldwork.executed` directly below, whose prompt
-    # covers the data and document registers together. The row still crosses to
-    # the owed side of the ledger when nothing has run, which is what says the
-    # results are missing.
-    "doc_tests.executed": {
-        "label": "Document test results", "destination": "doc-tests",
-        "unit": "test", "count": "document_tests",
-    },
     # Fieldwork schedules and rolls up tests another stage filed, so it has no
     # register of its own to size. Counting the document-test register here
     # claimed the same artifact twice, the second time with a number fieldwork
@@ -203,6 +188,13 @@ _SPINE: dict[str, dict[str, Any]] = {
     # the one number this row has of its own. It runs both registers, so it
     # draws a door to each — pointing only at the document tests hid half of
     # what the button beside it had just run.
+    #
+    # Those doors are also why there is no longer a `doc_tests.executed` row.
+    # It stated the size of the document-test register beside the word
+    # "results" — 8 specifications drawn as 8 results — and everything it was
+    # kept for is on this row now: "Document tests 5/8" says the same thing
+    # about the same register, in the place the button that runs them lives.
+    # Its runs are read onto this row, not lost — see `_FILED_UNDER`.
     "fieldwork.executed": {
         "label": "Fieldwork results", "destination": "",
         "unit": "", "count": None,
@@ -247,6 +239,24 @@ _SPINE: dict[str, dict[str, Any]] = {
         "label": "Verification", "destination": "",
         "unit": "", "count": None,
     },
+}
+
+# Where a milestone is read when the capability it names is not a row.
+#
+# Document tests are their own workflow, so a run started from the document-test
+# register files against that workflow's capabilities — `doc_tests.executed`,
+# which the ledger drew as its own row until the fieldwork row grew a door to
+# each register, and `doc_tests.definitions_ready`, which never had one and was
+# drawn labelless at the bottom of the ledger, below the write-up, as
+# `_stages`' unplaced-row fallback draws anything it cannot name.
+#
+# Both have a row on the audit spine that is the same work: preparing document
+# tests is the test programme, and running them is the fieldwork. Read onto it,
+# they carry what a run uniquely owns — the attempts it cost, and, where one of
+# them was the last thing to settle, the account it filed.
+_FILED_UNDER = {
+    "doc_tests.definitions_ready": "tests.specified",
+    "doc_tests.executed": "fieldwork.executed",
 }
 
 # A run whose status is one of these stopped early, so the wall clock between
@@ -509,25 +519,6 @@ def _fieldwork_ran(workspace: Workspace) -> bool:
     return any(_results(workspace).values())
 
 
-def _doc_tests_ran(workspace: Workspace) -> bool | None:
-    """Whether the document-test register holds a result.
-
-    ``None`` where there is no document test to run, on the same reading
-    `analysis.executed` gives an engagement with no tables: a stage with nothing
-    of its kind to work on has nothing to hold and nothing to owe.
-
-    Without this the row fell through to its `count`, which is
-    `document_tests` — the size of the register `tests.specified` fills. The row
-    labelled "Document test results" therefore went green, and stated the number
-    of results it held, the moment the tests were *written*: 32 specifications
-    drawn as 32 results on an engagement that had executed none of them.
-    """
-    tests = _loaded_document_tests(workspace)
-    if not tests:
-        return None
-    return any(rcm_execution.doc_test_has_durable_result(item) for item in tests)
-
-
 def _conclusions_set(workspace: Workspace) -> bool:
     """Whether the roll-up has concluded on the matrix.
 
@@ -574,7 +565,6 @@ _HOLDS: dict[str, Any] = {
         lambda ws: bool(str((ws.planning or {}).get("apm_markdown") or "").strip()),
     "planning.cycle_ready":
         lambda ws: bool(((ws.planning or {}).get("cycle") or {}).get("steps")),
-    "doc_tests.executed": _doc_tests_ran,
     "fieldwork.executed": _fieldwork_ran,
     "results.rolled_up": _conclusions_set,
     "report.working_draft": lambda ws: bool(_report_markdown(ws).strip()),
@@ -1205,6 +1195,7 @@ def record(workspace: Workspace) -> dict:
                 capability = str(row["milestone"].get("capability") or "").strip()
                 if not capability:
                     continue
+                capability = _FILED_UNDER.get(capability, capability)
                 by_capability.setdefault(capability, []).append(row)
                 contributing.add(row["run_id"])
 
