@@ -135,6 +135,10 @@ class AgentLoop(BaseRunner):
             str(schema["function"]["name"]) for schema in loop_tool_schemas()
         }
         self._finish: dict | None = None
+        # Consecutive turns whose every tool call was a read. Reading is the
+        # cheapest thing a model can always do next, and a request no outcome
+        # can carry out gives it no reason to stop; see ``_note_read_only_turn``.
+        self._read_only_turns = 0
         # The count of user messages already delivered into the conversation.
         # Steering arrives as run messages through the runtime's inbox drain,
         # and the loop reads forward from here at the top of every turn.
@@ -222,6 +226,58 @@ class AgentLoop(BaseRunner):
                 if self._finish is not None:
                     self._close_with_finish()
                     return
+            if self._note_read_only_turn(calls):
+                return
+
+    def _note_read_only_turn(self, calls: list[dict]) -> bool:
+        """Make a loop that only reads decide. True when the request is over.
+
+        Observed live: asked for something no registered outcome can do, the
+        loop read for eleven turns and thirty-four tool calls without starting
+        anything. Reading always looks like progress and never commits, so
+        nothing in the request itself ever ends it — the turn budget does,
+        expensively, having learned nothing since turn four.
+
+        One nudge at the limit, and one stop at twice it. Not prompt-only,
+        because "you have read enough" is a fact about the run rather than
+        advice about the work.
+        """
+
+        names = {
+            str((call.get("function") or {}).get("name") or "")
+            for call in calls
+            if isinstance(call.get("function"), dict)
+        }
+        if not names or not names <= self._read_names:
+            self._read_only_turns = 0
+            return False
+        self._read_only_turns += 1
+        limit = int((self.run.get("limits") or {}).get("max_read_turns") or 4)
+        if self._read_only_turns == limit:
+            self._append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"You have taken {self._read_only_turns} turns that only "
+                        "read. Decide now: plan and run an outcome, ask the "
+                        "auditor a question, or finish and say plainly what you "
+                        "cannot do and why. Do not read again first."
+                    ),
+                }
+            )
+            return False
+        if self._read_only_turns >= limit * 2:
+            self._close(
+                "completed_with_open_items",
+                note=(
+                    "I read the workspace at length without finding work I could "
+                    f"carry out — {self._read_only_turns} turns of reading and "
+                    "nothing to run. Nothing was changed. Tell me which artifact "
+                    "you want changed, or ask me what I found."
+                ),
+            )
+            return True
+        return False
 
     # -- conversation ------------------------------------------------------- #
     def _load_conversation(self) -> None:

@@ -76,6 +76,10 @@ LOOP_COMMAND_SOURCE = "loop"
 # charged twice while the loop counts it once.
 LOOP_LIMITS = {
     "max_loop_turns": 24,
+    # Consecutive turns that only read before the loop is made to decide. A
+    # request no registered outcome can carry out has no natural stopping
+    # point, and reading is the cheapest thing a model can always do next.
+    "max_read_turns": 4,
     "max_child_runs": 6,
     "max_tool_calls": 60,
     "max_auditor_questions": 3,

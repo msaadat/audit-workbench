@@ -803,8 +803,44 @@ Three findings, in the order they cost something:
    should not have been — the execution is real and correct — but the auditor
    was told something untrue.
 
-All three are fixed. Finding 3 got both candidate answers, because the prompt
-half is advice and the code half is a guarantee:
+#### The second live run, 6 September 2026
+
+Same workspace and model, after the three fixes. The request named the defect
+this time: "DT-D5D323C9 still is not right: its third step has no matching item.
+Redraft the test properly."
+
+The three fixes held. The hand-off took one `take_action` call rather than five
+refusals; `usage["retries"]` stayed empty across eleven turns; and cancelling
+mid-run stopped it cleanly with nothing committed and nothing left open.
+
+It also exposed a fourth thing, which is the same defect wearing different
+clothes. The first run charged ahead at a stage that could do nothing and
+claimed the result; the second, now told that such a stage changes nothing, went
+looking for a stage that could — and never stopped looking. Eleven turns, 34
+tool calls, 31 of them reads, one `plan_outcomes`, no child run, nothing
+committed, cancelled by hand.
+
+The cause is structural, not a prompt failure: **reading always looks like
+progress and never commits**, so a request no registered outcome can carry out
+— redrafting a Document Test's *definition* is not an outcome any capability
+offers — gives the loop no reason to stop. The turn budget would have ended it
+at 24 turns having learned nothing since turn four.
+
+Fixed the way the other guards are, in code rather than only in the prompt:
+`max_read_turns` (4) counts consecutive turns whose every call was a read. At
+the limit the loop is told to decide — run, ask, or finish saying what it
+cannot do. At twice it, the request ends `completed_with_open_items` saying it
+read at length and found nothing it could carry out. `LOOP_SYSTEM` says the same
+thing as advice, which is where advice belongs.
+
+Cost, for step 5's ledger: ~10,000 prompt tokens per loop turn, so a read spiral
+is the expensive failure and this guard is the cheapest fix available. The read
+tools' own output caps are the next lever if that is not enough.
+
+---
+
+All three of the first run's findings are fixed. Finding 3 got both candidate
+answers, because the prompt half is advice and the code half is a guarantee:
 
 - `loop_tools.run_account(run)` reads a finished run's own ledger — which
   capabilities committed units and what those produced, which ran with nothing

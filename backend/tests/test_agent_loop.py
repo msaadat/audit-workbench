@@ -287,6 +287,54 @@ def test_the_child_budget_stops_a_loop_that_keeps_starting_runs(
     assert any("limit" in str(item.get("error") or "") for item in results)
 
 
+def test_a_loop_that_only_reads_is_made_to_decide_and_then_stopped(
+    monkeypatch, workspace_with_data
+):
+    """The second live run's failure: reading forever, committing nothing.
+
+    Reading always looks like progress and never commits, so a request no
+    registered outcome can carry out never ends on its own. One nudge, then a
+    stop — long before the turn budget spends twenty-four turns learning
+    nothing.
+    """
+
+    script = LoopScript(tool_turn("get_audit_progress", {}))
+    configured(monkeypatch, script)
+
+    started = start_loop_with_limits(workspace_with_data, {"max_read_turns": 2})
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    assert run["status"] == "completed_with_open_items"
+    assert run["children"] == []
+    assert "without finding work I could carry out" in run["messages"][-1]["content"]
+    # Two reads, a nudge, two more, and it stops — not the 24-turn budget.
+    assert run["usage"]["llm_turns"] == 4
+    conversation = agent_loop.ConversationStore(workspace_with_data, run["id"]).load()[
+        "messages"
+    ]
+    assert any(
+        "turns that only read" in str(item.get("content"))
+        for item in conversation
+        if item["role"] == "user"
+    )
+
+
+def test_a_turn_that_acts_clears_the_read_counter(monkeypatch, workspace_with_data):
+    script = LoopScript(
+        tool_turn("get_audit_progress", {}),
+        tool_turn("run_outcomes", {"requested_outcomes": [APM_OUTCOME]}, "call_2"),
+        tool_turn("get_audit_progress", {}, "call_3"),
+        finish_turn("Drafted it."),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop_with_limits(workspace_with_data, {"max_read_turns": 2})
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    assert run["status"] == "completed"
+    assert len(run["children"]) == 1
+
+
 def test_the_turn_budget_ends_the_request_with_open_items(
     monkeypatch, workspace_with_data
 ):

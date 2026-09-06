@@ -156,6 +156,10 @@ How to work:
   the validator's errors in plain terms. If work is blocked or needs a person,
   ask_auditor when the answer would change what you do, otherwise finish and
   name the blocker.
+- Reading is not progress. Two or three reads settle what a request is about;
+  after that, plan and run something, ask, or finish saying what you cannot do.
+  If no outcome would change the thing you were asked about, say so — do not
+  keep looking for one.
 - Ask at most when it changes what you would do.
 - Finish by calling finish with a summary that names what was produced, what
   was left, and why.

@@ -431,6 +431,11 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
 - In permission mode, a run whose context carries `review_each_stage` is asked
   before each stage runs (`audit_execution.stage_review`): continue, skip, or
   stop. An auto run never waits there.
+- `max_read_turns` counts consecutive loop turns that only read. At the limit
+  the loop is told to decide; at twice it the request ends saying it found
+  nothing it could carry out. Reading always looks like progress and never
+  commits, so a request no outcome can satisfy would otherwise spend the whole
+  turn budget on it.
 - `ActionRunner` is still used for isolated mutations and repairable action
   graphs. `IntakeRunner` is the one retained protocol runner: folder intake is a
   single-unit protocol over a staged batch whose authoritative state lives under
