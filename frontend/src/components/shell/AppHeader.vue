@@ -144,7 +144,11 @@ onUnmounted(() => {
 
       <template v-if="engagement">
         <i class="app-shell__sep pi pi-chevron-right" aria-hidden="true" />
-        <span ref="engagementWrap" class="app-shell__engagement" :class="{ open: switcherOpen }">
+        <span
+          ref="engagementWrap"
+          class="app-shell__engagement"
+          :class="{ open: switcherOpen, 'app-shell__engagement--leaf': !trail.length }"
+        >
           <RouterLink
             :to="`/workspace/${engagement.id}`"
             class="app-shell__crumb app-shell__crumb--engagement"
@@ -158,7 +162,12 @@ onUnmounted(() => {
             aria-haspopup="menu"
             :aria-expanded="switcherOpen"
             @click="toggleSwitcher"
-          ><i class="pi pi-chevron-down" aria-hidden="true" /></button>
+          >
+            <span class="app-shell__switch-icon">
+              <i class="pi pi-chevron-right app-shell__switch-icon--right" aria-hidden="true" />
+              <i class="pi pi-chevron-down app-shell__switch-icon--down" aria-hidden="true" />
+            </span>
+          </button>
 
           <SectionSwitcher
             v-if="switcherOpen"
@@ -170,7 +179,9 @@ onUnmounted(() => {
       </template>
 
       <template v-for="(crumb, index) in trail" :key="index">
-        <i class="app-shell__sep pi pi-chevron-right" aria-hidden="true" />
+        <!-- Crumb 0 follows the engagement switcher, whose own icon already
+             reads as the separator into it; only later crumbs need one. -->
+        <i v-if="index > 0" class="app-shell__sep pi pi-chevron-right" aria-hidden="true" />
         <RouterLink
           v-if="crumb.to"
           :to="crumb.to"
@@ -291,6 +302,35 @@ a.app-shell__crumb:hover { background: var(--aw-on-dark-hover); color: var(--aw-
   color: var(--aw-on-navy-muted);
   cursor: pointer;
   font-size: var(--aw-text-xs);
+}
+/* Reads as a plain trail separator until hovered, when it hints that the
+   engagement name is actually a dropdown control. Both glyphs are always in
+   the DOM and swapped with opacity so the button never resizes. */
+.app-shell__switch-icon {
+  position: relative;
+  display: inline-block;
+  width: var(--aw-text-xs);
+  height: var(--aw-text-xs);
+}
+.app-shell__switch-icon--right,
+.app-shell__switch-icon--down {
+  position: absolute;
+  inset: 0;
+  font-size: var(--aw-text-xs);
+  line-height: 1;
+}
+.app-shell__switch-icon--down { opacity: 0; }
+/* On the engagement's own record page there is no further crumb for this
+   icon to separate, so it just reads as the dropdown affordance it is. */
+.app-shell__engagement--leaf .app-shell__switch-icon--right { opacity: 0; }
+.app-shell__engagement--leaf .app-shell__switch-icon--down { opacity: 1; }
+.app-shell__switch:hover .app-shell__switch-icon--right,
+.app-shell__engagement.open .app-shell__switch-icon--right {
+  opacity: 0;
+}
+.app-shell__switch:hover .app-shell__switch-icon--down,
+.app-shell__engagement.open .app-shell__switch-icon--down {
+  opacity: 1;
 }
 .app-shell__switch:hover { background: var(--aw-on-dark-hover); color: var(--aw-on-dark); }
 .app-shell__popover { position: absolute; z-index: 1200; top: calc(100% + 0.4rem); left: 0; }

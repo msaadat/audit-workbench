@@ -90,11 +90,13 @@ const PANEL_STORAGE_PREFIX = 'audit-workbench:agent-panel-open:'
 function savedPanelState(workspaceId: string): PanelMode {
   try {
     const value = window.localStorage.getItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`)
+    // No preference recorded yet for this workspace: open by default.
+    if (value === null) return 'docked'
     if (value === 'expanded') return 'expanded'
     // `true` is what the drawer's boolean wrote; it means docked.
     return value === 'docked' || value === 'true' ? 'docked' : 'closed'
   } catch {
-    return 'closed'
+    return 'docked'
   }
 }
 
