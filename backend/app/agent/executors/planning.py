@@ -673,6 +673,26 @@ def _similarity(left: object, right: object) -> float:
     return max(overlap, SequenceMatcher(None, left_text, right_text).ratio())
 
 
+def _ranked_rcm_matches(
+    workspace: Workspace,
+    spec: Mapping[str, object],
+) -> list[tuple[float, dict]]:
+    """Rank existing rows against one proposed row's narrative, best first."""
+    narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
+    return sorted(
+        (
+            (
+                _similarity(
+                    narrative, f"{row.get('process', '')} {row.get('risk', '')}"
+                ),
+                row,
+            )
+            for row in workspace.rcm
+        ),
+        key=lambda item: (-item[0], str(item[1].get("id"))),
+    )
+
+
 def match_rcm_revision(
     workspace: Workspace,
     spec: Mapping[str, object],
@@ -689,19 +709,7 @@ def match_rcm_revision(
     exact = workspace.find_semantic("rcm", semantic)
     if exact:
         return exact, False
-    narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
-    ranked = sorted(
-        (
-            (
-                _similarity(
-                    narrative, f"{row.get('process', '')} {row.get('risk', '')}"
-                ),
-                row,
-            )
-            for row in workspace.rcm
-        ),
-        key=lambda item: (-item[0], str(item[1].get("id"))),
-    )
+    ranked = _ranked_rcm_matches(workspace, spec)
     if not ranked or ranked[0][0] < 0.72:
         return None, False
     ambiguous = len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08
@@ -729,6 +737,32 @@ def _quarantined_rows(request: ExecutorRequest) -> list[dict]:
     if not isinstance(raw, (list, tuple)):
         return []
     return [_plain_json(item) for item in raw if isinstance(item, Mapping)]
+
+
+def _ambiguous_quarantine(workspace: Workspace, spec: Mapping[str, object]) -> dict:
+    """Project a row the matcher could not place into a quarantine entry.
+
+    The candidate rows are named because the decision the auditor is being asked
+    to make is which existing row this revises, if any. A bare "ambiguous" leaves
+    them to re-derive the ranking by hand against the whole matrix.
+    """
+
+    # Ambiguity is only ever declared over two or more candidates, so the
+    # re-ranking here has them. The fallback keeps the entry readable rather
+    # than naming an empty list if this is ever called off that path.
+    ranked = _ranked_rcm_matches(workspace, spec)
+    named = [str(row.get("id")) for _score, row in ranked[:2] if row.get("id")]
+    candidates = " and ".join(named) if named else "more than one existing row"
+    return {
+        "process": str(spec.get("process") or ""),
+        "risk": str(spec.get("risk") or ""),
+        "errors": [
+            f"Ambiguous RCM revision: this row matches {candidates} equally "
+            "well, so committing it would have overwritten one of them on a "
+            "guess. Set rcm_id to revise a specific row, or reword the risk so "
+            "it stands apart as a new one."
+        ],
+    }
 
 
 def _validated_rcm(
@@ -781,6 +815,7 @@ def _rcm_result(
     *,
     revision_before: int,
     outcomes: list[dict],
+    ambiguous: list[dict] | None = None,
 ) -> ExecutorResult:
     changed = [item for item in outcomes if item["action"] != "preserved"]
     # Preserved rows enter the receipt refs only when nothing changed, so the
@@ -788,7 +823,9 @@ def _rcm_result(
     refs = list(
         dict.fromkeys(f"rcm:{item['id']}" for item in (changed or outcomes))
     )
-    quarantined = _quarantined_rows(request)
+    # Rows the worker could not repair and rows the commit could not place are
+    # the same thing to the auditor: drafted, not in the matrix, needs a look.
+    quarantined = _quarantined_rows(request) + list(ambiguous or [])
     output: dict[str, object] = {"status": "updated", "rows": outcomes}
     # Carried from the proposal so the run can report them. Judgements the gate
     # declined to enforce: a control asserting a system mechanism, two rows
@@ -831,15 +868,19 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
         stamps = parent_hashes(fresh, [RCM_PARENT_REF, CYCLE_ARTIFACT_REF])
         parent_sha1 = stamps[RCM_PARENT_REF]
         outcomes: list[dict] = []
+        deferred: list[dict] = []
         for spec in rows:
             # Resolved inside the transaction, against the documents as they
             # stand at commit.
             spec = {**spec, "criteria_refs": _resolved_criteria_refs(fresh, spec)}
             existing, ambiguous = match_rcm_revision(fresh, spec, spec["semantic_id"])
             if ambiguous:
-                raise WorkspaceError(
-                    f"Ambiguous RCM revision for '{spec.get('risk')}'."
-                )
+                # The rows are independent, so one the matcher cannot place is
+                # not a reason to drop the rest of the matrix. It travels to the
+                # receipt with its candidates for the auditor to place by hand,
+                # which is the same treatment a row that will not validate gets.
+                deferred.append(_ambiguous_quarantine(fresh, spec))
+                continue
             if (
                 existing
                 and existing.get("created_by") != "agent"
@@ -899,7 +940,14 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                     "action": "created",
                 }
             )
-        return outcomes
+        if not outcomes:
+            # No row could be placed, so there is no partial matrix worth
+            # keeping. Raising inside the transaction leaves the workspace
+            # untouched rather than saving an empty commit.
+            raise WorkspaceError(
+                f"Ambiguous RCM revision for '{deferred[0]['risk']}'."
+            )
+        return outcomes, deferred
 
     committed = mutate(
         target.workspace,
@@ -907,11 +955,13 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
         expected_parents=request.expected_parents,
     )
     target.workspace = committed.workspace
+    outcomes, deferred = committed.value
     return _rcm_result(
         request,
         committed.workspace,
         revision_before=state["revision_before"],
-        outcomes=committed.value,
+        outcomes=outcomes,
+        ambiguous=deferred,
     )
 
 
@@ -952,8 +1002,11 @@ def reconcile_rcm(
     for spec in rows:
         existing, ambiguous = match_rcm_revision(current, spec, spec["semantic_id"])
         if ambiguous:
-            # Execution will surface the ambiguity as a durable unit failure.
-            return ExecutorReconciliation("not_applied")
+            # Execution quarantines this row rather than committing it, so it is
+            # never part of the applied set and can neither prove nor disprove
+            # an interrupted commit. A matrix where every row is ambiguous still
+            # reconciles as not applied, on the empty ``changed`` set below.
+            continue
         if (
             existing
             and existing.get("created_by") != "agent"

@@ -1572,6 +1572,20 @@ class AuditWorkflowExecution(ActionExecution):
                 self.warn(
                     f"Check RCM row {flag.get('row_index')}: {flag.get('message')}"
                 )
+            # Rows that were drafted but not committed: the worker could not
+            # repair them, or the commit could not place them against an
+            # existing row. Warned rather than left in the receipt alone,
+            # because a matrix that is quietly one row short reads as complete.
+            for row in (
+                (outcome.receipt.output.get("quarantined") or [])
+                if outcome.receipt
+                else []
+            ):
+                reason = "; ".join(str(item) for item in (row.get("errors") or []))
+                self.warn(
+                    f"RCM row '{row.get('risk')}' was drafted but not added to "
+                    f"the matrix: {reason}"
+                )
             # A theme no row mentions at all. Enforced once, and it rejected
             # matrices over the memo's markdown rather than over their coverage
             # — see :func:`unowned_themes`. Reported first because it is the

@@ -418,6 +418,72 @@ def test_rcm_executor_fails_on_ambiguous_narrative_match():
         RCM_EXECUTOR.implementation(request, RcmExecutorTarget(workspace, "run-amb"))
 
 
+def test_rcm_executor_quarantines_ambiguous_row_and_commits_the_rest():
+    # The matrix is a set of independent rows, so a row the matcher cannot place
+    # is set aside for the auditor rather than dropping every other row with it.
+    workspace = _rcm_workspace("RCM ambiguous partial")
+    workspace.add_rcm(
+        {"process": "Payments", "risk": "Duplicate payment risk exists here",
+         "control": "Control A", "risk_rating": "medium", "agent_run_id": "a"}
+    )
+    workspace.add_rcm(
+        {"process": "Payments", "risk": "Duplicate payment risk exists now",
+         "control": "Control B", "risk_rating": "medium", "agent_run_id": "b"}
+    )
+    request = _rcm_request(
+        workspace,
+        [
+            _rcm_row(process="Payments", risk="Duplicate payment risk exists today"),
+            _rcm_row(process="Receipting", risk="Cash receipts are posted twice"),
+        ],
+    )
+    target = RcmExecutorTarget(workspace, "run-amb-partial")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    assert [item["action"] for item in receipt.output["rows"]] == ["created"]
+    committed = [row for row in target.workspace.rcm if row["process"] == "Receipting"]
+    assert len(committed) == 1
+
+    quarantined = receipt.output["quarantined"]
+    assert [item["risk"] for item in quarantined] == [
+        "Duplicate payment risk exists today"
+    ]
+    # The candidates are named so the auditor is not left to re-rank by hand.
+    assert "Ambiguous RCM revision" in quarantined[0]["errors"][0]
+    for row in workspace.rcm:
+        assert row["id"] in quarantined[0]["errors"][0]
+
+
+def test_rcm_executor_reconcile_ignores_quarantined_ambiguous_row():
+    # The ambiguous row is never committed, so it must not stop the rows that
+    # were from reconciling as already applied.
+    workspace = _rcm_workspace("RCM ambiguous reconcile")
+    workspace.add_rcm(
+        {"process": "Payments", "risk": "Duplicate payment risk exists here",
+         "control": "Control A", "risk_rating": "medium", "agent_run_id": "a"}
+    )
+    workspace.add_rcm(
+        {"process": "Payments", "risk": "Duplicate payment risk exists now",
+         "control": "Control B", "risk_rating": "medium", "agent_run_id": "b"}
+    )
+    request = _rcm_request(
+        workspace,
+        [
+            _rcm_row(process="Payments", risk="Duplicate payment risk exists today"),
+            _rcm_row(process="Receipting", risk="Cash receipts are posted twice"),
+        ],
+    )
+    target = RcmExecutorTarget(workspace, "run-amb-reconcile")
+    EXECUTORS.execute(request, target)
+
+    reconciliation = RCM_EXECUTOR.reconciler(
+        request, RcmExecutorTarget(target.workspace, "run-amb-reconcile")
+    )
+
+    assert reconciliation.disposition == "already_applied"
+
+
 def test_rcm_executor_reconciles_interrupted_commit_and_detects_later_edit():
     workspace = _rcm_workspace("RCM reconcile")
     request = _rcm_request(workspace, [_rcm_row()])
