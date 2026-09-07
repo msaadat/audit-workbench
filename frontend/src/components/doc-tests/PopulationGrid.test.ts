@@ -117,6 +117,32 @@ describe('PopulationGrid', () => {
     )
   })
 
+  it('names the RCM row the population work counts as coverage of', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue(payload())
+
+    const wrapper = mount(PopulationGrid, { props, global })
+    await flushPromises()
+
+    const chip = wrapper.find('.grid-head .rcm-link')
+    expect(chip.text()).toContain('RCM-FF30C9')
+
+    await chip.trigger('click')
+    expect(wrapper.emitted('openRcm')).toEqual([['RCM-FF30C9']])
+  })
+
+  it('says so in the header when the test is linked to no RCM row', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue(payload())
+
+    const wrapper = mount(PopulationGrid, {
+      props: { ...props, test: { ...(test as object), rcm_id: null } as never },
+      global,
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.grid-head .rcm-link').exists()).toBe(false)
+    expect(wrapper.find('.grid-head .unlinked').text()).toContain('Not linked to an RCM row')
+  })
+
   it('leads with the exception and names the criteria the rows were judged against', async () => {
     vi.spyOn(api, 'get').mockResolvedValue(payload())
 

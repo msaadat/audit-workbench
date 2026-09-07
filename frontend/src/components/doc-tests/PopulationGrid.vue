@@ -48,6 +48,7 @@ const emit = defineEmits<{
   saveConclusion: []
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
+  openRcm: [rcmId: string]
 }>()
 
 const CONTROL_CONCLUSIONS: Array<{ label: string; value: ControlConclusion }> = [
@@ -294,6 +295,19 @@ defineExpose({ loadGrid })
           </p>
         </div>
         <div class="grid-actions">
+          <!-- The row this work counts as coverage of. Stated here because the
+               grid stands in for the item detail on a population item, and the
+               chip it carries is the only place the link is visible. -->
+          <Button
+            v-if="test.rcm_id"
+            :label="test.rcm_id"
+            icon="pi pi-map"
+            size="small"
+            outlined
+            class="rcm-link"
+            @click="emit('openRcm', test.rcm_id)"
+          />
+          <span v-else class="unlinked">Not linked to an RCM row</span>
           <Button
             label="Re-resolve"
             icon="pi pi-refresh"
@@ -574,7 +588,9 @@ defineExpose({ loadGrid })
 .population-grid { display: flex; flex-direction: column; gap: var(--aw-space-4); min-width: 0; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .grid-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .grid-head h3 { margin: .15rem 0 0; font-size: var(--aw-text-xl); }
-.grid-actions { display: flex; gap: .4rem; }
+.grid-actions { display: flex; align-items: center; gap: .4rem; }
+.rcm-link { flex: 0 0 auto; border-color: var(--aw-teal-line); color: var(--aw-teal); white-space: nowrap; }
+.unlinked { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); white-space: nowrap; }
 .eyebrow { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; }
 .question { margin: .3rem 0 0; color: var(--aw-ink); font-size: var(--aw-text-sm); }
 .criteria { margin: .3rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }

@@ -971,6 +971,7 @@ function onRulesetApproved(): void {
           @saveConclusion="saveConclusion"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
+          @openRcm="openRcm"
         />
         <DocTestItemDetail
           v-else-if="currentTest && currentItem"
