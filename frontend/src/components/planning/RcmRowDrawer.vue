@@ -99,6 +99,12 @@ function testTone(rollup: TestRollup) {
       </button>
       <span class="rating" :data-rating="row.risk_rating"><span class="rating-dot" />{{ row.risk_rating }}</span>
       <span class="grow" />
+      <!-- The id above carries the same destination, but reads as a label; the
+           full record is where every field the drawer omits is edited, so it
+           gets a named control of its own. -->
+      <button type="button" class="link" @click="emit('openRow')">
+        Full record<i class="pi pi-arrow-up-right" />
+      </button>
       <button type="button" class="link" @click="emit('paper')">Working paper</button>
       <button type="button" class="close" aria-label="Close" @click="emit('close')">
         <i class="pi pi-times" />
@@ -181,7 +187,7 @@ function testTone(rollup: TestRollup) {
 .drawer { display: flex; flex-direction: column; min-width: 0; height: 100%; }
 .grow { flex: 1; }
 
-.drawer-head { display: flex; align-items: center; gap: .625rem; padding: .75rem 1rem; border-bottom: 1px solid var(--aw-border); }
+.drawer-head { display: flex; align-items: center; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--aw-border); }
 .row-id {
   display: inline-flex; align-items: center; gap: .3rem;
   padding: 0; border: 0; background: none; color: var(--aw-muted);
@@ -209,7 +215,7 @@ label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { wi
 
 .group { display: flex; flex-direction: column; gap: .375rem; min-width: 0; }
 .group-head { display: flex; align-items: center; gap: .5rem; }
-.link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer; }
+.link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap; cursor: pointer; }
 .link:hover { text-decoration: underline; }
 .link .pi { margin-left: .25rem; font-size: var(--aw-text-2xs); }
 .muted { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
