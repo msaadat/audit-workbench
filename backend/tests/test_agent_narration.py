@@ -112,6 +112,34 @@ def test_a_code_that_reduces_to_nothing_does_not_leave_a_dangling_sentence(code)
     assert blocker["code"] == code
 
 
+def test_an_error_code_that_is_a_sentence_survives_into_the_message():
+    """A code ending in a full stop used to vanish and take the reason with it.
+
+    `humanize` strips the domain off ``documents.analysis_generated`` with a
+    ``rsplit(".", 1)``. Applied to "A population may read at most 20 fields."
+    that returns "", so the auditor was shown "…needs your input before it can
+    continue." — a prompt for input, about a step that had simply failed a
+    stated limit, with no way to learn which limit.
+    """
+    code = "A population may read at most 20 fields."
+    run = _run(stages=[_stage("test_specs", [_unit("failed", code)])])
+    blocker = narration.blockers(run)[0]
+
+    assert code[:-1] in blocker["message"]
+    assert "needs your input" not in blocker["message"]
+    # The code brings its own full stop; the sentence must not add a second.
+    assert not blocker["message"].endswith("..")
+    assert blocker["severity"] == "failed"
+
+
+def test_underscores_inside_a_sentence_are_left_alone():
+    """Underscores separate words in an id and sit inside names in prose."""
+    code = "'expense_category' is not a field of the 'payment_voucher' schema."
+    run = _run(stages=[_stage("test_specs", [_unit("failed", code)])])
+
+    assert "expense_category" in narration.blockers(run)[0]["message"]
+
+
 def test_units_stopped_for_one_reason_group_into_one_question():
     run = _run(stages=[_stage("review_required", [
         _unit("awaiting_confirmation", "document_has_no_extractable_text", "Consolidate analysis — a", "u1"),

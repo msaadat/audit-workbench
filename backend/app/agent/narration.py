@@ -193,10 +193,25 @@ def milestone(
 # Vocabulary
 # --------------------------------------------------------------------------- #
 def humanize(value: object) -> str:
-    """Turn a capability id, status or error code into readable words."""
+    """Turn a capability id, status or error code into readable words.
+
+    Only an *identifier* is rewritten, and whitespace is what tells the two
+    apart: an id never has any. An error code is sometimes already a written
+    sentence ("A population may read at most 20 fields."), and the identifier
+    rules destroy one — the domain strip is a ``rsplit(".", 1)``, so a code
+    ending in a full stop reduced to "" and the caller fell through to
+    whatever it says when there is nothing to report at all. A sentence is
+    returned as it was written, underscores included: there they sit inside
+    quoted field names rather than separating words.
+
+    An id that is only separators still reduces to "", which is the point —
+    "documents." says nothing, and the caller needs to know that.
+    """
     text = str(value or "").strip()
     if not text:
         return ""
+    if any(character.isspace() for character in text):
+        return text
     # Capability ids are ``domain.outcome``; the domain is redundant next to
     # the outcome in a sentence ("documents.analysis_generated" reads fine as
     # "analysis generated").
@@ -841,7 +856,9 @@ def _blocker(stage: dict, unit: dict) -> dict:
     elif detail:
         # An unmapped code still beats a raw identifier: say what stopped and
         # show the code as supporting detail rather than as the message.
-        message = _sentence(f"{unit.get('title') or 'A step'} stopped: {detail}.")
+        # A code that is already a sentence brings its own full stop, so the
+        # one this line adds would be the second.
+        message = _sentence(f"{unit.get('title') or 'A step'} stopped: {detail.rstrip('.')}.")
     else:
         message = _sentence(f"{unit.get('title') or 'A step'} needs your input before it can continue.")
     suggestions = [

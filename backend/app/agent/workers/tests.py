@@ -27,7 +27,14 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_linking, cycle_rulesets, cycle_vouching, doc_tests, sandbox
+from ... import (
+    cycle_linking,
+    cycle_rulesets,
+    cycle_vouching,
+    doc_tests,
+    document_population,
+    sandbox,
+)
 from ...text import counted, relevance_tokens, verb
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
@@ -550,6 +557,11 @@ Return JSON with a non-empty `tests` array. A test is one of:
     "population":{{"document_type":"payment_voucher",
       "fields":["expense_category","expense_description"],
       "criteria_refs":[{{"document_id":"f408fb18a7","section":"4"}}]}}}}
+
+   Name at most {document_population.MAX_POPULATION_FIELDS} fields and at most
+   {document_population.MAX_CRITERIA_REFS} `criteria_refs`, and name only the
+   fields the question is actually read from: listing the schema back is not a
+   question, and every field named is repeated to the model once per record.
 
    Write the question about **one record**, because that is how it is asked:
    the runner puts it separately to every record of the type and each answer
@@ -1278,14 +1290,29 @@ def _validate_generate_population(
             f"{path}.population must name at least one field of the "
             f"'{document_type}' schema"
         )
+    # Counted before the dedupe below, because :func:`normalize_population`
+    # counts it there too. A cap this validator applies more loosely than the
+    # commit does is not a cap: the proposal passes here and dies at commit,
+    # which is the one outcome the repair loop exists to prevent.
+    if len(fields) > document_population.MAX_POPULATION_FIELDS:
+        errors.append(
+            f"{path}.population reads {len(fields)} fields; at most "
+            f"{document_population.MAX_POPULATION_FIELDS} may be named"
+        )
     unknown = [value for value in fields if value not in known_fields]
     if unknown:
         errors.append(
             f"{path}.population reads '{unknown[0]}', which is not a field of the "
             f"'{document_type}' schema"
         )
+    declared_refs = population.get("criteria_refs") or []
+    if len(declared_refs) > document_population.MAX_CRITERIA_REFS:
+        errors.append(
+            f"{path}.population names {len(declared_refs)} criteria references; "
+            f"at most {document_population.MAX_CRITERIA_REFS} may be named"
+        )
     criteria_refs = []
-    for index, ref in enumerate(population.get("criteria_refs") or []):
+    for index, ref in enumerate(declared_refs):
         label = f"{path}.population.criteria_refs[{index}]"
         if isinstance(ref, str):
             kind, separator, rest = ref.partition(":")

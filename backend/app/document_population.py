@@ -39,9 +39,12 @@ SAMPLING_METHODS = frozenset({"random", "interval", "stratified"})
 #: changes is that the assessed set is stated as partial rather than presented
 #: as complete coverage.
 MAX_POPULATION_RECORDS = 500
-#: A question reads a handful of fields. A step naming twenty is describing the
-#: schema rather than asking something of it.
-MAX_POPULATION_FIELDS = 12
+#: A question reads a handful of fields; a step naming every one of them is
+#: describing the schema rather than asking something of it. Raised from 12
+#: because a real fraud question over a 16-field deal ticket wants most of the
+#: transactional ones, and 12 refused it — the cap is meant to catch a step
+#: that names the whole schema, not one that reads widely on purpose.
+MAX_POPULATION_FIELDS = 20
 MAX_CRITERIA_REFS = 4
 #: How many identifying fields a grid row leads with when the schema marks no
 #: identifier — see :func:`identifier_fields`.

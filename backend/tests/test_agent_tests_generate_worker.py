@@ -25,6 +25,7 @@ from app.agent.context import (
 from app.agent.workers import WORKERS, WorkerContractError, WorkerRequest, WorkerRunError
 from app.agent.workers.model import WorkerResponseValidationError
 from app.agent.workers import tests as tests_workers
+from app import document_population
 
 
 class _Gateway:
@@ -2076,6 +2077,95 @@ def test_a_population_reading_a_field_the_schema_lacks_is_refused_as_a_field():
 
     guidance = gateway.calls[1]["conversation"][-1]["content"]
     assert "not a field of the 'payment_voucher' schema" in guidance
+
+
+def _wide_schema(count):
+    """A ``payment_voucher`` schema carrying `count` interchangeable fields."""
+    return {
+        **_VOUCHER_SCHEMA,
+        "fields": [
+            {"name": f"field_{index}", "role": "attribute", "value_type": "text",
+             "label": f"Field {index}"}
+            for index in range(count)
+        ],
+    }
+
+
+def test_a_population_over_the_field_cap_is_repaired_rather_than_committed():
+    """The cap lived only in `normalize_population`, which runs at commit.
+
+    So a proposal naming fifteen fields passed every check this worker makes,
+    was accepted, and died at commit with "A population may read at most 20
+    fields." — the one error the repair loop exists to fix, reported after the
+    loop had already finished. The cap has to be checked where the model can
+    still be told about it.
+    """
+    over = document_population.MAX_POPULATION_FIELDS + 1
+    bundle = _bundle(evidence_types=[_VOUCHER_TYPE], evidence_schemas=[_wide_schema(over)])
+    step = _population_step(
+        population={
+            "document_type": "payment_voucher",
+            "fields": [f"field_{index}" for index in range(over)],
+        }
+    )
+    repaired = _population_step(
+        population={"document_type": "payment_voucher", "fields": ["field_0"]}
+    )
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[step])]}),
+            json.dumps({"tests": [_document_test(steps=[repaired])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert f"reads {over} fields" in guidance
+    assert f"at most {document_population.MAX_POPULATION_FIELDS} may be named" in guidance
+
+
+def test_the_worker_field_cap_is_the_one_the_commit_enforces():
+    """Two numbers would mean a proposal that passes here still dies later."""
+    schema = _wide_schema(document_population.MAX_POPULATION_FIELDS)
+    errors = []
+    tests_workers._validate_generate_population(
+        "tests[0].steps[0]",
+        {
+            "document_type": "payment_voucher",
+            "fields": [field["name"] for field in schema["fields"]],
+        },
+        {"payment_voucher": {field["name"] for field in schema["fields"]}},
+        set(),
+        set(),
+        errors,
+    )
+
+    assert errors == []
+
+
+def test_a_population_over_the_criteria_cap_is_repaired_rather_than_committed():
+    over = document_population.MAX_CRITERIA_REFS + 1
+    step = _population_step(
+        population={
+            "document_type": "payment_voucher",
+            "fields": ["expense_category"],
+            "criteria_refs": [
+                {"document_id": "DOC-1", "section": str(index)} for index in range(over)
+            ],
+        }
+    )
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[step])]}),
+            json.dumps({"tests": [_document_test(steps=[_population_step()])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(_population_bundle()), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert f"names {over} criteria references" in guidance
 
 
 def test_a_step_names_a_population_or_documents_but_not_both():
