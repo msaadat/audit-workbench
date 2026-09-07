@@ -35,7 +35,7 @@ const emit = defineEmits<{
   paper: []
   openRow: [tab?: string]
   openTest: [rollup: TestRollup]
-  addTest: [kind: 'data' | 'document' | 'generate']
+  addTest: [kind: 'data' | 'document' | 'link' | 'generate']
 }>()
 
 const ratings = ['low', 'medium', 'high', 'critical']
@@ -75,6 +75,9 @@ const addOptions = [
   { label: 'Data test', icon: 'pi pi-chart-bar', command: () => emit('addTest', 'data') },
   { label: 'Document test', icon: 'pi pi-file-check', command: () => emit('addTest', 'document') },
   { separator: true },
+  // Coverage the engagement already holds — a test written before this row, or
+  // against the wrong one. Creating a third test was the only offer here.
+  { label: 'Link an existing test', icon: 'pi pi-link', command: () => emit('addTest', 'link') },
   // The sparkle that used to sit in the grid's action column, per row, for the
   // rows that had no test. It belongs where the tests are listed.
   { label: 'Generate with assistant', icon: 'pi pi-sparkles', command: () => emit('addTest', 'generate') },

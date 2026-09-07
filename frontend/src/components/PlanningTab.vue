@@ -16,6 +16,7 @@ import UiReviewBar from './ui/UiReviewBar.vue'
 import { RCM_CHIPS, filterRows, rcmStatus } from './planning/rcmStatus'
 import type { RcmFilter } from './planning/rcmStatus'
 import RcmGrid from './planning/RcmGrid.vue'
+import LinkTestDialog from './planning/LinkTestDialog.vue'
 import RcmRowDrawer from './planning/RcmRowDrawer.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import { plural } from '../format'
@@ -47,6 +48,7 @@ const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
 const markingReviewed = ref(false)
 const detailOpen = ref(false)
+const linkOpen = ref(false)
 // The completion gates the status bar reports. Fetched beside the planning
 // payload rather than derived here: the backend already owns what counts as an
 // unreviewed conclusion or a capped one, and two definitions would drift.
@@ -213,11 +215,18 @@ function openRcmRow(tab?: string) {
 function openTest(rollup: TestRollup) {
   void nav.push(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id })
 }
-function addTestTo(kind: 'data' | 'document' | 'generate') {
+function addTestTo(kind: 'data' | 'document' | 'link' | 'generate') {
   const id = selectedRcmId.value
   if (!id) return
+  if (kind === 'link') return void (linkOpen.value = true)
   if (kind === 'generate') return void generatePlannedTests([id])
   void nav.push(kind === 'data' ? 'data-tests' : 'doc-tests', { create: '1', rcm: id })
+}
+async function afterLink() {
+  try {
+    await reload()
+    emit('changed')
+  } catch (error) { fail('Could not reload the matrix', error) }
 }
 /** The drawer edits a copy; this is what it hands back. */
 async function saveRcmRow(changes: Partial<RcmRow>) {
@@ -560,6 +569,16 @@ const rcmActions = computed(() => [
         @addTest="addTestTo"
       />
     </Drawer>
+
+    <!-- Linking writes on the test, so the matrix is redrawn from the reload
+         rather than from anything this dialog knows. -->
+    <LinkTestDialog
+      v-if="selectedRcmId"
+      v-model="linkOpen"
+      :workspace-id="props.workspace.id"
+      :rcm-id="selectedRcmId"
+      @linked="afterLink"
+    />
   </div>
 </template>
 

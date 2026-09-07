@@ -19,6 +19,7 @@ import { useTrail } from '../composables/useShell'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 import EvidenceAnchorDialog from '../components/EvidenceAnchorDialog.vue'
 import ProvenanceRail from '../components/agent/ProvenanceRail.vue'
+import LinkTestDialog from '../components/planning/LinkTestDialog.vue'
 import RcmControlAttributesEditor from '../components/planning/RcmControlAttributesEditor.vue'
 import UiEmptyState from '../components/ui/UiEmptyState.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
@@ -73,6 +74,7 @@ const criterionOpen = ref(false)
 const criterion = ref<CriterionRef | null>(null)
 const currentSection = ref('')
 const addMenu = ref<InstanceType<typeof Menu> | null>(null)
+const linkOpen = ref(false)
 
 const ratings = ['low', 'medium', 'high', 'critical']
 const CONCLUSIONS: Record<string, { label: string; tone: string }> = {
@@ -271,7 +273,15 @@ function openCriterion(value: CriterionRef) {
   criterion.value = value
   criterionOpen.value = true
 }
-async function addTest(kind: 'data' | 'document' | 'generate') {
+/** The link is written on the test; the row's roll-up is redrawn from it. */
+function afterLink() {
+  void reload().catch(error => fail('Could not reload the row', error))
+}
+async function addTest(kind: 'data' | 'document' | 'link' | 'generate') {
+  if (kind === 'link') {
+    linkOpen.value = true
+    return
+  }
   if (kind !== 'generate') {
     void nav.push(kind === 'data' ? 'data-tests' : 'doc-tests', { create: '1', rcm: props.rowId })
     return
@@ -324,6 +334,9 @@ const addOptions = [
   { label: 'Data test', icon: 'pi pi-chart-bar', command: () => void addTest('data') },
   { label: 'Document test', icon: 'pi pi-file-check', command: () => void addTest('document') },
   { separator: true },
+  // Coverage that already exists. Without this the row can only ever make a
+  // third test, and the test written before the row stays orphaned.
+  { label: 'Link an existing test', icon: 'pi pi-link', command: () => void addTest('link') },
   { label: 'Generate with assistant', icon: 'pi pi-sparkles', command: () => void addTest('generate') },
 ]
 const menuItems = computed(() => [
@@ -409,6 +422,12 @@ useTrail(() => [
               @click="addMenu?.toggle($event)"
             />
             <Menu ref="addMenu" :model="addOptions" popup />
+            <LinkTestDialog
+              v-model="linkOpen"
+              :workspace-id="id"
+              :rcm-id="rowId"
+              @linked="afterLink"
+            />
             <Button label="Save row" icon="pi pi-save" size="small" :loading="saving" @click="save" />
           </template>
           <UiOverflowMenu :items="menuItems" tooltip="More row actions" />
