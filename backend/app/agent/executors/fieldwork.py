@@ -87,6 +87,48 @@ def result_ref(rcm_id: str) -> str:
     return f"{RESULT_REF_PREFIX}:{rcm_id}"
 
 
+def adopt_pending_conclusions(
+    workspace: Workspace, *, rcm_ids: set[str] | None = None
+) -> list[str]:
+    """Conclude Data Tests that ran and were never concluded; return their ids.
+
+    A Data Test computes its verdict when it runs and adopts it separately, and
+    only the agent's own execution path performs the second act. A test run from
+    the register keeps ``control_conclusion_source`` at ``none``, and because
+    nothing re-visits a test that already holds a durable result, that verdict
+    stays unread for good — the row above it derives its conclusion from its
+    tests and so can never reach one either. The roll-up is where that becomes
+    visible and the only stage that can still act on it, which is why the act
+    lives here: the record calls this row "Control conclusions" and asks it to
+    roll the results up *into* them.
+
+    ``auto_disposition`` supplies the guarantees, unchanged — the verdict is the
+    deterministic one the evaluation already reached, it is stamped ``agent``,
+    and it never touches a conclusion an auditor has ruled on. Each one is then
+    disclosed as unreviewed through ``completion``'s
+    ``unreviewed_agent_conclusions``, so concluding here adds work to what the
+    file says nobody has read rather than quietly closing it.
+
+    Document Tests are deliberately not concluded here. Their conclusion is
+    combined from per-document worker answers as those settle, and one that has
+    settled on ``no_conclusion`` reached that answer honestly; there is no
+    separate verdict sitting unadopted to adopt.
+    """
+
+    concluded: list[str] = []
+    for data_test_id in rcm_execution.unconcluded_data_tests(
+        workspace, rcm_ids=rcm_ids
+    ):
+        item = data_tests.auto_disposition(workspace, data_test_id)
+        # `auto_disposition` declines a run it cannot rule on. It should not
+        # reach one here — `unconcluded_data_tests` filters those out — but the
+        # caller reports what it concluded, so it counts what actually changed
+        # rather than what it asked for.
+        if item.get("control_conclusion") in rcm_execution.CONCLUDED_CONTROL_CONCLUSIONS:
+            concluded.append(data_test_id)
+    return concluded
+
+
 def roll_up_results(
     workspace: Workspace, *, rcm_ids: set[str] | None = None
 ) -> list[str]:
@@ -99,8 +141,13 @@ def roll_up_results(
     rather than creating duplicates — the result and observation identities stay
     stable across runs. No model call is involved; exception observations feed
     finding creation directly.
+
+    Conclusions are adopted first so the roll-up derives from them in the same
+    pass. Rolling up and *then* concluding would leave every row one run behind
+    its own tests.
     """
 
+    adopt_pending_conclusions(workspace, rcm_ids=rcm_ids)
     result = rcm_execution.rollup(workspace, rcm_ids=rcm_ids)
     return [result_ref(row["rcm_id"]) for row in result["rows"]]
 
@@ -647,6 +694,7 @@ __all__ = [
     "data_test_ref",
     "result_ref",
     "roll_up_results",
+    "adopt_pending_conclusions",
 ]
 
 

@@ -891,6 +891,139 @@ def rollup(
     return {"rows": rows, "coverage": coverage(workspace, document_tests=test_index)}
 
 
+def unconcluded_rows_preview(
+    workspace: Workspace,
+    *,
+    document_tests: DocumentTestIndex | None = None,
+) -> list[str]:
+    """:func:`unconcluded_rows` against a freshly derived roll-up, leaving no trace.
+
+    For readers that must know what the *current* evidence concludes but are not
+    the roll-up — capability readiness, asked while planning a run that has not
+    executed yet. Reading the stored conclusion would answer with what somebody
+    last computed, which on a matrix an auditor has concluded on since is a
+    question about history.
+
+    The restore is the point. ``rollup`` decides whether to write by hashing
+    ``rcm`` and ``observations`` before its own pass and again after, so a
+    caller that has already applied the roll-up in memory leaves it comparing a
+    mutated state with itself: it finds no change and skips the save, and the
+    row on disk keeps a conclusion the evidence has moved past. Readiness runs
+    on the same workspace object the executor then rolls up, so a probe that
+    left its mutations behind silently cost the run its write — an auditor's
+    hand-set conclusion recomputed correctly, reported correctly, and never
+    persisted. Those two collections are exactly what that hash covers, so
+    putting them back is what makes this a read.
+    """
+    document_tests = document_tests or document_test_index(workspace)
+    before_rcm = copy.deepcopy(workspace.rcm)
+    before_observations = copy.deepcopy(workspace.observations)
+    try:
+        rollup(workspace, persist=False, document_tests=document_tests)
+        return unconcluded_rows(workspace, document_tests=document_tests)
+    finally:
+        # In place: the executor holds these lists, not the attribute.
+        workspace.rcm[:] = before_rcm
+        workspace.observations[:] = before_observations
+
+
+def unconcluded_rows(
+    workspace: Workspace,
+    *,
+    document_tests: DocumentTestIndex | None = None,
+) -> list[str]:
+    """RCM rows that reached no conclusion and stated no reason why not.
+
+    The single definition of "this row still owes a conclusion", read by
+    :func:`completion` for the record's disclosure and by the roll-up
+    capability's readiness for the scheduler. They asked it differently once:
+    readiness asked only whether a row carried an ``execution_rollup`` dict at
+    all, which every rolled row does, so it reported satisfied while the record
+    reported twenty-two rows outstanding. The run then reused the capability and
+    said nothing needed doing, and the record redrew the same Run button — a
+    button that could not, on any press, change what the record was asking for.
+
+    A row with no tests at all has made no statement about why it could not
+    conclude, and ``all`` over an empty list agrees with anything: twenty rows
+    carrying ``no_conclusion`` against zero tests reported nothing outstanding,
+    and the engagement record drew the roll-up as filed on a matrix that had
+    never been tested. Absence of a test is the opposite of a stated limitation,
+    so the tests are required to be non-empty rather than allowed to satisfy the
+    rule vacuously.
+
+    Reads the roll-up already on each row. Callers that need it derived from the
+    current execution artifacts roll up first — :func:`completion` does, and so
+    does the capability readiness — because a stored conclusion is what somebody
+    once computed, not what the evidence says now.
+    """
+    document_tests = document_tests or document_test_index(workspace)
+    return [
+        row["id"] for row in workspace.rcm
+        if (row.get("execution_rollup") or {}).get("control_conclusion") == "no_conclusion"
+        and not (
+            (row_tests := _tests(workspace, row["id"], document_tests))
+            and all(
+                str(test["item"].get("scope_limitations") or "").strip()
+                for test in row_tests
+            )
+        )
+    ]
+
+
+def unconcluded_data_tests(
+    workspace: Workspace,
+    *,
+    rcm_ids: set[str] | None = None,
+    document_tests: DocumentTestIndex | None = None,
+) -> list[str]:
+    """Data Tests behind these rows that ran and were never concluded.
+
+    A Data Test carries its own deterministic verdict — ``evaluation``'s
+    ``suggested_control_conclusion``, computed from the run that produced the
+    result — but adopting it is a separate act from running, and only the
+    agent's own execution path performs it. A test run from the register
+    instead keeps ``control_conclusion_source`` at ``none`` and its verdict goes
+    unread, which is correct while an auditor intends to conclude it and a dead
+    end once nobody does: the row above it can never conclude, because a row's
+    conclusion is derived from its tests' and nothing re-visits a test that
+    already holds a durable result.
+
+    Listed here, not concluded here. What to do about them belongs to the
+    roll-up executor, which is the only caller that is allowed to write.
+
+    Never a test an auditor has ruled on: ``control_conclusion_source`` of
+    ``auditor`` is their judgment, and ``auto_disposition`` stands aside from it
+    for the same reason this does.
+    """
+    document_tests = document_tests or document_test_index(workspace)
+    selected = None if rcm_ids is None else set(rcm_ids)
+    pending: list[str] = []
+    for row in workspace.rcm:
+        if selected is not None and row["id"] not in selected:
+            continue
+        for test in _tests(workspace, row["id"], document_tests):
+            if test["kind"] != "datatest":
+                continue
+            item = test["item"]
+            if not data_test_has_durable_result(item):
+                continue
+            if str(item.get("control_conclusion_source") or "none") == "auditor":
+                continue
+            if item.get("control_conclusion") in CONCLUDED_CONTROL_CONCLUSIONS:
+                continue
+            # The verdict has to be one the evaluation actually reached.
+            # ``auto_disposition`` declines a run it cannot rule on, and a test
+            # listed here that it then declines would be reported as concluded
+            # by a caller that only counts what it handed over.
+            evaluation = item.get("evaluation") or {}
+            if str(evaluation.get("state") or "not_run") in {"not_run", "inconclusive"}:
+                continue
+            if evaluation.get("suggested_control_conclusion") not in CONCLUDED_CONTROL_CONCLUSIONS:
+                continue
+            pending.append(test["id"])
+    return pending
+
+
 def completion(
     workspace: Workspace,
     *,
@@ -952,26 +1085,10 @@ def completion(
     ]
     blocked_without_plan = [item for item in blocked_without_plan if item["missing"]]
     # A row that reached no conclusion is owed one, unless every test behind it
-    # says why it could not be reached — a scope limitation is somebody stating
-    # on the record that the evidence was not there to look at.
-    #
-    # A row with no tests at all has made no such statement, and `all` over an
-    # empty list agrees with anything: twenty rows carrying `no_conclusion`
-    # against zero tests reported nothing outstanding, and the engagement record
-    # drew the roll-up as filed on a matrix that had never been tested. Absence
-    # of a test is the opposite of a stated limitation, so it is required to be
-    # non-empty rather than allowed to satisfy the rule vacuously.
-    rcm_without_conclusion = [
-        row["id"] for row in workspace.rcm
-        if (row.get("execution_rollup") or {}).get("control_conclusion") == "no_conclusion"
-        and not (
-            (row_tests := _tests(workspace, row["id"], document_tests))
-            and all(
-                str(test["item"].get("scope_limitations") or "").strip()
-                for test in row_tests
-            )
-        )
-    ]
+    # says why it could not be reached — see :func:`unconcluded_rows`, which
+    # owns the rule so the roll-up capability's readiness and this payload
+    # cannot disagree about which rows are still owed a conclusion.
+    rcm_without_conclusion = unconcluded_rows(workspace, document_tests=document_tests)
     # A conclusion that was capped rather than earned. Reported separately from
     # the rows that reached no conclusion at all, because "we tested less than
     # this claims" and "we could not look" are different disclosures. A ceiling

@@ -79,6 +79,7 @@ from .context import (
 )
 from .executors import EXECUTORS
 from .executors.fieldwork import (
+    adopt_pending_conclusions,
     roll_up_results,
     run_data_test,
     untested_populations,
@@ -1985,11 +1986,21 @@ class AuditWorkflowExecution(ActionExecution):
         generic deterministic path does not. No model call or approval is involved.
         """
         self.ws = subject
+        scoped = set(target_rcm_ids(self.ws, workflow_scope(self.run)))
         try:
-            refs = roll_up_results(
-                self.ws,
-                rcm_ids=set(target_rcm_ids(self.ws, workflow_scope(self.run))),
-            )
+            # Said before the roll-up reads them, because a conclusion this run
+            # adopted on the auditor's behalf is the part of the result they
+            # never got to weigh in on. `roll_up_results` adopts them itself, so
+            # this reports rather than performs; by the time it runs there is
+            # nothing left for it to find.
+            adopted = adopt_pending_conclusions(self.ws, rcm_ids=scoped)
+            if adopted:
+                self.warn(
+                    f"{counted(len(adopted), 'data test')} had run without a "
+                    "conclusion; the evaluation's own verdict was adopted and "
+                    "stamped as the assistant's, for review."
+                )
+            refs = roll_up_results(self.ws, rcm_ids=scoped)
         except WorkspaceConflict as error:
             return DeterministicUnitResult("conflict", error=str(error))
         # Roll-up is the first point that can see the fieldwork as a whole, and

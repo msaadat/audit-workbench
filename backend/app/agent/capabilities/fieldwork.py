@@ -142,11 +142,45 @@ def _fieldwork_executed() -> Capability:
 # results.rolled_up (P7G)
 # --------------------------------------------------------------------------- #
 def _rollup_ready(workspace: Workspace, scope: dict) -> Readiness:
+    """Whether the matrix has been concluded on, not merely rolled up.
+
+    Carrying an ``execution_rollup`` dict used to be the whole test, which every
+    rolled row satisfies whatever it concluded. The engagement record asks the
+    stricter question — has this row reached a conclusion — so on a matrix whose
+    tests ran but were never concluded the two disagreed: readiness said
+    satisfied, the run reused the capability and reported that nothing needed
+    doing, and the record redrew the Run button it had just refused to act on.
+    Both now read `rcm_execution.unconcluded_rows`, so the button and the
+    scheduler cannot mean different things by "concluded".
+
+    Derived fresh rather than read off the rows, and derived without disturbing
+    them. Readiness is asked before the roll-up runs, and the stored conclusion
+    is what the evidence said when it was last computed; a test concluded since
+    would otherwise leave the capability reporting work that no longer exists.
+    """
     rcm_rows = _rows(workspace, scope)
     missing = [row["id"] for row in rcm_rows if not row.get("execution_rollup")]
     if missing:
         return Readiness(
             "missing", (f"{counted(len(missing), 'RCM row')} {verb(len(missing), 'has', 'have')} not been rolled up",)
+        )
+    scoped = {row["id"] for row in rcm_rows}
+    # A read, not a roll-up: readiness runs on the workspace object the executor
+    # then rolls up, and a probe that left its own mutations behind would cost
+    # that roll-up its write. See `unconcluded_rows_preview`.
+    unconcluded = [
+        rcm_id
+        for rcm_id in rcm_execution.unconcluded_rows_preview(workspace)
+        if rcm_id in scoped
+    ]
+    if unconcluded:
+        return Readiness(
+            "missing",
+            (
+                f"{counted(len(unconcluded), 'RCM row')} "
+                f"{verb(len(unconcluded), 'has', 'have')} reached no conclusion",
+            ),
+            details={"artifact_count": len(rcm_rows), "unconcluded": len(unconcluded)},
         )
     return Readiness("satisfied", details={"artifact_count": len(rcm_rows)})
 
