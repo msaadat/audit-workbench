@@ -538,16 +538,60 @@ Files: `backend/app/report.py`, report template.
 
 ### Phase 5 — roll-out and clean-up
 
-- Run Phase 1 against the five local engagements and record the before/after
-  draft counts in this document.
+- Run Phase 1 against the local engagements and record the before/after
+  draft counts in this document. **Done 2026-09-09**, read-only (roll-up in
+  memory, nothing persisted), against the four engagements on this machine.
+  The procurement register had been cleared of drafts since §1 was written,
+  so the measure is exception observations that would expand a draft:
+
+  | Engagement | Data tests (marked duplicate) | Exception observations | Uncovered after Phase 1 | Covered |
+  | --- | --- | --- | --- | --- |
+  | Procurement | 49 (15) | 32 | 27 | 4 |
+  | Treasury | 14 (4) | 7 | 6 | 1 |
+  | Expenses | 18 (0) | 0 | 0 | 0 |
+  | TreasuryFull | 0 | 0 | 0 | 0 |
+
+  Fewer than the six §1 predicted for procurement: several of that
+  engagement's duplicate groups now span rows rather than sitting on one, and
+  a cross-row pair is deliberately left to layer 2.
 - Update [audit-workflow-graph.md](audit-workflow-graph.md): the graph, the
   stage reference (`findings.consolidated`), the worker table, the preset
   inventory, the privacy table (fourth door), the partial-dependency table,
-  and `TEMPLATE_OUTCOMES`.
+  and `TEMPLATE_OUTCOMES`. **Done.**
 - Update `AGENTS.md` privacy boundary: three row-level doors become three
-  plus one key-level door.
+  plus one key-level door. **Done.**
 - Consider retiring the `SequenceMatcher` title check once the advisory
   consolidation check has run on real engagements.
+
+### Implementation notes (2026-09-09)
+
+Where the shipped code departs from §3, and why:
+
+- **Phase 0 diagnosis.** `Workspace.remove_rcm` stripped every finding's
+  `rcm_refs` and `test_refs` when a row was deleted, which a regenerated matrix
+  does for every row. Findings now keep both; `evidence_warnings` names the
+  missing row or test, `_validate_links` tolerates a reference the finding
+  already holds, and `rcm_semantic_refs` is derived from `rcm_refs` and kept
+  when a row disappears.
+- **The basis.** §2.3 keys the basis on draft finding ids; the shipped basis is
+  every finding's id (absorbed included) and its *own* result hash — the
+  source observation's for a drafted finding, the cited results for a manual
+  one. Confirming, editing, accepting or dismissing does not move it, so
+  accepting one suggestion does not unsay the other groups the same turn
+  proposed. Adding, removing, or re-running a finding's test does.
+- **Worker validator for a consolidated redraft.** §3 asks that "every member
+  test id" be named in the narrative, while the finding prompt forbids test
+  ids in report prose. The shipped rule requires every member test's *title*
+  (the control stage) to appear, and the prompt asks for each instance to be
+  led by it.
+- **Refresh and redraft triggers.** The Findings page queues both through the
+  assistant chat (`consolidate_findings` and `draft_findings` with a
+  `finding_id` run context), as "Generate all findings" does; the
+  `POST /findings/consolidation/refresh` route exists for API callers.
+- **Operations index.** `artifact_operations` is derived from `produces`, and
+  the capability produces nothing, so it is not listed under a finding's
+  outcomes; it is requestable by name and by the `consolidate_findings`
+  command.
 
 ### Estimated size
 

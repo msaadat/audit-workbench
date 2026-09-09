@@ -43,6 +43,15 @@ another, and each projection reports what it left out — `rows_withheld`,
 as a complete population. That reporting, not the cap alone, is the property
 worth having: a bounded sample presented as the whole is worse than no sample.
 
+Beside the three row-level doors sits one key-level door,
+`allow_datatest_exception_keys`, for the one capability that must compare
+findings against each other: `findings.consolidated`. It admits the values of a
+run's `entity_key` column and nothing else, capped per finding
+(`CONSOLIDATION_KEY_LIMIT`, reporting `ids_withheld`); the overlaps between
+findings are computed locally and supplied as counts and shared ids. A pass that
+sees every finding at once must not see rows, only keys, which is why it is not
+a reuse of the finding-draft door.
+
 A fourth channel is row-*derived* rather than row-level and rides under
 `allow_table_metadata`: a column's complete value set, supplied so a generated
 predicate names a real value instead of guessing one. Three bounds decide when a
@@ -555,7 +564,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   audit-shaped glue: which worker/executor and declared context a unit uses,
   approval items, post-commit bookkeeping, checkpoint handlers, and the audit
   completion projection.
-- The audit graph is 30 capabilities and is documented stage by stage —
+- The audit graph is 31 capabilities and is documented stage by stage —
   dependencies, readiness rules, unit expansions, per-stage context, worker and
   executor bindings, input/output shapes, budgets, and the on-disk sidecars — in
   [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md). Its structure in

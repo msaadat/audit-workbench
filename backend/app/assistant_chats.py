@@ -800,9 +800,15 @@ def _launch_command(
     target_refs: list[str] = []
     if goal_template == "finding_draft":
         observation_id = str(planning_context.get("observation_id") or "").strip()
+        finding_id = str(planning_context.get("finding_id") or "").strip()
         rcm_id = str(planning_context.get("rcm_id") or "").strip()
         if observation_id:
             target_refs = [f"observation:{observation_id}"]
+        elif finding_id:
+            # Naming a finding is the instruction to redraft it — the path a
+            # consolidated lead takes to have its narrative rewritten from
+            # every member observation.
+            target_refs = [f"finding:{finding_id}"]
         elif rcm_id:
             target_refs = [f"rcm:{rcm_id}"]
         else:

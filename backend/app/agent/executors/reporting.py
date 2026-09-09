@@ -225,6 +225,11 @@ def finding_semantic_id(observation_id: str) -> str:
     return f"finding:observation:{observation_id}"
 
 
+def consolidated_semantic_id(group_id: str) -> str:
+    """The semantic identity a lead takes once it is redrafted from its group."""
+    return f"finding:consolidated:{group_id}"
+
+
 def finding_stable_id(semantic: str) -> str:
     return "F-" + hashlib.sha1(semantic.encode()).hexdigest()[:6].upper()
 
@@ -240,6 +245,10 @@ class FindingExecutorTarget:
     #: the request. Naming it is the permission to replace it — the same rule a
     #: named test is replaced under. It does not extend to any other draft.
     named_by_request: bool = False
+    #: The consolidated lead this observation heads, when the unit is a lead
+    #: redraft. The narrative lands on that finding and its unioned references
+    #: are kept; the observation-derived id is not used.
+    lead_finding_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, Workspace):
@@ -251,6 +260,7 @@ class FindingExecutorTarget:
             setattr(self, field_name, value)
         if not isinstance(self.named_by_request, bool):
             raise ValueError("named_by_request must be a boolean.")
+        self.lead_finding_id = str(self.lead_finding_id or "").strip() or None
 
 
 def _validated_finding(
@@ -270,6 +280,17 @@ def _validated_finding(
     draft = {key: raw[key] for key in FINDING_FIELDS if key in raw}
     if not str(draft.get("title") or "").strip():
         raise WorkspaceError("The accepted finding proposal has no title.")
+    if target.lead_finding_id:
+        lead = next(
+            (
+                item
+                for item in target.workspace.findings
+                if str(item.get("id")) == target.lead_finding_id
+            ),
+            None,
+        )
+        group_id = str(((lead or {}).get("consolidation") or {}).get("group_id") or "")
+        return target, draft, consolidated_semantic_id(group_id or target.lead_finding_id)
     return target, draft, finding_semantic_id(target.observation_id)
 
 
@@ -313,6 +334,58 @@ def _finding_result(
     )
 
 
+def _commit_lead_redraft(
+    fresh: Workspace,
+    target: FindingExecutorTarget,
+    draft: dict,
+    semantic: str,
+    observation: dict,
+) -> dict:
+    """Write a redrafted narrative onto a consolidated lead.
+
+    The lead keeps its id and the references ``findings.consolidate`` unioned
+    from every member; only what the worker was asked for changes — title,
+    severity, narrative, the deferred-cause flag — and the lead's semantic id
+    becomes the group's, so a second redraft of the same group resolves to
+    the same finding. The observation guard still holds: the unit was
+    expanded over the lead's own observation.
+    """
+    lead = next(
+        (item for item in fresh.findings if str(item.get("id")) == target.lead_finding_id),
+        None,
+    )
+    if lead is None:
+        raise WorkspaceError(f"Lead finding '{target.lead_finding_id}' not found.")
+    consolidation = dict(lead.get("consolidation") or {})
+    if consolidation.get("role") != "lead":
+        raise WorkspaceError(
+            f"Finding '{target.lead_finding_id}' is not a consolidated lead."
+        )
+    if str(lead.get("source_observation_id") or "") != target.observation_id:
+        raise WorkspaceError(
+            f"Observation '{target.observation_id}' is not the lead's own observation."
+        )
+    candidate = {
+        **lead,
+        **draft,
+        "semantic_id": semantic,
+        "agent_run_id": target.run_id,
+        "auditor_confirmed": False,
+        "consolidation": {**consolidation, "narrative_pending": False},
+    }
+    issues = findings.support_issues(fresh, candidate)
+    if issues:
+        raise WorkspaceError(
+            "Finding draft failed support validation: " + "; ".join(issues)
+        )
+    lead.update(candidate)
+    lead["created_by"] = "agent"
+    lead["source"] = "agent"
+    lead["updated"] = fresh._updated_now()
+    fresh.save()
+    return lead
+
+
 def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
     """Commit one accepted finding draft under its observation parent guard.
 
@@ -329,6 +402,8 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
     def commit(fresh: Workspace) -> dict:
         state["revision_before"] = fresh.revision
         observation = _observation(fresh, target.observation_id)
+        if target.lead_finding_id:
+            return _commit_lead_redraft(fresh, target, draft, semantic, observation)
         execution_ref = str(observation["execution_ref"])
         anchor = findings.anchor_from_ref(fresh, execution_ref, run_id=target.run_id)
         evidence_refs = list(observation.get("evidence_refs") or [])
@@ -348,6 +423,11 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
             "agent_run_id": target.run_id,
             "source_observation_id": target.observation_id,
             "rcm_refs": [observation["rcm_id"]],
+            "rcm_semantic_refs": findings.rcm_semantic_refs(
+                fresh,
+                [observation["rcm_id"]],
+                [observation.get("rcm_semantic_id")],
+            ),
             "procedure_refs": [],
             "test_refs": [observation["test_id"]],
             "execution_refs": [execution_ref],
@@ -428,6 +508,20 @@ def reconcile_finding(
         ),
         None,
     )
+    if target.lead_finding_id:
+        # A lead redraft rewrites a finding that already exists, so its
+        # presence proves nothing; the group semantic id it takes on commit is
+        # what says the redraft landed.
+        existing = next(
+            (
+                item
+                for item in current.findings
+                if item.get("id") == target.lead_finding_id
+                and item.get("semantic_id") == semantic
+                and not (item.get("consolidation") or {}).get("narrative_pending", False)
+            ),
+            None,
+        )
     if existing is None or current.revision <= request.expected_revision:
         return ExecutorReconciliation("not_applied")
     if existing.get("agent_run_id") != target.run_id:

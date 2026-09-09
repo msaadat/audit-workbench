@@ -39,6 +39,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'fieldwork.executed': 'Fieldwork execution',
   'results.rolled_up': 'Results and observations',
   'findings.drafted': 'Eligible finding drafts',
+  'findings.consolidated': 'Finding consolidation',
   'working_papers.generated': 'RCM working papers',
   'report.working_draft': 'Report working draft',
   'audit.verified': 'Audit verification',

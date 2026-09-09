@@ -336,6 +336,13 @@ def _finding(getfixture):
     return {"finding": _draft()}, _request()
 
 
+@builds("reporting.finding_consolidation")
+def _finding_consolidation(getfixture):
+    from test_agent_reporting_consolidation import _proposal, _request
+
+    return _proposal(), _request()
+
+
 @builds("tests.generate")
 def _generate(getfixture):
     from test_agent_tests_generate_worker import _data_test, _request

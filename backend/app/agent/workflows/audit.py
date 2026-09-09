@@ -183,11 +183,19 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
+    # One model turn over every draft, proposing which of them are one
+    # finding. Proposal-only: the suggestion set is the durable outcome and
+    # the auditor accepts or dismisses each group on the Findings page. The
+    # edge into the report is partial (``_PARTIAL_DEPENDENCIES``): an
+    # unreviewed suggestion never withholds the report, which carries every
+    # undecided draft exactly as it did before this stage existed.
+    "findings.consolidated": ("findings.drafted",),
     "working_papers.generated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
         "results.rolled_up",
         "findings.drafted",
+        "findings.consolidated",
     ),
     # Dashboard curation was a stage here once, and is not one now. Arranging
     # tiles over results the roll-up already produced changes how an engagement
@@ -258,6 +266,7 @@ BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
 FULL_AUDIT_OUTCOMES = [
     "analysis.summarized",
     "findings.drafted",
+    "findings.consolidated",
     "working_papers.generated",
     "report.working_draft",
     "audit.verified",
@@ -277,6 +286,7 @@ TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "apm_only": ["planning.apm_ready"],
     "rcm_only": ["planning.rcm_ready"],
     "finding_draft": ["findings.drafted"],
+    "finding_consolidation": ["findings.consolidated"],
     # Preparing an RCM row's Document Tests is the ``tests.specified``
     # deliverable, not a document-test run.
     "document_test_preparation": ["tests.specified"],

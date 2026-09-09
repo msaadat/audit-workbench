@@ -204,4 +204,32 @@ describe('FindingsTab', () => {
     expect(unlinked.find('.rail .missing').text())
       .toContain('The report cannot place this finding in a process')
   })
+
+  it('badges a consolidated lead, lists what it absorbed, and hides the absorbed by default', async () => {
+    const decided = { group_id: 'CG-1', relation: 'shared_cause' as const, basis_sha1: 'b', decided_by: 'auditor' as const, decided_at: '2026-09-09T00:00:00Z' }
+    const wrapper = await mountTab([
+      finding('F-1', { consolidation: { ...decided, role: 'lead', members: ['F-2'], narrative_pending: true } }),
+      finding('F-2', { title: 'Inactive vendor paid', consolidation: { ...decided, role: 'absorbed', into: 'F-1' } }),
+      finding('F-3', { auditor_confirmed: false }),
+    ])
+
+    // The register carries the lead and the ordinary draft; the absorbed one
+    // is reported under its lead and stays behind the toggle.
+    expect(wrapper.findAll('.row .meta .id').map(node => node.text())).toEqual(['F-1', 'F-3'])
+    expect(wrapper.find('.absorbed-toggle').text()).toBe('Show absorbed (1)')
+    expect(wrapper.find('[data-testid="lead-badge"]').text()).toContain('Consolidated: 1 procedure')
+    expect(wrapper.find('[data-testid="narrative-pending"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="lead-members"]').text()).toContain('Inactive vendor paid')
+    // Confirm-all counts the register, never the absorbed: one draft is owed.
+    expect(wrapper.find('.page-head').text()).toContain('Confirm 1')
+
+    await wrapper.find('.absorbed-toggle').trigger('click')
+    expect(wrapper.findAll('.row .meta .id').map(node => node.text())).toEqual(['F-1', 'F-2', 'F-3'])
+    await wrapper.findAll('.list-body .row')[1].trigger('click')
+    await flushPromises()
+    const bar = wrapper.find('[data-testid="absorbed-into"]')
+    expect(bar.text()).toContain('F-1')
+    expect(wrapper.findAll('button').some(node => node.text() === 'Restore')).toBe(true)
+    expect(wrapper.findAll('button').some(node => node.text() === 'Confirm for reporting')).toBe(false)
+  })
 })

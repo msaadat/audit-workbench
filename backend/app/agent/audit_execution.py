@@ -21,6 +21,8 @@ from collections.abc import Mapping
 
 from .. import (
     cycle_measurement,
+    finding_consolidation,
+    findings as findings_module,
     planning_delta,
     cycle_rulesets,
     cycle_vouching,
@@ -72,6 +74,7 @@ from .context import (
     apm_table_profile_candidates,
     cycle_scope,
     delta_review_scope,
+    finding_consolidation_scope,
     finding_draft_scope,
     planning_context_scope,
     rcm_scope,
@@ -446,6 +449,8 @@ class AuditWorkflowExecution(ActionExecution):
         calculated = (
             20 + 4 * len(self.ws.rcm) + 4 * test_count
             + 2 * qa_pairs + 2 * eligible_findings
+            # One consolidation turn once there are two drafts to compare.
+            + (1 if eligible_findings >= 2 or len(self.ws.findings) >= 2 else 0)
         )
         document_scope = dict(
             (self.run.get("workflow") or {}).get("scope") or {}
@@ -800,6 +805,10 @@ class AuditWorkflowExecution(ActionExecution):
             exception_observations = sum(
                 item.get("outcome") == "exception" for item in subject.observations
             )
+            covered = sum(
+                item.get("outcome") == "exception" and bool(item.get("covered_by"))
+                for item in subject.observations
+            )
             return {
                 "status": (
                     "completed_with_issues"
@@ -811,11 +820,21 @@ class AuditWorkflowExecution(ActionExecution):
                     f"Rolled results into {counted(len(rows), 'RCM row')}. "
                     f"Recorded {counted(exceptions, 'exception')} across "
                     f"{counted(exception_observations, 'exception observation')}."
+                    + (
+                        f" {counted(covered, 'observation')} "
+                        f"{verb(covered, 'is', 'are')} covered by a duplicate "
+                        "test on the same row and will not be drafted separately."
+                        if covered else ""
+                    )
                 ),
                 "metrics": [
                     {"label": "RCM rows", "value": len(rows)},
                     {"label": "Exceptions", "value": exceptions},
                     {"label": "Exception observations", "value": exception_observations},
+                    *(
+                        [{"label": "Covered by a duplicate test", "value": covered}]
+                        if covered else []
+                    ),
                 ],
                 # Where the exceptions landed, worst first — the question an
                 # auditor asks the moment fieldwork stops.
@@ -851,6 +870,48 @@ class AuditWorkflowExecution(ActionExecution):
                             str(item.get("id") or ""),
                         ),
                     )
+                ][:HIGHLIGHT_LIMIT],
+                "artifact_refs": refs,
+            }
+        if capability_id == "findings.consolidated":
+            basis = finding_consolidation.basis_sha1(subject)
+            suggestion = finding_consolidation.load(subject, basis) or {}
+            groups = list(suggestion.get("groups") or [])
+            undecided = finding_consolidation.undecided_groups(suggestion)
+            entity_backed = sum(group.get("basis") == "entity" for group in groups)
+            process_only = len(groups) - entity_backed
+            return {
+                "status": "needs_review" if undecided else state,
+                "headline": "Consolidation review",
+                "summary": (
+                    (
+                        f"Suggested {counted(len(groups), 'consolidation')}: "
+                        f"{entity_backed} backed by shared records, {process_only} by a "
+                        f"shared process. {counted(len(undecided), 'suggestion')} "
+                        f"{verb(len(undecided), 'awaits', 'await')} a decision on the "
+                        "Findings page."
+                    )
+                    if groups
+                    else "Reviewed the draft findings for consolidation; each stands on its own."
+                ),
+                "metrics": [
+                    {"label": "Groups suggested", "value": len(groups)},
+                    {"label": "Entity-backed", "value": entity_backed},
+                    {"label": "Process-only", "value": process_only},
+                    {"label": "Undecided", "value": len(undecided)},
+                ],
+                "highlights": [
+                    {
+                        "severity": "warning",
+                        "label": str(group.get("proposed_title") or group.get("group_id") or ""),
+                        "detail": (
+                            f"{counted(len(group.get('finding_ids') or []), 'finding')}, "
+                            f"{narration.humanize(str(group.get('relation') or ''))}. "
+                            + str(group.get("rationale") or "")
+                        ),
+                        "artifact_ref": f"finding:{group.get('lead_finding_id') or ''}",
+                    }
+                    for group in undecided
                 ][:HIGHLIGHT_LIMIT],
                 "artifact_refs": refs,
             }
@@ -2037,6 +2098,40 @@ class AuditWorkflowExecution(ActionExecution):
         # Re-derived from the run's durable scope for the same reason the
         # test binder re-derives its named ids: the unit record carries a hash
         # of its input, not the input.
+        # A consolidated lead is redrafted from every member's observation. The
+        # lead is the finding drafted from this observation that carries
+        # members; its siblings are the members' own source observations, and
+        # the brief is what the auditor accepted when they merged.
+        lead = next(
+            (
+                item
+                for item in self.ws.findings
+                if str(item.get("source_observation_id") or "") == observation_id
+                and finding_consolidation.is_lead(item)
+            ),
+            None,
+        )
+        sibling_ids: tuple[str, ...] = ()
+        brief: dict | None = None
+        if lead is not None:
+            members = findings_module.consolidation_members(self.ws, lead)
+            sibling_ids = tuple(
+                str(member.get("source_observation_id") or "")
+                for member in members
+                if member.get("source_observation_id")
+            )
+            consolidation = dict(lead.get("consolidation") or {})
+            brief = {
+                "lead_finding_id": str(lead["id"]),
+                "group_id": str(consolidation.get("group_id") or ""),
+                "relation": str(consolidation.get("relation") or ""),
+                "proposed_title": str(consolidation.get("proposed_title") or lead.get("title") or ""),
+                "root_cause_hypothesis": str(consolidation.get("root_cause_hypothesis") or ""),
+                "members": [
+                    {"id": str(member["id"]), "title": str(member.get("title") or "")}
+                    for member in members
+                ],
+            }
         target = FindingExecutorTarget(
             self.ws,
             self.run["id"],
@@ -2045,6 +2140,7 @@ class AuditWorkflowExecution(ActionExecution):
             in named_observation_ids(
                 self.ws, (self.run.get("workflow") or {}).get("scope") or {}
             ),
+            lead_finding_id=str(lead["id"]) if lead is not None else None,
         )
         task = self.add_task("findings", "workflow:findings", "Eligible finding drafts")
 
@@ -2058,6 +2154,8 @@ class AuditWorkflowExecution(ActionExecution):
                     self.ws,
                     observation_id,
                     instruction=workflow_scope(self.run).get("instruction"),
+                    sibling_observation_ids=sibling_ids,
+                    consolidation_brief=brief,
                 ),
             )
 
@@ -2124,6 +2222,148 @@ class AuditWorkflowExecution(ActionExecution):
             # capability's readiness only holds once every unit has committed.
             readiness_provider=None,
             on_committed=on_committed,
+        )
+
+    def _bind_finding_consolidation(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the one consolidation-review unit to the pipeline.
+
+        Proposal-only, following ``_bind_delta_review``: one model turn over
+        every draft, a persisted proposal, approval in permission mode, and
+        no executor. What outlives the run is the suggestion set written on
+        commit through ``finding_consolidation.save``, every group undecided;
+        the Findings page is where a group is accepted or dismissed.
+        """
+        self.ws = subject
+        payload = dict(unit.get("input_payload") or {})
+        basis = str(payload.get("basis_sha1") or finding_consolidation.basis_sha1(self.ws))
+        finding_ids = [str(value) for value in payload.get("finding_ids") or []] or [
+            ref.split(":", 1)[1]
+            for ref in unit.get("parent_refs") or []
+            if str(ref).startswith("finding:")
+        ]
+        known = {str(item.get("id")) for item in self.ws.findings}
+        expected = parent_hashes(
+            self.ws, [f"finding:{value}" for value in finding_ids if value in known]
+        )
+        task = self.add_task(
+            "finding_consolidation", "workflow:finding_consolidation", "Finding consolidation"
+        )
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                finding_consolidation_scope(
+                    self.ws,
+                    instruction=workflow_scope(self.run).get("instruction"),
+                ),
+            )
+
+        def approval_provider(proposal):
+            groups = list(proposal.get("groups") or [])
+            if not groups:
+                # Nothing to approve: every draft stands alone, and asking the
+                # auditor to approve an empty list is a click for nothing.
+                return dict(proposal)
+            proposals = [
+                self.proposal_item(
+                    str(group.get("proposed_title") or "Suggested consolidation"),
+                    str(group.get("rationale") or ""),
+                    dict(group),
+                )
+                for group in groups
+            ]
+            accepted = self.request_approval("finding_consolidation", task, proposals)
+            return {
+                "groups": [dict(item["spec"]) for item in accepted],
+                "singletons": list(proposal.get("singletons") or []),
+            }
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            record = UnitSidecarStore(self.ws, self.run["id"]).load_proposal(
+                unit["id"], outcome.proposal_reference
+            ) or {}
+            proposal = dict(record.get("proposal") or {})
+            saved = finding_consolidation.save(
+                self.ws, basis, proposal, run_id=self.run["id"]
+            )
+            groups = list(saved.get("groups") or [])
+            members = sum(len(group.get("finding_ids") or []) for group in groups)
+            self.task_detail(
+                task,
+                f"Suggested {counted(len(groups), 'consolidation')} across "
+                f"{counted(members, 'finding')}.",
+            )
+            self.task_status(task, "completed")
+            narration.say(
+                self.run,
+                self.emit,
+                (
+                    f"Suggested {counted(len(groups), 'consolidation')} across "
+                    f"{counted(members, 'finding')}. Review them on the Findings page; "
+                    "nothing merges until you accept a suggestion."
+                    if groups
+                    else "Reviewed the draft findings for consolidation: each one "
+                    "stands on its own."
+                ),
+            )
+            self.emit(
+                "workspace_changed",
+                {"kind": "finding", "id": "consolidation", "action": "updated"},
+            )
+
+        def failure_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            self.task_status(task, "failed", str(error))
+            return None
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="reporting.finding_consolidation",
+                executor_id=None,
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                    "basis_sha1": basis,
+                    "finding_ids": finding_ids,
+                },
+                activity={
+                    "artifact_refs": [f"finding:{value}" for value in finding_ids],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected,
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=(
+                    "finding_consolidation" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=None,
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=None,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(
+                self.ws, workflow_scope(self.run)
+            ),
+            on_committed=on_committed,
+            failure_handler=failure_handler,
         )
 
     def _bind_working_papers(
@@ -2428,7 +2668,10 @@ _PARTIAL_DEPENDENCIES = {
     # wait on an approval that stage is not allowed to make.
     "tests.specified": {"tests.cycle_ruleset_approved"},
     "results.rolled_up": {"fieldwork.executed"},
-    "report.working_draft": {"findings.drafted"},
+    # A consolidation suggestion the auditor has not decided settles
+    # ``review_required`` and must never withhold the report: the report
+    # carries every undecided draft exactly as it did before the stage existed.
+    "report.working_draft": {"findings.drafted", "findings.consolidated"},
     "audit.verified": {
         "working_papers.generated",
         "report.working_draft",
@@ -2616,6 +2859,10 @@ def build_audit_workflow_runner(
         "findings.drafted": (
             adapter._bind_finding,
             {"worker": "reporting.finding", "executor": "reporting.finding"},
+        ),
+        "findings.consolidated": (
+            adapter._bind_finding_consolidation,
+            {"worker": "reporting.finding_consolidation", "executor": None},
         ),
     }
     # Capabilities whose every unit is deterministic, bound through the

@@ -403,3 +403,116 @@ def annotate(workspace: Workspace, *, persist: bool = True) -> dict:
         workspace.save()
     outcome["persisted"] = bool(persist and changed)
     return outcome
+
+
+def marks_are_current(workspace: Workspace) -> bool:
+    """Whether every executed test's mark was made against its current result.
+
+    The sweep runs after each batch, but a roll-up on a resumed run can reach
+    a test whose result moved after its last sweep. A mark made against an
+    older result says nothing about the records the test flags now.
+    """
+    for item in workspace.data_tests:
+        last_run = item.get("last_run") or {}
+        if not last_run.get("id"):
+            continue
+        mark = item.get("redundancy") or {}
+        if not mark:
+            return False
+        expected = str(last_run.get("result_sha1") or "")
+        if expected and str(mark.get("result_sha1") or "") != expected:
+            return False
+    return True
+
+
+def current_marks(workspace: Workspace) -> dict[str, dict]:
+    """Each test's mark, re-scanned in memory when any persisted one is stale."""
+    if marks_are_current(workspace):
+        return {
+            str(item["id"]): dict(item.get("redundancy") or {})
+            for item in workspace.data_tests
+        }
+    return dict(annotate(workspace, persist=False)["marks"])
+
+
+def row_duplicate_groups(
+    workspace: Workspace,
+    rcm_id: str,
+    *,
+    marks: dict[str, dict] | None = None,
+) -> list[list[str]]:
+    """Test ids on this row that flag the same records, lead first.
+
+    Built from the persisted marks. A group is the connected set of tests on
+    the row joined by ``confirmed`` ``identical`` or ``subsumed_by`` peers:
+    three tests that measure the same control assertion three times are one
+    measurement, and only one of them needs to become an observation. Overlap
+    is deliberately not a joining relation — two tests that share half their
+    records still say different things — and a peer on another row never
+    joins, because a cross-row agreement is a root-cause question for the
+    consolidation pass rather than a duplicate to collapse.
+
+    Lead order: a subsuming test first (a ``subsumed_by`` chain resolves to
+    the outermost subsuming test), then the earliest ``created``, then id.
+    """
+    marks = marks if marks is not None else current_marks(workspace)
+    on_row = {
+        str(item["id"]): item
+        for item in workspace.data_tests
+        if str(item.get("rcm_id") or "") == str(rcm_id)
+    }
+    if len(on_row) < 2:
+        return []
+    # The register keeps creation order, which is finer than the second-
+    # resolution ``created`` stamp two tests generated together share.
+    position = {test_id: index for index, test_id in enumerate(on_row)}
+    parent = {test_id: test_id for test_id in on_row}
+
+    def find(node: str) -> str:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    # ``subsumes[a]`` holds the tests whose flagged records ``a`` contains.
+    subsumes: dict[str, set[str]] = {test_id: set() for test_id in on_row}
+    for test_id in on_row:
+        for peer in (marks.get(test_id) or {}).get("peers") or []:
+            other = str(peer.get("test_id") or "")
+            if other not in on_row or peer.get("confidence") != "confirmed":
+                continue
+            relation = peer.get("relation")
+            if relation == IDENTICAL:
+                pass
+            elif relation == SUBSUMED_BY:
+                subsumes[other].add(test_id)
+            elif relation == SUBSUMES:
+                subsumes[test_id].add(other)
+            else:
+                continue
+            left, right = find(test_id), find(other)
+            if left != right:
+                parent[right] = left
+
+    components: dict[str, list[str]] = {}
+    for test_id in on_row:
+        components.setdefault(find(test_id), []).append(test_id)
+
+    def lead_key(test_id: str) -> tuple:
+        # Outermost first: a test nothing on the row subsumes, ranked by how
+        # many others it contains, so a chain resolves to its widest member.
+        contained_by = sum(test_id in others for others in subsumes.values())
+        return (
+            contained_by,
+            -len(subsumes[test_id]),
+            str(on_row[test_id].get("created") or ""),
+            position[test_id],
+            test_id,
+        )
+
+    groups = [
+        sorted(members, key=lead_key)
+        for members in components.values()
+        if len(members) > 1
+    ]
+    return sorted(groups, key=lambda group: group[0])

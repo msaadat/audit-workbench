@@ -21,6 +21,7 @@ from . import (
 )
 from .text import counted, verb
 from .documents import append_activity
+from . import finding_consolidation
 from .findings import CAUSE_SECTION_KEYS, artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
 
@@ -117,13 +118,29 @@ def hydrate(workspace: Workspace) -> dict:
     return current
 
 
-def _safe_finding(item: dict) -> dict:
+def _safe_finding(item: dict, workspace: Workspace | None = None) -> dict:
+    consolidation = dict(item.get("consolidation") or {})
+    supporting = []
+    if workspace is not None and consolidation.get("role") == "lead":
+        # The absorbed members, as the report lists them under the lead: the
+        # procedures that observed the same issue, by title and test.
+        by_id = {str(row.get("id")): row for row in workspace.findings}
+        supporting = [
+            {
+                "id": str(member["id"]),
+                "title": str(member.get("title") or ""),
+                "severity": str(member.get("severity") or ""),
+                "test_refs": [str(value) for value in member.get("test_refs") or []],
+            }
+            for value in consolidation.get("members") or []
+            if (member := by_id.get(str(value))) is not None
+        ]
     return {
         key: item.get(key)
         for key in (
             "id", "title", "severity", "narrative", "management_response",
-            "rcm_refs", "test_refs", "execution_refs", "cause_pending",
-            "auditor_confirmed", "source",
+            "rcm_refs", "rcm_semantic_refs", "test_refs", "execution_refs",
+            "cause_pending", "auditor_confirmed", "source",
         )
     } | {
         "evidence": [
@@ -133,7 +150,19 @@ def _safe_finding(item: dict) -> dict:
                 "page": ref.get("page"), "field": ref.get("field"),
             }
             for ref in item.get("evidence_refs") or []
-        ]
+        ],
+        "consolidation": (
+            {
+                "role": consolidation.get("role"),
+                "relation": consolidation.get("relation"),
+                "group_id": consolidation.get("group_id"),
+                "members": list(consolidation.get("members") or []),
+                "into": consolidation.get("into"),
+            }
+            if consolidation
+            else None
+        ),
+        "supporting_procedures": supporting,
     }
 
 
@@ -478,9 +507,13 @@ def _build_context(workspace: Workspace, *, workflow: dict | None = None) -> dic
             totals[key] += int(rollup.get(key) or 0)
     context = _planning_context(workspace)
     linked_data_tests = [item for item in workspace.data_tests if item.get("rcm_id")]
+    # An absorbed finding is reported under its lead as a supporting procedure
+    # and never as a row of its own: it left the report, not the workspace.
     supported = [
         item for item in workspace.findings
-        if item.get("auditor_confirmed") and not support_issues(workspace, item)
+        if item.get("auditor_confirmed")
+        and not finding_consolidation.is_absorbed(item)
+        and not support_issues(workspace, item)
     ]
     risk_distribution = {
         rating: sum(
@@ -516,8 +549,16 @@ def _build_context(workspace: Workspace, *, workflow: dict | None = None) -> dic
             }
             for item in workspace.rcm
         ],
-        "findings": [_safe_finding(item) for item in supported],
-        "draft_findings_excluded": [item["id"] for item in workspace.findings if item not in supported],
+        "findings": [_safe_finding(item, workspace) for item in supported],
+        "draft_findings_excluded": [
+            item["id"] for item in workspace.findings
+            if item not in supported and not finding_consolidation.is_absorbed(item)
+        ],
+        "absorbed_findings": [
+            {"id": item["id"], "into": (item.get("consolidation") or {}).get("into")}
+            for item in workspace.findings
+            if finding_consolidation.is_absorbed(item)
+        ],
         "scope_limitations": [
             {"rcm_id": row["id"], "test_id": test["id"], "text": test.get("scope_limitations")}
             for row in workspace.rcm
@@ -811,10 +852,13 @@ def _limitation_texts(context: dict) -> list[str]:
 def _finding_processes(context: dict, item: dict) -> str:
     """The RCM process name(s) one finding sits under."""
     refs = {str(value) for value in item.get("rcm_refs") or []}
+    # A regenerated matrix keeps a row's semantic id while changing its id, so
+    # the semantic refs are what still name the process once the id is gone.
+    semantic = {str(value) for value in item.get("rcm_semantic_refs") or []}
     names = {
         str(row.get("process") or "").strip()
         for row in context.get("rcm") or []
-        if str(row.get("id")) in refs
+        if str(row.get("id")) in refs or str(row.get("semantic_id") or "") in semantic
     }
     return "; ".join(sorted(value for value in names if value))
 
@@ -973,6 +1017,24 @@ def _detailed_findings(context: dict) -> str:
             f"**Reference:** {_finding_link(context['workspace']['id'], item)}",
             _finding_narrative(item),
         ]
+        supporting = list(item.get("supporting_procedures") or [])
+        if supporting:
+            # A consolidated finding names the procedures it absorbed, so the
+            # reader can see each control that observed the issue without the
+            # issue being reported once per control.
+            parts.append(
+                "**Supporting procedures:** the following findings were consolidated "
+                "into this one.\n\n"
+                + "\n".join(
+                    f"- {member.get('title') or member.get('id')}"
+                    + (
+                        f" (tests {', '.join(member.get('test_refs') or [])})"
+                        if member.get("test_refs")
+                        else ""
+                    )
+                    for member in supporting
+                )
+            )
         if response:
             parts.append(f"**Management response:** {response}")
         blocks.append("\n\n".join(parts))
@@ -1508,6 +1570,20 @@ def _quality_checks(
     supported_findings = []
     for finding in workspace.findings:
         ref = f"finding:{finding['id']}"
+        if finding_consolidation.is_absorbed(finding):
+            # Reported under its lead, so it is neither a draft the report
+            # lacks nor a finding the report should carry. A confirmed absorbed
+            # finding is a contradiction the routes refuse; if one is on disk
+            # anyway, the report must not be verifiable over it.
+            if finding.get("auditor_confirmed"):
+                issues.append(_issue(
+                    "absorbed_finding_confirmed", "error",
+                    f"{finding['id']} is absorbed into "
+                    f"{(finding.get('consolidation') or {}).get('into')} but is auditor-confirmed; "
+                    "restore it or withdraw the confirmation.",
+                    [ref],
+                ))
+            continue
         blockers = support_issues(workspace, finding)
         if not finding.get("auditor_confirmed"):
             issues.append(_issue(
@@ -1596,6 +1672,24 @@ def _quality_checks(
                 "consider merging them or distinguishing them.",
                 [f"finding:{first['id']}", f"finding:{second['id']}"],
             ))
+    # Suggested consolidations nobody has decided are advisory, like the title
+    # check above: the report carries every undecided draft as it always did,
+    # and this points at the review the auditor has not yet made.
+    undecided = finding_consolidation.undecided_groups(
+        finding_consolidation.load(workspace, finding_consolidation.basis_sha1(workspace))
+    )
+    if undecided:
+        issues.append(_issue(
+            "unreviewed_consolidation", "warning",
+            f"{counted(len(undecided), 'suggested consolidation')} "
+            f"{verb(len(undecided), 'awaits', 'await')} a decision on the Findings page; "
+            "the report carries the findings separately until then.",
+            [
+                f"finding:{finding_id}"
+                for group in undecided
+                for finding_id in group.get("finding_ids") or []
+            ],
+        ))
     exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)
 
     if not text.strip():

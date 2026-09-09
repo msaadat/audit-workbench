@@ -1,8 +1,8 @@
 """Reporting capability group of the audit workflow.
 
 Owns the post-roll-up outcomes of the authoritative audit graph:
-``findings.drafted``, ``working_papers.generated``, ``report.working_draft``,
-and ``audit.verified``.
+``findings.drafted``, ``findings.consolidated``, ``working_papers.generated``,
+``report.working_draft``, and ``audit.verified``.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry keys for its
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from ... import findings, rcm_execution, report
+from ... import finding_consolidation, findings, rcm_execution, report
 from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import (
@@ -25,6 +25,7 @@ from ..workflow import (
 )
 from ..workflows import audit as audit_workflow
 from ._shared import all_tests as _all_tests
+from ._shared import covered_observations as _covered_observations
 from ._shared import eligible_observations as _eligible_observations
 from ._shared import named_observation_ids as _named_observation_ids
 from ._shared import rows as _rows
@@ -32,6 +33,7 @@ from ._shared import single_unit as _single
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "findings.drafted",
+    "findings.consolidated",
     "working_papers.generated",
     "report.working_draft",
     "audit.verified",
@@ -74,6 +76,9 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     ]
     unsupported = _unsupported_observations(workspace, eligible)
     details: dict = {"eligible": len(eligible)}
+    covered = _covered_observations(workspace, scope)
+    if covered:
+        details["covered"] = len(covered)
     if unsupported:
         details["unsupported"] = sorted(unsupported)
         details["unsupported_issues"] = {
@@ -306,8 +311,94 @@ def _audit_verified() -> Capability:
     )
 
 
+# --------------------------------------------------------------------------- #
+# findings.consolidated
+# --------------------------------------------------------------------------- #
+def _consolidation_ready(workspace: Workspace, _scope: dict) -> Readiness:
+    """Whether the current draft set has been reviewed for consolidation.
+
+    Satisfied when every group in the current-basis suggestion has a
+    decision, or when there is nothing to ask (fewer than two drafts).
+    ``review_required`` while undecided groups exist: the report proceeds on
+    the partial edge and carries every undecided draft, so an unreviewed
+    suggestion withholds nothing. ``missing`` when no suggestion exists for
+    the current basis, which is what a changed finding set looks like.
+    """
+    drafts = finding_consolidation.draft_findings(workspace)
+    if len(drafts) < 2:
+        return Readiness("satisfied", details={"drafts": len(drafts)})
+    basis = finding_consolidation.basis_sha1(workspace)
+    suggestion = finding_consolidation.load(workspace, basis)
+    if suggestion is None:
+        return Readiness(
+            "missing",
+            (f"{counted(len(drafts), 'draft finding')} have not been reviewed for consolidation",),
+            details={"drafts": len(drafts), "basis_sha1": basis},
+        )
+    groups = list(suggestion.get("groups") or [])
+    undecided = finding_consolidation.undecided_groups(suggestion)
+    if undecided:
+        return Readiness(
+            "review_required",
+            (
+                f"{counted(len(undecided), 'suggested consolidation')} "
+                f"{verb(len(undecided), 'awaits', 'await')} a decision",
+            ),
+            details={
+                "drafts": len(drafts),
+                "basis_sha1": basis,
+                "groups": len(groups),
+                "undecided": len(undecided),
+            },
+        )
+    return Readiness(
+        "satisfied",
+        details={"drafts": len(drafts), "basis_sha1": basis, "groups": len(groups)},
+    )
+
+
+def _consolidation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    """One unit per engagement, and only when the basis has no suggestion."""
+    drafts = finding_consolidation.draft_findings(workspace)
+    if len(drafts) < 2:
+        return []
+    basis = finding_consolidation.basis_sha1(workspace)
+    forced = str(scope.get("generation_mode") or "") == "force"
+    if finding_consolidation.load(workspace, basis) is not None and not forced:
+        return []
+    finding_ids = [str(item.get("id") or "") for item in drafts]
+    return [
+        UnitSpec(
+            "finding_consolidation",
+            "finding_consolidation",
+            "Review findings for consolidation",
+            tuple(f"finding:{value}" for value in finding_ids),
+            {"basis_sha1": basis, "finding_ids": finding_ids},
+        )
+    ]
+
+
+def _findings_consolidated() -> Capability:
+    return Capability(
+        "findings.consolidated",
+        "finding_consolidation",
+        "Finding consolidation",
+        "finding_consolidation",
+        audit_workflow.dependencies("findings.consolidated"),
+        _consolidation_ready,
+        _consolidation_units,
+        context="reporting.finding_consolidation",
+        invalidate_on=("findings",),
+        # Proposal-only: nothing is produced, and the suggestion set the unit
+        # persists is decided on the Findings page rather than committed.
+        produces=(),
+        accepts_refs=("finding",),
+    )
+
+
 _BUILDERS = {
     "findings.drafted": _findings_drafted,
+    "findings.consolidated": _findings_consolidated,
     "working_papers.generated": _working_papers_generated,
     "report.working_draft": _report_working_draft,
     "audit.verified": _audit_verified,

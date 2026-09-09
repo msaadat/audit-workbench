@@ -17,10 +17,14 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditFinding, EvidenceRef, FindingsPayload, WorkspaceSummary } from '../types'
+import type {
+  AuditFinding, ConsolidationGroup, ConsolidationPayload, ConsolidationRelation, EvidenceRef,
+  FindingsPayload, WorkspaceSummary,
+} from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
+import ConsolidationPanel from './findings/ConsolidationPanel.vue'
 import FindingNarrative from './findings/FindingNarrative.vue'
 import FindingsList from './findings/FindingsList.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -63,14 +67,28 @@ const riskPicker = ref<InstanceType<typeof Popover> | null>(null)
 const testPicker = ref<InstanceType<typeof Popover> | null>(null)
 const evidencePicker = ref<InstanceType<typeof Popover> | null>(null)
 
+/** The consolidation suggestions for the current draft set, or null before load. */
+const consolidation = ref<ConsolidationPayload | null>(null)
+const consolidating = ref(false)
+const manualConsolidation = ref(false)
+/** Absorbed findings leave the register by default; the toggle brings them back. */
+const showAbsorbed = ref(false)
+
 const selected = computed(() => data.value?.items.find(item => item.id === selectedId.value) ?? null)
-const items = computed(() => data.value?.items ?? [])
+const allItems = computed(() => data.value?.items ?? [])
+function isAbsorbed(item: AuditFinding): boolean {
+  return item.consolidation?.role === 'absorbed'
+}
+const absorbed = computed(() => allItems.value.filter(isAbsorbed))
+// The register the page counts and confirms: findings that stand on their own.
+// An absorbed finding is reported under its lead and is not a row of its own.
+const items = computed(() => allItems.value.filter(item => !isAbsorbed(item)))
 // The bar counts the whole register, not the filtered list: a count that shrank
 // as you filtered by it could never be clicked back out of.
 const status = computed(() => findingsStatus(items.value))
-const statusBusy = computed(() => generatingFindings.value || confirmingAll.value)
+const statusBusy = computed(() => generatingFindings.value || confirmingAll.value || consolidating.value)
 const scoped = computed(() => statusFilter.value.reduce<AuditFinding[]>(
-  (rows, key) => filterFindings(rows, key), items.value,
+  (rows, key) => filterFindings(rows, key), showAbsorbed.value ? allItems.value : items.value,
 ))
 const filtered = computed(() => {
   const needle = search.value.trim().toLowerCase()
@@ -95,6 +113,14 @@ const riskLinks = computed(() => (selected.value?.rcm_refs ?? []).map(id => ({
   id, risk: (data.value?.rcm ?? []).find(row => row.id === id)?.risk ?? '',
 })))
 const owed = computed(() => (selected.value ? openItems(selected.value) : []))
+/** The absorbed findings a lead carries, resolved against this payload. */
+const memberLinks = computed(() => (selected.value?.consolidation?.members ?? []).map(id => ({
+  id, title: allItems.value.find(item => item.id === id)?.title ?? id,
+})))
+const absorbedInto = computed(() => {
+  const into = selected.value?.consolidation?.into
+  return into ? { id: into, title: allItems.value.find(item => item.id === into)?.title ?? into } : null
+})
 const authorship = computed(() => {
   const item = selected.value
   if (!item) return ''
@@ -117,8 +143,126 @@ function fail(summary: string, error: unknown) {
 async function reload(preferred?: string) {
   data.value = await api.get<FindingsPayload>(`/api/workspaces/${props.workspace.id}/findings`)
   const requested = preferred || String(route.query.finding || '')
-  if (requested && data.value.items.some(item => item.id === requested)) selectedId.value = requested
-  else if (!selected.value) selectedId.value = data.value.items[0]?.id ?? null
+  const wanted = data.value.items.find(item => item.id === requested)
+  if (wanted) {
+    // An absorbed finding is hidden by default; asking for it by id is
+    // asking to see it, so the toggle opens rather than the selection sliding
+    // to the first visible row.
+    if (isAbsorbed(wanted)) showAbsorbed.value = true
+    selectedId.value = requested
+  } else if (!selected.value) selectedId.value = data.value.items[0]?.id ?? null
+  // Read after the register so a suggestion never names a finding the page
+  // has not loaded. A failure here leaves the panel closed, never the page.
+  try {
+    const payload = await api.get<ConsolidationPayload>(`/api/workspaces/${props.workspace.id}/findings/consolidation`)
+    consolidation.value = payload && typeof payload.drafts === 'number' ? payload : null
+  } catch { consolidation.value = null }
+}
+
+/** The findings a manual group may pick from: everything not already absorbed. */
+const consolidationCandidates = computed(() => items.value)
+
+async function refreshConsolidation() {
+  consolidating.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      'Review the draft findings for consolidation.',
+      'act', launchMode.value,
+      { command: 'consolidate_findings', source: 'tab_button' },
+    )
+    agent.openPanel()
+    toast.add({
+      severity: 'success',
+      summary: 'Reviewing findings for consolidation',
+      detail: 'Suggestions appear above the register when the review lands. Nothing merges until you accept one.',
+      life: 4000,
+    })
+  } catch (error) { fail('Could not start the consolidation review', error) }
+  finally { consolidating.value = false }
+}
+
+/**
+ * The lead keeps its own narrative until the finding worker has redrafted it
+ * from every member observation. Naming the finding is the instruction to
+ * redraft it; the run is queued through the assistant like every other draft.
+ */
+async function redraftLead(lead: AuditFinding) {
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Redraft finding ${lead.id} from its consolidated observations.`,
+      'act', launchMode.value,
+      { command: 'draft_findings', source: 'tab_button', runContext: { finding_id: lead.id } },
+    )
+    agent.openPanel()
+  } catch (error) {
+    toast.add({
+      severity: 'warn', summary: 'Consolidated, narrative pending redraft',
+      detail: `The narrative of ${lead.id} still reads as one draft. ${error instanceof ApiError ? error.message : String(error)}`,
+      life: 8000,
+    })
+  }
+}
+
+async function acceptConsolidation(group: ConsolidationGroup, choice: { lead_finding_id: string; title: string; include_confirmed: boolean }) {
+  const proceed = async () => {
+    consolidating.value = true
+    try {
+      const lead = await api.post<AuditFinding>(
+        `/api/workspaces/${props.workspace.id}/findings/consolidation/${group.group_id}/accept`, choice,
+      )
+      await reload(lead.id)
+      emit('changed')
+      toast.add({ severity: 'success', summary: `Consolidated into ${lead.id}`, detail: 'The absorbed findings are kept and report under the lead.', life: 3500 })
+      await redraftLead(lead)
+    } catch (error) { fail('Could not accept the consolidation', error) }
+    finally { consolidating.value = false }
+  }
+  if (!choice.include_confirmed) return proceed()
+  confirm.require({
+    header: 'Consolidate a confirmed finding',
+    message: 'This group includes an auditor-confirmed finding. Merging it produces one unconfirmed finding to confirm again. Continue?',
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Consolidate' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: () => void proceed(),
+  })
+}
+
+async function dismissConsolidation(group: ConsolidationGroup) {
+  consolidating.value = true
+  try {
+    consolidation.value = await api.post<ConsolidationPayload>(
+      `/api/workspaces/${props.workspace.id}/findings/consolidation/${group.group_id}/dismiss`,
+    )
+    toast.add({ severity: 'info', summary: 'Suggestion dismissed', detail: 'It will not be raised again until the findings change.', life: 3000 })
+  } catch (error) { fail('Could not dismiss the suggestion', error) }
+  finally { consolidating.value = false }
+}
+
+async function consolidateSelected(choice: { finding_ids: string[]; lead_finding_id: string; relation: ConsolidationRelation; title: string; include_confirmed: boolean }) {
+  consolidating.value = true
+  try {
+    const lead = await api.post<AuditFinding>(`/api/workspaces/${props.workspace.id}/findings/consolidate`, choice)
+    manualConsolidation.value = false
+    await reload(lead.id)
+    emit('changed')
+    toast.add({ severity: 'success', summary: `Consolidated into ${lead.id}`, life: 3000 })
+    await redraftLead(lead)
+  } catch (error) { fail('Could not consolidate the findings', error) }
+  finally { consolidating.value = false }
+}
+
+async function restoreFinding(item: AuditFinding) {
+  consolidating.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/findings/${item.id}/unconsolidate`)
+    await reload(item.id)
+    emit('changed')
+    toast.add({ severity: 'success', summary: `${item.id} restored as a draft`, life: 2500 })
+  } catch (error) { fail('Could not restore the finding', error) }
+  finally { consolidating.value = false }
 }
 
 onMounted(() => void reload().catch(error => fail('Could not load findings', error)))
@@ -310,6 +454,18 @@ const menuItems = computed(() => [
     disabled: statusBusy.value || agentBusy.value,
     command: () => void draftFromRcm(),
   },
+  {
+    label: 'Consolidate selected…',
+    icon: 'pi pi-objects-column',
+    disabled: statusBusy.value || items.value.length < 2,
+    command: () => { manualConsolidation.value = true },
+  },
+  {
+    label: showAbsorbed.value ? 'Hide absorbed findings' : `Show absorbed (${absorbed.value.length})`,
+    icon: 'pi pi-eye',
+    disabled: !absorbed.value.length,
+    command: () => { showAbsorbed.value = !showAbsorbed.value },
+  },
   { label: 'Finding template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
   {
     label: 'Copy Markdown',
@@ -457,13 +613,35 @@ const staleSentence = computed(() => {
       @filter="statusFilter = ($event as FindingsFilter[])"
     />
 
-    <div v-if="items.length" class="layout">
+    <ConsolidationPanel
+      v-if="allItems.length"
+      :payload="consolidation"
+      :candidates="consolidationCandidates"
+      :busy="consolidating"
+      :agentBusy="agentBusy"
+      :manual="manualConsolidation"
+      @refresh="refreshConsolidation"
+      @accept="acceptConsolidation"
+      @dismiss="dismissConsolidation"
+      @consolidate="consolidateSelected"
+      @closeManual="manualConsolidation = false"
+    />
+
+    <div v-if="allItems.length" class="layout">
       <section class="list-panel">
         <div class="list-head">
           <IconField>
             <InputIcon class="pi pi-search" />
             <InputText v-model="search" size="small" placeholder="Search findings" />
           </IconField>
+          <button
+            v-if="absorbed.length"
+            type="button"
+            class="absorbed-toggle"
+            @click="showAbsorbed = !showAbsorbed"
+          >
+            {{ showAbsorbed ? 'Hide absorbed findings' : `Show absorbed (${absorbed.length})` }}
+          </button>
         </div>
         <div class="list-body">
           <FindingsList :findings="filtered" :selectedId="selectedId" @select="selectedId = $event.id" />
@@ -498,17 +676,36 @@ const staleSentence = computed(() => {
 
         <!-- What is recorded, and what the report can do with it. The two
              checkboxes under the old editor said neither. -->
-        <UiVerdictBar :tone="selected.auditor_confirmed ? 'ok' : 'neutral'" :stale="staleSentence">
+        <UiVerdictBar
+          :tone="absorbedInto ? 'neutral' : selected.auditor_confirmed ? 'ok' : 'neutral'"
+          :stale="staleSentence"
+        >
           <template #found>
-            <template v-if="selected.auditor_confirmed">
+            <template v-if="absorbedInto">
+              <span class="absorbed-note" data-testid="absorbed-into">
+                Absorbed into
+                <button type="button" class="link" @click="selectedId = absorbedInto.id">{{ absorbedInto.id }}</button>
+                · {{ absorbedInto.title }}
+              </span>
+            </template>
+            <template v-else-if="selected.auditor_confirmed">
               <span>Confirmed for reporting</span>
               <span class="meta aw-figure">· {{ when(selected.updated) }}</span>
             </template>
             <span v-else>Not confirmed for reporting</span>
+            <span v-if="selected.consolidation?.role === 'lead'" class="pill lead" data-testid="lead-badge">
+              Consolidated: {{ plural(memberLinks.length, 'procedure') }}
+            </span>
+            <span v-if="selected.consolidation?.role === 'lead' && selected.consolidation?.narrative_pending" class="pill warn" data-testid="narrative-pending">
+              narrative pending redraft
+            </span>
           </template>
 
           <template #recorded>
-            <template v-if="!owed.length">In the report.</template>
+            <template v-if="absorbedInto">
+              Reported under its lead as a supporting procedure; kept here as the record of what its control showed.
+            </template>
+            <template v-else-if="!owed.length">In the report.</template>
             <template v-else>
               Left out of the report until it is supported:
               <template v-for="(item, index) in owed" :key="item.key">
@@ -519,6 +716,15 @@ const staleSentence = computed(() => {
           </template>
 
           <template #actions>
+            <Button
+              v-if="absorbedInto"
+              label="Restore"
+              icon="pi pi-undo"
+              size="small"
+              severity="secondary"
+              :loading="consolidating"
+              @click="restoreFinding(selected)"
+            />
             <Button
               v-if="selected.evidence_warnings?.length"
               label="Re-affirm"
@@ -537,7 +743,7 @@ const staleSentence = computed(() => {
               @click="riskPicker?.toggle($event)"
             />
             <Button
-              v-if="selected.auditor_confirmed"
+              v-if="!absorbedInto && selected.auditor_confirmed"
               label="Withdraw confirmation"
               size="small"
               text
@@ -546,7 +752,7 @@ const staleSentence = computed(() => {
               @click="setConfirmed(false)"
             />
             <Button
-              v-else
+              v-else-if="!absorbedInto"
               label="Confirm for reporting"
               icon="pi pi-check"
               size="small"
@@ -555,6 +761,22 @@ const staleSentence = computed(() => {
             />
           </template>
         </UiVerdictBar>
+
+        <!-- A lead lists what it absorbed, so the reader sees each control
+             that observed the issue without the issue reported once per control. -->
+        <section v-if="memberLinks.length" class="members" data-testid="lead-members">
+          <h3 class="aw-label">Consolidated procedures</h3>
+          <button
+            v-for="member in memberLinks"
+            :key="member.id"
+            type="button"
+            class="card"
+            @click="showAbsorbed = true; selectedId = member.id"
+          >
+            <span class="card-id">{{ member.id }}</span>
+            <span class="clamp">{{ member.title }}</span>
+          </button>
+        </section>
 
         <div class="body">
           <div class="main">
@@ -805,6 +1027,14 @@ const staleSentence = computed(() => {
 .list-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .list-head { display: flex; flex-direction: column; gap: .5rem; padding: .625rem .75rem; border-bottom: 1px solid var(--aw-border); }
 .list-head :deep(.p-iconfield), .list-head :deep(.p-inputtext) { width: 100%; }
+.absorbed-toggle {
+  align-self: flex-start; padding: 0; border: 0; background: none;
+  color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer;
+}
+.absorbed-note { display: inline-flex; align-items: center; gap: .3rem; flex-wrap: wrap; }
+.link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-weight: 600; cursor: pointer; }
+.pill.lead { background: var(--aw-teal-soft); color: var(--aw-teal); margin-left: .5rem; }
+.members { display: flex; flex-direction: column; gap: .4rem; }
 .list-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 
 .detail {

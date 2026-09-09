@@ -91,6 +91,15 @@ COMMANDS: dict[str, Command] = {
             ),
         ),
         Command(
+            "consolidate_findings", "finding_consolidation", "Review findings for consolidation",
+            slash=("consolidate findings", "consolidation"),
+            description="Propose which draft findings report one issue, for the auditor to accept or dismiss.",
+            phrases=(
+                "consolidate the findings", "review the findings for consolidation",
+                "suggest finding consolidations",
+            ),
+        ),
+        Command(
             "generate_report", "report", "Generate report",
             slash=("generate report", "report"),
             description="Prepare evidence-linked audit report working content and run quality checks.",

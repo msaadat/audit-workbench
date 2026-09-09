@@ -459,12 +459,17 @@ def _audit_model_turns(workspace: Workspace) -> int:
         item.get("outcome") == "exception"
         for item in workspace.observations
     )
+    # One turn for the consolidation pass, which only runs over two or more
+    # drafts. Counted from the observations that will become drafts, since
+    # the budget is sized before the drafts exist.
+    consolidation_turn = 1 if eligible_findings >= 2 or len(workspace.findings) >= 2 else 0
     return (
         20
         + 4 * len(workspace.rcm)
         + 4 * test_count
         + 2 * qa_pairs
         + 2 * eligible_findings
+        + consolidation_turn
     )
 
 

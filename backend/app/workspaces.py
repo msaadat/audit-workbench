@@ -536,6 +536,7 @@ def _read_artifact(root: Path, name: str) -> tuple[object, object]:
             item.setdefault("procedure_refs", [])
             item.setdefault("test_refs", [])
             item.setdefault("execution_refs", [])
+            item.setdefault("rcm_semantic_refs", [])
             item.setdefault("cause_pending", False)
             _migrate_finding_narrative(item)
             # Legacy/manual origin is not equivalent to a formal auditor
@@ -2133,7 +2134,6 @@ class Workspace:
         from . import doc_tests
 
         item = self._planning_record(self.rcm, item_id, "RCM row")
-        linked = set(item.get("test_refs") or [])
         self.rcm.remove(item)
         for procedure in self.work_program:
             procedure["rcm_refs"] = [ref for ref in procedure.get("rcm_refs", []) if ref != item_id]
@@ -2141,11 +2141,13 @@ class Workspace:
             if test.get("rcm_id") == item_id:
                 test["rcm_id"] = None
         doc_tests.unlink_rcm(self, item_id)
-        for finding in self.findings:
-            finding["rcm_refs"] = [ref for ref in finding.get("rcm_refs", []) if ref != item_id]
-            finding["test_refs"] = [
-                ref for ref in finding.get("test_refs", []) if ref not in linked
-            ]
+        # Findings keep their references on purpose. A finding is the record of
+        # what a control showed, and a row regenerated under a new id does not
+        # change what was found; stripping the ref here is what left every
+        # agent-drafted finding in a regenerated engagement with an empty
+        # ``rcm_refs`` and no process to sit under. The dangling ref surfaces as
+        # an ``evidence_warnings`` entry and a support issue instead, and the
+        # ``rcm_semantic_refs`` beside it still name the process.
         self.save()
 
     def add_procedure(self, payload: dict) -> dict:

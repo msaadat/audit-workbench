@@ -2324,25 +2324,25 @@ def _finding_execution_projection(
     return None
 
 
-def finding_draft_scope(
-    workspace: Workspace,
-    observation_id: str,
-    *,
-    instruction: str | None = None,
-) -> ContextScope:
-    """Build the local candidate scope for one finding-draft unit."""
+FINDING_SIBLING_OBSERVATIONS_SOURCE_ID = "sibling_observations"
+FINDING_SIBLING_EXECUTION_SOURCE_ID = "sibling_execution_results"
+FINDING_SIBLING_EXCEPTION_ROWS_SOURCE_ID = "sibling_exception_rows"
+FINDING_CONSOLIDATION_BRIEF_SOURCE_ID = "consolidation_brief"
+_FINDING_OBSERVATION_FIELDS = (
+    "id", "rcm_id", "test_id", "execution_ref", "exception_count",
+    "summary", "classification", "outcome", "cycle_item_id",
+    "assurance_scope", "definition_sha1", "evaluation_result_sha1",
+    "evaluation_state", "disposition_state", "assertion_keys",
+    "assertion_mismatch_count",
+)
+
+
+def _finding_observation_material(
+    workspace: Workspace, observation: Mapping[str, object]
+) -> dict[str, object]:
+    """One observation, its row, its test, its result and its flagged rows."""
     from ... import findings
 
-    observation = next(
-        (
-            item
-            for item in workspace.observations
-            if str(item.get("id")) == str(observation_id)
-        ),
-        None,
-    )
-    if observation is None:
-        raise WorkspaceError(f"Observation '{observation_id}' not found.")
     test_id = str(observation.get("test_id") or "")
     kind, _separator, _source_id = str(observation.get("execution_ref") or "").partition(":")
     test = _spec_test_record(workspace, kind or "doctest", test_id)
@@ -2356,34 +2356,138 @@ def finding_draft_scope(
     )
     if row is None:
         raise WorkspaceError(
-            f"Observation '{observation_id}' does not resolve to an RCM row."
+            f"Observation '{observation.get('id')}' does not resolve to an RCM row."
         )
-    finding_template = templates_store.get_template(workspace, "finding")["markdown"]
     execution_ref = str(observation.get("execution_ref") or "")
-    exception_rows = finding_exception_rows(workspace, execution_ref)
-    execution = {
+    return {
+        "kind": kind,
+        "row": row,
+        "test": test,
         "execution_ref": execution_ref,
-        "immutable_execution_result": _finding_execution_projection(
-            workspace,
-            execution_ref,
-            cycle_item_id=str(observation.get("cycle_item_id") or "") or None,
+        "exception_rows": finding_exception_rows(workspace, execution_ref),
+        "execution": {
+            "execution_ref": execution_ref,
+            "immutable_execution_result": _finding_execution_projection(
+                workspace,
+                execution_ref,
+                cycle_item_id=str(observation.get("cycle_item_id") or "") or None,
+            ),
+            "evidence_anchor": findings.anchor_from_ref(workspace, execution_ref),
+        },
+        "row_projection": {key: row.get(key) for key in _FINDING_ROW_FIELDS},
+        "test_projection": {key: test.get(key) for key in _FINDING_TEST_FIELDS},
+        "observation_projection": {
+            key: observation.get(key) for key in _FINDING_OBSERVATION_FIELDS
+        },
+    }
+
+
+def finding_draft_scope(
+    workspace: Workspace,
+    observation_id: str,
+    *,
+    instruction: str | None = None,
+    sibling_observation_ids: Iterable[str] = (),
+    consolidation_brief: Mapping[str, object] | None = None,
+) -> ContextScope:
+    """Build the local candidate scope for one finding-draft unit.
+
+    With ``sibling_observation_ids`` the unit redrafts a consolidated lead:
+    every sibling's observation, result and flagged rows travel as their own
+    sources, each capped exactly as the lead's are, and the
+    ``consolidation_brief`` says what the auditor accepted — the relation,
+    the title and the root-cause hypothesis — so the redraft states one
+    condition across its instances and one cause under them.
+    """
+    observation = next(
+        (
+            item
+            for item in workspace.observations
+            if str(item.get("id")) == str(observation_id)
         ),
-        "evidence_anchor": findings.anchor_from_ref(workspace, execution_ref),
-    }
-    row_projection = {key: row.get(key) for key in _FINDING_ROW_FIELDS}
-    test_projection = {key: test.get(key) for key in _FINDING_TEST_FIELDS}
-    observation_projection = {
-        key: observation.get(key)
-        for key in (
-            "id", "rcm_id", "test_id", "execution_ref", "exception_count",
-            "summary", "classification", "outcome", "cycle_item_id",
-            "assurance_scope", "definition_sha1", "evaluation_result_sha1",
-            "evaluation_state", "disposition_state", "assertion_keys",
-            "assertion_mismatch_count",
+        None,
+    )
+    if observation is None:
+        raise WorkspaceError(f"Observation '{observation_id}' not found.")
+    material = _finding_observation_material(workspace, observation)
+    kind = material["kind"]
+    row = material["row"]
+    test = material["test"]
+    finding_template = templates_store.get_template(workspace, "finding")["markdown"]
+    execution_ref = material["execution_ref"]
+    exception_rows = material["exception_rows"]
+    execution = material["execution"]
+    row_projection = material["row_projection"]
+    test_projection = material["test_projection"]
+    observation_projection = material["observation_projection"]
+
+    siblings = []
+    for sibling_id in dict.fromkeys(str(value) for value in sibling_observation_ids):
+        if sibling_id == str(observation_id):
+            continue
+        sibling = next(
+            (item for item in workspace.observations if str(item.get("id")) == sibling_id),
+            None,
         )
-    }
+        if sibling is None:
+            continue
+        siblings.append((sibling_id, _finding_observation_material(workspace, sibling)))
+    sibling_observations = tuple(
+        ContextCandidate(
+            source_ref=f"observation:{sibling_id}",
+            source={
+                **entry["observation_projection"],
+                "rcm_row": entry["row_projection"],
+                "test": entry["test_projection"],
+            },
+            representations={
+                "current_artifact": {
+                    **entry["observation_projection"],
+                    "rcm_row": entry["row_projection"],
+                    "test": entry["test_projection"],
+                }
+            },
+            metadata={"observation_id": sibling_id},
+        )
+        for sibling_id, entry in siblings
+    )
+    sibling_executions = tuple(
+        ContextCandidate(
+            source_ref=entry["execution_ref"] or f"observation:{sibling_id}",
+            source=entry["execution"],
+            representations={"current_artifact": entry["execution"]},
+            metadata={"execution_ref": entry["execution_ref"], "observation_id": sibling_id},
+        )
+        for sibling_id, entry in siblings
+    )
+    sibling_rows = tuple(
+        ContextCandidate(
+            source_ref=f"{entry['execution_ref']}:exceptions",
+            source=entry["exception_rows"],
+            representations={"datatest_exception_rows": entry["exception_rows"]},
+            metadata={"execution_ref": entry["execution_ref"], "observation_id": sibling_id},
+        )
+        for sibling_id, entry in siblings
+        if entry["exception_rows"]
+    )
+    brief = dict(consolidation_brief or {})
     return ContextScope(
         candidates={
+            FINDING_SIBLING_OBSERVATIONS_SOURCE_ID: sibling_observations,
+            FINDING_SIBLING_EXECUTION_SOURCE_ID: sibling_executions,
+            FINDING_SIBLING_EXCEPTION_ROWS_SOURCE_ID: sibling_rows,
+            FINDING_CONSOLIDATION_BRIEF_SOURCE_ID: (
+                (
+                    ContextCandidate(
+                        source_ref=f"finding:{brief.get('lead_finding_id') or observation_id}:consolidation",
+                        source=brief,
+                        representations={"current_artifact": brief},
+                        metadata={"group_id": str(brief.get("group_id") or "")},
+                    ),
+                )
+                if brief and siblings
+                else ()
+            ),
             FINDING_OBSERVATION_SOURCE_ID: (
                 ContextCandidate(
                     source_ref=f"observation:{observation['id']}",
@@ -2450,6 +2554,263 @@ def finding_draft_scope(
                 for value in (observation.get("summary"), row.get("risk"))
             )
         },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# reporting.finding_consolidation
+# --------------------------------------------------------------------------- #
+CONSOLIDATION_DRAFTS_SOURCE_ID = "draft_findings"
+CONSOLIDATION_KEYS_SOURCE_ID = "finding_exception_keys"
+CONSOLIDATION_OVERLAPS_SOURCE_ID = "finding_overlaps"
+#: Identifiers admitted per finding. A cap, not a sample: a finding flagging
+#: more records than this states ``ids_withheld`` so the overlap it reports is
+#: never read as complete.
+CONSOLIDATION_KEY_LIMIT = 50
+#: Shared identifiers named per overlapping pair; the count is always full.
+CONSOLIDATION_SHARED_ID_LIMIT = 10
+#: Pairs the overlap table carries, strongest first.
+CONSOLIDATION_PAIR_LIMIT = 200
+#: The key document-test findings contribute under: the documents whose
+#: items failed, which is the record a document test flags.
+DOCUMENT_KEY = "DOCUMENT_ID"
+
+
+def _finding_row(workspace: Workspace, item: Mapping[str, object]) -> Mapping[str, object] | None:
+    """The row a finding sits under — by id, or by semantic id once the row
+    has been regenerated under another id."""
+    refs = {str(value) for value in item.get("rcm_refs") or []}
+    semantic = {str(value) for value in item.get("rcm_semantic_refs") or []}
+    return next(
+        (
+            row
+            for row in workspace.rcm
+            if str(row.get("id")) in refs or str(row.get("semantic_id") or "") in semantic
+        ),
+        None,
+    )
+
+
+def finding_exception_keys(
+    workspace: Workspace, item: Mapping[str, object]
+) -> dict[str, object]:
+    """The identifiers one finding's execution results flagged, by key.
+
+    A Data Test contributes the distinct values of its run's ``entity_key``
+    column from the exception frame — the key the exception profile resolved,
+    never any other column. A Document Test contributes the ids of the
+    documents whose items failed, under ``DOCUMENT_ID``. Nothing else from
+    either result travels: no amounts, no dates, no row.
+    """
+    from ... import data_tests
+
+    keys: dict[str, list[str]] = {}
+    withheld = 0
+    for value in item.get("execution_refs") or []:
+        kind, _separator, source_id = str(value or "").partition(":")
+        if kind == "datatest":
+            artifact = data_tests.result_artifact(workspace, source_id)
+            if not artifact:
+                continue
+            result = artifact["item"]
+            key = str((result.get("exception_profile") or {}).get("entity_key") or "")
+            frame = result.get("exception_frame") or {}
+            columns = [str(column) for column in frame.get("columns") or []]
+            if not key or key not in columns:
+                continue
+            position = columns.index(key)
+            values = list(
+                dict.fromkeys(
+                    str(row[position])
+                    for row in frame.get("rows") or []
+                    if position < len(row) and row[position] is not None
+                )
+            )
+            keys.setdefault(key, []).extend(values)
+        elif kind == "doctest" and doc_tests.exists(workspace, source_id):
+            test = doc_tests.load_test(workspace, source_id)
+            failed = [
+                entry
+                for entry in test.get("items") or []
+                if str(entry.get("state") or "") in {"exception", "mismatch"}
+                or (entry.get("disposition") or {}).get("state") == "exception"
+            ]
+            keys.setdefault(DOCUMENT_KEY, []).extend(
+                document_id
+                for entry in failed
+                for document_id in _item_document_ids(entry)
+            )
+    supplied: dict[str, list[str]] = {}
+    for key, values in keys.items():
+        distinct = list(dict.fromkeys(values))
+        supplied[key] = distinct[:CONSOLIDATION_KEY_LIMIT]
+        withheld += max(0, len(distinct) - CONSOLIDATION_KEY_LIMIT)
+    return {
+        "finding_id": str(item.get("id") or ""),
+        "keys": supplied,
+        "ids_supplied": sum(len(values) for values in supplied.values()),
+        "ids_withheld": withheld,
+    }
+
+
+def finding_overlaps(
+    findings_keys: Mapping[str, Mapping[str, object]],
+    processes: Mapping[str, str],
+) -> list[dict[str, object]]:
+    """Every pair of findings that share identifiers, and every same-process
+    pair that shares none, computed locally.
+
+    Entity-backed pairs carry the count, the Jaccard over the union, and up to
+    ten shared ids; the validator holds a ``same_condition`` group to them.
+    Process-only pairs are flagged ``basis: "process"`` so the model may still
+    propose a ``shared_cause`` group the auditor can weigh, and the validator
+    can tell the two apart.
+    """
+    ids = sorted(findings_keys)
+    pairs: list[dict[str, object]] = []
+    for index, left in enumerate(ids):
+        for right in ids[index + 1:]:
+            left_keys = dict(findings_keys[left].get("keys") or {})
+            right_keys = dict(findings_keys[right].get("keys") or {})
+            best: dict[str, object] | None = None
+            for key in set(left_keys) & set(right_keys):
+                a = set(left_keys[key])
+                b = set(right_keys[key])
+                shared = a & b
+                if not shared:
+                    continue
+                candidate = {
+                    "finding_ids": [left, right],
+                    "basis": "entity",
+                    "key": key,
+                    "shared_count": len(shared),
+                    "left_count": len(a),
+                    "right_count": len(b),
+                    "jaccard": round(len(shared) / len(a | b), 4),
+                    "shared_ids": sorted(shared)[:CONSOLIDATION_SHARED_ID_LIMIT],
+                }
+                if best is None or (
+                    candidate["shared_count"],
+                    candidate["jaccard"],
+                ) > (best["shared_count"], best["jaccard"]):
+                    best = candidate
+            if best is not None:
+                pairs.append(best)
+                continue
+            process = str(processes.get(left) or "")
+            if process and process == str(processes.get(right) or ""):
+                pairs.append(
+                    {
+                        "finding_ids": [left, right],
+                        "basis": "process",
+                        "process": process,
+                        "shared_count": 0,
+                        "jaccard": 0.0,
+                        "shared_ids": [],
+                    }
+                )
+    pairs.sort(
+        key=lambda pair: (
+            pair["basis"] != "entity",
+            -int(pair["shared_count"]),
+            -float(pair["jaccard"]),
+            tuple(pair["finding_ids"]),
+        )
+    )
+    return pairs[:CONSOLIDATION_PAIR_LIMIT]
+
+
+def finding_consolidation_scope(
+    workspace: Workspace,
+    *,
+    instruction: str | None = None,
+) -> ContextScope:
+    """Every draft finding, the ids each flagged, and the overlaps between them.
+
+    Titles, severities, the row's process and control text, the test's title
+    and the run's entity key — and no narrative. The question is which drafts
+    are one finding, and the deterministic overlap table answers most of it;
+    the turn is for the judgment the table cannot make (is this one cause?)
+    and for the combined title and hypothesis the auditor will edit.
+    """
+    from ... import finding_consolidation
+
+    drafts = finding_consolidation.draft_findings(workspace)
+    test_titles = {
+        str(item.get("id")): str(item.get("title") or "") for item in workspace.data_tests
+    }
+    for summary in doc_tests.list_tests(workspace):
+        test_titles[str(summary.get("id"))] = str(summary.get("title") or "")
+    keys_by_finding: dict[str, dict[str, object]] = {}
+    processes: dict[str, str] = {}
+    draft_candidates = []
+    key_candidates = []
+    for item in drafts:
+        finding_id = str(item.get("id") or "")
+        row = _finding_row(workspace, item) or {}
+        keys = finding_exception_keys(workspace, item)
+        keys_by_finding[finding_id] = keys
+        processes[finding_id] = str(row.get("process") or "")
+        projection = {
+            "id": finding_id,
+            "title": str(item.get("title") or ""),
+            "severity": str(item.get("severity") or ""),
+            "auditor_confirmed": bool(item.get("auditor_confirmed")),
+            "process": processes[finding_id],
+            "risk": str(row.get("risk") or ""),
+            "control": str(row.get("control") or ""),
+            "tests": [
+                {"id": str(value), "title": test_titles.get(str(value), "")}
+                for value in item.get("test_refs") or []
+            ],
+            "entity_keys": sorted(dict(keys.get("keys") or {})),
+            "consolidation": (
+                {
+                    "role": "lead",
+                    "members": list((item.get("consolidation") or {}).get("members") or []),
+                }
+                if finding_consolidation.is_lead(item)
+                else None
+            ),
+        }
+        draft_candidates.append(
+            ContextCandidate(
+                source_ref=f"finding:{finding_id}",
+                source=projection,
+                representations={"current_artifact": projection},
+                metadata={"finding_id": finding_id},
+                lexical_text=projection["title"],
+            )
+        )
+        key_candidates.append(
+            ContextCandidate(
+                source_ref=f"finding:{finding_id}:keys",
+                source=keys,
+                representations={"datatest_exception_keys": keys},
+                metadata={"finding_id": finding_id},
+            )
+        )
+    overlaps = finding_overlaps(keys_by_finding, processes)
+    table = {
+        "pairs": overlaps,
+        "entity_pairs": sum(pair["basis"] == "entity" for pair in overlaps),
+        "process_pairs": sum(pair["basis"] == "process" for pair in overlaps),
+    }
+    return ContextScope(
+        candidates={
+            CONSOLIDATION_DRAFTS_SOURCE_ID: tuple(draft_candidates),
+            CONSOLIDATION_KEYS_SOURCE_ID: tuple(key_candidates),
+            CONSOLIDATION_OVERLAPS_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="findings:overlaps",
+                    source=table,
+                    representations={"current_artifact": table},
+                    metadata={"pairs": len(overlaps)},
+                ),
+            ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
+        },
+        selector_context={},
     )
 
 
@@ -4151,6 +4512,7 @@ __all__ = [
     "document_visual_page_scope",
     "document_test_document_candidates",
     "test_generate_evidence_type_candidates",
+    "finding_consolidation_scope",
     "finding_draft_scope",
     "document_category_scope",
     "intake_classification_scope",

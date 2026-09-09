@@ -28,10 +28,13 @@ def test_every_capability_declares_what_it_produces():
             if not capability.produces
         }
     )
-    # Two outcomes write no artifact, and both are deliberate: ``audit.verified``
-    # reads the engagement and settles, and ``planning.change_assessed`` records
-    # a judgment about artifacts rather than changing one.
-    assert undeclared == ["audit.verified", "planning.change_assessed"]
+    # Three outcomes write no artifact, and all are deliberate: ``audit.verified``
+    # reads the engagement and settles, ``planning.change_assessed`` records a
+    # judgment about artifacts rather than changing one, and
+    # ``findings.consolidated`` proposes groups the auditor decides on.
+    assert undeclared == [
+        "audit.verified", "findings.consolidated", "planning.change_assessed",
+    ]
 
 
 def test_declared_refs_are_a_subset_of_the_known_artifact_kinds():

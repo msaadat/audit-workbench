@@ -484,8 +484,18 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
     )
     findings = [item for item in workspace.findings if rcm_id in (item.get("rcm_refs") or [])]
     lines.extend(["", "## Linked findings", ""])
+    # An absorbed finding still shows what this row's own test found; it is
+    # listed with the lead it now reports under rather than dropped.
     lines.extend(
-        [f"- {item['id']}: {item.get('title')} ({item.get('severity')})" for item in findings]
+        [
+            f"- {item['id']}: {item.get('title')} ({item.get('severity')})"
+            + (
+                f" — consolidated into {(item.get('consolidation') or {}).get('into')}"
+                if (item.get("consolidation") or {}).get("role") == "absorbed"
+                else ""
+            )
+            for item in findings
+        ]
         or ["- No linked findings."]
     )
     lines.extend(

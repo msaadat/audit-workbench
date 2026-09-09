@@ -1670,6 +1670,8 @@ export interface AuditFinding {
   narrative: string
   management_response: string
   rcm_refs: string[]
+  /** `rcm:<process>:<risk>` identities that survive a regenerated matrix. */
+  rcm_semantic_refs?: string[]
   procedure_refs: string[]
   test_refs: string[]
   execution_refs: string[]
@@ -1678,8 +1680,75 @@ export interface AuditFinding {
   cause_pending: boolean
   auditor_confirmed: boolean
   source: 'agent' | 'manual' | 'promoted'
+  /** Present once the finding has been consolidated with others, either way. */
+  consolidation?: FindingConsolidation | null
   created: string
   updated: string
+}
+
+export type ConsolidationRelation = 'same_condition' | 'shared_cause'
+
+export interface FindingConsolidation {
+  group_id: string
+  role: 'lead' | 'absorbed'
+  /** Absorbed only: the lead finding this one was merged into. */
+  into?: string
+  /** Lead only: the absorbed finding ids. */
+  members?: string[]
+  relation: ConsolidationRelation
+  basis_sha1: string
+  decided_by: 'auditor' | 'agent'
+  decided_at: string
+  /** Lead only: the title and hypothesis the auditor accepted, for the redraft. */
+  proposed_title?: string
+  root_cause_hypothesis?: string
+  /** Lead only: true until the finding worker has redrafted it from every member. */
+  narrative_pending?: boolean
+}
+
+export interface ConsolidationGroup {
+  group_id: string
+  finding_ids: string[]
+  lead_finding_id: string
+  relation: ConsolidationRelation
+  basis: 'entity' | 'process'
+  proposed_title: string
+  root_cause_hypothesis: string
+  rationale: string
+  shared_entities: Record<string, string[]>
+  decision: 'accepted' | 'dismissed' | null
+  decided_by?: 'auditor' | 'agent' | null
+  decided_at?: string | null
+  /** Member summaries the page can render without a second lookup. */
+  members?: ConsolidationMember[]
+}
+
+export interface ConsolidationMember {
+  id: string
+  title: string
+  severity: FindingSeverity
+  process: string
+  test_refs: string[]
+  auditor_confirmed?: boolean
+  absorbed?: boolean
+  missing?: boolean
+}
+
+export interface ConsolidationPayload {
+  basis_sha1: string
+  /** Whether a suggestion set exists for the current basis. */
+  current: boolean
+  drafts: number
+  suggestion: {
+    basis_sha1: string
+    run_id?: string
+    suggested_at?: string
+    groups: ConsolidationGroup[]
+    singletons: string[]
+  } | null
+  /** The newest suggestion on file when the current basis has none. */
+  stale_suggestion: { basis_sha1: string; groups: number; suggested_at?: string } | null
+  undecided: number
 }
 
 export interface FindingSummary {

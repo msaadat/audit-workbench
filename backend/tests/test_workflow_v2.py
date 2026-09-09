@@ -417,11 +417,13 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
         "results.rolled_up": ("fieldwork.executed",),
         "findings.drafted": ("results.rolled_up",),
+        "findings.consolidated": ("findings.drafted",),
         "working_papers.generated": ("results.rolled_up",),
         "report.working_draft": (
             "planning.apm_ready",
             "results.rolled_up",
             "findings.drafted",
+            "findings.consolidated",
         ),
         "audit.verified": (
             "working_papers.generated",
@@ -471,6 +473,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "fieldwork.executed",
         "results.rolled_up",
         "findings.drafted",
+        "findings.consolidated",
         "working_papers.generated",
         "report.working_draft",
         "audit.verified",

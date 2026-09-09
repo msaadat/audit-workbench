@@ -400,10 +400,22 @@ def scoped_observations(workspace: Workspace, scope: dict) -> list[dict]:
 def eligible_observations(workspace: Workspace, scope: dict | None = None) -> list[dict]:
     """Exception observations in scope that may become finding drafts."""
 
+    # A covered observation is a duplicate measurement on the same row; its
+    # lead observation is the one that becomes a draft.
     return [
         item
         for item in scoped_observations(workspace, scope or {})
-        if item.get("outcome") == "exception"
+        if item.get("outcome") == "exception" and not item.get("covered_by")
+    ]
+
+
+def covered_observations(workspace: Workspace, scope: dict | None = None) -> list[dict]:
+    """Exception observations in scope a duplicate test on the row stands for."""
+
+    return [
+        item
+        for item in scoped_observations(workspace, scope or {})
+        if item.get("outcome") == "exception" and item.get("covered_by")
     ]
 
 

@@ -150,7 +150,46 @@ def evidence_warnings(workspace: Workspace, item: dict) -> list[str]:
             warnings.append(
                 f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' has changed since this finding was drafted."
             )
+    # A reference to a row that has since been removed — typically because the
+    # matrix was regenerated under new ids — is kept on the finding and named
+    # here, rather than being silently dropped. The semantic refs beside it are
+    # what still place the finding under its process.
+    known_rcm = {str(row.get("id")) for row in workspace.rcm}
+    for ref in item.get("rcm_refs") or []:
+        if str(ref) not in known_rcm:
+            warnings.append(f"RCM row '{ref}' no longer exists.")
+    test_refs = [str(value) for value in item.get("test_refs") or []]
+    if test_refs:
+        known_tests = _known_test_ids(workspace)
+        for ref in test_refs:
+            if ref not in known_tests:
+                warnings.append(f"Test '{ref}' no longer exists.")
     return list(dict.fromkeys(warnings))
+
+
+def rcm_semantic_refs(
+    workspace: Workspace,
+    rcm_refs: object,
+    previous: object = None,
+) -> list[str]:
+    """The ``semantic_id`` of every row a finding references, plus any it kept.
+
+    RCM rows carry ``semantic_id = rcm:<process>:<risk>``, and a regenerated
+    row keeps it while taking a new id. So a finding records both: the id it
+    was drafted against and the semantic identity that survives a redraft. A
+    previously stored semantic ref is retained even when its row id no longer
+    resolves — that is exactly the case it exists for.
+    """
+    by_id = {
+        str(row.get("id")): str(row.get("semantic_id") or "") for row in workspace.rcm
+    }
+    values = [
+        by_id[str(ref)]
+        for ref in (rcm_refs or [])
+        if by_id.get(str(ref))
+    ]
+    values.extend(str(value) for value in (previous or []) if str(value or "").strip())
+    return list(dict.fromkeys(values))
 
 
 def _known_test_ids(workspace: Workspace) -> set[str]:
@@ -175,13 +214,27 @@ def _validate_links(
     rcm_refs: object,
     procedure_refs: object,
     test_refs: object = None,
+    *,
+    existing: dict | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
+    """Validate a finding's links, tolerating refs it already carries.
+
+    A new reference must resolve. A reference the finding already holds is
+    kept even when its target has gone: a row regenerated under a new id or a
+    retired test does not unsay what the finding found, and refusing every
+    later save of that finding — the UI writes all its refs on each save —
+    would lock the auditor out of a record that only needs its warning read.
+    """
     rcm = [str(value) for value in (rcm_refs or [])]
     procedures = [str(value) for value in (procedure_refs or [])]
     tests = [str(value) for value in (test_refs or [])]
-    known_rcm = {row.get("id") for row in workspace.rcm}
+    held_rcm = {str(value) for value in (existing or {}).get("rcm_refs") or []}
+    held_tests = {str(value) for value in (existing or {}).get("test_refs") or []}
+    known_rcm = {row.get("id") for row in workspace.rcm} | held_rcm
     known_procedures = {row.get("id") for row in workspace.work_program}
-    known_tests = _known_test_ids(workspace)
+    known_tests = (
+        _known_test_ids(workspace) if set(tests) - held_tests else set()
+    ) | held_tests
     missing_rcm = next((value for value in rcm if value not in known_rcm), None)
     missing_procedure = next((value for value in procedures if value not in known_procedures), None)
     missing_test = next((value for value in tests if value not in known_tests), None)
@@ -337,6 +390,11 @@ def observation_support_issues(workspace: Workspace, observation: dict) -> list[
     test_id = str(observation.get("test_id") or "")
     execution_ref = str(observation.get("execution_ref") or "")
     issues: list[str] = []
+    if observation.get("covered_by"):
+        issues.append(
+            f"observation is covered by a duplicate test's observation "
+            f"{observation['covered_by']} on the same row"
+        )
     if not rcm_id:
         issues.append("no RCM reference")
     if not test_id:
@@ -387,6 +445,14 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
             issues.append(f"missing source observation {observation_id}")
         elif observation.get("outcome") != "exception":
             issues.append(f"source observation {observation_id} is not a current exception")
+        elif observation.get("covered_by"):
+            # A draft that already exists for a now-covered observation is not
+            # silently kept: it duplicates the lead's finding, and the auditor
+            # is told so here rather than finding two rows in the report.
+            issues.append(
+                f"source observation {observation_id} is covered by a duplicate "
+                f"test's observation {observation['covered_by']} on the same row"
+            )
         elif observation.get("cycle_item_id"):
             test_id = str(observation.get("test_id") or "")
             test = doc_tests.load_test(workspace, test_id) if doc_tests.exists(workspace, test_id) else None
@@ -415,6 +481,30 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
                     issues.append(f"source observation {observation_id} has a stale definition hash")
                 if observation.get("evaluation_result_sha1") != evaluation_sha1:
                     issues.append(f"source observation {observation_id} has a stale evaluation hash")
+    # A lead stands on every member's observation as well as its own. An
+    # absorbed finding is never unsupported *for* being absorbed: its own
+    # checks above still apply, and that is all.
+    consolidation = item.get("consolidation") or {}
+    if consolidation.get("role") == "lead":
+        observations = {
+            str(value.get("id") or ""): value for value in workspace.observations
+        }
+        by_id = {str(row.get("id")): row for row in workspace.findings}
+        for member_id in consolidation.get("members") or []:
+            member = by_id.get(str(member_id))
+            if member is None:
+                issues.append(f"absorbed finding {member_id} no longer exists")
+                continue
+            source_id = str(member.get("source_observation_id") or "")
+            if not source_id:
+                continue
+            source = observations.get(source_id)
+            if source is None:
+                issues.append(f"absorbed finding {member_id} has no source observation")
+            elif source.get("outcome") != "exception":
+                issues.append(
+                    f"absorbed finding {member_id}'s observation {source_id} is not a current exception"
+                )
     return list(dict.fromkeys(issues))
 
 
@@ -470,6 +560,9 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         or narrative_scaffold(workspace),
         "management_response": str(payload.get("management_response") or ""),
         "rcm_refs": rcm_refs,
+        "rcm_semantic_refs": rcm_semantic_refs(
+            workspace, rcm_refs, payload.get("rcm_semantic_refs")
+        ),
         "procedure_refs": procedure_refs,
         "test_refs": test_refs,
         "execution_refs": execution_refs,
@@ -518,10 +611,16 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
             changes.get("rcm_refs", item.get("rcm_refs")),
             changes.get("procedure_refs", item.get("procedure_refs")),
             changes.get("test_refs", item.get("test_refs")),
+            existing=item,
         )
         changes = {
             **changes,
             "rcm_refs": rcm_refs,
+            # Derived, never patched: the semantic refs follow the row refs,
+            # and a semantic ref kept from a row that has gone stays kept.
+            "rcm_semantic_refs": rcm_semantic_refs(
+                workspace, rcm_refs, item.get("rcm_semantic_refs")
+            ),
             "procedure_refs": procedure_refs,
             "test_refs": test_refs,
         }
@@ -539,13 +638,22 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
     candidate["auditor_confirmed"] = bool(candidate.get("auditor_confirmed"))
     candidate["cause_pending"] = bool(candidate.get("cause_pending"))
     if candidate["auditor_confirmed"]:
+        if str((item.get("consolidation") or {}).get("role") or "") == "absorbed":
+            raise WorkspaceError(
+                f"Finding '{finding_id}' is absorbed into "
+                f"'{item['consolidation'].get('into')}' and is reported there; "
+                "restore it before confirming it on its own."
+            )
         issues = support_issues(workspace, candidate)
         if issues:
             raise WorkspaceError(
                 "A finding cannot be auditor-confirmed: " + "; ".join(issues) + "."
             )
     for key, value in changes.items():
-        if key in ("rcm_refs", "procedure_refs", "test_refs", "execution_refs", "evidence_refs"):
+        if key in (
+            "rcm_refs", "rcm_semantic_refs", "procedure_refs", "test_refs",
+            "execution_refs", "evidence_refs",
+        ):
             item[key] = value
         elif key in ("cause_pending", "auditor_confirmed"):
             item[key] = bool(value)
@@ -598,6 +706,176 @@ def reaffirm_evidence(
 def remove(workspace: Workspace, finding_id: str) -> None:
     workspace.findings.remove(_record(workspace, finding_id))
     workspace.save()
+
+
+# --------------------------------------------------------------------------- #
+# Consolidation: one finding leads, the rest are absorbed, nothing is deleted
+# --------------------------------------------------------------------------- #
+_SEVERITY_RANK = {name: index for index, name in enumerate(SEVERITIES)}
+
+
+def _union(*groups: object) -> list[str]:
+    return list(dict.fromkeys(str(value) for values in groups for value in (values or [])))
+
+
+def _anchor_key(anchor: dict) -> str:
+    return str(anchor.get("id") or "") or (
+        f"{anchor.get('source_kind')}:{anchor.get('source_id')}:{anchor.get('page')}:{anchor.get('field')}"
+    )
+
+
+def consolidate(
+    workspace: Workspace,
+    *,
+    finding_ids: list[str] | tuple[str, ...],
+    lead_id: str,
+    relation: str,
+    group_id: str | None = None,
+    basis: str | None = None,
+    title: str | None = None,
+    root_cause_hypothesis: str | None = None,
+    decided_by: str = "auditor",
+    include_confirmed: bool = False,
+) -> dict:
+    """Merge several findings into one lead; mark, never delete, the rest.
+
+    The lead takes the union of every member's references and the highest
+    severity among them; its narrative is left as it was and redrafted by the
+    finding worker from every member observation in a separate, scoped run.
+    Absorbed findings stay on disk as the record of what their control showed
+    — they leave the report, not the workspace — and carry ``into`` so the
+    lead can list them as supporting procedures. Both sides lose
+    ``auditor_confirmed``: a merged finding is a new statement nobody has yet
+    confirmed.
+
+    A confirmed member is refused unless the caller passes
+    ``include_confirmed``; the UI asks first.
+    """
+    from . import finding_consolidation
+
+    ids = _union(finding_ids)
+    if len(ids) < 2:
+        raise WorkspaceError("A consolidation needs at least two findings.")
+    lead_id = str(lead_id or "")
+    if lead_id not in ids:
+        raise WorkspaceError("The lead finding must be one of the findings consolidated.")
+    if relation not in finding_consolidation.RELATIONS:
+        raise WorkspaceError(f"Unknown consolidation relation '{relation}'.")
+    members = [_record(workspace, value) for value in ids]
+    for item in members:
+        if finding_consolidation.is_absorbed(item):
+            raise WorkspaceError(
+                f"Finding '{item['id']}' is already absorbed into "
+                f"'{(item.get('consolidation') or {}).get('into')}'."
+            )
+        if item.get("auditor_confirmed") and not include_confirmed:
+            raise WorkspaceError(
+                f"Finding '{item['id']}' is auditor-confirmed; confirm that it may be consolidated."
+            )
+    lead = next(item for item in members if item["id"] == lead_id)
+    absorbed = [item for item in members if item["id"] != lead_id]
+    # A lead that already holds members keeps them: consolidating a lead
+    # again widens its group rather than starting a second one.
+    previous_members = list((lead.get("consolidation") or {}).get("members") or [])
+    all_members = _union(previous_members, [item["id"] for item in absorbed])
+    group = str(group_id or finding_consolidation.group_id([lead_id, *all_members]))
+    basis_value = str(basis or finding_consolidation.basis_sha1(workspace))
+    now = _now(workspace)
+    decision = {
+        "group_id": group,
+        "relation": relation,
+        "basis_sha1": basis_value,
+        "decided_by": decided_by,
+        "decided_at": now,
+    }
+    lead["rcm_refs"] = _union(lead.get("rcm_refs"), *(item.get("rcm_refs") for item in absorbed))
+    lead["rcm_semantic_refs"] = rcm_semantic_refs(
+        workspace,
+        lead["rcm_refs"],
+        _union(lead.get("rcm_semantic_refs"), *(item.get("rcm_semantic_refs") for item in absorbed)),
+    )
+    lead["test_refs"] = _union(lead.get("test_refs"), *(item.get("test_refs") for item in absorbed))
+    lead["execution_refs"] = _union(
+        lead.get("execution_refs"), *(item.get("execution_refs") for item in absorbed)
+    )
+    lead["procedure_refs"] = _union(
+        lead.get("procedure_refs"), *(item.get("procedure_refs") for item in absorbed)
+    )
+    anchors: dict[str, dict] = {}
+    for item in (lead, *absorbed):
+        for anchor in item.get("evidence_refs") or []:
+            anchors.setdefault(_anchor_key(anchor), anchor)
+    lead["evidence_refs"] = list(anchors.values())
+    lead["severity"] = min(
+        (str(item.get("severity") or "medium") for item in members),
+        key=lambda value: _SEVERITY_RANK.get(value, len(SEVERITIES)),
+    )
+    if str(title or "").strip():
+        lead["title"] = str(title).strip()
+    # The proposed title and hypothesis travel on the lead so the redraft can
+    # be briefed with what the auditor accepted, without a second lookup into
+    # the suggestion set.
+    lead["consolidation"] = {
+        **decision,
+        "role": "lead",
+        "members": all_members,
+        "proposed_title": str(title or "").strip() or str(lead.get("title") or ""),
+        "root_cause_hypothesis": str(root_cause_hypothesis or "").strip(),
+        # Until the finding worker has redrafted the lead from every member
+        # observation, its narrative is still the one draft's.
+        "narrative_pending": True,
+    }
+    lead["auditor_confirmed"] = False
+    lead["updated"] = now
+    for item in absorbed:
+        item["consolidation"] = {**decision, "role": "absorbed", "into": lead_id}
+        item["auditor_confirmed"] = False
+        item["updated"] = now
+    workspace.save()
+    return lead
+
+
+def unconsolidate(workspace: Workspace, finding_id: str) -> dict:
+    """Restore an absorbed finding to a draft and drop it from its lead.
+
+    The lead keeps the references it took — they are still true of the lead's
+    condition — and loses only the member. A lead left with no members stops
+    being one.
+    """
+    from . import finding_consolidation
+
+    item = _record(workspace, finding_id)
+    if not finding_consolidation.is_absorbed(item):
+        raise WorkspaceError(f"Finding '{finding_id}' is not absorbed into another finding.")
+    lead_id = str((item.get("consolidation") or {}).get("into") or "")
+    lead = next((row for row in workspace.findings if row.get("id") == lead_id), None)
+    now = _now(workspace)
+    if lead is not None and finding_consolidation.is_lead(lead):
+        remaining = [
+            value
+            for value in (lead.get("consolidation") or {}).get("members") or []
+            if str(value) != finding_id
+        ]
+        if remaining:
+            lead["consolidation"] = {**lead["consolidation"], "members": remaining}
+        else:
+            lead.pop("consolidation", None)
+        lead["updated"] = now
+    item.pop("consolidation", None)
+    item["auditor_confirmed"] = False
+    item["updated"] = now
+    workspace.save()
+    return item
+
+
+def consolidation_members(workspace: Workspace, lead: dict) -> list[dict]:
+    """The absorbed findings a lead carries, in the order they were absorbed."""
+    by_id = {str(row.get("id")): row for row in workspace.findings}
+    return [
+        by_id[str(value)]
+        for value in (lead.get("consolidation") or {}).get("members") or []
+        if str(value) in by_id
+    ]
 
 
 def anchor_from_ref(workspace: Workspace, value: str, *, run_id: str | None = None) -> dict | None:

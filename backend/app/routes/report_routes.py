@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body
 
-from .. import doc_tests, findings, report, workspaces
+from .. import doc_tests, finding_consolidation, findings, report, workspaces
+from ..agent import runner
+from ..workspaces import WorkspaceError
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["findings", "report"])
 
@@ -99,6 +101,141 @@ def delete_finding(workspace_id: str, finding_id: str):
     ws = _ws(workspace_id)
     findings.remove(ws, finding_id)
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Consolidation: suggestions the model made, decisions the auditor makes
+# --------------------------------------------------------------------------- #
+def _finding_payload(ws, item: dict) -> dict:
+    return {**item, "evidence_warnings": findings.evidence_warnings(ws, item)}
+
+
+@router.get("/findings/consolidation")
+def get_consolidation(workspace_id: str):
+    """The current basis, its suggestion set (or null), and each group's members."""
+    ws = _ws(workspace_id)
+    with doc_tests.request_cache_scope():
+        return finding_consolidation.summary(ws)
+
+
+@router.post("/findings/consolidation/refresh")
+def refresh_consolidation(workspace_id: str, payload: dict = Body(default={})):
+    """Queue a ``findings.consolidated`` run for the current draft set.
+
+    The same path "Generate all findings" takes: a workflow command naming
+    the outcome, started on the run thread. ``force`` re-asks even when a
+    suggestion for the current basis is already on file.
+    """
+    ws = _ws(workspace_id)
+    mode = str(payload.get("mode") or "auto")
+    try:
+        return runner.start_command_run(
+            ws,
+            mode if mode in {"auto", "permission"} else "auto",
+            {
+                "source": "tab_button",
+                "text": "Review the draft findings for consolidation.",
+                "goal_template": "finding_consolidation",
+                "requested_outcomes": ["findings.consolidated"],
+                "target_refs": [],
+                "generation_mode": "force" if payload.get("force") else "reuse_existing",
+            },
+            context=dict(payload.get("context") or {}),
+        )
+    except runner.AgentBusyError as error:
+        raise WorkspaceError(str(error)) from error
+
+
+def _group(ws, group_id: str) -> tuple[str, dict]:
+    basis = finding_consolidation.basis_sha1(ws)
+    suggestion = finding_consolidation.load(ws, basis)
+    if suggestion is None:
+        raise WorkspaceError(
+            "The findings have changed since the last consolidation review; refresh the suggestions."
+        )
+    group = next(
+        (item for item in suggestion.get("groups") or [] if item.get("group_id") == group_id),
+        None,
+    )
+    if group is None:
+        raise WorkspaceError(f"Consolidation group '{group_id}' is not in the current suggestions.")
+    return basis, group
+
+
+@router.post("/findings/consolidation/{group_id}/accept")
+def accept_consolidation(workspace_id: str, group_id: str, payload: dict = Body(default={})):
+    """Merge a suggested group into its lead; the suggestion records the decision."""
+    ws = _ws(workspace_id)
+    basis, group = _group(ws, group_id)
+    if group.get("decision"):
+        raise WorkspaceError(f"Consolidation group '{group_id}' was already {group['decision']}.")
+    lead = findings.consolidate(
+        ws,
+        finding_ids=list(group.get("finding_ids") or []),
+        lead_id=str(payload.get("lead_finding_id") or group.get("lead_finding_id") or ""),
+        relation=str(group.get("relation") or ""),
+        group_id=group_id,
+        basis=basis,
+        title=str(payload.get("title") or group.get("proposed_title") or "") or None,
+        root_cause_hypothesis=str(group.get("root_cause_hypothesis") or "") or None,
+        decided_by="auditor",
+        include_confirmed=bool(payload.get("include_confirmed")),
+    )
+    finding_consolidation.decide(ws, basis, group_id, "accepted", decided_by="auditor")
+    return _finding_payload(ws, lead)
+
+
+@router.post("/findings/consolidation/{group_id}/dismiss")
+def dismiss_consolidation(workspace_id: str, group_id: str):
+    ws = _ws(workspace_id)
+    basis, _group_record = _group(ws, group_id)
+    finding_consolidation.decide(ws, basis, group_id, "dismissed", decided_by="auditor")
+    return finding_consolidation.summary(ws)
+
+
+@router.post("/findings/consolidate")
+def consolidate_findings(workspace_id: str, payload: dict = Body(...)):
+    """An auditor-made group, through the same merge as an accepted suggestion."""
+    ws = _ws(workspace_id)
+    finding_ids = [str(value) for value in payload.get("finding_ids") or []]
+    lead_id = str(payload.get("lead_finding_id") or (finding_ids[0] if finding_ids else ""))
+    relation = str(payload.get("relation") or "shared_cause")
+    basis = finding_consolidation.basis_sha1(ws)
+    group_id = finding_consolidation.group_id(finding_ids)
+    lead = findings.consolidate(
+        ws,
+        finding_ids=finding_ids,
+        lead_id=lead_id,
+        relation=relation,
+        group_id=group_id,
+        basis=basis,
+        title=str(payload.get("title") or "") or None,
+        root_cause_hypothesis=str(payload.get("root_cause_hypothesis") or "") or None,
+        decided_by="auditor",
+        include_confirmed=bool(payload.get("include_confirmed")),
+    )
+    finding_consolidation.record_manual_group(
+        ws,
+        basis,
+        {
+            "group_id": group_id,
+            "finding_ids": finding_ids,
+            "lead_finding_id": lead_id,
+            "relation": relation,
+            "basis": "entity" if payload.get("basis") == "entity" else "process",
+            "proposed_title": str(payload.get("title") or lead.get("title") or ""),
+            "root_cause_hypothesis": str(payload.get("root_cause_hypothesis") or ""),
+            "rationale": str(payload.get("rationale") or "Grouped by the auditor."),
+        },
+    )
+    return _finding_payload(ws, lead)
+
+
+@router.post("/findings/{finding_id}/unconsolidate")
+def unconsolidate_finding(workspace_id: str, finding_id: str):
+    ws = _ws(workspace_id)
+    item = findings.unconsolidate(ws, finding_id)
+    return _finding_payload(ws, item)
 
 
 @router.get("/report")

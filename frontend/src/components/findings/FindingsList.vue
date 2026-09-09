@@ -74,7 +74,14 @@ const groups = computed(() => SEVERITY_ORDER
                  the chips above count each of them across the register. -->
             <span class="meta aw-figure">
               <span class="id">{{ item.id }}</span>
-              <template v-if="!item.auditor_confirmed"> · <span class="draft">draft</span></template>
+              <template v-if="item.consolidation?.role === 'absorbed'">
+                · <span class="draft">absorbed into {{ item.consolidation.into }}</span>
+              </template>
+              <template v-else-if="item.consolidation?.role === 'lead'">
+                · <span class="lead">consolidated · {{ item.consolidation.members?.length ?? 0 }}</span>
+                <template v-if="!item.auditor_confirmed"> · <span class="draft">draft</span></template>
+              </template>
+              <template v-else-if="!item.auditor_confirmed"> · <span class="draft">draft</span></template>
               <template v-else-if="openItems(item)[0]">
                 · <span :data-tone="openItems(item)[0].tone">{{ openItems(item)[0].short }}</span>
               </template>
@@ -136,6 +143,7 @@ const groups = computed(() => SEVERITY_ORDER
 .meta [data-tone='bad'] { color: var(--aw-danger); }
 .meta [data-tone='warn'] { color: var(--aw-warn-ink); }
 .meta .draft { color: var(--aw-muted); }
+.meta .lead { color: var(--aw-teal); }
 
 .empty { padding: 1rem .75rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 </style>

@@ -4,7 +4,7 @@ What each stage of an audit run actually does: what it waits for, what it is
 shown, what it asks a model, what it writes back, and what it costs.
 
 This is a reference for the **executable** audit lifecycle as the code declares
-it today — `audit_workflow_v3`, 30 capabilities. It is derived from
+it today — `audit_workflow_v3`, 31 capabilities. It is derived from
 `backend/app/agent/workflows/audit.py`, the grouped capability declarations
 under `backend/app/agent/capabilities/`, the context presets in
 `backend/app/agent/context/presets.py`, and the execution bindings in
@@ -108,8 +108,11 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                        ┌───────────────┼───────────────┐
                        ▼               ▼               ▼
              findings.drafted   working_papers.   report.working_draft
-                       │          generated        (+ planning.apm_ready)
-                       └──────────────►│◄───────────────┘
+                       │          generated        (+ planning.apm_ready,
+                       ▼               │            findings.consolidated ─ partial)
+            findings.consolidated      │                 ▲
+                       │               │                 │
+                       └──────────────►│◄────────────────┘
                                        ▼
                                  audit.verified
 
@@ -155,6 +158,14 @@ DAG, not a chain.
   it assesses exist, and a request for one on an unplanned engagement plans it
   first instead of reporting itself blocked and stopping. It is on no template
   and outside `FULL_AUDIT_OUTCOMES`; the steering loop requests it by name.
+- **`findings.consolidated` sits between the drafts and the report, and the
+  report's edge to it is partial.** One model turn sees every draft at once —
+  which the per-observation finding worker never can — and proposes which of
+  them report one issue. It is proposal-only: the suggestion set is the durable
+  outcome and the auditor accepts or dismisses each group on the Findings page.
+  An unreviewed suggestion settles `review_required` and never withholds the
+  report, which carries every undecided draft exactly as it did before the
+  stage existed. See [findings-consolidation-design.md](findings-consolidation-design.md).
 
 ### Outcome sets
 
@@ -163,11 +174,12 @@ request asks for. The transitive closure of those outcomes is the plan.
 
 | Template | Requested outcomes |
 | --- | --- |
-| `full_audit_working_draft` | `analysis.summarized`, `findings.drafted`, `working_papers.generated`, `report.working_draft`, `audit.verified` |
+| `full_audit_working_draft` | `analysis.summarized`, `findings.drafted`, `findings.consolidated`, `working_papers.generated`, `report.working_draft`, `audit.verified` |
 | `planning` | `planning.apm_ready`, `planning.rcm_ready`, `tests.specified` |
 | `apm_only` | `planning.apm_ready` |
 | `rcm_only` | `planning.rcm_ready` |
 | `finding_draft` | `findings.drafted` |
+| `finding_consolidation` | `findings.consolidated` |
 | `document_test_preparation` | `tests.specified` |
 | `report` | `report.working_draft`, `audit.verified` |
 
@@ -326,7 +338,7 @@ the dependent can still do.*
 | `tests.specified` | `tests.cycle_ruleset_approved` | Generation has always been able to proceed without a cycle — it writes document-question tests instead. Blocking here would withhold every test in the engagement, data tests included, to wait on an approval permission mode is not allowed to make. |
 | `fieldwork.executed` | `tests.specified`, `tests.promoted_from_analysis` | One unsatisfiable promotion must not block every test that already exists. |
 | `results.rolled_up` | `fieldwork.executed` | |
-| `report.working_draft` | `findings.drafted` | |
+| `report.working_draft` | `findings.drafted`, `findings.consolidated` | A consolidation suggestion the auditor has not decided settles `review_required`; the report carries every undecided draft separately rather than waiting on a review it cannot make. |
 | `audit.verified` | `working_papers.generated`, `report.working_draft` | |
 | `documents.analysis_chunks_ready` | `documents.text_ready` only | One unextractable document must not withhold the others. The `documents.categorized` edge is **blocking**: a failed category unit withholds chunk analysis. |
 | `documents.analysis_generated` | `documents.analysis_chunks_ready` | One unanalyzable document must not withhold the others. |
@@ -517,6 +529,7 @@ it: `llm.chat` retries transport and rate-limit errors up to
 | `fieldwork.document_qa` | `{answer, conclusion, control_conclusion, outcome, citations[]}` | yes | 1 | — | yes |
 | `fieldwork.cycle_vouch` | `{cells[]: check_id, verdict, compared, reason}` | yes | 1 | — | yes |
 | `reporting.finding` | Markdown draft (title / severity / narrative) | **no** | 1 | — | yes |
+| `reporting.finding_consolidation` | `{groups[]: finding_ids, lead_finding_id, relation, basis, proposed_title, root_cause_hypothesis, rationale; singletons[]}` | yes | 1 | — | yes — every draft placed once; a `same_condition` group needs every pair in the overlap table at Jaccard ≥ 0.5; a `shared_cause` group needs every pair in the table or in one process |
 | `documents.category` | `{category, confidence, rationale}` | yes | 1 | — | no |
 | `documents.classification` | document type assignment | yes | 1 | — | yes |
 | `documents.evidence_read` | `{records[]: fields[], new_fields[]}` | yes | **2** | — | yes |
@@ -548,7 +561,8 @@ uses it.)
 
 `planning.apm`, `planning.cycle`, `planning.context`, `planning.rcm`,
 `planning.delta`, `tests.cycle_ruleset`, `tests.generate`, `fieldwork.document_qa`,
-`fieldwork.cycle_vouch`, `reporting.finding`, `documents.category`,
+`fieldwork.cycle_vouch`, `reporting.finding` (which also writes a consolidated
+lead's redraft in place), `documents.category`,
 `documents.classification`, `documents.read`, `documents.stamp`,
 `documents.analysis`, `analysis.join`, `analysis.register`,
 `analysis.definitions`, `analysis.execution`, `analysis.summary`,
@@ -621,7 +635,19 @@ the answer rather than an input to one, each its own permission, each capped:
 | `allow_datatest_exception_rows` | The rows a durable, RCM-linked Data Test flagged, capped by row count and serialized size in the adapter. | `reporting.finding_draft` |
 
 The last two are separate on purpose, so widening one never silently widens the
-other. Each projection reports what it left out: the Data Test projection
+other.
+
+A fourth door is key-level rather than row-level:
+
+| Permission | What it admits | Who declares it |
+| --- | --- | --- |
+| `allow_datatest_exception_keys` | The values of a run's `entity_key` column — the identifiers of the records a Data Test flagged — and nothing else, capped per finding (`CONSOLIDATION_KEY_LIMIT`, reporting `ids_withheld`). A Document Test contributes the ids of the documents whose items failed. | `reporting.finding_consolidation` |
+
+It is separate from `allow_datatest_exception_rows` because the two turns are
+different in kind: the finding draft sees one observation's rows; the
+consolidation pass sees every finding at once and must see keys only. The
+overlaps between findings are computed locally in the adapter and supplied as
+counts, Jaccard, and up to ten shared ids per pair. Each projection reports what it left out: the Data Test projection
 reports `rows_withheld`, so a truncated table cannot be drafted as a complete
 population, and the analysis-exception projection reports `rows_supplied` and
 `exception_count` and leaves the subtraction to the reader. That reporting,
@@ -689,7 +715,8 @@ Budgets below are `items / characters`.
 | `tests.generate` | 180 / 160k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `planning_documents` (**lexical_retained**, 8/20k — planning material only), `evidence_types` (opt, 1/4k — one item per document type, with how many records of it), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
 | `fieldwork.document_qa` | 66 / 44k | document_text | `qa_item` (req, 4k), `document_reading` (opt, 1/4k — one record's structured reading), `criteria_excerpt` (opt, 4/12k — the policy the answer is judged against), `document_pages` (opt, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
 | `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
-| `reporting.finding_draft` | 7 / 44k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction` |
+| `reporting.finding_draft` | 32 / 280k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction`; for a consolidated lead's redraft also `sibling_observations`, `sibling_execution_results`, `sibling_exception_rows` (opt, 8 each, the same per-member caps) and `consolidation_brief` (opt) |
+| `reporting.finding_consolidation` | 320 / 100k | document_text, **datatest_exception_keys**, auditor_instruction | `draft_findings` (req, 60/48k — id, title, severity, process, control, test titles, entity keys; never the narrative), `finding_exception_keys` (req, 60/24k — the flagged ids per finding, capped), `finding_overlaps` (req, one table of every pair sharing ids or a process), `instruction` |
 | `documents.category` | 1 / 6k | document_text | `document_category` (req) — the opening page |
 | `documents.classification` | 1 / 6k | document_text | `document_classification` (req) |
 | `documents.evidence_read` | 7 / 49k | document_text, document_images | `document_pages` (req, 48k), `document_page_images` (opt, 6) |
@@ -1172,20 +1199,58 @@ only one that can warn about populations no executed data test makes a
 statement about. A per-row conclusion cannot: every row concluded on the tests
 it had.
 
+It also collapses intra-row duplicates. Where two data tests on one row stand
+in a `confirmed` `identical` or `subsumed_by` relation in their redundancy
+marks (`data_test_redundancy.row_duplicate_groups`), one observation per group
+is the lead and the rest are written with `covered_by: <lead observation id>`,
+outcome unchanged. Finding expansion skips covered observations; a draft whose
+observation later becomes covered reports a support issue. The marks are
+re-scanned in memory when any test's result moved after its last sweep. Every
+observation carries its row's `rcm_semantic_id`, and every finding
+`rcm_semantic_refs`, so process grouping survives a regenerated matrix.
+
 ### `findings.drafted` — Eligible finding drafts
 
 | | |
 | --- | --- |
 | Depends on | `results.rolled_up` |
-| Readiness | every eligible exception observation has a supported finding; `review_required` when a linked finding has support issues |
-| Units | one per eligible exception observation (`finding:<obs>`), parents `observation:`, `rcm:`, and the execution ref |
+| Readiness | every eligible exception observation has a supported finding; `review_required` when a linked finding has support issues; `covered: n` in the details counts the observations a duplicate test stands for |
+| Units | one per eligible, uncovered exception observation (`finding:<obs>`), parents `observation:`, `rcm:`, and the execution ref |
 | Binding | pipeline — worker `reporting.finding`, executor `reporting.finding` |
-| Context | `reporting.finding_draft` — observation, RCM row, test, execution result, the firm's finding template, and (for a Data Test) the **flagged rows** |
+| Context | `reporting.finding_draft` — observation, RCM row, test, execution result, the firm's finding template, and (for a Data Test) the **flagged rows**; for a consolidated lead, every member's observation, result and rows besides, and the brief the auditor accepted |
 | Output | **Markdown**: a title line, a severity line, and everything from the first `##` heading onward as the narrative — the prose copied into the report unchanged |
 
 The narrative's sections are the firm's, so the template is required *context*
 rather than a constant in the worker: a firm changes what a finding must say by
 editing the template, not the code.
+
+Naming a consolidated lead (`finding:<lead>`) redrafts it from every member
+observation: the condition section sets out each instance led by its test's
+title, the root cause states the shared cause, and the executor writes the
+narrative onto the lead — id and unioned references kept, semantic id
+`finding:consolidated:<group>`. Accepting a suggestion on the Findings page
+queues exactly that run; until it lands the lead shows "narrative pending
+redraft".
+
+### `findings.consolidated` — Finding consolidation
+
+| | |
+| --- | --- |
+| Depends on | `findings.drafted` |
+| Readiness | `satisfied` with fewer than two drafts, or when every group in the current-basis suggestion has a decision; `review_required` while groups are undecided; `missing` when no suggestion exists for the current basis |
+| Units | one (`finding_consolidation`) per engagement, only when the basis has no suggestion (or force); parents `finding:` for every draft |
+| Binding | pipeline — worker `reporting.finding_consolidation`, **no executor** (proposal-only, like `planning.change_assessed`) |
+| Context | `reporting.finding_consolidation` — every draft's spine, the ids each flagged under the key-level door, and a locally computed overlap table |
+| Output | `Findings/.consolidation/<basis>.json`: groups with relation (`same_condition` / `shared_cause`), basis (`entity` / `process`), lead, proposed title, root-cause hypothesis, rationale, shared entities, and a `decision` the auditor makes on the Findings page |
+
+The basis is the sorted finding ids and each finding's own result hash. It
+moves when a finding is added, removed, or re-run against a changed result —
+not when one is confirmed, edited, or accepted into a group — so accepting one
+suggestion does not unsay the others the same turn proposed. Accept merges
+through `findings.consolidate` (references unioned, severity the highest,
+absorbed findings marked `into` the lead and kept); dismiss records against
+the basis. A manual group takes the same merge path and is filed beside the
+suggestions. Nothing merges without a click.
 
 ### `working_papers.generated` — RCM working papers
 
@@ -1200,10 +1265,10 @@ editing the template, not the code.
 
 | | |
 | --- | --- |
-| Depends on | `planning.apm_ready`, `results.rolled_up`, `findings.drafted` (partial) |
+| Depends on | `planning.apm_ready`, `results.rolled_up`, `findings.drafted` (partial), `findings.consolidated` (partial) |
 | Units | one (`report`) |
 | Binding | **deterministic** (`reporting.report_draft`) — no worker, no model call |
-| Output | the assembled draft. An auditor-edited draft is preserved and its regenerated candidate left for reconciliation, recorded as `awaiting_confirmation`. |
+| Output | the assembled draft. An auditor-edited draft is preserved and its regenerated candidate left for reconciliation, recorded as `awaiting_confirmation`. Absorbed findings are excluded; a lead lists them under "Supporting procedures". Quality checks add `unreviewed_consolidation` (advisory) and `absorbed_finding_confirmed` (blocking). |
 
 ### `audit.verified` — Audit verification
 

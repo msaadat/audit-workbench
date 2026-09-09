@@ -300,6 +300,14 @@ class ContextPrivacy(_JSONModel):
     # that can say "1 invoice was paid before it was verified" but not which
     # invoice is a finding management cannot act on.
     allow_datatest_exception_rows: bool = False
+    # The *identifiers* of the records a Data Test flagged — the values of the
+    # run's ``entity_key`` column and nothing else — for the one capability
+    # that must compare findings against each other: consolidation. Separate
+    # on purpose from ``allow_datatest_exception_rows``: that door admits whole
+    # rows to one finding's draft, and a pass that sees every finding at once
+    # must not see rows, only keys. Overlaps are computed locally in the
+    # adapter and supplied as counts and shared ids, capped per finding.
+    allow_datatest_exception_keys: bool = False
     # The written EDA memo. Its own permission rather than a reuse of
     # ``allow_analysis_results``: the memo is prose that may quote the
     # identifiers of flagged rows, so it is a wider content class than the
@@ -339,6 +347,7 @@ class ContextPrivacy(_JSONModel):
         "allow_analysis_results",
         "allow_analysis_exception_rows",
         "allow_datatest_exception_rows",
+        "allow_datatest_exception_keys",
         "allow_analysis_summary",
         "allow_value_domains",
         "allow_auditor_instruction",

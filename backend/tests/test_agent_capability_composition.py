@@ -146,6 +146,12 @@ _DECLARED = {
         "reporting.finding_draft",
         ("observation",),
     ),
+    "findings.consolidated": (
+        "finding_consolidation",
+        "finding_consolidation",
+        "reporting.finding_consolidation",
+        ("findings",),
+    ),
     "working_papers.generated": ("working_papers", "working_paper", None, ("rollup",)),
     "report.working_draft": (
         "report",

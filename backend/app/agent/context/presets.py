@@ -57,6 +57,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "analysis_result": "allow_analysis_results",
     "analysis_exception_rows": "allow_analysis_exception_rows",
     "datatest_exception_rows": "allow_datatest_exception_rows",
+    "datatest_exception_keys": "allow_datatest_exception_keys",
     "analysis_summary": "allow_analysis_summary",
     "value_domain": "allow_value_domains",
     "auditor_instruction": "allow_auditor_instruction",
@@ -1482,6 +1483,46 @@ PRESETS.register(
                     ),
                     budget=ContextBudget(max_items=1, max_characters=10_000),
                 ),
+                # A consolidated lead is redrafted from every member's
+                # observation. The siblings travel as their own sources, each
+                # under the same caps the single draft has, so the row
+                # admission widens by member and never by size.
+                ContextSource(
+                    id="sibling_observations",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=8, max_characters=48_000),
+                ),
+                ContextSource(
+                    id="sibling_execution_results",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=8, max_characters=96_000),
+                ),
+                ContextSource(
+                    id="sibling_exception_rows",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(
+                        ContextRepresentation("datatest_exception_rows"),
+                    ),
+                    budget=ContextBudget(max_items=8, max_characters=80_000),
+                ),
+                # What the auditor accepted: the group's relation, the title
+                # they chose and the root-cause hypothesis they were shown.
+                ContextSource(
+                    id="consolidation_brief",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=4_000),
+                ),
                 # What the auditor asked for, when they asked for something.
                 # Optional and absent on every run the workflow schedules for
                 # itself; present when a person said what they wanted changed.
@@ -1497,7 +1538,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=2_000),
                 ),
             ),
-            budget=ContextBudget(max_items=7, max_characters=44_000),
+            budget=ContextBudget(max_items=32, max_characters=280_000),
             # A finding is grounded in its exception observation, the immutable
             # execution result behind it, and — for a Data Test — the rows that
             # result flagged. The row admission is the deliberate widening: it
@@ -1510,6 +1551,69 @@ PRESETS.register(
                 allow_document_text=True,
                 allow_template_text=True,
                 allow_datatest_exception_rows=True,
+            ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="reporting.finding_consolidation",
+        spec=ContextSpec(
+            sources=(
+                # Every draft finding at once: id, title, severity, process,
+                # control text, test title, entity key. Never the narrative —
+                # the question is which drafts are one finding, and the
+                # deterministic overlap table below answers most of it.
+                ContextSource(
+                    id="draft_findings",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=60, max_characters=48_000),
+                ),
+                # Per finding: the key column and the ids it flagged, capped.
+                # The one row-derived source in this declaration, under its
+                # own door, so that widening the finding draft's row admission
+                # never widens what a cross-finding pass may see.
+                ContextSource(
+                    id="finding_exception_keys",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(
+                        ContextRepresentation("datatest_exception_keys"),
+                    ),
+                    budget=ContextBudget(max_items=60, max_characters=24_000),
+                ),
+                # Computed locally: every pair sharing ids, with count, Jaccard
+                # and up to ten shared ids; and every same-process pair with
+                # none, flagged as such. The validator holds the proposal to
+                # this table.
+                ContextSource(
+                    id="finding_overlaps",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=200, max_characters=24_000),
+                ),
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=False,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=320, max_characters=100_000),
+            privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
+                allow_document_text=True,
+                allow_datatest_exception_keys=True,
             ),
         ),
     )

@@ -11,7 +11,14 @@ import copy
 import uuid
 from dataclasses import dataclass
 
-from . import analysis_promotion, column_coverage, cycle_vouching, data_tests, doc_tests
+from . import (
+    analysis_promotion,
+    column_coverage,
+    cycle_vouching,
+    data_test_redundancy,
+    data_tests,
+    doc_tests,
+)
 from .evidence import normalize_anchor
 from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import TERMINAL_TEST_STATUSES, Workspace
@@ -327,6 +334,7 @@ def _observation(
     details: dict | None = None,
     evidence_refs: list[dict] | None = None,
     outcome: str | None = None,
+    rcm_semantic_id: str | None = None,
 ) -> dict:
     # Where the caller knows what was decided about these exceptions, that is
     # the outcome. Only a caller with no disposition layer falls back to reading
@@ -389,6 +397,11 @@ def _observation(
             updated=workspace._updated_now(),
         )
     existing["observation_key"] = key
+    # The row's semantic identity travels with the observation so a finding
+    # drafted from it still resolves a process after the matrix is regenerated
+    # under new row ids.
+    if rcm_semantic_id:
+        existing["rcm_semantic_id"] = str(rcm_semantic_id)
     if details:
         existing.update(details)
     if evidence_refs is not None:
@@ -417,6 +430,7 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
             _observation(
                 workspace,
                 rcm_id=row["id"],
+                rcm_semantic_id=str(row.get("semantic_id") or ""),
                 test_id=item["id"],
                 execution_ref=f"datatest:{item['id']}:{last_run['id']}",
                 exception_count=exceptions,
@@ -505,6 +519,7 @@ def _sync_cycle_observations(
         _observation(
             workspace,
             rcm_id=row["id"],
+            rcm_semantic_id=str(row.get("semantic_id") or ""),
             test_id=test["id"],
             execution_ref=f"doctest:{test['id']}",
             observation_key=observation_key,
@@ -580,6 +595,7 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
         observation = _observation(
             workspace,
             rcm_id=row["id"],
+            rcm_semantic_id=str(row.get("semantic_id") or ""),
             test_id=item["id"],
             execution_ref=f"doctest:{item['id']}",
             exception_count=exceptions,
@@ -757,6 +773,46 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
     }
 
 
+def _cover_duplicate_observations(
+    workspace: Workspace, rcm_id: str, groups: list[list[str]]
+) -> int:
+    """Mark the observations of a row's duplicate tests as covered by their lead.
+
+    Every test on the row still writes its observation — the roll-up records
+    what each test found — but a test that flags exactly the records another
+    test on the same row flags has made the same measurement twice, and a
+    finding drafted from each would be the same finding twice. The non-lead
+    observations carry ``covered_by`` naming the lead's observation; finding
+    expansion skips them. The mark is recomputed on every roll-up and cleared
+    where it no longer holds, since a duplicate earned last run may not be one
+    this run. Returns how many observations are covered.
+    """
+    by_test = {
+        str(item.get("test_id") or ""): item
+        for item in workspace.observations
+        if str(item.get("rcm_id") or "") == str(rcm_id)
+        and not item.get("cycle_item_id")
+    }
+    covered_by: dict[str, str] = {}
+    for group in groups:
+        lead = by_test.get(group[0])
+        if lead is None:
+            continue
+        for member in group[1:]:
+            if member in by_test:
+                covered_by[member] = str(lead["id"])
+    for test_id, observation in by_test.items():
+        lead_id = covered_by.get(test_id)
+        if lead_id and lead_id != str(observation.get("id")):
+            if observation.get("covered_by") != lead_id:
+                observation["covered_by"] = lead_id
+                observation["updated"] = workspace._updated_now()
+        elif observation.get("covered_by"):
+            observation.pop("covered_by", None)
+            observation["updated"] = workspace._updated_now()
+    return sum(1 for item in by_test.values() if item.get("covered_by"))
+
+
 def rollup(
     workspace: Workspace,
     *,
@@ -779,6 +835,9 @@ def rollup(
     documents_to_write: dict[str, dict] = {}
     rows = []
     selected_rcm_ids = None if rcm_ids is None else set(rcm_ids)
+    # Redundancy marks are read once, and only when some row carries more than
+    # one data test: a row with one test has nothing to collapse.
+    redundancy_marks: dict[str, dict] | None = None
     for row in workspace.rcm:
         if selected_rcm_ids is not None and row["id"] not in selected_rcm_ids:
             continue
@@ -787,6 +846,16 @@ def rollup(
         for test in tests:
             if test["kind"] == "doctest":
                 documents_to_write[test["id"]] = test["item"]
+        groups: list[list[str]] = []
+        if sum(test["kind"] == "datatest" for test in tests) > 1:
+            if redundancy_marks is None:
+                redundancy_marks = data_test_redundancy.current_marks(workspace)
+            groups = data_test_redundancy.row_duplicate_groups(
+                workspace, row["id"], marks=redundancy_marks
+            )
+        covered_observations = _cover_duplicate_observations(
+            workspace, row["id"], groups
+        )
         conclusions = [
             item["control_conclusion"]
             for item in test_rollups
@@ -834,6 +903,9 @@ def rollup(
             "draft": sum(item["status"] == "draft" for item in test_rollups),
             "exceptions": sum(item["exception_count"] for item in test_rollups),
             "open_exceptions": sum(item["open_exception_count"] for item in test_rollups),
+            # Observations this row keeps but does not draft from, because a
+            # duplicate test on the same row already stands for them.
+            "covered_observations": covered_observations,
             "tested_items": sum(item["tested_items"] for item in test_rollups),
             "failed_items": sum(item["failed_items"] for item in test_rollups),
             "incomplete_items": sum(item["incomplete_items"] for item in test_rollups),

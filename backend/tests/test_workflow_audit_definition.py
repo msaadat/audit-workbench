@@ -66,11 +66,13 @@ EXPECTED_DEPENDENCIES = {
     "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
+    "findings.consolidated": ("findings.drafted",),
     "working_papers.generated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
         "results.rolled_up",
         "findings.drafted",
+        "findings.consolidated",
     ),
     "audit.verified": (
         "working_papers.generated",
@@ -128,6 +130,9 @@ def test_full_audit_closure_is_topological():
         "fieldwork.executed",
         "results.rolled_up",
         "findings.drafted",
+        # One turn over every draft, proposing groups; the report follows on a
+        # partial edge so an unreviewed suggestion never withholds it.
+        "findings.consolidated",
         "working_papers.generated",
         "report.working_draft",
         "audit.verified",
