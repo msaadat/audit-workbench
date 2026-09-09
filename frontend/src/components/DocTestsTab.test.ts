@@ -344,10 +344,10 @@ describe('DocTestsTab filtering', () => {
     ],
   }
 
-  function mountTab() {
+  function mountTab(payload: DocTestSummaryPayload = mixedSummary) {
     routeState.query = {}
     vi.spyOn(api, 'get').mockImplementation(async (url: string) => {
-      if (url.endsWith('/doc-tests/summary')) return mixedSummary
+      if (url.endsWith('/doc-tests/summary')) return payload
       if (url.endsWith('/documents')) return { items: [] }
       if (url.endsWith('/planning')) return { findings: [] }
       if (url.endsWith('/doc-tests/meta')) return { document_types: [], cycle_vouch: {} }
@@ -422,6 +422,45 @@ describe('DocTestsTab filtering', () => {
     // rather than leaving an empty worklist.
     await chip(wrapper, 'Confirmed')!.trigger('click')
     expect(titles(wrapper)).toEqual(['Item CLEAN'])
+  })
+
+  /**
+   * The cycle grid replaces the worklist rather than sitting beside it, so
+   * advancing onto one after a narrowing hid the selected item would answer a
+   * filter click by hiding the list it narrowed.
+   */
+  const cycleEntry = { ...summary.entries[0], classification: 'confirmed' as const }
+  function narrowedSummary(entries: DocTestSummaryPayload['entries']): DocTestSummaryPayload {
+    return { ...mixedSummary, entries }
+  }
+
+  it('advances past a cycle test to the first item when a narrowing hides the selection', async () => {
+    const wrapper = mountTab(narrowedSummary([
+      itemEntry('OPEN', 'auditor'),
+      cycleEntry,
+      { ...itemEntry('CLEAN', 'none'), classification: 'confirmed', state: 'confirmed' },
+    ]))
+    await flushPromises()
+    expect(wrapper.find('.cycle-review').exists()).toBe(false)
+
+    await menuRow(wrapper, 'Not concluded')!.trigger('click')
+    await flushPromises()
+
+    expect(titles(wrapper)).toEqual(['Payroll payment cycle', 'Item CLEAN'])
+    expect(wrapper.find('.cycle-review').exists()).toBe(false)
+    expect(navReplace).toHaveBeenLastCalledWith('doc-tests', { test: 'DT-CLEAN', item: undefined })
+  })
+
+  it('holds no selection rather than opening the grid when only cycle tests survive', async () => {
+    const wrapper = mountTab(narrowedSummary([itemEntry('OPEN', 'auditor'), cycleEntry]))
+    await flushPromises()
+
+    await menuRow(wrapper, 'Not concluded')!.trigger('click')
+    await flushPromises()
+
+    expect(titles(wrapper)).toEqual(['Payroll payment cycle'])
+    expect(wrapper.find('.cycle-review').exists()).toBe(false)
+    expect(wrapper.find('.item-list .row.active').exists()).toBe(false)
   })
 
   it('goes back to the whole worklist from the All chip', async () => {

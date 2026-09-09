@@ -318,11 +318,16 @@ async function closeCycleDetail() {
   cycleGrid.value?.focusSelectedCell()
 }
 
-async function closeCycleGrid() {
+/** Leave the cycle grid and any open detail, holding no selection at all. */
+function clearSelection() {
   selectedCycleTestId.value = null
   selectedItemId.value = null
   currentTest.value = null
   focusedAssertionKey.value = null
+}
+
+async function closeCycleGrid() {
+  clearSelection()
   await syncUrl()
 }
 
@@ -338,12 +343,7 @@ async function closeCycleGrid() {
  */
 function pickStatusFilter(value: DocTestFilter[]) {
   statusFilter.value = value
-  if (value.length && selectedCycleTestId.value) {
-    selectedCycleTestId.value = null
-    selectedItemId.value = null
-    currentTest.value = null
-    focusedAssertionKey.value = null
-  }
+  if (value.length && selectedCycleTestId.value) clearSelection()
 }
 function toggleSelecting() {
   selecting.value = !selecting.value
@@ -793,9 +793,19 @@ const menuItems = computed(() => [
 ])
 
 // A filter change can hide the selected item; move to the first visible one.
+// The cycle grid replaces the worklist rather than sitting beside it, so
+// auto-advancing onto a cycle test would answer a narrowing gesture by hiding
+// the list it narrowed. Advance to the first item entry instead, and hold no
+// selection when only cycle tests survive: that grid is entered by clicking
+// its row, never by filtering past everything else.
 watch(visibleItems, items => {
   if (!items.length || items.some(item => entryId(item) === selectedEntryId.value)) return
-  void select(items[0])
+  const next = items.find(item => item.entry_type !== 'cycle_test')
+  if (next) void select(next)
+  else if (selectedEntryId.value) {
+    clearSelection()
+    void syncUrl()
+  }
 })
 
 onMounted(() => {
