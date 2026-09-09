@@ -2064,6 +2064,22 @@ class AuditWorkflowExecution(ActionExecution):
             refs = roll_up_results(self.ws, rcm_ids=scoped)
         except WorkspaceConflict as error:
             return DeterministicUnitResult("conflict", error=str(error))
+        # What the roll-up could not conclude, said by the run that could not
+        # conclude it. The rows are derived and the record draws them, but a run
+        # that finishes without mentioning them reads as one that finished the
+        # work — and the auditor who pressed the button is exactly the reader
+        # who needs to know it stopped short of three controls.
+        try:
+            awaiting = rcm_execution.conclusions_await_auditor(self.ws)
+        except Exception:
+            awaiting = []
+        if awaiting:
+            self.warn(
+                f"{counted(len(awaiting), 'control')} could not be concluded "
+                "from the results as they stand, and the roll-up has nothing "
+                "left to adopt for them: each needs a conclusion an auditor "
+                "sets, or a stated scope limitation."
+            )
         # Roll-up is the first point that can see the fieldwork as a whole, and
         # so the only one that can report the populations it never reached. A
         # per-row conclusion cannot: every row concluded on the tests it had.

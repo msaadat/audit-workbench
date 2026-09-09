@@ -660,10 +660,17 @@ def assertion_inputs(assertion: Mapping[str, object], *, item: Mapping[str, obje
         for binding in item.get("role_bindings") or []
         if str(binding.get("role") or "") in roles
     ]
+    # Item-scoped, every one of them. A verdict about this row is a statement
+    # about this row's frozen values and the records and extractions bound to
+    # it; the other rows of the population have no bearing on whether it still
+    # holds. The population's own fingerprint used to sit here beside them, so
+    # a single unrelated row moving anywhere in the table invalidated every
+    # verdict of every item in every cycle test at once — which is what took
+    # five passing tests to `stale` here with the source file untouched since
+    # import. Whether the population still stands is a real question, but it is
+    # a question about the *selection*, and `materialization_inputs_sha1`
+    # answers it at that level.
     material = {
-        "population_source_sha1": str(
-            (item.get("population_ref") or {}).get("source_sha1") or ""
-        ),
         "frozen_row_sha1": sha1_hash(item.get("frozen_row") or {}),
         "bound_record_hashes": [
             list(value)
@@ -697,6 +704,36 @@ def assertion_inputs(assertion: Mapping[str, object], *, item: Mapping[str, obje
     return material
 
 
+#: The population fingerprint `assertion_inputs` used to carry. Stored results
+#: written before it was dropped still hold it, and its own `input_sha1` still
+#: digests it, so both are normalized away rather than compared.
+_LEGACY_POPULATION_KEY = "population_source_sha1"
+
+
+def item_scoped_inputs(inputs: Mapping[str, object]) -> dict:
+    """One `input_hashes` reduced to the facts about the item itself.
+
+    Reads the shape written before the population fingerprint was dropped and
+    the shape written after it, and returns the same value for both. Without
+    it, dropping the field would have re-invalidated every verdict already on
+    file — the exact failure the change exists to stop — because a stored
+    result carries the old five-key dict and a freshly computed one carries
+    four.
+
+    ``input_sha1`` is recomputed rather than trusted: it is a digest over the
+    other keys, so a stored one still vouches for the population fingerprint
+    that has just been removed from beside it.
+    """
+
+    material = {
+        key: value
+        for key, value in (inputs or {}).items()
+        if key not in {_LEGACY_POPULATION_KEY, "input_sha1"}
+    }
+    material["input_sha1"] = sha1_hash(material)
+    return material
+
+
 def result_reusable(
     result: Mapping[str, object],
     *,
@@ -709,7 +746,8 @@ def result_reusable(
         and not result.get("stale")
         and result.get("assertion_sha1") == assertion_sha1
         and result.get("ruleset_hash") == ruleset_hash
-        and result.get("input_hashes") == inputs
+        and item_scoped_inputs(result.get("input_hashes") or {})
+        == item_scoped_inputs(inputs)
     )
 
 

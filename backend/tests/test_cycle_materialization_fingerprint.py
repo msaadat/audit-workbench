@@ -167,3 +167,103 @@ def test_the_fingerprint_is_no_part_of_the_tests_identity(engagement):
         if key != cycle_vouching.ITEMS_INPUTS_KEY
     }
     assert doc_tests.test_sha1(evaluated) == doc_tests.test_sha1(without)
+
+
+# --------------------------------------------------------------------------- #
+# What a stored verdict is a statement about
+# --------------------------------------------------------------------------- #
+def test_an_unrelated_population_row_does_not_invalidate_a_verdict(engagement):
+    """A verdict about INV-1 says nothing about the rest of the ledger.
+
+    The population's fingerprint sat in every assertion's inputs beside the
+    item's own, so one row arriving anywhere in the table reset every verdict
+    of every item in every cycle test to `not_run` and flagged it stale. Five
+    passing tests on a real engagement went stale that way with the source file
+    untouched since import, and no auditor action could clear it: re-running is
+    the only route back and the verdicts it needs are not deterministic.
+    """
+    import polars as pl
+
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+    doc_tests.save_test(ws, evaluate(ws, test))
+    before = doc_tests.load_test(ws, test["id"])
+    settled = next(item for item in before["items"] if item["label"] == "INV-1")
+    assert settled["evaluation"]["state"] == "passed"
+
+    entry = next(item for item in ws.tables if item["name"] == "invoices")
+    (ws.data_dir / entry["file"]).write_bytes(
+        pl.DataFrame({
+            "INVOICE_NO": ["INV-1", "INV-2", "INV-3", "INV-4"],
+            "AMOUNT": [100.0, 200.0, 300.0, 400.0],
+        }).write_csv().encode()
+    )
+
+    after = doc_tests.load_test(ws, test["id"])
+    redrawn = next(item for item in after["items"] if item["label"] == "INV-1")
+
+    # The population is read again — that part is right, and the item says so.
+    assert redrawn["population_ref"]["source_sha1"] != (
+        settled["population_ref"]["source_sha1"]
+    )
+    # What INV-1's evidence established still stands.
+    assert redrawn["evaluation"]["state"] == "passed"
+    assert [
+        result["verdict"] for result in redrawn["result_by_assertion"].values()
+    ] == [
+        result["verdict"] for result in settled["result_by_assertion"].values()
+    ]
+    assert not any(
+        result["stale"] for result in redrawn["result_by_assertion"].values()
+    )
+
+
+def test_the_items_own_evidence_still_invalidates_its_verdict(engagement):
+    """The guarantee that matters is kept: this item's inputs still bind it."""
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+    doc_tests.save_test(ws, evaluate(ws, test))
+    stored = _stored(ws, test["id"])
+    item = next(item for item in stored["items"] if item["label"] == "INV-1")
+    assert item["evaluation"]["state"] == "passed"
+
+    for result in item["result_by_assertion"].values():
+        result["input_hashes"]["frozen_row_sha1"] = "sha1:something-else"
+
+    redrawn = cycle_linking.materialize_cycle_items(ws, stored)
+    changed = next(one for one in redrawn if one["label"] == "INV-1")
+
+    assert changed["evaluation"]["state"] == "stale"
+
+
+def test_a_verdict_stored_before_the_population_key_was_dropped_still_stands(
+    engagement,
+):
+    """The migration the change would otherwise have caused itself.
+
+    Dropping the population fingerprint changes the shape of every stored
+    `input_hashes` and the digest over it, so a verdict written under the old
+    shape would have compared unequal to a freshly computed one — re-staling
+    every verdict on file at the moment the fix landed.
+    """
+    ws, row = engagement
+    approved(ws)
+    test = build(ws, row)
+    doc_tests.save_test(ws, evaluate(ws, test))
+    stored = _stored(ws, test["id"])
+    item = next(item for item in stored["items"] if item["label"] == "INV-1")
+
+    # Put the old shape back: the population key, and a digest that counted it.
+    for result in item["result_by_assertion"].values():
+        legacy = dict(result["input_hashes"])
+        legacy.pop("input_sha1", None)
+        legacy["population_source_sha1"] = item["population_ref"]["source_sha1"]
+        legacy["input_sha1"] = cycle_linking.sha1_hash(legacy)
+        result["input_hashes"] = legacy
+
+    redrawn = cycle_linking.materialize_cycle_items(ws, stored)
+    carried = next(one for one in redrawn if one["label"] == "INV-1")
+
+    assert carried["evaluation"]["state"] == "passed"

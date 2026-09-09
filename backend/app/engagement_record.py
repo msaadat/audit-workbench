@@ -42,6 +42,7 @@ from .agent import store
 from .agent.capabilities.documents import has_generated_analysis
 from .agent.workflows import audit as audit_workflow
 from .agent.workflows import documents as documents_workflow
+from .text import counted, verb
 from .workspaces import Workspace
 
 # --------------------------------------------------------------------------- #
@@ -856,6 +857,53 @@ def _blocked_by(workspace: Workspace, capability: str, counts: dict[str, int]) -
     return f"Waits for {', '.join(waiting[:-1])} and {waiting[-1]}."
 
 
+def _rollup_awaits_auditor(workspace: Workspace) -> str:
+    """Why the conclusions row is owed when no run can deliver it.
+
+    A stage is normally owed *and* runnable: the work is absent and a run
+    produces it. The conclusions row breaks that pair. It is owed while any row
+    of the matrix has reached no conclusion, but the roll-up only ever concludes
+    by adopting a Data Test's own verdict, so once none is left unadopted the
+    button completes, changes nothing, and the row redraws exactly as it was.
+    That is the same dead end the readiness fix closed one level down, arriving
+    from the other side: the run is honest now, and the record is still asking
+    for it.
+
+    Said as a reason rather than a dependency. `_blocked_by` names stages this
+    one waits for, and the conclusions row is not waiting on a stage — the tests
+    ran, the results are in, and what is missing is somebody's judgment about
+    what they mean.
+    """
+    try:
+        rows = rcm_execution.conclusions_await_auditor(
+            workspace,
+            unconcluded=list(_completion(workspace).get("rcm_without_conclusion") or []),
+            document_tests=_document_test_index(workspace),
+        )
+    except Exception:
+        # A reason that cannot be computed must not invent one: the row falls
+        # back to the ordinary owed-and-runnable pair rather than refusing a run
+        # the reader may well need.
+        return ""
+    if not rows:
+        return ""
+    # A phrase, not a sentence: this lands in the meta cell beside the row,
+    # where its neighbour reads "after the memorandum". What would close it is
+    # the open point's job to say — the row has one line.
+    return f"{counted(len(rows), 'row')} {verb(len(rows), 'needs', 'need')} your conclusion"
+
+
+# Stages that can be owed without a run being able to deliver them. Only the
+# conclusions row is one today; the hook exists because "owed" and "runnable"
+# came apart there and the ledger had no way to say so.
+_AWAITS_AUDITOR = {"results.rolled_up": _rollup_awaits_auditor}
+
+
+def _awaits_auditor(workspace: Workspace, capability: str) -> str:
+    hook = _AWAITS_AUDITOR.get(capability)
+    return hook(workspace) if hook else ""
+
+
 def _holds(workspace: Workspace, capability: str, counts: dict[str, int]) -> bool | None:
     """Whether the engagement holds this stage's work product.
 
@@ -910,6 +958,10 @@ def _stages(
         # could not answer — is neither held nor owed.
         owed = holds is False
         blocked = _blocked_by(workspace, capability, counts) if owed else ""
+        # A dependency outranks it: a stage waiting on earlier work is waiting
+        # on that, whatever its own rows would need afterwards.
+        if owed and not blocked:
+            blocked = _awaits_auditor(workspace, capability)
         headline = str(spec.get("headline") or "")
         count_key = spec.get("count")
         state = readiness.get(capability) or {}
@@ -1068,7 +1120,8 @@ def _stages(
 # The two findings debts share one rank because they share one slot: only
 # ever one of them is raised, and which one is decided in `_open_points`.
 _OPEN_RANK = {
-    "unread_conclusions": 10, "unconfirmed_findings": 20,
+    "unread_conclusions": 10, "conclusions_await_auditor": 15,
+    "unconfirmed_findings": 20,
     "findings_followup": 20, "draft_rcm": 30,
 }
 
@@ -1093,6 +1146,32 @@ def _open_points(workspace: Workspace) -> list[dict]:
                 else f"{unread} conclusions were set by the assistant and never read."
             ),
             "action": "Open them",
+            "destination": "rcm",
+        })
+
+    # Raised where the stage has stopped being runnable, so the row that can no
+    # longer be pressed still says what would close it. Without this the ledger
+    # draws the conclusions row as owed, offers nothing, and explains nothing.
+    try:
+        awaiting = rcm_execution.conclusions_await_auditor(
+            workspace,
+            unconcluded=list(
+                _completion(workspace).get("rcm_without_conclusion") or []
+            ),
+            document_tests=_document_test_index(workspace),
+        )
+    except Exception:
+        awaiting = []
+    if awaiting:
+        points.append({
+            "key": "conclusions_await_auditor",
+            "capability": "results.rolled_up",
+            "message": (
+                f"{counted(len(awaiting), 'control')} cannot be concluded from "
+                "the results as they stand — each needs a conclusion you set, "
+                "or a stated scope limitation."
+            ),
+            "action": "Conclude them",
             "destination": "rcm",
         })
 

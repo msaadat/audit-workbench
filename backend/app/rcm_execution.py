@@ -1042,6 +1042,64 @@ def unconcluded_rows(
     ]
 
 
+def conclusions_await_auditor(
+    workspace: Workspace,
+    *,
+    unconcluded: list[str] | None = None,
+    document_tests: DocumentTestIndex | None = None,
+) -> list[str]:
+    """Unconcluded rows that no roll-up can advance, so a person has to.
+
+    The roll-up changes a row's conclusion by one route only: adopting a Data
+    Test's own verdict and deriving the row from it again. Where no test behind
+    the unconcluded rows has a verdict left to adopt, running it again computes
+    the same answer it computed last time, and the record that keeps offering it
+    is asking the auditor to press a button that cannot move.
+
+    Everything left in that state is waiting on a judgment. A document test that
+    settled on ``needs_manual_check`` said the record could not answer the
+    question; one with no attached document never had evidence to read. Neither
+    is a defect the run can repair, and both close the same two ways — an
+    auditor concludes the row, or states the scope limitation that says why they
+    cannot.
+
+    Empty while any verdict is still unadopted: the run has real work then, and
+    the rows it would conclude are not the auditor's to answer yet.
+
+    Derives the roll-up itself rather than reading the one on the rows, so the
+    answer does not depend on whether the caller happened to roll up first —
+    reading the stored value gave seven rows where a derived one gave three,
+    which is the sort of ordering the roll-up has been caught by once already.
+    The derivation restores what it touched; see :func:`unconcluded_rows_preview`.
+
+    ``unconcluded`` is for the caller that has already asked. The engagement
+    record reads its unconcluded rows from ``completion`` and draws the whole
+    ledger from that one answer; deriving a second one here would let the row's
+    reason disagree with the row, which is the fault this whole path exists to
+    remove. Only the rule — unconcluded, and nothing left to adopt — lives here.
+    """
+    document_tests = document_tests or document_test_index(workspace)
+    if unconcluded is None:
+        unconcluded = unconcluded_rows_preview(workspace, document_tests=document_tests)
+    # Only rows somebody actually looked at. A row with no linked test has
+    # reached no conclusion either, and `unconcluded_rows` counts it — rightly,
+    # since an untested control is not a concluded one — but what it is waiting
+    # for is the fieldwork, not a judgment. Asking the auditor to conclude a
+    # control nobody tested names the wrong debt, and names it on the row that
+    # would otherwise say plainly that the tests have not run.
+    tested = [
+        rcm_id for rcm_id in unconcluded
+        if _tests(workspace, rcm_id, document_tests)
+    ]
+    if not tested:
+        return []
+    if unconcluded_data_tests(
+        workspace, rcm_ids=set(tested), document_tests=document_tests
+    ):
+        return []
+    return tested
+
+
 def unconcluded_data_tests(
     workspace: Workspace,
     *,

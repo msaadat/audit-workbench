@@ -142,8 +142,10 @@ def stub_store(monkeypatch):
             # its conclusions cannot disagree with each other.
             lambda workspace: {
                 "unreviewed_agent_conclusions": [],
+                # Row ids, which is what the real payload carries. It held
+                # whole rows here until a reader needed to look them up.
                 "rcm_without_conclusion": [
-                    row for row in workspace.rcm
+                    row["id"] for row in workspace.rcm
                     if not str(row.get("conclusion") or "").strip()
                 ],
             },
@@ -1656,3 +1658,101 @@ def test_the_memo_does_not_outlive_the_call_that_opened_it(stub_store, monkeypat
 
     assert calls["completion"] == 2
     assert engagement_record._MEMO.get() is None
+
+
+# --------------------------------------------------------------------------- #
+# Owed, but not by a run
+# --------------------------------------------------------------------------- #
+def _unconcluded_row(*, adoptable: bool):
+    """One unconcluded RCM row and the executed data test behind it.
+
+    ``adoptable`` decides whether the roll-up still has something to do: a test
+    whose evaluation reached a verdict can be concluded by adopting it, and one
+    that came back inconclusive cannot be concluded by anybody but the auditor.
+    """
+    evaluation = (
+        {"state": "failed", "suggested_control_conclusion": "ineffective"}
+        if adoptable
+        else {"state": "inconclusive", "suggested_control_conclusion": "no_conclusion"}
+    )
+    return _Workspace(
+        apm="# APM",
+        rcm=[{"id": "R1", "execution_rollup": {"control_conclusion": "no_conclusion"}}],
+        data_tests=[
+            _ran({
+                "id": "DAT-1", "rcm_id": "R1", "status": "completed_with_exception",
+                "control_conclusion": "no_conclusion",
+                "control_conclusion_source": "none",
+                "evaluation": evaluation,
+            })
+        ],
+    )
+
+
+def test_the_conclusions_row_stops_offering_a_run_it_cannot_deliver(stub_store):
+    """The dead end one level up from the readiness fix.
+
+    The roll-up concludes a row by adopting a test's own verdict. With none left
+    unadopted it recomputes the same answer, so the record kept drawing a Run
+    button that completed and changed nothing. A stage can be owed without a run
+    being able to deliver it, and the ledger now says which.
+    """
+    stub_store([])
+    rows = _rows(engagement_record.record(_unconcluded_row(adoptable=False)))
+    row = rows["results.rolled_up"]
+
+    assert row["held"] is False
+    assert row["runnable"] is False
+    assert row["blocked_reason"] == "1 row needs your conclusion"
+
+
+def test_a_run_is_still_offered_while_a_verdict_is_left_to_adopt(stub_store):
+    """The other side of it: real work outstanding keeps the button."""
+    stub_store([])
+    rows = _rows(engagement_record.record(_unconcluded_row(adoptable=True)))
+    row = rows["results.rolled_up"]
+
+    assert row["held"] is False
+    assert row["runnable"] is True
+    assert row["blocked_reason"] == ""
+
+
+def test_a_row_that_cannot_be_run_still_says_what_would_close_it(stub_store):
+    """A row with no button and no explanation is worse than the button was."""
+    stub_store([])
+    result = engagement_record.record(_unconcluded_row(adoptable=False))
+
+    point = next(
+        item for item in result["open_points"]
+        if item["key"] == "conclusions_await_auditor"
+    )
+    assert point["capability"] == "results.rolled_up"
+    assert point["action"] == "Conclude them"
+    assert point["destination"] == "rcm"
+    assert "1 control" in point["message"]
+
+
+def test_a_dependency_outranks_the_auditor_reason(stub_store):
+    """A stage waiting on earlier work is waiting on that, whatever else it needs."""
+    stub_store([])
+    workspace = _unconcluded_row(adoptable=False)
+    workspace.data_tests = []  # nothing ran, so the fieldwork row is owed too
+
+    rows = _rows(engagement_record.record(workspace))
+
+    assert rows["results.rolled_up"]["blocked_reason"] == "Waits for the test results."
+
+
+def test_an_untested_row_is_not_asked_of_the_auditor(stub_store):
+    """It has reached no conclusion either, but it is waiting on the fieldwork.
+
+    Asking somebody to conclude a control nobody tested names the wrong debt,
+    and names it over the row that would otherwise say the tests have not run.
+    """
+    stub_store([])
+    workspace = _Workspace(apm="# APM", rcm=[{"id": "R1"}])
+
+    result = engagement_record.record(workspace)
+
+    keys = [point["key"] for point in result["open_points"]]
+    assert "conclusions_await_auditor" not in keys
