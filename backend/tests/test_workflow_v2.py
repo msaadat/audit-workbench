@@ -221,6 +221,7 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
     ]),
         ("document_test_preparation", "workflow", ["tests.specified"]),
         ("document_test_execution", "workflow", ["doc_tests.executed"]),
+        ("finding_consolidation", "workflow", ["findings.consolidated"]),
     ],
 )
 def test_every_registered_goal_template_has_a_deterministic_local_route(
@@ -235,6 +236,7 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
         "apm_only",
         "rcm_only",
         "finding_draft",
+        "finding_consolidation",
         "data_analysis",
         "analysis_execution",
         "table_relationships",

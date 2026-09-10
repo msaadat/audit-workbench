@@ -109,6 +109,13 @@ GOAL_TEMPLATES: dict[str, dict] = {
     "finding_draft": {
         "objective": "Draft evidence-linked findings for the selected observation or risk.",
     },
+    "finding_consolidation": {
+        "objective": (
+            "Propose which draft findings report one issue, for the auditor "
+            "to accept or dismiss."
+        ),
+        "constraints": ["Do not rewrite any finding.", "Preserve auditor edits."],
+    },
     "report": {
         "objective": (
             "Prepare evidence-linked audit report working content and run "

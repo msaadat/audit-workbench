@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from app import llm, workspaces
-from app.agent import action_execution, actions, routing, runner, store
+from app.agent import action_execution, actions, commands, routing, runner, store
 from app.agent import capabilities as audit_capabilities
 from app.agent.runtime import WorkflowRunner
 from app.workspaces import WorkspaceError
@@ -184,6 +184,24 @@ def test_every_registered_goal_template_names_a_declared_outcome_set():
         outcomes = routing.template_outcomes(template)
         assert outcomes, template
         assert routing.validate_requested_outcomes(outcomes)
+
+
+def test_every_command_goal_template_is_registered():
+    """A command's template must be in ``GOAL_TEMPLATES``, not only in the
+    workflow's outcome table.
+
+    ``assistant_chats.send`` rejects a template this dict does not name, so a
+    command registered with an outcome set but no entry here is a tab button
+    and a slash command that raise instead of running — the failure mode the
+    Findings page's consolidation button had.
+    """
+    unregistered = sorted(
+        command.goal_template
+        for command in commands.COMMANDS.values()
+        if command.goal_template and command.goal_template not in routing.GOAL_TEMPLATES
+    )
+
+    assert unregistered == []
 
 
 # --------------------------------------------------------------------------- #
