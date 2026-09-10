@@ -555,6 +555,24 @@ async function saveConclusion() {
  *  `saveConclusion` above reads `currentTest`, which is null while the grid is
  *  up: the grid works from the paged projection alone, which is what keeps a
  *  large population cheap to open. So the value travels with the event. */
+/** The auditor's own scope text. Saved on its own, without a conclusion: a
+ *  limitation is worth stating whether or not one has been reached yet. The
+ *  disclosure beneath it is rebuilt server-side on every such save. */
+async function saveScopeLimitation(note: string, testId?: string) {
+  const id = testId ?? currentTest.value?.id
+  if (!id) return
+  try {
+    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${id}`, {
+      scope_limitations: note,
+    })
+    await refresh()
+    if (testId) await cycleGrid.value?.loadGrid()
+    toast.add({ severity: 'success', summary: 'Scope limitation saved', life: 1800 })
+  } catch (error) { fail('Could not save the scope limitation', error) }
+}
+function saveCycleScopeLimitation(note: string) {
+  return saveScopeLimitation(note, selectedCycleTestId.value ?? undefined)
+}
 async function saveCycleConclusion(conclusion: ControlConclusion) {
   const testId = selectedCycleTestId.value
   if (!testId) return
@@ -921,6 +939,7 @@ function onRulesetApproved(): void {
           @run="runTest"
           @changed="refresh"
           @saveConclusion="saveCycleConclusion"
+          @saveScopeLimitation="saveCycleScopeLimitation"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
         />
@@ -945,6 +964,7 @@ function onRulesetApproved(): void {
             @saveAttributes="saveAttributes"
             @setState="setItemState"
             @saveConclusion="saveConclusion"
+          @saveScopeLimitation="saveScopeLimitation"
             @generateFinding="generateFinding"
             @openFinding="openFinding"
             @updateEvidenceRequest="updateEvidenceRequest"
@@ -1000,6 +1020,7 @@ function onRulesetApproved(): void {
           @run="runTest"
           @openDocument="openDocument"
           @saveConclusion="saveConclusion"
+          @saveScopeLimitation="saveScopeLimitation"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
           @openRcm="openRcm"
@@ -1020,6 +1041,7 @@ function onRulesetApproved(): void {
           @saveAttributes="saveAttributes"
           @setState="setItemState"
           @saveConclusion="saveConclusion"
+          @saveScopeLimitation="saveScopeLimitation"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
           @updateEvidenceRequest="updateEvidenceRequest"

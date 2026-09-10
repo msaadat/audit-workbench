@@ -1044,6 +1044,11 @@ export interface CycleVouchGridPayload {
    *  projection because the grid never fetches the test itself. */
   control_conclusion: ControlConclusion
   rcm_id: string | null
+  /** `scope_limitations` split into the auditor's own text and the disclosure
+   *  written beneath it — see `doc_tests.scope_limitation_parts`. Only the
+   *  first is editable; the second is regenerated on every save. */
+  scope_limitation_note: string
+  scope_limitation_disclosure: string
   population: { table: string; column: string; selection: Record<string, unknown> }
   coverage: Record<string, unknown>
   selection_basis: 'evidence_linked' | 'sample'
@@ -1087,6 +1092,10 @@ export interface CycleVouchGridPayload {
 }
 
 export interface DocTest extends TestPlan, TestOutcome {
+  /** `scope_limitations` split for editing — see `scope_limitation_parts`.
+   *  Present on the single-test read, absent from list projections. */
+  scope_limitation_note?: string
+  scope_limitation_disclosure?: string
   id: string
   kind: DocTestKind | null
   schema_version?: 2

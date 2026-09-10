@@ -37,6 +37,7 @@ const emit = defineEmits<{
   run: []
   changed: []
   saveConclusion: [conclusion: ControlConclusion]
+  saveScopeLimitation: [note: string]
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
 }>()
@@ -54,6 +55,12 @@ const CONTROL_CONCLUSIONS: Array<{ label: string; value: ControlConclusion }> = 
 const conclusion = ref<ControlConclusion>('no_conclusion')
 const savedConclusion = ref<ControlConclusion>('no_conclusion')
 const conclusionChanged = computed(() => conclusion.value !== savedConclusion.value)
+// The auditor's own scope text. The disclosure written beneath it is the
+// file's, regenerated on every save, so it is shown and never edited.
+const scopeNote = ref('')
+const savedScopeNote = ref('')
+const scopeNoteChanged = computed(() => scopeNote.value !== savedScopeNote.value)
+const scopeDisclosure = computed(() => payload.value?.scope_limitation_disclosure ?? '')
 /** Records still carrying no call. A warning beside the conclusion, never a
  *  block: concluding over open records is the auditor's to make, and the
  *  backend records what was open as a scope limitation. */
@@ -207,6 +214,10 @@ async function loadGrid() {
     // leave the select showing an edit the file never took.
     conclusion.value = payload.value.control_conclusion
     savedConclusion.value = payload.value.control_conclusion
+    // `?? ''` rather than trusting the field: a server that predates it sends
+    // null, and null in a text input is not an empty string.
+    scopeNote.value = payload.value.scope_limitation_note ?? ''
+    savedScopeNote.value = payload.value.scope_limitation_note ?? ''
   } catch (error) {
     payload.value = null
     loadError.value = error instanceof Error ? error.message : String(error)
@@ -508,6 +519,26 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
           />
         </template>
       </div>
+      <div class="footer-cell scope-cell">
+        <p class="aw-label">Scope limitation</p>
+        <input
+          v-model="scopeNote"
+          class="scope-input"
+          type="text"
+          aria-label="Scope limitation"
+          placeholder="What the evidence could not establish"
+        />
+        <Button
+          v-if="scopeNoteChanged"
+          label="Save"
+          icon="pi pi-check"
+          size="small"
+          :disabled="busy"
+          aria-label="Save scope limitation"
+          @click="emit('saveScopeLimitation', scopeNote)"
+        />
+      </div>
+      <p v-if="scopeDisclosure" class="footer-disclosure">{{ scopeDisclosure }}</p>
       <p v-if="undispositioned" class="footer-warn">
         {{ undispositioned }} of {{ payload.page.total }} records carry no call yet. You can
         still conclude — it will be recorded as a scope limitation.
@@ -523,6 +554,9 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
 .footer-cell .aw-label { margin: 0; }
 .conclusion-select { min-width: 10rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
 .footer-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.scope-cell { flex: 1 1 22rem; }
+.scope-input { flex: 1 1 auto; min-width: 12rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
+.footer-disclosure { flex: 1 1 100%; margin: 0; padding: .4rem .6rem; border-radius: var(--aw-radius-control); background: var(--aw-surface-sunken, var(--aw-panel)); color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: pre-line; }
 .footer-warn { flex: 1 1 100%; margin: 0; color: var(--aw-warn); font-size: var(--aw-text-xs); }
 .finding-chip { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-pill); background: var(--aw-panel); color: inherit; font: inherit; cursor: pointer; }
 .finding-id { color: var(--aw-teal); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }

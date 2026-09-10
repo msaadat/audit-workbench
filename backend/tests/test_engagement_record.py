@@ -1727,9 +1727,13 @@ def test_a_row_that_cannot_be_run_still_says_what_would_close_it(stub_store):
         if item["key"] == "conclusions_await_auditor"
     )
     assert point["capability"] == "results.rolled_up"
-    assert point["action"] == "Conclude them"
     assert point["destination"] == "rcm"
-    assert "1 control" in point["message"]
+    # Named, so the reader can find it. A count alone said a row existed
+    # somewhere in the matrix without saying which — the complaint that raised
+    # this was "it shows 1 control remaining and I cannot find it".
+    assert "R1" in point["message"]
+    # And pointed at the tests, which is where a conclusion is actually set.
+    assert "Conclude the tests linked to it" in point["message"]
 
 
 def test_a_dependency_outranks_the_auditor_reason(stub_store):
@@ -1756,3 +1760,39 @@ def test_an_untested_row_is_not_asked_of_the_auditor(stub_store):
 
     keys = [point["key"] for point in result["open_points"]]
     assert "conclusions_await_auditor" not in keys
+
+
+def test_the_controls_awaiting_a_conclusion_are_named_and_capped(stub_store):
+    """Three names, then a count: a ledger line, not a list of thirty."""
+    stub_store([])
+    rows = [
+        {"id": f"R{index}", "execution_rollup": {"control_conclusion": "no_conclusion"}}
+        for index in range(1, 6)
+    ]
+    workspace = _Workspace(
+        apm="# APM",
+        rcm=rows,
+        data_tests=[
+            _ran({
+                "id": f"DAT-{index}", "rcm_id": f"R{index}",
+                "status": "completed_with_exception",
+                "control_conclusion": "no_conclusion",
+                "control_conclusion_source": "none",
+                "evaluation": {
+                    "state": "inconclusive",
+                    "suggested_control_conclusion": "no_conclusion",
+                },
+            })
+            for index in range(1, 6)
+        ],
+    )
+
+    result = engagement_record.record(workspace)
+
+    point = next(
+        item for item in result["open_points"]
+        if item["key"] == "conclusions_await_auditor"
+    )
+    assert "5 controls have reached no conclusion" in point["message"]
+    assert "R1, R2, R3 and 2 more" in point["message"]
+    assert "linked to each" in point["message"]

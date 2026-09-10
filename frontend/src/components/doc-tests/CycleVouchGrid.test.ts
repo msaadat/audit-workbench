@@ -11,6 +11,8 @@ const payload: CycleVouchGridPayload = {
   test_sha1: 'sha1:test',
   control_conclusion: 'no_conclusion',
   rcm_id: 'RCM-1',
+  scope_limitation_note: '',
+  scope_limitation_disclosure: '',
   definition_sha1: 'sha1:definition',
   title: 'Payroll payment cycle',
   population: {
@@ -237,5 +239,45 @@ describe('CycleVouchGrid conclusion', () => {
     await flushPromises()
 
     expect(wrapper.find('.footer-row').exists()).toBe(false)
+  })
+})
+
+describe('CycleVouchGrid scope limitation', () => {
+  it('offers the auditor a scope limitation to state', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue(payload)
+    const saveScopeLimitation = vi.fn()
+    const wrapper = mount(CycleVouchGrid, {
+      props: { ...props },
+      attrs: { onSaveScopeLimitation: saveScopeLimitation },
+      global,
+    })
+    await flushPromises()
+
+    // Nothing to save until it differs from what was filed.
+    expect(wrapper.find('button[aria-label="Save scope limitation"]').exists()).toBe(false)
+
+    await wrapper.get('input[aria-label="Scope limitation"]')
+      .setValue('Management did not provide the extract.')
+    await wrapper.get('button[aria-label="Save scope limitation"]').trigger('click')
+
+    expect(saveScopeLimitation).toHaveBeenCalledWith('Management did not provide the extract.')
+  })
+
+  it('shows the disclosure the file wrote without offering it for edit', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      ...payload,
+      scope_limitation_note: 'Mine.',
+      scope_limitation_disclosure: '[Concluded over unresolved items]\nExecution never settled.',
+    })
+    const wrapper = mount(CycleVouchGrid, { props: { ...props }, global })
+    await flushPromises()
+
+    // The editable half is the auditor's own text only.
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="Scope limitation"]').element.value)
+      .toBe('Mine.')
+    // The generated half is shown, read-only, beside it.
+    const disclosure = wrapper.get('.footer-disclosure')
+    expect(disclosure.text()).toContain('Execution never settled.')
+    expect(disclosure.element.tagName).toBe('P')
   })
 })

@@ -278,10 +278,16 @@ def get_document_test(workspace_id: str, test_id: str):
         item for item in workspace.evidence_requests
         if item.get("document_test_id") == test_id
     ]
+    note, disclosure = doc_tests.scope_limitation_parts(test)
     return {
         **test,
         "rollup": doc_tests.result_rollup(test),
         "evidence_requests": evidence_requests,
+        # `scope_limitations` holds the auditor's own text and the disclosure
+        # together; the editor needs the halves apart. See
+        # `doc_tests.scope_limitation_parts`.
+        "scope_limitation_note": note,
+        "scope_limitation_disclosure": disclosure,
     }
 
 

@@ -39,6 +39,7 @@ const emit = defineEmits<{
   saveAttributes: []
   setState: [value: DocTestDispositionState, note?: string]
   saveConclusion: []
+  saveScopeLimitation: [note: string]
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
   updateEvidenceRequest: [requestId: string, status: 'received' | 'cancelled']
@@ -299,6 +300,20 @@ watch([() => props.test.id, () => props.test.sha1], () => {
   savedConclusion.value = props.test.control_conclusion
 })
 const conclusionChanged = computed(() => props.test.control_conclusion !== savedConclusion.value)
+// The auditor's own scope text. The disclosure written beneath it is the
+// file's, regenerated on every save, so it is shown and never edited.
+const scopeNote = ref(props.test.scope_limitation_note ?? '')
+const savedScopeNote = ref(props.test.scope_limitation_note ?? '')
+watch(() => props.test.id, () => {
+  scopeNote.value = props.test.scope_limitation_note ?? ''
+  savedScopeNote.value = props.test.scope_limitation_note ?? ''
+})
+watch(() => props.test.scope_limitation_note, value => {
+  scopeNote.value = value ?? ''
+  savedScopeNote.value = value ?? ''
+})
+const scopeNoteChanged = computed(() => scopeNote.value !== savedScopeNote.value)
+const scopeDisclosure = computed(() => props.test.scope_limitation_disclosure ?? '')
 const provenanceOpen = ref(false)
 
 function edgeLabel(edge: Record<string, unknown>) {
@@ -749,6 +764,26 @@ onMounted(() => { void focusAssertion() })
         <span v-else-if="!settled" class="footer-note">Record your call first.</span>
       </div>
 
+      <div class="footer-cell scope-cell">
+        <p class="aw-label">Scope limitation</p>
+        <input
+          v-model="scopeNote"
+          class="scope-input"
+          type="text"
+          aria-label="Scope limitation"
+          placeholder="What the evidence could not establish"
+        />
+        <Button
+          v-if="scopeNoteChanged"
+          label="Save"
+          icon="pi pi-check"
+          size="small"
+          :disabled="busy"
+          aria-label="Save scope limitation"
+          @click="emit('saveScopeLimitation', scopeNote)"
+        />
+      </div>
+      <p v-if="scopeDisclosure" class="footer-disclosure">{{ scopeDisclosure }}</p>
       <div class="footer-cell">
         <p class="aw-label">Finding</p>
         <template v-if="findings.length">
@@ -946,6 +981,9 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
 .footer-cell { display: flex; align-items: center; gap: .625rem; min-width: 0; }
 .footer-cell .aw-label { flex: none; }
 .footer-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.scope-cell { flex: 1 1 22rem; }
+.scope-input { flex: 1 1 auto; min-width: 12rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
+.footer-disclosure { flex: 1 1 100%; margin: 0; padding: .4rem .6rem; border-radius: var(--aw-radius-control); background: var(--aw-surface-sunken, var(--aw-panel)); color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: pre-line; }
 .footer-warn, .footer-provenance { grid-column: 1 / -1; margin: 0; }
 .footer-warn { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); line-height: 1.45; }
 .conclusion-select { min-width: 10rem; }

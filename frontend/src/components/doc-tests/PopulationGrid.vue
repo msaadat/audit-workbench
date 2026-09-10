@@ -46,6 +46,7 @@ const emit = defineEmits<{
   run: []
   openDocument: [documentId: string]
   saveConclusion: []
+  saveScopeLimitation: [note: string]
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
   openRcm: [rcmId: string]
@@ -66,6 +67,20 @@ watch(() => props.test.control_conclusion, value => {
 const conclusionChanged = computed(
   () => props.test.control_conclusion !== savedConclusion.value,
 )
+// The auditor's own scope text. The disclosure written beneath it is the
+// file's, regenerated on every save, so it is shown and never edited.
+const scopeNote = ref(props.test.scope_limitation_note ?? '')
+const savedScopeNote = ref(props.test.scope_limitation_note ?? '')
+watch(() => props.test.id, () => {
+  scopeNote.value = props.test.scope_limitation_note ?? ''
+  savedScopeNote.value = props.test.scope_limitation_note ?? ''
+})
+watch(() => props.test.scope_limitation_note, value => {
+  scopeNote.value = value ?? ''
+  savedScopeNote.value = value ?? ''
+})
+const scopeNoteChanged = computed(() => scopeNote.value !== savedScopeNote.value)
+const scopeDisclosure = computed(() => props.test.scope_limitation_disclosure ?? '')
 /** Every record has a call, so the test is ready to be concluded over. */
 const undispositioned = computed(() =>
   (payload.value?.rows ?? []).filter(row => row.disposition === 'pending').length,
@@ -556,6 +571,26 @@ defineExpose({ loadGrid })
             />
           </template>
         </div>
+      <div class="footer-cell scope-cell">
+        <p class="aw-label">Scope limitation</p>
+        <input
+          v-model="scopeNote"
+          class="scope-input"
+          type="text"
+          aria-label="Scope limitation"
+          placeholder="What the evidence could not establish"
+        />
+        <Button
+          v-if="scopeNoteChanged"
+          label="Save"
+          icon="pi pi-check"
+          size="small"
+          :disabled="busy"
+          aria-label="Save scope limitation"
+          @click="emit('saveScopeLimitation', scopeNote)"
+        />
+      </div>
+      <p v-if="scopeDisclosure" class="footer-disclosure">{{ scopeDisclosure }}</p>
         <!-- A warning, not a block: concluding over open records is the
              auditor's call, and the backend records what was open. -->
         <p v-if="undispositioned" class="footer-warn">
@@ -649,6 +684,9 @@ td.missing span { color: var(--aw-muted); }
 .footer-cell .aw-label { margin: 0; }
 .conclusion-select { min-width: 10rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
 .footer-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.scope-cell { flex: 1 1 22rem; }
+.scope-input { flex: 1 1 auto; min-width: 12rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
+.footer-disclosure { flex: 1 1 100%; margin: 0; padding: .4rem .6rem; border-radius: var(--aw-radius-control); background: var(--aw-surface-sunken, var(--aw-panel)); color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: pre-line; }
 .footer-warn { flex: 1 1 100%; margin: 0; color: var(--aw-warn); font-size: var(--aw-text-xs); }
 .finding-chip { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-pill); background: var(--aw-panel); color: inherit; font: inherit; cursor: pointer; }
 .finding-id { color: var(--aw-teal); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }

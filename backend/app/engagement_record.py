@@ -1163,15 +1163,26 @@ def _open_points(workspace: Workspace) -> list[dict]:
     except Exception:
         awaiting = []
     if awaiting:
+        # Named, not counted. "One control cannot be concluded" is a true
+        # sentence an auditor cannot act on: it says a row exists somewhere in a
+        # matrix of thirty-two without saying which, and the row itself is not
+        # where the work is — a control conclusion is derived from the
+        # conclusions on its linked tests, so the matrix is the last place the
+        # reader can do anything about it.
+        shown = ", ".join(awaiting[:3])
+        if len(awaiting) > 3:
+            shown += f" and {len(awaiting) - 3} more"
         points.append({
             "key": "conclusions_await_auditor",
             "capability": "results.rolled_up",
             "message": (
-                f"{counted(len(awaiting), 'control')} cannot be concluded from "
-                "the results as they stand — each needs a conclusion you set, "
-                "or a stated scope limitation."
+                f"{counted(len(awaiting), 'control')} "
+                f"{verb(len(awaiting), 'has', 'have')} reached no conclusion: "
+                f"{shown}. Conclude the tests linked to "
+                f"{'it' if len(awaiting) == 1 else 'each'}, or state a scope "
+                "limitation on them."
             ),
-            "action": "Conclude them",
+            "action": "Open the rows",
             "destination": "rcm",
         })
 

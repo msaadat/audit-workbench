@@ -687,3 +687,57 @@ def test_a_conclusion_on_a_test_that_never_ran_is_disclosed(workspace_with_data)
     assert updated["control_conclusion"] == "effective"
     assert "execution never settled" in updated["scope_limitations"]
     assert updated["conclusion_override"]["execution_settled"] is False
+
+
+def test_a_scope_limitation_saved_alone_keeps_the_disclosure(workspace_with_data):
+    """The auditor stating a limitation must not erase the one already stated.
+
+    `record_conclusion_override` ran only when the conclusion moved, so a note
+    saved on its own replaced the whole field — dropping what the file had
+    disclosed about what the conclusion was reached over.
+    """
+    ws = workspace_with_data
+    test = doc_tests.create_test(ws, {
+        "kind": "qa", "title": "Standing data is authorised",
+        "items": [
+            {"label": "Standing data", "document_ids": [],
+             "question": "Are standing data changes authorised?"},
+        ],
+    })
+    doc_tests.update_item(ws, test["id"], test["items"][0]["id"], {"state": "confirmed"})
+    concluded = doc_tests.update_test(ws, test["id"], {"control_conclusion": "effective"})
+    assert "execution never settled" in concluded["scope_limitations"]
+
+    updated = doc_tests.update_test(ws, test["id"], {
+        "scope_limitations": "Management did not provide the standing data extract.",
+    })
+
+    note, disclosure = doc_tests.scope_limitation_parts(updated)
+    assert note == "Management did not provide the standing data extract."
+    assert "execution never settled" in disclosure
+
+
+def test_the_auditors_note_and_the_disclosure_come_back_apart(workspace_with_data):
+    """One field on the file, two authors; an editor needs them separated."""
+    ws = workspace_with_data
+    test = doc_tests.create_test(ws, {
+        "kind": "qa", "title": "Standing data is authorised",
+        "items": [
+            {"label": "Standing data", "document_ids": [],
+             "question": "Are standing data changes authorised?"},
+        ],
+    })
+    doc_tests.update_item(ws, test["id"], test["items"][0]["id"], {"state": "confirmed"})
+    doc_tests.update_test(ws, test["id"], {
+        "control_conclusion": "effective",
+        "scope_limitations": "Evidence was never supplied.",
+    })
+
+    note, disclosure = doc_tests.scope_limitation_parts(doc_tests.load_test(ws, test["id"]))
+
+    assert note == "Evidence was never supplied."
+    assert disclosure.startswith("[Concluded over unresolved items]")
+    # A test with nothing disclosed reports an empty second half, not the marker.
+    assert doc_tests.scope_limitation_parts({"scope_limitations": "Just mine."}) == (
+        "Just mine.", "",
+    )

@@ -1226,6 +1226,10 @@ def grid_projection(
     selection = validated["definition"]["population"]["selection"]
     scope = assurance_scope_for(selection)
     total = len(items)
+    # Locally, because `doc_tests` imports this module.
+    from . import doc_tests as _doc_tests
+
+    scope_note, scope_disclosure = _doc_tests.scope_limitation_parts(test)
     return {
         "test_id": str(test.get("id") or ""),
         "test_sha1": str(test.get("sha1") or ""),
@@ -1239,6 +1243,8 @@ def grid_projection(
         # one at all.
         "control_conclusion": str(test.get("control_conclusion") or "no_conclusion"),
         "rcm_id": str(test.get("rcm_id") or "") or None,
+        "scope_limitation_note": scope_note,
+        "scope_limitation_disclosure": scope_disclosure,
         "population": dict(validated["definition"]["population"]),
         "coverage": dict(rollup["coverage"]),
         "selection_basis": str(selection.get("mode") or ""),

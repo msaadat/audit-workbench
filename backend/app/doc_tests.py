@@ -1756,9 +1756,14 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
             test[key] = str(changes[key] or "")
     if "conclusion" in changes:
         test["conclusion_source"] = "auditor"
-    if "control_conclusion" in changes:
+    if "control_conclusion" in changes or "scope_limitations" in changes:
         # After the auditor's own scope text has been applied, so an edit in the
         # same request is preserved and the disclosure is appended below it.
+        #
+        # A scope note saved on its own reaches here too. The disclosure is a
+        # function of the conclusion and that note, so writing the note without
+        # rebuilding it would drop what the file had disclosed — the auditor
+        # stating a limitation is the last moment that should quietly erase one.
         record_conclusion_override(test)
     test["rcm_refs"], test["procedure_refs"] = rcm_refs, procedure_refs
     test["rcm_id"] = rcm_id
@@ -3071,6 +3076,22 @@ def incomplete_checks(test: dict) -> int:
         )
         for item in test.get("items") or []
     )
+
+
+def scope_limitation_parts(test: Mapping[str, object]) -> tuple[str, str]:
+    """The auditor's own scope text, and the disclosure written beneath it.
+
+    ``scope_limitations`` holds both: what the auditor stated, and what
+    `record_conclusion_override` appended about what was still open when they
+    concluded. They are edited and authored by different parties, so a reader
+    that offers the field for editing needs them apart — handing back the whole
+    string would invite an auditor to rewrite a disclosure that is regenerated
+    on every save anyway.
+    """
+
+    text = str(test.get("scope_limitations") or "")
+    note, _, disclosure = text.partition(_OVERRIDE_MARKER)
+    return note.rstrip(), (_OVERRIDE_MARKER + disclosure).strip() if disclosure else ""
 
 
 def record_conclusion_override(test: dict) -> None:
