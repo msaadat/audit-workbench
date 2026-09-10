@@ -715,3 +715,51 @@ def test_completion_uses_control_conclusion_without_free_text(
 
     completion = rcm_execution.completion(ws)
     assert completion["blank_conclusions"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Whose conclusion reaches the row
+# --------------------------------------------------------------------------- #
+def _conclusion_stub(**overrides):
+    return {
+        "conclusion_eligible": False,
+        "control_conclusion": "effective",
+        "control_conclusion_source": "auditor",
+        **overrides,
+    }
+
+
+def test_an_auditor_conclusion_reaches_the_row_over_unsettled_evidence():
+    """Their judgment stands whatever the evidence did.
+
+    Eligibility is a statement about the evidence, and it rightly stops a
+    *derived* conclusion outrunning it. An auditor's is not derived. Discarding
+    it accepted the save and then quietly ignored it: two tests on a real
+    engagement were concluded by hand, and the row above them stayed unconcluded
+    with nothing left for the auditor to act on.
+    """
+    assert rcm_execution.counts_toward_row_conclusion(_conclusion_stub()) is True
+
+
+def test_a_derived_conclusion_still_needs_the_evidence_to_have_settled():
+    """The half that has to keep working."""
+    assert rcm_execution.counts_toward_row_conclusion(
+        _conclusion_stub(control_conclusion_source="agent")
+    ) is False
+    assert rcm_execution.counts_toward_row_conclusion(
+        _conclusion_stub(control_conclusion_source="none")
+    ) is False
+
+
+def test_not_concluded_is_not_a_conclusion_whoever_selected_it():
+    """`no_conclusion` is the absence of a decision, not one of them."""
+    assert rcm_execution.counts_toward_row_conclusion(
+        _conclusion_stub(control_conclusion="no_conclusion")
+    ) is False
+
+
+def test_an_eligible_test_counts_whoever_concluded_it():
+    for source in ("auditor", "agent", "none"):
+        assert rcm_execution.counts_toward_row_conclusion(
+            _conclusion_stub(conclusion_eligible=True, control_conclusion_source=source)
+        ) is True

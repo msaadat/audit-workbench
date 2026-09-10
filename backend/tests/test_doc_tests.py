@@ -654,3 +654,36 @@ def test_doctest_reference_validation_and_api(workspace_with_data):
     assert compare.status_code == 200 and compare.json()["result"] == "match"
     paper = client.get(f"/api/workspaces/{ws.id}/procedures/{procedure['id']}/working-paper")
     assert paper.status_code == 200 and test_id in paper.json()["markdown"]
+
+
+def test_a_conclusion_on_a_test_that_never_ran_is_disclosed(workspace_with_data):
+    """The case the disclosure was silent on.
+
+    An item dispositioned without a reading behind it projects as `confirmed`,
+    so `unresolved_items` came back empty and nothing was recorded. Two tests on
+    a real engagement were concluded `effective` over a single item with no
+    attached document, and the file disclosed nothing at all — the one thing it
+    asks in exchange for letting the conclusion stand.
+    """
+    ws = workspace_with_data
+    # No document, and never run: the shape a generated placeholder leaves when
+    # the evidence it was written for never arrived.
+    test = doc_tests.create_test(ws, {
+        "kind": "qa", "title": "Standing data is authorised",
+        "items": [
+            {"label": "Standing data", "document_ids": [],
+             "question": "Are standing data changes authorised?"},
+        ],
+    })
+    item = test["items"][0]
+    doc_tests.update_item(ws, test["id"], item["id"], {"state": "confirmed"})
+    before = doc_tests.load_test(ws, test["id"])
+    assert doc_tests.execution_settled(before) is False
+    assert doc_tests.unresolved_items(before) == []
+
+    updated = doc_tests.update_test(ws, test["id"], {"control_conclusion": "effective"})
+
+    # Nothing refuses the conclusion; the file says what it was reached over.
+    assert updated["control_conclusion"] == "effective"
+    assert "execution never settled" in updated["scope_limitations"]
+    assert updated["conclusion_override"]["execution_settled"] is False

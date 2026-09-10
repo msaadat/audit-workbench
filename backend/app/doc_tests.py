@@ -3078,18 +3078,34 @@ def record_conclusion_override(test: dict) -> None:
 
     Rewritten on every conclusion save, so resolving the items later clears the
     disclosure rather than leaving a stale one on the file.
+
+    The disclosure is the whole of what the file asks in exchange for letting an
+    auditor conclude over evidence that never arrived — the conclusion itself is
+    theirs to reach and nothing refuses it. So the test that has not run at all
+    has to reach here: an item dispositioned without a reading behind it
+    projects as `confirmed`, which left `unresolved_items` empty and this
+    function with nothing to say. Two tests on a real engagement were concluded
+    `effective` over a single item with no attached document, and the file
+    disclosed nothing at all.
     """
 
     existing = str(test.get("scope_limitations") or "")
     auditor_text = existing.split(_OVERRIDE_MARKER)[0].rstrip()
     open_items = unresolved_items(test)
     incomplete = incomplete_checks(test)
+    settled = execution_settled(test)
     concluded = str(test.get("control_conclusion") or "no_conclusion") != "no_conclusion"
-    if not concluded or (not open_items and not incomplete):
+    if not concluded or (not open_items and not incomplete and settled):
         test["scope_limitations"] = auditor_text
         test.pop("conclusion_override", None)
         return
     lines = [_OVERRIDE_MARKER]
+    if not settled:
+        issues = execution_issues(test)
+        lines.append(
+            "Concluded on a test whose execution never settled"
+            + (f": {'; '.join(issues)}." if issues else ".")
+        )
     if open_items:
         total = len(test.get("items") or [])
         lines.append(
@@ -3109,6 +3125,7 @@ def record_conclusion_override(test: dict) -> None:
     test["conclusion_override"] = {
         "unresolved_items": open_items,
         "incomplete_check_items": incomplete,
+        "execution_settled": settled,
         "recorded_at": utcnow(),
     }
 

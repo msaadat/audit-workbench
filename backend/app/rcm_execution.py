@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from . import (
@@ -859,7 +860,7 @@ def rollup(
         conclusions = [
             item["control_conclusion"]
             for item in test_rollups
-            if item["conclusion_eligible"]
+            if counts_toward_row_conclusion(item)
         ]
         if "ineffective" in conclusions:
             control_conclusion = "ineffective"
@@ -882,7 +883,7 @@ def rollup(
         if control_conclusion == "effective":
             evidence_ceiling = _evidence_ceiling(row, test_rollups)
             contributing = [
-                item for item in test_rollups if item["conclusion_eligible"]
+                item for item in test_rollups if counts_toward_row_conclusion(item)
             ]
             auditor_concluded = bool(contributing) and all(
                 item.get("control_conclusion_source") == "auditor"
@@ -914,8 +915,13 @@ def rollup(
             "assertion_mismatches": sum(
                 item["assertion_mismatches"] for item in test_rollups
             ),
+            # What actually fed the row's conclusion, which is what the reader
+            # comparing it against `tests` is asking about. An auditor's
+            # conclusion over unsettled evidence counts here because it counts
+            # there — a row drawn as "1 of 2" while both fed it would be
+            # reporting a gap that no longer exists.
             "conclusion_eligible_tests": sum(
-                item["conclusion_eligible"] for item in test_rollups
+                counts_toward_row_conclusion(item) for item in test_rollups
             ),
             "supplemental_tests": sum(
                 item.get("assurance_scope") == "targeted_evidence_only"
@@ -997,6 +1003,37 @@ def unconcluded_rows_preview(
         # In place: the executor holds these lists, not the attribute.
         workspace.rcm[:] = before_rcm
         workspace.observations[:] = before_observations
+
+
+def counts_toward_row_conclusion(test_rollup: Mapping[str, object]) -> bool:
+    """Whether one test's conclusion feeds the row's.
+
+    Eligibility is a statement about the *evidence*: a test whose execution
+    never settled cannot, on its own, establish anything about the control, so
+    a conclusion derived from it is not allowed to reach the row.
+
+    An auditor's own conclusion is not derived from it. It is their judgment,
+    and it stands whatever the evidence did — the same rule the evidence
+    ceiling below already follows, for the same reason: downgrading or
+    discarding a conclusion an auditor signed leaves the file asserting
+    something nobody decided. Discarding it is the worse half, because the save
+    is accepted and then quietly ignored: an auditor concluded two tests on this
+    engagement, watched the row stay unconcluded, and had nothing to act on.
+
+    What the file owes in exchange is disclosure, never prevention — see
+    `doc_tests.record_conclusion_override`, which states what was still open
+    beside the conclusion that was reached over it.
+
+    ``no_conclusion`` is the absence of a decision, so an auditor who selects it
+    has not reached one; the test stays out either way.
+    """
+    if test_rollup.get("conclusion_eligible"):
+        return True
+    return (
+        str(test_rollup.get("control_conclusion_source") or "none") == "auditor"
+        and str(test_rollup.get("control_conclusion") or "no_conclusion")
+        in CONCLUDED_CONTROL_CONCLUSIONS
+    )
 
 
 def unconcluded_rows(
