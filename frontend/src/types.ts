@@ -1040,6 +1040,10 @@ export interface CycleVouchGridPayload {
   test_sha1: string
   definition_sha1: string
   title: string
+  /** The two test-level records the grid stands in for. They travel with the
+   *  projection because the grid never fetches the test itself. */
+  control_conclusion: ControlConclusion
+  rcm_id: string | null
   population: { table: string; column: string; selection: Record<string, unknown> }
   coverage: Record<string, unknown>
   selection_basis: 'evidence_linked' | 'sample'

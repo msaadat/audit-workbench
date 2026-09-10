@@ -1231,6 +1231,14 @@ def grid_projection(
         "test_sha1": str(test.get("sha1") or ""),
         "definition_sha1": definition_sha1,
         "title": str(test.get("title") or ""),
+        # The two test-level records the grid stands in for. The grid is the
+        # whole view of a cycle test — it deliberately never fetches the test
+        # itself, which is what keeps a large population cheap to open — so
+        # without these the conclusion had nowhere to live but an item detail
+        # one click deeper, and a one-item cycle test offered no way to record
+        # one at all.
+        "control_conclusion": str(test.get("control_conclusion") or "no_conclusion"),
+        "rcm_id": str(test.get("rcm_id") or "") or None,
         "population": dict(validated["definition"]["population"]),
         "coverage": dict(rollup["coverage"]),
         "selection_basis": str(selection.get("mode") or ""),

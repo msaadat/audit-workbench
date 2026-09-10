@@ -17,6 +17,7 @@ import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
   AuditFinding,
+  ControlConclusion,
   DocTest,
   DocTestDispositionState,
   DocTestItem,
@@ -550,6 +551,22 @@ async function saveConclusion() {
     toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
   } catch (error) { fail('Could not save the conclusion', error) }
 }
+/** The cycle grid's conclusion, saved without the test ever being loaded.
+ *  `saveConclusion` above reads `currentTest`, which is null while the grid is
+ *  up: the grid works from the paged projection alone, which is what keeps a
+ *  large population cheap to open. So the value travels with the event. */
+async function saveCycleConclusion(conclusion: ControlConclusion) {
+  const testId = selectedCycleTestId.value
+  if (!testId) return
+  try {
+    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${testId}`, {
+      control_conclusion: conclusion,
+    })
+    await refresh()
+    await cycleGrid.value?.loadGrid()
+    toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
+  } catch (error) { fail('Could not save the conclusion', error) }
+}
 async function updateEvidenceRequest(requestId: string, status: 'received' | 'cancelled') {
   try {
     await api.patch(`/api/workspaces/${props.workspace.id}/evidence-requests/${requestId}`, {
@@ -897,11 +914,15 @@ function onRulesetApproved(): void {
           :running="running"
           :busy="agent.isActive.value"
           :metadata="cycleMetadata"
+          :findings="linkedFindings"
           @close="closeCycleGrid"
           @error="fail"
           @openDetail="openCycleDetail"
           @run="runTest"
           @changed="refresh"
+          @saveConclusion="saveCycleConclusion"
+          @generateFinding="generateFinding"
+          @openFinding="openFinding"
         />
         <template v-if="currentTest && currentItem">
           <div class="detail-return">

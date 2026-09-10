@@ -4,6 +4,8 @@ import Button from 'primevue/button'
 
 import { api } from '../../api'
 import type {
+  AuditFinding,
+  ControlConclusion,
   CycleAssertionVerdict,
   CycleEvaluationState,
   CycleVouchGridComparison,
@@ -25,6 +27,7 @@ const props = defineProps<{
   running: boolean
   busy: boolean
   metadata: CycleVouchMetadata | null
+  findings: AuditFinding[]
 }>()
 const emit = defineEmits<{
   close: []
@@ -33,7 +36,30 @@ const emit = defineEmits<{
   openRules: []
   run: []
   changed: []
+  saveConclusion: [conclusion: ControlConclusion]
+  generateFinding: [regenerate: boolean]
+  openFinding: [findingId: string]
 }>()
+
+const CONTROL_CONCLUSIONS: Array<{ label: string; value: ControlConclusion }> = [
+  { label: 'Not concluded', value: 'no_conclusion' },
+  { label: 'Effective', value: 'effective' },
+  { label: 'Partially effective', value: 'partially_effective' },
+  { label: 'Ineffective', value: 'ineffective' },
+  { label: 'Not applicable', value: 'not_applicable' },
+]
+// Read from the grid projection rather than from the test. The grid never
+// fetches the test itself — that is what keeps a large population cheap to
+// open — so the two records it stands in for travel with the projection.
+const conclusion = ref<ControlConclusion>('no_conclusion')
+const savedConclusion = ref<ControlConclusion>('no_conclusion')
+const conclusionChanged = computed(() => conclusion.value !== savedConclusion.value)
+/** Records still carrying no call. A warning beside the conclusion, never a
+ *  block: concluding over open records is the auditor's to make, and the
+ *  backend records what was open as a scope limitation. */
+const undispositioned = computed(() =>
+  (payload.value?.rows ?? []).filter(row => row.disposition_state === 'pending').length,
+)
 
 const payload = ref<CycleVouchGridPayload | null>(null)
 const loading = ref(false)
@@ -177,6 +203,10 @@ async function loadGrid() {
       `/api/workspaces/${props.workspaceId}/doc-tests/${props.testId}/grid?offset=${offset.value}&limit=${limit.value}`,
     )
     if (payload.value.page.offset !== offset.value) offset.value = payload.value.page.offset
+    // Reseed from what was filed, so paging or a reload after saving does not
+    // leave the select showing an edit the file never took.
+    conclusion.value = payload.value.control_conclusion
+    savedConclusion.value = payload.value.control_conclusion
   } catch (error) {
     payload.value = null
     loadError.value = error instanceof Error ? error.message : String(error)
@@ -428,10 +458,74 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
     </UiEmptyState>
     <UiEmptyState v-else icon="pi pi-spin pi-spinner" title="Loading Cycle vouch grid" description="Reading the bounded grid projection." compact />
 
+    <!-- Its own `v-if` rather than a place in the chain above: the empty states
+         are the `v-else` arms of the grid itself, and a sibling between them
+         would break that. -->
+    <div v-if="payload" class="footer-row">
+      <div class="footer-cell">
+        <p class="aw-label">Conclusion</p>
+        <select v-model="conclusion" class="conclusion-select" aria-label="Control conclusion">
+          <option v-for="option in CONTROL_CONCLUSIONS" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+        <Button
+          v-if="conclusionChanged"
+          label="Save"
+          icon="pi pi-check"
+          size="small"
+          :disabled="busy"
+          @click="emit('saveConclusion', conclusion)"
+        />
+      </div>
+      <div class="footer-cell">
+        <p class="aw-label">Finding</p>
+        <template v-if="findings.length">
+          <button
+            v-for="finding in findings"
+            :key="finding.id"
+            type="button"
+            class="finding-chip"
+            @click="emit('openFinding', finding.id)"
+          >
+            <span class="finding-id">{{ finding.id }}</span>{{ finding.severity }}
+          </button>
+          <Button
+            label="Regenerate"
+            size="small" text severity="secondary"
+            :disabled="busy || !payload.rcm_id"
+            @click="emit('generateFinding', true)"
+          />
+        </template>
+        <template v-else>
+          <span class="footer-note">{{ payload.rcm_id ? 'None yet.' : 'Not linked to an RCM row.' }}</span>
+          <Button
+            label="Generate finding"
+            icon="pi pi-sparkles"
+            size="small" text severity="secondary"
+            :disabled="busy || !payload.rcm_id"
+            @click="emit('generateFinding', false)"
+          />
+        </template>
+      </div>
+      <p v-if="undispositioned" class="footer-warn">
+        {{ undispositioned }} of {{ payload.page.total }} records carry no call yet. You can
+        still conclude — it will be recorded as a scope limitation.
+      </p>
+    </div>
+
   </section>
 </template>
 
 <style scoped>
+.footer-row { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1.5rem; padding-top: .75rem; border-top: 1px solid var(--aw-border); }
+.footer-cell { display: flex; align-items: center; gap: .5rem; }
+.footer-cell .aw-label { margin: 0; }
+.conclusion-select { min-width: 10rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
+.footer-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.footer-warn { flex: 1 1 100%; margin: 0; color: var(--aw-warn); font-size: var(--aw-text-xs); }
+.finding-chip { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-pill); background: var(--aw-panel); color: inherit; font: inherit; cursor: pointer; }
+.finding-id { color: var(--aw-teal); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }
 .cycle-grid { display: flex; flex-direction: column; gap: var(--aw-space-4); min-width: 0; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .grid-head, .grid-actions, .grid-summary, .page-bar, .page-bar > div { display: flex; align-items: center; }
 .grid-head { justify-content: space-between; gap: 1rem; }

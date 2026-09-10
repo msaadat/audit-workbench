@@ -9,6 +9,8 @@ import CycleVouchGrid from './CycleVouchGrid.vue'
 const payload: CycleVouchGridPayload = {
   test_id: 'DT-CYCLE',
   test_sha1: 'sha1:test',
+  control_conclusion: 'no_conclusion',
+  rcm_id: 'RCM-1',
   definition_sha1: 'sha1:definition',
   title: 'Payroll payment cycle',
   population: {
@@ -73,6 +75,15 @@ const payload: CycleVouchGridPayload = {
   truncated: false,
 }
 
+const props = {
+  workspaceId: 'WS-1',
+  testId: 'DT-CYCLE',
+  running: false,
+  busy: false,
+  metadata: null,
+  findings: [],
+}
+
 const global = {
   directives: { tooltip: () => undefined },
 }
@@ -83,7 +94,7 @@ describe('CycleVouchGrid', () => {
   it('loads only the paged grid projection and never the whole test', async () => {
     const get = vi.spyOn(api, 'get').mockResolvedValue(payload)
     const wrapper = mount(CycleVouchGrid, {
-      props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false, metadata: null },
+      props: { ...props },
       global,
     })
     await flushPromises()
@@ -100,7 +111,7 @@ describe('CycleVouchGrid', () => {
     vi.spyOn(api, 'get').mockResolvedValue(payload)
     const openDetail = vi.fn()
     const wrapper = mount(CycleVouchGrid, {
-      props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false, metadata: null },
+      props: { ...props },
       attrs: { onOpenDetail: openDetail },
       global,
     })
@@ -132,6 +143,7 @@ describe('CycleVouchGrid', () => {
           :running="false"
           :busy="false"
           :metadata="null"
+          :findings="[]"
           @open-detail="detailOpen = true"
         />
         <button v-if="detailOpen" class="back" @click="detailOpen = false">Back</button>
@@ -153,5 +165,77 @@ describe('CycleVouchGrid', () => {
     expect(wrapper.get<HTMLElement>('.grid-scroll').element.scrollLeft).toBe(340)
     expect(wrapper.get<HTMLElement>('.grid-scroll').element.scrollTop).toBe(125)
     expect(wrapper.get('.assertion-cell').classes()).toContain('selected')
+  })
+})
+
+// --------------------------------------------------------------------------- #
+// The two records the grid carries for the test
+// --------------------------------------------------------------------------- #
+describe('CycleVouchGrid conclusion', () => {
+  it('offers the control conclusion on the grid itself', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue(payload)
+    const wrapper = mount(CycleVouchGrid, { props: { ...props }, global })
+    await flushPromises()
+
+    // It lived only on an item detail one click deeper, so a cycle test — a
+    // single-item one especially — presented no way to conclude it at all.
+    const select = wrapper.get<HTMLSelectElement>('select[aria-label="Control conclusion"]')
+    expect([...select.element.options].map(option => option.value)).toEqual([
+      'no_conclusion', 'effective', 'partially_effective', 'ineffective', 'not_applicable',
+    ])
+  })
+
+  it('asks the page to save only once the conclusion has been changed', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue(payload)
+    const saveConclusion = vi.fn()
+    const wrapper = mount(CycleVouchGrid, {
+      props: { ...props },
+      attrs: { onSaveConclusion: saveConclusion },
+      global,
+    })
+    await flushPromises()
+
+    // Nothing to save while it still reads what was filed.
+    expect(wrapper.find('button[aria-label="Save"]').exists()).toBe(false)
+
+    await wrapper.get('select[aria-label="Control conclusion"]').setValue('effective')
+    const save = wrapper.findAll('button').find(button => button.text().includes('Save'))
+    await save!.trigger('click')
+
+    expect(saveConclusion).toHaveBeenCalledTimes(1)
+    // The value travels with the request: the page never loaded the test.
+    expect(saveConclusion).toHaveBeenCalledWith('effective')
+  })
+
+  it('says what is still unanswered without refusing the conclusion', async () => {
+    // A warning, not a gate: concluding over open records is the auditor's.
+    vi.spyOn(api, 'get').mockResolvedValue(payload)
+    const wrapper = mount(CycleVouchGrid, { props: { ...props }, global })
+    await flushPromises()
+
+    const warn = wrapper.find('.footer-warn')
+    expect(warn.exists()).toBe(true)
+    expect(warn.text()).toContain('carry no call yet')
+    // The select is still there and still usable.
+    expect(wrapper.get('select[aria-label="Control conclusion"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('shows the conclusion the projection filed, not a default', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ ...payload, control_conclusion: 'ineffective' })
+    const wrapper = mount(CycleVouchGrid, { props: { ...props }, global })
+    await flushPromises()
+
+    const select = wrapper.get<HTMLSelectElement>('select[aria-label="Control conclusion"]')
+    expect(select.element.value).toBe('ineffective')
+    // Nothing to save: it reads exactly what the file holds.
+    expect(wrapper.findAll('button').some(button => button.text().includes('Save'))).toBe(false)
+  })
+
+  it('draws no footer until the projection has loaded', async () => {
+    vi.spyOn(api, 'get').mockImplementation(() => new Promise(() => {}))
+    const wrapper = mount(CycleVouchGrid, { props: { ...props }, global })
+    await flushPromises()
+
+    expect(wrapper.find('.footer-row').exists()).toBe(false)
   })
 })
