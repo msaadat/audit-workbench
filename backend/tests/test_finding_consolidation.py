@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import data_tests, finding_consolidation, findings, report, working_papers, workspaces
+from app.agent import capabilities as audit_capabilities
 from app.agent.context import (
     ContextBundle,
     ContextBundleItem,
@@ -343,6 +344,44 @@ def test_an_ordinary_draft_carries_no_sibling_keys():
     sent = json.loads(gateway.calls[0]["user"])
     assert "SIBLING OBSERVATIONS" not in sent
     assert "CONSOLIDATION BRIEF" not in sent
+
+
+def test_a_lead_awaiting_redraft_is_outstanding_work_for_the_capability(
+    workspace_with_data,
+):
+    """The merge leaves the lead's narrative pending, and the capability has
+    to say so.
+
+    Readiness and unit expansion must name the same work: readiness reporting
+    ``satisfied`` here made the scheduler reuse ``findings.drafted`` without
+    ever asking for units, so the redraft run completed having done nothing
+    and the lead kept one member's narrative.
+    """
+    ws = _two_drafts(workspace_with_data)
+    lead, member = _lead_and_member(ws)
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+    assert capability.readiness(ws, {}).state == "satisfied"
+
+    findings.consolidate(
+        ws, finding_ids=[lead["id"], member["id"]], lead_id=lead["id"],
+        relation="shared_cause",
+    )
+    ws = workspaces.load_workspace(ws.id)
+    lead = next(item for item in ws.findings if item["id"] == lead["id"])
+    assert lead["consolidation"]["narrative_pending"] is True
+
+    readiness = capability.readiness(ws, {})
+    assert readiness.state == "missing"
+    assert readiness.details["pending_redraft"] == 1
+    assert any("awaits redrafting" in reason for reason in readiness.reasons)
+
+    # Named or not, the pending lead expands — and only the lead's own
+    # observation does, since the member is absorbed.
+    for scope in ({}, {"target_refs": [f"finding:{lead['id']}"]}):
+        units = capability.expand_units(ws, scope)
+        assert [unit.parent_refs[0] for unit in units] == [
+            f"observation:{lead['source_observation_id']}"
+        ], scope
 
 
 def test_the_executor_redrafts_a_lead_in_place_keeping_its_unioned_references(workspace_with_data):

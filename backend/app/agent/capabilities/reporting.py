@@ -61,6 +61,25 @@ def _unsupported_observations(
     return {key: value for key, value in issues.items() if value}
 
 
+def _pending_lead_observations(workspace: Workspace, eligible: list[dict]) -> set[str]:
+    """Observations whose finding is a consolidated lead still to be redrafted.
+
+    Accepting a consolidation merges the members into the lead and marks the
+    lead's narrative pending: the text still reads as one member's draft until
+    the finding worker rewrites it from every member observation. That is
+    outstanding generation work, so it is reported here and expanded below —
+    readiness and the unit builder have to name the same work, or the
+    scheduler reuses a capability whose units it never asks for.
+    """
+    leads = {
+        str(item.get("source_observation_id") or "")
+        for item in workspace.findings
+        if finding_consolidation.is_lead(item)
+        and (item.get("consolidation") or {}).get("narrative_pending")
+    }
+    return {item["id"] for item in eligible if item["id"] in leads}
+
+
 def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     eligible = _eligible_observations(workspace, scope)
     linked = {
@@ -112,13 +131,23 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
         for item in eligible
         if item["id"] not in covered and item["id"] not in unsupported
     ]
-    if missing:
+    pending = sorted(_pending_lead_observations(workspace, eligible) - set(unsupported))
+    if pending:
+        details["pending_redraft"] = len(pending)
+    if missing or pending:
         return Readiness(
             "missing",
             tuple(
                 reason
                 for reason in (
-                    f"{counted(len(missing), 'eligible observation')} {verb(len(missing))} finding drafts",
+                    f"{counted(len(missing), 'eligible observation')} {verb(len(missing))} finding drafts"
+                    if missing
+                    else "",
+                    f"{counted(len(pending), 'consolidated finding')} "
+                    f"{verb(len(pending), 'awaits', 'await')} redrafting from "
+                    f"{verb(len(pending), 'its', 'their')} members"
+                    if pending
+                    else "",
                     unsupported_reason,
                 )
                 if reason
@@ -139,6 +168,10 @@ def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     named = set(_named_observation_ids(workspace, scope))
     eligible = _eligible_observations(workspace, scope)
     unsupported = _unsupported_observations(workspace, eligible)
+    # A lead whose narrative is still pending is outstanding work whether or
+    # not the request named it, so it expands the way an undrafted
+    # observation does. See `_pending_lead_observations`.
+    pending = _pending_lead_observations(workspace, eligible)
     return [
         UnitSpec(
             semantic_unit_id("finding", item["id"]),
@@ -154,7 +187,12 @@ def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             item,
         )
         for item in eligible
-        if (forced or item["id"] in named or item["id"] not in existing)
+        if (
+            forced
+            or item["id"] in named
+            or item["id"] in pending
+            or item["id"] not in existing
+        )
         and item["id"] not in unsupported
     ]
 

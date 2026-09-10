@@ -44,8 +44,10 @@ vi.mock('../composables/useAgentRun', async () => {
   }
 })
 
+const assistant = vi.hoisted(() => ({ createChat: vi.fn(), send: vi.fn() }))
+
 vi.mock('../composables/useAssistantChat', () => ({
-  useAssistantChat: () => ({ state: { busy: false }, createChat: vi.fn(), send: vi.fn() }),
+  useAssistantChat: () => ({ state: { busy: false }, ...assistant }),
 }))
 
 globalThis.ResizeObserver ??= class {
@@ -203,6 +205,39 @@ describe('FindingsTab', () => {
     const unlinked = await mountTab([finding('F-1', { rcm_refs: [] })])
     expect(unlinked.find('.rail .missing').text())
       .toContain('The report cannot place this finding in a process')
+  })
+
+  it('offers a redraft for a lead whose narrative is still pending', async () => {
+    // The redraft is queued automatically on accept. When that run does not
+    // land, the pending pill is the only trace of it — without an action
+    // beside it the lead is stuck reading as one member's draft.
+    assistant.send.mockClear()
+    const decided = { group_id: 'CG-1', relation: 'shared_cause' as const, basis_sha1: 'b', decided_by: 'auditor' as const, decided_at: '2026-09-09T00:00:00Z' }
+    const wrapper = await mountTab([
+      finding('F-1', { consolidation: { ...decided, role: 'lead', members: ['F-2'], narrative_pending: true } }),
+    ])
+
+    const redraft = wrapper.find('[data-testid="redraft-lead"]')
+    expect(redraft.exists()).toBe(true)
+
+    await redraft.trigger('click')
+    await flushPromises()
+
+    expect(assistant.send).toHaveBeenCalledWith(
+      'Redraft finding F-1 from its consolidated observations.',
+      'act', expect.anything(),
+      expect.objectContaining({ command: 'draft_findings', runContext: { finding_id: 'F-1' } }),
+    )
+  })
+
+  it('offers no redraft once the lead has been redrafted', async () => {
+    const decided = { group_id: 'CG-1', relation: 'shared_cause' as const, basis_sha1: 'b', decided_by: 'auditor' as const, decided_at: '2026-09-09T00:00:00Z' }
+    const wrapper = await mountTab([
+      finding('F-1', { consolidation: { ...decided, role: 'lead', members: ['F-2'], narrative_pending: false } }),
+    ])
+
+    expect(wrapper.find('[data-testid="narrative-pending"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="redraft-lead"]').exists()).toBe(false)
   })
 
   it('badges a consolidated lead, lists what it absorbed, and hides the absorbed by default', async () => {

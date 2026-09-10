@@ -53,6 +53,7 @@ const saving = ref(false)
 const confirmingAll = ref(false)
 const generatingFindings = ref(false)
 const reaffirming = ref(false)
+const redrafting = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
 const search = ref('')
@@ -188,6 +189,7 @@ async function refreshConsolidation() {
  * redraft it; the run is queued through the assistant like every other draft.
  */
 async function redraftLead(lead: AuditFinding) {
+  redrafting.value = true
   try {
     await assistantChat.createChat()
     await assistantChat.send(
@@ -202,7 +204,7 @@ async function redraftLead(lead: AuditFinding) {
       detail: `The narrative of ${lead.id} still reads as one draft. ${error instanceof ApiError ? error.message : String(error)}`,
       life: 8000,
     })
-  }
+  } finally { redrafting.value = false }
 }
 
 async function acceptConsolidation(group: ConsolidationGroup, choice: { lead_finding_id: string; title: string; include_confirmed: boolean }) {
@@ -724,6 +726,20 @@ const staleSentence = computed(() => {
               severity="secondary"
               :loading="consolidating"
               @click="restoreFinding(selected)"
+            />
+            <!-- The redraft is queued automatically when a consolidation is
+                 accepted. A run that never landed leaves the lead reading as
+                 one member's draft with no way back to it, so the pending
+                 state carries its own way to ask again. -->
+            <Button
+              v-if="selected.consolidation?.role === 'lead' && selected.consolidation?.narrative_pending"
+              label="Redraft narrative"
+              icon="pi pi-sparkles"
+              size="small"
+              severity="warn"
+              data-testid="redraft-lead"
+              :loading="redrafting"
+              @click="redraftLead(selected)"
             />
             <Button
               v-if="selected.evidence_warnings?.length"

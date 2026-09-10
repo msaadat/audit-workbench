@@ -251,6 +251,42 @@ def test_finding_draft_tab_button_keeps_selected_observation_scope(workspace_wit
     assert launched["context"] == {"observation_id": "OBS-1"}
 
 
+def test_finding_draft_tab_button_scopes_a_redraft_to_the_named_finding(
+    workspace_with_data, monkeypatch
+):
+    """Accepting a consolidation redrafts the lead by naming it.
+
+    ``finding_id`` is a declared scope key for the template, so the Findings
+    page's redraft reaches the capability as a ``finding:`` ref rather than
+    being refused as an undeclared key and leaving the lead's narrative
+    reading as one member's draft.
+    """
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.update(command=command, context=context)
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Redraft finding F-1 from its consolidated observations.",
+        "intent": "act", "mode": "auto", "request_id": "request-finding-redraft",
+        "source": "tab_button", "goal_template": "finding_draft",
+        "run_context": {"finding_id": "F-1"},
+    })
+
+    assert result["outcome"]["kind"] != "error"
+    assert launched["command"]["target_refs"] == ["finding:F-1"]
+
+
 def test_finding_draft_tab_button_scopes_a_batch_to_named_rcm_rows(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)

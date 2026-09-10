@@ -151,7 +151,11 @@ TEMPLATE_RUN_CONTEXT_KEYS: dict[str, frozenset[str]] = {
     # ``rcm_ids`` is the batch form of ``rcm_id``: a test tab knows every row
     # whose exceptions are still undrafted, and naming them is what keeps the
     # button from widening into an unscoped workspace sweep.
-    "finding_draft": frozenset({"observation_id", "rcm_id", "rcm_ids"}),
+    # ``finding_id`` is the redraft form: naming a consolidated lead is the
+    # instruction to rewrite its narrative from every member observation, and
+    # `_launch_command` turns it into the ``finding:`` ref the capability
+    # expands from.
+    "finding_draft": frozenset({"observation_id", "finding_id", "rcm_id", "rcm_ids"}),
     "document_analysis": frozenset({"document_ids", "action"}),
     "document_test_preparation": frozenset(),
     "document_test_execution": frozenset({"test_id", "test_ids"}),
