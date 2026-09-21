@@ -3,7 +3,8 @@ import { portion } from '../ui/statusLanes'
 import type {
   ReviewChip, StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
-import type { AuditFinding, DataTest } from '../../types'
+import type { AuditFinding, AuditObservation, DataTest } from '../../types'
+import { findingCoverage } from '../findings/findingCoverage'
 
 /**
  * Where the Data Tests stand, above the list of them.
@@ -54,7 +55,9 @@ interface Counts {
   semanticWarnings: number
   /** RCM-linked exception tests — the ones a finding can be drafted against. */
   exceptionTests: number
+  /** Of those, the ones a finding speaks for — their own, or their lead's. */
   exceptionTestsCovered: number
+  /** The rest: exceptions with no write-up and none coming. */
   undrafted: string[]
   /** Exceptions on tests that support no RCM row, so no finding is owed. */
   exploratoryExceptions: number
@@ -83,8 +86,10 @@ function isPending(test: DataTest): boolean {
   return !hasRun(test) && test.status !== 'blocked' && test.status !== 'review_required'
 }
 
-function tally(tests: DataTest[], findings: AuditFinding[]): Counts {
-  const drafted = new Set(findings.flatMap(finding => finding.test_refs))
+function tally(
+  tests: DataTest[], findings: AuditFinding[], observations: AuditObservation[],
+): Counts {
+  const coverage = findingCoverage(findings, observations)
   const counts: Counts = {
     total: tests.length,
     run: 0, notRun: [], blocked: 0, awaitingReview: 0, staleResults: [],
@@ -127,7 +132,7 @@ function tally(tests: DataTest[], findings: AuditFinding[]): Counts {
       if (!test.rcm_id) counts.exploratoryExceptions += 1
       else {
         counts.exceptionTests += 1
-        if (drafted.has(test.id)) counts.exceptionTestsCovered += 1
+        if (coverage.spokenFor(test.id)) counts.exceptionTestsCovered += 1
         else counts.undrafted.push(test.id)
       }
     }
@@ -380,8 +385,12 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
   return items
 }
 
-export function dataTestStatus(tests: DataTest[], findings: AuditFinding[] = []): StatusModel {
-  const counts = tally(tests, findings)
+export function dataTestStatus(
+  tests: DataTest[],
+  findings: AuditFinding[] = [],
+  observations: AuditObservation[] = [],
+): StatusModel {
+  const counts = tally(tests, findings, observations)
   return {
     lanes: [executionLane(counts), conclusionLane(counts), findingsLane(counts)],
     disclosures: disclosuresFor(counts),
@@ -430,10 +439,13 @@ export const DATA_TEST_FILTER_LABELS: Record<DataTestFilter, string> = {
 
 /** Narrow the same list the lanes counted, so the two can never disagree. */
 export function filterDataTests(
-  tests: DataTest[], filter: DataTestFilter | null, findings: AuditFinding[] = [],
+  tests: DataTest[],
+  filter: DataTestFilter | null,
+  findings: AuditFinding[] = [],
+  observations: AuditObservation[] = [],
 ): DataTest[] {
   if (!filter) return tests
-  const drafted = new Set(findings.flatMap(finding => finding.test_refs))
+  const coverage = findingCoverage(findings, observations)
   return tests.filter(test => {
     const conclusion = String(test.control_conclusion ?? '') || 'no_conclusion'
     switch (filter) {
@@ -450,8 +462,9 @@ export function filterDataTests(
       case 'no_conclusion': return !CONCLUDED.has(conclusion)
       case 'stale_conclusion': return test.control_conclusion_stale
       case 'missing_finding':
-        return test.status === 'completed_with_exception' && Boolean(test.rcm_id) && !drafted.has(test.id)
-      case 'has_finding': return drafted.has(test.id)
+        return test.status === 'completed_with_exception'
+          && Boolean(test.rcm_id) && !coverage.spokenFor(test.id)
+      case 'has_finding': return coverage.spokenFor(test.id)
       case 'agent_concluded':
         return test.control_conclusion_source === 'agent' && CONCLUDED.has(conclusion)
       case 'auditor_concluded':

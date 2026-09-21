@@ -671,6 +671,9 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
                 "agent_run_id": run["id"],
                 "rcm_refs": [observation["rcm_id"]],
                 "test_refs": [observation["test_id"]],
+                "covered_test_refs": findings.covered_test_refs(
+                    workspace, str(observation["id"])
+                ),
                 "execution_refs": [execution_ref],
                 "evidence_refs": [anchor],
                 "auditor_confirmed": False,

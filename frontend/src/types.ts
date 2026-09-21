@@ -1666,6 +1666,15 @@ export interface AuditObservation {
   summary: string
   classification: string
   outcome: 'exception' | 'needs_manual_check'
+  /**
+   * The observation on the same row this one is a duplicate measurement of.
+   *
+   * Set by the roll-up where another test flagged exactly these records, and
+   * cleared where that no longer holds. Finding drafting skips a covered
+   * observation, so anything counting write-ups owed has to read it — see
+   * `findingCoverage`.
+   */
+  covered_by?: string | null
   created: string
   updated: string
 }
@@ -1687,7 +1696,18 @@ export interface AuditFinding {
   rcm_semantic_refs?: string[]
   procedure_refs: string[]
   test_refs: string[]
+  /**
+   * Duplicate tests on the same row whose exception this finding answers.
+   *
+   * Beside `test_refs`, not in it: those are the tests the finding rests on,
+   * and a covered duplicate's result was never read. Written at draft time and
+   * not maintained afterwards, so anything that must be current derives
+   * coverage from `AuditObservation.covered_by` — see `findingCoverage`.
+   */
+  covered_test_refs?: string[]
   execution_refs: string[]
+  /** The exception observation this finding was drafted from. */
+  source_observation_id?: string | null
   evidence_refs: EvidenceRef[]
   evidence_warnings?: string[]
   cause_pending: boolean

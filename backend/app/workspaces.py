@@ -535,6 +535,7 @@ def _read_artifact(root: Path, name: str) -> tuple[object, object]:
             item.setdefault("rcm_refs", [])
             item.setdefault("procedure_refs", [])
             item.setdefault("test_refs", [])
+            item.setdefault("covered_test_refs", [])
             item.setdefault("execution_refs", [])
             item.setdefault("rcm_semantic_refs", [])
             item.setdefault("cause_pending", False)

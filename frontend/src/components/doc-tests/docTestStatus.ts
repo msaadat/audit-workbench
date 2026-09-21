@@ -3,7 +3,10 @@ import { portion } from '../ui/statusLanes'
 import type {
   ReviewChip, StatusChip, StatusDisclosure, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
-import type { AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload } from '../../types'
+import type {
+  AuditFinding, AuditObservation, DocTestSummaryEntry, DocTestSummaryPayload,
+} from '../../types'
+import { findingCoverage } from '../findings/findingCoverage'
 
 /**
  * Where the Document Tests stand, above the worklist.
@@ -61,13 +64,19 @@ interface Counts {
   agentConcluded: number
   auditorConcluded: number
   exceptionTests: number
+  /** Of those, the ones a finding speaks for — their own, or their lead's. */
   exceptionTestsCovered: number
+  /** The rest: exceptions with no write-up and none coming. */
   undrafted: string[]
 }
 
-function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]): Counts {
+function tally(
+  payload: DocTestSummaryPayload | null,
+  findings: AuditFinding[],
+  observations: AuditObservation[],
+): Counts {
   const entries = payload?.entries ?? []
-  const drafted = new Set(findings.flatMap(finding => finding.test_refs))
+  const coverage = findingCoverage(findings, observations)
   const counts: Counts = {
     entries: entries.length, executed: 0,
     notRunTests: [], notRunEntries: 0, awaitingEvidence: 0, needsReview: 0,
@@ -106,7 +115,7 @@ function tally(payload: DocTestSummaryPayload | null, findings: AuditFinding[]):
 
     if (entry.test_status === 'completed_with_exception') {
       counts.exceptionTests += 1
-      if (drafted.has(entry.test_id)) counts.exceptionTestsCovered += 1
+      if (coverage.spokenFor(entry.test_id)) counts.exceptionTestsCovered += 1
       // Drafting is per RCM row, so a test with no row has nothing to draft
       // against and is not counted as a finding the file is missing.
       else if (entry.rcm_id) counts.undrafted.push(entry.test_id)
@@ -323,9 +332,11 @@ function disclosuresFor(counts: Counts): StatusDisclosure[] {
 }
 
 export function docTestStatus(
-  payload: DocTestSummaryPayload | null, findings: AuditFinding[] = [],
+  payload: DocTestSummaryPayload | null,
+  findings: AuditFinding[] = [],
+  observations: AuditObservation[] = [],
 ): StatusModel {
-  const counts = tally(payload, findings)
+  const counts = tally(payload, findings, observations)
   return {
     lanes: [executionLane(counts), conclusionLane(counts), findingsLane(counts)],
     disclosures: disclosuresFor(counts),
@@ -370,10 +381,13 @@ export const DOC_TEST_FILTER_LABELS: Record<DocTestFilter, string> = {
  * and select every item of a matching test, which is what the worklist shows.
  */
 export function filterDocTestEntries(
-  entries: DocTestSummaryEntry[], filter: DocTestFilter | null, findings: AuditFinding[] = [],
+  entries: DocTestSummaryEntry[],
+  filter: DocTestFilter | null,
+  findings: AuditFinding[] = [],
+  observations: AuditObservation[] = [],
 ): DocTestSummaryEntry[] {
   if (!filter) return entries
-  const drafted = new Set(findings.flatMap(finding => finding.test_refs))
+  const coverage = findingCoverage(findings, observations)
   return entries.filter(entry => {
     switch (filter) {
       case 'not_run': return entry.classification === 'not_run'
@@ -388,8 +402,8 @@ export function filterDocTestEntries(
       case 'auditor_concluded': return entry.conclusion_state === 'auditor'
       case 'missing_finding':
         return entry.test_status === 'completed_with_exception'
-          && Boolean(entry.rcm_id) && !drafted.has(entry.test_id)
-      case 'has_finding': return drafted.has(entry.test_id)
+          && Boolean(entry.rcm_id) && !coverage.spokenFor(entry.test_id)
+      case 'has_finding': return coverage.spokenFor(entry.test_id)
       case 'evidence_request':
         return entry.entry_type === 'item' && entry.evidence_request_count > 0
       default: return true

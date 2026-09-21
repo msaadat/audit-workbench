@@ -209,6 +209,38 @@ def _test_rcm_id(workspace: Workspace, test_id: str) -> str | None:
     return str(record.get("rcm_id") or "") or None if record else None
 
 
+def covered_test_refs(workspace: Workspace, observation_id: str) -> list[str]:
+    """The tests a finding on this observation also stands for.
+
+    A duplicate test on the same row flags exactly the records the lead test
+    flags, so the roll-up marks its observation ``covered_by`` the lead's and
+    finding expansion skips it -- one exception, one write-up. Nothing on the
+    lead's finding recorded that, which left a reader of the record unable to
+    see that the duplicate's exception had been answered at all.
+
+    Kept beside ``test_refs`` rather than inside it because the two claim
+    different things. ``test_refs`` is support: :func:`_reference_issues`
+    validates every entry against the finding's execution results, and this
+    finding never read the duplicate's result. It stands for the duplicate's
+    exception without resting on its evidence.
+
+    Written at draft time and not maintained afterwards, for the reason
+    ``rcm_execution`` gives for keeping finding counts off the RCM row: the
+    duplicate grouping is recomputed by a roll-up that does not rewrite
+    findings, so this can age. Readers that must be current -- the test tabs'
+    "no finding written" count among them -- derive coverage from
+    ``observations[].covered_by`` instead, which is the live fact.
+    """
+    return sorted(
+        {
+            test_id
+            for item in workspace.observations
+            if str(item.get("covered_by") or "") == str(observation_id)
+            and (test_id := str(item.get("test_id") or ""))
+        }
+    )
+
+
 def _validate_links(
     workspace: Workspace,
     rcm_refs: object,
@@ -565,6 +597,14 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         ),
         "procedure_refs": procedure_refs,
         "test_refs": test_refs,
+        # Not put through `_validate_links`: a retired duplicate is a stale
+        # annotation, not a broken support link, and refusing the save would
+        # lock the auditor out of the finding over it. See `covered_test_refs`.
+        "covered_test_refs": [
+            str(value)
+            for value in dict.fromkeys(payload.get("covered_test_refs") or [])
+            if str(value).strip()
+        ],
         "execution_refs": execution_refs,
         "evidence_refs": evidence_refs,
         "cause_pending": bool(payload.get("cause_pending", False)),

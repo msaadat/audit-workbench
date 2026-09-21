@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { AuditFinding, DataTest } from '../../types'
+import type { AuditFinding, AuditObservation, DataTest } from '../../types'
 import {
   DATA_TEST_CHIPS, dataTestStatus, filterDataTests,
 } from './dataTestStatus'
@@ -22,12 +22,24 @@ function test(id: string, overrides: Partial<DataTest> = {}): DataTest {
   } as DataTest
 }
 
-function finding(testRefs: string[]): AuditFinding {
-  return { id: 'F-1', test_refs: testRefs } as AuditFinding
+function finding(testRefs: string[], overrides: Partial<AuditFinding> = {}): AuditFinding {
+  return { id: 'F-1', test_refs: testRefs, ...overrides } as AuditFinding
 }
 
-const lanes = (tests: DataTest[], findings: AuditFinding[] = []) =>
-  Object.fromEntries(dataTestStatus(tests, findings).lanes.map(lane => [lane.key, lane]))
+function observation(
+  id: string, testId: string, overrides: Partial<AuditObservation> = {},
+): AuditObservation {
+  return {
+    id, rcm_id: 'RCM-1', test_id: testId, outcome: 'exception', ...overrides,
+  } as AuditObservation
+}
+
+const lanes = (
+  tests: DataTest[], findings: AuditFinding[] = [], observations: AuditObservation[] = [],
+) =>
+  Object.fromEntries(
+    dataTestStatus(tests, findings, observations).lanes.map(lane => [lane.key, lane]),
+  )
 
 describe('data test execution lane', () => {
   it('scopes the run to the tests that have never run', () => {
@@ -110,6 +122,46 @@ describe('data test findings lane', () => {
     }])
   })
 
+  it('counts a duplicate test as written up by the finding on its lead', () => {
+    // The row's two tests flagged the same records, so the roll-up covered the
+    // duplicate's observation and drafting skips it. Counting it as owing a
+    // finding offered a button no run could ever clear.
+    const tests = [
+      test('DAT-LEAD', { status: 'completed_with_exception' }),
+      test('DAT-DUP', { status: 'completed_with_exception' }),
+    ]
+    const lane = lanes(
+      tests,
+      [finding(['DAT-LEAD'], { source_observation_id: 'OBS-LEAD' })],
+      [
+        observation('OBS-LEAD', 'DAT-LEAD'),
+        observation('OBS-DUP', 'DAT-DUP', { covered_by: 'OBS-LEAD' }),
+      ],
+    ).findings
+
+    expect(`${lane.value} ${lane.caption}`).toBe('2 of 2 exception tests written up')
+    expect(lane.actions).toEqual([])
+  })
+
+  it('still owes a finding where the duplicate covers an undrafted lead', () => {
+    // Coverage is only an answer once the lead has one. Both rows here are
+    // outstanding, and the run scoped to the row will draft the lead.
+    const lane = lanes(
+      [
+        test('DAT-LEAD', { status: 'completed_with_exception' }),
+        test('DAT-DUP', { status: 'completed_with_exception' }),
+      ],
+      [],
+      [
+        observation('OBS-LEAD', 'DAT-LEAD'),
+        observation('OBS-DUP', 'DAT-DUP', { covered_by: 'OBS-LEAD' }),
+      ],
+    ).findings
+
+    expect(`${lane.value} ${lane.caption}`).toBe('0 of 2 exception tests written up')
+    expect(lane.actions[0].ids).toEqual(['DAT-LEAD', 'DAT-DUP'])
+  })
+
   it('leaves an exploratory exception out of the count and says why', () => {
     // Counting it would leave the lane short of a write-up that can never
     // exist, because drafting is per RCM row and this test has none.
@@ -181,6 +233,22 @@ describe('data test filters', () => {
     expect(ids('exploratory')).toEqual(['DAT-4'])
     expect(ids('has_finding')).toEqual(['DAT-2'])
     expect(ids('missing_finding')).toEqual([])
+  })
+
+  it('narrows a duplicate test to the finding that speaks for it', () => {
+    const rows = [
+      test('DAT-LEAD', { status: 'completed_with_exception' }),
+      test('DAT-DUP', { status: 'completed_with_exception' }),
+    ]
+    const drafted = [finding(['DAT-LEAD'], { source_observation_id: 'OBS-LEAD' })]
+    const observations = [
+      observation('OBS-LEAD', 'DAT-LEAD'),
+      observation('OBS-DUP', 'DAT-DUP', { covered_by: 'OBS-LEAD' }),
+    ]
+
+    expect(filterDataTests(rows, 'missing_finding', drafted, observations)).toEqual([])
+    expect(filterDataTests(rows, 'has_finding', drafted, observations).map(item => item.id))
+      .toEqual(['DAT-LEAD', 'DAT-DUP'])
   })
 })
 

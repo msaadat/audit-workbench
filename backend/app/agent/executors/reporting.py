@@ -430,6 +430,12 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
             ),
             "procedure_refs": [],
             "test_refs": [observation["test_id"]],
+            # The duplicate tests on this row whose exception this finding
+            # answers. Recorded so the record says so; see
+            # `findings.covered_test_refs`.
+            "covered_test_refs": findings.covered_test_refs(
+                fresh, target.observation_id
+            ),
             "execution_refs": [execution_ref],
             "evidence_refs": evidence_refs,
             "auditor_confirmed": False,

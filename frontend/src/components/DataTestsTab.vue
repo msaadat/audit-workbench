@@ -38,6 +38,7 @@ import {
   DATA_TEST_CHIPS, dataTestStatus, filterDataTests,
 } from './data-tests/dataTestStatus'
 import type { DataTestFilter } from './data-tests/dataTestStatus'
+import { findingCoverage } from './findings/findingCoverage'
 import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -128,16 +129,26 @@ const rcmFacet = computed(() => {
   return linked.size > 1 ? rcmOptions.value.filter(option => linked.has(option.value)) : []
 })
 const filterRcm = ref<string | null>(null)
+// One coverage view behind every count on this page: the bar, the filters, the
+// drawer's linked findings and the batch button all read it, so none of them
+// can claim a write-up is owed while another says it exists.
+const coverage = computed(() => findingCoverage(
+  planning.value?.findings ?? [], planning.value?.observations ?? [],
+))
 // The bar counts every test, not the filtered list: a count that shrank as you
 // filtered by it could never be clicked back out of.
-const status = computed(() => dataTestStatus(tests.value, planning.value?.findings ?? []))
+const status = computed(() => dataTestStatus(
+  tests.value, planning.value?.findings ?? [], planning.value?.observations ?? [],
+))
 const statusBusy = computed(() => running.value || runningAll.value || generatingFindings.value)
 const canRunAgent = computed(() => !agent.isActive.value)
 // Folded rather than combined: each narrowing runs the same predicate over
 // what the last one left, so the filters compose without a second code path.
 const statusScope = computed(() => statusFilter.value
   .reduce(
-    (rows, key) => filterDataTests(rows, key, planning.value?.findings ?? []),
+    (rows, key) => filterDataTests(
+      rows, key, planning.value?.findings ?? [], planning.value?.observations ?? [],
+    ),
     tests.value,
   )
   .filter(test => !filterRcm.value || test.rcm_id === filterRcm.value))
@@ -149,19 +160,16 @@ const visibleTests = computed(() => {
 })
 const linkedFindings = computed<AuditFinding[]>(() => {
   const testId = selected.value?.id
-  return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
+  return testId ? coverage.value.forTest(testId) : []
 })
 // The tests that ran, found something, and are still waiting on the finding
 // that says so. Drafting is per RCM row — the same scope the single-test
 // button uses — so the button offers the rows behind these tests at once.
-const findingsPending = computed(() => {
-  const drafted = new Set((planning.value?.findings ?? []).flatMap(finding => finding.test_refs))
-  return tests.value.filter(test =>
-    test.rcm_id
-    && test.last_run
-    && test.status === 'completed_with_exception'
-    && !drafted.has(test.id))
-})
+const findingsPending = computed(() => tests.value.filter(test =>
+  test.rcm_id
+  && test.last_run
+  && test.status === 'completed_with_exception'
+  && !coverage.value.spokenFor(test.id)))
 const staleTestIds = computed(() => tests.value.filter(test => test.result_stale).map(test => test.id))
 
 /* ---- What the verdict bar says ---------------------------------------- */

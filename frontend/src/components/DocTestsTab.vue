@@ -47,6 +47,7 @@ import {
   DOC_TEST_CHIPS, docTestStatus, filterDocTestEntries,
 } from './doc-tests/docTestStatus'
 import type { DocTestFilter } from './doc-tests/docTestStatus'
+import { findingCoverage } from './findings/findingCoverage'
 import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -102,9 +103,17 @@ const anchor = ref<EvidenceRef | null>(null)
 const selectedIds = ref<string[]>([])
 const bulkBusy = ref(false)
 
+// One coverage view behind every count on this page: the bar, the filters, the
+// drawer's linked findings and the batch button all read it, so none of them
+// can claim a write-up is owed while another says it exists.
+const coverage = computed(() => findingCoverage(
+  planning.value?.findings ?? [], planning.value?.observations ?? [],
+))
 // The bar counts every entry, not the filtered worklist: a count that shrank
 // as you filtered by it could never be clicked back out of.
-const status = computed(() => docTestStatus(summary.value, planning.value?.findings ?? []))
+const status = computed(() => docTestStatus(
+  summary.value, planning.value?.findings ?? [], planning.value?.observations ?? [],
+))
 const statusBusy = computed(() =>
   runningAll.value || runningOutstanding.value || generatingFindings.value)
 /** The list header's `Select` toggle. Checkboxes appear only once asked for. */
@@ -112,7 +121,9 @@ const selecting = ref(false)
 // Folded rather than combined: each narrowing runs the same predicate over
 // what the last one left, so the filters compose without a second code path.
 const statusScope = computed(() => statusFilter.value.reduce(
-  (entries, key) => filterDocTestEntries(entries, key, planning.value?.findings ?? []),
+  (entries, key) => filterDocTestEntries(
+    entries, key, planning.value?.findings ?? [], planning.value?.observations ?? [],
+  ),
   summary.value?.entries ?? [],
 ))
 const visibleItems = computed(() => {
@@ -167,7 +178,7 @@ const selectedEntryId = computed(() =>
     : selectedItemId.value)
 const linkedFindings = computed<AuditFinding[]>(() => {
   const testId = currentTest.value?.id ?? selectedCycleTestId.value
-  return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
+  return testId ? coverage.value.forTest(testId) : []
 })
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
 const hasTests = computed(() => Boolean(summary.value?.test_counts.total))
@@ -180,11 +191,10 @@ const allTestIds = computed(() => {
 // that says so. Drafting is per RCM row — the same scope the single-test
 // button uses — so the row behind each test is what the batch names.
 const findingsPending = computed(() => {
-  const drafted = new Set((planning.value?.findings ?? []).flatMap(finding => finding.test_refs))
   const rows = new Map<string, string>()
   for (const entry of summary.value?.entries ?? []) {
     if (entry.test_status !== 'completed_with_exception') continue
-    if (!entry.rcm_id || drafted.has(entry.test_id)) continue
+    if (!entry.rcm_id || coverage.value.spokenFor(entry.test_id)) continue
     rows.set(entry.test_id, entry.rcm_id)
   }
   return rows

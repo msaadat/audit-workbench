@@ -268,6 +268,40 @@ def test_three_duplicate_tests_yield_one_uncovered_observation(workspace_with_da
     assert [unit.parent_refs[0] for unit in units] == [f"observation:{uncovered[0]['id']}"]
 
 
+def test_the_leads_finding_records_the_duplicate_tests_it_stands_for(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    lead = _polars_test(ws, row, title="Customer C1", code=_BY_CUSTOMER)
+    twin = _polars_test(ws, row, title="Two invoices", code=_selecting(1001, 1003))
+    data_tests.run_all(ws)
+    ws = workspaces.load_workspace(ws.id)
+
+    source = next(item for item in ws.observations if item["test_id"] == lead["id"])
+    ws = _commit_finding(ws, source)
+    finding = ws.findings[0]
+
+    # `test_refs` stays what the finding rests on: the duplicate's result was
+    # never read, so it is named beside them, not among them.
+    assert finding["test_refs"] == [lead["id"]]
+    assert finding["covered_test_refs"] == [twin["id"]]
+    assert findings.support_issues(ws, finding) == []
+
+    # Written on the record, and derivable from the observations, which is what
+    # a reader needing the current answer uses.
+    assert findings.covered_test_refs(ws, source["id"]) == [twin["id"]]
+
+
+def test_a_finding_on_a_row_with_no_duplicate_records_no_covered_tests(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    _polars_test(ws, row, title="Customer C1", code=_BY_CUSTOMER)
+    data_tests.run_all(ws)
+    ws = workspaces.load_workspace(ws.id)
+    ws = _commit_finding(ws, ws.observations[0])
+
+    assert ws.findings[0]["covered_test_refs"] == []
+
+
 def test_retiring_a_duplicate_clears_the_coverage_on_the_next_rollup(workspace_with_data):
     ws = workspace_with_data
     row = _row(ws)

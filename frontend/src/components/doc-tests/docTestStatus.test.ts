@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type {
-  AuditFinding, DocTestSummaryEntry, DocTestSummaryPayload,
+  AuditFinding, AuditObservation, DocTestSummaryEntry, DocTestSummaryPayload,
 } from '../../types'
 import {
   DOC_TEST_CHIPS, docTestStatus, filterDocTestEntries,
@@ -28,12 +28,27 @@ function payload(entries: DocTestSummaryEntry[]): DocTestSummaryPayload {
   return { entry_counts: {}, test_counts: {}, tested_item_counts: {}, assertion_counts: {}, entries } as DocTestSummaryPayload
 }
 
-function finding(testRefs: string[]): AuditFinding {
-  return { id: 'F-1', test_refs: testRefs } as AuditFinding
+function finding(testRefs: string[], overrides: Partial<AuditFinding> = {}): AuditFinding {
+  return { id: 'F-1', test_refs: testRefs, ...overrides } as AuditFinding
 }
 
-const lanes = (entries: DocTestSummaryEntry[], findings: AuditFinding[] = []) =>
-  Object.fromEntries(docTestStatus(payload(entries), findings).lanes.map(lane => [lane.key, lane]))
+function observation(
+  id: string, testId: string, overrides: Partial<AuditObservation> = {},
+): AuditObservation {
+  return {
+    id, rcm_id: 'RCM-1', test_id: testId, outcome: 'exception', ...overrides,
+  } as AuditObservation
+}
+
+const lanes = (
+  entries: DocTestSummaryEntry[],
+  findings: AuditFinding[] = [],
+  observations: AuditObservation[] = [],
+) =>
+  Object.fromEntries(
+    docTestStatus(payload(entries), findings, observations).lanes
+      .map(lane => [lane.key, lane]),
+  )
 
 describe('document test execution lane', () => {
   it('counts worklist items, which is the unit the list below shows', () => {
@@ -115,6 +130,26 @@ describe('document test findings lane', () => {
       key: 'draft_findings', label: 'Draft findings (1)', tone: 'warn',
       ids: ['DT-2'], needsAgent: true,
     }])
+  })
+
+  it('counts a duplicate test as written up by the finding on its lead', () => {
+    // Same rule as the Data Tests lane: a duplicate test on the row is spoken
+    // for by the lead's finding, and drafting will never produce its own.
+    const exception = { classification: 'exception', test_status: 'completed_with_exception' }
+    const lane = lanes(
+      [
+        item('DT-LEAD', 'I-1', exception as Partial<DocTestSummaryEntry>),
+        item('DT-DUP', 'I-2', exception as Partial<DocTestSummaryEntry>),
+      ],
+      [finding(['DT-LEAD'], { source_observation_id: 'OBS-LEAD' })],
+      [
+        observation('OBS-LEAD', 'DT-LEAD'),
+        observation('OBS-DUP', 'DT-DUP', { covered_by: 'OBS-LEAD' }),
+      ],
+    ).findings
+
+    expect(`${lane.value} ${lane.caption}`).toBe('2 of 2 exception tests written up')
+    expect(lane.actions).toEqual([])
   })
 
   it('rests once every exception test is written up', () => {
