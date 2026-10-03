@@ -78,6 +78,24 @@ const WorkbenchPreset = definePreset(Aura, {
           borderColor: '#dce5ee',
         },
       },
+      // The slate ramp the dark tokens in style.css are drawn from; without it
+      // PrimeVue's own overlays, tables and inputs keep the navy ramp above.
+      dark: {
+        surface: {
+          0: '#ffffff',
+          50: '#f3f5f9',
+          100: '#e3e8ef',
+          200: '#c6cfdb',
+          300: '#a5b1c1',
+          400: '#8693a6',
+          500: '#687589',
+          600: '#4d586a',
+          700: '#384252',
+          800: '#262f3d',
+          900: '#161c26',
+          950: '#0f141c',
+        },
+      },
     },
   },
 })

@@ -196,66 +196,73 @@ body {
 
    The dark palette is not an inversion. Ink lightens, surfaces lift rather
    than darken as they come forward, and every accent moves up its own ramp so
-   it still reads as itself against a navy ground: the teal that carries the
+   it still reads as itself against a dark ground: the teal that carries the
    brand on white is invisible on navy, and the semantic hues have to stay
    distinguishable from each other at the new lightness.
+
+   The ground is a deep slate — the navy hue at a fraction of its saturation.
+   The saturated navy it replaced made every surface glow blue, left the shell,
+   canvas and panels within a few steps of each other, and turned the brand
+   teal into the brightest thing on the screen. The shell now sits below the
+   canvas so the top edge reads as structure, and the teal is pulled down to a
+   tone that marks the action without outshining the content.
    ========================================================================= */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --aw-ink: #e6edf6;
-    --aw-ink-strong: #ffffff;
-    --aw-ink-soft: #c3d2e4;
-    --aw-muted: #9db0c9;
-    --aw-muted-strong: #8fa2bb;
+    --aw-ink: #e1e6ee;
+    --aw-ink-strong: #f5f7fa;
+    --aw-ink-soft: #b7c1cf;
+    --aw-muted: #8e9aac;
+    --aw-muted-strong: #8693a6;
 
     --aw-on-dark: #ffffff;
-    --aw-on-navy: #e6edf6;
-    --aw-on-navy-muted: #8fa6c2;
-    --aw-on-accent: #07162b;
+    --aw-on-navy: #e1e6ee;
+    --aw-on-navy-muted: #8a97aa;
+    --aw-on-accent: #0c1512;
 
-    --aw-canvas: #07162b;
-    --aw-panel: #0d2340;
-    --aw-raised: #14294a;
-    --aw-panel-wash: rgb(230 237 246 / 6%);
-    --aw-navy-950: #050f1e;
-    --aw-navy-900: #07162b;
-    --aw-navy-800: #0d2340;
+    --aw-canvas: #0f141c;
+    --aw-panel: #161c26;
+    --aw-raised: #1d2430;
+    --aw-panel-wash: rgb(255 255 255 / 4%);
+    --aw-navy-950: #0a0e14;
+    --aw-navy-900: #0d121a;
+    --aw-navy-800: #1a2130;
 
-    --aw-border: #1e3557;
-    --aw-border-strong: #2c4870;
+    --aw-border: #262f3d;
+    --aw-border-strong: #35404f;
 
-    --aw-teal: #5eead4;
-    --aw-teal-600: #2dd4bf;
-    --aw-teal-strong: #99f6e4;
-    --aw-teal-soft: #0e3b3a;
-    --aw-teal-line: #1c5f5a;
-    --aw-mint: #99f6e4;
-    --aw-mint-600: #5eead4;
+    --aw-teal: #52c2b1;
+    --aw-teal-600: #3ca898;
+    --aw-teal-strong: #72d4c5;
+    --aw-teal-soft: #13302d;
+    --aw-teal-line: #214b46;
+    --aw-mint: #7ad9cb;
+    --aw-mint-600: #5ec8b8;
 
-    --aw-accent: #c4b5fd;
-    --aw-accent-soft: #2a2145;
+    --aw-accent: #b6a7f6;
+    --aw-accent-soft: #231f38;
 
-    --aw-ok: #6ee7b7;
-    --aw-ok-soft: #0d3527;
-    --aw-ok-line: #1c5c43;
+    --aw-ok: #62d09d;
+    --aw-ok-soft: #12291f;
+    --aw-ok-line: #1e4836;
 
-    --aw-warn: #f0b45f;
-    --aw-warn-ink: #f8d199;
-    --aw-warn-soft: #3a2a12;
-    --aw-warn-line: #6b4a1c;
+    --aw-warn: #e9a75c;
+    --aw-warn-ink: #f2c793;
+    --aw-warn-soft: #2d2216;
+    --aw-warn-line: #594221;
 
-    --aw-low: #fde047;
-    --aw-low-ink: #fef08a;
-    --aw-low-soft: #322a0c;
+    --aw-low: #e6c94a;
+    --aw-low-ink: #f0dc8a;
+    --aw-low-soft: #282410;
 
-    --aw-danger: #fca5a0;
-    --aw-danger-ink: #fecaca;
-    --aw-danger-soft: #3d1714;
-    --aw-danger-line: #6d2823;
+    --aw-danger: #f0948c;
+    --aw-danger-ink: #f6bdb7;
+    --aw-danger-soft: #311b1b;
+    --aw-danger-line: #5c2b29;
 
-    --aw-info: #93c5fd;
-    --aw-info-soft: #14243f;
-    --aw-info-line: #26456f;
+    --aw-info: #8cb6f2;
+    --aw-info-soft: #162034;
+    --aw-info-line: #26385a;
 
     /* A shadow on a dark ground reads as depth only when it is a real
        shadow, not a tinted haze. */
@@ -268,60 +275,60 @@ body {
 /* The explicit choice wins in both directions: dark on a light OS, and — via
    the `:not([data-theme='light'])` guard above — light on a dark one. */
 :root[data-theme='dark'] {
-  --aw-ink: #e6edf6;
-  --aw-ink-strong: #ffffff;
-  --aw-ink-soft: #c3d2e4;
-  --aw-muted: #9db0c9;
-  --aw-muted-strong: #8fa2bb;
+  --aw-ink: #e1e6ee;
+  --aw-ink-strong: #f5f7fa;
+  --aw-ink-soft: #b7c1cf;
+  --aw-muted: #8e9aac;
+  --aw-muted-strong: #8693a6;
 
   --aw-on-dark: #ffffff;
-  --aw-on-navy: #e6edf6;
-  --aw-on-navy-muted: #8fa6c2;
-  --aw-on-accent: #07162b;
+  --aw-on-navy: #e1e6ee;
+  --aw-on-navy-muted: #8a97aa;
+  --aw-on-accent: #0c1512;
 
-  --aw-canvas: #07162b;
-  --aw-panel: #0d2340;
-  --aw-raised: #14294a;
-  --aw-panel-wash: rgb(230 237 246 / 6%);
-  --aw-navy-950: #050f1e;
-  --aw-navy-900: #07162b;
-  --aw-navy-800: #0d2340;
+  --aw-canvas: #0f141c;
+  --aw-panel: #161c26;
+  --aw-raised: #1d2430;
+  --aw-panel-wash: rgb(255 255 255 / 4%);
+  --aw-navy-950: #0a0e14;
+  --aw-navy-900: #0d121a;
+  --aw-navy-800: #1a2130;
 
-  --aw-border: #1e3557;
-  --aw-border-strong: #2c4870;
+  --aw-border: #262f3d;
+  --aw-border-strong: #35404f;
 
-  --aw-teal: #5eead4;
-  --aw-teal-600: #2dd4bf;
-  --aw-teal-strong: #99f6e4;
-  --aw-teal-soft: #0e3b3a;
-  --aw-teal-line: #1c5f5a;
-  --aw-mint: #99f6e4;
-  --aw-mint-600: #5eead4;
+  --aw-teal: #52c2b1;
+  --aw-teal-600: #3ca898;
+  --aw-teal-strong: #72d4c5;
+  --aw-teal-soft: #13302d;
+  --aw-teal-line: #214b46;
+  --aw-mint: #7ad9cb;
+  --aw-mint-600: #5ec8b8;
 
-  --aw-accent: #c4b5fd;
-  --aw-accent-soft: #2a2145;
+  --aw-accent: #b6a7f6;
+  --aw-accent-soft: #231f38;
 
-  --aw-ok: #6ee7b7;
-  --aw-ok-soft: #0d3527;
-  --aw-ok-line: #1c5c43;
+  --aw-ok: #62d09d;
+  --aw-ok-soft: #12291f;
+  --aw-ok-line: #1e4836;
 
-  --aw-warn: #f0b45f;
-  --aw-warn-ink: #f8d199;
-  --aw-warn-soft: #3a2a12;
-  --aw-warn-line: #6b4a1c;
+  --aw-warn: #e9a75c;
+  --aw-warn-ink: #f2c793;
+  --aw-warn-soft: #2d2216;
+  --aw-warn-line: #594221;
 
-  --aw-low: #fde047;
-  --aw-low-ink: #fef08a;
-  --aw-low-soft: #322a0c;
+  --aw-low: #e6c94a;
+  --aw-low-ink: #f0dc8a;
+  --aw-low-soft: #282410;
 
-  --aw-danger: #fca5a0;
-  --aw-danger-ink: #fecaca;
-  --aw-danger-soft: #3d1714;
-  --aw-danger-line: #6d2823;
+  --aw-danger: #f0948c;
+  --aw-danger-ink: #f6bdb7;
+  --aw-danger-soft: #311b1b;
+  --aw-danger-line: #5c2b29;
 
-  --aw-info: #93c5fd;
-  --aw-info-soft: #14243f;
-  --aw-info-line: #26456f;
+  --aw-info: #8cb6f2;
+  --aw-info-soft: #162034;
+  --aw-info-line: #26385a;
 
   --aw-shadow-sm: 0 1px 2px rgb(0 0 0 / 32%), 0 1px 3px rgb(0 0 0 / 24%);
   --aw-shadow-md: 0 2px 6px rgb(0 0 0 / 34%), 0 10px 24px rgb(0 0 0 / 28%);
