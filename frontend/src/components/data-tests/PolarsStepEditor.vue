@@ -17,13 +17,13 @@ function remove(index: number) { steps.value.splice(index, 1) }
   <div class="steps-author">
     <div class="steps-header">
       <p>Steps</p>
-      <Button label="Add step" icon="pi pi-plus" text size="small" @click="add" />
+      <Button label="Add step" icon="aw-icon aw-icon-plus" text size="small" @click="add" />
     </div>
     <div v-for="(step, index) in steps" :key="index" class="step-card">
       <div class="step-card-head">
         <span>Step {{ index + 1 }}</span>
         <Button
-          icon="pi pi-trash"
+          icon="aw-icon aw-icon-trash-2"
           text
           rounded
           size="small"

@@ -383,13 +383,13 @@ defineExpose({ reload: load })
 <template>
   <aside class="provenance">
     <header>
-      <i class="pi pi-shield" />
+      <i class="aw-icon aw-icon-shield" />
       <strong>Where this came from</strong>
-      <button class="refresh" title="Reload provenance" @click="load"><i class="pi pi-refresh" /></button>
+      <button class="refresh" title="Reload provenance" @click="load"><i class="aw-icon aw-icon-refresh-cw" /></button>
     </header>
 
-    <p v-if="loading" class="note"><i class="pi pi-spin pi-spinner" /> Reading the run record…</p>
-    <p v-else-if="error" class="note bad"><i class="pi pi-exclamation-triangle" /> {{ error }}</p>
+    <p v-if="loading" class="note"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /> Reading the run record…</p>
+    <p v-else-if="error" class="note bad"><i class="aw-icon aw-icon-triangle-alert" /> {{ error }}</p>
 
     <div v-else-if="payload?.state === 'unattributed'" class="card">
       <h6>Not agent-written</h6>
@@ -402,7 +402,7 @@ defineExpose({ reload: load })
         <h6>Sources in context <span v-if="context?.state === 'available'">{{ selections.length }}</span></h6>
         <div class="body">
           <p v-if="context?.state !== 'available'" class="muted broken">
-            <i class="pi pi-exclamation-triangle" />
+            <i class="aw-icon aw-icon-triangle-alert" />
             Provenance unavailable — {{ context?.reason }}
           </p>
           <template v-else>
@@ -413,7 +413,7 @@ defineExpose({ reload: load })
                 :aria-expanded="isOpen(group)"
                 @click="toggleGroup(group)"
               >
-                <i :class="isOpen(group) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
+                <i :class="isOpen(group) ? 'aw-icon aw-icon-chevron-down' : 'aw-icon aw-icon-chevron-right'" />
                 <span>{{ groupSummary(group) }}</span>
               </button>
               <div v-else class="group-head">
@@ -512,29 +512,29 @@ defineExpose({ reload: load })
                that was genuinely cut short. -->
           <template v-if="context?.state === 'available'">
             <p v-if="intact" class="verdict ok">
-              <i class="pi pi-check-circle" />
+              <i class="aw-icon aw-icon-circle-check" />
               Everything this step selected was supplied in full.
             </p>
             <p v-if="truncated" class="verdict warn">
-              <i class="pi pi-exclamation-triangle" />
+              <i class="aw-icon aw-icon-triangle-alert" />
               {{ plural(truncated, 'source') }} {{ verb(truncated, 'was', 'were') }} cut short.
               Anything resting on the missing part is unsupported.
             </p>
             <p v-if="overLimit" class="verdict warn">
-              <i class="pi pi-exclamation-triangle" />
+              <i class="aw-icon aw-icon-triangle-alert" />
               {{ plural(overLimit, 'source') }} did not fit within the size limit.
             </p>
             <p v-if="unavailable" class="verdict muted-verdict">
-              <i class="pi pi-minus-circle" />
+              <i class="aw-icon aw-icon-circle-minus" />
               {{ plural(unavailable, 'source') }} {{ verb(unavailable, 'was', 'were') }} not available.
             </p>
             <p v-if="scoped" class="verdict muted-verdict">
-              <i class="pi pi-filter" />
+              <i class="aw-icon aw-icon-funnel" />
               {{ plural(scoped, 'source') }} {{ verb(scoped, 'was', 'were') }} outside this step's scope.
             </p>
           </template>
           <p v-else class="verdict warn">
-            <i class="pi pi-exclamation-triangle" /> No usable context record — what this step read cannot be established.
+            <i class="aw-icon aw-icon-triangle-alert" /> No usable context record — what this step read cannot be established.
           </p>
           <p class="muted">
             The generated text itself is not reproduced here; provenance identifies it by hash
@@ -563,7 +563,6 @@ defineExpose({ reload: load })
   border-bottom: 1px solid var(--aw-border);
   background: var(--aw-raised);
   color: var(--aw-muted);
-  font-family: var(--aw-font-mono);
   font-size: var(--aw-text-2xs);
   font-weight: 700;
 }
@@ -576,9 +575,8 @@ defineExpose({ reload: load })
   display: flex; align-items: center; gap: 0.35rem;
   width: 100%; padding: 0;
   border: 0; background: none; text-align: left;
-  color: var(--aw-muted);
-  font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs);
-  font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--aw-muted); font-size: var(--aw-text-xs);
+  font-weight: 600;
 }
 .group-head b { margin-left: auto; font-variant-numeric: tabular-nums; }
 .group-head.toggle { cursor: pointer; }
@@ -612,9 +610,8 @@ defineExpose({ reload: load })
 .tally { display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
 .tally + .tally { padding-top: 0.4rem; border-top: 1px dashed var(--aw-border); }
 .tally .what {
-  color: var(--aw-ink);
-  font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs);
-  font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--aw-ink); font-size: var(--aw-text-xs);
+  font-weight: 600;
 }
 /* A loss reads as a loss; a scope decision and an absence do not. */
 .tally.cut .what { color: var(--aw-warn); }

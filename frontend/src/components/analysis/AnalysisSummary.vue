@@ -148,7 +148,7 @@ const staleSentence = computed(() => {
       <template #actions>
         <Button
           label="Regenerate"
-          icon="pi pi-refresh"
+          icon="aw-icon aw-icon-refresh-cw"
           size="small"
           outlined
           severity="secondary"
@@ -238,18 +238,18 @@ const staleSentence = computed(() => {
 
   <UiEmptyState
     v-else-if="loading"
-    icon="pi pi-hourglass"
+    icon="aw-icon aw-icon-hourglass"
     title="Loading the summary"
     description="Reading the analysis summary recorded for this engagement."
   />
 
   <UiEmptyState
     v-else
-    icon="pi pi-file-edit"
+    icon="aw-icon aw-icon-file-pen"
     title="No analysis summary yet"
     description="Once the procedures have run, the assistant can write up what the analysis found — the population, the exceptions, and the work still outstanding — and cite each result where it uses it."
   >
-    <Button label="Write the summary" icon="pi pi-sparkles" @click="emit('regenerate')" />
+    <Button label="Write the summary" icon="aw-icon aw-icon-sparkles" @click="emit('regenerate')" />
   </UiEmptyState>
 </template>
 

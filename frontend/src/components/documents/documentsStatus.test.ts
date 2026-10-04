@@ -75,16 +75,16 @@ describe('what a row says', () => {
   it('carries what the document is, and nothing the dot or the chips say', () => {
     // Not the page count, which distinguishes nothing, and not the analysis
     // state, which the dot carries and the chips count.
-    expect(documentMeta(document('a'), FACTS)).toEqual([{ text: 'vendor invoice' }])
+    expect(documentMeta(document('a'), FACTS)).toEqual([{ text: 'Vendor invoice' }])
     expect(documentMeta(document('a', { text_state: 'failed' }), FACTS))
-      .toEqual([{ text: 'vendor invoice' }])
+      .toEqual([{ text: 'Vendor invoice' }])
   })
 
   it('says a document with no type has none, where a type is asked for', () => {
     expect(documentMeta(
       document('a', { classification: { document_type: null, assigned_by: null } as AuditDocument['classification'] }),
       FACTS,
-    )).toEqual([{ text: 'not identified', tone: 'warn' }])
+    )).toEqual([{ text: 'Type not identified', tone: 'warn' }])
   })
 
   it('says nothing at all about a policy, which is not read under a type', () => {

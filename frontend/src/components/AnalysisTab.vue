@@ -233,8 +233,8 @@ function runAll() { return runAnalyses(analyses.value.map(item => item.id)) }
  * both opened the same editor with a different starting point.
  */
 const createOptions = computed(() => [
-  { label: 'Library test', icon: 'pi pi-book', command: () => startLibrary() },
-  { label: 'Custom code', icon: 'pi pi-code', command: () => startCode() },
+  { label: 'Library test', icon: 'aw-icon aw-icon-book-open', command: () => startLibrary() },
+  { label: 'Custom code', icon: 'aw-icon aw-icon-code', command: () => startCode() },
 ])
 
 /**
@@ -248,13 +248,13 @@ const menuItems = computed<MenuItem[]>(() => {
   return [
   {
     label: `Run all (${analyses.value.length})`,
-    icon: 'pi pi-forward',
+    icon: 'aw-icon aw-icon-fast-forward',
     disabled: executing.value || !analyses.value.length,
     command: () => void runAll(),
   },
   {
     label: 'Analyse with assistant',
-    icon: 'pi pi-sparkles',
+    icon: 'aw-icon aw-icon-sparkles',
     disabled: assistantUnavailable.value,
     command: () => void analyzeWithAssistant(),
   },
@@ -263,7 +263,7 @@ const menuItems = computed<MenuItem[]>(() => {
   // here rather than offered as a per-row button the page cannot commit.
   {
     label: `Carry ${plural(unanswered, 'exception')} into tests`,
-    icon: 'pi pi-shield',
+    icon: 'aw-icon aw-icon-shield',
     visible: unanswered > 0,
     disabled: assistantUnavailable.value,
     command: () => void carryIntoTests(),
@@ -354,7 +354,7 @@ function fail(summaryText: string, error: unknown) {
       <template v-if="analyses.length">
         <SplitButton
           label="New procedure"
-          icon="pi pi-plus"
+          icon="aw-icon aw-icon-plus"
           size="small"
           outlined
           severity="secondary"
@@ -366,7 +366,7 @@ function fail(summaryText: string, error: unknown) {
         <Button
           v-if="outstanding.length"
           :label="`Run ${outstanding.length} outstanding`"
-          icon="pi pi-play"
+          icon="aw-icon aw-icon-play"
           size="small"
           :loading="executing"
           v-tooltip.bottom="'Execute every procedure with no current result — stale or never run'"
@@ -375,7 +375,7 @@ function fail(summaryText: string, error: unknown) {
         <Button
           v-else-if="view === 'summary'"
           :label="hasSummary ? 'Regenerate' : 'Write the summary'"
-          icon="pi pi-sparkles"
+          icon="aw-icon aw-icon-sparkles"
           size="small"
           :disabled="assistantUnavailable"
           @click="writeSummary"
@@ -383,7 +383,7 @@ function fail(summaryText: string, error: unknown) {
         <Button
           v-else
           label="Analyse with assistant"
-          icon="pi pi-sparkles"
+          icon="aw-icon aw-icon-sparkles"
           size="small"
           :disabled="assistantUnavailable"
           @click="analyzeWithAssistant"
@@ -437,7 +437,7 @@ function fail(summaryText: string, error: unknown) {
         <section class="list-panel">
           <div class="list-head">
             <IconField>
-              <InputIcon class="pi pi-search" />
+              <InputIcon class="aw-icon aw-icon-search" />
               <InputText v-model="search" size="small" placeholder="Search procedures and tables" fluid />
             </IconField>
           </div>
@@ -472,12 +472,12 @@ function fail(summaryText: string, error: unknown) {
           />
           <UiEmptyState
             v-else
-            icon="pi pi-chart-bar"
+            icon="aw-icon aw-icon-chart-column"
             title="Open a procedure"
             :description="loading ? 'Loading saved procedures…' : 'Pick a procedure from the list, or create one.'"
           >
-            <Button label="Library test" icon="pi pi-book" size="small" @click="startLibrary" />
-            <Button label="Custom code" icon="pi pi-code" size="small" outlined @click="startCode" />
+            <Button label="Library test" icon="aw-icon aw-icon-book-open" size="small" @click="startLibrary" />
+            <Button label="Custom code" icon="aw-icon aw-icon-code" size="small" outlined @click="startCode" />
           </UiEmptyState>
         </section>
       </div>
@@ -485,20 +485,20 @@ function fail(summaryText: string, error: unknown) {
 
     <UiEmptyState
       v-else-if="loading"
-      icon="pi pi-hourglass"
+      icon="aw-icon aw-icon-hourglass"
       title="Loading analyses"
       description="Reading the saved procedures and the outcomes they recorded."
     />
 
     <UiEmptyState
       v-else
-      icon="pi pi-chart-bar"
+      icon="aw-icon aw-icon-chart-column"
       title="Analyse this engagement's data"
       description="A saved procedure is a rerunnable spec: pick a predefined audit test, write Polars yourself, or let the assistant propose procedures for the imported tables."
     >
-      <Button label="Analyse with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="analyzeWithAssistant" />
-      <Button label="Library test" icon="pi pi-book" outlined @click="startLibrary" />
-      <Button label="Custom code" icon="pi pi-code" outlined @click="startCode" />
+      <Button label="Analyse with assistant" icon="aw-icon aw-icon-sparkles" :disabled="assistantUnavailable" @click="analyzeWithAssistant" />
+      <Button label="Library test" icon="aw-icon aw-icon-book-open" outlined @click="startLibrary" />
+      <Button label="Custom code" icon="aw-icon aw-icon-code" outlined @click="startCode" />
     </UiEmptyState>
   </div>
 </template>
@@ -509,9 +509,6 @@ function fail(summaryText: string, error: unknown) {
   min-width: 0; max-width: 100%; min-height: 0; height: 100%;
 }
 
-/* One 36px row: the title, what there is of it, and at most one primary. */
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
 .grow { flex: 1; }
 
 .layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }

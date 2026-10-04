@@ -153,14 +153,14 @@ onMounted(load)
           size="small"
           outlined
           severity="secondary"
-          icon="pi pi-pencil"
+          icon="aw-icon aw-icon-pencil"
           @click="editing = true"
         />
         <Button
           v-if="hasCycle"
           label="Review rules"
           size="small"
-          icon="pi pi-list-check"
+          icon="aw-icon aw-icon-list-checks"
           @click="reviewOpen = true"
         />
       </div>
@@ -168,7 +168,7 @@ onMounted(load)
 
     <UiEmptyState
       v-if="!loading && !hasCycle"
-      icon="pi pi-sitemap"
+      icon="aw-icon aw-icon-network"
       title="No cycle has been designed"
       description="The cycle is read from the audit planning memorandum's process flow. Ask the agent to design it, or add the steps by hand."
     >
@@ -215,8 +215,6 @@ onMounted(load)
 
 <style scoped>
 .cycle-tab { display: flex; flex-direction: column; gap: var(--aw-space-3); min-height: 0; }
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; }
 .grow { flex: 1; }
 .cycle-tab__copy { display: flex; align-items: baseline; gap: var(--aw-space-3); flex-wrap: wrap; min-width: 0; }
 .cycle-tab__actions { display: flex; align-items: center; gap: var(--aw-space-2); flex-wrap: wrap; }

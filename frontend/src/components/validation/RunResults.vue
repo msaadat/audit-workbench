@@ -36,10 +36,10 @@ const loadingDetail = ref<string | null>(null)
 const exportingId = ref<string | null>(null)
 
 const banner: Record<string, { text: string; severity: string; icon: string }> = {
-  ok: { text: 'PASS', severity: 'success', icon: 'pi pi-check-circle' },
-  warn: { text: 'PASS WITH WARNINGS', severity: 'warn', icon: 'pi pi-exclamation-triangle' },
-  fail: { text: 'FAIL', severity: 'danger', icon: 'pi pi-times-circle' },
-  info: { text: 'NO RULES RUN', severity: 'info', icon: 'pi pi-info-circle' },
+  ok: { text: 'PASS', severity: 'success', icon: 'aw-icon aw-icon-circle-check' },
+  warn: { text: 'PASS WITH WARNINGS', severity: 'warn', icon: 'aw-icon aw-icon-triangle-alert' },
+  fail: { text: 'FAIL', severity: 'danger', icon: 'aw-icon aw-icon-circle-x' },
+  info: { text: 'NO RULES RUN', severity: 'info', icon: 'aw-icon aw-icon-info' },
 }
 
 const verdictSeverity: Record<string, string> = {
@@ -150,7 +150,7 @@ watch(
       <Button
         v-if="overridden"
         :label="`Rebind to ${run.table}`"
-        icon="pi pi-link"
+        icon="aw-icon aw-icon-link"
         size="small"
         severity="secondary"
         outlined
@@ -160,7 +160,7 @@ watch(
     </div>
 
     <p v-if="run.counts.errored" class="error-hint">
-      <i class="pi pi-exclamation-circle" />
+      <i class="aw-icon aw-icon-circle-alert" />
       {{ plural(run.counts.errored, 'rule') }} could not run — usually a column that is
       missing or renamed in this table. See the rows marked "error" below.
     </p>
@@ -181,7 +181,7 @@ watch(
         >
           <i
             v-if="expandable(result)"
-            :class="expanded === result.rule_id ? 'pi pi-chevron-down' : 'pi pi-chevron-right'"
+            :class="expanded === result.rule_id ? 'aw-icon aw-icon-chevron-down' : 'aw-icon aw-icon-chevron-right'"
             class="chev"
           />
           <span v-else class="chev" />
@@ -202,7 +202,7 @@ watch(
           <Tag :value="result.verdict" :severity="verdictSeverity[result.verdict] ?? 'info'" />
           <Button
             v-if="expandable(result)"
-            icon="pi pi-file-excel"
+            icon="aw-icon aw-icon-file-spreadsheet"
             text
             size="small"
             :loading="exportingId === result.rule_id"
@@ -214,7 +214,7 @@ watch(
 
         <div v-if="expanded === result.rule_id" class="rule-detail">
           <p v-if="loadingDetail === result.rule_id" class="muted">
-            <i class="pi pi-spinner pi-spin" /> Loading failing rows…
+            <i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Loading failing rows…
           </p>
           <template v-else-if="details[result.rule_id ?? '']">
             <p class="muted detail-note">

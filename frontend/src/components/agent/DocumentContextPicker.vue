@@ -62,7 +62,7 @@ function apply() {
     <div class="document-list" :class="{ loading }">
       <label v-for="doc in filtered" :key="doc.id" class="document-card">
         <Checkbox v-model="draftIds" :value="doc.id" />
-        <span class="file-icon"><i class="pi pi-file" /></span>
+        <span class="file-icon"><i class="aw-icon aw-icon-file" /></span>
         <span class="identity">
           <strong>{{ doc.title }}</strong>
           <small>{{ doc.source }} · {{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }}</small>
@@ -71,11 +71,11 @@ function apply() {
       </label>
       <p v-if="!loading && !filtered.length" class="empty">No documents match your search.</p>
     </div>
-    <p class="budget-note"><i class="pi pi-info-circle" /> Whole documents are attached. If they exceed the safe context budget, the answer will identify any trimmed pages.</p>
+    <p class="budget-note"><i class="aw-icon aw-icon-info" /> Whole documents are attached. If they exceed the safe context budget, the answer will identify any trimmed pages.</p>
 
     <template #footer>
       <Button label="Cancel" severity="secondary" text @click="emit('update:visible', false)" />
-      <Button :label="`Use ${draftIds.length} document${draftIds.length === 1 ? '' : 's'}`" icon="pi pi-paperclip" @click="apply" />
+      <Button :label="`Use ${draftIds.length} document${draftIds.length === 1 ? '' : 's'}`" icon="aw-icon aw-icon-paperclip" @click="apply" />
     </template>
   </Dialog>
 </template>

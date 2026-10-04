@@ -200,7 +200,7 @@ onUnmounted(() => {
     <Teleport to="#shell-actions">
       <Button
         :label="assistantAttention ? 'Assistant · needs you' : assistantLive ? 'Assistant · working' : 'Assistant'"
-        icon="pi pi-sparkles"
+        icon="aw-icon aw-icon-sparkles"
         size="small"
         class="assistant-toggle"
         :class="{ on: assistantOpen, attention: assistantAttention }"
@@ -225,7 +225,7 @@ onUnmounted(() => {
     />
     <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
       <div class="drop-overlay-card">
-        <i class="pi pi-cloud-upload" />
+        <i class="aw-icon aw-icon-cloud-upload" />
         <strong>Drop to import</strong>
         <span>Files and folders are staged for review before anything is added.</span>
       </div>

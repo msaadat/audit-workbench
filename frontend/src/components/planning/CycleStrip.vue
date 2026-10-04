@@ -151,7 +151,7 @@ function edgeTitle(edge: { kind: CycleEdgeKind; label: string }): string {
                 <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M9 10v10" />
               </svg>
               <span class="cycle-node__title">{{ node.title }}</span>
-              <em v-if="node.anchor" class="cycle-pill cycle-pill--teal">population</em>
+              <em v-if="node.anchor" class="cycle-pill cycle-pill--teal">Population</em>
             </header>
             <p class="cycle-node__count">{{ node.countLabel }}</p>
             <!-- The field rows come next and nothing is drawn above them: an
@@ -182,8 +182,8 @@ function edgeTitle(edge: { kind: CycleEdgeKind; label: string }): string {
                   <circle cx="12" cy="12" r="3" fill="currentColor" />
                 </svg>
                 <span class="cycle-field__name" :title="field.name">{{ field.name }}</span>
-                <em v-if="field.anchor" class="cycle-pill cycle-pill--teal">anchor</em>
-                <em v-if="field.stated" class="cycle-pill cycle-pill--accent">stated</em>
+                <em v-if="field.anchor" class="cycle-pill cycle-pill--teal">Anchor</em>
+                <em v-if="field.stated" class="cycle-pill cycle-pill--accent">Stated</em>
               </li>
             </ul>
             <div class="cycle-node__trailing" :style="{ top: `${FIELDS_TOP + node.fields.length * METRICS.fieldHeight}px` }">
@@ -322,7 +322,6 @@ function edgeTitle(edge: { kind: CycleEdgeKind; label: string }): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--aw-font-mono);
   font-size: 12px;
   font-weight: 600;
 }
@@ -373,8 +372,6 @@ function edgeTitle(edge: { kind: CycleEdgeKind; label: string }): string {
   font-style: normal;
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   line-height: 1.3;
 }
 .cycle-pill--teal { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); color: var(--aw-teal-strong); }

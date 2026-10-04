@@ -199,7 +199,7 @@ const contextRead = computed(() => {
       <ConsoleThread ref="threadRef" :workspace="workspace">
         <template #head-actions>
           <Button
-            icon="pi pi-comments"
+            icon="aw-icon aw-icon-messages-square"
             text
             size="small"
             severity="secondary"
@@ -208,7 +208,7 @@ const contextRead = computed(() => {
             @click="chatMenu?.toggle($event)"
           />
           <Button
-            :icon="expanded ? 'pi pi-window-minimize' : 'pi pi-window-maximize'"
+            :icon="expanded ? 'aw-icon aw-icon-minimize-2' : 'aw-icon aw-icon-maximize-2'"
             text
             size="small"
             severity="secondary"
@@ -217,7 +217,7 @@ const contextRead = computed(() => {
             @click="agent.setPanelMode(expanded ? 'docked' : 'expanded')"
           />
           <Button
-            icon="pi pi-times"
+            icon="aw-icon aw-icon-x"
             text
             size="small"
             severity="secondary"

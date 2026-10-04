@@ -92,7 +92,7 @@ async function submit() {
   <div class="login-page">
     <form class="login-card" @submit.prevent="submit">
       <div class="login-brand">
-        <span class="brand-mark"><i class="pi pi-verified" /></span>
+        <span class="brand-mark"><i class="aw-icon aw-icon-badge-check" /></span>
         <strong>Audit Workbench</strong>
       </div>
 

@@ -165,7 +165,7 @@ function openAnchor(item: CriterionRef) {
       <section class="list-panel">
         <div class="list-head">
           <IconField>
-            <InputIcon class="pi pi-search" />
+            <InputIcon class="aw-icon aw-icon-search" />
             <InputText v-model="search" size="small" placeholder="Search risks and controls" fluid />
           </IconField>
         </div>
@@ -199,7 +199,7 @@ function openAnchor(item: CriterionRef) {
           </div>
           <Button
             label="Open in the matrix"
-            icon="pi pi-map"
+            icon="aw-icon aw-icon-map"
             size="small"
             outlined
             severity="secondary"
@@ -210,7 +210,7 @@ function openAnchor(item: CriterionRef) {
         <div class="spine">
         <!-- 1 · What the criterion rests on. -->
         <article class="hop" :class="{ empty: !selectedLinks.sources }">
-          <span class="dot"><i class="pi pi-file" /></span>
+          <span class="dot"><i class="aw-icon aw-icon-file" /></span>
           <div class="hop-body">
             <h4>Source</h4>
             <template v-if="selected.criteria_refs?.length">
@@ -239,7 +239,7 @@ function openAnchor(item: CriterionRef) {
              and is the detail head now: the risk and the control were being
              stated twice on one screen. -->
         <article class="hop" :class="{ empty: !selectedLinks.tests }">
-          <span class="dot"><i class="pi pi-shield" /></span>
+          <span class="dot"><i class="aw-icon aw-icon-shield" /></span>
           <div class="hop-body">
             <h4>Tests <span v-if="selectedLinks.tests">{{ selectedLinks.tests }}</span></h4>
             <button
@@ -247,13 +247,13 @@ function openAnchor(item: CriterionRef) {
               :key="test.id"
               class="linked"
               @click="nav.push('data-tests', { test: test.id })"
-            ><i class="pi pi-chart-bar" /><span>{{ test.title }}</span><small>{{ plural(test.exception_count, 'exception') }}</small></button>
+            ><i class="aw-icon aw-icon-chart-column" /><span>{{ test.title }}</span><small>{{ plural(test.exception_count, 'exception') }}</small></button>
             <button
               v-for="test in linkedDocTests"
               :key="test.id"
               class="linked"
               @click="nav.push('doc-tests', { test: test.id })"
-            ><i class="pi pi-file-check" /><span>{{ test.title }}</span><small>{{ test.status.replaceAll('_', ' ') }}</small></button>
+            ><i class="aw-icon aw-icon-file-check" /><span>{{ test.title }}</span><small>{{ test.status.replaceAll('_', ' ') }}</small></button>
             <p v-if="!linkedDataTests.length && !linkedDocTests.length" class="muted">
               No test covers this row, so it cannot pass coverage.
             </p>
@@ -262,7 +262,7 @@ function openAnchor(item: CriterionRef) {
 
         <!-- 3 · What that showed. -->
         <article class="hop" :class="{ empty: !selectedLinks.exceptions }">
-          <span class="dot" :class="{ bad: selectedLinks.exceptions }"><i class="pi pi-exclamation-triangle" /></span>
+          <span class="dot" :class="{ bad: selectedLinks.exceptions }"><i class="aw-icon aw-icon-triangle-alert" /></span>
           <div class="hop-body">
             <h4>Result</h4>
             <p v-if="selectedLinks.exceptions" class="verdict bad">
@@ -280,7 +280,7 @@ function openAnchor(item: CriterionRef) {
 
         <!-- 4 · What it became. -->
         <article class="hop last" :class="{ empty: !linkedFindings.length }">
-          <span class="dot" :class="{ bad: linkedFindings.length }"><i class="pi pi-flag" /></span>
+          <span class="dot" :class="{ bad: linkedFindings.length }"><i class="aw-icon aw-icon-flag" /></span>
           <div class="hop-body">
             <h4>Findings <span v-if="linkedFindings.length">{{ linkedFindings.length }}</span></h4>
             <button
@@ -288,7 +288,7 @@ function openAnchor(item: CriterionRef) {
               :key="item.id"
               class="linked"
               @click="nav.push('findings', { finding: item.id })"
-            ><i class="pi pi-flag" /><span>{{ item.title }}</span><small>{{ item.severity }}</small></button>
+            ><i class="aw-icon aw-icon-flag" /><span>{{ item.title }}</span><small>{{ item.severity }}</small></button>
             <p v-if="!linkedFindings.length" class="muted">No finding has been drafted from this row.</p>
           </div>
         </article>
@@ -297,7 +297,7 @@ function openAnchor(item: CriterionRef) {
 
       <UiEmptyState
         v-else
-        icon="pi pi-sitemap"
+        icon="aw-icon aw-icon-network"
         title="No risk selected"
         description="Pick a row to follow it from its source through to its finding."
       />
@@ -305,11 +305,11 @@ function openAnchor(item: CriterionRef) {
 
     <UiEmptyState
       v-else
-      icon="pi pi-sitemap"
+      icon="aw-icon aw-icon-network"
       title="Nothing to follow yet"
       description="The chain runs from a risk's cited source through the tests built from it to the finding they produced. It starts with the risk and control matrix."
     >
-      <Button label="Open the matrix" icon="pi pi-map" @click="nav.push('rcm')" />
+      <Button label="Open the matrix" icon="aw-icon aw-icon-map" @click="nav.push('rcm')" />
     </UiEmptyState>
 
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" :documents="documents" />
@@ -322,8 +322,6 @@ function openAnchor(item: CriterionRef) {
   min-width: 0; max-width: 100%; min-height: 0; height: 100%;
 }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem }
-.page-head h1 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em }
 .grow { flex: 1 }
 
 .layout { display: grid; grid-template-columns: 21rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem }
@@ -387,7 +385,7 @@ function openAnchor(item: CriterionRef) {
 .dot.bad { border-color: var(--aw-danger); color: var(--aw-danger) }
 .hop.empty .dot { border-color: var(--aw-border-strong); color: var(--aw-muted) }
 .hop-body { display: grid; gap: .4rem; align-content: start; padding: .9rem 0 1.6rem; min-width: 0 }
-.hop-body h4 { display: flex; align-items: baseline; gap: .45rem; margin: 0; font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--aw-muted); font-family: var(--aw-font-mono) }
+.hop-body h4 { display: flex; align-items: baseline; gap: .45rem; margin: 0; font-size: var(--aw-text-xs); font-weight: 600; color: var(--aw-muted); }
 .hop-body h4 span { color: var(--aw-ink-strong); font-variant-numeric: tabular-nums }
 .risk { margin: 0; font-size: var(--aw-text-md); line-height: 1.5; color: var(--aw-ink-strong) }
 .muted { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.5 }

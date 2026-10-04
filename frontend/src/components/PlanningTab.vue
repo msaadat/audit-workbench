@@ -346,7 +346,7 @@ function markRowsReviewed(ids: string[]) {
     message: `Mark ${plural(ids.length, 'RCM row')} as reviewed? `
       + 'Sign-off makes each row auditor-owned, so rerunning the agent will '
       + 'preserve it rather than update it.',
-    icon: 'pi pi-check-circle',
+    icon: 'aw-icon aw-icon-circle-check',
     acceptProps: { label: 'Mark reviewed' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -414,20 +414,20 @@ const unreviewedRows = computed(
 const runOptions = computed(() => [
   {
     label: `Run ${plural(linkedDataTestCount.value, 'Data Test')}`,
-    icon: 'pi pi-chart-bar',
+    icon: 'aw-icon aw-icon-chart-column',
     disabled: !linkedDataTestCount.value || isActive.value || runningAllDataTests.value,
     command: () => void runAllDataTests(),
   },
   {
     label: `Run ${plural(linkedDocumentTestIds.value.length, 'Document Test')}`,
-    icon: 'pi pi-file-check',
+    icon: 'aw-icon aw-icon-file-check',
     disabled: !linkedDocumentTestIds.value.length || isActive.value || runningAllDocumentTests.value,
     command: () => void runAllDocumentTests(),
   },
   { separator: true },
   {
     label: 'Run everything linked',
-    icon: 'pi pi-play',
+    icon: 'aw-icon aw-icon-play',
     disabled: isActive.value || runningAllDataTests.value || runningAllDocumentTests.value,
     command: async () => { await runAllDataTests(); await runAllDocumentTests() },
   },
@@ -438,38 +438,38 @@ const runOptions = computed(() => [
 const rcmActions = computed(() => [
   {
     label: 'Generate planning drafts',
-    icon: 'pi pi-sparkles',
+    icon: 'aw-icon aw-icon-sparkles',
     disabled: agentBusy.value,
     command: () => void generate(),
   },
   {
     label: 'Generate all findings',
-    icon: 'pi pi-flag',
+    icon: 'aw-icon aw-icon-flag',
     disabled: agentBusy.value || generatingFindings.value,
     command: () => void generateAllFindings(),
   },
   {
     label: `Generate tests for ${plural(rowsWithoutTests.value.length, 'uncovered risk')}`,
-    icon: 'pi pi-bolt',
+    icon: 'aw-icon aw-icon-zap',
     disabled: agentBusy.value || !rowsWithoutTests.value.length || generatingTests.value,
     command: () => void generatePlannedTests(),
   },
   { separator: true },
   {
     label: 'Refresh roll-up',
-    icon: 'pi pi-refresh',
+    icon: 'aw-icon aw-icon-refresh-cw',
     command: () => void refreshRollup(),
   },
   { separator: true },
   {
     label: 'Export RCM',
-    icon: 'pi pi-download',
+    icon: 'aw-icon aw-icon-download',
     disabled: rcmExporting.value,
     command: () => void exportRcm(),
   },
   {
     label: 'Import RCM',
-    icon: 'pi pi-upload',
+    icon: 'aw-icon aw-icon-upload',
     disabled: rcmImporting.value,
     command: () => triggerRcmImport(),
   },
@@ -484,10 +484,10 @@ const rcmActions = computed(() => [
     <header class="page-head">
       <h1>Risk and control matrix</h1>
       <span class="grow" />
-      <Button label="Add risk" icon="pi pi-plus" size="small" outlined severity="secondary" @click="addRcm" />
+      <Button label="Add risk" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="addRcm" />
       <SplitButton
         label="Run tests"
-        icon="pi pi-play"
+        icon="aw-icon aw-icon-play"
         size="small"
         outlined
         severity="secondary"
@@ -499,9 +499,8 @@ const rcmActions = computed(() => [
       <Button
         v-if="findingsPending.length"
         :label="`Draft ${plural(findingsPending.length, 'finding')}`"
-        icon="pi pi-flag"
+        icon="aw-icon aw-icon-flag"
         size="small"
-        severity="warn"
         :disabled="rcmBusy || agentBusy"
         @click="generateAllFindings"
       />
@@ -585,10 +584,6 @@ const rcmActions = computed(() => [
 <style scoped>
 .rcm-view { display:flex; flex-direction:column; gap:.75rem }
 
-/* One 36px row: the title, what the matrix holds, and at most one primary. */
-.page-head { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-height:2.25rem }
-.page-head h1 { margin:0; color:var(--aw-ink-strong); font-size:var(--aw-text-xl); font-weight:700; letter-spacing:-0.01em }
-.headline { margin:0; color:var(--aw-muted); font-size:var(--aw-text-sm) }
 .grow { flex:1 }
 .settle {
   padding:.25rem .625rem; border:1px solid var(--aw-border-strong); border-radius:var(--aw-radius-control);

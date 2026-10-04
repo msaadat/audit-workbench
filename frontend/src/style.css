@@ -19,20 +19,40 @@ body {
   --aw-font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --aw-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
 
-  --aw-text-2xs: 0.68rem;
-  --aw-text-xs: 0.72rem;
-  --aw-text-sm: 0.8rem;
+  /* One step per role, on whole pixels at the default 16 px root:
+       2xs 11  column heads, the one uppercase in the app
+       xs  12  labels — sentence case, 600, muted
+       sm  13  meta lines, buttons, dense tables
+       base 14 body and inputs
+       md  15  reading — memoranda, reports, analyses (at `--aw-measure`)
+       lg  17  section titles
+       xl  22  page titles
+     The steps above them are for figures and the index's hero only. The
+     roles are drawn by the `.aw-type-*` rules further down; reach for those
+     before restating a size and a weight. */
+  --aw-text-2xs: 0.6875rem;
+  --aw-text-xs: 0.75rem;
+  --aw-text-sm: 0.8125rem;
   --aw-text-base: 0.875rem;
-  --aw-text-md: 0.95rem;
-  --aw-text-lg: 1.1rem;
-  --aw-text-xl: 1.35rem;
+  --aw-text-md: 0.9375rem;
+  --aw-text-lg: 1.0625rem;
+  --aw-text-xl: 1.375rem;
   --aw-text-2xl: 1.75rem;
   --aw-text-3xl: 2.25rem;
+  --aw-weight-title: 650;
+  /* A line of reading text. `ch` is the width of a zero, which is wider than
+     an average letter, so 70ch at the reading size is about 80–85 characters
+     of running text. Memoranda, reports and the analysis memo were set at
+     96ch — 120 characters a line across a 7,900-word document. The document
+     view and its editor both read this, so switching to Edit moves no line. */
+  --aw-measure: 70ch;
 
   /* --- Geometry -------------------------------------------------------- */
-  /* Compact-readable control geometry, tuned for 1366×768 workstations. */
-  --aw-control-height: 2.25rem;
-  --aw-control-height-sm: 1.9rem;
+  /* Compact-readable control geometry, tuned for 1366×768 workstations. Every
+     button and input is `--aw-control-height`; `-sm` is the dense size, for
+     controls inside a row that is itself one control tall. */
+  --aw-control-height: 2rem;
+  --aw-control-height-sm: 1.75rem;
   --aw-row-height: 2.5rem;
   --aw-section-gap: 0.85rem;
   /* The shell bar and the controls it carries. It is one bar on every page —
@@ -71,6 +91,14 @@ body {
   --aw-on-dark-line: rgb(255 255 255 / 18%);
   --aw-on-dark-hover: rgb(255 255 255 / 10%);
   --aw-on-dark-sep: rgb(255 255 255 / 32%);
+  /* The accent and the warning as they read on the navy bar. The light-theme
+     accent (teal-700) and warning (amber-700) are both under 3:1 on navy, and
+     the bar is navy in both themes, so these do not flip with the theme. */
+  --aw-on-navy-accent: #5eead4;
+  --aw-on-navy-accent-ink: #ccfbf1;
+  --aw-on-navy-accent-wash: rgb(94 234 212 / 14%);
+  --aw-on-navy-accent-line: rgb(94 234 212 / 42%);
+  --aw-on-navy-warn: #f6c177;
   /* Text on a solid accent fill. Distinct from `--aw-on-dark`, which is text
      over the navy header and stays white in both themes: the accent is dark
      teal on a light ground and light teal on a dark one, so what reads on it
@@ -177,8 +205,8 @@ body {
   --aw-text-2xl: 2.05rem;
   --aw-text-3xl: 2.6rem;
 
-  --aw-control-height: 2.6rem;
-  --aw-control-height-sm: 2.2rem;
+  --aw-control-height: 2.4rem;
+  --aw-control-height-sm: 2.1rem;
   --aw-row-height: 2.9rem;
   --aw-section-gap: 1.1rem;
   --aw-shell-height: 3.25rem;
@@ -354,13 +382,17 @@ body {
    the rest of the app uses for the same job is the 700 step, which carries
    white at 5.47:1. In dark the relationship inverts: the button becomes a
    light teal with navy on it, because a 700 teal on a navy ground reads as a
-   disabled control rather than the primary action. */
-.p-button:not(.p-button-outlined):not(.p-button-text):not(.p-button-secondary):not(.p-button-danger):not(.p-button-success):not(.p-button-warn):not(.p-button-info) {
+   disabled control rather than the primary action.
+
+   The exclusions sit inside one `:is()`, so the rule weighs two classes. As a
+   chain of seven `:not()`s it weighed eight, and outranked every scoped rule
+   that styles a particular button — the shell's assistant toggle among them. */
+.p-button:not(:is(.p-button-outlined, .p-button-text, .p-button-secondary, .p-button-danger, .p-button-success, .p-button-warn, .p-button-info)) {
   background: var(--aw-teal);
   border-color: var(--aw-teal);
   color: var(--aw-on-accent);
 }
-.p-button:not(.p-button-outlined):not(.p-button-text):not(.p-button-secondary):not(.p-button-danger):not(.p-button-success):not(.p-button-warn):not(.p-button-info):hover {
+.p-button:not(:is(.p-button-outlined, .p-button-text, .p-button-secondary, .p-button-danger, .p-button-success, .p-button-warn, .p-button-info)):hover {
   background: var(--aw-teal-strong);
   border-color: var(--aw-teal-strong);
 }
@@ -399,8 +431,41 @@ body {
 
 .workspace-page { max-width: none; padding: 0; }
 
-h1, h2, h3, h4 { color: var(--aw-ink); letter-spacing: -0.02em; font-weight: 700; }
+h1, h2, h3, h4 { color: var(--aw-ink); letter-spacing: -0.02em; font-weight: var(--aw-weight-title); }
 h1 { font-size: var(--aw-text-2xl); line-height: 1.15; }
+
+/* =========================================================================
+   Type roles. Seven, and each is a size, a weight and a colour together, so
+   a page states a role rather than re-deriving one from the scale.
+
+   Uppercase belongs to one role only — a table's column head — because a
+   column head is the one label read sideways across a grid. Everywhere else a
+   label is sentence case: an all-caps eyebrow over every block made each one
+   shout, and when everything is set as a label nothing reads as one.
+
+   The mono face is for figures and identifiers (`1,000`, `70.9%`,
+   `TD-2025-0518`, `DEAL_ID`) — values a reader compares character by
+   character. Names, types and statuses are words and stay in the sans face:
+   'Payment instruction', not `payment instruction`.
+   ========================================================================= */
+.aw-type-title { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: var(--aw-weight-title); letter-spacing: -0.015em; line-height: 1.2; }
+.aw-type-section { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-lg); font-weight: var(--aw-weight-title); letter-spacing: -0.01em; line-height: 1.3; }
+.aw-type-body { color: var(--aw-ink); font-size: var(--aw-text-base); line-height: 1.5; }
+.aw-type-reading { max-width: var(--aw-measure); color: var(--aw-ink); font-size: var(--aw-text-md); line-height: 1.65; }
+.aw-type-meta { color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.45; }
+.aw-type-column {
+  color: var(--aw-muted);
+  font-size: var(--aw-text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The page header: one row, the title, what there is of it, and at most one
+   filled button — the next step, not the most expensive action. It was
+   written out in eleven scoped blocks, identically; it is written once here. */
+.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
+.page-head h1 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: var(--aw-weight-title); letter-spacing: -0.015em; line-height: 1.2; }
 
 /* Ledger figures: monospaced tabular numerals mark a value as a *figure*.
    This is opt-in — applying it to whole tables put vendor names and status
@@ -416,24 +481,50 @@ h1 { font-size: var(--aw-text-2xl); line-height: 1.15; }
 
 button, input, textarea, select { font: inherit; }
 
+/* Icons. One stroke set (Lucide), drawn as a mask over `currentColor`, so an
+   icon is sized by the font-size and coloured by the text around it exactly
+   as the PrimeIcons font it replaced was — and every place that took a font
+   class (`<Button icon>`, menu items, InputIcon) takes these unchanged. The
+   glyph classes are generated into `icons.css`; see scripts/build-icons.mjs.
+   The box is 1.125em because Lucide draws inside a 2 px margin of its 24 px
+   grid, where a PrimeIcons glyph filled its em; at 1em every icon read a size
+   smaller than the text beside it. `vertical-align` centres the box on the
+   text rather than standing it on the baseline. */
+.aw-icon {
+  display: inline-block;
+  flex: none;
+  width: 1.125em;
+  height: 1.125em;
+  line-height: 1;
+  vertical-align: -0.2em;
+  background-color: currentColor;
+  -webkit-mask: var(--aw-icon-glyph) center / contain no-repeat;
+  mask: var(--aw-icon-glyph) center / contain no-repeat;
+}
+.aw-icon-spin { animation: aw-icon-spin 0.9s linear infinite; }
+@keyframes aw-icon-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .aw-icon-spin { animation-duration: 2.4s; }
+}
+
 :focus-visible { outline: 3px solid rgb(13 148 136 / 30%); outline-offset: 2px; }
 
 .muted {
   color: var(--aw-muted);
 }
 
-/* The one shouting treatment in the app: a section label. Everything that
-   used to be uppercase + letterspaced + 700 elsewhere is now ordinary muted
-   text, so that when something *is* set this way it reads as a label rather
-   than as another competing heading. */
+/* A label: what the block under it is. Sentence case, the label size, 600,
+   muted — quieter than the block's own content, which is the point. It was
+   the app's one shouting treatment (uppercase, letterspaced, 700) until every
+   panel carried one; see the type roles above. */
 .aw-label,
 .eyebrow {
   margin: 0;
   color: var(--aw-muted);
-  font-size: var(--aw-text-2xs);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--aw-text-xs);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .stat-cards {
@@ -495,8 +586,7 @@ button, input, textarea, select { font: inherit; }
 
 /* The `.ui-page-header` block that used to sit here — an `h2` with a
    description and an actions column — is gone with its component. Every work
-   product carries the 36 px `.page-head` row instead: one `h1`, what there is
-   of it, and at most one primary. */
+   product carries the `.page-head` row instead; see the type roles. */
 
 .ui-master-detail {
   display: grid;
@@ -564,10 +654,8 @@ button, input, textarea, select { font: inherit; }
 .ui-surface__label {
   margin: 0 .6rem .45rem;
   color: var(--aw-muted);
-  font-size: var(--aw-text-2xs);
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  font-size: var(--aw-text-xs);
+  font-weight: 600;
 }
 .ui-surface__item {
   display: flex;
@@ -587,7 +675,7 @@ button, input, textarea, select { font: inherit; }
 .ui-surface__item:hover:not(.active) { background: var(--aw-panel-wash); color: var(--aw-ink); }
 /* Active nav lifts off the rail — one of the few places a shadow earns its keep. */
 .ui-surface__item.active { color: var(--aw-teal); background: var(--aw-panel); box-shadow: var(--aw-shadow-sm); }
-.ui-surface__item.active .pi { color: var(--aw-teal); }
+.ui-surface__item.active .aw-icon { color: var(--aw-teal); }
 .ui-surface__item > small {
   margin-left: auto;
   min-width: 1.25rem;
@@ -665,7 +753,7 @@ button, input, textarea, select { font: inherit; }
 /* The title, where it is edited: with the definition rather than above the
    page. A procedure's name is one of the things a definition edit changes. */
 .title-field { display: flex; align-items: center; gap: var(--aw-space-2); min-width: 0; }
-.title-field > span { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.title-field > span { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .title-field :deep(.p-inputtext), .title-field input { min-width: 18rem; font-weight: 600; }
 
 .analysis-error {
@@ -716,15 +804,55 @@ button, input, textarea, select { font: inherit; }
 
 /* PrimeVue: one restrained, audit-console visual language. Buttons and inputs
    share a radius so a toolbar reads as one row of controls rather than as a
-   pile of differently-cornered widgets. */
-.p-button { min-height: var(--aw-control-height); border-radius: var(--aw-radius-control); font-weight: 600; letter-spacing: 0.005em; }
-.p-button.p-button-sm { min-height: var(--aw-control-height-sm); }
+   pile of differently-cornered widgets.
+
+   Buttons come in one size. PrimeVue draws an unsized button at 16 px text on
+   36 px and a `small` one at 14 on 30, and the app used both — the small one in
+   page headers, the large one in empty states — so the same action read at two
+   sizes on two pages, and the empty state's copy of a header action out-shouted
+   the header. Every button is now 32 px with 13 px text whatever `size` says;
+   the prop is ignored rather than removed so nothing has to be rewritten.
+   Only a row that is itself 32 px tall takes the 28 px `.aw-dense` size.
+
+   PrimeVue injects its stylesheet after this one, so these rules carry an
+   `html` prefix to win on specificity rather than by order. */
+html .p-button {
+  min-height: var(--aw-control-height);
+  white-space: nowrap;
+  padding: 0 0.75rem;
+  gap: 0.375rem;
+  border-radius: var(--aw-radius-control);
+  font-size: var(--aw-text-sm);
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+html .p-button .p-button-label { font-weight: 600; }
+html .p-button.p-button-icon-only { width: var(--aw-control-height); height: var(--aw-control-height); padding: 0; }
+html .p-button.p-button-link { min-height: 0; padding: 0; }
+html .aw-dense .p-button { min-height: var(--aw-control-height-sm); padding: 0 0.5rem; }
+html .aw-dense .p-button.p-button-icon-only { width: var(--aw-control-height-sm); height: var(--aw-control-height-sm); padding: 0; }
+
 .p-inputtext, .p-select, .p-multiselect, .p-textarea { border-radius: var(--aw-radius-control); }
 /* Inputs match buttons, so a toolbar is one row of equal-height controls
-   rather than a stack of slightly different boxes. Textareas grow, so they
-   opt out. */
-.p-inputtext:not(textarea), .p-select, .p-multiselect { min-height: var(--aw-control-height); }
-.p-inputtext.p-inputtext-sm:not(textarea), .p-select.p-select-sm, .p-multiselect.p-multiselect-sm { min-height: var(--aw-control-height-sm); }
+   rather than a stack of slightly different boxes — at one height, for the
+   same reason buttons have one. Text is the body size, not PrimeVue's 16 px.
+   Textareas grow, so they opt out of the height. */
+html .p-inputtext:not(textarea),
+html .p-select,
+html .p-multiselect { min-height: var(--aw-control-height); }
+html .p-inputtext,
+html .p-textarea,
+html .p-select-label,
+html .p-multiselect-label { font-size: var(--aw-text-base); }
+html .p-inputtext:not(textarea),
+html .p-select-label,
+html .p-multiselect-label { padding-block: 0.3125rem; }
+html .p-inputtext.p-inputtext-sm,
+html .p-select-sm .p-select-label,
+html .p-multiselect-sm .p-multiselect-label { font-size: var(--aw-text-sm); }
+html .aw-dense .p-inputtext:not(textarea),
+html .aw-dense .p-select,
+html .aw-dense .p-multiselect { min-height: var(--aw-control-height-sm); }
 .p-card, .p-dialog { border-radius: var(--aw-radius-surface); }
 /* Floating surfaces: shadow, no border. */
 .p-card { box-shadow: var(--aw-shadow-sm); border: 0; }

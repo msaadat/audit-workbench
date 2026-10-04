@@ -158,7 +158,7 @@ function applyDefaults(label: string, description: string) {
       <Textarea v-model="draft.objective" rows="2" autoResize placeholder="What it sets out to establish" />
     </label>
     <button type="button" class="link chevron" :aria-expanded="criteriaOpen" @click="criteriaOpen = !criteriaOpen">
-      <i class="pi" :class="criteriaOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />Criteria
+      <i class="aw-icon" :class="criteriaOpen ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />Criteria
     </button>
     <label v-if="criteriaOpen">
       <Textarea v-model="draft.criteria" rows="2" autoResize placeholder="The rule this test is measured against" />
@@ -187,5 +187,5 @@ label[data-missing='true'] :deep(.p-select) { border-color: var(--aw-warn-line);
 .link:hover { text-decoration: underline; }
 .link.chevron { color: var(--aw-muted); }
 .link.chevron:hover { color: var(--aw-teal); }
-.link .pi { font-size: var(--aw-text-2xs); }
+.link .aw-icon { font-size: var(--aw-text-2xs); }
 </style>

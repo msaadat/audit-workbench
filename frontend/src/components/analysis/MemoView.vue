@@ -197,11 +197,11 @@ const prose = computed(() => {
           <span v-if="byId[segment.embed.analysis]" class="memo-embed-found aw-figure">
             {{ foundSummary(byId[segment.embed.analysis]!) }}
           </span>
-          <i class="pi pi-chevron-right" aria-hidden="true" />
+          <i class="aw-icon aw-icon-chevron-right" aria-hidden="true" />
         </button>
 
         <div v-if="failed.has(segment.embed.analysis)" class="memo-embed-error">
-          <i class="pi pi-exclamation-triangle" /> Could not load this result
+          <i class="aw-icon aw-icon-triangle-alert" /> Could not load this result
         </div>
 
         <template v-else-if="segment.embed.as === 'stats'">
@@ -222,7 +222,7 @@ const prose = computed(() => {
           <p v-else-if="flagged[segment.embed.analysis]" class="memo-embed-note">
             This result recorded no flagged rows.
           </p>
-          <div v-else class="memo-embed-loading"><i class="pi pi-spin pi-spinner" /></div>
+          <div v-else class="memo-embed-loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /></div>
         </template>
 
         <template v-else>
@@ -237,7 +237,7 @@ const prose = computed(() => {
             :frame="details[segment.embed.analysis]!.frame!"
             scrollHeight="260px"
           />
-          <div v-else class="memo-embed-loading"><i class="pi pi-spin pi-spinner" /></div>
+          <div v-else class="memo-embed-loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /></div>
         </template>
 
         <figcaption v-if="segment.embed.caption">{{ segment.embed.caption }}</figcaption>
@@ -257,7 +257,7 @@ const prose = computed(() => {
 .document {
   min-width: 0;
   padding-block: 1.5rem;
-  padding-inline: max(1.25rem, calc((100% - 96ch) / 2));
+  padding-inline: max(1.25rem, calc((100% - var(--aw-measure)) / 2));
   border: 1px solid var(--aw-border);
   border-radius: var(--aw-radius-surface);
   background: var(--aw-panel);
@@ -266,8 +266,7 @@ const prose = computed(() => {
 }
 .eyebrow {
   margin: 0 0 1rem;
-  color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700;
-  letter-spacing: .09em; text-transform: uppercase;
+  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600;
 }
 .heading { color: var(--aw-ink-strong); scroll-margin-top: .75rem; }
 .heading.level-1 { margin: 0 0 1rem; font-size: var(--aw-text-2xl); font-weight: 700; letter-spacing: -0.02em; }
@@ -313,7 +312,7 @@ const prose = computed(() => {
 .memo-embed-title { min-width: 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .memo-embed-grow { flex: 1; }
 .memo-embed-found { color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: nowrap; }
-.memo-embed-head .pi { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.memo-embed-head .aw-icon { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .memo-embed-head:hover .memo-embed-title { text-decoration: underline; }
 .memo-embed figcaption {
   margin-top: var(--aw-space-2);

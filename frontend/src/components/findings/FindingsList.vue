@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
+import { sentenceCase } from '../../format'
 import type { AuditFinding, FindingSeverity } from '../../types'
 import { SEVERITY_ORDER, openItems } from './findingsStatus'
 
@@ -52,8 +53,8 @@ const groups = computed(() => SEVERITY_ORDER
         :aria-expanded="!collapsed.has(group.severity)"
         @click="toggle(group.severity)"
       >
-        <i class="pi" :class="collapsed.has(group.severity) ? 'pi-chevron-right' : 'pi-chevron-down'" aria-hidden="true" />
-        <span class="severity" :data-tone="TONES[group.severity]">{{ group.severity }}</span>
+        <i class="aw-icon" :class="collapsed.has(group.severity) ? 'aw-icon-chevron-right' : 'aw-icon-chevron-down'" aria-hidden="true" />
+        <span class="severity" :data-tone="TONES[group.severity]">{{ sentenceCase(group.severity) }}</span>
         <span class="count aw-figure">{{ group.items.length }}</span>
       </button>
       <template v-if="!collapsed.has(group.severity)">
@@ -107,10 +108,9 @@ const groups = computed(() => SEVERITY_ORDER
 .group:first-child, section:first-child .group { border-top: 0; }
 .group:hover { background: var(--aw-raised); }
 .group:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
-.group .pi { color: var(--aw-muted); font-size: .625rem; }
+.group .aw-icon { color: var(--aw-muted); font-size: .625rem; }
 .severity {
   color: var(--aw-ink-strong); font-size: var(--aw-text-xs); font-weight: 700;
-  letter-spacing: .06em; text-transform: uppercase;
 }
 .severity[data-tone='critical'] { color: var(--aw-danger-ink); }
 .severity[data-tone='high'] { color: var(--aw-danger); }

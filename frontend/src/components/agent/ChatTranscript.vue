@@ -191,15 +191,15 @@ function messageTime(value: string) {
          come first. Same action, icon and framing the audit file's onboarding had
          onboarding card, so the two surfaces agree on what step one is. -->
     <div v-if="empty && needsSources" class="empty-state">
-      <span class="empty-icon"><i class="pi pi-folder-open" /></span>
+      <span class="empty-icon"><i class="aw-icon aw-icon-folder-open" /></span>
       <strong>Start with the audit folder</strong>
       <p>Drop files anywhere, or pick files or a folder. The workbench stages and classifies supported data and documents before importing them.</p>
-      <Button label="Import files" icon="pi pi-upload" @click="emit('import')" />
+      <Button label="Import files" icon="aw-icon aw-icon-upload" @click="emit('import')" />
       <p class="empty-followup">Once the files are in, I can plan the engagement, build the RCM, and run the tests.</p>
     </div>
 
     <div v-else-if="empty" class="empty-state">
-      <span class="empty-icon"><i class="pi pi-sparkles" /></span>
+      <span class="empty-icon"><i class="aw-icon aw-icon-sparkles" /></span>
       <strong>What should we work on?</strong>
       <p>Ask me anything about this engagement, or tell me what to do next.</p>
       <section class="empty-section">
@@ -242,17 +242,17 @@ function messageTime(value: string) {
       <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />
       <div v-else class="message" :class="[item.role, item.kind, item.state]">
         <div class="bubble" :title="messageTime(item.created_at)">
-          <i v-if="item.state === 'pending'" class="pi pi-spin pi-spinner" />
-          <i v-else-if="item.kind === 'error'" class="pi pi-exclamation-triangle" />
+          <i v-if="item.state === 'pending'" class="aw-icon aw-icon-spin aw-icon-loader-circle" />
+          <i v-else-if="item.kind === 'error'" class="aw-icon aw-icon-triangle-alert" />
           <MarkdownView v-if="item.role === 'assistant' && item.kind === 'text'" class="bubble-markdown" :markdown="item.content" />
           <p v-else>{{ item.content }}</p>
           <small v-if="item.role === 'user' && item.requested_intent !== 'auto'" class="intent">{{ item.requested_intent }}</small>
         </div>
-        <Button v-if="item.state === 'failed' && item.role === 'user'" label="Retry" icon="pi pi-refresh" text size="small" @click="emit('retry', item)" />
-        <details v-if="item.tool_trace?.length" class="trace"><summary>{{ plural(item.tool_trace.length, 'local tool step') }}</summary><div v-for="(step,index) in item.tool_trace" :key="index"><i :class="step.ok ? 'pi pi-check' : 'pi pi-times'" /> {{ step.tool }}</div></details>
-        <div v-if="item.document_manifest?.trimmed" class="warning"><i class="pi pi-exclamation-triangle" /> Some attached document text was trimmed to the safe context budget.</div>
+        <Button v-if="item.state === 'failed' && item.role === 'user'" label="Retry" icon="aw-icon aw-icon-refresh-cw" text size="small" @click="emit('retry', item)" />
+        <details v-if="item.tool_trace?.length" class="trace"><summary>{{ plural(item.tool_trace.length, 'local tool step') }}</summary><div v-for="(step,index) in item.tool_trace" :key="index"><i :class="step.ok ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-x'" /> {{ step.tool }}</div></details>
+        <div v-if="item.document_manifest?.trimmed" class="warning"><i class="aw-icon aw-icon-triangle-alert" /> Some attached document text was trimmed to the safe context budget.</div>
         <div v-if="item.citations?.length" class="citations">
-          <Button v-for="citation in item.citations" :key="citation.id" :label="`${documentTitle(citation.source_id)} · p. ${citation.page}`" icon="pi pi-link" size="small" severity="secondary" outlined :disabled="citation.available === false || !documents.some(doc => doc.id === citation.source_id)" @click="openCitation(citation)" />
+          <Button v-for="citation in item.citations" :key="citation.id" :label="`${documentTitle(citation.source_id)} · p. ${citation.page}`" icon="aw-icon aw-icon-link" size="small" severity="secondary" outlined :disabled="citation.available === false || !documents.some(doc => doc.id === citation.source_id)" @click="openCitation(citation)" />
         </div>
         <template v-for="artifactId in item.artifact_ids" :key="artifactId">
           <ChatArtifactCard v-if="chat.artifacts[artifactId]" :workspaceId="workspaceId" :artifact="chat.artifacts[artifactId]" />

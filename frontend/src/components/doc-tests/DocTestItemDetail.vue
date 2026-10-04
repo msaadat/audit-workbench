@@ -161,12 +161,12 @@ const staleSentence = computed(() => (isStale.value
 // have overturned it were the ones hidden because it had a verdict at all.
 const dispositionChoices = computed(() => {
   const choices: Array<{ value: DocTestDispositionState; label: string; icon: string; tone: string }> = [
-    { value: 'confirmed', label: 'Confirm', icon: 'pi pi-check', tone: 'ok' },
-    { value: 'exception', label: 'Exception', icon: 'pi pi-exclamation-triangle', tone: 'bad' },
+    { value: 'confirmed', label: 'Confirm', icon: 'aw-icon aw-icon-check', tone: 'ok' },
+    { value: 'exception', label: 'Exception', icon: 'aw-icon aw-icon-triangle-alert', tone: 'bad' },
   ]
   // Parking is an item-first affordance; a cycle disposition stays binary.
   if (!isCanonicalCycle.value) {
-    choices.push({ value: 'needs_review', label: 'Needs review', icon: 'pi pi-eye', tone: 'warn' })
+    choices.push({ value: 'needs_review', label: 'Needs review', icon: 'aw-icon aw-icon-eye', tone: 'warn' })
   }
   return choices
 })
@@ -368,7 +368,7 @@ onMounted(() => { void focusAssertion() })
       <Button
         v-if="test.rcm_id"
         :label="test.rcm_id"
-        icon="pi pi-map"
+        icon="aw-icon aw-icon-map"
         size="small"
         outlined
         class="rcm-link"
@@ -377,7 +377,7 @@ onMounted(() => { void focusAssertion() })
       <p v-else class="unlinked">Not linked to an RCM row — this work does not count as coverage.</p>
       <Button
         label="Run test"
-        icon="pi pi-play"
+        icon="aw-icon aw-icon-play"
         size="small"
         outlined
         severity="secondary"
@@ -444,7 +444,7 @@ onMounted(() => { void focusAssertion() })
     <!-- The reason is prompted where it is missed, and written whenever the
          auditor gets to it — never as a toll on recording the call. -->
     <p v-if="departsFromRun && !disposition.note && !editingNote" class="departs">
-      <i class="pi pi-pencil" />This departs from the run. A written reason is worth having on the file.
+      <i class="aw-icon aw-icon-pencil" />This departs from the run. A written reason is worth having on the file.
       <button type="button" class="link" @click="beginNote">Add one</button>
     </p>
     <form v-if="editingNote" ref="reasonBox" class="reason-form" @submit.prevent="saveNote">
@@ -460,14 +460,14 @@ onMounted(() => { void focusAssertion() })
         />
       </label>
       <span class="reason-actions">
-        <Button label="Save reason" icon="pi pi-save" size="small" :disabled="busy" @click="saveNote" />
+        <Button label="Save reason" icon="aw-icon aw-icon-save" size="small" :disabled="busy" @click="saveNote" />
         <Button label="Cancel" size="small" text severity="secondary" :disabled="busy" @click="cancelNote" />
       </span>
     </form>
 
     <!-- The record: what the procedure was and what the run found. -->
     <div class="detail-main">
-    <p v-if="runnerNote" class="runner-note"><i class="pi pi-info-circle" />{{ runnerNote }}</p>
+    <p v-if="runnerNote" class="runner-note"><i class="aw-icon aw-icon-info" />{{ runnerNote }}</p>
 
     <!-- `instruction` and `question` are one planned step written twice: the
          runner emits an imperative and an interrogative form of the same
@@ -502,7 +502,7 @@ onMounted(() => { void focusAssertion() })
       <template v-if="perDocumentAnswers.length">
         <article v-for="[documentId, answer] in perDocumentAnswers" :key="documentId" class="answer" :data-outcome="answer.outcome">
           <div class="answer-head">
-            <i class="pi pi-file" aria-hidden="true" />
+            <i class="aw-icon aw-icon-file" aria-hidden="true" />
             <strong>{{ documentTitle(documentId) }}</strong>
             <span class="citations">
               <Button
@@ -526,7 +526,7 @@ onMounted(() => { void focusAssertion() })
             v-for="citation in item.citations"
             :key="citation.id"
             :label="`Page ${citation.page || '—'}`"
-            icon="pi pi-link"
+            icon="aw-icon aw-icon-link"
             size="small"
             text
             @click="emit('anchor', citation)"
@@ -552,7 +552,7 @@ onMounted(() => { void focusAssertion() })
         </small>
       </div>
       <div v-if="item.role_conflicts?.length || item.collisions?.length" class="conflict">
-        <strong><i class="pi pi-exclamation-triangle" />Role binding requires review</strong>
+        <strong><i class="aw-icon aw-icon-triangle-alert" />Role binding requires review</strong>
         <span>{{ plural(item.role_conflicts?.length ?? 0, 'within-item conflict') }} · {{ plural(item.collisions?.length ?? 0, 'cross-item collision') }}</span>
       </div>
       <UiAdvancedSection title="Population record" description="The frozen row this cycle is tested against">
@@ -600,7 +600,7 @@ onMounted(() => { void focusAssertion() })
               v-for="anchor in comparisonEvidence(comparison)"
               :key="anchor.id"
               :label="`Page ${anchor.page ?? '—'}`"
-              icon="pi pi-link"
+              icon="aw-icon aw-icon-link"
               size="small"
               text
               @click="emit('anchor', anchor)"
@@ -630,7 +630,7 @@ onMounted(() => { void focusAssertion() })
           <UiTestStatus :status="result.result" showLabel />
           <Button
             v-if="result.evidence"
-            icon="pi pi-link"
+            icon="aw-icon aw-icon-link"
             text
             rounded
             size="small"
@@ -650,7 +650,7 @@ onMounted(() => { void focusAssertion() })
           </div>
         </UiAdvancedSection>
       </article>
-      <Button label="Save matching rules" icon="pi pi-save" size="small" outlined @click="emit('saveChecks')" />
+      <Button label="Save matching rules" icon="aw-icon aw-icon-save" size="small" outlined @click="emit('saveChecks')" />
     </section>
 
     <section v-if="item.attributes?.length" class="block">
@@ -660,7 +660,7 @@ onMounted(() => { void focusAssertion() })
         <UiTestStatus :status="attribute.verdict" showLabel />
         <InputText v-model="attribute.note" placeholder="Auditor note" />
       </article>
-      <Button label="Save attribute notes" icon="pi pi-save" size="small" outlined @click="emit('saveAttributes')" />
+      <Button label="Save attribute notes" icon="aw-icon aw-icon-save" size="small" outlined @click="emit('saveAttributes')" />
     </section>
 
     <!-- Evidence: what is attached and what is still missing. -->
@@ -671,13 +671,13 @@ onMounted(() => { void focusAssertion() })
       </div>
       <div v-if="item.document_ids.length" class="attached">
         <span v-for="documentId in item.document_ids" :key="documentId" class="doc-chip">
-          <i class="pi pi-file" />{{ documentTitle(documentId) }}
+          <i class="aw-icon aw-icon-file" />{{ documentTitle(documentId) }}
         </span>
       </div>
       <p v-else class="muted">No document is attached to this item.</p>
 
       <div v-if="coverage && (coverage.missing_document_types.length || coverage.image_only)" class="gap">
-        <strong><i class="pi pi-exclamation-triangle" />Evidence gap</strong>
+        <strong><i class="aw-icon aw-icon-triangle-alert" />Evidence gap</strong>
         <span v-if="coverage.missing_document_types.length">
           Missing: {{ coverage.missing_document_types.join(', ') }}
         </span>
@@ -703,15 +703,15 @@ onMounted(() => { void focusAssertion() })
           <div v-if="request.status === 'open'" class="evidence-request-actions">
             <Button
               label="Clear request"
-              icon="pi pi-check-circle"
+              icon="aw-icon aw-icon-circle-check"
               size="small"
-              severity="success"
+              severity="secondary"
               outlined
               @click="emit('updateEvidenceRequest', request.id, 'cancelled')"
             />
             <Button
               label="Mark received"
-              icon="pi pi-check"
+              icon="aw-icon aw-icon-check"
               size="small"
               severity="secondary"
               text
@@ -722,7 +722,7 @@ onMounted(() => { void focusAssertion() })
       </div>
 
       <div v-if="duplicates.length" class="conflict">
-        <strong><i class="pi pi-copy" />Duplicate evidence attached</strong>
+        <strong><i class="aw-icon aw-icon-copy" />Duplicate evidence attached</strong>
         <span>Resolve the duplication before accepting this item.</span>
       </div>
 
@@ -735,7 +735,7 @@ onMounted(() => { void focusAssertion() })
           filter
           placeholder="Attach a document"
         />
-        <Button label="Attach" icon="pi pi-paperclip" outlined :disabled="!attachId" @click="attach" />
+        <Button label="Attach" icon="aw-icon aw-icon-paperclip" outlined :disabled="!attachId" @click="attach" />
       </div>
     </section>
 
@@ -756,7 +756,7 @@ onMounted(() => { void focusAssertion() })
         <Button
           v-if="conclusionChanged"
           label="Save"
-          icon="pi pi-check"
+          icon="aw-icon aw-icon-check"
           size="small"
           :disabled="busy"
           @click="emit('saveConclusion')"
@@ -776,7 +776,7 @@ onMounted(() => { void focusAssertion() })
         <Button
           v-if="scopeNoteChanged"
           label="Save"
-          icon="pi pi-check"
+          icon="aw-icon aw-icon-check"
           size="small"
           :disabled="busy"
           aria-label="Save scope limitation"
@@ -809,7 +809,7 @@ onMounted(() => { void focusAssertion() })
           <span class="footer-note">{{ findingBlockedReason || 'None yet.' }}</span>
           <Button
             label="Generate finding"
-            icon="pi pi-sparkles"
+            icon="aw-icon aw-icon-sparkles"
             size="small"
             text
             severity="secondary"
@@ -835,7 +835,7 @@ onMounted(() => { void focusAssertion() })
           :aria-expanded="provenanceOpen"
           @click="provenanceOpen = !provenanceOpen"
         >
-          <i class="pi" :class="provenanceOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />Where this came from
+          <i class="aw-icon" :class="provenanceOpen ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />Where this came from
         </button>
       </p>
       <!-- Provenance belongs to the test definition, not to the item: the
@@ -896,7 +896,7 @@ onMounted(() => { void focusAssertion() })
 .dispositions button[aria-pressed='true'][data-tone='ok'] { background: var(--aw-ok-soft); }
 .dispositions button[aria-pressed='true'][data-tone='bad'] { background: var(--aw-danger-soft); }
 .dispositions button[aria-pressed='true'][data-tone='warn'] { background: var(--aw-warn-soft); }
-.dispositions .pi { font-size: var(--aw-text-xs); }
+.dispositions .aw-icon { font-size: var(--aw-text-xs); }
 .call-links { display: flex; gap: .75rem; margin: 0; }
 
 .link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-decoration: underline; cursor: pointer; }
@@ -928,7 +928,7 @@ onMounted(() => { void focusAssertion() })
 .answer[data-outcome='needs_review'], .answer[data-outcome='inconclusive'] { border-left-color: var(--aw-warn); }
 .answer-head { display: flex; align-items: center; gap: .5rem; min-width: 0; }
 .answer-head strong { min-width: 0; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-base); text-overflow: ellipsis; white-space: nowrap; }
-.answer-head > .pi { flex: none; color: var(--aw-teal); }
+.answer-head > .aw-icon { flex: none; color: var(--aw-teal); }
 .answer-head .citations { margin-left: auto; }
 .answer p { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 .citations { display: flex; flex-wrap: wrap; gap: .2rem; }
@@ -1001,7 +1001,7 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
   font: inherit; font-size: var(--aw-text-sm); font-weight: 600; cursor: pointer;
 }
 .disclosure-link:hover { color: var(--aw-teal); }
-.disclosure-link .pi { font-size: var(--aw-text-2xs); }
+.disclosure-link .aw-icon { font-size: var(--aw-text-2xs); }
 .provenance { grid-column: 1 / -1; }
 
 /* PrimeVue leaves its control text at the browser default, so any control

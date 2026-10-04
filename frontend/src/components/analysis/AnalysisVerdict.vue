@@ -139,7 +139,7 @@ const STALE = 'The definition or its source data changed after this result was r
       />
       <Button
         label="Run"
-        icon="pi pi-play"
+        icon="aw-icon aw-icon-play"
         size="small"
         :loading="busy"
         v-tooltip.bottom="'Execute this procedure and record what it concludes'"

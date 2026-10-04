@@ -3,6 +3,7 @@ import type {
   ReviewChip, StatusFilterGroup, StatusLane, StatusModel,
 } from '../ui/statusLanes'
 import { documentStatus } from '../../composables/documentStatus'
+import { sentenceCase } from '../../format'
 import type { AuditDocument, DocumentVocabulary } from '../../types'
 
 /**
@@ -220,7 +221,7 @@ export function documentMeta(document: AuditDocument, facts: DocumentsFacts): Ar
 }> {
   void facts
   const type = document.classification?.document_type
-  if (type) return [{ text: type.replace(/_/g, ' ') }]
-  if (document.category === 'evidence') return [{ text: 'not identified', tone: 'warn' }]
+  if (type) return [{ text: sentenceCase(type) }]
+  if (document.category === 'evidence') return [{ text: 'Type not identified', tone: 'warn' }]
   return []
 }

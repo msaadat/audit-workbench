@@ -19,20 +19,20 @@ const lastIndex = computed(() => visible.value.length - 1)
 // the status the entry now carries; entries written before it was recorded have
 // none, and keep the tick they were shown with.
 const SETTLED_ICONS: Record<string, string> = {
-  failed: 'pi pi-times-circle',
-  cancelled: 'pi pi-ban',
-  blocked: 'pi pi-lock',
-  review_required: 'pi pi-pause-circle',
-  skipped: 'pi pi-minus-circle',
+  failed: 'aw-icon aw-icon-circle-x',
+  cancelled: 'aw-icon aw-icon-ban',
+  blocked: 'aw-icon aw-icon-lock',
+  review_required: 'aw-icon aw-icon-circle-pause',
+  skipped: 'aw-icon aw-icon-circle-minus',
 }
 
 function icon(entry: AgentNarrationEntry, current: boolean) {
-  if (current) return 'pi pi-spin pi-spinner'
+  if (current) return 'aw-icon aw-icon-spin aw-icon-loader-circle'
   // A repair is work being redone, not progress being made. It reads as its own
   // kind of line so a reader can tell a stage that struggled from one that ran.
-  if (entry.kind === 'repair') return 'pi pi-wrench'
-  if (entry.kind !== 'stage_settled') return 'pi pi-angle-right'
-  return SETTLED_ICONS[entry.status ?? ''] ?? 'pi pi-check'
+  if (entry.kind === 'repair') return 'aw-icon aw-icon-wrench'
+  if (entry.kind !== 'stage_settled') return 'aw-icon aw-icon-chevron-right'
+  return SETTLED_ICONS[entry.status ?? ''] ?? 'aw-icon aw-icon-check'
 }
 
 function tone(entry: AgentNarrationEntry) {

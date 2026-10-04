@@ -100,10 +100,10 @@ const STATE_BY_STATUS: Record<string, SpineState> = {
 }
 
 const UNIT_ICONS: Record<WorkflowUnitStatus, string> = {
-  queued: 'pi pi-circle', running: 'pi pi-spin pi-spinner', succeeded: 'pi pi-check-circle',
-  failed: 'pi pi-times-circle', blocked: 'pi pi-lock', awaiting_input: 'pi pi-pause-circle',
-  awaiting_confirmation: 'pi pi-user-edit', conflict: 'pi pi-exclamation-triangle',
-  skipped: 'pi pi-minus-circle', cancelled: 'pi pi-ban',
+  queued: 'aw-icon aw-icon-circle', running: 'aw-icon aw-icon-spin aw-icon-loader-circle', succeeded: 'aw-icon aw-icon-circle-check',
+  failed: 'aw-icon aw-icon-circle-x', blocked: 'aw-icon aw-icon-lock', awaiting_input: 'aw-icon aw-icon-circle-pause',
+  awaiting_confirmation: 'aw-icon aw-icon-user-pen', conflict: 'aw-icon aw-icon-triangle-alert',
+  skipped: 'aw-icon aw-icon-circle-minus', cancelled: 'aw-icon aw-icon-ban',
 }
 
 /**
@@ -271,7 +271,7 @@ const note = computed(() => {
           <span class="cap" :title="row.title">{{ row.title }}</span>
           <span v-if="row.attention" class="attention" :title="`${plural(row.attention, 'item')} ${verb(row.attention)} attention`">{{ row.attention }}</span>
           <span v-else-if="row.count" class="n">{{ row.count }}</span>
-          <i class="chevron" :class="isOpen(row) ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" aria-hidden="true" />
+          <i class="chevron" :class="isOpen(row) ? 'aw-icon aw-icon-chevron-up' : 'aw-icon aw-icon-chevron-down'" aria-hidden="true" />
         </button>
         <p v-if="row.waitingOn" class="detail">Waiting on {{ row.waitingOn }}.</p>
         <p v-else-if="row.reason" class="detail">{{ row.reason }}</p>
@@ -280,7 +280,7 @@ const note = computed(() => {
              its status, its attempts and the error it stopped on. -->
         <div v-if="isOpen(row)" class="units">
           <div v-for="unit in row.units" :key="unit.id" class="unit" :class="unit.status">
-            <i :class="UNIT_ICONS[unit.status] ?? 'pi pi-circle'" aria-hidden="true" />
+            <i :class="UNIT_ICONS[unit.status] ?? 'aw-icon aw-icon-circle'" aria-hidden="true" />
             <span>
               <b>{{ unit.title }}</b>
               <small>{{ unit.status.replaceAll('_', ' ') }}<template v-if="unit.attempts"> · attempt {{ unit.attempts }}</template></small>
@@ -315,7 +315,7 @@ const note = computed(() => {
     </details>
 
     <!-- Why the agent skipped work is as much a part of the plan as what it ran. -->
-    <p v-if="reused" class="reused"><i class="pi pi-history" /> Reused {{ reused }}.</p>
+    <p v-if="reused" class="reused"><i class="aw-icon aw-icon-history" /> Reused {{ reused }}.</p>
   </aside>
 </template>
 

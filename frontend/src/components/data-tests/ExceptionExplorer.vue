@@ -359,7 +359,7 @@ function clear(label: string) {
 .table { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
 /* The identifiers are figures and the header labels them; the frame's own
    header ran a size larger than the cells it names. */
-.table :deep(th) { font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.table :deep(th) { font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.5; }
 
 @container master-detail-content (max-width: 34rem) {

@@ -77,14 +77,14 @@ const elapsedText = computed(() => (tick.value ? formatElapsed(Math.round(tick.v
 <template>
   <div v-if="working" class="plan-strip">
     <div class="line">
-      <i class="pi pi-spin pi-spinner" aria-hidden="true" />
+      <i class="aw-icon aw-icon-spin aw-icon-loader-circle" aria-hidden="true" />
       <span class="stage">{{ stage }}</span>
       <span class="position aw-figure">
         <template v-if="position">{{ position }}</template>
         <template v-if="position && elapsedText"> · </template>{{ elapsedText }}
       </span>
       <button type="button" class="more" :aria-expanded="open" @click="open = !open">
-        Plan<i class="pi" :class="open ? 'pi-chevron-up' : 'pi-chevron-down'" aria-hidden="true" />
+        Plan<i class="aw-icon" :class="open ? 'aw-icon-chevron-up' : 'aw-icon-chevron-down'" aria-hidden="true" />
       </button>
     </div>
     <!-- In place, not in a modal: the plan qualifies the transcript under it. -->
@@ -95,10 +95,10 @@ const elapsedText = computed(() => (tick.value ? formatElapsed(Math.round(tick.v
 <style scoped>
 .plan-strip { flex: none; border-bottom: 1px solid var(--aw-border); background: var(--aw-raised); }
 .line { display: flex; align-items: center; gap: .5rem; min-height: 2.25rem; padding: 0 .75rem; }
-.line .pi-spinner { color: var(--aw-teal); font-size: .7rem; }
+.line .aw-icon-loader-circle { color: var(--aw-teal); font-size: .7rem; }
 .stage { flex: none; color: var(--aw-ink-strong); font-size: var(--aw-text-xs); font-weight: 600; }
 .position { flex: 1; min-width: 0; overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-2xs); text-overflow: ellipsis; white-space: nowrap; }
 .more { display: inline-flex; align-items: center; gap: .25rem; padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-2xs); font-weight: 600; cursor: pointer; }
-.more .pi { font-size: .55rem; }
+.more .aw-icon { font-size: .55rem; }
 .unfolded { max-height: 18rem; overflow-y: auto; border-top: 1px solid var(--aw-border); }
 </style>

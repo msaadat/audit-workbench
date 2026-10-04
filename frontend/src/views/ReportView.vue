@@ -68,7 +68,7 @@ const badges = computed(() => {
   const excluded = context.value?.draft_findings_excluded?.length ?? 0
   if (!excluded) return {}
   const section = entries.value.find(entry => /detailed finding/i.test(entry.text))
-  return section ? { [section.id]: 'excluded' } : {}
+  return section ? { [section.id]: 'Excluded' } : {}
 })
 
 /**
@@ -225,9 +225,9 @@ function startReport() {
 }
 
 const menuItems = computed(() => [
-  { label: 'Editorial review', icon: 'pi pi-sparkles', disabled: busy.value, command: () => void check(true) },
-  { label: 'Report template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
-  { label: 'Copy Markdown', icon: 'pi pi-copy', disabled: !hasContent.value, command: () => void copy() },
+  { label: 'Editorial review', icon: 'aw-icon aw-icon-sparkles', disabled: busy.value, command: () => void check(true) },
+  { label: 'Report template', icon: 'aw-icon aw-icon-file-pen', command: () => void openTemplate() },
+  { label: 'Copy Markdown', icon: 'aw-icon aw-icon-copy', disabled: !hasContent.value, command: () => void copy() },
 ])
 
 const REPORTED_STATISTICS: Array<{ key: string; label: string; tone?: 'warn' }> = [
@@ -275,13 +275,13 @@ function runStrip(issue: ReportQualityIssue) {
       <span class="grow" />
       <template v-if="reconcile">
         <Button label="Keep current" size="small" outlined severity="secondary" :loading="busy" @click="settle('keep')" />
-        <Button label="Use generated" icon="pi pi-check" size="small" :loading="busy" @click="settle('replace')" />
+        <Button label="Use generated" icon="aw-icon aw-icon-check" size="small" :loading="busy" @click="settle('replace')" />
       </template>
       <template v-else>
         <Button
           v-if="hasContent"
           :label="editing ? 'Done' : 'Edit'"
-          :icon="editing ? 'pi pi-check' : 'pi pi-pencil'"
+          :icon="editing ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-pencil'"
           size="small"
           outlined
           severity="secondary"
@@ -291,7 +291,7 @@ function runStrip(issue: ReportQualityIssue) {
         <Button
           v-if="hasContent"
           label="Check quality"
-          icon="pi pi-check-circle"
+          icon="aw-icon aw-icon-circle-check"
           size="small"
           outlined
           severity="secondary"
@@ -301,16 +301,20 @@ function runStrip(issue: ReportQualityIssue) {
         <Button
           v-if="editing"
           label="Save"
-          icon="pi pi-save"
+          icon="aw-icon aw-icon-save"
           size="small"
           :loading="busy"
           @click="save(true)"
         />
+        <!-- As on the memorandum: the empty state offers the first draft,
+             and once there is one a regeneration is offered, not filled. -->
         <Button
-          v-else
+          v-else-if="hasContent"
           :label="report.generated_at ? 'Regenerate' : 'Generate report'"
-          icon="pi pi-sparkles"
+          icon="aw-icon aw-icon-sparkles"
           size="small"
+          outlined
+          severity="secondary"
           :loading="busy"
           @click="generate"
         />
@@ -320,12 +324,12 @@ function runStrip(issue: ReportQualityIssue) {
 
     <UiEmptyState
       v-if="!hasContent && !reconcile"
-      icon="pi pi-file-edit"
+      icon="aw-icon aw-icon-file-pen"
       title="No report drafted yet"
       description="The draft is written from the audit file: the confirmed findings, the tests behind them, and the scope limitations recorded during fieldwork. Every figure it states is checked against the register."
     >
-      <Button label="Generate report" icon="pi pi-sparkles" :loading="busy" @click="generate" />
-      <Button label="Write it myself" icon="pi pi-pencil" outlined @click="startReport" />
+      <Button label="Generate report" icon="aw-icon aw-icon-sparkles" :loading="busy" @click="generate" />
+      <Button label="Write it myself" icon="aw-icon aw-icon-pencil" outlined @click="startReport" />
     </UiEmptyState>
 
     <template v-else>
@@ -477,7 +481,7 @@ function runStrip(issue: ReportQualityIssue) {
       <Textarea v-if="template" v-model="template.markdown" rows="24" spellcheck="false" class="template-editor" />
       <div class="template-foot">
         <Button label="Restore default" severity="secondary" text size="small" @click="saveTemplate(true)" />
-        <Button label="Save override" icon="pi pi-save" size="small" @click="saveTemplate(false)" />
+        <Button label="Save override" icon="aw-icon aw-icon-save" size="small" @click="saveTemplate(false)" />
       </div>
     </Drawer>
   </div>
@@ -486,9 +490,6 @@ function runStrip(issue: ReportQualityIssue) {
 <style scoped>
 .report { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 
 /* The editor fills the column and scrolls inside itself. Given a fixed height

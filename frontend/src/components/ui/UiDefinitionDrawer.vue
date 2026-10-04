@@ -47,7 +47,7 @@ const emit = defineEmits<{ save: [run: boolean] }>()
           <strong>{{ title }}</strong>
         </div>
         <button type="button" class="close" aria-label="Close" @click="visible = false">
-          <i class="pi pi-times" />
+          <i class="aw-icon aw-icon-x" />
         </button>
       </header>
 
@@ -68,7 +68,7 @@ const emit = defineEmits<{ save: [run: boolean] }>()
         />
         <Button
           :label="props.editing ? 'Save and run' : 'Create and run'"
-          icon="pi pi-play"
+          icon="aw-icon aw-icon-play"
           size="small"
           :loading="saving || running"
           :disabled="!ready"

@@ -196,7 +196,7 @@ void loadTests()
 .selected span, .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .selected button { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-size: var(--aw-text-sm); font-weight: 600; }
 .parameters { display: flex; flex-direction: column; gap: 0.55rem; }
-.parameters-head { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.parameters-head { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .parameter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.7rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label small { color: var(--aw-muted); font-weight: 400; }

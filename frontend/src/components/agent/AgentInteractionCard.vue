@@ -75,7 +75,7 @@ function readablePreview(value: unknown) {
     <small v-if="interaction.policy_reason">{{ interaction.policy_reason }}</small>
     <details v-if="detail && !resolved" class="technical"><summary>Technical comparison</summary><pre>{{ JSON.stringify(detail, null, 2) }}</pre></details>
 
-    <div v-if="resolved" class="resolution"><i class="pi pi-check-circle" /> {{ resolvedSummary }}</div>
+    <div v-if="resolved" class="resolution"><i class="aw-icon aw-icon-circle-check" /> {{ resolvedSummary }}</div>
 
     <template v-else-if="interaction.type === 'clarification'">
       <Textarea v-model="text" rows="2" autoResize placeholder="Provide the missing detail…" />
@@ -117,7 +117,7 @@ function readablePreview(value: unknown) {
       <details v-if="interaction.payload.preview" class="technical"><summary>Removal details</summary><pre>{{ JSON.stringify(interaction.payload.preview, null, 2) }}</pre></details>
       <div class="buttons">
         <Button label="Keep it" severity="secondary" outlined size="small" :disabled="busy" @click="emit('respond', { decision: 'reject' })" />
-        <Button label="Confirm removal" severity="danger" size="small" :loading="busy" @click="emit('respond', { decision: 'approve' })" />
+        <Button label="Confirm removal" severity="danger" outlined size="small" :loading="busy" @click="emit('respond', { decision: 'approve' })" />
       </div>
     </template>
 

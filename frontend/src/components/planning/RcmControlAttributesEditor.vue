@@ -192,7 +192,7 @@ function remove(index: number) {
 
 <template>
   <section class="attributes">
-    <div class="heading"><div><strong>Control attributes</strong><small>A transaction-cycle requirement states what must agree, written against the fields this engagement's documents carry.</small></div><Button label="Add attribute" icon="pi pi-plus" size="small" outlined @click="add" /></div>
+    <div class="heading"><div><strong>Control attributes</strong><small>A transaction-cycle requirement states what must agree, written against the fields this engagement's documents carry.</small></div><Button label="Add attribute" icon="aw-icon aw-icon-plus" size="small" outlined @click="add" /></div>
     <article v-for="(attribute, index) in modelValue" :key="index" class="attribute">
       <label>Key<InputText :modelValue="attribute.key" @update:modelValue="replace(index, { key: $event })" /></label>
       <label>Assertion<Select :modelValue="attribute.assertion" :options="assertions" @update:modelValue="replace(index, { assertion: $event })" /></label>
@@ -208,7 +208,7 @@ function remove(index: number) {
               comparison that is merely nearby proves something else.
             </small>
           </div>
-          <Button label="Add comparison" icon="pi pi-plus" size="small" outlined :disabled="!documentTypeOptions.length" @click="addComparison(index)" />
+          <Button label="Add comparison" icon="aw-icon aw-icon-plus" size="small" outlined :disabled="!documentTypeOptions.length" @click="addComparison(index)" />
         </div>
         <small v-if="!documentTypeOptions.length" class="warn">
           No document type has an induced schema yet, so there are no fields to
@@ -231,7 +231,7 @@ function remove(index: number) {
             <span />
           </template>
           <label class="wide">What these fields must show<InputText :modelValue="comparison.rationale ?? ''" @update:modelValue="replaceComparison(index, comparisonIndex, { rationale: String($event) })" /></label>
-          <Button icon="pi pi-trash" label="Remove comparison" text severity="danger" size="small" @click="removeComparison(index, comparisonIndex)" />
+          <Button icon="aw-icon aw-icon-trash-2" label="Remove comparison" text severity="danger" size="small" @click="removeComparison(index, comparisonIndex)" />
         </article>
         <small v-if="!comparisons(attribute).length && documentTypeOptions.length" class="note">
           Which fields must agree is decided by the cycle design, against this
@@ -241,7 +241,7 @@ function remove(index: number) {
         </small>
       </section>
 
-      <Button icon="pi pi-trash" label="Remove" text severity="danger" size="small" :disabled="modelValue.length <= 1" @click="remove(index)" />
+      <Button icon="aw-icon aw-icon-trash-2" label="Remove" text severity="danger" size="small" :disabled="modelValue.length <= 1" @click="remove(index)" />
     </article>
   </section>
 </template>

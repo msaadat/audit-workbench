@@ -34,37 +34,37 @@ const META: Record<AnalysisSummaryClassification, ClassificationMeta> = {
   exception: {
     label: 'Exception',
     severity: 'danger',
-    icon: 'pi pi-times-circle',
+    icon: 'aw-icon aw-icon-circle-x',
     hint: 'This procedure concluded that the population contains exceptions.',
   },
   unusual: {
     label: 'Need review',
     severity: 'warn',
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     hint: 'This procedure returned something worth a look, short of an exception.',
   },
   execution_error: {
     label: 'Blocked',
     severity: 'danger',
-    icon: 'pi pi-ban',
+    icon: 'aw-icon aw-icon-ban',
     hint: 'The definition could not run. Fix the spec, then run it again.',
   },
   not_run: {
     label: 'Not run',
     severity: 'secondary',
-    icon: 'pi pi-clock',
+    icon: 'aw-icon aw-icon-clock',
     hint: 'This procedure has never been executed, so it has concluded nothing.',
   },
   clear: {
     label: 'No exception',
     severity: 'success',
-    icon: 'pi pi-check-circle',
+    icon: 'aw-icon aw-icon-circle-check',
     hint: 'This procedure ran and found nothing to report.',
   },
   informational: {
     label: 'Informational',
     severity: 'info',
-    icon: 'pi pi-info-circle',
+    icon: 'aw-icon aw-icon-info',
     hint: 'This procedure returns context rather than a pass/fail conclusion.',
   },
 }
@@ -93,8 +93,8 @@ export const BUCKET_CLASSIFICATIONS: Record<string, AnalysisSummaryClassificatio
  */
 const FRESHNESS: Record<AnalysisResultState, { label: string; icon: string } | null> = {
   current: null,
-  stale: { label: 'Rerun required', icon: 'pi pi-refresh' },
-  not_run: { label: 'Not run', icon: 'pi pi-clock' },
+  stale: { label: 'Rerun required', icon: 'aw-icon aw-icon-refresh-cw' },
+  not_run: { label: 'Not run', icon: 'aw-icon aw-icon-clock' },
 }
 
 export function freshnessMeta(state: AnalysisResultState) {
@@ -118,12 +118,12 @@ export function provenance(
 ): { icon: string; label: string } {
   if (analysis.kind === 'python') {
     return analysis.source === 'code'
-      ? { icon: 'pi pi-code', label: 'Custom code' }
-      : { icon: 'pi pi-sparkles', label: 'Assistant code' }
+      ? { icon: 'aw-icon aw-icon-code', label: 'Custom code' }
+      : { icon: 'aw-icon aw-icon-sparkles', label: 'Assistant code' }
   }
   return analysis.source === 'ai'
-    ? { icon: 'pi pi-sparkles', label: 'Assistant test' }
-    : { icon: 'pi pi-book', label: 'Library test' }
+    ? { icon: 'aw-icon aw-icon-sparkles', label: 'Assistant test' }
+    : { icon: 'aw-icon aw-icon-book-open', label: 'Library test' }
 }
 
 /**

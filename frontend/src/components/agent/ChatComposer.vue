@@ -128,17 +128,17 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
         </li>
       </ul>
       <div v-if="selectedIds.length" class="chips">
-        <span v-for="id in selectedIds" :key="id"><i class="pi pi-file" />{{ label(id) }}<button :aria-label="`Remove ${label(id)}`" @click="emit('removeDocument', id)"><i class="pi pi-times" /></button></span>
+        <span v-for="id in selectedIds" :key="id"><i class="aw-icon aw-icon-file" />{{ label(id) }}<button :aria-label="`Remove ${label(id)}`" @click="emit('removeDocument', id)"><i class="aw-icon aw-icon-x" /></button></span>
       </div>
       <!-- Stays enabled while busy so the next message can be drafted during a long reply. -->
       <Textarea ref="textareaRef" v-model="draft" rows="1" autoResize :placeholder="placeholder" @keydown="keydown" />
       <div class="toolbar">
-        <Button class="control" icon="pi pi-paperclip" label="Context" outlined size="small" severity="secondary" @click="emit('documents')" />
-        <Button class="control mode" :label="modeLabel" icon="pi pi-angle-down" iconPos="right" outlined size="small" severity="secondary" aria-haspopup="true" aria-controls="composer-mode-menu" @click="openModeMenu" />
+        <Button class="control" icon="aw-icon aw-icon-paperclip" label="Context" outlined size="small" severity="secondary" @click="emit('documents')" />
+        <Button class="control mode" :label="modeLabel" icon="aw-icon aw-icon-chevron-down" iconPos="right" outlined size="small" severity="secondary" aria-haspopup="true" aria-controls="composer-mode-menu" @click="openModeMenu" />
         <Menu id="composer-mode-menu" ref="modeMenu" :model="modeMenuItems" popup>
           <template #item="{ item, props: itemProps }">
             <a class="mode-item" v-bind="itemProps.action">
-              <i class="pi" :class="item.selected ? 'pi-check' : 'pi-circle'" aria-hidden="true" />
+              <i class="aw-icon" :class="item.selected ? 'aw-icon-check' : 'aw-icon-circle'" aria-hidden="true" />
               <span><strong>{{ item.label }}</strong><small>{{ item.hint }}</small></span>
             </a>
           </template>
@@ -146,8 +146,8 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
         <span class="grow" />
         <!-- Stopping a run is a first-class action, not something to hunt for
              inside an expanded card. -->
-        <Button v-if="runActive" icon="pi pi-stop-circle" size="small" severity="danger" outlined aria-label="Stop the run" @click="emit('stop')" />
-        <Button class="send" label="Send" icon="pi pi-send" iconPos="right" size="small" aria-label="Send" :loading="busy" :disabled="!canSend" @click="submit" />
+        <Button v-if="runActive" icon="aw-icon aw-icon-circle-stop" size="small" severity="danger" outlined aria-label="Stop the run" @click="emit('stop')" />
+        <Button class="send" label="Send" icon="aw-icon aw-icon-send" iconPos="right" size="small" aria-label="Send" :loading="busy" :disabled="!canSend" @click="submit" />
       </div>
     </div>
   </div>

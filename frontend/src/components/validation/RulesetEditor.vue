@@ -192,7 +192,7 @@ function confirmDelete() {
   confirm.require({
     header: 'Delete rule set',
     message: `Delete "${props.ruleset.title}"?`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -340,7 +340,7 @@ function fail(summary: string, error: unknown) {
     />
     <SplitButton
       label="Run"
-      icon="pi pi-play"
+      icon="aw-icon aw-icon-play"
       size="small"
       :model="runAgainstItems"
       :disabled="!table || rules.length === 0"
@@ -350,7 +350,7 @@ function fail(summary: string, error: unknown) {
     />
     <Button
       label="Save"
-      icon="pi pi-save"
+      icon="aw-icon aw-icon-save"
       size="small"
       :disabled="!dirty"
       :loading="saving"
@@ -358,7 +358,7 @@ function fail(summary: string, error: unknown) {
     />
     <Button
       label="Report"
-      icon="pi pi-file-excel"
+      icon="aw-icon aw-icon-file-spreadsheet"
       severity="secondary"
       size="small"
       :disabled="rules.length === 0"
@@ -368,7 +368,7 @@ function fail(summary: string, error: unknown) {
     />
     <Button
       v-if="ruleset"
-      icon="pi pi-trash"
+      icon="aw-icon aw-icon-trash-2"
       severity="danger"
       text
       size="small"
@@ -378,7 +378,7 @@ function fail(summary: string, error: unknown) {
   </div>
 
   <p v-if="dirty" class="muted dirty-hint">
-    <i class="pi pi-circle-fill" /> Unsaved changes — Run uses the current draft.
+    <i class="aw-icon aw-icon-dot-fill" /> Unsaved changes — Run uses the current draft.
   </p>
 
   <template v-if="view === 'rules'">
@@ -389,7 +389,7 @@ function fail(summary: string, error: unknown) {
       <div class="suggest-bar">
         <Button
           label="Suggest checks"
-          icon="pi pi-lightbulb"
+          icon="aw-icon aw-icon-lightbulb"
           severity="secondary"
           outlined
           size="small"

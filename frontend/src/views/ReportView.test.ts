@@ -101,7 +101,7 @@ describe('ReportView', () => {
     ])
     expect(entries).toContain('… 2 more')
     // The excluded findings are marked where the reader meets them.
-    expect(wrapper.find('.outline .badge').text()).toBe('excluded')
+    expect(wrapper.find('.outline .badge').text()).toBe('Excluded')
   })
 
   it('attaches each report issue to the heading it is about', async () => {

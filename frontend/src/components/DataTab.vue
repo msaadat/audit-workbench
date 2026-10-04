@@ -269,7 +269,7 @@ function removeTable() {
     message: table.kind === 'join'
       ? `Remove join "${table.name}"?`
       : `Remove "${table.name}" and delete its file from the workspace?`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Remove', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -295,11 +295,11 @@ async function download() {
 }
 
 const menuItems = computed(() => [
-  { label: 'Rename', icon: 'pi pi-pencil', disabled: !selectedTable.value, command: startRename },
-  { label: 'Profile again', icon: 'pi pi-refresh', disabled: !selectedTable.value, command: () => void reprofile() },
-  { label: 'Export table', icon: 'pi pi-download', disabled: !selectedTable.value, command: () => void download() },
+  { label: 'Rename', icon: 'aw-icon aw-icon-pencil', disabled: !selectedTable.value, command: startRename },
+  { label: 'Profile again', icon: 'aw-icon aw-icon-refresh-cw', disabled: !selectedTable.value, command: () => void reprofile() },
+  { label: 'Export table', icon: 'aw-icon aw-icon-download', disabled: !selectedTable.value, command: () => void download() },
   { separator: true },
-  { label: 'Remove', icon: 'pi pi-trash', disabled: !selectedTable.value, command: removeTable },
+  { label: 'Remove', icon: 'aw-icon aw-icon-trash-2', disabled: !selectedTable.value, command: removeTable },
 ])
 
 function toggleExpanded(column: string) {
@@ -343,14 +343,14 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
       <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
       <Button
         label="Add join"
-        icon="pi pi-link"
+        icon="aw-icon aw-icon-link"
         size="small"
         outlined
         severity="secondary"
         :disabled="tables.length < 2"
         @click="joinOpen = true"
       />
-      <Button label="Add files" icon="pi pi-upload" size="small" @click="emit('import-requested')" />
+      <Button label="Add files" icon="aw-icon aw-icon-upload" size="small" @click="emit('import-requested')" />
       <UiOverflowMenu :items="menuItems" tooltip="More table actions" />
     </header>
 
@@ -369,7 +369,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
       <section class="list-panel">
         <div class="list-head">
           <IconField>
-            <InputIcon class="pi pi-search" />
+            <InputIcon class="aw-icon aw-icon-search" />
             <InputText v-model="search" size="small" placeholder="Filter tables" />
           </IconField>
         </div>
@@ -420,7 +420,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
           <Button
             v-if="selectedTable.kind !== 'join'"
             label="Replace data"
-            icon="pi pi-sync"
+            icon="aw-icon aw-icon-refresh-ccw"
             size="small"
             outlined
             severity="secondary"
@@ -465,7 +465,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 
           <template #actions>
             <template v-if="selectedTable.error">
-              <Button label="Replace data" icon="pi pi-sync" size="small" :loading="replacing" @click="startReplace(selectedTable)" />
+              <Button label="Replace data" icon="aw-icon aw-icon-refresh-ccw" size="small" :loading="replacing" @click="startReplace(selectedTable)" />
             </template>
             <template v-else-if="rules.length">
               <span class="rules aw-figure">{{ plural(rules.length, 'rule set') }}</span>
@@ -498,7 +498,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
         </nav>
 
         <template v-if="tab === 'profile'">
-          <p v-if="profiling" class="note"><i class="pi pi-spinner pi-spin" /> Profiling {{ selected }}…</p>
+          <p v-if="profiling" class="note"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Profiling {{ selected }}…</p>
           <template v-else-if="profile">
             <p class="note aw-figure">
               Statistics are computed on
@@ -517,7 +517,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
                   <tr :class="{ untested: coverage && !testsFor(column.name).length }">
                     <td class="expander">
                       <button type="button" :aria-expanded="expanded.has(column.name)" @click="toggleExpanded(column.name)">
-                        <i class="pi" :class="expanded.has(column.name) ? 'pi-chevron-down' : 'pi-chevron-right'" />
+                        <i class="aw-icon" :class="expanded.has(column.name) ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />
                       </button>
                     </td>
                     <td>
@@ -536,7 +536,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
                       <template v-if="!coverage"><span class="muted">—</span></template>
                       <template v-else-if="testsFor(column.name).length">
                         <button type="button" class="tests" @click="openTest(testsFor(column.name)[0])">
-                          <i class="pi pi-check" aria-hidden="true" />{{ plural(testsFor(column.name).length, 'test') }}
+                          <i class="aw-icon aw-icon-check" aria-hidden="true" />{{ plural(testsFor(column.name).length, 'test') }}
                         </button>
                       </template>
                       <span v-else class="none">None</span>
@@ -561,7 +561,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
         </template>
 
         <template v-else-if="tab === 'preview'">
-          <p v-if="previewLoading" class="note"><i class="pi pi-spinner pi-spin" /> Loading rows…</p>
+          <p v-if="previewLoading" class="note"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Loading rows…</p>
           <FrameTable v-else-if="preview" :frame="preview.frame" scrollHeight="28rem" />
           <p v-else class="note">No rows to show.</p>
         </template>
@@ -585,19 +585,19 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
             <span class="name">{{ join.name }}</span>
             <span class="meta aw-figure">{{ tableMeta(join, facts) }}</span>
           </button>
-          <Button label="Add join" icon="pi pi-link" size="small" outlined severity="secondary" class="add-join" @click="joinOpen = true" />
+          <Button label="Add join" icon="aw-icon aw-icon-link" size="small" outlined severity="secondary" class="add-join" @click="joinOpen = true" />
         </template>
       </section>
-      <UiEmptyState v-else icon="pi pi-table" title="No table selected" description="Select a table to profile it." />
+      <UiEmptyState v-else icon="aw-icon aw-icon-table" title="No table selected" description="Select a table to profile it." />
     </div>
 
     <UiEmptyState
       v-else
-      icon="pi pi-upload"
+      icon="aw-icon aw-icon-upload"
       title="Add engagement data"
       description="Import the populations the audit will test — invoices, purchase orders, payments — as CSV or Excel."
     >
-      <Button label="Choose files" icon="pi pi-upload" @click="emit('import-requested')" />
+      <Button label="Choose files" icon="aw-icon aw-icon-upload" @click="emit('import-requested')" />
     </UiEmptyState>
 
     <JoinDrawer v-model:visible="joinOpen" :workspace="workspace" @saved="emit('changed')" />
@@ -607,9 +607,6 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 <style scoped>
 .tables { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 
 .layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
@@ -621,7 +618,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 
 .group { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: .5rem .75rem .35rem; background: var(--aw-canvas); border-top: 1px solid var(--aw-border); }
 .list-body > section:first-child .group { border-top: 0; }
-.group-name { color: var(--aw-ink-strong); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.group-name { color: var(--aw-ink-strong); font-size: var(--aw-text-xs); font-weight: 600; }
 .group-count { color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 
 .row {
@@ -683,7 +680,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 .profile { width: 100%; border-collapse: collapse; font-size: var(--aw-text-sm); }
 .profile th {
   padding: .35rem .5rem; border-bottom: 1px solid var(--aw-border);
-  color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs);
+  color: var(--aw-muted); font-size: var(--aw-text-2xs);
   font-weight: 600; letter-spacing: .06em; text-align: left; text-transform: uppercase;
 }
 .profile td { padding: .4rem .5rem; border-bottom: 1px solid var(--aw-border); color: var(--aw-ink); vertical-align: middle; }

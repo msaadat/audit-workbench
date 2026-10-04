@@ -43,7 +43,7 @@ function remove(ws: WorkspaceListItem) {
   confirm.require({
     header: 'Delete workspace',
     message: `Delete "${ws.name}" and all its data files? This cannot be undone.`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -56,7 +56,7 @@ function remove(ws: WorkspaceListItem) {
 function workspaceActions(ws: WorkspaceListItem): MenuItem[] {
   return [{
     label: `Delete ${ws.name}`,
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     command: () => remove(ws),
   }]
 }
@@ -74,7 +74,7 @@ onMounted(load)
       </div>
       <!-- One primary action per screen. While the list is empty the empty
            state below owns it; a hero button here made two. -->
-      <Button v-if="workspaces.length" label="New engagement" icon="pi pi-plus" @click="showCreate = true" />
+      <Button v-if="workspaces.length" label="New engagement" icon="aw-icon aw-icon-plus" @click="showCreate = true" />
     </div>
 
     <div v-if="loading" class="loading-grid">
@@ -82,11 +82,11 @@ onMounted(load)
     </div>
     <div v-else-if="workspaces.length === 0" class="empty-state">
       <div>
-        <span class="empty-state-icon"><i class="pi pi-folder-open" /></span>
+        <span class="empty-state-icon"><i class="aw-icon aw-icon-folder-open" /></span>
         <h3>Start your first engagement</h3>
         <p>Name it, point it at the audit folder, and the assistant proposes the plan before it changes anything.</p>
-        <Button label="New engagement" icon="pi pi-plus" @click="showCreate = true" />
-        <p class="empty-aside"><a href="/about.html">Why this exists <i class="pi pi-arrow-up-right" /></a></p>
+        <Button label="New engagement" icon="aw-icon aw-icon-plus" @click="showCreate = true" />
+        <p class="empty-aside"><a href="/about.html">Why this exists <i class="aw-icon aw-icon-arrow-up-right" /></a></p>
       </div>
     </div>
 
@@ -94,16 +94,16 @@ onMounted(load)
       <Card v-for="ws in workspaces" :key="ws.id" class="ws-card" @click="router.push(`/workspace/${ws.id}`)">
         <template #title>
           <div class="card-title">
-            <span class="workspace-icon"><i class="pi pi-briefcase" /></span>
+            <span class="workspace-icon"><i class="aw-icon aw-icon-briefcase" /></span>
             <span class="workspace-name">{{ ws.name }}</span>
-            <i class="pi pi-arrow-up-right card-arrow" />
+            <i class="aw-icon aw-icon-arrow-up-right card-arrow" />
           </div>
         </template>
         <template #content>
           <p v-if="ws.description" class="desc">{{ ws.description }}</p>
           <div class="workspace-meta">
-            <span><i class="pi pi-database" /> {{ ws.table_count }} table{{ ws.table_count === 1 ? '' : 's' }}</span>
-            <span><i class="pi pi-calendar" /> Created {{ ws.created || '—' }}</span>
+            <span><i class="aw-icon aw-icon-database" /> {{ ws.table_count }} table{{ ws.table_count === 1 ? '' : 's' }}</span>
+            <span><i class="aw-icon aw-icon-calendar" /> Created {{ ws.created || '—' }}</span>
           </div>
         </template>
         <template #footer>

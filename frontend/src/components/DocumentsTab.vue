@@ -29,7 +29,7 @@ import {
   DOCUMENT_CHIPS, documentMeta, documentTone, documentsStatus, filterDocuments,
 } from './documents/documentsStatus'
 import type { DocumentsFilter } from './documents/documentsStatus'
-import { plural } from '../format'
+import { plural, sentenceCase } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
@@ -295,22 +295,22 @@ function toggleFind() {
   void nextTick(() => (findInput.value?.$el as HTMLInputElement | undefined)?.focus?.())
 }
 const secondaryActions = computed<MenuItem[]>(() => [
-  { label: 'Reindex search', icon: 'pi pi-sync', command: () => void reindexAll() },
-  { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
+  { label: 'Reindex search', icon: 'aw-icon aw-icon-refresh-ccw', command: () => void reindexAll() },
+  { label: 'Methodology knowledge', icon: 'aw-icon aw-icon-book-open', command: () => void openKnowledge() },
   // Server-wide assistant configuration, so an administrator's to set. A
   // non-admin still needs to know whether it is available, which the label says.
   {
     label: canConfigureVision.value
       ? (visionAvailable.value ? 'Vision profile' : 'Configure vision')
       : (visionAvailable.value ? 'Vision configured' : 'Vision not configured'),
-    icon: visionAvailable.value ? 'pi pi-eye' : 'pi pi-cog',
+    icon: visionAvailable.value ? 'aw-icon aw-icon-eye' : 'aw-icon aw-icon-settings',
     disabled: !canConfigureVision.value,
     command: () => void openVisionSettings(),
   },
 ])
 const documentActions = computed<MenuItem[]>(() => [
-  { label: 'Re-extract text', icon: 'pi pi-refresh', command: () => void reextract() },
-  { label: 'Delete document', icon: 'pi pi-trash', command: () => remove() },
+  { label: 'Re-extract text', icon: 'aw-icon aw-icon-refresh-cw', command: () => void reextract() },
+  { label: 'Delete document', icon: 'aw-icon aw-icon-trash-2', command: () => remove() },
 ])
 
 async function openVisionSettings() {
@@ -619,7 +619,7 @@ function remove() {
   confirm.require({
     header: 'Delete document',
     message: `Delete "${doc.title}"? Existing evidence references will remain visibly stale.`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -730,28 +730,27 @@ onUnmounted(() => {
         aria-live="polite"
         v-tooltip.bottom="indexingDetail"
       >
-        <i class="pi pi-spin pi-spinner" />Indexing<template v-if="indexingProgress"> {{ indexingProgress }}</template>
+        <i class="aw-icon aw-icon-spin aw-icon-loader-circle" />Indexing<template v-if="indexingProgress"> {{ indexingProgress }}</template>
       </span>
-      <Button label="Add documents" icon="pi pi-plus" size="small" outlined severity="secondary" @click="emit('import-requested')" />
+      <Button label="Add documents" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="emit('import-requested')" />
       <Button
         v-if="unidentifiedCount"
         :label="`Identify ${unidentifiedCount}`"
-        icon="pi pi-question-circle"
+        icon="aw-icon aw-icon-circle-help"
         size="small"
-        severity="warn"
+        severity="secondary"
         outlined
         @click="typeReviewOpen = true"
       />
       <Button
         v-if="eligibleDocuments.length"
         :label="`Analyse ${eligibleDocuments.length}`"
-        icon="pi pi-sparkles"
+        icon="aw-icon aw-icon-sparkles"
         size="small"
-        severity="warn"
         :loading="analysisBusy"
         @click="batchAnalyze"
       />
-      <Button v-else label="Analyse all" icon="pi pi-sparkles" size="small" :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
+      <Button v-else label="Analyse all" icon="aw-icon aw-icon-sparkles" size="small" :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
       <UiOverflowMenu :items="secondaryActions" tooltip="More document actions" />
     </header>
 
@@ -770,7 +769,7 @@ onUnmounted(() => {
       <aside class="document-rail">
         <div class="rail-tools">
           <IconField>
-            <InputIcon class="pi pi-search" />
+            <InputIcon class="aw-icon aw-icon-search" />
             <InputText v-model="search" size="small" placeholder="Search documents" />
           </IconField>
           <!-- A link, not a full-width select: grouping is chosen once and
@@ -780,8 +779,8 @@ onUnmounted(() => {
         <div v-if="!filtered.length" class="rail-empty">No document matches this view.</div>
         <div v-for="group in groups" :key="group.key" class="doc-group">
           <button class="group-head" :aria-expanded="!collapsedGroups.has(group.key)" @click="toggleGroup(group.key)">
-            <i :class="collapsedGroups.has(group.key) ? 'pi pi-angle-right' : 'pi pi-angle-down'" />
-            <span class="group-name">{{ group.label }}</span>
+            <i :class="collapsedGroups.has(group.key) ? 'aw-icon aw-icon-chevron-right' : 'aw-icon aw-icon-chevron-down'" />
+            <span class="group-name">{{ sentenceCase(group.label) }}</span>
             <span class="group-count aw-figure">{{ group.items.length }}</span>
           </button>
           <template v-if="!collapsedGroups.has(group.key)">
@@ -795,7 +794,7 @@ onUnmounted(() => {
               <span class="dot" :data-tone="documentTone(doc, documentFacts)" aria-hidden="true" />
               <span class="doc-identity">
                 <span class="doc-name">{{ doc.source }}</span>
-                <span class="doc-meta aw-figure">
+                <span class="doc-meta">
                   <template v-for="(part, index) in documentMeta(doc, documentFacts)" :key="part.text">
                     <span v-if="index" aria-hidden="true"> · </span><span :data-tone="part.tone">{{ part.text }}</span>
                   </template>
@@ -805,7 +804,7 @@ onUnmounted(() => {
           </template>
         </div>
         <button v-if="search.trim()" class="rail-deep-search" @click="runContentSearch()">
-          <i class="pi pi-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
+          <i class="aw-icon aw-icon-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
         </button>
         <!-- The results of that search replace the list in place; the modal
              that used to hold them is retired. -->
@@ -816,7 +815,7 @@ onUnmounted(() => {
           </p>
           <button v-for="result in searchResults" :key="result.citation_id" class="rail-result" @click="openSearchResult(result)">
             <span class="doc-name">{{ result.title }}</span>
-            <span class="doc-meta aw-figure">page {{ result.page }}</span>
+            <span class="doc-meta">Page {{ result.page }}</span>
             <span class="excerpt">{{ result.excerpt }}</span>
           </button>
         </div>
@@ -847,11 +846,22 @@ onUnmounted(() => {
               @update:modelValue="updateClassification"
             />
           </label>
-          <Button label="Add to assistant" icon="pi pi-paperclip" size="small" outlined severity="secondary" @click="attachToAssistant" />
+          <!-- An icon, named by its tooltip: it is the one control on this row not
+               about the document's own state, and its label cost the row the
+               room `Mark reviewed` needed. -->
+          <Button
+            icon="aw-icon aw-icon-paperclip"
+            size="small"
+            outlined
+            severity="secondary"
+            aria-label="Add to assistant"
+            v-tooltip.bottom="'Add to assistant'"
+            @click="attachToAssistant"
+          />
           <Button
             v-if="selected.analysis_review_state === 'reviewed'"
             label="Reviewed"
-            icon="pi pi-check"
+            icon="aw-icon aw-icon-check"
             size="small"
             outlined
             severity="secondary"
@@ -860,7 +870,7 @@ onUnmounted(() => {
           <Button
             v-else
             label="Mark reviewed"
-            icon="pi pi-check"
+            icon="aw-icon aw-icon-check"
             size="small"
             :disabled="!analysis?.effective"
             :loading="analysisBusy"
@@ -879,7 +889,7 @@ onUnmounted(() => {
           </nav>
           <template v-if="view === 'preview'">
             <span v-if="showPageNav" class="page-nav">
-              <Button icon="pi pi-angle-left" text :disabled="currentPage <= 1" aria-label="Previous page" @click="currentPage--" /><span>Page {{ currentPage }} of {{ selected.pages || previewPages.length || 1 }}</span><Button icon="pi pi-angle-right" text :disabled="currentPage >= (selected.pages || previewPages.length || 1)" aria-label="Next page" @click="currentPage++" />
+              <Button icon="aw-icon aw-icon-chevron-left" text :disabled="currentPage <= 1" aria-label="Previous page" @click="currentPage--" /><span>Page {{ currentPage }} of {{ selected.pages || previewPages.length || 1 }}</span><Button icon="aw-icon aw-icon-chevron-right" text :disabled="currentPage >= (selected.pages || previewPages.length || 1)" aria-label="Next page" @click="currentPage++" />
             </span>
             <div v-if="hasOriginalView" class="source-toggle" role="group" aria-label="Preview mode">
               <button :class="{ active: sourceView === 'original' }" @click="sourceView = 'original'">Original</button>
@@ -887,7 +897,7 @@ onUnmounted(() => {
             </div>
             <Button
               label="Find"
-              icon="pi pi-search"
+              icon="aw-icon aw-icon-search"
               size="small"
               text
               :class="{ 'find-on': showDocumentSearch }"
@@ -900,12 +910,12 @@ onUnmounted(() => {
         <!-- The two states that need a sentence, in the fieldwork stale-strip
              form. Everything else about the analysis is on the row or the tab. -->
         <p v-if="selected.analysis_validity_state === 'stale'" class="strip warn">
-          <i class="pi pi-history" aria-hidden="true" />
+          <i class="aw-icon aw-icon-history" aria-hidden="true" />
           <span>The analysis was made against an earlier version of this file. Refresh it before relying on it.</span>
           <button type="button" :disabled="analysisBusy" @click="startAnalysis('refresh')">Refresh</button>
         </p>
         <p v-else-if="selected.candidate_analysis_id" class="strip info">
-          <i class="pi pi-clone" aria-hidden="true" />
+          <i class="aw-icon aw-icon-git-compare" aria-hidden="true" />
           <span>A refreshed analysis is waiting.</span>
           <button type="button" @click="view = 'analysis'; compareCandidate = true">Compare</button>
         </p>
@@ -918,13 +928,13 @@ onUnmounted(() => {
               placeholder="Search this document's text and transcripts"
               @keyup.enter="runContentSearch(selected ? [selected.id] : [])"
             />
-            <Button label="Search" icon="pi pi-search" severity="secondary" outlined :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
+            <Button label="Search" icon="aw-icon aw-icon-search" severity="secondary" outlined :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
           </div>
           <div v-if="sourceResults.length && sourceSearch" class="inline-search-results">
             <button v-for="result in sourceResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
           </div>
           <div v-if="current?.image_only && showTextView" class="scan-notice">
-            <i class="pi pi-image" />
+            <i class="aw-icon aw-icon-image" />
             <div>
               <strong>{{ selected.analysis_vision_used && selected.analysis_validity_state === 'current' ? 'Visual source—analysis available' : 'Visual source' }}</strong>
               <p v-if="selected.analysis_vision_used && selected.analysis_validity_state === 'current'">The extracted-text view is empty, but the current analysis includes an AI-derived visual transcription. Open the Analysis tab to review it.</p>
@@ -938,7 +948,7 @@ onUnmounted(() => {
           <pre v-else class="page-text">{{ current?.text || 'No extractable text on this page.' }}</pre>
           <details class="technical-details">
             <summary>Technical details</summary>
-            <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div><div v-if="selected.updated"><dt>Replaced</dt><dd>{{ selected.updated }}</dd></div></dl>
+            <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="aw-icon aw-icon-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="aw-icon aw-icon-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div><div v-if="selected.updated"><dt>Replaced</dt><dd>{{ selected.updated }}</dd></div></dl>
           </details>
         </div>
 
@@ -953,16 +963,16 @@ onUnmounted(() => {
               <Button
                 v-if="selected.text_state === 'extracted' || selected.text_state === 'partial'"
                 :label="fullVisualCoverage ? `Full visual coverage (max ${visualPageLimit})` : 'Text coverage only'"
-                :icon="fullVisualCoverage ? 'pi pi-images' : 'pi pi-file'"
+                :icon="fullVisualCoverage ? 'aw-icon aw-icon-images' : 'aw-icon aw-icon-file'"
                 size="small"
                 severity="secondary"
                 outlined
                 v-tooltip.bottom="`Opt in to visual analysis of text-bearing pages, bounded to ${visualPageLimit} pages for this document.`"
                 @click="fullVisualCoverage = !fullVisualCoverage"
               />
-              <Button v-if="!analysis?.generated" label="Analyse" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
-              <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" outlined :loading="analysisBusy" @click="startAnalysis('refresh')" v-tooltip.bottom="'Re-read this document under the vocabulary its type already carries.'" />
-              <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" outlined @click="compareCandidate = !compareCandidate" />
+              <Button v-if="!analysis?.generated" label="Analyse" icon="aw-icon aw-icon-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
+              <Button v-else label="Refresh" icon="aw-icon aw-icon-refresh-cw" size="small" severity="secondary" outlined :loading="analysisBusy" @click="startAnalysis('refresh')" v-tooltip.bottom="'Re-read this document under the vocabulary its type already carries.'" />
+              <Button v-if="analysis?.candidate" label="Compare candidate" icon="aw-icon aw-icon-git-compare" size="small" severity="secondary" outlined @click="compareCandidate = !compareCandidate" />
             </div>
           </div>
 
@@ -973,14 +983,14 @@ onUnmounted(() => {
                 ·
                 <button type="button" class="fields-link" @click="fieldsOpen = !fieldsOpen">
                   {{ selectedVocabulary.fields.length }} {{ selectedVocabulary.fields.length === 1 ? 'field' : 'fields' }}
-                  <i class="pi" :class="fieldsOpen ? 'pi-chevron-down' : 'pi-chevron-right'" />
+                  <i class="aw-icon" :class="fieldsOpen ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />
                 </button>
                 from {{ plural(selectedVocabulary.documents_read.length, 'document') }} ·
                 {{ selectedVocabulary.corroborated_fields ? `${selectedVocabulary.corroborated_fields} stated by two or more` : 'none stated by two' }}
               </span>
             </p>
             <p v-if="selectedVocabulary.thin" class="strip warn inline">
-              <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+              <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />
               <span>{{ thinReason(selectedVocabulary) }}</span>
               <button v-if="isEvidence" type="button" :disabled="analysisBusy" @click="startAnalysis('revise_vocabulary')">Revise vocabulary</button>
             </p>
@@ -1004,7 +1014,7 @@ onUnmounted(() => {
           </section>
 
           <div v-if="analysis?.status.analysis_coverage_state === 'partial'" class="coverage-warning">
-            <i class="pi pi-exclamation-triangle" />
+            <i class="aw-icon aw-icon-triangle-alert" />
             <div>
               <strong>Partial source coverage</strong>
               <p>Text pages: {{ analysis.effective?.coverage.text_analyzed_pages?.join(', ') || '—' }} · Visual pages: {{ analysis.effective?.coverage.vision_analyzed_pages?.join(', ') || '—' }}</p>
@@ -1014,9 +1024,9 @@ onUnmounted(() => {
               <p v-else>Omitted pages: {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}</p>
             </div>
           </div>
-          <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity. It remains available to agent context; refresh it before relying on it as current.</span></div>
+          <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="aw-icon aw-icon-history" /><span>This analysis belongs to an earlier source identity. It remains available to agent context; refresh it before relying on it as current.</span></div>
 
-          <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyse this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
+          <UiEmptyState v-if="!analysis?.effective" icon="aw-icon aw-icon-sparkles" title="Analyse this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
           <template v-else>
             <!-- A summary whose origin is the structured evidence is that
                  evidence written out as bullets: the same fields, the same
@@ -1049,12 +1059,12 @@ onUnmounted(() => {
               <header><div><h4 class="aw-label">Audit notes</h4><small>Freeform observations are not evidence that a control operated.</small></div><div><Button v-if="analysis.review.audit_notes_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('notes')" /></div></header>
               <MarkdownEditor v-model="notesDraft" />
             </section>
-            <div class="save-analysis"><Button :label="hasStructuredSummary ? 'Save notes' : 'Save edits'" icon="pi pi-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="pi pi-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
+            <div class="save-analysis"><Button :label="hasStructuredSummary ? 'Save notes' : 'Save edits'" icon="aw-icon aw-icon-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="aw-icon aw-icon-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
 
             <section v-if="compareCandidate && analysis.candidate" class="candidate-compare">
               <h4>Refresh candidate</h4>
               <div><article><strong>Current effective summary</strong><MarkdownView :markdown="summaryDraft" /></article><article><strong>Candidate summary</strong><MarkdownView :markdown="analysis.candidate.summary_markdown" /></article></div>
-              <div class="candidate-actions"><Button v-if="!hasStructuredSummary" label="Copy candidate summary into edits" severity="secondary" @click="summaryDraft = analysis.candidate.summary_markdown" /><Button label="Copy candidate notes into edits" severity="secondary" @click="notesDraft = analysis.candidate.audit_notes_markdown" /><Button label="Accept candidate as generated basis" icon="pi pi-check" @click="acceptCandidate" /></div>
+              <div class="candidate-actions"><Button v-if="!hasStructuredSummary" label="Copy candidate summary into edits" severity="secondary" @click="summaryDraft = analysis.candidate.summary_markdown" /><Button label="Copy candidate notes into edits" severity="secondary" @click="notesDraft = analysis.candidate.audit_notes_markdown" /><Button label="Accept candidate as generated basis" icon="aw-icon aw-icon-check" @click="acceptCandidate" /></div>
             </section>
 
             <section class="analysis-sources">
@@ -1093,20 +1103,20 @@ onUnmounted(() => {
         </div>
 
         <div v-else class="detail-content timeline">
-          <article v-for="item in activity" :key="item.id"><i class="pi pi-sparkles" /><div><strong>{{ item.purpose.replace('_', ' ') }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · response {{ item.response_hash || 'not available' }}</code></details></div></article>
+          <article v-for="item in activity" :key="item.id"><i class="aw-icon aw-icon-sparkles" /><div><strong>{{ item.purpose.replace('_', ' ') }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · response {{ item.response_hash || 'not available' }}</code></details></div></article>
           <p v-if="!activity.length" class="muted">No model activity references this document.</p>
         </div>
       </main>
-      <UiEmptyState v-else icon="pi pi-file" title="Choose a document" description="Select a document from the inventory to preview it." compact />
+      <UiEmptyState v-else icon="aw-icon aw-icon-file" title="Choose a document" description="Select a document from the inventory to preview it." compact />
     </div>
-    <UiEmptyState v-else icon="pi pi-file-plus" title="Add engagement documents" description="Upload policies, contracts, evidence, reports, and other files. Extraction happens locally.">
-      <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
+    <UiEmptyState v-else icon="aw-icon aw-icon-file-plus" title="Add engagement documents" description="Upload policies, contracts, evidence, reports, and other files. Extraction happens locally.">
+      <Button label="Add documents" icon="aw-icon aw-icon-plus" @click="emit('import-requested')" />
     </UiEmptyState>
 
     <Drawer v-model:visible="knowledgeOpen" position="right" header="Methodology knowledge" :style="{ width: 'min(45rem, 96vw)' }">
       <div class="pack-toolbar">
         <input ref="packInput" type="file" hidden accept=".md,.markdown,.txt" @change="uploadPack" />
-        <Button label="Add Markdown pack" icon="pi pi-plus" size="small" @click="packInput?.click()" />
+        <Button label="Add Markdown pack" icon="aw-icon aw-icon-plus" size="small" @click="packInput?.click()" />
         <InputText v-model="packSearch" size="small" placeholder="Search local methodology" @keyup.enter="searchPacks" />
         <Button label="Search" size="small" severity="secondary" outlined @click="searchPacks" />
       </div>
@@ -1132,7 +1142,7 @@ onUnmounted(() => {
         <p v-if="agent.state.status?.vision_unavailability_reason" class="settings-warning">{{ agent.state.status.vision_unavailability_reason }}</p>
         <div class="drawer-foot">
           <Button label="Cancel" size="small" severity="secondary" outlined @click="visionSettingsOpen = false" />
-          <Button label="Save vision profile" icon="pi pi-save" size="small" :loading="visionSettingsBusy" :disabled="!visionProvider || !visionModel.trim()" @click="saveVisionSettings" />
+          <Button label="Save vision profile" icon="aw-icon aw-icon-save" size="small" :loading="visionSettingsBusy" :disabled="!visionProvider || !visionModel.trim()" @click="saveVisionSettings" />
         </div>
       </div>
     </Drawer>
@@ -1149,14 +1159,15 @@ onUnmounted(() => {
 <style scoped>
 .documents-tab { display: flex; flex-direction: column; gap: .75rem; height: 100%; min-height: 36rem; min-width: 0; }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 
 /* One 32px row: the pill, the filename, and the acts. Everything the old
    three-line header restated is on the list row or on `Mark reviewed`. */
 .detail-head { display: flex; align-items: center; gap: .5rem; min-height: 2rem; padding: .5rem 1.25rem; border-bottom: 1px solid var(--aw-border); }
+/* A button keeps its label whole and the title gives way. With the assistant
+   open the row was narrower than its controls, and `Mark reviewed` wrapped
+   onto two lines inside its own button. */
+.detail-head :deep(.p-button) { flex: none; }
 .detail-head h2 { margin: 0; min-width: 0; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-md); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .held { flex: none; padding: .1rem .5rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 600; text-transform: capitalize; }
 .held[data-empty='true'] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
@@ -1182,7 +1193,7 @@ onUnmounted(() => {
 .dot[data-tone='info'] { background: var(--aw-info); }
 .doc-name { overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); text-overflow: ellipsis; white-space: nowrap; }
 .doc-row.active .doc-name { color: var(--aw-ink-strong); font-weight: 600; }
-.doc-meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-2xs); text-overflow: ellipsis; white-space: nowrap; }
+.doc-meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .doc-meta [data-tone='warn'] { color: var(--aw-warn-ink); }
 .doc-meta [data-tone='bad'] { color: var(--aw-danger); }
 .doc-meta [data-tone='agent'] { color: var(--aw-accent); }
@@ -1191,7 +1202,7 @@ onUnmounted(() => {
 
 /* Deep-search results replace the list where the list was. */
 .rail-results { display: flex; flex-direction: column; gap: .3rem; margin-top: .6rem; }
-.rail-results-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.rail-results-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .rail-results-head button { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-2xs); cursor: pointer; }
 .rail-result { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: .45rem .55rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); text-align: left; cursor: pointer; }
 .rail-result:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
@@ -1213,13 +1224,13 @@ onUnmounted(() => {
 .pack-toolbar .p-inputtext { flex: 1; }
 .pack-list { display: flex; flex-direction: column; gap: .5rem; }
 .pack-list article { padding: .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }
-.pack-scope { float: right; color: var(--aw-muted); font-size: var(--aw-text-2xs); text-transform: uppercase; letter-spacing: .04em; }
+.pack-scope { float: right; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .drawer-foot { display: flex; justify-content: flex-end; gap: .5rem; padding-top: .875rem; border-top: 1px solid var(--aw-border); }
 .document-layout { display: grid; flex: 1 1 auto; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 0; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }
 /* A running background job, not a problem to be solved. The sentence it used
    to spell out over two lines is on the tooltip. */
 .indexing-chip { display:inline-flex; align-items:center; gap:.4rem; min-height:var(--aw-control-height-sm); padding:.2rem .6rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-pill); background:var(--aw-info-soft); color:var(--aw-info); font-size:var(--aw-text-xs); font-weight:600; white-space:nowrap; }
-.indexing-chip .pi { font-size:var(--aw-text-xs); }
+.indexing-chip .aw-icon { font-size:var(--aw-text-xs); }
 .document-rail { min-height:0; padding:.75rem; border-right:1px solid var(--aw-border); background:var(--aw-canvas); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--aw-border); background:var(--aw-canvas); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--aw-border-strong); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:var(--aw-text-sm); }
 .doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:var(--aw-text-2xs); }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-control); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:var(--aw-panel); }.doc-row.active { border-color:var(--aw-teal-line); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); font-size:var(--aw-text-sm); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:var(--aw-text-sm); }.doc-identity small { color:var(--aw-muted); font-size:var(--aw-text-2xs); }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:var(--aw-text-xs); }.doc-status.processing { color:var(--aw-info); }.doc-status.attention { color:var(--aw-warn); }.doc-status.attention.failed { color:var(--aw-danger); }.doc-subgroup { display:flex; align-items:center; gap:.4rem; margin:.35rem 0 .05rem; padding:.1rem .25rem .1rem 1.15rem; color:var(--aw-muted); font-size:var(--aw-text-2xs); font-weight:700; letter-spacing:.02em; text-transform:capitalize; }.subgroup-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.subgroup-count { margin-left:auto; font-weight:400; }.doc-row.nested { margin-left:.9rem; }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
 .subgroup-thin { color:var(--aw-warn); font-size:var(--aw-text-2xs); }

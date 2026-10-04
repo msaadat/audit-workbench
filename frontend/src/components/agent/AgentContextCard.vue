@@ -180,7 +180,7 @@ function openArtifact(item: ContextArtifact) {
     </div>
 
     <p v-if="context.withheld.length" class="held">
-      <i class="pi pi-filter" aria-hidden="true" />
+      <i class="aw-icon aw-icon-funnel" aria-hidden="true" />
       <span><strong>Held back</strong> {{ withheldSummary }} — outside this step's scope.</span>
     </p>
 
@@ -192,7 +192,7 @@ function openArtifact(item: ContextArtifact) {
 .context-read{display:grid;gap:.4rem;align-self:flex-start;width:min(92%,42rem);padding:.7rem .8rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-surface);background:var(--aw-canvas)}
 .context-read>header{display:flex;align-items:baseline;gap:.45rem}
 .context-read>header>strong{font-size:var(--aw-text-sm);color:var(--aw-ink)}
-.context-read>header>span{color:var(--aw-muted);font-family:var(--aw-font-mono);font-size:var(--aw-text-2xs);letter-spacing:.04em;text-transform:uppercase}
+.context-read>header>span{color:var(--aw-muted);font-size:var(--aw-text-xs);font-weight:600;}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.4rem}
 .doc{display:grid;grid-template-columns:2.1rem minmax(0,1fr);gap:0 .5rem;align-items:center;padding:.45rem .5rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:var(--aw-panel);text-align:left;cursor:pointer;color:inherit}
@@ -202,7 +202,7 @@ function openArtifact(item: ContextArtifact) {
 .identity{display:grid;gap:.1rem;min-width:0}
 .identity b{font-size:var(--aw-text-xs);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .identity small{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem;color:var(--aw-muted);font-size:var(--aw-text-2xs)}
-.tag{padding:.05rem .3rem;border:1px solid var(--aw-teal-line);border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.tag{padding:.05rem .3rem;border:1px solid var(--aw-teal-line);border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-weight:700;}
 
 /* Held back is a decision, not a warning: stated once, never alarming. */
 .held{display:flex;align-items:baseline;gap:.4rem;margin:.35rem 0 0;padding-top:.45rem;border-top:1px dashed var(--aw-border);color:var(--aw-muted);font-size:var(--aw-text-xs);line-height:1.5}

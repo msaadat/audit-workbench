@@ -213,7 +213,7 @@ function reset() {
 
 <template>
   <Dialog :visible="modelValue" modal header="Import files and folders" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
-    <div v-if="error" class="inline-error"><i class="pi pi-exclamation-triangle" />{{ error }}</div>
+    <div v-if="error" class="inline-error"><i class="aw-icon aw-icon-triangle-alert" />{{ error }}</div>
     <nav class="wizard-progress" aria-label="Import progress"><span v-for="(label,index) in STEPS" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }"><i>{{ index + 1 }}</i>{{ label }}</span></nav>
 
     <section v-if="step === 1" class="select-step">
@@ -224,28 +224,28 @@ function reset() {
         @dragleave.prevent="dragActive = false"
         @drop.prevent="onDrop"
       >
-        <i class="pi pi-cloud-upload" />
+        <i class="aw-icon aw-icon-cloud-upload" />
         <strong>Drop files or a folder here</strong>
         <span>Spreadsheets and CSVs become data tables; PDFs, Word files and images become documents. What each document is gets read from its opening page after import.</span>
         <div class="picker-actions">
           <label class="picker-button" tabindex="0" @keydown="activatePicker">
-            <i class="pi pi-file" />Choose files
+            <i class="aw-icon aw-icon-file" />Choose files
             <input type="file" multiple @change="chooseFiles" />
           </label>
           <label class="picker-button" tabindex="0" @keydown="activatePicker">
-            <i class="pi pi-folder-open" />Choose a folder
+            <i class="aw-icon aw-icon-folder-open" />Choose a folder
             <input type="file" webkitdirectory multiple @change="chooseFolder" />
           </label>
         </div>
       </div>
       <div v-if="staged.length" class="staged-summary">
-        <i class="pi pi-check-circle" />
+        <i class="aw-icon aw-icon-circle-check" />
         <span class="staged-copy">
           <strong>{{ staged.length }} file{{ staged.length === 1 ? '' : 's' }} ready</strong>
           <small>{{ rootName ? `Folder "${rootName}"` : 'Selected files' }} · {{ stagedSize }}. Unchanged files are skipped automatically.</small>
         </span>
         <Button label="Clear" text size="small" severity="secondary" :disabled="busy" @click="staged = []" />
-        <Button :label="`Import ${staged.length} file${staged.length === 1 ? '' : 's'}`" icon="pi pi-arrow-right" iconPos="right" :loading="busy" @click="startImport" />
+        <Button :label="`Import ${staged.length} file${staged.length === 1 ? '' : 's'}`" icon="aw-icon aw-icon-arrow-right" iconPos="right" :loading="busy" @click="startImport" />
       </div>
     </section>
 
@@ -258,9 +258,9 @@ function reset() {
     <section v-else class="summary-step">
       <h3>Import complete</h3>
       <div class="route-summary" aria-label="What was imported">
-        <span><i class="pi pi-table" /><strong>{{ routeCounts.table }}</strong> data {{ routeCounts.table === 1 ? 'table' : 'tables' }}</span>
-        <span><i class="pi pi-file" /><strong>{{ routeCounts.document }}</strong> {{ routeCounts.document === 1 ? 'document' : 'documents' }}</span>
-        <span><i class="pi pi-minus-circle" /><strong>{{ routeCounts.excluded }}</strong> left out</span>
+        <span><i class="aw-icon aw-icon-table" /><strong>{{ routeCounts.table }}</strong> data {{ routeCounts.table === 1 ? 'table' : 'tables' }}</span>
+        <span><i class="aw-icon aw-icon-file" /><strong>{{ routeCounts.document }}</strong> {{ routeCounts.document === 1 ? 'document' : 'documents' }}</span>
+        <span><i class="aw-icon aw-icon-circle-minus" /><strong>{{ routeCounts.excluded }}</strong> left out</span>
       </div>
       <div class="summary-cards" v-if="batch?.summary">
         <span><strong>{{ batch.summary.imported }}</strong> imported</span>
@@ -268,7 +268,7 @@ function reset() {
         <span><strong>{{ batch.summary.ignored }}</strong> ignored</span>
       </div>
       <div v-if="unreadable.length" class="unreadable">
-        <i class="pi pi-exclamation-triangle" />
+        <i class="aw-icon aw-icon-triangle-alert" />
         <span>
           <strong>{{ unreadable.length }} file{{ unreadable.length === 1 ? '' : 's' }} could not be read and {{ unreadable.length === 1 ? 'was' : 'were' }} left out</strong>
           <small v-for="item in unreadable" :key="item.id">
@@ -277,7 +277,7 @@ function reset() {
         </span>
       </div>
       <div v-if="batch?.indexing_job?.document_ids.length" class="selection-summary">
-        <i class="pi pi-spin pi-spinner" />
+        <i class="aw-icon aw-icon-spin aw-icon-loader-circle" />
         <span><strong>Search indexing continues in the background</strong><small>{{ batch.indexing_job.document_ids.length }} imported document{{ batch.indexing_job.document_ids.length === 1 ? '' : 's' }} will become searchable automatically.</small></span>
       </div>
       <PostImportPlanningOffer

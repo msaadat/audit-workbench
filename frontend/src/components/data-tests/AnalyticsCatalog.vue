@@ -31,7 +31,7 @@ const groups = computed(() => {
 <template>
   <div class="catalog">
     <IconField>
-      <InputIcon class="pi pi-search" />
+      <InputIcon class="aw-icon aw-icon-search" />
       <InputText v-model="search" placeholder="Search the analytics library" autofocus />
     </IconField>
 
@@ -53,7 +53,7 @@ const groups = computed(() => {
             <strong>{{ test.label }}</strong>
             <small>{{ test.description }}</small>
           </span>
-          <i class="pi pi-arrow-right row-go" />
+          <i class="aw-icon aw-icon-arrow-right row-go" />
         </button>
       </section>
       <p v-if="!groups.length" class="empty">No analytic matches “{{ search }}”.</p>

@@ -61,19 +61,18 @@ const blocks = computed(() => markdownBlocks(props.markdown, entries.value))
      Switching to Edit must not move a single line. */
   min-width: 0;
   padding-block: 1.5rem;
-  padding-inline: max(1.25rem, calc((100% - 96ch) / 2));
+  padding-inline: max(1.25rem, calc((100% - var(--aw-measure)) / 2));
   border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
   background: var(--aw-panel);
   font-size: var(--aw-text-md); line-height: 1.65;
 }
 .eyebrow {
   margin: 0 0 1rem;
-  color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700;
-  letter-spacing: .09em; text-transform: uppercase;
+  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600;
 }
 .heading { color: var(--aw-ink-strong); scroll-margin-top: .75rem; }
-.heading.level-1 { margin: 0 0 1rem; font-size: var(--aw-text-2xl); font-weight: 700; letter-spacing: -0.02em; }
-.heading.level-2 { margin: 1.75rem 0 .5rem; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; }
+.heading.level-1 { margin: 0 0 1rem; font-size: var(--aw-text-2xl); font-weight: var(--aw-weight-title); letter-spacing: -0.02em; }
+.heading.level-2 { margin: 1.75rem 0 .5rem; font-size: var(--aw-text-xl); font-weight: var(--aw-weight-title); letter-spacing: -0.01em; }
 .heading.level-3 { margin: 1.25rem 0 .35rem; font-size: var(--aw-text-md); font-weight: 600; }
 .heading.level-4 { margin: 1rem 0 .3rem; font-size: var(--aw-text-base); font-weight: 600; }
 .document > .heading:first-of-type { margin-top: 0; }

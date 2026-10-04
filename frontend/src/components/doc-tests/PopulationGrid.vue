@@ -316,7 +316,7 @@ defineExpose({ loadGrid })
           <Button
             v-if="test.rcm_id"
             :label="test.rcm_id"
-            icon="pi pi-map"
+            icon="aw-icon aw-icon-map"
             size="small"
             outlined
             class="rcm-link"
@@ -325,7 +325,7 @@ defineExpose({ loadGrid })
           <span v-else class="unlinked">Not linked to an RCM row</span>
           <Button
             label="Re-resolve"
-            icon="pi pi-refresh"
+            icon="aw-icon aw-icon-refresh-cw"
             size="small"
             outlined
             :loading="resolving"
@@ -334,7 +334,7 @@ defineExpose({ loadGrid })
           />
           <Button
             label="Run test"
-            icon="pi pi-play"
+            icon="aw-icon aw-icon-play"
             size="small"
             :loading="running"
             :disabled="busy"
@@ -375,7 +375,7 @@ defineExpose({ loadGrid })
         </label>
         <Button
           label="Confirm all accepted"
-          icon="pi pi-check"
+          icon="aw-icon aw-icon-check"
           size="small"
           outlined
           :disabled="busy || !acceptedUndispositioned.length || working === 'bulk'"
@@ -393,8 +393,8 @@ defineExpose({ loadGrid })
               <option v-for="size in pageSizes" :key="size" :value="size">{{ size }}</option>
             </select>
           </label>
-          <Button icon="pi pi-chevron-left" text rounded aria-label="Previous page" :disabled="!hasPrevious || loading" @click="offset = Math.max(0, offset - limit)" />
-          <Button icon="pi pi-chevron-right" text rounded aria-label="Next page" :disabled="!hasNext || loading" @click="offset += limit" />
+          <Button icon="aw-icon aw-icon-chevron-left" text rounded aria-label="Previous page" :disabled="!hasPrevious || loading" @click="offset = Math.max(0, offset - limit)" />
+          <Button icon="aw-icon aw-icon-chevron-right" text rounded aria-label="Next page" :disabled="!hasNext || loading" @click="offset += limit" />
         </div>
       </div>
 
@@ -435,7 +435,7 @@ defineExpose({ loadGrid })
                   <UiTestStatus v-if="row.disposition !== 'pending'" :status="row.disposition" showLabel />
                   <span class="call-actions">
                     <Button
-                      icon="pi pi-check"
+                      icon="aw-icon aw-icon-check"
                       text rounded size="small"
                       v-tooltip.top="'Confirm'"
                       :aria-label="`Confirm ${row.document_title} record ${row.record_index}`"
@@ -444,7 +444,7 @@ defineExpose({ loadGrid })
                       @click="setRow(row, 'confirmed')"
                     />
                     <Button
-                      icon="pi pi-exclamation-triangle"
+                      icon="aw-icon aw-icon-triangle-alert"
                       text rounded size="small" severity="danger"
                       v-tooltip.top="'Exception'"
                       :aria-label="`Mark ${row.document_title} record ${row.record_index} an exception`"
@@ -453,8 +453,8 @@ defineExpose({ loadGrid })
                       @click="setRow(row, 'exception')"
                     />
                     <Button
-                      icon="pi pi-eye"
-                      text rounded size="small" severity="warning"
+                      icon="aw-icon aw-icon-eye"
+                      text rounded size="small" severity="secondary"
                       v-tooltip.top="'Needs review'"
                       :aria-label="`Send ${row.document_title} record ${row.record_index} to review`"
                       :disabled="busy || row.outcome === 'not_run' || working === row.key"
@@ -462,7 +462,7 @@ defineExpose({ loadGrid })
                       @click="setRow(row, 'needs_review')"
                     />
                     <Button
-                      icon="pi pi-refresh"
+                      icon="aw-icon aw-icon-refresh-cw"
                       text rounded size="small" severity="secondary"
                       v-tooltip.top="'Clear'"
                       :aria-label="`Clear the call on ${row.document_title} record ${row.record_index}`"
@@ -476,7 +476,7 @@ defineExpose({ loadGrid })
           </table>
           <UiEmptyState
             v-if="!rows.length"
-            icon="pi pi-filter-slash"
+            icon="aw-icon aw-icon-funnel-x"
             title="No record matches"
             description="Clear the filter or the search to see this page."
             compact
@@ -491,7 +491,7 @@ defineExpose({ loadGrid })
               <strong>{{ selected.document_title || selected.document_id }}</strong>
               <small>record {{ selected.record_index }} · {{ selected.document_id }}</small>
             </div>
-            <Button icon="pi pi-times" text rounded size="small" aria-label="Close record detail" @click="selectedKey = null" />
+            <Button icon="aw-icon aw-icon-x" text rounded size="small" aria-label="Close record detail" @click="selectedKey = null" />
           </header>
           <UiTestStatus :status="selected.outcome" showLabel />
           <p v-if="selected.answer" class="answer">{{ selected.answer }}</p>
@@ -514,7 +514,7 @@ defineExpose({ loadGrid })
           <p v-if="selected.disposition_note" class="muted">Your note: {{ selected.disposition_note }}</p>
           <Button
             label="Open the document"
-            icon="pi pi-external-link"
+            icon="aw-icon aw-icon-external-link"
             size="small"
             outlined
             @click="emit('openDocument', selected.document_id)"
@@ -535,7 +535,7 @@ defineExpose({ loadGrid })
           <Button
             v-if="conclusionChanged"
             label="Save"
-            icon="pi pi-check"
+            icon="aw-icon aw-icon-check"
             size="small"
             :disabled="busy"
             @click="emit('saveConclusion')"
@@ -564,7 +564,7 @@ defineExpose({ loadGrid })
             <span class="footer-note">{{ test.rcm_id ? 'None yet.' : 'Not linked to an RCM row.' }}</span>
             <Button
               label="Generate finding"
-              icon="pi pi-sparkles"
+              icon="aw-icon aw-icon-sparkles"
               size="small" text severity="secondary"
               :disabled="busy || !test.rcm_id"
               @click="emit('generateFinding', false)"
@@ -583,7 +583,7 @@ defineExpose({ loadGrid })
         <Button
           v-if="scopeNoteChanged"
           label="Save"
-          icon="pi pi-check"
+          icon="aw-icon aw-icon-check"
           size="small"
           :disabled="busy"
           aria-label="Save scope limitation"
@@ -602,16 +602,16 @@ defineExpose({ loadGrid })
 
     <UiEmptyState
       v-else-if="loadError"
-      icon="pi pi-exclamation-triangle"
+      icon="aw-icon aw-icon-triangle-alert"
       title="Population grid unavailable"
       :description="loadError"
       compact
     >
-      <Button label="Try again" icon="pi pi-refresh" size="small" outlined @click="loadGrid" />
+      <Button label="Try again" icon="aw-icon aw-icon-refresh-cw" size="small" outlined @click="loadGrid" />
     </UiEmptyState>
     <UiEmptyState
       v-else
-      icon="pi pi-spin pi-spinner"
+      icon="aw-icon aw-icon-spin aw-icon-loader-circle"
       title="Loading the population"
       description="Resolving the type against the documents this engagement holds."
       compact
@@ -626,7 +626,7 @@ defineExpose({ loadGrid })
 .grid-actions { display: flex; align-items: center; gap: .4rem; }
 .rcm-link { flex: 0 0 auto; border-color: var(--aw-teal-line); color: var(--aw-teal); white-space: nowrap; }
 .unlinked { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); white-space: nowrap; }
-.eyebrow { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; }
+.eyebrow { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .question { margin: .3rem 0 0; color: var(--aw-ink); font-size: var(--aw-text-sm); }
 .criteria { margin: .3rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .criteria-ref { margin-left: .35rem; padding: .1rem .4rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); }

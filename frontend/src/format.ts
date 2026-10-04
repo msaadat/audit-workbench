@@ -18,6 +18,26 @@ export function plural(count: number, singular: string, pluralForm?: string): st
   return `${count.toLocaleString()} ${word}`
 }
 
+/**
+ * `Same condition` from `same condition` or `same_condition`.
+ *
+ * Labels are sentence case and stored values are not: a severity is `high`, an
+ * outcome `exception_noted`. The labels used to be uppercased in CSS, which hid
+ * the difference; this is the one place it is made instead.
+ */
+export function sentenceCase(value: string | null | undefined): string {
+  const words = (value ?? '').replaceAll('_', ' ').trim().split(/\s+/).filter(Boolean)
+  return words
+    .map((word, index) => {
+      if (ACRONYMS.has(word.toLowerCase())) return word.toUpperCase()
+      return index === 0 ? word[0].toUpperCase() + word.slice(1) : word
+    })
+    .join(' ')
+}
+
+/** Words a stored value spells in lower case that a reader expects in capitals: `FX contract`, not `Fx contract`. */
+const ACRONYMS = new Set(['fx', 'po', 'grn', 'vat', 'gst', 'kyc', 'aml', 'sop', 'rcm', 'apm', 'id', 'iban', 'swift', 'ssi', 'mm'])
+
 /** The noun alone, for when the caller renders the number separately. */
 export function pluralWord(count: number, singular: string, pluralForm?: string): string {
   return count === 1 ? singular : (pluralForm ?? `${singular}s`)

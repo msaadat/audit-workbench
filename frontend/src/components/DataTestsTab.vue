@@ -444,7 +444,7 @@ async function runTest() {
         'This replaces the result your conclusion was recorded against. The '
         + 'conclusion is kept, but it will be flagged as out of date if the '
         + 'definition or the data has changed since.',
-      icon: 'pi pi-refresh',
+      icon: 'aw-icon aw-icon-refresh-cw',
       acceptProps: { label: 'Run again' },
       rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
       accept: () => { void execute(item.id) },
@@ -481,7 +481,7 @@ function deleteTest() {
   confirm.require({
     header: 'Delete data test',
     message: `Delete "${item.title}" and its stored results? This cannot be undone.`,
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -582,13 +582,13 @@ function findingSeverity(id: string) {
 const menuItems = computed(() => [
   {
     label: `Re-run ${plural(staleTestIds.value.length, 'stale test')}`,
-    icon: 'pi pi-refresh',
+    icon: 'aw-icon aw-icon-refresh-cw',
     disabled: !staleTestIds.value.length || statusBusy.value,
     command: () => void runAllTests(staleTestIds.value),
   },
   {
     label: 'Delete this test',
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     disabled: !selected.value,
     command: () => deleteTest(),
   },
@@ -617,11 +617,13 @@ onUnmounted(unsubscribe)
     <header class="page-head">
       <h1>Data tests</h1>
       <span class="grow" />
-      <Button label="New test" icon="pi pi-plus" size="small" outlined severity="secondary" @click="openNewDefinition" />
+      <!-- With no tests the empty state offers the first one, and there is
+           nothing to run; the header holds back both. -->
+      <Button v-if="tests.length" label="New test" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="openNewDefinition" />
       <Button
         v-if="findingsPending.length"
         label="Run all"
-        icon="pi pi-play"
+        icon="aw-icon aw-icon-play"
         size="small"
         outlined
         severity="secondary"
@@ -632,19 +634,18 @@ onUnmounted(unsubscribe)
       <Button
         v-if="findingsPending.length"
         :label="`Draft ${plural(findingsPending.length, 'finding')}`"
-        icon="pi pi-flag"
+        icon="aw-icon aw-icon-flag"
         size="small"
-        severity="warn"
         :disabled="statusBusy || !canRunAgent"
         @click="draftPendingFindings()"
       />
       <Button
-        v-else
+        v-else-if="tests.length"
         label="Run all"
-        icon="pi pi-play"
+        icon="aw-icon aw-icon-play"
         size="small"
         :loading="runningAll"
-        :disabled="running || runningAll || !tests.length"
+        :disabled="running || runningAll"
         @click="runAllTests()"
       />
       <UiOverflowMenu :items="menuItems" tooltip="More data test actions" />
@@ -665,7 +666,7 @@ onUnmounted(unsubscribe)
       <section class="list-panel">
         <div class="list-head">
           <IconField>
-            <InputIcon class="pi pi-search" />
+            <InputIcon class="aw-icon aw-icon-search" />
             <InputText v-model="search" size="small" placeholder="Search titles and objectives" />
           </IconField>
           <Select
@@ -694,18 +695,18 @@ onUnmounted(unsubscribe)
           <Button
             v-if="selected.rcm_id"
             :label="selected.rcm_id"
-            icon="pi pi-map"
+            icon="aw-icon aw-icon-map"
             size="small"
             outlined
             class="rcm-chip"
             @click="openRcm"
           />
-          <Button label="Edit definition" icon="pi pi-sliders-h" size="small" outlined severity="secondary" @click="openDefinition" />
-          <Button label="Run" icon="pi pi-play" size="small" outlined severity="secondary" :loading="running" :disabled="runningAll" @click="runTest" />
+          <Button label="Edit definition" icon="aw-icon aw-icon-sliders-horizontal" size="small" outlined severity="secondary" @click="openDefinition" />
+          <Button label="Run" icon="aw-icon aw-icon-play" size="small" outlined severity="secondary" :loading="running" :disabled="runningAll" @click="runTest" />
           <Button
             v-if="selected.rcm_id"
             label="Redraft"
-            icon="pi pi-pencil"
+            icon="aw-icon aw-icon-pencil"
             size="small"
             outlined
             severity="secondary"
@@ -758,14 +759,14 @@ onUnmounted(unsubscribe)
             <Button
               v-if="canAccept"
               label="Accept conclusion"
-              icon="pi pi-check"
+              icon="aw-icon aw-icon-check"
               size="small"
               :loading="saving"
               @click="acceptRunReading"
             />
             <Button
               label="Change"
-              icon="pi pi-chevron-down"
+              icon="aw-icon aw-icon-chevron-down"
               iconPos="right"
               size="small"
               outlined
@@ -805,7 +806,7 @@ onUnmounted(unsubscribe)
           <span class="grow" />
           <Button
             :label="linkedFindings.length ? 'Regenerate' : 'Generate finding'"
-            :icon="linkedFindings.length ? 'pi pi-refresh' : 'pi pi-sparkles'"
+            :icon="linkedFindings.length ? 'aw-icon aw-icon-refresh-cw' : 'aw-icon aw-icon-sparkles'"
             size="small"
             outlined
             severity="secondary"
@@ -816,7 +817,7 @@ onUnmounted(unsubscribe)
       </section>
       <UiEmptyState
         v-else
-        icon="pi pi-shield"
+        icon="aw-icon aw-icon-shield"
         title="No data test selected"
         description="Pick a test from the list, or create one."
       />
@@ -824,11 +825,11 @@ onUnmounted(unsubscribe)
 
     <UiEmptyState
       v-else
-      icon="pi pi-shield"
+      icon="aw-icon aw-icon-shield"
       title="Run analytics over the imported data"
       description="Pick an analytic from the library, or write Polars code, and link it to an RCM row so the result counts as coverage."
     >
-      <Button label="New test" icon="pi pi-plus" @click="openNewDefinition" />
+      <Button label="New test" icon="aw-icon aw-icon-plus" @click="openNewDefinition" />
     </UiEmptyState>
 
     <!-- Changing the recorded conclusion is the rarer half of the verdict bar,
@@ -854,7 +855,7 @@ onUnmounted(unsubscribe)
         <small v-if="departsWithoutReason" class="needs-reason">
           This departs from the run — a written reason above is worth having.
         </small>
-        <Button label="Save" icon="pi pi-check" size="small" :loading="saving" @click="saveConclusion" />
+        <Button label="Save" icon="aw-icon aw-icon-check" size="small" :loading="saving" @click="saveConclusion" />
       </div>
     </Popover>
 
@@ -888,10 +889,6 @@ onUnmounted(unsubscribe)
 <style scoped>
 .data-tests { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 
-/* One 36px row: the title, what there is of it, and at most one primary. */
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 
 .layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }

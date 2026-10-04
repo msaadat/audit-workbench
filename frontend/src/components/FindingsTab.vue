@@ -225,7 +225,7 @@ async function acceptConsolidation(group: ConsolidationGroup, choice: { lead_fin
   confirm.require({
     header: 'Consolidate a confirmed finding',
     message: 'This group includes an auditor-confirmed finding. Merging it produces one unconfirmed finding to confirm again. Continue?',
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Consolidate' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: () => void proceed(),
@@ -342,7 +342,7 @@ function remove() {
   confirm.require({
     header: 'Remove finding',
     message: `Remove "${item.id} — ${item.title}"? This cannot be undone.`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Remove', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -381,7 +381,7 @@ function confirmAll() {
   confirm.require({
     header: 'Confirm all findings',
     message: `Mark ${plural(targets.length, 'finding')} as auditor confirmed for formal reporting? Findings missing a complete narrative, required links, or evidence will be skipped.`,
-    icon: 'pi pi-check-square',
+    icon: 'aw-icon aw-icon-square-check',
     acceptProps: { label: `Confirm ${targets.length}` },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -452,32 +452,32 @@ function copyMarkdown() {
 const menuItems = computed(() => [
   {
     label: 'Generate all findings',
-    icon: 'pi pi-sparkles',
+    icon: 'aw-icon aw-icon-sparkles',
     disabled: statusBusy.value || agentBusy.value,
     command: () => void draftFromRcm(),
   },
   {
     label: 'Consolidate selected…',
-    icon: 'pi pi-objects-column',
+    icon: 'aw-icon aw-icon-columns-3',
     disabled: statusBusy.value || items.value.length < 2,
     command: () => { manualConsolidation.value = true },
   },
   {
     label: showAbsorbed.value ? 'Hide absorbed findings' : `Show absorbed (${absorbed.value.length})`,
-    icon: 'pi pi-eye',
+    icon: 'aw-icon aw-icon-eye',
     disabled: !absorbed.value.length,
     command: () => { showAbsorbed.value = !showAbsorbed.value },
   },
-  { label: 'Finding template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
+  { label: 'Finding template', icon: 'aw-icon aw-icon-file-pen', command: () => void openTemplate() },
   {
     label: 'Copy Markdown',
-    icon: 'pi pi-copy',
+    icon: 'aw-icon aw-icon-copy',
     disabled: !selected.value,
     command: copyMarkdown,
   },
   {
     label: 'Remove finding',
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     disabled: !selected.value,
     command: remove,
   },
@@ -520,12 +520,12 @@ function resolveTest(id: string): TestLink | null {
   const dataTest = (data.value?.data_tests ?? []).find(item => item.id === id)
   if (dataTest) {
     return {
-      id, destination: 'data-tests', title: dataTest.title, icon: 'pi pi-chart-bar',
+      id, destination: 'data-tests', title: dataTest.title, icon: 'aw-icon aw-icon-chart-column',
       exceptions: dataTest.open_exception_count || dataTest.evaluation?.exception_count || 0,
     }
   }
   const docTest = (data.value?.document_tests ?? []).find(item => item.id === id)
-  if (docTest) return { id, destination: 'doc-tests', title: docTest.title, icon: 'pi pi-file-check', exceptions: 0 }
+  if (docTest) return { id, destination: 'doc-tests', title: docTest.title, icon: 'aw-icon aw-icon-file-check', exceptions: 0 }
   return null
 }
 const testLinks = computed(() => (selected.value?.test_refs ?? [])
@@ -574,7 +574,7 @@ const staleSentence = computed(() => {
       <span class="grow" />
       <Button
         label="Draft from the RCM"
-        icon="pi pi-sparkles"
+        icon="aw-icon aw-icon-sparkles"
         size="small"
         outlined
         severity="secondary"
@@ -584,7 +584,7 @@ const staleSentence = computed(() => {
       <Button
         v-if="unconfirmed.length"
         label="Add finding"
-        icon="pi pi-plus"
+        icon="aw-icon aw-icon-plus"
         size="small"
         outlined
         severity="secondary"
@@ -593,14 +593,15 @@ const staleSentence = computed(() => {
       <Button
         v-if="unconfirmed.length"
         :label="`Confirm ${unconfirmed.length}`"
-        icon="pi pi-check"
+        icon="aw-icon aw-icon-check"
         size="small"
-        severity="warn"
         :loading="confirmingAll"
         :disabled="statusBusy"
         @click="confirmAll"
       />
-      <Button v-else label="Add finding" icon="pi pi-plus" size="small" @click="addManual" />
+      <!-- An empty register's empty state offers this; the header does not
+           say it twice. -->
+      <Button v-else-if="items.length" label="Add finding" icon="aw-icon aw-icon-plus" size="small" @click="addManual" />
       <UiOverflowMenu :items="menuItems" tooltip="More findings actions" />
     </header>
 
@@ -633,7 +634,7 @@ const staleSentence = computed(() => {
       <section class="list-panel">
         <div class="list-head">
           <IconField>
-            <InputIcon class="pi pi-search" />
+            <InputIcon class="aw-icon aw-icon-search" />
             <InputText v-model="search" size="small" placeholder="Search findings" />
           </IconField>
           <button
@@ -673,7 +674,7 @@ const staleSentence = computed(() => {
             :data-tone="selected.severity"
             aria-label="Severity"
           />
-          <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save()" />
+          <Button label="Save" icon="aw-icon aw-icon-save" size="small" :loading="saving" @click="save()" />
         </header>
 
         <!-- What is recorded, and what the report can do with it. The two
@@ -699,7 +700,7 @@ const staleSentence = computed(() => {
               Consolidated: {{ plural(memberLinks.length, 'procedure') }}
             </span>
             <span v-if="selected.consolidation?.role === 'lead' && selected.consolidation?.narrative_pending" class="pill warn" data-testid="narrative-pending">
-              narrative pending redraft
+              Narrative pending redraft
             </span>
           </template>
 
@@ -721,7 +722,7 @@ const staleSentence = computed(() => {
             <Button
               v-if="absorbedInto"
               label="Restore"
-              icon="pi pi-undo"
+              icon="aw-icon aw-icon-undo-2"
               size="small"
               severity="secondary"
               :loading="consolidating"
@@ -734,9 +735,10 @@ const staleSentence = computed(() => {
             <Button
               v-if="selected.consolidation?.role === 'lead' && selected.consolidation?.narrative_pending"
               label="Redraft narrative"
-              icon="pi pi-sparkles"
+              icon="aw-icon aw-icon-sparkles"
               size="small"
-              severity="warn"
+              severity="secondary"
+              outlined
               data-testid="redraft-lead"
               :loading="redrafting"
               @click="redraftLead(selected)"
@@ -744,16 +746,17 @@ const staleSentence = computed(() => {
             <Button
               v-if="selected.evidence_warnings?.length"
               label="Re-affirm"
-              icon="pi pi-verified"
+              icon="aw-icon aw-icon-badge-check"
               size="small"
-              severity="warn"
+              severity="secondary"
+              outlined
               :loading="reaffirming"
               @click="reaffirmEvidence"
             />
             <Button
               v-if="!selected.rcm_refs.length"
               label="Link to a risk"
-              icon="pi pi-map"
+              icon="aw-icon aw-icon-map"
               iconPos="left"
               size="small"
               @click="riskPicker?.toggle($event)"
@@ -770,7 +773,7 @@ const staleSentence = computed(() => {
             <Button
               v-else-if="!absorbedInto"
               label="Confirm for reporting"
-              icon="pi pi-check"
+              icon="aw-icon aw-icon-check"
               size="small"
               :loading="saving"
               @click="setConfirmed(true)"
@@ -801,7 +804,7 @@ const staleSentence = computed(() => {
                 <h3 class="aw-label">Narrative</h3>
                 <Button
                   :label="editingNarrative ? 'Done' : 'Edit'"
-                  :icon="editingNarrative ? 'pi pi-check' : 'pi pi-pencil'"
+                  :icon="editingNarrative ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-pencil'"
                   size="small"
                   text
                   severity="secondary"
@@ -830,7 +833,7 @@ const staleSentence = computed(() => {
                 <Button
                   v-if="!editingResponse"
                   label="Record as received"
-                  icon="pi pi-pencil"
+                  icon="aw-icon aw-icon-pencil"
                   size="small"
                   text
                   severity="secondary"
@@ -839,7 +842,7 @@ const staleSentence = computed(() => {
                 <Button
                   v-else
                   label="Done"
-                  icon="pi pi-check"
+                  icon="aw-icon aw-icon-check"
                   size="small"
                   text
                   severity="secondary"
@@ -897,7 +900,7 @@ const staleSentence = computed(() => {
             <section>
               <div class="section-head">
                 <h3 class="aw-label">Tests</h3>
-                <Button label="Add" icon="pi pi-plus" size="small" text severity="secondary" @click="testPicker?.toggle($event)" />
+                <Button label="Add" icon="aw-icon aw-icon-plus" size="small" text severity="secondary" @click="testPicker?.toggle($event)" />
               </div>
               <button
                 v-for="link in testLinks"
@@ -920,7 +923,7 @@ const staleSentence = computed(() => {
                 <h3 class="aw-label">Evidence</h3>
                 <Button
                   label="Add"
-                  icon="pi pi-plus"
+                  icon="aw-icon aw-icon-plus"
                   size="small"
                   text
                   severity="secondary"
@@ -932,7 +935,7 @@ const staleSentence = computed(() => {
                 <button type="button" class="card" @click="openEvidence(value)">
                   <span class="card-top">
                     <span class="card-id">{{ value.id }}</span>
-                    <span v-if="anchorMoved(value)" class="pill warn">changed</span>
+                    <span v-if="anchorMoved(value)" class="pill warn">Changed</span>
                   </span>
                   <span class="clamp">{{ value.source_kind }} · {{ value.source_id }}</span>
                   <span v-if="value.source_sha1" class="drafted aw-figure">
@@ -940,7 +943,7 @@ const staleSentence = computed(() => {
                   </span>
                 </button>
                 <Button
-                  icon="pi pi-times"
+                  icon="aw-icon aw-icon-x"
                   text
                   rounded
                   severity="danger"
@@ -962,10 +965,10 @@ const staleSentence = computed(() => {
           </aside>
         </div>
       </section>
-      <UiEmptyState v-else icon="pi pi-flag" title="No finding selected" description="Select a finding or add one." />
+      <UiEmptyState v-else icon="aw-icon aw-icon-flag" title="No finding selected" description="Select a finding or add one." />
     </div>
-    <UiEmptyState v-else icon="pi pi-flag" title="Start the findings register" description="Add a finding when fieldwork identifies a reportable issue.">
-      <Button label="Add finding" icon="pi pi-plus" @click="addManual" />
+    <UiEmptyState v-else icon="aw-icon aw-icon-flag" title="Start the findings register" description="Add a finding when fieldwork identifies a reportable issue.">
+      <Button label="Add finding" icon="aw-icon aw-icon-plus" @click="addManual" />
     </UiEmptyState>
 
     <!-- The three multiselects the detail used to carry, moved to where the
@@ -1002,7 +1005,7 @@ const staleSentence = computed(() => {
       <Popover ref="evidencePicker">
         <div class="picker evidence-picker">
           <button v-for="option in availableEvidence" :key="option.anchor.id" type="button" @click="addEvidence(option.anchor)">
-            <i class="pi pi-plus" aria-hidden="true" />{{ option.label }}
+            <i class="aw-icon aw-icon-plus" aria-hidden="true" />{{ option.label }}
           </button>
           <p v-if="!availableEvidence.length" class="none">Nothing further has been captured in fieldwork.</p>
         </div>
@@ -1024,7 +1027,7 @@ const staleSentence = computed(() => {
       <Textarea v-if="template" v-model="template.markdown" rows="24" spellcheck="false" class="template-editor" />
       <div class="template-foot">
         <Button label="Restore default" severity="secondary" text size="small" @click="saveTemplate(true)" />
-        <Button label="Save override" icon="pi pi-save" size="small" @click="saveTemplate(false)" />
+        <Button label="Save override" icon="aw-icon aw-icon-save" size="small" @click="saveTemplate(false)" />
       </div>
     </Drawer>
   </div>
@@ -1033,9 +1036,6 @@ const staleSentence = computed(() => {
 <style scoped>
 .findings { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 
 .layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
@@ -1131,7 +1131,7 @@ const staleSentence = computed(() => {
 .pill {
   flex: none; padding: 0 .375rem;
   border-radius: var(--aw-radius-pill);
-  font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  font-size: var(--aw-text-2xs); font-weight: 700;
 }
 .pill.warn { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 

@@ -100,7 +100,7 @@ function onRan(rulesetId: string | null, verdict: string) {
           :severity="verdictSeverity[lastVerdicts[r.id]] ?? 'info'"
         />
       </button>
-      <Button label="New rule set" icon="pi pi-plus" size="small" outlined :disabled="creating" @click="startNew" />
+      <Button label="New rule set" icon="aw-icon aw-icon-plus" size="small" outlined :disabled="creating" @click="startNew" />
     </div>
 
     <RulesetEditor
@@ -116,10 +116,10 @@ function onRan(rulesetId: string | null, verdict: string) {
     />
     <div v-else class="empty-state validation-empty">
       <div>
-        <span class="empty-state-icon"><i class="pi pi-check-square" /></span>
+        <span class="empty-state-icon"><i class="aw-icon aw-icon-square-check" /></span>
         <h3>No validation rules yet</h3>
         <p>Create a rule set for this table.</p>
-        <Button label="New rule set" icon="pi pi-plus" size="small" @click="startNew" />
+        <Button label="New rule set" icon="aw-icon aw-icon-plus" size="small" @click="startNew" />
       </div>
     </div>
   </div>

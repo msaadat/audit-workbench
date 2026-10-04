@@ -125,7 +125,7 @@ async function save() {
   <div class="analysis-editor-head">
     <InputText v-model="title" placeholder="Analysis title" class="title-input" />
     <span class="grow" />
-    <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save" />
+    <Button label="Save" icon="aw-icon aw-icon-save" size="small" :loading="saving" @click="save" />
   </div>
 
   <p class="intro">
@@ -149,13 +149,13 @@ async function save() {
   </div>
 
   <div v-if="runError" class="analysis-error">
-    <i class="pi pi-exclamation-triangle" /> {{ runError }}
+    <i class="aw-icon aw-icon-triangle-alert" /> {{ runError }}
   </div>
 
   <div class="analysis-code-block">
     <div class="analysis-code-head">
-      <span><i class="pi pi-code" /> Python — runs in the local sandbox</span>
-      <Button label="Preview" icon="pi pi-eye" size="small" text :loading="running" @click="run" />
+      <span><i class="aw-icon aw-icon-code" /> Python — runs in the local sandbox</span>
+      <Button label="Preview" icon="aw-icon aw-icon-eye" size="small" text :loading="running" @click="run" />
     </div>
     <CodeEditor v-model="code" />
     <pre v-if="stdout" class="analysis-stdout">{{ stdout }}</pre>

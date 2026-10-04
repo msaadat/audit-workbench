@@ -990,6 +990,19 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   changes the workspace only through child runs and registered actions. Every
   other call in `agent/` — every worker, the router, the action interpreter — is
   single-turn, bounded, and budgeted through `BaseRunner`.
+- **Frontend foundations** live in `frontend/src/style.css` and two source
+  scans hold them (`src/foundations.test.ts`, `src/icons.test.ts`). Icons are
+  Lucide glyphs drawn as `aw-icon aw-icon-<lucide name>` classes — the shape
+  PrimeVue's `icon` props already take — generated into `src/icons.css` from
+  whatever `src/` names; run `npm run icons` after naming a new one. Buttons
+  have one size (32 px, whatever `size` says); a screen has at most one filled
+  button, the next step; warning, success and info never fill a button, and
+  danger is outlined. Type is seven roles (`.aw-type-*`, `.page-head`,
+  `.aw-label`): labels are sentence case, uppercase is for table column heads
+  only, mono is for figures and identifiers only, and reading text sits at
+  `--aw-measure`. Stored lower-case values pass through `format.sentenceCase`
+  where they are shown. A piece of the audit file has one of five states,
+  drawn by `ui/UiStateIcon.vue` as an icon and a word.
 - Existing uncommitted workspace or code changes may be user-owned. Do not
   revert them unless explicitly asked.
 

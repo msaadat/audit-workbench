@@ -68,8 +68,8 @@ async function copyCitation() {
       <UiAdvancedSection title="Technical details" description="Immutable source and excerpt identifiers"><dl class="technical"><div><dt>Source hash</dt><dd><code>{{ anchor.source_sha1 || 'Legacy reference' }}</code></dd></div><div v-if="anchor.excerpt_hash"><dt>Excerpt hash</dt><dd><code>{{ anchor.excerpt_hash }}</code></dd></div></dl></UiAdvancedSection>
     </div>
     <template #footer>
-      <Button label="Copy citation" icon="pi pi-copy" severity="secondary" @click="copyCitation" />
-      <Button v-if="anchor && ['document', 'doctest'].includes(anchor.source_kind)" label="Open source" icon="pi pi-external-link" @click="openSource" />
+      <Button label="Copy citation" icon="aw-icon aw-icon-copy" severity="secondary" @click="copyCitation" />
+      <Button v-if="anchor && ['document', 'doctest'].includes(anchor.source_kind)" label="Open source" icon="aw-icon aw-icon-external-link" @click="openSource" />
     </template>
   </Dialog>
 </template>

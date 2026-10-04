@@ -7,7 +7,7 @@ import DataTestDefinitionForm from './DataTestDefinitionForm.vue'
 import type { DataTestDraft } from './DataTestDefinitionForm.vue'
 
 const ANALYTIC = {
-  id: 'date_order', label: 'Date order check', icon: 'pi pi-calendar', group: 'Dates',
+  id: 'date_order', label: 'Date order check', icon: 'aw-icon aw-icon-calendar', group: 'Dates',
   description: 'Rows where one date column falls before another.',
   params: [
     { name: 'earlier', label: 'Earlier date', kind: 'column' },

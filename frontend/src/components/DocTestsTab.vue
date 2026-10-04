@@ -737,7 +737,7 @@ function deleteTest() {
   confirm.require({
     header: 'Delete document test',
     message: `Delete "${testTitle}" and its ${itemText}? This cannot be undone.`,
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -791,13 +791,13 @@ function showAnchor(value: EvidenceRef) {
 const runOptions = computed(() => [
   {
     label: `Run all ${allTestIds.value.length}`,
-    icon: 'pi pi-play',
+    icon: 'aw-icon aw-icon-play',
     disabled: assistantUnavailable.value || !allTestIds.value.length,
     command: () => void runAllTests(),
   },
   {
     label: `Run ${plural(outstandingTestIds.value.length, 'outstanding test')}`,
-    icon: 'pi pi-forward',
+    icon: 'aw-icon aw-icon-fast-forward',
     disabled: assistantUnavailable.value || !outstandingTestIds.value.length,
     command: () => void runOutstandingTests(),
   },
@@ -811,19 +811,19 @@ const menuItems = computed(() => [
   ...(findingsPending.value.size
     ? [{
         label: `Draft ${plural(findingsPending.value.size, 'finding')}`,
-        icon: 'pi pi-flag',
+        icon: 'aw-icon aw-icon-flag',
         disabled: statusBusy.value || assistantUnavailable.value,
         command: () => void draftPendingFindings(),
       }]
     : []),
   {
     label: 'Cycle rules',
-    icon: 'pi pi-sitemap',
+    icon: 'aw-icon aw-icon-network',
     command: () => { rulesetReviewOpen.value = true },
   },
   {
     label: 'Redraft this test',
-    icon: 'pi pi-pencil',
+    icon: 'aw-icon aw-icon-pencil',
     disabled:
       assistantUnavailable.value
       || (!currentTest.value && !selectedCycleEntry.value),
@@ -831,7 +831,7 @@ const menuItems = computed(() => [
   },
   {
     label: 'Delete this test',
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     disabled: !currentTest.value && !selectedCycleEntry.value,
     command: () => deleteTest(),
   },
@@ -891,11 +891,11 @@ function onRulesetApproved(): void {
     <header class="page-head">
       <h1>Document tests</h1>
       <span class="grow" />
-      <Button label="New test" icon="pi pi-plus" size="small" outlined severity="secondary" @click="openCreate" />
+      <Button label="New test" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="openCreate" />
       <SplitButton
         v-if="hasTests"
         label="Run"
-        icon="pi pi-play"
+        icon="aw-icon aw-icon-play"
         size="small"
         outlined
         severity="secondary"
@@ -912,7 +912,7 @@ function onRulesetApproved(): void {
       <Button
         v-if="hasTests"
         label="Draft missing tests"
-        icon="pi pi-sparkles"
+        icon="aw-icon aw-icon-sparkles"
         size="small"
         :disabled="assistantUnavailable"
         @click="prepareTests"
@@ -955,7 +955,7 @@ function onRulesetApproved(): void {
         />
         <template v-if="currentTest && currentItem">
           <div class="detail-return">
-            <Button label="Back to Cycle vouch grid" icon="pi pi-arrow-left" text @click="closeCycleDetail" />
+            <Button label="Back to Cycle vouch grid" icon="aw-icon aw-icon-arrow-left" text @click="closeCycleDetail" />
             <span v-if="focusedAssertionKey">Opened at assertion <code>{{ focusedAssertionKey }}</code></span>
           </div>
           <DocTestItemDetail
@@ -988,7 +988,7 @@ function onRulesetApproved(): void {
         <section class="list-panel">
           <div class="list-head">
             <IconField>
-              <InputIcon class="pi pi-search" />
+              <InputIcon class="aw-icon aw-icon-search" />
               <InputText v-model="search" size="small" placeholder="Search items and answers" />
             </IconField>
             <button type="button" class="select-toggle" :aria-pressed="selecting" @click="toggleSelecting">
@@ -1068,16 +1068,16 @@ function onRulesetApproved(): void {
               </span>
               <Button
                 label="Confirm"
-                icon="pi pi-check"
+                icon="aw-icon aw-icon-check"
                 size="small"
-                severity="success"
+                severity="secondary"
                 outlined
                 :disabled="bulkBusy || agent.isActive.value"
                 @click="setSelectedStates('confirmed')"
               />
               <Button
                 label="Exception"
-                icon="pi pi-exclamation-triangle"
+                icon="aw-icon aw-icon-triangle-alert"
                 size="small"
                 severity="danger"
                 outlined
@@ -1086,16 +1086,16 @@ function onRulesetApproved(): void {
               />
               <Button
                 label="Needs review"
-                icon="pi pi-eye"
+                icon="aw-icon aw-icon-eye"
                 size="small"
-                severity="warn"
+                severity="secondary"
                 outlined
                 :disabled="bulkBusy || agent.isActive.value"
                 @click="setSelectedStates('needs_review')"
               />
               <Button
                 label="Clear calls"
-                icon="pi pi-refresh"
+                icon="aw-icon aw-icon-refresh-cw"
                 size="small"
                 text
                 :disabled="bulkBusy || agent.isActive.value"
@@ -1106,22 +1106,22 @@ function onRulesetApproved(): void {
         </DocTestItemDetail>
         <UiEmptyState
           v-else-if="!visibleItems.length"
-          icon="pi pi-check-circle"
+          icon="aw-icon aw-icon-circle-check"
           title="Nothing in this view"
           description="Pick All items above to review every worklist item."
         />
-        <UiEmptyState v-else icon="pi pi-verified" title="Loading item" description="Opening the selected worklist item." />
+        <UiEmptyState v-else icon="aw-icon aw-icon-badge-check" title="Loading item" description="Opening the selected worklist item." />
       </div>
     </template>
 
     <UiEmptyState
       v-else
-      icon="pi pi-verified"
+      icon="aw-icon aw-icon-badge-check"
       title="Prepare document fieldwork"
       description="Create document tests for the RCM rows they cover, prioritising transactions that already have imported evidence."
     >
-      <Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests" />
-      <Button label="New test" icon="pi pi-plus" severity="secondary" outlined @click="openCreate" />
+      <Button label="Prepare with assistant" icon="aw-icon aw-icon-sparkles" :disabled="assistantUnavailable" @click="prepareTests" />
+      <Button label="New test" icon="aw-icon aw-icon-plus" severity="secondary" outlined @click="openCreate" />
     </UiEmptyState>
 
     <!-- The same drawer the data tests author in, with the shape picker as
@@ -1163,9 +1163,6 @@ function onRulesetApproved(): void {
 <style scoped>
 .doc-tests { display: flex; flex-direction: column; gap: .75rem; min-width: 0; min-height: 0; height: 100%; }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 
 .layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }

@@ -6,7 +6,7 @@ import Drawer from 'primevue/drawer'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
-import { plural } from '../format'
+import { plural, sentenceCase } from '../format'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
@@ -224,9 +224,9 @@ function startApm() {
 }
 
 const menuItems = computed(() => [
-  { label: 'Import Markdown', icon: 'pi pi-upload', disabled: importing.value, command: () => triggerImport() },
-  { label: 'APM template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
-  { label: 'Copy Markdown', icon: 'pi pi-copy', disabled: !hasContent.value, command: () => void copy() },
+  { label: 'Import Markdown', icon: 'aw-icon aw-icon-upload', disabled: importing.value, command: () => triggerImport() },
+  { label: 'APM template', icon: 'aw-icon aw-icon-file-pen', command: () => void openTemplate() },
+  { label: 'Copy Markdown', icon: 'aw-icon aw-icon-copy', disabled: !hasContent.value, command: () => void copy() },
 ])
 
 const rcmCount = computed(() => data.value?.rcm.length ?? 0)
@@ -241,7 +241,7 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
       <Button
         v-if="hasContent"
         :label="editing ? 'Done' : 'Edit'"
-        :icon="editing ? 'pi pi-check' : 'pi pi-pencil'"
+        :icon="editing ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-pencil'"
         size="small"
         outlined
         severity="secondary"
@@ -251,19 +251,24 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
       <Button
         v-if="hasContent"
         label="Export"
-        icon="pi pi-download"
+        icon="aw-icon aw-icon-download"
         size="small"
         outlined
         severity="secondary"
         :loading="exporting"
         @click="exportApm"
       />
-      <Button v-if="editing" label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save(true)" />
+      <Button v-if="editing" label="Save" icon="aw-icon aw-icon-save" size="small" :loading="saving" @click="save(true)" />
+      <!-- Regenerating replaces a written memorandum, so it is offered and
+           never the filled button; with nothing written, the empty state
+           below offers generation and the header does not repeat it. -->
       <Button
-        v-else
-        :label="hasContent ? 'Regenerate' : 'Generate planning drafts'"
-        icon="pi pi-sparkles"
+        v-else-if="hasContent"
+        label="Regenerate"
+        icon="aw-icon aw-icon-sparkles"
         size="small"
+        outlined
+        severity="secondary"
         :disabled="agentBusy"
         @click="generate"
       />
@@ -273,12 +278,12 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
 
     <UiEmptyState
       v-if="!hasContent"
-      icon="pi pi-map"
+      icon="aw-icon aw-icon-map"
       title="No planning memorandum yet"
       description="The assistant drafts it from the engagement material — the documents you imported, the planning context, and the risks already recorded. You can also write it yourself."
     >
-      <Button label="Generate planning drafts" icon="pi pi-sparkles" :disabled="agentBusy" @click="generate" />
-      <Button label="Start writing" icon="pi pi-pencil" outlined @click="startApm" />
+      <Button label="Generate planning drafts" icon="aw-icon aw-icon-sparkles" :disabled="agentBusy" @click="generate" />
+      <Button label="Start writing" icon="aw-icon aw-icon-pencil" outlined @click="startApm" />
     </UiEmptyState>
 
     <template v-else>
@@ -308,9 +313,9 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
                 class="row"
                 @click="nav.push('documents', { document: document.id })"
               >
-                <i class="pi pi-file" aria-hidden="true" />
+                <i class="aw-icon aw-icon-file" aria-hidden="true" />
                 <span class="name">{{ document.name }}</span>
-                <span v-if="document.category" class="tag">{{ document.category }}</span>
+                <span v-if="document.category" class="tag">{{ sentenceCase(document.category) }}</span>
               </button>
               <p v-if="readDocuments.length > 4" class="more">
                 {{ plural(readDocuments.length - 4, 'more document') }}
@@ -383,7 +388,7 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
       <Textarea v-if="template" v-model="template.markdown" rows="24" spellcheck="false" class="template-editor" />
       <div class="template-foot">
         <Button label="Restore default" severity="secondary" text size="small" @click="saveTemplate(true)" />
-        <Button label="Save override" icon="pi pi-save" size="small" @click="saveTemplate(false)" />
+        <Button label="Save override" icon="aw-icon aw-icon-save" size="small" @click="saveTemplate(false)" />
       </div>
     </Drawer>
   </div>
@@ -392,9 +397,6 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
 <style scoped>
 .apm { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 
-.page-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; min-height: 2.25rem; }
-.page-head h1 { margin: 0; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; color: var(--aw-ink-strong); }
-.headline { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .grow { flex: 1; }
 .meta { color: var(--aw-muted); font-size: var(--aw-text-sm); font-weight: 500; }
 
@@ -415,12 +417,12 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
   font: inherit; font-size: var(--aw-text-xs); text-align: left; cursor: pointer;
 }
 .row:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
-.row .pi { color: var(--aw-muted); font-size: .7rem; }
+.row .aw-icon { color: var(--aw-muted); font-size: .7rem; }
 .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag {
   flex: none; padding: 0 .3rem; border-radius: var(--aw-radius-pill);
   background: var(--aw-raised); color: var(--aw-muted);
-  font-size: var(--aw-text-2xs); text-transform: uppercase; letter-spacing: .04em;
+  font-size: var(--aw-text-2xs);
 }
 .more, .line, .none { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.5; }
 .line b { color: var(--aw-ink); }

@@ -5,7 +5,6 @@ import { definePreset } from '@primeuix/themes'
 import ToastService from 'primevue/toastservice'
 import ConfirmationService from 'primevue/confirmationservice'
 import Tooltip from 'primevue/tooltip'
-import 'primeicons/primeicons.css'
 
 // Self-hosted fonts (no CDN — this tool runs fully local/offline).
 import '@fontsource-variable/inter'
@@ -14,6 +13,7 @@ import '@fontsource-variable/jetbrains-mono'
 import App from './App.vue'
 import router from './router'
 import './style.css'
+import './icons.css'
 
 // Extend Aura well beyond `primary`: override the neutral surface ramp, form
 // fields, focus ring and text tokens so every component inherits the refreshed

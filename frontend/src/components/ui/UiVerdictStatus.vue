@@ -4,16 +4,16 @@ import { computed } from 'vue'
 const props = defineProps<{ verdict: string }>()
 
 const meta: Record<string, { icon: string; tone: string; label: string }> = {
-  ok: { icon: 'pi-check-circle', tone: 'success', label: 'OK' },
-  warn: { icon: 'pi-exclamation-triangle', tone: 'warn', label: 'Warning' },
-  fail: { icon: 'pi-times-circle', tone: 'danger', label: 'Failed' },
-  info: { icon: 'pi-info-circle', tone: 'info', label: 'Info' },
-  error: { icon: 'pi-times-circle', tone: 'danger', label: 'Error' },
-  skipped: { icon: 'pi-minus-circle', tone: 'secondary', label: 'Skipped' },
+  ok: { icon: 'aw-icon-circle-check', tone: 'success', label: 'OK' },
+  warn: { icon: 'aw-icon-triangle-alert', tone: 'warn', label: 'Warning' },
+  fail: { icon: 'aw-icon-circle-x', tone: 'danger', label: 'Failed' },
+  info: { icon: 'aw-icon-info', tone: 'info', label: 'Info' },
+  error: { icon: 'aw-icon-circle-x', tone: 'danger', label: 'Error' },
+  skipped: { icon: 'aw-icon-circle-minus', tone: 'secondary', label: 'Skipped' },
 }
 
 const info = computed(() => meta[props.verdict] ?? {
-  icon: 'pi-circle',
+  icon: 'aw-icon-circle',
   tone: 'secondary',
   label: props.verdict.replaceAll('_', ' ').replace(/^./, char => char.toUpperCase()),
 })
@@ -21,7 +21,7 @@ const info = computed(() => meta[props.verdict] ?? {
 
 <template>
   <i
-    class="verdict-icon pi"
+    class="verdict-icon aw-icon"
     :class="[info.icon, `tone-${info.tone}`]"
     v-tooltip.left="info.label"
     :aria-label="info.label"

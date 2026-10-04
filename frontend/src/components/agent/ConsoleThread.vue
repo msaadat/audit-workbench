@@ -115,7 +115,7 @@ function stopRun() {
   confirm.require({
     header: 'Stop the run',
     message: 'Stop the agent here? Work already committed to the workspace is kept.',
-    icon: 'pi pi-stop-circle',
+    icon: 'aw-icon aw-icon-circle-stop',
     acceptProps: { label: 'Stop', severity: 'danger' },
     rejectProps: { label: 'Keep going', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -141,7 +141,7 @@ function remove() {
   confirm.require({
     header: 'Delete chat',
     message: 'Delete this chat and its local Q&A artifacts? Linked runs and workspace work products will remain.',
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -177,7 +177,7 @@ defineExpose({ rename, remove })
 <template>
   <div class="console-thread">
     <header class="thread-head">
-      <i class="pi pi-sparkles" />
+      <i class="aw-icon aw-icon-sparkles" />
       <!-- The title edits in place; renaming was a dialog over a sidecar. -->
       <button class="title static" @dblclick="rename"><strong>{{ activeChat?.title ?? 'Audit assistant' }}</strong></button>
       <!-- One pill. The live dot went with it: the pill says the run is
@@ -190,10 +190,10 @@ defineExpose({ rename, remove })
           : runActive && !agent.state.connected ? 'warn' : 'info'"
       />
       <span class="grow" />
-      <Button icon="pi pi-plus" text size="small" severity="secondary" aria-label="New chat" @click="chats.createChat()" />
+      <Button icon="aw-icon aw-icon-plus" text size="small" severity="secondary" aria-label="New chat" @click="chats.createChat()" />
       <slot name="head-actions" />
     </header>
-    <div v-if="chats.state.loading && !displayChat" class="loading"><i class="pi pi-spin pi-spinner" /> Loading chat…</div>
+    <div v-if="chats.state.loading && !displayChat" class="loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /> Loading chat…</div>
     <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" :needsSources="needsSources" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @import="shell?.requestImport()" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
     <ChatComposer
       v-if="activeChat"

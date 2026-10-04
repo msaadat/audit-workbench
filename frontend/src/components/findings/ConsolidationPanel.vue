@@ -41,8 +41,8 @@ const emit = defineEmits<{
 }>()
 
 const RELATION_LABEL: Record<ConsolidationRelation, string> = {
-  same_condition: 'same condition',
-  shared_cause: 'shared cause',
+  same_condition: 'Same condition',
+  shared_cause: 'Shared cause',
 }
 
 const groups = computed(() => (props.payload?.suggestion?.groups ?? []).filter(group => !group.decision))
@@ -131,7 +131,7 @@ const basisState = computed(() => {
       </div>
       <Button
         :label="payload?.current ? 'Review again' : 'Refresh suggestions'"
-        icon="pi pi-sparkles"
+        icon="aw-icon aw-icon-sparkles"
         size="small"
         outlined
         severity="secondary"
@@ -159,7 +159,7 @@ const basisState = computed(() => {
             <span class="member-id aw-figure">{{ member.id }}</span>
             <span class="member-title">{{ member.title }}</span>
             <span class="member-meta">{{ member.severity }}<template v-if="member.process"> · {{ member.process }}</template></span>
-            <span v-if="member.auditor_confirmed" class="pill">confirmed</span>
+            <span v-if="member.auditor_confirmed" class="pill">Confirmed</span>
           </label>
         </li>
       </ul>
@@ -193,14 +193,14 @@ const basisState = computed(() => {
       <p v-if="confirmedIn(group)" class="note">A confirmed finding is in this group. Accepting merges it and leaves the combined finding unconfirmed.</p>
 
       <div class="actions">
-        <Button label="Accept" icon="pi pi-check" size="small" :disabled="busy" @click="accept(group)" />
+        <Button label="Accept" icon="aw-icon aw-icon-check" size="small" :disabled="busy" @click="accept(group)" />
         <Button label="Dismiss" size="small" text severity="secondary" :disabled="busy" @click="emit('dismiss', group)" />
       </div>
     </article>
 
     <article v-if="manual" class="card manual" data-testid="consolidation-manual">
       <div class="card-head">
-        <span class="chip" data-relation="manual">consolidate selected</span>
+        <span class="chip" data-relation="manual">Consolidate selected</span>
         <span class="basis">Pick the findings that report one issue, then the one that leads.</span>
       </div>
       <Listbox
@@ -232,7 +232,7 @@ const basisState = computed(() => {
         <dd><InputText v-model="manualChoice.title" class="title-input" placeholder="Keep the lead's title" aria-label="Combined title" /></dd>
       </dl>
       <div class="actions">
-        <Button label="Consolidate" icon="pi pi-check" size="small" :disabled="busy || manualChoice.ids.length < 2" @click="consolidate" />
+        <Button label="Consolidate" icon="aw-icon aw-icon-check" size="small" :disabled="busy || manualChoice.ids.length < 2" @click="consolidate" />
         <Button label="Cancel" size="small" text severity="secondary" @click="emit('closeManual')" />
       </div>
     </article>
@@ -263,7 +263,7 @@ const basisState = computed(() => {
 .chip {
   padding: 0 .45rem; border-radius: var(--aw-radius-pill);
   background: var(--aw-panel); color: var(--aw-ink-strong);
-  font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  font-size: var(--aw-text-2xs); font-weight: 700;
 }
 .basis { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 
@@ -273,7 +273,7 @@ const basisState = computed(() => {
 .member-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--aw-ink); }
 .members li.lead .member-title { font-weight: 600; }
 .member-meta { color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: nowrap; }
-.pill { padding: 0 .375rem; border-radius: var(--aw-radius-pill); background: var(--aw-panel); color: var(--aw-warn-ink); font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; }
+.pill { padding: 0 .375rem; border-radius: var(--aw-radius-pill); background: var(--aw-panel); color: var(--aw-warn-ink); font-size: var(--aw-text-2xs); font-weight: 700; }
 
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .75rem; margin: 0; font-size: var(--aw-text-sm); }
 .facts dt { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; padding-top: .15rem; }

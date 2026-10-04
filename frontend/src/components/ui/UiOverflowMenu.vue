@@ -13,7 +13,7 @@ const menu = ref<InstanceType<typeof Menu> | null>(null)
 <template>
   <Button
     :label="label"
-    icon="pi pi-ellipsis-v"
+    icon="aw-icon aw-icon-ellipsis-vertical"
     iconPos="right"
     severity="secondary"
     text

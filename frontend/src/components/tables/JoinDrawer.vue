@@ -133,11 +133,11 @@ async function save() {
       <label>Join keys</label>
       <div v-for="(pair, index) in pairs" :key="index" class="row pair-row">
         <Select v-model="pair.left_on" :options="leftColumns" placeholder="Left column" class="grow" filter />
-        <i class="pi pi-arrows-h muted" />
+        <i class="aw-icon aw-icon-move-horizontal muted" />
         <Select v-model="pair.right_on" :options="rightColumns" placeholder="Right column" class="grow" filter />
-        <Button icon="pi pi-times" text severity="danger" :disabled="pairs.length === 1" @click="pairs.splice(index, 1)" />
+        <Button icon="aw-icon aw-icon-x" text severity="danger" :disabled="pairs.length === 1" @click="pairs.splice(index, 1)" />
       </div>
-      <Button label="Add key pair" icon="pi pi-plus" text size="small" @click="pairs.push({ left_on: null, right_on: null })" />
+      <Button label="Add key pair" icon="aw-icon aw-icon-plus" text size="small" @click="pairs.push({ left_on: null, right_on: null })" />
     </div>
 
     <UiAdvancedSection title="Advanced join type" description="Left join keeps every row from the left table">
@@ -146,7 +146,7 @@ async function save() {
 
     <div class="foot">
       <Button label="Cancel" size="small" outlined severity="secondary" @click="emit('update:visible', false)" />
-      <Button label="Create join" icon="pi pi-link" size="small" :disabled="!valid" :loading="saving" @click="save" />
+      <Button label="Create join" icon="aw-icon aw-icon-link" size="small" :disabled="!valid" :loading="saving" @click="save" />
     </div>
   </Drawer>
 </template>

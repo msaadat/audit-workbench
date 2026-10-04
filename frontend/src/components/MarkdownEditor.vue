@@ -149,7 +149,7 @@ function followInternalLink(event: MouseEvent) {
  */
 .markdown-editor :deep(.milkdown .ProseMirror) {
   padding-block: 1.5rem;
-  padding-inline: max(1.25rem, calc((100% - 96ch) / 2));
+  padding-inline: max(1.25rem, calc((100% - var(--aw-measure)) / 2));
   font-size: var(--aw-text-md);
   line-height: 1.65;
 }

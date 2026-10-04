@@ -37,8 +37,8 @@ const visible = computed(() => {
 // read as three peers, which put "create" and "delete for ever" a few pixels
 // apart and made both apply to whichever chat happened to be selected.
 const rowActions = [
-  { label: 'Rename chat', icon: 'pi pi-pencil', command: () => emit('rename') },
-  { label: 'Delete chat', icon: 'pi pi-trash', command: () => emit('remove') },
+  { label: 'Rename chat', icon: 'aw-icon aw-icon-pencil', command: () => emit('rename') },
+  { label: 'Delete chat', icon: 'aw-icon aw-icon-trash-2', command: () => emit('remove') },
 ]
 
 const RUNNING = new Set(['running', 'awaiting_approval', 'awaiting_input', 'queued', 'starting'])
@@ -69,11 +69,11 @@ function meta(chat: AssistantChatSummary): string {
   <div class="chat-list">
     <header>
       <h3 class="aw-label">Chats</h3>
-      <Button icon="pi pi-plus" text size="small" aria-label="New chat" v-tooltip.bottom="'New chat'" @click="emit('create')" />
+      <Button icon="aw-icon aw-icon-plus" text size="small" aria-label="New chat" v-tooltip.bottom="'New chat'" @click="emit('create')" />
     </header>
     <div v-if="searchable" class="search">
       <IconField>
-        <InputIcon class="pi pi-search" />
+        <InputIcon class="aw-icon aw-icon-search" />
         <InputText v-model="search" size="small" placeholder="Search chats" />
       </IconField>
     </div>

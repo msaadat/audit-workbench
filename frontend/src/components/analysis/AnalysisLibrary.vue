@@ -242,7 +242,7 @@ async function save() {
 
 /** Everything that is not this procedure's next act. */
 const menuItems = computed(() => [
-  { label: 'Delete procedure', icon: 'pi pi-trash', command: () => confirmDelete() },
+  { label: 'Delete procedure', icon: 'aw-icon aw-icon-trash-2', command: () => confirmDelete() },
 ])
 
 function confirmDelete() {
@@ -250,7 +250,7 @@ function confirmDelete() {
   confirm.require({
     header: 'Delete analysis',
     message: `Delete "${props.analysis.title}"?`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -373,7 +373,7 @@ watch(table, () => {
     <template #actions>
       <Button
         label="Save"
-        icon="pi pi-save"
+        icon="aw-icon aw-icon-save"
         size="small"
         :severity="analysis && !dirty ? 'secondary' : undefined"
         :outlined="Boolean(analysis) && !dirty"
@@ -381,7 +381,7 @@ watch(table, () => {
         :loading="saving"
         @click="save"
       />
-      <Button v-if="result || detail" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
+      <Button v-if="result || detail" label="Export" icon="aw-icon aw-icon-file-spreadsheet" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
       <UiOverflowMenu v-if="analysis" :items="menuItems" tooltip="More procedure actions" />
     </template>
   </AnalysisHead>
@@ -404,7 +404,7 @@ watch(table, () => {
     </span>
   </p>
   <p v-if="analysis && dirty" class="dirty-note">
-    <i class="pi pi-pencil" /> Unsaved changes. Running saves them first, so the
+    <i class="aw-icon aw-icon-pencil" /> Unsaved changes. Running saves them first, so the
     recorded result always matches the definition that produced it.
   </p>
 
@@ -424,12 +424,12 @@ watch(table, () => {
       <strong>{{ selected.label }}</strong>
       <span>{{ selected.description }}</span>
     </div>
-    <Button label="Change test" icon="pi pi-th-large" severity="secondary" size="small" outlined @click="pickerOpen = true" />
+    <Button label="Change test" icon="aw-icon aw-icon-layout-grid" severity="secondary" size="small" outlined @click="pickerOpen = true" />
   </div>
 
   <div v-if="pickerOpen" class="picker">
     <div v-if="selected" class="picker-head">
-      <Button label="Keep current" icon="pi pi-times" text size="small" @click="pickerOpen = false" />
+      <Button label="Keep current" icon="aw-icon aw-icon-x" text size="small" @click="pickerOpen = false" />
     </div>
     <template v-for="group in testGroups" :key="group.name">
       <p class="group-title">{{ group.name }}</p>
@@ -451,7 +451,7 @@ watch(table, () => {
 
   <div v-if="selected && !pickerOpen" class="run-panel">
     <button class="section-toggle" @click="paramsOpen = !paramsOpen">
-      <i :class="paramsOpen ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
+      <i :class="paramsOpen ? 'aw-icon aw-icon-chevron-down' : 'aw-icon aw-icon-chevron-right'" />
       Parameters
     </button>
     <div v-show="paramsOpen" class="param-form">
@@ -490,7 +490,7 @@ watch(table, () => {
           style="width: 8rem"
         />
       </div>
-      <Button label="Preview" icon="pi pi-eye" severity="secondary" outlined :disabled="!ready" :loading="previewing" @click="preview" />
+      <Button label="Preview" icon="aw-icon aw-icon-eye" severity="secondary" outlined :disabled="!ready" :loading="previewing" @click="preview" />
       <span class="muted run-hint">
         A preview shows what these parameters return now; it records nothing.
       </span>
@@ -499,7 +499,7 @@ watch(table, () => {
 
   <div v-if="result" class="result">
     <div class="result-head" :data-verdict="result.verdict">
-      <span class="result-icon"><i :class="result.verdict === 'ok' ? 'pi pi-check-circle' : result.verdict === 'fail' ? 'pi pi-times-circle' : result.verdict === 'warn' ? 'pi pi-exclamation-triangle' : 'pi pi-info-circle'" /></span>
+      <span class="result-icon"><i :class="result.verdict === 'ok' ? 'aw-icon aw-icon-circle-check' : result.verdict === 'fail' ? 'aw-icon aw-icon-circle-x' : result.verdict === 'warn' ? 'aw-icon aw-icon-triangle-alert' : 'aw-icon aw-icon-info'" /></span>
       <div><p class="eyebrow">Preview — not recorded</p><h3>{{ result.title }}</h3></div>
       <span class="grow" />
       <Tag :value="result.verdict_text || result.verdict" :severity="verdictSeverity[result.verdict]" />
@@ -542,10 +542,10 @@ watch(table, () => {
     <ChartView :frame="detail.frame" :viz="detail.viz" height="280px" />
   </div>
   <p v-else-if="detail?.error" class="analysis-error">
-    <i class="pi pi-exclamation-triangle" /> {{ detail.error }}
+    <i class="aw-icon aw-icon-triangle-alert" /> {{ detail.error }}
   </p>
   <div v-else-if="loadingCurrent" class="loading-current">
-    <i class="pi pi-spin pi-spinner" /> Loading current result…
+    <i class="aw-icon aw-icon-spin aw-icon-loader-circle" /> Loading current result…
   </div>
 
 

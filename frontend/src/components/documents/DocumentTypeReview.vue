@@ -232,7 +232,7 @@ watch(visible, open => { if (open) void load() }, { immediate: true })
 
       <div v-for="group in groups" :key="group.id" class="type-group">
         <button type="button" class="type-group__head" @click="expanded[group.id] = !expanded[group.id]">
-          <i :class="expanded[group.id] ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
+          <i :class="expanded[group.id] ? 'aw-icon aw-icon-chevron-down' : 'aw-icon aw-icon-chevron-right'" />
           <span>{{ group.label }}</span>
           <span class="type-group__count">{{ group.items.length }}</span>
         </button>
@@ -303,9 +303,7 @@ watch(visible, open => { if (open) void load() }, { immediate: true })
 .type-section {
   margin: 0 0 0.6rem;
   font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  font-weight: 600;
   color: var(--p-text-muted-color);
 }
 .type-identified {

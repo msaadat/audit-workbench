@@ -151,7 +151,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
          card used to restate is already in the narration above it. -->
     <div class="head-row">
       <span class="run-head">
-        <span class="icon"><i :class="active ? 'pi pi-spin pi-spinner' : 'pi pi-sparkles'" /></span>
+        <span class="icon"><i :class="active ? 'aw-icon aw-icon-spin aw-icon-loader-circle' : 'aw-icon aw-icon-sparkles'" /></span>
         <span class="identity">
           <strong>{{ projection.title }}</strong>
           <small>{{ subline }}</small>
@@ -161,14 +161,14 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       <Tag v-else-if="projection.status === 'completed_with_failures'" :value="projection.status_label" severity="warn" />
       <Tag v-else-if="projection.pending_attention" value="Needs you" severity="warn" />
       <template v-if="active">
-        <button v-if="!['paused','interrupted'].includes(projection.status)" class="control" :disabled="busy" title="Pause" aria-label="Pause the run" @click="control('pause')"><i class="pi pi-pause" /></button>
-        <button v-else class="control" :disabled="busy" title="Resume" aria-label="Resume the run" @click="control('resume')"><i class="pi pi-play" /></button>
-        <button class="control danger" :disabled="busy" title="Stop" aria-label="Stop the run" @click="control('cancel')"><i class="pi pi-stop-circle" /></button>
+        <button v-if="!['paused','interrupted'].includes(projection.status)" class="control" :disabled="busy" title="Pause" aria-label="Pause the run" @click="control('pause')"><i class="aw-icon aw-icon-pause" /></button>
+        <button v-else class="control" :disabled="busy" title="Resume" aria-label="Resume the run" @click="control('resume')"><i class="aw-icon aw-icon-play" /></button>
+        <button class="control danger" :disabled="busy" title="Stop" aria-label="Stop the run" @click="control('cancel')"><i class="aw-icon aw-icon-circle-stop" /></button>
       </template>
       <!-- Continue is offered first wherever the run named what is left: it
            resumes only the remainder, where retry replays the whole command. -->
-      <button v-else-if="canContinue" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="pi pi-arrow-right" /></button>
-      <button v-else-if="canRetry" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="openRetryPrompt"><i class="pi pi-refresh" /></button>
+      <button v-else-if="canContinue" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="aw-icon aw-icon-arrow-right" /></button>
+      <button v-else-if="canRetry" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="openRetryPrompt"><i class="aw-icon aw-icon-refresh-cw" /></button>
     </div>
 
     <!-- Optional, and skippable in one click: most retries have nothing to add,

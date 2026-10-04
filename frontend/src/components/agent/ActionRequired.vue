@@ -61,7 +61,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
         <p class="summary">{{ total ? 'Review these run issues and continue where needed.' : 'Nothing is holding the current run.' }}</p>
       </div>
       <Tag v-if="total" :value="String(total)" severity="warn" />
-      <i v-else class="pi pi-check-circle" aria-hidden="true" />
+      <i v-else class="aw-icon aw-icon-circle-check" aria-hidden="true" />
     </div>
 
     <AgentApprovalCard
@@ -81,7 +81,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       @respond="respond(interaction, $event)"
     />
     <div v-for="item in blockers" :key="item.id" class="blocker" :class="{ failed: item.failed }">
-      <i :class="item.failed ? 'pi pi-times-circle' : 'pi pi-pause-circle'" aria-hidden="true" />
+      <i :class="item.failed ? 'aw-icon aw-icon-circle-x' : 'aw-icon aw-icon-circle-pause'" aria-hidden="true" />
       <span><strong>{{ item.title }}</strong><small>{{ item.detail }}</small></span>
     </div>
   </section>

@@ -52,9 +52,9 @@ const showAccount = computed(() => !session.state.singleUser && session.state.us
 
 const THEME_LABEL = { system: 'System', light: 'Light', dark: 'Dark' } as const
 const THEME_ICON = {
-  system: 'pi pi-desktop',
-  light: 'pi pi-sun',
-  dark: 'pi pi-moon',
+  system: 'aw-icon aw-icon-monitor',
+  light: 'aw-icon aw-icon-sun',
+  dark: 'aw-icon aw-icon-moon',
 } as const
 
 /**
@@ -68,7 +68,7 @@ const kebabItems = computed<MenuItem[]>(() => {
   const items: MenuItem[] = [
     {
       label: 'Presentation size',
-      icon: 'pi pi-search-plus',
+      icon: 'aw-icon aw-icon-zoom-in',
       class: presenting.value ? 'shell-menu-item--on' : undefined,
       command: () => { presenting.value = !presenting.value },
     },
@@ -82,16 +82,16 @@ const kebabItems = computed<MenuItem[]>(() => {
   if (current) {
     items.push({
       label: 'Diagnostics',
-      icon: 'pi pi-code',
+      icon: 'aw-icon aw-icon-code',
       command: () => { void router.push(`/workspace/${current.id}/debug`) },
     })
   }
-  items.push({ label: 'About Audit Workbench', icon: 'pi pi-info-circle', url: '/about.html' })
+  items.push({ label: 'About Audit Workbench', icon: 'aw-icon aw-icon-info', url: '/about.html' })
   if (showAccount.value) {
     items.push(
       { separator: true },
       { label: `Signed in as ${session.state.user?.email ?? ''}`, disabled: true },
-      { label: 'Sign out', icon: 'pi pi-sign-out', command: () => { void signOut() } },
+      { label: 'Sign out', icon: 'aw-icon aw-icon-log-out', command: () => { void signOut() } },
     )
   }
   return items
@@ -135,7 +135,7 @@ onUnmounted(() => {
   <header class="app-shell">
     <div class="app-shell__trail">
       <RouterLink to="/" class="app-shell__mark" aria-label="All engagements">
-        <i class="pi pi-verified" aria-hidden="true" />
+        <i class="aw-icon aw-icon-badge-check" aria-hidden="true" />
       </RouterLink>
       <!-- The wordmark only where there is no trail. Inside an engagement the
            engagement's name is the identity, and two of them is the 330 px the
@@ -143,7 +143,7 @@ onUnmounted(() => {
       <strong v-if="!engagement" class="app-shell__wordmark">Audit Workbench</strong>
 
       <template v-if="engagement">
-        <i class="app-shell__sep pi pi-chevron-right" aria-hidden="true" />
+        <i class="app-shell__sep aw-icon aw-icon-chevron-right" aria-hidden="true" />
         <span
           ref="engagementWrap"
           class="app-shell__engagement"
@@ -164,8 +164,8 @@ onUnmounted(() => {
             @click="toggleSwitcher"
           >
             <span class="app-shell__switch-icon">
-              <i class="pi pi-chevron-right app-shell__switch-icon--right" aria-hidden="true" />
-              <i class="pi pi-chevron-down app-shell__switch-icon--down" aria-hidden="true" />
+              <i class="aw-icon aw-icon-chevron-right app-shell__switch-icon--right" aria-hidden="true" />
+              <i class="aw-icon aw-icon-chevron-down app-shell__switch-icon--down" aria-hidden="true" />
             </span>
           </button>
 
@@ -181,7 +181,7 @@ onUnmounted(() => {
       <template v-for="(crumb, index) in trail" :key="index">
         <!-- Crumb 0 follows the engagement switcher, whose own icon already
              reads as the separator into it; only later crumbs need one. -->
-        <i v-if="index > 0" class="app-shell__sep pi pi-chevron-right" aria-hidden="true" />
+        <i v-if="index > 0" class="app-shell__sep aw-icon aw-icon-chevron-right" aria-hidden="true" />
         <RouterLink
           v-if="crumb.to"
           :to="crumb.to"
@@ -208,7 +208,7 @@ onUnmounted(() => {
         aria-label="More"
         aria-haspopup="true"
         @click="kebab?.toggle($event)"
-      ><i class="pi pi-ellipsis-v" aria-hidden="true" /></button>
+      ><i class="aw-icon aw-icon-ellipsis-vertical" aria-hidden="true" /></button>
       <Menu ref="kebab" :model="kebabItems" popup />
     </div>
   </header>
@@ -370,30 +370,35 @@ a.app-shell__crumb:hover { background: var(--aw-on-dark-hover); color: var(--aw-
   font-size: var(--aw-text-sm);
   white-space: nowrap;
 }
-/* The assistant is the one control the bar exists to offer, so it is filled
-   rather than translucent; a ghost pill beside a filled one read as disabled.
-   Its text is `--aw-on-accent` rather than white because the accent itself
-   flips: dark teal on a light ground, light teal on a dark one. */
+/* The assistant is the bar's one labelled control, and it is drawn like the
+   kebab beside it — a wash on the navy, not a fill. It used to be the one
+   filled teal button on every screen, which made it the loudest control on
+   pages whose own primary is the next step of the audit; a screen gets one
+   filled button and the bar does not spend it. Its icon carries the accent so
+   it is still found first. Open reads as pressed, in the accent's own wash. */
 .app-shell__actions :deep(.assistant-toggle.p-button) {
-  border-color: var(--aw-teal);
-  background: var(--aw-teal);
-  color: var(--aw-on-accent);
+  border-color: var(--aw-on-dark-line);
+  background: var(--aw-on-dark-wash);
+  color: var(--aw-on-dark);
 }
+.app-shell__actions :deep(.assistant-toggle.p-button .p-button-icon) { color: var(--aw-on-navy-accent); }
 .app-shell__actions :deep(.assistant-toggle.p-button:hover) {
-  border-color: var(--aw-teal-600);
-  background: var(--aw-teal-600);
+  border-color: var(--aw-on-dark-line);
+  background: var(--aw-on-dark-hover);
+  color: var(--aw-on-dark);
 }
-/* Open reads as pressed. */
 .app-shell__actions :deep(.assistant-toggle.on.p-button) {
-  border-color: var(--aw-teal-600);
-  background: var(--aw-teal-600);
+  border-color: var(--aw-on-navy-accent-line);
+  background: var(--aw-on-navy-accent-wash);
+  color: var(--aw-on-navy-accent-ink);
 }
-/* A run that needs the auditor is the one state worth breaking colour for. */
+/* A run that needs the auditor says so in the warning hue — as an edge and a
+   word ("needs you"), the way every other state is marked, not as a fill. */
 .app-shell__actions :deep(.assistant-toggle.attention.p-button) {
-  border-color: var(--aw-warn);
-  background: var(--aw-warn);
-  color: var(--aw-on-accent);
+  border-color: var(--aw-on-navy-warn);
+  color: var(--aw-on-navy-warn);
 }
+.app-shell__actions :deep(.assistant-toggle.attention.p-button .p-button-icon) { color: var(--aw-on-navy-warn); }
 
 /* --- narrow ------------------------------------------------------------- */
 /* The labelled button drops to an icon and the trail truncates its middle

@@ -87,10 +87,10 @@ function kindOf(field: string): string {
 
 function fieldIcon(field: string): string {
   const kind = kindOf(field)
-  if (kind === 'numeric') return 'pi pi-hashtag'
-  if (kind === 'date') return 'pi pi-calendar'
-  if (kind === 'boolean') return 'pi pi-check-square'
-  return 'pi pi-align-left'
+  if (kind === 'numeric') return 'aw-icon aw-icon-hash'
+  if (kind === 'date') return 'aw-icon aw-icon-calendar'
+  if (kind === 'boolean') return 'aw-icon aw-icon-square-check'
+  return 'aw-icon aw-icon-text-align-start'
 }
 
 function aggFuncOptions(agg: AggSpec) {
@@ -521,28 +521,28 @@ async function exportExcel() {
     <Tag v-if="result && wasGrouped" :value="`${result.total_rows.toLocaleString()} groups`" severity="info" />
     <Button
       label="Export"
-      icon="pi pi-file-excel"
+      icon="aw-icon aw-icon-file-spreadsheet"
       severity="secondary"
       :loading="exporting"
       :disabled="!result"
       v-tooltip.bottom="'Full result to Excel'"
       @click="exportExcel"
     />
-    <Button icon="pi pi-undo" severity="secondary" text :disabled="!filters.length && !groupBy.length && !aggs.length && !splitField && !sortSpec.length" v-tooltip.bottom="'Clear query'" @click="clearQuery" />
+    <Button icon="aw-icon aw-icon-undo-2" severity="secondary" text :disabled="!filters.length && !groupBy.length && !aggs.length && !splitField && !sortSpec.length" v-tooltip.bottom="'Clear query'" @click="clearQuery" />
   </div>
 
   <div class="query-layout">
     <div class="query-result surface-panel" :class="{ dim: running }">
       <div class="result-titlebar">
         <div><strong>{{ resultSummary }}</strong></div>
-        <span v-if="running" class="computing"><i class="pi pi-spinner pi-spin" /> Recomputing</span>
+        <span v-if="running" class="computing"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Recomputing</span>
       </div>
       <div class="result-body">
-      <div v-if="!table" class="empty-state compact-empty"><div><span class="empty-state-icon"><i class="pi pi-table" /></span><h3>Select a source table</h3></div></div>
-      <div v-else-if="lastError" class="error"><i class="pi pi-exclamation-circle" /> {{ lastError }}</div>
+      <div v-if="!table" class="empty-state compact-empty"><div><span class="empty-state-icon"><i class="aw-icon aw-icon-table" /></span><h3>Select a source table</h3></div></div>
+      <div v-else-if="lastError" class="error"><i class="aw-icon aw-icon-circle-alert" /> {{ lastError }}</div>
       <template v-else-if="result">
         <div class="result-meta" v-if="showChartControls || wasGrouped">
-          <span v-if="wasGrouped" class="muted small"><i class="pi pi-info-circle" /> Click a group row to drill down to its rows.</span>
+          <span v-if="wasGrouped" class="muted small"><i class="aw-icon aw-icon-info" /> Click a group row to drill down to its rows.</span>
           <span v-if="showChartControls" class="viz-controls">
             <Select v-model="vizType" :options="['table', 'bar', 'line', 'pie']" class="viz-type" />
             <template v-if="vizType !== 'table'">
@@ -647,7 +647,7 @@ async function exportExcel() {
           </Column>
         </DataTable>
       </template>
-      <p v-else class="muted hint"><i class="pi pi-spinner pi-spin" /> Computing result…</p>
+      <p v-else class="muted hint"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Computing result…</p>
       </div>
     </div>
 
@@ -659,7 +659,7 @@ async function exportExcel() {
           <span class="grow" />
           <span v-if="hiddenCount" class="muted small">{{ hiddenCount }} hidden</span>
           <Button
-            icon="pi pi-eye"
+            icon="aw-icon aw-icon-eye"
             text
             rounded
             size="small"
@@ -687,7 +687,7 @@ async function exportExcel() {
               <span class="field-name">{{ column }}</span>
             </span>
             <Button
-              :icon="visibleColumnSet.has(column) ? 'pi pi-eye' : 'pi pi-eye-slash'"
+              :icon="visibleColumnSet.has(column) ? 'aw-icon aw-icon-eye' : 'aw-icon aw-icon-eye-off'"
               text
               rounded
               size="small"
@@ -709,7 +709,7 @@ async function exportExcel() {
         @dragleave="dragOver = null"
         @drop="onDrop('filters')"
       >
-        <div class="panel-head"><i class="pi pi-filter" /> Filters</div>
+        <div class="panel-head"><i class="aw-icon aw-icon-funnel" /> Filters</div>
         <p v-if="filters.length === 0" class="muted empty">Drop a field here to filter</p>
         <div v-for="(filter, index) in filters" :key="index" class="zone-row">
           <span
@@ -727,7 +727,7 @@ async function exportExcel() {
           />
           <InputText v-if="needsValue(filter.op)" v-model="filter.value" size="small" placeholder="Value" class="val" @keyup.enter="run()" />
           <InputText v-if="filter.op === 'between'" v-model="filter.value2" size="small" placeholder="and…" class="val" @keyup.enter="run()" />
-          <Button icon="pi pi-times" text severity="danger" size="small" @click="filters.splice(index, 1)" />
+          <Button icon="aw-icon aw-icon-x" text severity="danger" size="small" @click="filters.splice(index, 1)" />
         </div>
       </div>
 
@@ -739,7 +739,7 @@ async function exportExcel() {
         @dragleave="dragOver = null"
         @drop="onDrop('group')"
       >
-        <div class="panel-head"><i class="pi pi-arrows-v" /> Group by</div>
+        <div class="panel-head"><i class="aw-icon aw-icon-move-vertical" /> Group by</div>
         <p v-if="groupBy.length === 0" class="muted empty">Drop fields here — one row per group</p>
         <div v-for="(field, index) in groupBy" :key="field" class="zone-row">
           <span
@@ -747,7 +747,7 @@ async function exportExcel() {
             draggable="true"
             @dragstart="startDrag(field, 'group', index)"
           >{{ field }}</span>
-          <Button icon="pi pi-times" text severity="danger" size="small" @click="groupBy.splice(index, 1)" />
+          <Button icon="aw-icon aw-icon-x" text severity="danger" size="small" @click="groupBy.splice(index, 1)" />
         </div>
       </div>
 
@@ -760,7 +760,7 @@ async function exportExcel() {
         @dragleave="dragOver = null"
         @drop="onDrop('split')"
       >
-        <summary class="panel-head"><span><i class="pi pi-arrows-h" /> Split by</span><small>Advanced</small><i class="pi pi-chevron-down" /></summary>
+        <summary class="panel-head"><span><i class="aw-icon aw-icon-move-horizontal" /> Split by</span><small>Advanced</small><i class="aw-icon aw-icon-chevron-down" /></summary>
         <p v-if="!splitField" class="muted empty">Drop one field here — its values become columns</p>
         <div v-else class="zone-row">
           <span
@@ -768,7 +768,7 @@ async function exportExcel() {
             draggable="true"
             @dragstart="startDrag(splitField, 'split', 0)"
           >{{ splitField }}</span>
-          <Button icon="pi pi-times" text severity="danger" size="small" @click="splitField = null" />
+          <Button icon="aw-icon aw-icon-x" text severity="danger" size="small" @click="splitField = null" />
         </div>
       </details>
 
@@ -781,7 +781,7 @@ async function exportExcel() {
         @dragleave="dragOver = null"
         @drop="onDrop('aggs')"
       >
-        <summary class="panel-head"><span><i class="pi pi-calculator" /> Aggregations</span><small>Advanced</small><i class="pi pi-chevron-down" /></summary>
+        <summary class="panel-head"><span><i class="aw-icon aw-icon-calculator" /> Aggregations</span><small>Advanced</small><i class="aw-icon aw-icon-chevron-down" /></summary>
         <p v-if="aggs.length === 0" class="muted empty">
           {{ groupBy.length || isPivot ? 'Drop fields here — default: count of rows' : 'Drop fields here to aggregate' }}
         </p>
@@ -800,7 +800,7 @@ async function exportExcel() {
             size="small"
             class="op"
           />
-          <Button icon="pi pi-times" text severity="danger" size="small" @click="aggs.splice(index, 1)" />
+          <Button icon="aw-icon aw-icon-x" text severity="danger" size="small" @click="aggs.splice(index, 1)" />
         </div>
       </details>
 
@@ -814,7 +814,7 @@ async function exportExcel() {
         @dragleave="dragOver = null"
         @drop="onDrop('sort')"
       >
-        <summary class="panel-head"><span><i class="pi pi-sort-alt" /> Order by</span><small>Advanced</small><i class="pi pi-chevron-down" /></summary>
+        <summary class="panel-head"><span><i class="aw-icon aw-icon-arrow-up-down" /> Order by</span><small>Advanced</small><i class="aw-icon aw-icon-chevron-down" /></summary>
         <p v-if="sortSpec.length === 0" class="muted empty">Drop fields here to sort</p>
         <div v-for="(sort, index) in sortSpec" :key="index" class="zone-row">
           <Select
@@ -825,13 +825,13 @@ async function exportExcel() {
             filter
           />
           <Button
-            :icon="sort.desc ? 'pi pi-sort-amount-down' : 'pi pi-sort-amount-up'"
+            :icon="sort.desc ? 'aw-icon aw-icon-arrow-down-wide-narrow' : 'aw-icon aw-icon-arrow-up-wide-narrow'"
             text
             size="small"
             v-tooltip.left="sort.desc ? 'Descending' : 'Ascending'"
             @click="sort.desc = !sort.desc"
           />
-          <Button icon="pi pi-times" text severity="danger" size="small" @click="sortSpec.splice(index, 1)" />
+          <Button icon="aw-icon aw-icon-x" text severity="danger" size="small" @click="sortSpec.splice(index, 1)" />
         </div>
       </details>
     </aside>
@@ -1156,12 +1156,10 @@ async function exportExcel() {
   padding: 0.6rem 0.75rem;
 }
 
-.zone { border-left-width: 3px; }
-.zone[data-zone='filters'] { border-left-color: var(--aw-warn); }
-.zone[data-zone='group'] { border-left-color: var(--aw-info); }
-.zone[data-zone='split'] { border-left-color: var(--aw-accent); }
-.zone[data-zone='aggs'] { border-left-color: var(--aw-teal); }
-.zone[data-zone='sort'] { border-left-color: var(--aw-muted); }
+/* Each zone is told apart by its icon and its title. It also carried a
+   coloured left edge — amber, blue, purple, teal, grey — which spent the
+   warning and assistant hues as decoration, so a filter zone read as a
+   warning. A hue means a state; these are places. */
 
 .zone {
   min-height: 4.2rem;
@@ -1171,8 +1169,8 @@ async function exportExcel() {
 .advanced-zone > summary::-webkit-details-marker { display: none; }
 .advanced-zone > summary span { display: flex; align-items: center; gap: .4rem; }
 .advanced-zone > summary small { margin-left: auto; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600; }
-.advanced-zone > summary > .pi-chevron-down { color: var(--aw-muted); font-size: var(--aw-text-2xs); transition: rotate .15s; }
-.advanced-zone[open] > summary > .pi-chevron-down { rotate: 180deg; }
+.advanced-zone > summary > .aw-icon-chevron-down { color: var(--aw-muted); font-size: var(--aw-text-2xs); transition: rotate .15s; }
+.advanced-zone[open] > summary > .aw-icon-chevron-down { rotate: 180deg; }
 
 .zone.over {
   border-color: var(--aw-teal);

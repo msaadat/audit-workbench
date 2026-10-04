@@ -173,7 +173,7 @@ const columns = computed(() => `13.75rem minmax(0, 1fr) ${props.railWidth}`)
   flex: none; padding: 0 .3rem;
   border-radius: var(--aw-radius-pill);
   background: var(--aw-warn-soft); color: var(--aw-warn-ink);
-  font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  font-size: var(--aw-text-2xs); font-weight: 700;
 }
 .outline .empty { margin: 0; padding: .25rem .5rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 

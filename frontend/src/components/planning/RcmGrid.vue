@@ -103,7 +103,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
         :aria-expanded="!collapsed.has(group.process)"
         @click="toggle(group.process)"
       >
-        <i class="pi" :class="collapsed.has(group.process) ? 'pi-chevron-right' : 'pi-chevron-down'" />
+        <i class="aw-icon" :class="collapsed.has(group.process) ? 'aw-icon-chevron-right' : 'aw-icon-chevron-down'" />
         <span class="group-name">{{ group.process }}</span>
         <span class="group-summary aw-figure">{{ group.summary }}</span>
       </button>
@@ -128,7 +128,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 
           <span v-if="controlOf(row)" class="control">{{ controlOf(row) }}</span>
           <span v-else class="no-control">
-            <i class="pi pi-info-circle" />No control identified
+            <i class="aw-icon aw-icon-info" />No control identified
           </span>
 
           <span class="tests aw-figure">
@@ -154,12 +154,12 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
           </span>
 
           <span class="review" :data-reviewed="row.review_status === 'reviewed'">
-            <i v-if="row.review_status === 'reviewed'" class="pi pi-check-circle" />
+            <i v-if="row.review_status === 'reviewed'" class="aw-icon aw-icon-circle-check" />
             <span v-else class="draft-ring" />
             {{ row.review_status === 'reviewed' ? 'Reviewed' : 'Draft' }}
           </span>
 
-          <i class="pi pi-chevron-right go" />
+          <i class="aw-icon aw-icon-chevron-right go" />
         </button>
       </template>
     </template>
@@ -200,7 +200,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 }
 .group:hover { background: var(--aw-raised); }
 .group:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
-.group .pi { flex: none; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.group .aw-icon { flex: none; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .group-name { color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600; }
 .group-summary { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 
@@ -236,7 +236,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 .statement { color: var(--aw-ink); }
 .control { color: var(--aw-ink-soft); }
 .no-control { display: inline-flex; align-items: center; gap: .375rem; color: var(--aw-warn-ink); font-size: var(--aw-text-base); font-style: italic; }
-.no-control .pi { font-size: var(--aw-text-xs); }
+.no-control .aw-icon { font-size: var(--aw-text-xs); }
 
 /* One line: "2 tests · 0 exc" wrapping made a row half a line taller than the
    ones around it, which is the raggedness the fixed clamps above exist to
@@ -268,7 +268,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 
 .review { display: inline-flex; align-items: center; gap: .3125rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .review[data-reviewed='true'] { color: var(--aw-ok); }
-.review .pi { font-size: var(--aw-text-sm); }
+.review .aw-icon { font-size: var(--aw-text-sm); }
 .draft-ring { width: 12px; height: 12px; border: 1.5px dashed var(--aw-border-strong); border-radius: 50%; }
 
 .go { color: var(--aw-border-strong); font-size: var(--aw-text-sm); }

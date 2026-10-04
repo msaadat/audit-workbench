@@ -6,44 +6,44 @@ const props = withDefaults(defineProps<{ status: string; showLabel?: boolean }>(
 })
 
 const meta: Record<string, { icon: string; tone: string; label: string }> = {
-  draft: { icon: 'pi-file-edit', tone: 'secondary', label: 'Draft' },
-  ready: { icon: 'pi-clock', tone: 'secondary', label: 'Ready' },
-  in_progress: { icon: 'pi-spin pi-spinner', tone: 'info', label: 'In progress' },
-  review_required: { icon: 'pi-eye', tone: 'warn', label: 'Review required' },
-  blocked: { icon: 'pi-ban', tone: 'danger', label: 'Blocked' },
-  completed: { icon: 'pi-check-circle', tone: 'success', label: 'Completed' },
-  completed_no_exception: { icon: 'pi-check-circle', tone: 'success', label: 'No exception' },
-  completed_with_exception: { icon: 'pi-exclamation-triangle', tone: 'danger', label: 'Exception' },
-  not_applicable: { icon: 'pi-minus-circle', tone: 'secondary', label: 'Not applicable' },
-  pending: { icon: 'pi-clock', tone: 'secondary', label: 'Not run' },
-  agent_checked: { icon: 'pi-android', tone: 'info', label: 'Agent checked' },
-  confirmed: { icon: 'pi-check-circle', tone: 'success', label: 'Confirmed' },
-  exception: { icon: 'pi-exclamation-triangle', tone: 'danger', label: 'Exception' },
-  manual_review: { icon: 'pi-eye', tone: 'warn', label: 'Manual review' },
-  error: { icon: 'pi-times-circle', tone: 'danger', label: 'Error' },
-  needs_manual_check: { icon: 'pi-eye', tone: 'warn', label: 'Needs manual check' },
+  draft: { icon: 'aw-icon-file-pen', tone: 'secondary', label: 'Draft' },
+  ready: { icon: 'aw-icon-clock', tone: 'secondary', label: 'Ready' },
+  in_progress: { icon: 'aw-icon-spin aw-icon-loader-circle', tone: 'info', label: 'In progress' },
+  review_required: { icon: 'aw-icon-eye', tone: 'warn', label: 'Review required' },
+  blocked: { icon: 'aw-icon-ban', tone: 'danger', label: 'Blocked' },
+  completed: { icon: 'aw-icon-circle-check', tone: 'success', label: 'Completed' },
+  completed_no_exception: { icon: 'aw-icon-circle-check', tone: 'success', label: 'No exception' },
+  completed_with_exception: { icon: 'aw-icon-triangle-alert', tone: 'danger', label: 'Exception' },
+  not_applicable: { icon: 'aw-icon-circle-minus', tone: 'secondary', label: 'Not applicable' },
+  pending: { icon: 'aw-icon-clock', tone: 'secondary', label: 'Not run' },
+  agent_checked: { icon: 'aw-icon-bot', tone: 'info', label: 'Agent checked' },
+  confirmed: { icon: 'aw-icon-circle-check', tone: 'success', label: 'Confirmed' },
+  exception: { icon: 'aw-icon-triangle-alert', tone: 'danger', label: 'Exception' },
+  manual_review: { icon: 'aw-icon-eye', tone: 'warn', label: 'Manual review' },
+  error: { icon: 'aw-icon-circle-x', tone: 'danger', label: 'Error' },
+  needs_manual_check: { icon: 'aw-icon-eye', tone: 'warn', label: 'Needs manual check' },
   // The worker's own accept, which a population grid shows per record until an
   // auditor's disposition overrides it.
-  accepted: { icon: 'pi-check-circle', tone: 'success', label: 'Accepted' },
-  awaiting_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Awaiting evidence' },
-  not_run: { icon: 'pi-clock', tone: 'secondary', label: 'Not run' },
-  passed: { icon: 'pi-check-circle', tone: 'success', label: 'Passed' },
-  failed: { icon: 'pi-times-circle', tone: 'danger', label: 'Failed' },
-  incomplete: { icon: 'pi-inbox', tone: 'warn', label: 'Incomplete' },
-  needs_review: { icon: 'pi-eye', tone: 'warn', label: 'Needs review' },
-  stale: { icon: 'pi-history', tone: 'warn', label: 'Stale' },
+  accepted: { icon: 'aw-icon-circle-check', tone: 'success', label: 'Accepted' },
+  awaiting_evidence: { icon: 'aw-icon-inbox', tone: 'warn', label: 'Awaiting evidence' },
+  not_run: { icon: 'aw-icon-clock', tone: 'secondary', label: 'Not run' },
+  passed: { icon: 'aw-icon-circle-check', tone: 'success', label: 'Passed' },
+  failed: { icon: 'aw-icon-circle-x', tone: 'danger', label: 'Failed' },
+  incomplete: { icon: 'aw-icon-inbox', tone: 'warn', label: 'Incomplete' },
+  needs_review: { icon: 'aw-icon-eye', tone: 'warn', label: 'Needs review' },
+  stale: { icon: 'aw-icon-history', tone: 'warn', label: 'Stale' },
   // The runner could run the check but not settle it — distinct from an
   // auditor's 'needs_review', which is a decision to defer.
-  inconclusive: { icon: 'pi-question-circle', tone: 'warn', label: 'Inconclusive' },
-  match: { icon: 'pi-check', tone: 'success', label: 'Match' },
-  mismatch: { icon: 'pi-times', tone: 'danger', label: 'Mismatch' },
-  missing_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Missing evidence' },
-  invalid_extraction: { icon: 'pi-exclamation-circle', tone: 'warn', label: 'Invalid extraction' },
-  ambiguous: { icon: 'pi-question-circle', tone: 'warn', label: 'Ambiguous' },
+  inconclusive: { icon: 'aw-icon-circle-help', tone: 'warn', label: 'Inconclusive' },
+  match: { icon: 'aw-icon-check', tone: 'success', label: 'Match' },
+  mismatch: { icon: 'aw-icon-x', tone: 'danger', label: 'Mismatch' },
+  missing_evidence: { icon: 'aw-icon-inbox', tone: 'warn', label: 'Missing evidence' },
+  invalid_extraction: { icon: 'aw-icon-circle-alert', tone: 'warn', label: 'Invalid extraction' },
+  ambiguous: { icon: 'aw-icon-circle-help', tone: 'warn', label: 'Ambiguous' },
 }
 
 const info = computed(() => meta[props.status] ?? {
-  icon: 'pi-circle',
+  icon: 'aw-icon-circle',
   tone: 'secondary',
   label: props.status.replaceAll('_', ' ').replace(/^./, char => char.toUpperCase()),
 })
@@ -57,11 +57,11 @@ const info = computed(() => meta[props.status] ?? {
     role="img"
     :aria-label="info.label"
   >
-    <i class="pi" :class="info.icon" />{{ info.label }}
+    <i class="aw-icon" :class="info.icon" />{{ info.label }}
   </span>
   <i
     v-else
-    class="status-icon pi"
+    class="status-icon aw-icon"
     :class="[info.icon, `tone-${info.tone}`]"
     v-tooltip.left="info.label"
     :aria-label="info.label"
@@ -94,7 +94,7 @@ const info = computed(() => meta[props.status] ?? {
   font-weight: 600;
   white-space: nowrap;
 }
-.status-chip .pi { font-size: var(--aw-text-xs); }
+.status-chip .aw-icon { font-size: var(--aw-text-xs); }
 
 .status-icon.tone-secondary, .status-chip.tone-secondary { color: var(--aw-muted); background: var(--aw-raised); }
 .status-icon.tone-success, .status-chip.tone-success { color: var(--aw-ok); background: var(--aw-ok-soft); }

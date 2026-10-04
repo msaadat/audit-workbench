@@ -124,30 +124,30 @@ async function create(withImport: boolean) {
           </li>
         </ol>
 
-        <UiAdvancedSection :title="`All ${plan.outcomes.length} steps`" description="In the order they would run" icon="pi pi-list">
+        <UiAdvancedSection :title="`All ${plan.outcomes.length} steps`" description="In the order they would run" icon="aw-icon aw-icon-list">
           <ol class="outcomes">
             <li v-for="outcome in plan.outcomes" :key="outcome.capability">{{ outcome.title }}</li>
           </ol>
         </UiAdvancedSection>
 
-        <p class="gate"><i class="pi pi-pause-circle" />{{ plan.gates.summary }}</p>
+        <p class="gate"><i class="aw-icon aw-icon-circle-pause" />{{ plan.gates.summary }}</p>
 
         <div class="facts">
           <p :class="{ warn: !plan.destination.configured }">
-            <i :class="plan.destination.local ? 'pi pi-desktop' : 'pi pi-cloud'" />
+            <i :class="plan.destination.local ? 'aw-icon aw-icon-monitor' : 'aw-icon aw-icon-cloud'" />
             {{ plan.destination.summary }}
             <em v-if="plan.destination.model">{{ plan.destination.model }}</em>
           </p>
 
           <p v-if="plan.estimate.state === 'measured'">
-            <i class="pi pi-clock" />
+            <i class="aw-icon aw-icon-clock" />
             About {{ plan.estimate.median_minutes }} minutes and
             {{ plan.estimate.median_model_calls }} model calls, from
             {{ plan.estimate.runs_observed }} {{ plan.estimate.basis }}.
             <em>{{ plan.estimate.caveat }}</em>
           </p>
           <p v-else>
-            <i class="pi pi-clock" />
+            <i class="aw-icon aw-icon-clock" />
             {{ plan.estimate.reason }}
           </p>
         </div>
@@ -161,7 +161,7 @@ async function create(withImport: boolean) {
         <Button label="Create only" severity="secondary" outlined size="small" :disabled="!canCreate" @click="create(false)" />
         <Button
           label="Create and add files"
-          icon="pi pi-arrow-right"
+          icon="aw-icon aw-icon-arrow-right"
           iconPos="right"
           size="small"
           :loading="busy"

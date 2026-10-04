@@ -71,7 +71,7 @@ async function promote(finding: AgentFinding) {
               · evidence: {{ finding.evidence_refs.join(', ') }}
             </template>
           </small>
-          <Button label="Promote to finding" icon="pi pi-flag" size="small" text @click="promote(finding)" />
+          <Button label="Promote to finding" icon="aw-icon aw-icon-flag" size="small" text @click="promote(finding)" />
         </div>
       </div>
     </div>

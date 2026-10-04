@@ -99,7 +99,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
 <template>
   <div class="approval" :class="{ resolved }">
     <div class="head">
-      <i :class="resolved ? 'pi pi-check-circle' : 'pi pi-pause-circle'" />
+      <i :class="resolved ? 'aw-icon aw-icon-circle-check' : 'aw-icon aw-icon-circle-pause'" />
       <strong>{{ kindLabel[approval.kind] ?? approval.kind }}</strong>
       <span class="grow" />
       <Tag v-if="!resolved" :value="`${approval.items.length}`" severity="warn" />
@@ -109,7 +109,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
       <p class="hint">{{ resolvedSummary }}</p>
       <ul class="decided">
         <li v-for="item in approval.items" :key="item.id">
-          <i :class="item.decision === 'rejected' ? 'pi pi-times' : 'pi pi-check'" />
+          <i :class="item.decision === 'rejected' ? 'aw-icon aw-icon-x' : 'aw-icon aw-icon-check'" />
           {{ item.title }}<small v-if="item.decision"> · {{ item.decision }}</small>
         </li>
       </ul>
@@ -131,7 +131,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
         <span class="item-title">{{ item.title }}</span>
         <span class="grow" />
         <Button
-          :icon="items[item.id].action === 'approve' ? 'pi pi-check' : 'pi pi-times'"
+          :icon="items[item.id].action === 'approve' ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-x'"
           :severity="items[item.id].action === 'approve' ? 'success' : 'danger'"
           :label="items[item.id].action === 'approve' ? 'Approve' : 'Rejected'"
           size="small"
@@ -139,7 +139,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
           @click="toggle(item.id)"
         />
         <Button
-          icon="pi pi-pencil"
+          icon="aw-icon aw-icon-pencil"
           size="small"
           text
           severity="secondary"
@@ -152,7 +152,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
         <div v-for="field in readableSpec(item.spec)" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
       </dl>
       <small v-if="items[item.id].edited" class="edited">
-        <i class="pi pi-pencil" /> edited — the modified spec will be applied
+        <i class="aw-icon aw-icon-pencil" /> edited — the modified spec will be applied
       </small>
       <div v-if="items[item.id].editing" class="editor">
         <Textarea v-model="items[item.id].draft" rows="6" autoResize spellcheck="false" />
@@ -173,7 +173,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
     <Button
       class="apply"
       label="Apply decisions"
-      icon="pi pi-play"
+      icon="aw-icon aw-icon-play"
       :loading="busy || submitting"
       @click="apply"
     />

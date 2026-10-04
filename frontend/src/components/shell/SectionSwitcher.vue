@@ -31,19 +31,19 @@ const route = useRoute()
 
 /** An icon per view, taken from what the work product *is* — as the record does. */
 const ICONS: Partial<Record<WorkspaceDestination, string>> = {
-  record: 'pi pi-book',
-  apm: 'pi pi-map',
-  cycle: 'pi pi-sitemap',
-  rcm: 'pi pi-table',
-  'data-tests': 'pi pi-shield',
-  'doc-tests': 'pi pi-verified',
-  findings: 'pi pi-flag',
-  chain: 'pi pi-share-alt',
-  report: 'pi pi-file-edit',
-  documents: 'pi pi-folder-open',
-  data: 'pi pi-database',
-  query: 'pi pi-search',
-  analysis: 'pi pi-chart-bar',
+  record: 'aw-icon aw-icon-book-open',
+  apm: 'aw-icon aw-icon-map',
+  cycle: 'aw-icon aw-icon-network',
+  rcm: 'aw-icon aw-icon-table',
+  'data-tests': 'aw-icon aw-icon-shield',
+  'doc-tests': 'aw-icon aw-icon-badge-check',
+  findings: 'aw-icon aw-icon-flag',
+  chain: 'aw-icon aw-icon-share-2',
+  report: 'aw-icon aw-icon-file-pen',
+  documents: 'aw-icon aw-icon-folder-open',
+  data: 'aw-icon aw-icon-database',
+  query: 'aw-icon aw-icon-search',
+  analysis: 'aw-icon aw-icon-chart-column',
 }
 
 interface Entry {
@@ -58,7 +58,7 @@ function entry(destination: WorkspaceDestination): Entry {
   return {
     destination,
     label: destinationLabel(destination),
-    icon: ICONS[destination] ?? 'pi pi-circle',
+    icon: ICONS[destination] ?? 'aw-icon aw-icon-circle',
     path: target.path,
   }
 }
@@ -123,10 +123,8 @@ function isCurrent(item: Entry): boolean {
 .switcher__eyebrow {
   margin: 0.35rem 0.6rem 0.2rem;
   color: var(--aw-muted);
-  font-size: var(--aw-text-2xs);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--aw-text-xs);
+  font-weight: 600;
 }
 .switcher__row {
   display: flex;

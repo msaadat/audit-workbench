@@ -27,33 +27,33 @@ function artifactLink(ref: string): ArtifactLink | null {
   if (!kind) return null
 
   if (kind === 'planning' && (id === 'apm' || id === 'context')) {
-    return { label: 'View APM', icon: 'pi pi-map', destination: 'apm' }
+    return { label: 'View APM', icon: 'aw-icon aw-icon-map', destination: 'apm' }
   }
   if (kind === 'rcm' || kind === 'observation') {
-    return { label: 'View RCM', icon: 'pi pi-table', destination: 'rcm' }
+    return { label: 'View RCM', icon: 'aw-icon aw-icon-table', destination: 'rcm' }
   }
   // A generated working paper is read on the RCM row it was rendered from, so
   // the link carries that row and the matrix opens the paper itself.
   if (kind === 'working_paper' && id) {
-    return { label: 'View working paper', icon: 'pi pi-file', destination: 'rcm', state: { paper: id } }
+    return { label: 'View working paper', icon: 'aw-icon aw-icon-file', destination: 'rcm', state: { paper: id } }
   }
   if (kind === 'datatest') {
-    return { label: 'View data tests', icon: 'pi pi-chart-bar', destination: 'data-tests' }
+    return { label: 'View data tests', icon: 'aw-icon aw-icon-chart-column', destination: 'data-tests' }
   }
   if (kind === 'doctest' || kind === 'document_test' || kind === 'doctest_item') {
-    return { label: 'View document tests', icon: 'pi pi-file-check', destination: 'doc-tests' }
+    return { label: 'View document tests', icon: 'aw-icon aw-icon-file-check', destination: 'doc-tests' }
   }
   if (kind === 'finding') {
-    return { label: 'View findings', icon: 'pi pi-flag', destination: 'findings' }
+    return { label: 'View findings', icon: 'aw-icon aw-icon-flag', destination: 'findings' }
   }
   if (kind === 'analysis') {
-    return { label: 'View analyses', icon: 'pi pi-chart-line', destination: 'analysis' }
+    return { label: 'View analyses', icon: 'aw-icon aw-icon-chart-line', destination: 'analysis' }
   }
   if (kind === 'document') {
-    return { label: 'View documents', icon: 'pi pi-file', destination: 'documents' }
+    return { label: 'View documents', icon: 'aw-icon aw-icon-file', destination: 'documents' }
   }
   if (kind === 'report') {
-    return { label: 'View report', icon: 'pi pi-file-edit', destination: 'report' }
+    return { label: 'View report', icon: 'aw-icon aw-icon-file-pen', destination: 'report' }
   }
   return null
 }
@@ -77,7 +77,7 @@ const links = computed(() => {
 <template>
   <article class="milestone" :data-status="props.milestone.status">
     <span class="icon">
-      <i :class="props.milestone.status === 'completed' ? 'pi pi-check' : 'pi pi-exclamation-circle'" />
+      <i :class="props.milestone.status === 'completed' ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-circle-alert'" />
     </span>
     <div class="body">
       <strong>{{ props.milestone.headline }}</strong>
@@ -90,7 +90,7 @@ const links = computed(() => {
       </dl>
       <ul v-if="props.milestone.highlights.length" class="highlights">
         <li v-for="item in props.milestone.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
-          <i :class="item.severity === 'error' ? 'pi pi-times-circle' : 'pi pi-exclamation-triangle'" />
+          <i :class="item.severity === 'error' ? 'aw-icon aw-icon-circle-x' : 'aw-icon aw-icon-triangle-alert'" />
           <span><b>{{ item.label }}</b><small>{{ item.detail }}</small></span>
         </li>
       </ul>
@@ -104,7 +104,7 @@ const links = computed(() => {
         >
           <i :class="link.icon" aria-hidden="true" />
           <span>{{ link.label }}</span>
-          <i class="pi pi-arrow-up-right" aria-hidden="true" />
+          <i class="aw-icon aw-icon-arrow-up-right" aria-hidden="true" />
         </RouterLink>
       </nav>
     </div>

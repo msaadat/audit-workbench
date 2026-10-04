@@ -75,9 +75,9 @@ function label(rule: ValidationRule): string {
           @click="emit('edit', rule)"
           v-tooltip.top="rule.enabled ? 'Edit check' : 'Disabled — click to edit'"
         >
-          <i v-if="rule.severity === 'warn'" class="pi pi-exclamation-triangle" />
+          <i v-if="rule.severity === 'warn'" class="aw-icon aw-icon-triangle-alert" />
           {{ label(rule) }}
-          <i class="pi pi-times x" @click.stop="emit('remove', rule.id)" />
+          <i class="aw-icon aw-icon-x x" @click.stop="emit('remove', rule.id)" />
         </button>
         <span
           v-for="ghost in columnSuggestions[column.name] ?? []"
@@ -86,8 +86,8 @@ function label(rule: ValidationRule): string {
           v-tooltip.top="'Suggested from the current data'"
         >
           {{ label(ghost) }}
-          <i class="pi pi-check x accept" @click="emit('accept', ghost)" v-tooltip.top="'Accept'" />
-          <i class="pi pi-times x" @click="emit('dismiss', ghost.id)" v-tooltip.top="'Dismiss'" />
+          <i class="aw-icon aw-icon-check x accept" @click="emit('accept', ghost)" v-tooltip.top="'Accept'" />
+          <i class="aw-icon aw-icon-x x" @click="emit('dismiss', ghost.id)" v-tooltip.top="'Dismiss'" />
         </span>
         <span
           v-if="!(columnRules[column.name] ?? []).length && !(columnSuggestions[column.name] ?? []).length"
@@ -97,7 +97,7 @@ function label(rule: ValidationRule): string {
       </span>
       <span class="row-add">
         <Button
-          icon="pi pi-plus"
+          icon="aw-icon aw-icon-plus"
           label="Add"
           text
           size="small"
@@ -117,20 +117,20 @@ function label(rule: ValidationRule): string {
           :class="{ warn: rule.severity === 'warn', off: !rule.enabled }"
           @click="emit('edit', rule)"
         >
-          <i v-if="rule.severity === 'warn'" class="pi pi-exclamation-triangle" />
+          <i v-if="rule.severity === 'warn'" class="aw-icon aw-icon-triangle-alert" />
           {{ label(rule) }}
-          <i class="pi pi-times x" @click.stop="emit('remove', rule.id)" />
+          <i class="aw-icon aw-icon-x x" @click.stop="emit('remove', rule.id)" />
         </button>
         <span v-if="!tableRules.length" class="muted none">— no checks —</span>
       </span>
       <span class="row-add">
-        <Button icon="pi pi-plus" label="Add" text size="small" @click="emit('add', null)" />
+        <Button icon="aw-icon aw-icon-plus" label="Add" text size="small" @click="emit('add', null)" />
       </span>
     </div>
 
     <div v-if="unknownRules.length" class="grid-row unknown-row">
       <span class="col-name">
-        <i class="pi pi-exclamation-circle" /> Unknown columns
+        <i class="aw-icon aw-icon-circle-alert" /> Unknown columns
       </span>
       <span class="col-kind" data-kind="missing">missing</span>
       <span class="chips">
@@ -142,7 +142,7 @@ function label(rule: ValidationRule): string {
           v-tooltip.top="`Column '${rule.column}' is not in this table — the rule will error on run`"
         >
           {{ rule.column }}: {{ label(rule) }}
-          <i class="pi pi-times x" @click.stop="emit('remove', rule.id)" />
+          <i class="aw-icon aw-icon-x x" @click.stop="emit('remove', rule.id)" />
         </button>
       </span>
       <span class="row-add" />
@@ -231,7 +231,7 @@ function label(rule: ValidationRule): string {
   background: var(--aw-warn-soft);
   color: var(--aw-warn-ink);
 }
-.chip.warn > .pi-exclamation-triangle { font-size: var(--aw-text-2xs); }
+.chip.warn > .aw-icon-triangle-alert { font-size: var(--aw-text-2xs); }
 .chip.off {
   border-color: var(--aw-border);
   background: var(--aw-raised);

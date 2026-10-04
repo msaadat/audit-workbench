@@ -27,7 +27,7 @@ import type {
   AuditDocument, AuditObservation, CriterionRef, CycleVouchMetadata,
   DocumentSchemaCatalogEntry, PlanningPayload, TestRollup, WorkingPaper,
 } from '../types'
-import { plural } from '../format'
+import { plural, sentenceCase } from '../format'
 
 /**
  * One RCM row, as a page.
@@ -234,7 +234,7 @@ function remove() {
       + (linked
         ? ` Its ${plural(linked, 'linked test')} will be unlinked, not deleted; findings will be unlinked too.`
         : ' Any linked findings will be unlinked.'),
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Remove', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -327,21 +327,21 @@ async function copyPaper(kind: 'markdown' | 'html') {
   toast.add({ severity: 'success', summary: `${kind === 'markdown' ? 'Markdown' : 'HTML'} copied`, life: 1600 })
 }
 const copyOptions = [
-  { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copyPaper('markdown') },
-  { label: 'Copy HTML', icon: 'pi pi-code', command: () => void copyPaper('html') },
+  { label: 'Copy Markdown', icon: 'aw-icon aw-icon-copy', command: () => void copyPaper('markdown') },
+  { label: 'Copy HTML', icon: 'aw-icon aw-icon-code', command: () => void copyPaper('html') },
 ]
 const addOptions = [
-  { label: 'Data test', icon: 'pi pi-chart-bar', command: () => void addTest('data') },
-  { label: 'Document test', icon: 'pi pi-file-check', command: () => void addTest('document') },
+  { label: 'Data test', icon: 'aw-icon aw-icon-chart-column', command: () => void addTest('data') },
+  { label: 'Document test', icon: 'aw-icon aw-icon-file-check', command: () => void addTest('document') },
   { separator: true },
   // Coverage that already exists. Without this the row can only ever make a
   // third test, and the test written before the row stays orphaned.
-  { label: 'Link an existing test', icon: 'pi pi-link', command: () => void addTest('link') },
-  { label: 'Generate with assistant', icon: 'pi pi-sparkles', command: () => void addTest('generate') },
+  { label: 'Link an existing test', icon: 'aw-icon aw-icon-link', command: () => void addTest('link') },
+  { label: 'Generate with assistant', icon: 'aw-icon aw-icon-sparkles', command: () => void addTest('generate') },
 ]
 const menuItems = computed(() => [
-  { label: 'Export the matrix', icon: 'pi pi-download', command: () => void exportMatrix() },
-  { label: 'Remove row', icon: 'pi pi-trash', command: () => remove() },
+  { label: 'Export the matrix', icon: 'aw-icon aw-icon-download', command: () => void exportMatrix() },
+  { label: 'Remove row', icon: 'aw-icon aw-icon-trash-2', command: () => remove() },
 ])
 
 /**
@@ -358,7 +358,7 @@ useTrail(() => [
   <div class="ui-surface ui-surface--stacked">
     <UiEmptyState
       v-if="data && !row"
-      icon="pi pi-map"
+      icon="aw-icon aw-icon-map"
       title="This row is no longer in the matrix"
       description="It may have been removed, or the link may name a row from another engagement."
     />
@@ -375,18 +375,18 @@ useTrail(() => [
                commonest movement on this page. -->
           <span class="stepper">
             <button type="button" :disabled="position <= 0" aria-label="Previous row" @click="step(-1)">
-              <i class="pi pi-chevron-left" />
+              <i class="aw-icon aw-icon-chevron-left" />
             </button>
             <span class="aw-figure">{{ position + 1 }} of {{ rows.length }}</span>
             <button type="button" :disabled="position >= rows.length - 1" aria-label="Next row" @click="step(1)">
-              <i class="pi pi-chevron-right" />
+              <i class="aw-icon aw-icon-chevron-right" />
             </button>
           </span>
 
           <template v-if="tab === 'paper'">
             <SplitButton
               label="Copy"
-              icon="pi pi-copy"
+              icon="aw-icon aw-icon-copy"
               size="small"
               outlined
               severity="secondary"
@@ -395,7 +395,7 @@ useTrail(() => [
             />
             <Button
               label="Export PDF"
-              icon="pi pi-download"
+              icon="aw-icon aw-icon-download"
               size="small"
               outlined
               severity="secondary"
@@ -404,7 +404,7 @@ useTrail(() => [
             />
             <Button
               label="Regenerate"
-              icon="pi pi-refresh"
+              icon="aw-icon aw-icon-refresh-cw"
               size="small"
               :loading="regenerating"
               @click="regeneratePaper"
@@ -413,7 +413,7 @@ useTrail(() => [
           <template v-else>
             <Button
               label="Add test"
-              icon="pi pi-chevron-down"
+              icon="aw-icon aw-icon-chevron-down"
               iconPos="right"
               size="small"
               outlined
@@ -428,7 +428,7 @@ useTrail(() => [
               :rcm-id="rowId"
               @linked="afterLink"
             />
-            <Button label="Save row" icon="pi pi-save" size="small" :loading="saving" @click="save" />
+            <Button label="Save row" icon="aw-icon aw-icon-save" size="small" :loading="saving" @click="save" />
           </template>
           <UiOverflowMenu :items="menuItems" tooltip="More row actions" />
         </div>
@@ -484,7 +484,7 @@ useTrail(() => [
                   :title="ref.excerpt"
                   @click="openCriterion(ref)"
                 >
-                  <i class="pi pi-link" />
+                  <i class="aw-icon aw-icon-link" />
                   <span>{{ documentName(ref.source_id) }}</span>
                   <code v-if="ref.page">p.{{ ref.page }}</code>
                 </button>
@@ -498,7 +498,7 @@ useTrail(() => [
                 <button type="button" class="link" @click="goTab('attributes')">Edit attributes</button>
               </div>
               <div v-for="attribute in row.control_attributes" :key="attribute.key" class="attribute">
-                <span class="assertion">{{ attribute.assertion }}</span>
+                <span class="assertion">{{ sentenceCase(attribute.assertion) }}</span>
                 <span class="requirement">{{ attribute.requirement }}</span>
               </div>
               <p v-if="!row.control_attributes.length" class="muted">
@@ -516,7 +516,7 @@ useTrail(() => [
               <Button
                 v-if="agentSet"
                 label="Accept and mark reviewed"
-                icon="pi pi-check"
+                icon="aw-icon aw-icon-check"
                 size="small"
                 outlined
                 :loading="saving"
@@ -605,7 +605,7 @@ useTrail(() => [
               <span v-if="rollup.exception_count" class="open">
                 {{ plural(rollup.exception_count, 'exception') }} · {{ rollup.open_exception_count }} open
               </span>
-              <Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined severity="secondary" @click="openTest(rollup)" />
+              <Button label="Open test" icon="aw-icon aw-icon-arrow-up-right" size="small" outlined severity="secondary" @click="openTest(rollup)" />
             </div>
             <p class="test-name">{{ rollup.title }}</p>
             <p class="muted">{{ rollup.result_summary || 'Not executed yet.' }}</p>
@@ -621,7 +621,7 @@ useTrail(() => [
           <UiEmptyState
             v-if="!tests.length"
             compact
-            icon="pi pi-shield"
+            icon="aw-icon aw-icon-shield"
             title="No test covers this risk"
             description="Link a data or document test to it, or ask the assistant to write one."
           />
@@ -651,7 +651,7 @@ useTrail(() => [
           <article v-if="workingPaper" class="paper" v-html="paper.html" />
           <UiEmptyState
             v-else
-            :icon="paperLoading ? 'pi pi-spinner pi-spin' : 'pi pi-file'"
+            :icon="paperLoading ? 'aw-icon aw-icon-loader-circle aw-icon-spin' : 'aw-icon aw-icon-file'"
             :title="paperLoading ? 'Rendering the paper' : 'No working paper yet'"
             description="The paper is drafted from the row and the runs that filed its test results."
           />
@@ -663,12 +663,12 @@ useTrail(() => [
             <p class="aw-label">Exception observations</p>
             <article v-for="item in observations" :key="item.id" class="observation" :data-outcome="item.outcome">
               <div class="observation-head">
-                <span class="outcome">{{ item.outcome.replaceAll('_', ' ') }}</span>
+                <span class="outcome">{{ sentenceCase(item.outcome) }}</span>
                 <span class="classification">{{ item.classification.replaceAll('_', ' ') }}</span>
                 <span class="grow" />
                 <Button
                   label="Draft finding"
-                  icon="pi pi-sparkles"
+                  icon="aw-icon aw-icon-sparkles"
                   size="small"
                   text
                   severity="secondary"
@@ -722,7 +722,7 @@ useTrail(() => [
 .definition { display: grid; grid-template-columns: minmax(0, 1fr) 23.75rem; gap: 1.25rem; align-items: start; }
 .record { display: flex; flex-direction: column; gap: 1.125rem; min-width: 0; }
 .quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
-label { display: flex; flex-direction: column; gap: .25rem; min-width: 0; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+label { display: flex; flex-direction: column; gap: .25rem; min-width: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { width: 100%; min-width: 0; background: var(--aw-panel); color: var(--aw-ink); font-size: var(--aw-text-base); font-weight: 400; letter-spacing: 0; text-transform: none; }
 
 .citations { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .35rem; }
@@ -738,7 +738,7 @@ label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { wi
 
 .attributes-brief { display: flex; flex-direction: column; gap: .375rem; }
 .attribute { display: flex; gap: .5rem; padding: .5rem .625rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
-.assertion { flex: none; align-self: flex-start; padding: .0625rem .4375rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.assertion { flex: none; align-self: flex-start; padding: .0625rem .4375rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 700; }
 .requirement { min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.4; }
 
 .side { display: flex; flex-direction: column; gap: .75rem; min-width: 0; }
@@ -775,7 +775,7 @@ label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { wi
 .observation { display: flex; flex-direction: column; gap: .25rem; padding: .75rem .875rem; border: 1px solid var(--aw-border); border-left: 3px solid var(--aw-warn); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
 .observation[data-outcome='exception'] { border-left-color: var(--aw-danger); }
 .observation-head { display: flex; align-items: center; gap: .5rem; }
-.observation .outcome { color: var(--aw-danger); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.observation .outcome { color: var(--aw-danger); font-size: var(--aw-text-xs); font-weight: 700; }
 .observation .classification { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .observation p { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 

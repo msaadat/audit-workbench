@@ -15,6 +15,7 @@ import type {
   EngagementOpenPoint, EngagementRecordPayload, EngagementStage, WorkspaceSummary,
 } from '../types'
 import UiEmptyState from './ui/UiEmptyState.vue'
+import UiStateIcon, { type UiState } from './ui/UiStateIcon.vue'
 
 /**
  * The engagement record: what this engagement holds, and what it still owes.
@@ -63,18 +64,18 @@ const KNOWN_DESTINATIONS: readonly string[] = [
 
 /** An icon per work product, chosen from what the artifact *is*. */
 const FILED_ICONS: Record<string, string> = {
-  Sources: 'pi pi-folder-open',
-  'Audit planning memorandum': 'pi pi-map',
-  'Cycle design': 'pi pi-sitemap',
-  'Risk and control matrix': 'pi pi-table',
-  'Control conclusions': 'pi pi-check-square',
-  'Test programme': 'pi pi-shield',
-  'Fieldwork results': 'pi pi-briefcase',
-  'Findings register': 'pi pi-flag',
-  'Document analyses': 'pi pi-file',
-  'Analysis library': 'pi pi-chart-bar',
-  Report: 'pi pi-file-edit',
-  Verification: 'pi pi-th-large',
+  Sources: 'aw-icon aw-icon-folder-open',
+  'Audit planning memorandum': 'aw-icon aw-icon-map',
+  'Cycle design': 'aw-icon aw-icon-network',
+  'Risk and control matrix': 'aw-icon aw-icon-table',
+  'Control conclusions': 'aw-icon aw-icon-square-check',
+  'Test programme': 'aw-icon aw-icon-shield',
+  'Fieldwork results': 'aw-icon aw-icon-briefcase',
+  'Findings register': 'aw-icon aw-icon-flag',
+  'Document analyses': 'aw-icon aw-icon-file',
+  'Analysis library': 'aw-icon aw-icon-chart-column',
+  Report: 'aw-icon aw-icon-file-pen',
+  Verification: 'aw-icon aw-icon-layout-grid',
 }
 
 async function load() {
@@ -296,7 +297,7 @@ function destinationOf(stage: EngagementStage): WorkspaceDestination | null {
 }
 
 function icon(label: string): string {
-  return FILED_ICONS[label] ?? 'pi pi-box'
+  return FILED_ICONS[label] ?? 'aw-icon aw-icon-box'
 }
 
 /** `27 rows`, or '' where the work product has no meaningful size. */
@@ -331,6 +332,30 @@ function stamp(stage: EngagementStage): string {
   const at = clock(past.at)
   const took = duration(past.elapsed_ms)
   return at ? `${at} · ${took}` : took
+}
+
+/**
+ * Which of the five states the row is in. A run in flight is drawn by the
+ * live dot instead, because it is about to change the answer.
+ *
+ * Holding the work product is not the same as being done: the analysis
+ * library holds its definitions while none has a result, and the graph says
+ * so in `readiness`. Such a row needs attention, and its reason is printed
+ * beside it — a filled "done" dot over sixty-three unrun analyses was the
+ * record contradicting itself.
+ */
+function rowState(stage: EngagementStage): UiState {
+  if (stage.held) {
+    const issues = ['completed_with_issues', 'needs_review'].includes(stage.history?.status ?? '')
+    return issues || stage.readiness.state !== 'satisfied' ? 'attention' : 'done'
+  }
+  if (stage.capability === leadStage.value) return 'next'
+  return stage.blocked_reason.trim() ? 'waiting' : 'not_started'
+}
+
+/** The reason a held row needs attention, for the meta cell while it is shut. */
+function attentionReason(stage: EngagementStage): string {
+  return rowState(stage) === 'attention' ? stage.readiness.reasons[0] ?? '' : ''
 }
 
 /**
@@ -824,7 +849,7 @@ function phaseNames(group: PhaseGroup): string {
       </div>
       <Button
         class="refresh"
-        icon="pi pi-refresh"
+        icon="aw-icon aw-icon-refresh-cw"
         size="small"
         severity="secondary"
         outlined
@@ -838,11 +863,11 @@ function phaseNames(group: PhaseGroup): string {
            so it files nothing and has nowhere on the ledger to sit. It is a
            link rather than a button because it is a place, not an action. -->
       <RouterLink :to="nav.to('chain')" class="chain">
-        <i class="pi pi-sitemap" aria-hidden="true" />Chain
+        <i class="aw-icon aw-icon-network" aria-hidden="true" />Chain
       </RouterLink>
     </div>
 
-    <div v-if="loading && !data" class="loading"><i class="pi pi-spin pi-spinner" /> Reading the record…</div>
+    <div v-if="loading && !data" class="loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /> Reading the record…</div>
 
     <!-- Only a record with no stages at all is empty, which means the graph
          itself could not be read. A workspace at the very start still draws
@@ -850,7 +875,7 @@ function phaseNames(group: PhaseGroup): string {
          draws everything it holds. -->
     <UiEmptyState
       v-else-if="!stages.length"
-      icon="pi pi-book"
+      icon="aw-icon aw-icon-book-open"
       title="No stages to show"
       detail="The engagement plan could not be read, so there is nothing to lay out yet."
     />
@@ -886,7 +911,7 @@ function phaseNames(group: PhaseGroup): string {
         :data-wait="live.waiting ? '1' : null"
       >
         <span class="mark">
-          <i :class="live.waiting ? 'pi pi-question-circle' : 'pi pi-spin pi-spinner'" />
+          <i :class="live.waiting ? 'aw-icon aw-icon-circle-help' : 'aw-icon aw-icon-spin aw-icon-loader-circle'" />
         </span>
         <div class="txt">
           <strong>{{ live.headline }}</strong>
@@ -902,7 +927,7 @@ function phaseNames(group: PhaseGroup): string {
         </span>
         <Button
           :label="live.waiting ? 'Respond' : 'Watch it'"
-          :icon="live.waiting ? 'pi pi-reply' : 'pi pi-sparkles'"
+          :icon="live.waiting ? 'aw-icon aw-icon-reply' : 'aw-icon aw-icon-sparkles'"
           size="small"
           :severity="live.waiting ? undefined : 'secondary'"
           :outlined="!live.waiting"
@@ -941,7 +966,7 @@ function phaseNames(group: PhaseGroup): string {
               Nothing is blocking it.
             </span>
             <span v-if="phaseTally(group)" class="pst">{{ phaseTally(group) }}</span>
-            <i v-if="!phaseOpen(group)" class="pi pi-chevron-down pchev" aria-hidden="true" />
+            <i v-if="!phaseOpen(group)" class="aw-icon aw-icon-chevron-down pchev" aria-hidden="true" />
           </button>
 
           <ol v-if="phaseOpen(group)" class="ledger">
@@ -954,8 +979,10 @@ function phaseNames(group: PhaseGroup): string {
                 @click="rowClick(stage, $event)"
               >
                 <!-- What state the stage is in, said once, in the one column a
-                     reader scanning the phase is looking down. -->
-                <span class="dot" aria-hidden="true"></span>
+                     reader scanning the phase is looking down. A live run keeps
+                     its dot: it is the one state that moves. -->
+                <span v-if="liveState(stage.capability)" class="dot" aria-hidden="true"></span>
+                <UiStateIcon v-else class="state" :state="rowState(stage)" />
 
                 <span class="name">
                   <template v-if="stage.filed">
@@ -989,7 +1016,7 @@ function phaseNames(group: PhaseGroup): string {
                       class="door"
                       :data-kind="link.kind"
                     >
-                      <i v-if="link.kind === 'tool'" class="pi pi-wrench" aria-hidden="true" />
+                      <i v-if="link.kind === 'tool'" class="aw-icon aw-icon-wrench" aria-hidden="true" />
                       {{ link.label }}<b v-if="link.count !== null">{{ link.count
                       }}<span v-if="link.total" class="of">/{{ link.total }}</span></b>
                     </component>
@@ -1003,6 +1030,7 @@ function phaseNames(group: PhaseGroup): string {
                   <template v-else>
                     <!-- The folded body, counted. Colour survives the fold. -->
                     <template v-if="!isOpen(stage)">
+                      <span v-if="attentionReason(stage) && !remaining(stage)" class="owed">{{ attentionReason(stage) }}</span>
                       <span
                         v-for="chip in chips(stage)"
                         :key="chip.label"
@@ -1062,7 +1090,7 @@ function phaseNames(group: PhaseGroup): string {
                     :aria-label="`${isOpen(stage) ? 'Collapse' : 'Expand'} ${stage.filed?.label || stage.capability}`"
                     @click="toggleRow(stage)"
                   >
-                    <i class="pi pi-chevron-right" aria-hidden="true" />
+                    <i class="aw-icon aw-icon-chevron-right" aria-hidden="true" />
                   </button>
                 </span>
 
@@ -1073,12 +1101,12 @@ function phaseNames(group: PhaseGroup): string {
                        beside it is not contradicted: thirty findings are filed
                        and two observations are undrafted, and both are true. -->
                   <span v-if="isOpen(stage) && remaining(stage)" class="left">
-                    <i class="pi pi-hourglass" aria-hidden="true" />{{ remaining(stage) }}
+                    <i class="aw-icon aw-icon-hourglass" aria-hidden="true" />{{ remaining(stage) }}
                   </span>
 
                   <!-- Being produced right now, whether or not it was filed before. -->
                   <span v-if="liveState(stage.capability)" class="again" :data-live="liveState(stage.capability)">
-                    <i :class="liveState(stage.capability) === 'running' ? 'pi pi-spin pi-spinner' : 'pi pi-clock'" aria-hidden="true" />
+                    <i :class="liveState(stage.capability) === 'running' ? 'aw-icon aw-icon-spin aw-icon-loader-circle' : 'aw-icon aw-icon-clock'" aria-hidden="true" />
                     <template v-if="liveState(stage.capability) === 'running'">
                       <!-- A stage that already filed is being produced *again*,
                            which is a different thing from one being produced. -->
@@ -1121,9 +1149,9 @@ function phaseNames(group: PhaseGroup): string {
                     class="open"
                     @click="openPoint(point)"
                   >
-                    <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+                    <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />
                     <span class="ot">{{ point.message }}</span>
-                    <span class="oa">{{ point.action }}<i class="pi pi-arrow-right" aria-hidden="true" /></span>
+                    <span class="oa">{{ point.action }}<i class="aw-icon aw-icon-arrow-right" aria-hidden="true" /></span>
                   </button>
 
                   <button
@@ -1133,7 +1161,7 @@ function phaseNames(group: PhaseGroup): string {
                     :aria-expanded="expanded.has(stage.id)"
                     @click="toggle(stage)"
                   >
-                    <i :class="expanded.has(stage.id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" aria-hidden="true" />
+                    <i :class="expanded.has(stage.id) ? 'aw-icon aw-icon-chevron-down' : 'aw-icon aw-icon-chevron-right'" aria-hidden="true" />
                     {{ attemptNote(stage) }}
                   </button>
                   <ol v-if="isOpen(stage) && expanded.has(stage.id) && stage.history" class="attempts">
@@ -1160,7 +1188,7 @@ function phaseNames(group: PhaseGroup): string {
            `stage` next step has no band any more — the phase being worked says
            it, on its own header. -->
       <section v-if="next && next.kind === 'open_point'" class="brief" data-kind="open_point">
-        <span class="mark"><i class="pi pi-exclamation-circle" /></span>
+        <span class="mark"><i class="aw-icon aw-icon-circle-alert" /></span>
         <div class="txt"><strong>{{ next.message }}</strong></div>
         <Button
           :label="next.action"
@@ -1187,8 +1215,7 @@ function phaseNames(group: PhaseGroup): string {
 /* --- the toolbar --------------------------------------------------------- */
 .bar { display: flex; align-items: center; gap: .875rem; }
 .bar h2 {
-  margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700;
-  letter-spacing: .1em; text-transform: uppercase;
+  margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600;
 }
 .grow { flex: 1; }
 
@@ -1222,7 +1249,7 @@ function phaseNames(group: PhaseGroup): string {
 }
 .chain:hover { background: var(--aw-teal-soft); }
 .chain:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
-.chain .pi { font-size: var(--aw-text-sm); }
+.chain .aw-icon { font-size: var(--aw-text-sm); }
 
 /* --- the whole plan, as one strip ---------------------------------------- */
 /* Twelve stages, drawn once. It carried a sentence saying the same thing in
@@ -1323,7 +1350,7 @@ function phaseNames(group: PhaseGroup): string {
 .pnext {
   flex: 0 0 auto; padding: 1px .5rem; border-radius: var(--aw-radius-pill);
   background: var(--aw-teal); color: var(--aw-on-accent);
-  font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  font-size: var(--aw-text-xs); font-weight: 700;
 }
 
 .pst {
@@ -1365,20 +1392,14 @@ function phaseNames(group: PhaseGroup): string {
 .row.shut:hover { background: color-mix(in srgb, var(--aw-raised) 55%, transparent); }
 
 /* The state of the stage, said once. It replaces a time column that read "—"
-   on nine rows of twelve and a spine whose dot said the same thing twice. */
+   on nine rows of twelve and a spine whose dot said the same thing twice.
+   The five settled states are `UiStateIcon`; a run in flight keeps a dot,
+   because it is the one state that moves. */
+.state { justify-self: center; font-size: var(--aw-text-base); }
+.owed { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 22rem; }
 .dot {
   box-sizing: border-box; width: 10px; height: 10px; margin: 0 auto;
   border-radius: 50%; background: var(--aw-teal);
-}
-.row[data-status="completed_with_issues"] .dot,
-.row[data-status="needs_review"] .dot { background: var(--aw-warn); }
-.row.ghost .dot {
-  width: 9px; height: 9px;
-  border: 1.5px dashed var(--aw-border-strong); background: var(--aw-panel);
-}
-.row.ghost.lead .dot {
-  width: 10px; height: 10px;
-  border: 2px solid var(--aw-teal); background: var(--aw-panel);
 }
 .row[data-live] .dot {
   width: 10px; height: 10px;
@@ -1484,7 +1505,7 @@ a.door:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
   border-color: var(--aw-border-strong); border-style: dashed; color: var(--aw-muted);
 }
 a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-ink-soft); }
-.door .pi { font-size: var(--aw-text-xs); }
+.door .aw-icon { font-size: var(--aw-text-xs); }
 
 .dsc { max-width: 72ch; color: var(--aw-ink-soft); font-size: var(--aw-text-base); line-height: 1.55; }
 
@@ -1521,7 +1542,7 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
   background: var(--aw-raised); color: var(--aw-muted-strong);
 }
 .tally b { font-size: var(--aw-text-base); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--aw-ink-strong); }
-.tally span { font-size: var(--aw-text-xs); letter-spacing: .04em; text-transform: uppercase; }
+.tally span { font-size: var(--aw-text-xs); }
 /* Zero of something severe is worth saying and not worth colouring. */
 .tally li[data-severity="warning"]:not([data-zero]) { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 .tally li[data-severity="warning"]:not([data-zero]) b { color: var(--aw-warn-ink); }
@@ -1613,7 +1634,7 @@ a.door[data-kind='tool']:hover { background: var(--aw-raised); color: var(--aw-i
   .slabels { line-height: 1.25; }
 
   .row { grid-template-columns: 16px minmax(0, 1fr) 120px; }
-  .row .dot { grid-column: 1; grid-row: 1; }
+  .row .dot, .row .state { grid-column: 1; grid-row: 1; }
   .row .name { grid-column: 2; grid-row: 1; }
   .row .act { grid-column: 3; grid-row: 1; }
   .row .meta { grid-column: 2; grid-row: 2; justify-content: flex-start; margin-top: .2rem; }

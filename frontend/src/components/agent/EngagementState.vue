@@ -46,10 +46,10 @@ function toggle(row: PhaseRow) {
 }
 
 const stateIcon: Record<EngagementPhase['state'], string> = {
-  not_started: 'pi pi-circle',
-  in_progress: 'pi pi-clock',
-  complete: 'pi pi-check-circle',
-  attention: 'pi pi-exclamation-triangle',
+  not_started: 'aw-icon aw-icon-circle',
+  in_progress: 'aw-icon aw-icon-clock',
+  complete: 'aw-icon aw-icon-circle-check',
+  attention: 'aw-icon aw-icon-triangle-alert',
 }
 const stateLabel: Record<EngagementPhase['state'], string> = {
   not_started: 'Not started',
@@ -125,7 +125,7 @@ function summary(row: PhaseRow) {
           <!-- The tail is the collapsed row's stand-in for the figure. Drawing
                both would state the same fraction twice on one row. -->
           <span v-if="row.tail && !(isOpen(row) && row.figure)" class="tail">{{ row.tail }}</span>
-          <i class="chev" :class="isOpen(row) ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" aria-hidden="true" />
+          <i class="chev" :class="isOpen(row) ? 'aw-icon aw-icon-chevron-up' : 'aw-icon aw-icon-chevron-down'" aria-hidden="true" />
         </button>
 
         <template v-if="isOpen(row)">
@@ -174,7 +174,7 @@ function summary(row: PhaseRow) {
          a rule is the whole treatment, so a finished file still reads finished. -->
     <div v-if="status.disclosures.length" class="disclosures">
       <p v-for="item in status.disclosures" :key="item.key" class="disclosure">
-        <i class="pi pi-info-circle" aria-hidden="true" />
+        <i class="aw-icon aw-icon-info" aria-hidden="true" />
         <span>
           {{ item.message }}
           <router-link :to="nav.target(item.target)">Open</router-link>

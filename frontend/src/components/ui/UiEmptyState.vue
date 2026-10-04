@@ -1,6 +1,6 @@
 <script setup lang="ts">
 withDefaults(defineProps<{ icon?: string; title: string; description?: string; compact?: boolean }>(), {
-  icon: 'pi pi-inbox',
+  icon: 'aw-icon aw-icon-inbox',
   compact: false,
 })
 </script>

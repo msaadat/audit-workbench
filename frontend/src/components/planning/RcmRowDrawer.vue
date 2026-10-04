@@ -7,6 +7,7 @@ import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 
+import { sentenceCase } from '../../format'
 import type { FindingSummary, RcmRow, TestRollup } from '../../types'
 
 /**
@@ -72,15 +73,15 @@ const agentSet = computed(() => props.row.created_by === 'agent' && props.row.re
 
 const addMenu = ref<InstanceType<typeof Menu> | null>(null)
 const addOptions = [
-  { label: 'Data test', icon: 'pi pi-chart-bar', command: () => emit('addTest', 'data') },
-  { label: 'Document test', icon: 'pi pi-file-check', command: () => emit('addTest', 'document') },
+  { label: 'Data test', icon: 'aw-icon aw-icon-chart-column', command: () => emit('addTest', 'data') },
+  { label: 'Document test', icon: 'aw-icon aw-icon-file-check', command: () => emit('addTest', 'document') },
   { separator: true },
   // Coverage the engagement already holds — a test written before this row, or
   // against the wrong one. Creating a third test was the only offer here.
-  { label: 'Link an existing test', icon: 'pi pi-link', command: () => emit('addTest', 'link') },
+  { label: 'Link an existing test', icon: 'aw-icon aw-icon-link', command: () => emit('addTest', 'link') },
   // The sparkle that used to sit in the grid's action column, per row, for the
   // rows that had no test. It belongs where the tests are listed.
-  { label: 'Generate with assistant', icon: 'pi pi-sparkles', command: () => emit('addTest', 'generate') },
+  { label: 'Generate with assistant', icon: 'aw-icon aw-icon-sparkles', command: () => emit('addTest', 'generate') },
 ]
 
 function testTone(rollup: TestRollup) {
@@ -95,7 +96,7 @@ function testTone(rollup: TestRollup) {
     <header class="drawer-head">
       <!-- The id is the link to everything this drawer does not hold. -->
       <button type="button" class="row-id" @click="emit('openRow')">
-        {{ row.id }}<i class="pi pi-arrow-up-right" />
+        {{ row.id }}<i class="aw-icon aw-icon-arrow-up-right" />
       </button>
       <span class="rating" :data-rating="row.risk_rating"><span class="rating-dot" />{{ row.risk_rating }}</span>
       <span class="grow" />
@@ -103,11 +104,11 @@ function testTone(rollup: TestRollup) {
            full record is where every field the drawer omits is edited, so it
            gets a named control of its own. -->
       <button type="button" class="link" @click="emit('openRow')">
-        Full record<i class="pi pi-arrow-up-right" />
+        Full record<i class="aw-icon aw-icon-arrow-up-right" />
       </button>
       <button type="button" class="link" @click="emit('paper')">Working paper</button>
       <button type="button" class="close" aria-label="Close" @click="emit('close')">
-        <i class="pi pi-times" />
+        <i class="aw-icon aw-icon-x" />
       </button>
     </header>
 
@@ -126,7 +127,7 @@ function testTone(rollup: TestRollup) {
           <button type="button" class="link" @click="emit('openRow', 'attributes')">Add attribute</button>
         </div>
         <div v-for="attribute in row.control_attributes" :key="attribute.key" class="attribute">
-          <span class="assertion">{{ attribute.assertion }}</span>
+          <span class="assertion">{{ sentenceCase(attribute.assertion) }}</span>
           <span class="requirement">{{ attribute.requirement }}</span>
         </div>
         <p v-if="!row.control_attributes.length" class="muted">No attribute is recorded against this control.</p>
@@ -137,7 +138,7 @@ function testTone(rollup: TestRollup) {
           <p class="aw-label">Tests · {{ tests.length }}</p>
           <span class="grow" />
           <button type="button" class="link" aria-haspopup="true" @click="addMenu?.toggle($event)">
-            Add test<i class="pi pi-chevron-down" />
+            Add test<i class="aw-icon aw-icon-chevron-down" />
           </button>
           <Menu ref="addMenu" :model="addOptions" popup />
         </div>
@@ -194,7 +195,7 @@ function testTone(rollup: TestRollup) {
   font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer;
 }
 .row-id:hover { color: var(--aw-teal); }
-.row-id .pi { font-size: var(--aw-text-2xs); }
+.row-id .aw-icon { font-size: var(--aw-text-2xs); }
 .rating { display: inline-flex; align-items: center; gap: .3125rem; font-size: var(--aw-text-xs); font-weight: 600; text-transform: capitalize; }
 .rating-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--aw-muted); }
 .rating[data-rating='critical'] { color: var(--aw-danger-ink); }
@@ -210,18 +211,18 @@ function testTone(rollup: TestRollup) {
 
 .drawer-body { display: flex; flex-direction: column; gap: .875rem; flex: 1; min-height: 0; overflow-y: auto; padding: .875rem 1rem; }
 .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .625rem; }
-label { display: flex; flex-direction: column; gap: .25rem; min-width: 0; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+label { display: flex; flex-direction: column; gap: .25rem; min-width: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { width: 100%; min-width: 0; font-size: var(--aw-text-base); font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--aw-ink); }
 
 .group { display: flex; flex-direction: column; gap: .375rem; min-width: 0; }
 .group-head { display: flex; align-items: center; gap: .5rem; }
 .link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap; cursor: pointer; }
 .link:hover { text-decoration: underline; }
-.link .pi { margin-left: .25rem; font-size: var(--aw-text-2xs); }
+.link .aw-icon { margin-left: .25rem; font-size: var(--aw-text-2xs); }
 .muted { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
 .attribute { display: flex; gap: .5rem; padding: .5rem .625rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
-.assertion { flex: none; align-self: flex-start; padding: .0625rem .4375rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.assertion { flex: none; align-self: flex-start; padding: .0625rem .4375rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 700; }
 .requirement { min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.4; }
 
 .test {

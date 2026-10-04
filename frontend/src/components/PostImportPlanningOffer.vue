@@ -50,7 +50,7 @@ async function startPlanningUpdate() {
 
 <template>
   <article class="next-action">
-    <div class="next-action-icon"><i class="pi pi-sparkles" /></div>
+    <div class="next-action-icon"><i class="aw-icon aw-icon-sparkles" /></div>
     <div>
       <Tag value="Recommended next step" severity="info" />
       <h4>{{ action.title }}</h4>
@@ -62,7 +62,7 @@ async function startPlanningUpdate() {
     </div>
     <Button
       label="Review and run planning"
-      icon="pi pi-arrow-right"
+      icon="aw-icon aw-icon-arrow-right"
       iconPos="right"
       @click="confirmOpen = true"
     />
@@ -76,17 +76,17 @@ async function startPlanningUpdate() {
         {{ launchMode }} mode selected in the audit assistant.
       </p>
       <div class="context-preview">
-        <strong><i class="pi pi-file" /> Document context</strong>
+        <strong><i class="aw-icon aw-icon-file" /> Document context</strong>
         <p>The assistant will include up to the first 8 extracted pages per document.</p>
         <ul><li v-for="document in action.documents" :key="document.id">{{ document.title }} <small>({{ document.category }})</small></li></ul>
         <p>Model activity and source hashes are recorded with the engagement.</p>
       </div>
-      <p v-if="agent.state.status && !agent.state.status.configured" class="optin-note"><i class="pi pi-key" /> Configure an assistant provider and model before running this update.</p>
-      <p v-if="error" class="inline-error"><i class="pi pi-exclamation-triangle" />{{ error }}</p>
+      <p v-if="agent.state.status && !agent.state.status.configured" class="optin-note"><i class="aw-icon aw-icon-key-round" /> Configure an assistant provider and model before running this update.</p>
+      <p v-if="error" class="inline-error"><i class="aw-icon aw-icon-triangle-alert" />{{ error }}</p>
     </div>
     <template #footer>
       <Button label="Not now" severity="secondary" text :disabled="starting" @click="confirmOpen = false" />
-      <Button label="Run planning assistant" icon="pi pi-play" :loading="starting" @click="startPlanningUpdate" />
+      <Button label="Run planning assistant" icon="aw-icon aw-icon-play" :loading="starting" @click="startPlanningUpdate" />
     </template>
   </Dialog>
 </template>

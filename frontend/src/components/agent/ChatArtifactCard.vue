@@ -62,17 +62,17 @@ function fail(summary: string, error: unknown) {
       <strong>{{ artifact.title }}</strong>
       <Tag v-if="artifact.verdict" :value="artifact.verdict_text || artifact.verdict" :severity="severity[artifact.verdict]" />
       <span class="grow" />
-      <Button v-if="artifact.kind !== 'query'" icon="pi pi-save" text size="small" :loading="saving" v-tooltip.top="'Save to analyses'" @click="saveAnalysis" />
+      <Button v-if="artifact.kind !== 'query'" icon="aw-icon aw-icon-save" text size="small" :loading="saving" v-tooltip.top="'Save to analyses'" @click="saveAnalysis" />
     </header>
     <div v-if="artifact.stats?.length" class="stats">
       <span v-for="stat in artifact.stats" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span>
     </div>
     <div v-if="artifact.code !== undefined" class="code">
-      <div><span><i class="pi pi-code" /> Editable Polars</span><Button label="Save & re-run" icon="pi pi-play" text size="small" :loading="rerunning" @click="rerun" /></div>
+      <div><span><i class="aw-icon aw-icon-code" /> Editable Polars</span><Button label="Save & re-run" icon="aw-icon aw-icon-play" text size="small" :loading="rerunning" @click="rerun" /></div>
       <CodeEditor v-model="code" />
       <pre v-if="artifact.stdout">{{ artifact.stdout }}</pre>
     </div>
-    <p v-if="artifact.last_error" class="error"><i class="pi pi-exclamation-triangle" /> {{ artifact.last_error }}</p>
+    <p v-if="artifact.last_error" class="error"><i class="aw-icon aw-icon-triangle-alert" /> {{ artifact.last_error }}</p>
     <ChartView v-if="artifact.frame" :frame="artifact.frame" :viz="artifact.viz" height="230px" />
   </article>
 </template>

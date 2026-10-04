@@ -12,13 +12,13 @@ const props = defineProps<{
 }>()
 
 const statusIcon: Record<AgentTaskStatus, string> = {
-  queued: 'pi pi-circle',
-  running: 'pi pi-spin pi-spinner',
-  awaiting_approval: 'pi pi-pause-circle',
-  completed: 'pi pi-check-circle',
-  skipped: 'pi pi-minus-circle',
-  failed: 'pi pi-times-circle',
-  cancelled: 'pi pi-ban',
+  queued: 'aw-icon aw-icon-circle',
+  running: 'aw-icon aw-icon-spin aw-icon-loader-circle',
+  awaiting_approval: 'aw-icon aw-icon-circle-pause',
+  completed: 'aw-icon aw-icon-circle-check',
+  skipped: 'aw-icon aw-icon-circle-minus',
+  failed: 'aw-icon aw-icon-circle-x',
+  cancelled: 'aw-icon aw-icon-ban',
 }
 
 const visibleStages = computed(() => props.stages
@@ -87,7 +87,7 @@ function taskDuration(task: AgentTask): string {
         class="task"
         :class="task.status"
       >
-        <i :class="statusIcon[task.status] ?? 'pi pi-circle'" />
+        <i :class="statusIcon[task.status] ?? 'aw-icon aw-icon-circle'" />
         <div class="task-body">
           <span class="task-title">{{ task.title }}</span>
           <small v-if="task.status === 'failed' && task.error" class="task-error">

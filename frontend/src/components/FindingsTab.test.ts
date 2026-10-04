@@ -125,7 +125,7 @@ describe('FindingsTab', () => {
     ])
 
     expect(wrapper.findAll('.group .severity').map(node => node.text()))
-      .toEqual(['critical', 'high'])
+      .toEqual(['Critical', 'High'])
     const rows = wrapper.findAll('.row .meta')
     // The id and the first thing owed — not all four, on all eighteen rows.
     expect(rows[0].text().replace(/\s+/g, ' ').trim()).toBe('F-1 · no risk')
@@ -187,7 +187,7 @@ describe('FindingsTab', () => {
 
     expect(wrapper.find('.verdict-bar .stale').text())
       .toContain('has changed since the narrative was drafted')
-    expect(wrapper.find('.card-row .pill').text()).toBe('changed')
+    expect(wrapper.find('.card-row .pill').text()).toBe('Changed')
 
     const reaffirm = wrapper.findAll('.verdict-bar button')
       .find(node => node.text().includes('Re-affirm'))

@@ -180,7 +180,7 @@ function confirmDelete() {
   confirm.require({
     header: 'Delete analysis',
     message: `Delete "${props.analysis.title}"?`,
-    icon: 'pi pi-exclamation-triangle',
+    icon: 'aw-icon aw-icon-triangle-alert',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
@@ -219,7 +219,7 @@ function fail(summary: string, error: unknown) {
 const menuItems = computed(() => [
   {
     label: 'Delete procedure',
-    icon: 'pi pi-trash',
+    icon: 'aw-icon aw-icon-trash-2',
     command: () => confirmDelete(),
   },
 ])
@@ -240,14 +240,14 @@ async function openRun(runId: string) {
     <template #actions>
       <Button
         label="Save"
-        icon="pi pi-save"
+        icon="aw-icon aw-icon-save"
         size="small"
         :severity="dirty ? undefined : 'secondary'"
         :outlined="!dirty"
         :loading="saving"
         @click="save"
       />
-      <Button v-if="frame" label="Export" icon="pi pi-file-excel" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
+      <Button v-if="frame" label="Export" icon="aw-icon aw-icon-file-spreadsheet" severity="secondary" size="small" outlined :loading="exporting" @click="exportExcel" />
       <UiOverflowMenu :items="menuItems" tooltip="More procedure actions" />
     </template>
   </AnalysisHead>
@@ -270,12 +270,12 @@ async function openRun(runId: string) {
     </span>
   </p>
   <p v-if="dirty" class="dirty-note">
-    <i class="pi pi-pencil" /> Unsaved changes. Running saves them first, so the
+    <i class="aw-icon aw-icon-pencil" /> Unsaved changes. Running saves them first, so the
     recorded result always matches the definition that produced it.
   </p>
 
   <div v-if="runError" class="analysis-error">
-    <i class="pi pi-exclamation-triangle" /> {{ runError }}
+    <i class="aw-icon aw-icon-triangle-alert" /> {{ runError }}
   </div>
 
   <!-- The definition, title included: renaming a procedure is one edit among
@@ -287,8 +287,8 @@ async function openRun(runId: string) {
         <InputText v-model="title" placeholder="What this procedure tests" size="small" />
       </label>
       <span class="grow" />
-      <span class="hint"><i class="pi pi-code" /> Python — runs in the local sandbox</span>
-      <Button label="Preview" icon="pi pi-eye" size="small" text :loading="previewing" @click="preview" />
+      <span class="hint"><i class="aw-icon aw-icon-code" /> Python — runs in the local sandbox</span>
+      <Button label="Preview" icon="aw-icon aw-icon-eye" size="small" text :loading="previewing" @click="preview" />
     </div>
     <CodeEditor v-model="code" />
     <pre v-if="stdout" class="analysis-stdout">{{ stdout }}</pre>
@@ -302,7 +302,7 @@ async function openRun(runId: string) {
     <ChartView :frame="frame" :viz="analysis.viz" height="320px" />
   </div>
   <div v-else-if="loadingCurrent" class="loading-current">
-    <i class="pi pi-spin pi-spinner" /> Loading current result…
+    <i class="aw-icon aw-icon-spin aw-icon-loader-circle" /> Loading current result…
   </div>
 
   <AnalysisFooter :analysis="analysis" />

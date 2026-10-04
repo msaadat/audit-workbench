@@ -197,7 +197,7 @@ const disclosures = computed(() => [
           :aria-expanded="Boolean(open[item.key])"
           @click="toggle(item.key)"
         >
-          <i class="pi" :class="open[item.key] ? 'pi-chevron-down' : 'pi-chevron-right'" />{{ item.label }}
+          <i class="aw-icon" :class="open[item.key] ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />{{ item.label }}
         </button>
       </p>
 
@@ -273,7 +273,7 @@ const disclosures = computed(() => [
 }
 .disclosure-link:hover { color: var(--aw-teal); }
 .disclosure-link:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
-.disclosure-link .pi { font-size: var(--aw-text-2xs); }
+.disclosure-link .aw-icon { font-size: var(--aw-text-2xs); }
 
 .steps { min-width: 0; }
 .step-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; min-width: 0; padding: .4rem .55rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); font-size: var(--aw-text-sm); }

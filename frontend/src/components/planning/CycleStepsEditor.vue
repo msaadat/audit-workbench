@@ -186,15 +186,15 @@ function onSave() {
           <div class="step__head">
             <InputText v-model="step.name" placeholder="Step name" class="step__name" />
             <Button
-              icon="pi pi-arrow-up" text size="small" aria-label="Move up"
+              icon="aw-icon aw-icon-arrow-up" text size="small" aria-label="Move up"
               :disabled="index === 0" @click="move(index, -1)"
             />
             <Button
-              icon="pi pi-arrow-down" text size="small" aria-label="Move down"
+              icon="aw-icon aw-icon-arrow-down" text size="small" aria-label="Move down"
               :disabled="index === draft.length - 1" @click="move(index, 1)"
             />
             <Button
-              icon="pi pi-trash" text size="small" severity="danger"
+              icon="aw-icon aw-icon-trash-2" text size="small" severity="danger"
               aria-label="Remove step" @click="removeStep(index)"
             />
           </div>
@@ -213,11 +213,11 @@ function onSave() {
                 class="row__wide"
               />
               <Button
-                icon="pi pi-times" text size="small" aria-label="Remove role"
+                icon="aw-icon aw-icon-x" text size="small" aria-label="Remove role"
                 @click="removeRole(index, roleIndex)"
               />
             </div>
-            <Button label="Add a document role" text size="small" icon="pi pi-plus" @click="addRole(index)" />
+            <Button label="Add a document role" text size="small" icon="aw-icon aw-icon-plus" @click="addRole(index)" />
           </div>
 
           <div class="step__group">
@@ -232,16 +232,16 @@ function onSave() {
                 class="row__wide"
               />
               <Button
-                icon="pi pi-times" text size="small" aria-label="Remove population"
+                icon="aw-icon aw-icon-x" text size="small" aria-label="Remove population"
                 @click="removePopulation(index, popIndex)"
               />
             </div>
-            <Button label="Add a population" text size="small" icon="pi pi-plus" @click="addPopulation(index)" />
+            <Button label="Add a population" text size="small" icon="aw-icon aw-icon-plus" @click="addPopulation(index)" />
           </div>
         </li>
       </ol>
 
-      <Button label="Add a step" size="small" outlined icon="pi pi-plus" @click="addStep" />
+      <Button label="Add a step" size="small" outlined icon="aw-icon aw-icon-plus" @click="addStep" />
 
       <label class="field">
         <span class="field__label">Anchor population</span>
@@ -272,8 +272,6 @@ function onSave() {
 .field__label {
   font-size: var(--aw-text-xs);
   font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--aw-muted);
 }
 .field__hint { font-size: var(--aw-text-xs); color: var(--aw-muted); }

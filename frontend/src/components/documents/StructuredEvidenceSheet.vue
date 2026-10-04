@@ -111,7 +111,7 @@ const sheets = computed(() => props.records.map((record, index) => ({
         <span class="eyebrow">
           Record {{ sheet.index + 1 }} of {{ records.length }}<template v-if="schema?.document_type"> · {{ schema.document_type }}</template>
         </span>
-        <span v-if="validated" class="pill">validated</span>
+        <span v-if="validated" class="pill">Validated</span>
         <span class="by-model">read by the model</span>
       </header>
 
@@ -147,13 +147,13 @@ const sheets = computed(() => props.records.map((record, index) => ({
 }
 .eyebrow {
   flex: 1; min-width: 0;
-  color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs);
-  font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--aw-muted); font-size: var(--aw-text-xs);
+  font-weight: 600;
 }
 .pill {
   padding: 0 .375rem; border-radius: var(--aw-radius-pill);
   background: var(--aw-ok-soft); color: var(--aw-ok);
-  font-size: var(--aw-text-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  font-size: var(--aw-text-2xs); font-weight: 700;
 }
 .by-model { color: var(--aw-accent); font-size: var(--aw-text-2xs); font-weight: 600; }
 

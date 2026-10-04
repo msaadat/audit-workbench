@@ -15,13 +15,13 @@ type AnyRecord = Record<string, any>
 const props = defineProps<{ id: string }>()
 const route = useRoute(); const router = useRouter(); const toast = useToast(); const confirm = useConfirm()
 const views = [
-  { id: 'overview', label: 'Overview', icon: 'pi pi-gauge' },
-  { id: 'steps', label: 'Steps', icon: 'pi pi-check-square' },
-  { id: 'timeline', label: 'Timeline', icon: 'pi pi-chart-bar' },
-  { id: 'graph', label: 'Plan graph', icon: 'pi pi-sitemap' },
-  { id: 'calls', label: 'LLM calls', icon: 'pi pi-comments' },
-  { id: 'events', label: 'Raw events', icon: 'pi pi-list' },
-  { id: 'state', label: 'State', icon: 'pi pi-code' },
+  { id: 'overview', label: 'Overview', icon: 'aw-icon aw-icon-gauge' },
+  { id: 'steps', label: 'Steps', icon: 'aw-icon aw-icon-square-check' },
+  { id: 'timeline', label: 'Timeline', icon: 'aw-icon aw-icon-chart-column' },
+  { id: 'graph', label: 'Plan graph', icon: 'aw-icon aw-icon-network' },
+  { id: 'calls', label: 'LLM calls', icon: 'aw-icon aw-icon-messages-square' },
+  { id: 'events', label: 'Raw events', icon: 'aw-icon aw-icon-list' },
+  { id: 'state', label: 'State', icon: 'aw-icon aw-icon-code' },
 ]
 const view = ref(String(route.query.view || 'overview'))
 const overview = ref<AnyRecord | null>(null); const runs = ref<AnyRecord[]>([])
@@ -159,7 +159,7 @@ async function rollBack(step: AnyRecord) {
   const later = stepList.value.filter(item => item.index > step.index).length
   confirm.require({
     header: `Roll back “${step.title || step.capability}”?`,
-    icon: 'pi pi-history',
+    icon: 'aw-icon aw-icon-history',
     message: [
       `The engagement returns to the state it was in before this step ran: ${parts.join(', ')}.`,
       later ? ` The ${later} step${later === 1 ? '' : 's'} that ran after it ${later === 1 ? 'is' : 'are'} undone with it.` : '',
@@ -217,7 +217,7 @@ function connect() {
 }
 function clearTelemetry() {
   confirm.require({
-    header: 'Clear debug telemetry?', icon: 'pi pi-exclamation-triangle',
+    header: 'Clear debug telemetry?', icon: 'aw-icon aw-icon-triangle-alert',
     message: 'This permanently removes all local debug calls, events, snapshots, and transitions for this workspace.',
     acceptLabel: 'Clear telemetry', rejectLabel: 'Keep telemetry',
     accept: async () => { await api.del(`/api/workspaces/${props.id}/debug?confirm=${encodeURIComponent(props.id)}`); selectedRunId.value = ''; detail.value = null; selectedCall.value = null; await loadAll() },
@@ -270,20 +270,20 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
       <span class="count">{{ overview?.counts?.runs || 0 }} runs · {{ overview?.counts?.calls || 0 }} model calls · stored locally</span>
       <span class="spacer"/>
       <span class="live" :class="{ on: live }"><i/>{{ live ? 'Live' : 'Reconnecting' }}</span>
-      <Button icon="pi pi-trash" label="Clear" severity="danger" outlined size="small" @click="clearTelemetry" />
+      <Button icon="aw-icon aw-icon-trash-2" label="Clear" severity="danger" outlined size="small" @click="clearTelemetry" />
     </header>
     <div class="debug-shell">
       <aside>
         <nav><button v-for="item in views" :key="item.id" :class="{ active: view === item.id }" @click="chooseView(item.id)"><i :class="item.icon"/><span>{{ item.label }}</span></button></nav>
         <label>Run<Select v-model="selectedRunId" :options="runOptions" optionLabel="label" optionValue="value" class="run-select" :title="selectedRunTitle" fluid /></label>
-        <div class="retention"><i class="pi pi-lock"/><span>Stored only in this workspace until you clear it.</span></div>
+        <div class="retention"><i class="aw-icon aw-icon-lock"/><span>Stored only in this workspace until you clear it.</span></div>
       </aside>
       <main v-if="!loading">
         <section v-if="view === 'overview'" class="stack">
-          <div class="hero"><div><small>TELEMETRY HEALTH</small><h2>{{ overview?.counts?.calls || 0 }} model calls captured</h2><p>Complete safe requests, provider attempts, state changes, and run timing remain local.</p></div><i class="pi pi-wave-pulse"/></div>
+          <div class="hero"><div><small>TELEMETRY HEALTH</small><h2>{{ overview?.counts?.calls || 0 }} model calls captured</h2><p>Complete safe requests, provider attempts, state changes, and run timing remain local.</p></div><i class="aw-icon aw-icon-activity"/></div>
           <div class="metric-grid"><article><small>Runs</small><strong>{{ overview?.counts?.runs || 0 }}</strong></article><article><small>State transitions</small><strong>{{ overview?.counts?.transitions || 0 }}</strong></article><article><small>Failed calls</small><strong>{{ overview?.counts?.failed_calls || 0 }}</strong></article><article><small>Parallelism</small><strong>{{ metrics.parallelism_factor || 0 }}×</strong></article></div>
-          <div v-if="detail" class="two-col"><article class="panel"><h3>Run timing</h3><dl><template v-for="(value, key) in metrics" :key="key"><template v-if="typeof value === 'number'"><dt>{{ String(key).replaceAll('_',' ') }}</dt><dd>{{ String(key) === 'parallelism_factor' || String(key) === 'retry_waste_ratio' ? value : formatMs(value) }}</dd></template></template></dl></article><article class="panel"><h3>Deterministic cause</h3><pre>{{ JSON.stringify(detail.causal_analysis, null, 2) }}</pre><p v-for="gap in detail.telemetry_gaps" :key="gap" class="notice"><i class="pi pi-info-circle"/>{{ gap }}</p></article></div>
-          <article class="panel"><h3>Recent calls</h3><button v-for="call in overview?.recent_calls" :key="call.id" class="row" @click="inspectCall(call.id)"><Tag :value="call.status" :severity="severity(call.status)"/><span><strong>{{ call.correlation?.stage || call.correlation?.purpose || 'Model call' }}</strong><small>{{ call.provider }} / {{ call.model }}</small></span><time>{{ formatMs(call.duration_ms) }}</time><i class="pi pi-chevron-right"/></button><p v-if="!overview?.recent_calls?.length" class="empty">No calls have been recorded yet.</p></article>
+          <div v-if="detail" class="two-col"><article class="panel"><h3>Run timing</h3><dl><template v-for="(value, key) in metrics" :key="key"><template v-if="typeof value === 'number'"><dt>{{ String(key).replaceAll('_',' ') }}</dt><dd>{{ String(key) === 'parallelism_factor' || String(key) === 'retry_waste_ratio' ? value : formatMs(value) }}</dd></template></template></dl></article><article class="panel"><h3>Deterministic cause</h3><pre>{{ JSON.stringify(detail.causal_analysis, null, 2) }}</pre><p v-for="gap in detail.telemetry_gaps" :key="gap" class="notice"><i class="aw-icon aw-icon-info"/>{{ gap }}</p></article></div>
+          <article class="panel"><h3>Recent calls</h3><button v-for="call in overview?.recent_calls" :key="call.id" class="row" @click="inspectCall(call.id)"><Tag :value="call.status" :severity="severity(call.status)"/><span><strong>{{ call.correlation?.stage || call.correlation?.purpose || 'Model call' }}</strong><small>{{ call.provider }} / {{ call.model }}</small></span><time>{{ formatMs(call.duration_ms) }}</time><i class="aw-icon aw-icon-chevron-right"/></button><p v-if="!overview?.recent_calls?.length" class="empty">No calls have been recorded yet.</p></article>
         </section>
 
         <section v-else-if="view === 'steps'" class="stack">
@@ -297,7 +297,7 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
               :severity="steps?.checkpointing_enabled ? 'info' : 'warn'"
             />
           </div>
-          <p v-if="steps?.notice" class="notice"><i class="pi pi-info-circle"/>{{ steps.notice }}</p>
+          <p v-if="steps?.notice" class="notice"><i class="aw-icon aw-icon-info"/>{{ steps.notice }}</p>
           <article class="panel step-list">
             <!-- Not scoped to the run picker: rollback rewinds the workspace,
                  so the ledger it is offered from is the workspace's. Each row
@@ -311,20 +311,20 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
                 </strong>
                 <small>
                   <button class="run-chip" v-tooltip.top="`${step.run_id} · ${step.run_status || 'unknown'}`" @click="openRun(step)">
-                    <i class="pi pi-play-circle"/>{{ stepRunLabel(step) }}
+                    <i class="aw-icon aw-icon-circle-play"/>{{ stepRunLabel(step) }}
                   </button>
                   <code>{{ step.capability }}</code>
                   · {{ step.unit_count }} unit{{ step.unit_count === 1 ? '' : 's' }}
                   <template v-if="step.result_refs.length"> · {{ step.result_refs.length }} artifact{{ step.result_refs.length === 1 ? '' : 's' }}</template>
                   <template v-if="step.duration_ms"> · {{ formatMs(step.duration_ms) }}</template>
                 </small>
-                <small v-if="step.orphan" class="step-error"><i class="pi pi-info-circle"/>The run record for this step is gone; its restore point still works.</small>
-                <small v-if="step.error" class="step-error"><i class="pi pi-exclamation-triangle"/>{{ step.error }}</small>
+                <small v-if="step.orphan" class="step-error"><i class="aw-icon aw-icon-info"/>The run record for this step is gone; its restore point still works.</small>
+                <small v-if="step.error" class="step-error"><i class="aw-icon aw-icon-triangle-alert"/>{{ step.error }}</small>
               </div>
               <Tag :value="step.status" :severity="severity(step.status)"/>
               <Button
                 v-if="step.checkpoint"
-                icon="pi pi-history"
+                icon="aw-icon aw-icon-history"
                 label="Roll back"
                 severity="danger"
                 outlined
@@ -337,31 +337,31 @@ onUnmounted(() => { source?.close(); window.clearTimeout(refreshTimer) })
                    restore point says why it has none, because that is the fact
                    an operator needs rather than a control that does nothing. -->
               <span v-else class="no-checkpoint" v-tooltip.left="'This step ran before checkpointing, or its restore point has aged out under the retention cap.'">
-                <i class="pi pi-ban"/>No checkpoint
+                <i class="aw-icon aw-icon-ban"/>No checkpoint
               </span>
             </div>
             <p v-if="!stepList.length && !steps?.notice" class="empty">This workspace has run no workflow steps.</p>
           </article>
         </section>
 
-        <section v-else-if="view === 'timeline'" class="stack"><div class="section-head"><div><h2>Execution timeline</h2><p>Calls share one wall-clock scale, so overlap and sequential gaps are visible.</p></div><Tag :value="`${metrics.parallelism_factor || 0}× parallelism`" severity="info"/></div><div class="timeline panel"><div v-for="item in timeline.items" :key="item.id" class="timeline-row"><button class="timeline-label" @click="item.kind === 'call' ? inspectCall(item.id) : chooseAction(item.id)"><i :class="item.kind === 'call' ? 'pi pi-comments' : 'pi pi-bolt'"/><span>{{ item.label }}</span></button><div class="track"><button class="bar" :class="[item.kind, item.status]" :style="{ left: `${item.left}%`, width: `${item.width}%` }" :title="`${item.label} · ${item.status}`" @click="item.kind === 'call' ? inspectCall(item.id) : chooseAction(item.id)"/></div></div><p v-if="!timeline.items.length" class="empty">This run has no timestamped actions or calls. Historical telemetry is never fabricated.</p></div></section>
+        <section v-else-if="view === 'timeline'" class="stack"><div class="section-head"><div><h2>Execution timeline</h2><p>Calls share one wall-clock scale, so overlap and sequential gaps are visible.</p></div><Tag :value="`${metrics.parallelism_factor || 0}× parallelism`" severity="info"/></div><div class="timeline panel"><div v-for="item in timeline.items" :key="item.id" class="timeline-row"><button class="timeline-label" @click="item.kind === 'call' ? inspectCall(item.id) : chooseAction(item.id)"><i :class="item.kind === 'call' ? 'aw-icon aw-icon-messages-square' : 'aw-icon aw-icon-zap'"/><span>{{ item.label }}</span></button><div class="track"><button class="bar" :class="[item.kind, item.status]" :style="{ left: `${item.left}%`, width: `${item.width}%` }" :title="`${item.label} · ${item.status}`" @click="item.kind === 'call' ? inspectCall(item.id) : chooseAction(item.id)"/></div></div><p v-if="!timeline.items.length" class="empty">This run has no timestamped actions or calls. Historical telemetry is never fabricated.</p></div></section>
 
-        <section v-else-if="view === 'graph'" class="stack"><div class="section-head"><div><h2>Plan graph</h2><p>Immutable revisions are used when available; the console caps rendering at 60 actions.</p></div><Tag :value="detail?.graph_telemetry?.available ? `${detail.graph_snapshots.length} revisions` : 'Historical gap'" :severity="detail?.graph_telemetry?.available ? 'success' : 'warn'"/></div><p v-if="detail?.graph_telemetry?.legacy_notice" class="notice"><i class="pi pi-info-circle"/>{{ detail.graph_telemetry.legacy_notice }}</p><div class="graph panel"><svg :viewBox="`0 0 ${graphLayout.width} ${graphLayout.height}`" :style="{ minWidth: `${graphLayout.width}px`, height: `${graphLayout.height}px` }"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"/></marker></defs><line v-for="(edge,index) in graphLayout.edges" :key="index" :x1="edge.from.x + 170" :y1="edge.from.y + 25" :x2="edge.to.x" :y2="edge.to.y + 25" marker-end="url(#arrow)"/><g v-for="node in graphLayout.nodes" :key="node.id" :transform="`translate(${node.x} ${node.y})`" role="button" tabindex="0" @click="chooseAction(node.id)"><rect width="170" height="52" rx="8" :class="[node.status, { selected: route.query.action === node.id }]"/><text x="10" y="20">{{ (node.type || node.id).slice(0,22) }}</text><text x="10" y="39" class="status-text">{{ node.status }} · {{ node.id.slice(-8) }}</text></g></svg><p v-if="!graphLayout.nodes.length" class="empty">Schema-v1 history is represented by its stage/task tree in the raw run record.</p></div><article v-if="selectedAction" class="panel"><div class="section-head"><h3>{{ selectedAction.id }}</h3><Tag :value="selectedAction.status" :severity="severity(selectedAction.status)"/></div><JsonTree :value="selectedAction" path="$" :search="jsonSearch"/><InputText v-model="jsonSearch" placeholder="Search action JSON or correlations" class="json-search"/></article></section>
+        <section v-else-if="view === 'graph'" class="stack"><div class="section-head"><div><h2>Plan graph</h2><p>Immutable revisions are used when available; the console caps rendering at 60 actions.</p></div><Tag :value="detail?.graph_telemetry?.available ? `${detail.graph_snapshots.length} revisions` : 'Historical gap'" :severity="detail?.graph_telemetry?.available ? 'success' : 'warn'"/></div><p v-if="detail?.graph_telemetry?.legacy_notice" class="notice"><i class="aw-icon aw-icon-info"/>{{ detail.graph_telemetry.legacy_notice }}</p><div class="graph panel"><svg :viewBox="`0 0 ${graphLayout.width} ${graphLayout.height}`" :style="{ minWidth: `${graphLayout.width}px`, height: `${graphLayout.height}px` }"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"/></marker></defs><line v-for="(edge,index) in graphLayout.edges" :key="index" :x1="edge.from.x + 170" :y1="edge.from.y + 25" :x2="edge.to.x" :y2="edge.to.y + 25" marker-end="url(#arrow)"/><g v-for="node in graphLayout.nodes" :key="node.id" :transform="`translate(${node.x} ${node.y})`" role="button" tabindex="0" @click="chooseAction(node.id)"><rect width="170" height="52" rx="8" :class="[node.status, { selected: route.query.action === node.id }]"/><text x="10" y="20">{{ (node.type || node.id).slice(0,22) }}</text><text x="10" y="39" class="status-text">{{ node.status }} · {{ node.id.slice(-8) }}</text></g></svg><p v-if="!graphLayout.nodes.length" class="empty">Schema-v1 history is represented by its stage/task tree in the raw run record.</p></div><article v-if="selectedAction" class="panel"><div class="section-head"><h3>{{ selectedAction.id }}</h3><Tag :value="selectedAction.status" :severity="severity(selectedAction.status)"/></div><JsonTree :value="selectedAction" path="$" :search="jsonSearch"/><InputText v-model="jsonSearch" placeholder="Search action JSON or correlations" class="json-search"/></article></section>
 
         <section v-else-if="view === 'calls'" class="inspector-layout">
           <div class="list-pane">
             <div class="section-head"><div><h2>LLM calls</h2><p>{{ selectedRunId ? 'Calls correlated to this run.' : 'All safe raw transport records.' }}</p></div></div>
             <button v-for="call in visibleCalls" :key="call.id" class="call-card" :class="{ selected: selectedCall?.id === call.id }" @click="inspectCall(call.id)"><span><Tag :value="call.status" :severity="severity(call.status)"/><small>{{ call.attempt_count }} attempt{{ call.attempt_count === 1 ? '' : 's' }}</small></span><strong>{{ call.correlation?.stage || call.correlation?.purpose || call.id }}</strong><small>{{ call.provider }} / {{ call.model }} · {{ formatMs(call.duration_ms) }}</small></button>
-            <div v-if="!visibleCalls.length" class="call-gap"><i class="pi pi-history"/><strong>No captured call records</strong><p v-if="historicalTurnCount">The durable run ledger reports {{ historicalTurnCount }} model turn{{ historicalTurnCount === 1 ? '' : 's' }}, but this work predates full Debug tracing. Raw prompts and responses cannot be reconstructed.</p><p v-else>No model call has been made in this {{ selectedRunId ? 'run' : 'workspace' }} since full Debug tracing was enabled.</p><small v-if="telemetryStartedAt">Workspace Debug telemetry begins at {{ telemetryStartedAt }}.</small></div>
+            <div v-if="!visibleCalls.length" class="call-gap"><i class="aw-icon aw-icon-history"/><strong>No captured call records</strong><p v-if="historicalTurnCount">The durable run ledger reports {{ historicalTurnCount }} model turn{{ historicalTurnCount === 1 ? '' : 's' }}, but this work predates full Debug tracing. Raw prompts and responses cannot be reconstructed.</p><p v-else>No model call has been made in this {{ selectedRunId ? 'run' : 'workspace' }} since full Debug tracing was enabled.</p><small v-if="telemetryStartedAt">Workspace Debug telemetry begins at {{ telemetryStartedAt }}.</small></div>
           </div>
-          <article class="json-inspector panel"><div class="section-head"><h3>{{ selectedCall?.id || (visibleCalls.length ? 'Select a call' : 'Historical telemetry gap') }}</h3><Tag v-if="selectedCall" :value="selectedCall.status" :severity="severity(selectedCall.status)"/></div><JsonTree v-if="selectedCall" :value="selectedCall" path="$" :search="jsonSearch"/><InputText v-if="selectedCall" v-model="jsonSearch" placeholder="Search JSON paths or values" class="json-search"/><div v-else-if="!visibleCalls.length" class="gap-detail"><i class="pi pi-info-circle"/><h3>Nothing is hidden by a filter</h3><p>Complete request and response records only exist for calls made after the Debug store was installed. The console labels this gap rather than fabricating historical data.</p><p>Start a new model-backed assistant question or audit action; its call will appear here live.</p></div></article>
+          <article class="json-inspector panel"><div class="section-head"><h3>{{ selectedCall?.id || (visibleCalls.length ? 'Select a call' : 'Historical telemetry gap') }}</h3><Tag v-if="selectedCall" :value="selectedCall.status" :severity="severity(selectedCall.status)"/></div><JsonTree v-if="selectedCall" :value="selectedCall" path="$" :search="jsonSearch"/><InputText v-if="selectedCall" v-model="jsonSearch" placeholder="Search JSON paths or values" class="json-search"/><div v-else-if="!visibleCalls.length" class="gap-detail"><i class="aw-icon aw-icon-info"/><h3>Nothing is hidden by a filter</h3><p>Complete request and response records only exist for calls made after the Debug store was installed. The console labels this gap rather than fabricating historical data.</p><p>Start a new model-backed assistant question or audit action; its call will appear here live.</p></div></article>
         </section>
 
         <section v-else-if="view === 'events'" class="stack"><div class="section-head"><div><h2>Raw events</h2><p>Append-only workspace debug feed. Agent-run events remain included in run detail.</p></div></div><article class="panel event-list"><div v-for="event in events" :key="event.id" class="event"><time>#{{ event.seq }} · {{ event.at }}</time><Tag :value="event.type" severity="secondary"/><pre>{{ JSON.stringify(event.data, null, 2) }}</pre></div><p v-if="!events.length" class="empty">No debug events recorded.</p></article></section>
 
         <section v-else-if="view === 'state'" class="state-layout"><div class="list-pane"><div class="section-head"><div><h2>State transitions</h2><p>Click a change to answer “why did this change?”</p></div></div><button v-for="item in transitions" :key="item.id" class="transition-card" :class="{ selected: selectedTransition?.id === item.id }" @click="inspectTransition(item.id)"><strong>{{ item.trigger }}</strong><small>{{ item.at }}</small><span>{{ item.changed_paths?.length || 0 }} paths · {{ item.correlation?.action_id || item.correlation?.run_id || 'workspace' }}</span></button></div><div class="state-detail"><div class="state-tools"><InputText v-model="jsonSearch" placeholder="JSON-path search"/><InputText v-model="artifactFilter" placeholder="Artifact/provenance filter"/></div><article v-if="selectedTransition" class="panel"><div class="section-head"><div><h3>{{ selectedTransition.trigger }}</h3><p>{{ selectedTransition.correlation?.run_id }} {{ selectedTransition.correlation?.action_id }}</p></div><Tag :value="selectedTransition.kind" severity="info"/></div><div class="change-list"><details v-for="change in filteredChanges" :key="change.path"><summary><Tag :value="change.change" :severity="change.change === 'removed' ? 'danger' : change.change === 'added' ? 'success' : 'secondary'"/><code>{{ change.path }}</code></summary><pre>{{ JSON.stringify(change, null, 2) }}</pre></details></div><div class="snapshot-compare"><div><h4>Before snapshot</h4><JsonTree :value="beforeSnapshot?.payload ?? null" path="$" :search="jsonSearch"/></div><div><h4>After snapshot</h4><JsonTree :value="afterSnapshot?.payload ?? null" path="$" :search="jsonSearch"/></div></div></article><p v-else class="empty panel">Select a transition to inspect its provenance, path-level diff, and before/after snapshot trees.</p></div></section>
       </main>
-      <main v-else class="loading"><i class="pi pi-spin pi-spinner"/> Loading local telemetry…</main>
+      <main v-else class="loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle"/> Loading local telemetry…</main>
     </div>
   </div>
 </template>

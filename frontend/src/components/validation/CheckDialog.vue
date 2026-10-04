@@ -330,7 +330,7 @@ watch(visible, (open) => {
       <Button
         v-if="rule"
         label="Delete"
-        icon="pi pi-trash"
+        icon="aw-icon aw-icon-trash-2"
         severity="danger"
         text
         size="small"
@@ -340,7 +340,7 @@ watch(visible, (open) => {
       <Button label="Cancel" severity="secondary" outlined size="small" @click="visible = false" />
       <Button
         :label="rule ? 'Save check' : 'Add check'"
-        icon="pi pi-check"
+        icon="aw-icon aw-icon-check"
         size="small"
         :disabled="!ready"
         @click="save"

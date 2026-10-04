@@ -40,7 +40,7 @@ const owed = computed(() => holdsExceptions(props.analysis) && !disposition.valu
         class="chip"
         @click="nav.push('data-tests', { test: disposition.test_id })"
       >
-        <i class="pi pi-shield" aria-hidden="true" />
+        <i class="aw-icon aw-icon-shield" aria-hidden="true" />
         <span class="id">{{ disposition.test_id }}</span>
       </button>
       <button
@@ -49,7 +49,7 @@ const owed = computed(() => holdsExceptions(props.analysis) && !disposition.valu
         class="chip"
         @click="nav.push('rcm-row', { rcm: disposition.rcm_id })"
       >
-        <i class="pi pi-map" aria-hidden="true" />
+        <i class="aw-icon aw-icon-map" aria-hidden="true" />
         <span class="id">{{ disposition.rcm_id }}</span>
       </button>
       <span class="note">Carried into a data test, so what it found can carry a finding.</span>

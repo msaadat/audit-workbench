@@ -84,13 +84,13 @@ function when(value: string): string {
     <p v-if="context.sentence" class="reading">{{ context.sentence }}</p>
 
     <button v-for="document in documents" :key="document.document_id" type="button" class="row">
-      <i class="pi pi-file" aria-hidden="true" />
+      <i class="aw-icon aw-icon-file" aria-hidden="true" />
       <span class="name">{{ document.name }}</span>
       <span v-if="document.category" class="tag">{{ CATEGORY_LABELS[document.category] || document.category }}</span>
     </button>
 
     <button v-if="hidden" type="button" class="more" @click="expanded = !expanded">
-      <i class="pi" :class="expanded ? 'pi-chevron-down' : 'pi-chevron-right'" aria-hidden="true" />
+      <i class="aw-icon" :class="expanded ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" aria-hidden="true" />
       {{ expanded ? 'Fewer documents' : plural(hidden, 'more document') }}
     </button>
 
@@ -111,7 +111,7 @@ function when(value: string): string {
   background: none; color: var(--aw-ink); font: inherit; font-size: var(--aw-text-xs);
   text-align: left; cursor: default;
 }
-.row .pi { color: var(--aw-teal); font-size: .7rem; }
+.row .aw-icon { color: var(--aw-teal); font-size: .7rem; }
 .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag { flex: none; color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 .more {
@@ -120,7 +120,7 @@ function when(value: string): string {
   border: 0; background: none; color: var(--aw-teal);
   font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer;
 }
-.more .pi { font-size: .55rem; }
+.more .aw-icon { font-size: .55rem; }
 .withheld {
   margin: .4rem 0 0; padding-top: .4rem;
   border-top: 1px solid var(--aw-border);

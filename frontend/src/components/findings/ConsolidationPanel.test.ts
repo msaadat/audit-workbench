@@ -49,7 +49,7 @@ describe('ConsolidationPanel', () => {
   it('shows one card per undecided group with the shared records, the relation, and the model lead', () => {
     const wrapper = mountPanel()
     const card = wrapper.find('[data-testid="consolidation-group"]')
-    expect(card.find('.chip').text()).toBe('shared cause')
+    expect(card.find('.chip').text()).toBe('Shared cause')
     expect(card.text()).toContain('backed by shared records')
     expect(card.text()).toContain('VENDOR_ID')
     expect(card.text()).toContain('V0977')

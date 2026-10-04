@@ -53,10 +53,10 @@ function semanticStatus(action: AgentAction) {
     <p v-else class="muted">{{ emptyMessage }}</p>
     <div v-for="action in actions" :key="action.id" class="action" :class="action.status">
       <i
-        :class="action.status === 'succeeded' ? 'pi pi-check-circle'
-          : action.status === 'running' ? 'pi pi-spin pi-spinner'
-          : action.status === 'failed' || action.status === 'blocked' ? 'pi pi-exclamation-circle'
-          : 'pi pi-circle'"
+        :class="action.status === 'succeeded' ? 'aw-icon aw-icon-circle-check'
+          : action.status === 'running' ? 'aw-icon aw-icon-spin aw-icon-loader-circle'
+          : action.status === 'failed' || action.status === 'blocked' ? 'aw-icon aw-icon-circle-alert'
+          : 'aw-icon aw-icon-circle'"
       />
       <div class="body">
         <strong>{{ action.type.replaceAll('_', ' ') }}</strong>

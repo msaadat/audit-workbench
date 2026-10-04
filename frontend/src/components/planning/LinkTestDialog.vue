@@ -157,7 +157,7 @@ async function link() {
             :aria-pressed="selected?.key === entry.key"
             @click="selected = entry"
           >
-            <i :class="entry.kind === 'data' ? 'pi pi-chart-bar' : 'pi pi-file-check'" />
+            <i :class="entry.kind === 'data' ? 'aw-icon aw-icon-chart-column' : 'aw-icon aw-icon-file-check'" />
             <span class="entry-text">
               <strong>{{ entry.title }}</strong>
               <small>{{ entry.subtitle }}</small>
@@ -178,7 +178,7 @@ async function link() {
             :aria-pressed="selected?.key === entry.key"
             @click="selected = entry"
           >
-            <i :class="entry.kind === 'data' ? 'pi pi-chart-bar' : 'pi pi-file-check'" />
+            <i :class="entry.kind === 'data' ? 'aw-icon aw-icon-chart-column' : 'aw-icon aw-icon-file-check'" />
             <span class="entry-text">
               <strong>{{ entry.title }}</strong>
               <small>{{ entry.subtitle }}</small>
@@ -197,7 +197,7 @@ async function link() {
       <Button label="Cancel" severity="secondary" outlined @click="visible = false" />
       <Button
         :label="selected?.rcmId ? 'Move to this row' : 'Link test'"
-        icon="pi pi-link"
+        icon="aw-icon aw-icon-link"
         :disabled="!selected"
         :loading="linking"
         @click="link"

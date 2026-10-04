@@ -100,7 +100,7 @@ onUnmounted(() => {
          actually use. -->
     <ul v-if="progress?.length" class="checklist" aria-hidden="true">
       <li v-for="item in progress" :key="item.label" :class="item.state">
-        <i :class="item.state === 'done' ? 'pi pi-check' : 'pi pi-spin pi-spinner'" />
+        <i :class="item.state === 'done' ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-spin aw-icon-loader-circle'" />
         <span>{{ item.label }}</span>
       </li>
     </ul>

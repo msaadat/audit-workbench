@@ -571,7 +571,7 @@ label[data-missing='true'] :deep(.p-textarea),
 .approved-head { display: flex; flex-direction: column; gap: .125rem; }
 .approved-cycle small { color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.4; }
 .approved-cycle dl { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: 0; }
-.approved-cycle dt { color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.approved-cycle dt { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .approved-cycle dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .approved-cycle code { font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }
 .gaps, .rules { display: flex; flex-direction: column; gap: .25rem; margin: 0; padding-left: 1.1rem; font-size: var(--aw-text-sm); }

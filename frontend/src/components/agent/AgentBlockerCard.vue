@@ -22,7 +22,7 @@ const destinations: Record<string, string> = {
        an identifier back into the reading surface. -->
   <div class="blocker" :class="blocker.severity" :title="blocker.code ?? undefined">
     <div class="head">
-      <i :class="blocker.severity === 'failed' ? 'pi pi-times-circle' : blocker.severity === 'review' ? 'pi pi-eye' : 'pi pi-exclamation-triangle'" />
+      <i :class="blocker.severity === 'failed' ? 'aw-icon aw-icon-circle-x' : blocker.severity === 'review' ? 'aw-icon aw-icon-eye' : 'aw-icon aw-icon-triangle-alert'" />
       <p>{{ blocker.message }}</p>
     </div>
     <small v-if="blocker.where" class="where">Review it in the {{ destinations[blocker.where] ?? blocker.where }}.</small>

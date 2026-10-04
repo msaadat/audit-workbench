@@ -6,6 +6,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.ts'],
+    // icons.test.ts reads the generated glyph classes as text; Vitest stubs
+    // every other stylesheet to an empty string.
+    css: { include: [/icons\.css/] },
   },
   server: {
     proxy: {

@@ -220,8 +220,7 @@ const meters = computed(() => props.lanes.map(lane => ({
 .meters { display: flex; align-items: center; gap: 1.125rem; flex: none; }
 .meter { display: flex; flex-direction: column; gap: .25rem; margin: 0; }
 .meter-label {
-  color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600;
-  letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
+  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .meter-label b { color: var(--aw-ink-strong); }
@@ -236,8 +235,7 @@ const meters = computed(() => props.lanes.map(lane => ({
 .menu section { display: flex; flex-direction: column; gap: .1rem; min-width: 0; padding: .2rem 0 .5rem; }
 .menu h4 {
   margin: 0 0 .25rem; padding: 0 .4rem;
-  color: var(--aw-muted-strong); font-size: var(--aw-text-2xs); font-weight: 700;
-  letter-spacing: .09em; text-transform: uppercase;
+  color: var(--aw-muted-strong); font-size: var(--aw-text-xs); font-weight: 600;
 }
 .menu .row {
   display: grid; grid-template-columns: .45rem minmax(0, 1fr) auto;

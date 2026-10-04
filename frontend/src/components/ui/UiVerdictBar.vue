@@ -45,7 +45,7 @@ defineProps<{
     </div>
 
     <p v-if="stale" class="stale">
-      <i class="pi pi-exclamation-triangle" aria-hidden="true" />{{ stale }}
+      <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />{{ stale }}
     </p>
   </section>
 </template>
@@ -88,7 +88,7 @@ defineProps<{
   background: var(--aw-warn-soft); color: var(--aw-warn-ink);
   font-size: var(--aw-text-sm); line-height: 1.4;
 }
-.stale .pi { flex: none; font-size: var(--aw-text-sm); }
+.stale .aw-icon { flex: none; font-size: var(--aw-text-sm); }
 
 @container master-detail-content (max-width: 34rem) {
   .body { grid-template-columns: minmax(0, 1fr); }

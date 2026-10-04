@@ -264,7 +264,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
   <section class="cycle-grid" aria-label="Cycle vouch grid review">
     <header class="grid-head">
       <div>
-        <Button label="All document work" icon="pi pi-arrow-left" text size="small" @click="emit('close')" />
+        <Button label="All document work" icon="aw-icon aw-icon-arrow-left" text size="small" @click="emit('close')" />
         <p class="eyebrow">Cycle vouch · {{ payload?.population.table ?? 'Loading population' }}</p>
         <h3>{{ payload?.title ?? 'Cycle vouch review' }}</h3>
       </div>
@@ -274,14 +274,14 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
              points at where they are actually changed. -->
         <Button
           label="Cycle rules"
-          icon="pi pi-sitemap"
+          icon="aw-icon aw-icon-network"
           size="small"
           outlined
           @click="emit('openRules')"
         />
         <Button
           label="Run test"
-          icon="pi pi-play"
+          icon="aw-icon aw-icon-play"
           size="small"
           :loading="running"
           :disabled="busy"
@@ -334,15 +334,15 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
           <option v-for="option in verdictOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
         </select>
       </label>
-      <Button label="Clear filters" icon="pi pi-filter-slash" text size="small" @click="clearFilters" />
+      <Button label="Clear filters" icon="aw-icon aw-icon-funnel-x" text size="small" @click="clearFilters" />
     </div>
 
     <div v-if="payload" class="page-bar">
       <span>{{ rows.length }} matching item{{ rows.length === 1 ? '' : 's' }} on this page · {{ pageLabel }}</span>
       <div>
         <label class="page-size">Rows <select :value="limit" @change="changePageSize"><option v-for="size in pageSizes" :key="size" :value="size">{{ size }}</option></select></label>
-        <Button icon="pi pi-chevron-left" text rounded aria-label="Previous grid page" :disabled="!hasPrevious || loading" @click="previousPage" />
-        <Button icon="pi pi-chevron-right" text rounded aria-label="Next grid page" :disabled="!hasNext || loading" @click="nextPage" />
+        <Button icon="aw-icon aw-icon-chevron-left" text rounded aria-label="Previous grid page" :disabled="!hasPrevious || loading" @click="previousPage" />
+        <Button icon="aw-icon aw-icon-chevron-right" text rounded aria-label="Next grid page" :disabled="!hasNext || loading" @click="nextPage" />
       </div>
     </div>
 
@@ -383,7 +383,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
               <UiTestStatus :status="dispositionStatus(row)" showLabel />
               <span v-if="canDisposition(row)" class="disposition-actions">
                 <Button
-                  icon="pi pi-check"
+                  icon="aw-icon aw-icon-check"
                   text
                   rounded
                   size="small"
@@ -394,7 +394,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
                   @click="setDisposition(row, 'confirmed')"
                 />
                 <Button
-                  icon="pi pi-exclamation-triangle"
+                  icon="aw-icon aw-icon-triangle-alert"
                   text
                   rounded
                   size="small"
@@ -406,7 +406,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
                   @click="setDisposition(row, 'exception')"
                 />
                 <Button
-                  icon="pi pi-refresh"
+                  icon="aw-icon aw-icon-refresh-cw"
                   text
                   rounded
                   size="small"
@@ -440,7 +440,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
               <div v-if="isSelectedCell(row.item_id, column.key)" class="cell-popover" role="dialog" :aria-label="`${column.label} comparison detail`">
                 <header>
                   <div><strong>{{ column.label }}</strong><small>{{ row.label }}</small></div>
-                  <Button icon="pi pi-times" text rounded size="small" aria-label="Close comparison detail" @click="selectedCell = null" />
+                  <Button icon="aw-icon aw-icon-x" text rounded size="small" aria-label="Close comparison detail" @click="selectedCell = null" />
                 </header>
                 <p v-if="row.cells[column.key]?.display" class="cell-display">{{ row.cells[column.key].display }}</p>
                 <div v-if="row.cells[column.key]?.comparisons.length" class="comparison-list">
@@ -455,19 +455,19 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
                   </article>
                 </div>
                 <p v-else class="muted">No per-document comparison has been projected for this cell.</p>
-                <Button label="Open assertion evidence" icon="pi pi-arrow-right" size="small" @click="openDetail(row.item_id, column.key)" />
+                <Button label="Open assertion evidence" icon="aw-icon aw-icon-arrow-right" size="small" @click="openDetail(row.item_id, column.key)" />
               </div>
             </td>
           </tr>
         </tbody>
       </table>
-      <UiEmptyState v-if="!rows.length" icon="pi pi-filter-slash" title="No items match" description="Clear or adjust the grid filters to see this page." compact />
+      <UiEmptyState v-if="!rows.length" icon="aw-icon aw-icon-funnel-x" title="No items match" description="Clear or adjust the grid filters to see this page." compact />
     </div>
 
-    <UiEmptyState v-else-if="loadError" icon="pi pi-exclamation-triangle" title="Cycle grid unavailable" :description="loadError" compact>
-      <Button label="Try again" icon="pi pi-refresh" size="small" outlined @click="loadGrid" />
+    <UiEmptyState v-else-if="loadError" icon="aw-icon aw-icon-triangle-alert" title="Cycle grid unavailable" :description="loadError" compact>
+      <Button label="Try again" icon="aw-icon aw-icon-refresh-cw" size="small" outlined @click="loadGrid" />
     </UiEmptyState>
-    <UiEmptyState v-else icon="pi pi-spin pi-spinner" title="Loading Cycle vouch grid" description="Reading the bounded grid projection." compact />
+    <UiEmptyState v-else icon="aw-icon aw-icon-spin aw-icon-loader-circle" title="Loading Cycle vouch grid" description="Reading the bounded grid projection." compact />
 
     <!-- Its own `v-if` rather than a place in the chain above: the empty states
          are the `v-else` arms of the grid itself, and a sibling between them
@@ -483,7 +483,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
         <Button
           v-if="conclusionChanged"
           label="Save"
-          icon="pi pi-check"
+          icon="aw-icon aw-icon-check"
           size="small"
           :disabled="busy"
           @click="emit('saveConclusion', conclusion)"
@@ -512,7 +512,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
           <span class="footer-note">{{ payload.rcm_id ? 'None yet.' : 'Not linked to an RCM row.' }}</span>
           <Button
             label="Generate finding"
-            icon="pi pi-sparkles"
+            icon="aw-icon aw-icon-sparkles"
             size="small" text severity="secondary"
             :disabled="busy || !payload.rcm_id"
             @click="emit('generateFinding', false)"
@@ -531,7 +531,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
         <Button
           v-if="scopeNoteChanged"
           label="Save"
-          icon="pi pi-check"
+          icon="aw-icon aw-icon-check"
           size="small"
           :disabled="busy"
           aria-label="Save scope limitation"
@@ -564,7 +564,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
 .grid-head, .grid-actions, .grid-summary, .page-bar, .page-bar > div { display: flex; align-items: center; }
 .grid-head { justify-content: space-between; gap: 1rem; }
 .grid-head h3 { margin: .15rem 0 0; font-size: var(--aw-text-xl); }
-.eyebrow { margin: .15rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; }
+.eyebrow { margin: .15rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .grid-summary { flex-wrap: wrap; gap: .45rem; }
 .grid-summary span { padding: .35rem .6rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .grid-summary strong { color: var(--aw-ink); }
