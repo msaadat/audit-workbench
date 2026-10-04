@@ -52,8 +52,11 @@ from .workspaces import (
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _WORKSPACE_PATH = re.compile(r"^/api/workspaces/([^/]+)(?:/|$)")
 
-# The Vite dev server is a different origin from the API in development, so it
-# is both a CORS origin and an accepted Origin for state-changing requests.
+# A dev server that calls the API directly is a different origin, so it is both
+# a CORS origin and an accepted Origin for state-changing requests.  The Vite
+# proxy needs no entry here: it forwards the browser's Host, so its requests
+# pass as same-origin on any port.  Another localhost port is the same *site*,
+# so SameSite=Lax does not cover it and this list stays exact.
 DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 # Reachable without a session: the login screen has to be able to sign in, ask

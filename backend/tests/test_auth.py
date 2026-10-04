@@ -182,6 +182,28 @@ def test_a_same_origin_mutation_is_allowed(multi_user, client):
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "dev_origin", ["http://localhost:5183", "http://127.0.0.1:5184", "http://localhost:5174"]
+)
+def test_a_mutation_through_the_dev_proxy_is_allowed(client, dev_origin):
+    """The Vite proxy forwards the browser's Host, so every dev port is same-origin."""
+    response = client.post("/api/workspaces", json={"name": "Proxied"},
+                           headers={"Origin": dev_origin, "Host": dev_origin.split("://", 1)[1]})
+    assert response.status_code == 200, response.text
+
+
+def test_a_rewritten_host_does_not_vouch_for_a_local_origin(client):
+    """A proxy that rewrites Host (Vite's ``changeOrigin``) is refused, not excused.
+
+    Another localhost port is the same *site*, so SameSite=Lax still sends the
+    cookie and this check is the only lock: being local earns no trust.
+    """
+    response = client.post("/api/workspaces", json={"name": "Rewritten"},
+                           headers={"Origin": "http://localhost:5183", "Host": "127.0.0.1:8000"})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Cross-site request refused."}
+
+
 def test_a_cross_site_read_is_untouched(multi_user, client):
     """Only state-changing methods are gated; GETs carry no CSRF risk."""
     _account()
