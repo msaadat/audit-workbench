@@ -8,7 +8,7 @@ import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 
 import { api, ApiError } from '../api'
-import { fileSize, plural, pluralWord } from '../format'
+import { plural, pluralWord, sentenceCase } from '../format'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   ColumnProfile, FramePayload, RuleSet, TableInfo, TableProfile, WorkspaceSummary,
@@ -18,11 +18,9 @@ import TableValidation from './validation/TableValidation.vue'
 import JoinDrawer from './tables/JoinDrawer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
-import UiReviewBar from './ui/UiReviewBar.vue'
-import UiVerdictBar from './ui/UiVerdictBar.vue'
 import {
-  EMPTY_FACTS, TABLE_CHIPS, duplicateRows, filterTables, isAgentBuilt, ruleSetsFor,
-  tableMeta, tableTone, tablesStatus, untestedColumns,
+  EMPTY_FACTS, TABLE_QUEUES, columnNotes, filterTables, isAgentBuilt, joinKeys, ruleSetsFor,
+  tableIssues, tableLabel, tableShape, tableTone, tablesSentence, tablesStatus, untestedColumns,
 } from './tables/tablesStatus'
 import type { TablesFacts, TablesFilter } from './tables/tablesStatus'
 
@@ -72,8 +70,32 @@ const scoped = computed(() => statusFilter.value.reduce<TableInfo[]>(
 const visible = computed(() => {
   const needle = search.value.trim().toLowerCase()
   if (!needle) return scoped.value
-  return scoped.value.filter(table => table.name.toLowerCase().includes(needle))
+  return scoped.value.filter(table =>
+    `${table.name} ${tableLabel(table.name, tables.value)}`.toLowerCase().includes(needle))
 })
+/**
+ * The filters as one choice, as on Documents: All and whatever currently has
+ * something in it. Who built a join is a second axis and a checkbox.
+ */
+const filterCounts = computed(() => new Map(
+  (status.value.filters ?? []).flatMap(group => group.options.map(option => [option.key, option.value] as const)),
+))
+const queueFilter = computed<TablesFilter | ''>(() => statusFilter.value.find(key => key !== 'agent_built') ?? '')
+const queues = computed(() => TABLE_QUEUES
+  .filter(option => !option.key || (filterCounts.value.get(option.key) ?? 0) > 0 || option.key === queueFilter.value)
+  .map(option => ({ ...option, count: option.key ? filterCounts.value.get(option.key) ?? 0 : tables.value.length })))
+const agentBuiltOnly = computed({
+  get: () => statusFilter.value.includes('agent_built'),
+  set: (on: boolean) => {
+    statusFilter.value = [...(queueFilter.value ? [queueFilter.value] : []), ...(on ? ['agent_built' as const] : [])]
+  },
+})
+function setQueue(key: TablesFilter | '') {
+  statusFilter.value = [...(key ? [key] : []), ...(agentBuiltOnly.value ? ['agent_built' as const] : [])]
+}
+const sentence = computed(() => tablesSentence(tables.value, facts.value))
+const label = (name: string) => tableLabel(name, tables.value)
+
 const groups = computed(() => [
   { key: 'files', label: 'Files', tables: visible.value.filter(table => table.kind !== 'join') },
   { key: 'joins', label: 'Joins', tables: visible.value.filter(table => table.kind === 'join') },
@@ -314,22 +336,37 @@ function rangeText(item: ColumnProfile): string {
   return item.mean !== null ? `${range} (mean ${item.mean})` : range
 }
 
-const verdictTone = computed<'ok' | 'warn' | 'bad' | 'neutral'>(() => {
+/**
+ * What the selected table is, in one line under its name: its shape, its
+ * condition, its period where a date column gives one, how much of it the
+ * tests evaluate, and how many joins draw on it. A verdict box with three
+ * slots used to say this in three sentences, the first a row of figures and
+ * the last a pair of buttons for rule sets the Validation tab already holds.
+ */
+const factLine = computed(() => {
   const table = selectedTable.value
-  if (!table) return 'neutral'
-  if (table.error) return 'bad'
-  if (!profile.value) return 'neutral'
-  return duplicateRows(facts.value, table.name) > 0 || untested.value.length ? 'warn' : 'ok'
+  if (!table || table.error || !profile.value) return []
+  const parts: Array<{ text: string; tone?: 'warn' }> = [
+    { text: plural(profile.value.rows, 'row') },
+    { text: plural(profile.value.columns, 'column') },
+    profile.value.duplicate_rows
+      ? { text: plural(profile.value.duplicate_rows, 'duplicate row'), tone: 'warn' }
+      : { text: 'no duplicate rows' },
+  ]
+  if (table.kind !== 'join' && coverage.value) {
+    const tested = coverage.value.length - untested.value.length
+    parts.push({ text: `${tested} of ${coverage.value.length} columns tested`, tone: tested < coverage.value.length ? 'warn' : undefined })
+  }
+  if (relatedJoins.value.length) parts.push({ text: `used by ${plural(relatedJoins.value.length, 'join')}` })
+  return parts
 })
 
-const eyebrow = computed(() => {
+/** The identifier under the readable name: the file it came from, or how the join was built. */
+const identity = computed(() => {
   const table = selectedTable.value
   if (!table) return ''
-  if (table.join) {
-    const built = isAgentBuilt(table) ? ' · built by the assistant' : ''
-    return `Join · ${table.join.left} ⋈ ${table.join.right}${built}`
-  }
-  return `File · ${table.source}`
+  if (table.join) return `${table.name} · ${table.join.how} join ${joinKeys(table)}${isAgentBuilt(table) ? ' · built by the assistant' : ''}`
+  return table.source
 })
 
 function openTest(id: string) { void nav.push('data-tests', { test: id }) }
@@ -338,10 +375,15 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 <template>
   <div class="tables">
     <header class="page-head">
-      <h1>Source tables</h1>
+      <div class="head-copy">
+        <h1>Source tables</h1>
+        <p v-if="tables.length" class="aw-type-meta head-count">{{ sentence }}</p>
+      </div>
       <span class="grow" />
       <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
+      <!-- Neither is the next step of the audit, so neither is filled. -->
       <Button
+        v-if="tables.length"
         label="Add join"
         icon="aw-icon aw-icon-link"
         size="small"
@@ -350,27 +392,33 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
         :disabled="tables.length < 2"
         @click="joinOpen = true"
       />
-      <Button label="Add files" icon="aw-icon aw-icon-upload" size="small" @click="emit('import-requested')" />
+      <Button v-if="tables.length" label="Add files" icon="aw-icon aw-icon-upload" size="small" outlined severity="secondary" @click="emit('import-requested')" />
       <UiOverflowMenu :items="menuItems" tooltip="More table actions" />
     </header>
 
-    <UiReviewBar
-      v-if="tables.length"
-      :lanes="status.lanes"
-      :chips="TABLE_CHIPS"
-      :filters="status.filters"
-      allLabel="All tables"
-      :total="tables.length"
-      :filter="statusFilter"
-      @filter="statusFilter = ($event as TablesFilter[])"
-    />
+    <div v-if="tables.length" class="aw-filter-row">
+      <div class="aw-segmented" role="group" aria-label="Show">
+        <button
+          v-for="option in queues"
+          :key="option.key || 'all'"
+          type="button"
+          :class="{ on: queueFilter === option.key }"
+          :aria-pressed="queueFilter === option.key"
+          @click="setQueue(option.key)"
+        >{{ option.label }} <span class="aw-figure">{{ option.count }}</span></button>
+      </div>
+      <label v-if="filterCounts.get('agent_built')" class="aw-filter-check">
+        <input v-model="agentBuiltOnly" type="checkbox">
+        Only what the assistant built <span class="aw-figure">{{ filterCounts.get('agent_built') }}</span>
+      </label>
+    </div>
 
     <div v-if="tables.length" class="layout">
-      <section class="list-panel">
+      <section class="list-panel" aria-label="Tables">
         <div class="list-head">
           <IconField>
             <InputIcon class="aw-icon aw-icon-search" />
-            <InputText v-model="search" size="small" placeholder="Filter tables" />
+            <InputText v-model="search" size="small" :placeholder="`Filter ${plural(visible.length, 'table')}`" />
           </IconField>
         </div>
         <div class="list-body">
@@ -385,13 +433,16 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
               type="button"
               class="row"
               :class="{ active: table.name === selected }"
+              :title="table.name"
               @click="selected = table.name"
             >
               <span class="dot" :data-tone="tableTone(table, facts)" aria-hidden="true" />
               <span class="copy">
-                <span class="name">{{ table.name }}</span>
-                <span class="meta aw-figure" :data-tone="table.error ? 'bad' : undefined">{{ tableMeta(table, facts) }}</span>
+                <span class="name">{{ label(table.name) }}</span>
+                <span v-if="tableIssues(table, facts)" class="meta" :data-tone="table.error ? 'bad' : 'warn'">{{ tableIssues(table, facts) }}</span>
+                <span v-else-if="table.join" class="meta aw-figure">{{ joinKeys(table) }}</span>
               </span>
+              <span class="shape aw-figure">{{ tableShape(table) }}</span>
             </button>
           </section>
           <p v-if="!visible.length" class="empty">No table matches this view.</p>
@@ -401,7 +452,6 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
       <section v-if="selectedTable" class="detail">
         <header class="detail-head">
           <div class="detail-copy">
-            <p class="eyebrow">{{ eyebrow }}</p>
             <!-- Renaming happens where the name is read, not in a dialog that
                  hides the list the name has to stay distinct within. -->
             <InputText
@@ -412,10 +462,17 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
               @keyup.enter="commitRename"
               @blur="commitRename"
             />
-            <h2 v-else @dblclick="startRename">{{ selectedTable.name }}</h2>
-            <p v-if="relatedJoins.length" class="sub">
-              {{ plural(relatedJoins.length, 'join') }} {{ relatedJoins.length === 1 ? 'uses' : 'use' }} this table
+            <div v-else class="title-line">
+              <h2 @dblclick="startRename">{{ label(selectedTable.name) }}</h2>
+              <span class="identity aw-figure" :title="identity">{{ identity }}</span>
+            </div>
+            <p v-if="selectedTable.error" class="fact-line"><span class="failed">{{ selectedTable.error }}</span></p>
+            <p v-else-if="factLine.length" class="fact-line">
+              <template v-for="(part, index) in factLine" :key="part.text">
+                <span v-if="index" aria-hidden="true"> · </span><span :class="{ warned: part.tone === 'warn' }">{{ part.text }}</span>
+              </template>
             </p>
+            <p v-else class="fact-line muted">{{ profiling ? 'Profiling…' : 'Not profiled yet.' }}</p>
           </div>
           <Button
             v-if="selectedTable.kind !== 'join'"
@@ -429,60 +486,11 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
           />
         </header>
 
-        <!-- What the population is, and how much of it the audit evaluated. -->
-        <UiVerdictBar :tone="verdictTone">
-          <template #found>
-            <template v-if="selectedTable.error">
-              <span class="failed">{{ selectedTable.error }}</span>
-            </template>
-            <template v-else-if="profile">
-              <span class="aw-figure">
-                {{ profile.rows.toLocaleString() }} {{ pluralWord(profile.rows, 'row') }} ·
-                {{ profile.columns }} {{ pluralWord(profile.columns, 'column') }} ·
-                <template v-if="profile.duplicate_rows">
-                  <span class="warned">{{ plural(profile.duplicate_rows, 'duplicate row') }}</span>
-                </template>
-                <template v-else>no duplicate rows</template>
-                · {{ fileSize(profile.estimated_size_bytes) }} in memory
-              </span>
-            </template>
-            <span v-else>{{ profiling ? 'Profiling…' : 'Not profiled yet.' }}</span>
-          </template>
-
-          <template #recorded>
-            <template v-if="selectedTable.kind === 'join'">
-              Built from {{ selectedTable.join?.left }} and {{ selectedTable.join?.right }}; coverage is
-              measured on the files it draws from.
-            </template>
-            <template v-else-if="!coverage">Test coverage has not been read yet.</template>
-            <template v-else-if="untested.length">
-              {{ coverage.length - untested.length }} of {{ coverage.length }} columns are evaluated by a data test.
-              <b class="warned">{{ untested.join(', ') }}</b>
-              {{ untested.length === 1 ? 'is' : 'are' }} evaluated by none.
-            </template>
-            <template v-else>Every column is evaluated by at least one data test.</template>
-          </template>
-
-          <template #actions>
-            <template v-if="selectedTable.error">
-              <Button label="Replace data" icon="aw-icon aw-icon-refresh-ccw" size="small" :loading="replacing" @click="startReplace(selectedTable)" />
-            </template>
-            <template v-else-if="rules.length">
-              <span class="rules aw-figure">{{ plural(rules.length, 'rule set') }}</span>
-              <Button label="Open" size="small" outlined severity="secondary" @click="tab = 'validation'" />
-            </template>
-            <template v-else-if="selectedTable.kind !== 'join'">
-              <span class="rules muted">No validation rules</span>
-              <Button label="New rule set" size="small" outlined severity="secondary" @click="tab = 'validation'" />
-            </template>
-          </template>
-        </UiVerdictBar>
-
         <nav class="tabs" role="tablist">
           <button
             v-for="entry in [
               { key: 'profile', label: 'Profile', badge: '' },
-              { key: 'preview', label: 'Preview', badge: '100 rows' },
+              { key: 'preview', label: 'Rows', badge: '' },
               { key: 'validation', label: 'Validation', badge: rules.length ? String(rules.length) : '' },
               { key: 'relationships', label: 'Relationships', badge: relatedJoins.length ? String(relatedJoins.length) : '' },
             ]"
@@ -498,71 +506,82 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
         </nav>
 
         <template v-if="tab === 'profile'">
-          <p v-if="profiling" class="note"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Profiling {{ selected }}…</p>
+          <p v-if="profiling" class="note"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Profiling {{ label(selected ?? '') }}…</p>
           <template v-else-if="profile">
-            <p class="note aw-figure">
-              Statistics are computed on
-              {{ profile.sampled ? `the first ${profile.sample_rows.toLocaleString()} rows` : `all ${profile.rows.toLocaleString()} rows` }}.
-            </p>
-            <table class="profile">
-              <thead>
-                <tr>
-                  <th class="expander" />
-                  <th>Column</th><th>Type</th><th>Blank</th><th>Distinct</th>
-                  <th>Range / mean</th><th>Tested</th>
-                </tr>
-              </thead>
-              <tbody>
-                <template v-for="column in profile.column_profiles" :key="column.name">
-                  <tr :class="{ untested: coverage && !testsFor(column.name).length }">
-                    <td class="expander">
-                      <button type="button" :aria-expanded="expanded.has(column.name)" @click="toggleExpanded(column.name)">
-                        <i class="aw-icon" :class="expanded.has(column.name) ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />
-                      </button>
-                    </td>
-                    <td>
-                      <b class="column-name">{{ column.name }}</b>
-                      <span class="dtype">{{ column.dtype }}</span>
-                    </td>
-                    <td><span class="type-pill" :data-kind="column.inferred_type">{{ column.inferred_type }}</span></td>
-                    <td class="aw-figure">
-                      <span class="blank">
-                        <i :style="{ width: `${Math.min(100, column.blank_pct)}%` }" />
-                      </span>{{ column.blank_pct }}%
-                    </td>
-                    <td class="aw-figure">{{ column.distinct_count.toLocaleString() }} <span class="muted">({{ column.distinct_pct }}%)</span></td>
-                    <td class="aw-figure range">{{ rangeText(column) }}</td>
-                    <td class="tested aw-figure">
-                      <template v-if="!coverage"><span class="muted">—</span></template>
-                      <template v-else-if="testsFor(column.name).length">
-                        <button type="button" class="tests" @click="openTest(testsFor(column.name)[0])">
-                          <i class="aw-icon aw-icon-check" aria-hidden="true" />{{ plural(testsFor(column.name).length, 'test') }}
+            <div class="profile-scroll">
+              <table class="profile">
+                <thead>
+                  <tr>
+                    <th class="expander"><span class="visually-hidden">Values</span></th>
+                    <th>Column</th><th>Blank</th><th>Distinct</th>
+                    <th>Range</th><th>Notes</th><th>Tested by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template v-for="column in profile.column_profiles" :key="column.name">
+                    <tr>
+                      <td class="expander">
+                        <button type="button" :aria-expanded="expanded.has(column.name)" :aria-label="`Values of ${column.name}`" @click="toggleExpanded(column.name)">
+                          <i class="aw-icon" :class="expanded.has(column.name) ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />
                         </button>
-                      </template>
-                      <span v-else class="none">None</span>
-                    </td>
-                  </tr>
-                  <tr v-if="expanded.has(column.name)" class="values">
-                    <td />
-                    <td colspan="6">
-                      <p v-if="!column.top_values.length" class="muted">No values.</p>
-                      <div v-for="value in column.top_values" :key="value.value ?? ''" class="value-row">
-                        <span class="value">{{ value.value ?? '∅' }}</span>
-                        <span class="bar"><i :style="{ width: `${value.pct}%` }" /></span>
-                        <span class="count aw-figure">{{ value.count.toLocaleString() }} ({{ value.pct }}%)</span>
-                      </div>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
+                      </td>
+                      <td class="column-cell">
+                        <b class="column-name">{{ column.name }}</b>
+                        <span class="type">{{ sentenceCase(column.inferred_type) }}</span>
+                      </td>
+                      <td class="aw-figure nowrap">
+                        <span class="blank"><i :style="{ width: `${Math.min(100, column.blank_pct)}%` }" /></span>{{ column.blank_pct }}%
+                      </td>
+                      <td class="aw-figure nowrap">{{ column.distinct_count.toLocaleString() }}</td>
+                      <td class="aw-figure range" :title="rangeText(column)">{{ rangeText(column) }}</td>
+                      <td class="notes">
+                        <span
+                          v-for="note in columnNotes(column, selectedTable.name, tables)"
+                          :key="note.text"
+                          class="note-chip"
+                          :data-tone="note.tone || null"
+                        >{{ note.text }}</span>
+                      </td>
+                      <td class="tested">
+                        <template v-if="!coverage"><span class="muted">—</span></template>
+                        <template v-else-if="testsFor(column.name).length">
+                          <button type="button" class="tests" @click="openTest(testsFor(column.name)[0])">
+                            <i class="aw-icon aw-icon-check" aria-hidden="true" />{{ plural(testsFor(column.name).length, 'test') }}
+                          </button>
+                        </template>
+                        <span v-else class="none">None</span>
+                      </td>
+                    </tr>
+                    <tr v-if="expanded.has(column.name)" class="values">
+                      <td />
+                      <td colspan="6">
+                        <p v-if="!column.top_values.length" class="muted">No values.</p>
+                        <div v-for="value in column.top_values" :key="value.value ?? ''" class="value-row">
+                          <span class="value">{{ value.value ?? '∅' }}</span>
+                          <span class="bar"><i :style="{ width: `${value.pct}%` }" /></span>
+                          <span class="count aw-figure">{{ value.count.toLocaleString() }} ({{ value.pct }}%)</span>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <p class="note">
+              Statistics over
+              {{ profile.sampled ? `the first ${profile.sample_rows.toLocaleString()} rows` : `all ${profile.rows.toLocaleString()} rows` }}.
+              <template v-if="selectedTable.kind === 'join'">Coverage is measured on the files a join draws from.</template>
+            </p>
           </template>
           <p v-else class="note">This table has not been profiled.</p>
         </template>
 
         <template v-else-if="tab === 'preview'">
           <p v-if="previewLoading" class="note"><i class="aw-icon aw-icon-loader-circle aw-icon-spin" /> Loading rows…</p>
-          <FrameTable v-else-if="preview" :frame="preview.frame" scrollHeight="28rem" />
+          <template v-else-if="preview">
+            <p class="note">The first {{ Math.min(100, preview.total).toLocaleString() }} of {{ preview.total.toLocaleString() }} rows.</p>
+            <FrameTable :frame="preview.frame" scrollHeight="28rem" />
+          </template>
           <p v-else class="note">No rows to show.</p>
         </template>
 
@@ -582,8 +601,8 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
             class="join-row"
             @click="selected = join.name"
           >
-            <span class="name">{{ join.name }}</span>
-            <span class="meta aw-figure">{{ tableMeta(join, facts) }}</span>
+            <span class="name">{{ label(join.name) }}</span>
+            <span class="meta aw-figure">{{ joinKeys(join) }}</span>
           </button>
           <Button label="Add join" icon="aw-icon aw-icon-link" size="small" outlined severity="secondary" class="add-join" @click="joinOpen = true" />
         </template>
@@ -608,8 +627,11 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 .tables { display: flex; flex-direction: column; gap: .75rem; min-width: 0; max-width: 100%; min-height: 0; height: 100%; }
 
 .grow { flex: 1; }
+.head-copy { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; min-width: 0; }
+.head-count { margin: 0; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
-.layout { display: grid; grid-template-columns: 18.75rem minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
+.layout { display: grid; grid-template-columns: minmax(14rem, 17.5rem) minmax(0, 1fr); gap: .875rem; flex: 1; min-height: 12rem; }
 
 .list-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .list-head { padding: .625rem .75rem; border-bottom: 1px solid var(--aw-border); }
@@ -622,7 +644,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 .group-count { color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 
 .row {
-  display: flex; align-items: center; gap: .625rem;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .625rem;
   width: 100%; min-width: 0;
   padding: .5rem .75rem;
   border: 0; border-left: 3px solid transparent;
@@ -636,10 +658,15 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 .dot[data-tone='warn'] { background: var(--aw-warn); }
 .dot[data-tone='bad'] { background: var(--aw-danger); }
 .copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.copy .name { overflow: hidden; color: var(--aw-ink); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.row.active .name { color: var(--aw-ink-strong); }
-.meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-2xs); text-overflow: ellipsis; white-space: nowrap; }
+/* The row reads by name, in words; the identifier is its tooltip. The shape
+   sits on the right edge in figures, so the line under the name is free for
+   the one thing that is wrong with the table, and a clean table is one line. */
+.copy .name { overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.row.active .name { color: var(--aw-teal-strong); font-weight: 600; }
+.meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.meta[data-tone='warn'] { color: var(--aw-warn-ink); }
 .meta[data-tone='bad'] { color: var(--aw-danger); }
+.shape { max-width: 9rem; overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 1rem .75rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 
 .detail {
@@ -653,11 +680,13 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 }
 .detail > * { flex: none; }
 .detail-head { display: flex; align-items: flex-start; gap: 1rem; min-width: 0; }
-.detail-copy { display: flex; flex-direction: column; gap: .2rem; flex: 1; min-width: 0; }
-.eyebrow { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }
-.detail-head h2, .rename { margin: 0; color: var(--aw-ink-strong); font-family: var(--aw-font-mono); font-size: var(--aw-text-lg); font-weight: 600; }
+.detail-copy { display: flex; flex-direction: column; gap: .25rem; flex: 1; min-width: 0; }
+.title-line { display: flex; align-items: baseline; gap: .625rem; min-width: 0; }
+.detail-head h2, .rename { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-lg); font-weight: var(--aw-weight-title); }
+.detail-head h2 { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity { min-width: 0; overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .rename { width: 100%; padding: .1rem .25rem; }
-.sub { margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); }
+.fact-line { margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); }
 
 .failed { color: var(--aw-danger); }
 .warned { color: var(--aw-warn-ink); font-weight: 600; }
@@ -677,6 +706,7 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
 
 .note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
+.profile-scroll { overflow-x: auto; }
 .profile { width: 100%; border-collapse: collapse; font-size: var(--aw-text-sm); }
 .profile th {
   padding: .35rem .5rem; border-bottom: 1px solid var(--aw-border);
@@ -684,21 +714,23 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
   font-weight: 600; letter-spacing: .06em; text-align: left; text-transform: uppercase;
 }
 .profile td { padding: .4rem .5rem; border-bottom: 1px solid var(--aw-border); color: var(--aw-ink); vertical-align: middle; }
-.profile tr.untested .column-name { color: var(--aw-warn-ink); }
 .profile .expander { width: 2rem; }
 .profile .expander button { padding: 0; border: 0; background: none; color: var(--aw-muted); cursor: pointer; font-size: .65rem; }
 .column-name { font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); }
-.dtype { margin-left: .4rem; color: var(--aw-muted); font-size: var(--aw-text-2xs); }
-.type-pill { padding: 0 .375rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 600; }
-.type-pill[data-kind='numeric'] { background: var(--aw-ok-soft); color: var(--aw-ok); }
-.type-pill[data-kind='date'] { background: var(--aw-teal-soft); color: var(--aw-teal); }
-.type-pill[data-kind='categorical'] { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
-.type-pill[data-kind='empty'] { background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
+/* A column's type is a word beside its name, not a coloured pill: the pills
+   spent the success, warning and failure hues on `numeric`, `categorical` and
+   `empty`, none of which is a state. */
+.column-cell { white-space: nowrap; }
+.type { margin-left: .5rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.nowrap { white-space: nowrap; }
+.notes { min-width: 8rem; }
+.note-chip { display: inline-block; margin: 1px 4px 1px 0; padding: 0 .4rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-xs); white-space: nowrap; }
+.note-chip[data-tone='warn'] { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 .blank { display: inline-block; width: 4rem; height: 5px; margin-right: .4rem; border-radius: var(--aw-radius-pill); background: var(--aw-border); overflow: hidden; vertical-align: middle; }
 .blank i { display: block; height: 100%; background: var(--aw-border-strong); }
-.range { color: var(--aw-ink-soft); font-size: var(--aw-text-xs); }
+.range { max-width: 16rem; overflow: hidden; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .tested .tests { display: inline-flex; align-items: center; gap: .25rem; padding: 0; border: 0; background: none; color: var(--aw-ok); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer; }
-.tested .none { color: var(--aw-warn-ink); font-size: var(--aw-text-xs); font-weight: 600; }
+.tested .none { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .muted { color: var(--aw-muted); }
 
 .values td { background: var(--aw-canvas); }
@@ -715,10 +747,27 @@ function openTest(id: string) { void nav.push('data-tests', { test: id }) }
   background: var(--aw-panel); font: inherit; text-align: left; cursor: pointer;
 }
 .join-row:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
-.join-row .name { color: var(--aw-ink-strong); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 600; }
+.join-row .name { color: var(--aw-ink-strong); font-size: var(--aw-text-sm); font-weight: 600; }
 .add-join { align-self: flex-start; }
 
-@container workspace-panel (max-width: 60rem) {
+/* With the assistant open the detail is too narrow for every column at full
+   width, and the last two — what the column looks like and what tests it —
+   are the ones that scrolled off. The blank bar is a picture of the figure
+   beside it, so it goes first; the range truncates harder, and keeps its full
+   text on hover. */
+@container master-detail-content (max-width: 48rem) {
+  .blank { display: none; }
+  .range { max-width: 7rem; }
+  .column-cell .type { display: block; margin: 1px 0 0; }
+  .notes { min-width: 6.5rem; }
+  .note-chip { white-space: normal; }
+  .profile th, .profile td { padding-inline: .375rem; }
+}
+
+/* Stacked only when the panel is genuinely narrow. At 60rem it stacked
+   whenever the assistant was open, which put the profile a list's height
+   below the table it was chosen from. */
+@container workspace-panel (max-width: 40rem) {
   .layout { grid-template-columns: minmax(0, 1fr); }
   .list-body { max-height: 18rem; }
 }

@@ -7,7 +7,6 @@ import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import Tag from 'primevue/tag'
 import Drawer from 'primevue/drawer'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
@@ -22,11 +21,10 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import MarkdownView from './MarkdownView.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
-import UiReviewBar from './ui/UiReviewBar.vue'
 import DocumentTypeReview from './documents/DocumentTypeReview.vue'
 import StructuredEvidenceSheet from './documents/StructuredEvidenceSheet.vue'
 import {
-  DOCUMENT_CHIPS, documentMeta, documentTone, documentsStatus, filterDocuments,
+  DOCUMENT_QUEUES, documentLabel, documentMeta, documentTone, documentsStatus, filterDocuments, isReviewed, needsReview,
 } from './documents/documentsStatus'
 import type { DocumentsFilter } from './documents/documentsStatus'
 import { plural, sentenceCase } from '../format'
@@ -44,13 +42,25 @@ const documents = ref<AuditDocument[]>([])
 const selectedId = ref('')
 const previewPages = ref<DocumentPage[]>([])
 const currentPage = ref(1)
-const view = ref<'preview' | 'analysis' | 'activity'>('preview')
-const detailViews = ['preview', 'analysis', 'activity'] as const
+/**
+ * The page is three panes — the list, the original, and what was read from it
+ * — because reviewing a reading means looking at the source while you do. The
+ * reading used to be a tab *instead of* the original, so checking one claim
+ * against its page was a round trip between two tabs.
+ *
+ * `readingTab` is which face of the reading is showing. `pane` only matters
+ * when the page is too narrow for three columns (the assistant open beside it,
+ * a laptop): the original and the reading then share one column, and this is
+ * which of them it holds.
+ */
+const readingTab = ref<'reading' | 'notes' | 'activity'>('reading')
+const pane = ref<'original' | 'reading'>('original')
+const editingReading = ref(false)
 const search = ref('')
 const statusFilter = ref<DocumentsFilter[]>([])
 const groupBy = ref<'type' | 'folder' | 'status'>('type')
 const collapsedGroups = ref<Set<string>>(new Set())
-const sourceView = ref<'original' | 'text'>('original')
+const sourceView = ref<'original' | 'text' | 'fields'>('original')
 const docxContainer = ref<HTMLElement | null>(null)
 const docxLoading = ref(false)
 const busy = ref(false)
@@ -93,7 +103,7 @@ let unsubscribeWorkspaceChanged: (() => void) | undefined
 // picker reads as the partition it is, with evidence — the one value that puts
 // a document under a field schema — last.
 const categories: DocumentCategory[] = ['policy', 'minutes', 'background', 'evidence']
-const documentCategoryOptions = categories.map(value => ({ value, label: value.replace('_', ' ') }))
+const documentCategoryOptions = categories.map(value => ({ value, label: sentenceCase(value) }))
 /** `fx_contract` -> `fx contract`; `local.broker_note` -> `broker note`. */
 function documentTypeLabel(value: string): string {
   return value.replace(/^local\./, '').replace(/_/g, ' ')
@@ -171,6 +181,119 @@ const filtered = computed(() => scoped.value.filter(doc => {
   const term = search.value.toLowerCase()
   return !term || `${doc.title} ${doc.source}`.toLowerCase().includes(term)
 }))
+/**
+ * The filters, as one choice. The page drew two rows of count chips and three
+ * progress lanes under them, which said each number twice (`83 Analysis to
+ * review` beside `REVIEWED 0/84`). The counts now sit in the header sentence
+ * once, and the filter is one segmented control: All, To review, and whatever
+ * else currently has something in it. Who typed a document is a different
+ * axis, so it is a checkbox beside the control rather than another segment.
+ */
+const filterCounts = computed(() => new Map(
+  (status.value.filters ?? []).flatMap(group => group.options.map(option => [option.key, option.value] as const)),
+))
+const queueFilter = computed<DocumentsFilter | ''>(
+  () => statusFilter.value.find(key => key !== 'model_typed') ?? '',
+)
+const queues = computed(() => DOCUMENT_QUEUES
+  .filter(option => !option.key || option.key === 'needs_review'
+    || (filterCounts.value.get(option.key) ?? 0) > 0 || option.key === queueFilter.value)
+  .map(option => ({ ...option, count: option.key ? filterCounts.value.get(option.key) ?? 0 : documents.value.length })))
+const modelTypedOnly = computed({
+  get: () => statusFilter.value.includes('model_typed'),
+  set: (on: boolean) => {
+    statusFilter.value = [...(queueFilter.value ? [queueFilter.value] : []), ...(on ? ['model_typed' as const] : [])]
+  },
+})
+function setQueue(key: DocumentsFilter | '') {
+  statusFilter.value = [...(key ? [key] : []), ...(modelTypedOnly.value ? ['model_typed' as const] : [])]
+}
+/** `84 documents · 84 read · 83 analysed · 0 reviewed` — the three lanes, said once. */
+const countSentence = computed(() => {
+  const lane = (key: string) => status.value.lanes.find(item => item.key === key)?.value ?? '0'
+  return [
+    plural(documents.value.length, 'document'),
+    `${lane('read')} read`, `${lane('analysed')} analysed`, `${lane('reviewed')} reviewed`,
+  ].join(' · ')
+})
+
+/**
+ * Review walks the list in the order it is drawn. `Mark reviewed and next`
+ * lands on the next document after this one that still needs review, wrapping
+ * once, so working down a group is one button per document.
+ */
+const ordered = computed(() => groups.value.flatMap(group => group.items))
+const reviewQueue = computed(() => ordered.value.filter(needsReview))
+const nextToReview = computed(() => {
+  const list = ordered.value
+  const at = list.findIndex(doc => doc.id === selectedId.value)
+  const after = [...list.slice(at + 1), ...list.slice(0, Math.max(at, 0))]
+  return after.find(doc => needsReview(doc) && doc.id !== selectedId.value) ?? null
+})
+const queuePosition = computed(() => {
+  const queue = reviewQueue.value
+  if (!queue.length) return 'Nothing left to review'
+  const at = queue.findIndex(doc => doc.id === selectedId.value)
+  return at >= 0 ? `${at + 1} of ${queue.length} to review` : `${queue.length} to review`
+})
+
+async function markReviewedAndNext() {
+  const next = nextToReview.value
+  if (!(await saveAnalysis(true))) return
+  if (next) await selectDocument(next.id, 1)
+}
+
+/** Who wrote the reading the pane shows, and when — a model reading is marked as one. */
+const readingSource = computed(() => {
+  const effective = analysis.value?.effective
+  if (!effective) return null
+  const edited = analysis.value?.review.summary_override != null || analysis.value?.review.audit_notes_override != null
+  const at = effective.generated_at ? new Date(effective.generated_at) : null
+  const when = at && !Number.isNaN(at.getTime())
+    ? at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    : ''
+  const pages = effective.coverage?.analyzed_pages?.length ?? 0
+  return {
+    edited,
+    meta: [when, pages ? `${plural(pages, 'page')} read` : ''].filter(Boolean).join(' · '),
+  }
+})
+
+const readingActions = computed<MenuItem[]>(() => {
+  const doc = selected.value
+  const items: MenuItem[] = []
+  if (!doc) return items
+  items.push(analysis.value?.generated
+    ? { label: 'Refresh the reading', icon: 'aw-icon aw-icon-refresh-cw', disabled: analysisBusy.value, command: () => void startAnalysis('refresh') }
+    : { label: 'Analyse this document', icon: 'aw-icon aw-icon-sparkles', disabled: analysisBusy.value, command: () => void startAnalysis('analyze') })
+  if (doc.text_state === 'extracted' || doc.text_state === 'partial') {
+    items.push({
+      label: fullVisualCoverage.value ? `Full visual coverage is on (max ${visualPageLimit} pages)` : 'Read pages visually too',
+      icon: fullVisualCoverage.value ? 'aw-icon aw-icon-images' : 'aw-icon aw-icon-file',
+      command: () => { fullVisualCoverage.value = !fullVisualCoverage.value },
+    })
+  }
+  if (isEvidence.value) {
+    items.push({ label: 'Revise this type’s vocabulary', icon: 'aw-icon aw-icon-list-checks', disabled: analysisBusy.value, command: () => void startAnalysis('revise_vocabulary') })
+  }
+  if (analysis.value?.candidate) {
+    items.push({ label: 'Compare the refreshed reading', icon: 'aw-icon aw-icon-git-compare', command: () => { compareCandidate.value = !compareCandidate.value } })
+  }
+  if (analysis.value?.review.summary_override != null) {
+    items.push({ label: 'Revert to the generated summary', icon: 'aw-icon aw-icon-undo-2', command: () => void revertAnalysisField('summary') })
+  }
+  return items
+})
+
+function cancelReadingEdit() {
+  summaryDraft.value = analysis.value?.effective?.summary_markdown || ''
+  editingReading.value = false
+}
+
+async function saveReadingEdit() {
+  if (await saveAnalysis(false)) editingReading.value = false
+}
+
 const eligibleDocuments = computed(() => documents.value.filter(document =>
   ['extracted', 'partial', 'image_only'].includes(document.text_state)
   && document.analysis_validity_state !== 'current'))
@@ -244,7 +367,16 @@ const isPdf = computed(() => !!selected.value && /\.pdf$/i.test(selected.value.f
 const isDocx = computed(() => !!selected.value && /\.docx$/i.test(selected.value.file))
 const isImage = computed(() => !!selected.value && /\.(png|jpe?g|webp|bmp)$/i.test(selected.value.file))
 const hasOriginalView = computed(() => isPdf.value || isDocx.value)
-const showTextView = computed(() => !isImage.value && (!hasOriginalView.value || sourceView.value === 'text'))
+/**
+ * The structured evidence is a third way of looking at the document, beside
+ * the original and its extracted text, rather than a block in the reading
+ * pane. It is the page restated as fields, and it needs the page's width: in
+ * the 24rem pane its values wrapped a character at a time.
+ */
+const hasRecords = computed(() => Boolean(analysis.value?.effective?.records?.length))
+const showFields = computed(() => sourceView.value === 'fields' && hasRecords.value)
+const showTextView = computed(() => !isImage.value && !showFields.value
+  && (!hasOriginalView.value || sourceView.value === 'text'))
 const fileUrl = computed(() => selected.value ? `/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/file` : '')
 const indexingActive = computed(() =>
   indexingStatus.value?.state === 'indexing' || documents.value.some(document => document.search_index_state === 'indexing'),
@@ -417,6 +549,8 @@ async function selectDocument(id: string, page?: number) {
     sourceSearch.value = ''
     sourceResults.value = []
     fullVisualCoverage.value = false
+    editingReading.value = false
+    compareCandidate.value = false
   }
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
@@ -481,8 +615,8 @@ async function startAnalysis(action: AnalysisAction) {
   } finally { analysisBusy.value = false }
 }
 
-async function saveAnalysis(reviewed = false) {
-  if (!selected.value || !analysis.value) return
+async function saveAnalysis(reviewed = false): Promise<boolean> {
+  if (!selected.value || !analysis.value) return false
   analysisBusy.value = true
   try {
     const payload: Record<string, unknown> = {
@@ -493,9 +627,12 @@ async function saveAnalysis(reviewed = false) {
     if (!hasStructuredSummary.value) payload.summary_markdown = summaryDraft.value
     analysis.value = await api.patch<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis/review`, payload)
     await loadDocuments()
-    toast.add({ severity: 'success', summary: reviewed ? 'Analysis reviewed' : 'Analysis edits saved', life: 2200 })
-  } catch (error) { toast.add({ severity: 'error', summary: 'Analysis not saved', detail: String(error), life: 5000 }) }
-  finally { analysisBusy.value = false }
+    toast.add({ severity: 'success', summary: reviewed ? 'Reading reviewed' : 'Reading edits saved', life: 2200 })
+    return true
+  } catch (error) {
+    toast.add({ severity: 'error', summary: 'Reading not saved', detail: String(error), life: 5000 })
+    return false
+  } finally { analysisBusy.value = false }
 }
 
 async function revertAnalysisField(field: 'summary' | 'notes') {
@@ -533,13 +670,13 @@ async function runContentSearch(documentIds?: string[]) {
 
 async function openSearchResult(result: DocumentSearchResult) {
   await selectDocument(result.document_id, result.page)
-  view.value = 'preview'; sourceView.value = 'text'
+  pane.value = 'original'; sourceView.value = 'text'
 }
 
 async function openCitation(citation: DocumentAnalysisCitation) {
   if (!selected.value) return
   currentPage.value = citation.page
-  view.value = 'preview'
+  pane.value = 'original'
   sourceView.value = citation.evidence_kind === 'visual' ? 'original' : 'text'
   await nav.replace('documents', { doc: selected.value.id, page: citation.page })
 }
@@ -639,7 +776,7 @@ async function attachToAssistant() {
 
 let docxToken = 0
 async function renderDocx() {
-  if (!selected.value || !isDocx.value || sourceView.value !== 'original' || view.value !== 'preview') return
+  if (!selected.value || !isDocx.value || sourceView.value !== 'original') return
   const token = ++docxToken
   docxLoading.value = true
   try {
@@ -658,7 +795,10 @@ async function renderDocx() {
   }
 }
 
-watch([() => selected.value?.id, sourceView, view], () => { void renderDocx() }, { flush: 'post' })
+watch([() => selected.value?.id, sourceView], () => { void renderDocx() }, { flush: 'post' })
+// A document with nothing structured to show falls back to its original
+// rather than to a blank Fields view the toggle no longer offers.
+watch(hasRecords, has => { if (!has && sourceView.value === 'fields') sourceView.value = 'original' })
 
 
 
@@ -720,7 +860,10 @@ onUnmounted(() => {
 <template>
   <section class="documents-tab">
     <header class="page-head">
-      <h1>Documents</h1>
+      <div class="head-copy">
+        <h1>Documents</h1>
+        <p v-if="documents.length" class="aw-type-meta head-count">{{ countSentence }}</p>
+      </div>
       <span class="grow" />
       <!-- A background job, reported at the size of a background job. -->
       <span
@@ -732,7 +875,9 @@ onUnmounted(() => {
       >
         <i class="aw-icon aw-icon-spin aw-icon-loader-circle" />Indexing<template v-if="indexingProgress"> {{ indexingProgress }}</template>
       </span>
-      <Button label="Add documents" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="emit('import-requested')" />
+      <!-- All three are neutral. The page's one filled button is the review
+           itself — `Mark reviewed and next`, where the reading ends — and
+           these are the chores that feed it. -->
       <Button
         v-if="unidentifiedCount"
         :label="`Identify ${unidentifiedCount}`"
@@ -747,94 +892,109 @@ onUnmounted(() => {
         :label="`Analyse ${eligibleDocuments.length}`"
         icon="aw-icon aw-icon-sparkles"
         size="small"
+        severity="secondary"
+        outlined
         :loading="analysisBusy"
         @click="batchAnalyze"
       />
-      <Button v-else label="Analyse all" icon="aw-icon aw-icon-sparkles" size="small" :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
+      <Button v-if="documents.length" label="Add documents" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="emit('import-requested')" />
       <UiOverflowMenu :items="secondaryActions" tooltip="More document actions" />
     </header>
 
-    <UiReviewBar
-      v-if="documents.length"
-      :lanes="status.lanes"
-      :chips="DOCUMENT_CHIPS"
-      :filters="status.filters"
-      allLabel="All documents"
-      :total="documents.length"
-      :filter="statusFilter"
-      @filter="statusFilter = ($event as DocumentsFilter[])"
-    />
+    <div v-if="documents.length" class="aw-filter-row">
+      <div class="aw-segmented" role="group" aria-label="Show">
+        <button
+          v-for="option in queues"
+          :key="option.key || 'all'"
+          type="button"
+          :class="{ on: queueFilter === option.key }"
+          :aria-pressed="queueFilter === option.key"
+          @click="setQueue(option.key)"
+        >{{ option.label }} <span class="aw-figure">{{ option.count }}</span></button>
+      </div>
+      <label v-if="filterCounts.get('model_typed')" class="aw-filter-check">
+        <input v-model="modelTypedOnly" type="checkbox">
+        Only types the assistant assigned <span class="aw-figure">{{ filterCounts.get('model_typed') }}</span>
+      </label>
+    </div>
 
-    <div v-if="documents.length" class="document-layout surface-panel">
-      <aside class="document-rail">
-        <div class="rail-tools">
-          <IconField>
-            <InputIcon class="aw-icon aw-icon-search" />
-            <InputText v-model="search" size="small" placeholder="Search documents" />
-          </IconField>
-          <!-- A link, not a full-width select: grouping is chosen once and
-               then read past. -->
-          <button type="button" class="group-by" @click="cycleGrouping">Group by {{ groupBy }} ▾</button>
-        </div>
-        <div v-if="!filtered.length" class="rail-empty">No document matches this view.</div>
-        <div v-for="group in groups" :key="group.key" class="doc-group">
-          <button class="group-head" :aria-expanded="!collapsedGroups.has(group.key)" @click="toggleGroup(group.key)">
-            <i :class="collapsedGroups.has(group.key) ? 'aw-icon aw-icon-chevron-right' : 'aw-icon aw-icon-chevron-down'" />
-            <span class="group-name">{{ sentenceCase(group.label) }}</span>
-            <span class="group-count aw-figure">{{ group.items.length }}</span>
-          </button>
-          <template v-if="!collapsedGroups.has(group.key)">
-            <button
-              v-for="doc in group.items"
-              :key="doc.id"
-              class="doc-row"
-              :class="{ active: doc.id === selectedId }"
-              @click="selectDocument(doc.id, 1)"
-            >
-              <span class="dot" :data-tone="documentTone(doc, documentFacts)" aria-hidden="true" />
-              <span class="doc-identity">
-                <span class="doc-name">{{ doc.source }}</span>
-                <span class="doc-meta">
-                  <template v-for="(part, index) in documentMeta(doc, documentFacts)" :key="part.text">
-                    <span v-if="index" aria-hidden="true"> · </span><span :data-tone="part.tone">{{ part.text }}</span>
-                  </template>
-                </span>
-              </span>
+    <div v-if="documents.length" class="document-layout">
+      <div class="document-grid" :data-pane="pane">
+        <aside class="document-rail" aria-label="Documents">
+          <div class="rail-tools">
+            <IconField>
+              <InputIcon class="aw-icon aw-icon-search" />
+              <InputText v-model="search" size="small" :placeholder="`Search ${plural(filtered.length, 'document')}`" />
+            </IconField>
+            <!-- A link, not a full-width select: grouping is chosen once and
+                 then read past. -->
+            <button type="button" class="group-by" @click="cycleGrouping">By {{ groupBy }} <i class="aw-icon aw-icon-chevron-down" aria-hidden="true" /></button>
+          </div>
+          <div v-if="!filtered.length" class="rail-empty">No document matches this view.</div>
+          <div v-for="group in groups" :key="group.key" class="doc-group">
+            <button class="group-head" :aria-expanded="!collapsedGroups.has(group.key)" @click="toggleGroup(group.key)">
+              <i :class="collapsedGroups.has(group.key) ? 'aw-icon aw-icon-chevron-right' : 'aw-icon aw-icon-chevron-down'" />
+              <span class="group-name">{{ sentenceCase(group.label) }}</span>
+              <span class="group-count aw-figure">{{ group.items.length }}</span>
             </button>
-          </template>
-        </div>
-        <button v-if="search.trim()" class="rail-deep-search" @click="runContentSearch()">
-          <i class="aw-icon aw-icon-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
-        </button>
-        <!-- The results of that search replace the list in place; the modal
-             that used to hold them is retired. -->
-        <div v-if="searchResults.length" class="rail-results">
-          <p class="rail-results-head">
-            {{ plural(searchResults.length, 'match') }}
-            <button type="button" @click="searchResults = []">Clear</button>
-          </p>
-          <button v-for="result in searchResults" :key="result.citation_id" class="rail-result" @click="openSearchResult(result)">
-            <span class="doc-name">{{ result.title }}</span>
-            <span class="doc-meta">Page {{ result.page }}</span>
-            <span class="excerpt">{{ result.excerpt }}</span>
+            <template v-if="!collapsedGroups.has(group.key)">
+              <button
+                v-for="doc in group.items"
+                :key="doc.id"
+                class="doc-row"
+                :class="{ active: doc.id === selectedId }"
+                :title="doc.source"
+                @click="selectDocument(doc.id, 1)"
+              >
+                <span class="dot" :data-tone="documentTone(doc, documentFacts)" aria-hidden="true" />
+                <span class="doc-identity">
+                  <span v-if="documentLabel(doc).reference" class="doc-name doc-ref">{{ documentLabel(doc).reference }}</span>
+                  <span v-else class="doc-name">{{ documentLabel(doc).name }}</span>
+                  <span class="doc-meta">
+                    <template v-if="documentMeta(doc, documentFacts).length">
+                      <template v-for="(part, index) in documentMeta(doc, documentFacts)" :key="part.text">
+                        <span v-if="index" aria-hidden="true"> · </span><span :data-tone="part.tone">{{ part.text }}</span>
+                      </template>
+                    </template>
+                    <template v-else-if="documentLabel(doc).reference">{{ documentLabel(doc).name }}</template>
+                  </span>
+                </span>
+                <i v-if="isReviewed(doc)" class="aw-icon aw-icon-check reviewed-mark" role="img" aria-label="Reviewed" title="Reviewed" />
+              </button>
+            </template>
+          </div>
+          <button v-if="search.trim()" class="rail-deep-search" @click="runContentSearch()">
+            <i class="aw-icon aw-icon-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
+          </button>
+          <!-- The results of that search replace the list in place; the modal
+               that used to hold them is retired. -->
+          <div v-if="searchResults.length" class="rail-results">
+            <p class="rail-results-head">
+              {{ plural(searchResults.length, 'match') }}
+              <button type="button" @click="searchResults = []">Clear</button>
+            </p>
+            <button v-for="result in searchResults" :key="result.citation_id" class="rail-result" @click="openSearchResult(result)">
+              <span class="doc-name">{{ result.title }}</span>
+              <span class="doc-meta">Page {{ result.page }}</span>
+              <span class="excerpt">{{ result.excerpt }}</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- Only drawn when the original and the reading share one column. -->
+        <div v-if="selected" class="pane-switch" role="group" aria-label="Show">
+          <button type="button" :class="{ on: pane === 'original' }" :aria-pressed="pane === 'original'" @click="pane = 'original'">Original</button>
+          <button type="button" :class="{ on: pane === 'reading' }" :aria-pressed="pane === 'reading'" @click="pane = 'reading'">
+            Reading<i v-if="selected && needsReview(selected)" class="switch-dot" aria-label="needs review" />
           </button>
         </div>
-      </aside>
 
-      <main v-if="selected" class="document-detail">
-        <!-- One 32px row. The page count, the analysis date and the review
-             state are on the list row's meta line and on `Mark reviewed`; a
-             header that restated them was a band the viewer paid for. -->
-        <header class="detail-head">
-          <span class="held" :data-empty="!selected.category">
-            {{ selected.category ? selected.category : 'Not yet read' }}<template
-              v-if="selected.classification?.document_type"> · {{ documentTypeLabel(selected.classification.document_type) }}</template>
-          </span>
-          <h2 :title="selected.source">{{ selected.source }}</h2>
-          <span class="grow" />
-          <label class="held-as">
-            <span>Held as</span>
+        <!-- The original. One row of controls: what it is held as, its name,
+             and how it is being looked at. Review lives with the reading. -->
+        <main v-if="selected" class="viewer-pane">
+          <header class="viewer-head">
             <Select
+              class="held-select"
               :modelValue="selected.category"
               :options="documentCategoryOptions"
               optionLabel="label"
@@ -843,271 +1003,296 @@ onUnmounted(() => {
               placeholder="Not yet read"
               size="small"
               aria-label="What this engagement holds the document as"
+              v-tooltip.bottom="'Held as'"
               @update:modelValue="updateClassification"
             />
-          </label>
-          <!-- An icon, named by its tooltip: it is the one control on this row not
-               about the document's own state, and its label cost the row the
-               room `Mark reviewed` needed. -->
-          <Button
-            icon="aw-icon aw-icon-paperclip"
-            size="small"
-            outlined
-            severity="secondary"
-            aria-label="Add to assistant"
-            v-tooltip.bottom="'Add to assistant'"
-            @click="attachToAssistant"
-          />
-          <Button
-            v-if="selected.analysis_review_state === 'reviewed'"
-            label="Reviewed"
-            icon="aw-icon aw-icon-check"
-            size="small"
-            outlined
-            severity="secondary"
-            disabled
-          />
-          <Button
-            v-else
-            label="Mark reviewed"
-            icon="aw-icon aw-icon-check"
-            size="small"
-            :disabled="!analysis?.effective"
-            :loading="analysisBusy"
-            @click="saveAnalysis(true)"
-          />
-          <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
-        </header>
-
-        <!-- Which view, and how that view is set up: one row rather than a tab
-             bar above a tool bar. -->
-        <div class="detail-views">
-          <nav class="detail-tabs">
-            <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">
-              {{ item }}<span v-if="item === 'activity' && activity.length" class="tab-badge aw-figure">{{ activity.length }}</span>
-            </button>
-          </nav>
-          <template v-if="view === 'preview'">
+            <h2 :title="selected.source">{{ selected.source }}</h2>
+            <span class="grow" />
             <span v-if="showPageNav" class="page-nav">
-              <Button icon="aw-icon aw-icon-chevron-left" text :disabled="currentPage <= 1" aria-label="Previous page" @click="currentPage--" /><span>Page {{ currentPage }} of {{ selected.pages || previewPages.length || 1 }}</span><Button icon="aw-icon aw-icon-chevron-right" text :disabled="currentPage >= (selected.pages || previewPages.length || 1)" aria-label="Next page" @click="currentPage++" />
+              <Button icon="aw-icon aw-icon-chevron-left" text size="small" :disabled="currentPage <= 1" aria-label="Previous page" @click="currentPage--" /><span class="aw-figure">{{ currentPage }} / {{ selected.pages || previewPages.length || 1 }}</span><Button icon="aw-icon aw-icon-chevron-right" text size="small" :disabled="currentPage >= (selected.pages || previewPages.length || 1)" aria-label="Next page" @click="currentPage++" />
             </span>
-            <div v-if="hasOriginalView" class="source-toggle" role="group" aria-label="Preview mode">
-              <button :class="{ active: sourceView === 'original' }" @click="sourceView = 'original'">Original</button>
-              <button :class="{ active: sourceView === 'text' }" @click="sourceView = 'text'">Extracted text</button>
+            <div v-if="hasOriginalView || hasRecords" class="source-toggle" role="group" aria-label="Preview mode">
+              <button v-if="hasOriginalView || isImage" :class="{ active: !showFields && sourceView === 'original' }" @click="sourceView = 'original'">Original</button>
+              <button v-if="!isImage" :class="{ active: showTextView }" @click="sourceView = 'text'">Extracted text</button>
+              <button v-if="hasRecords" :class="{ active: showFields }" @click="sourceView = 'fields'">Fields</button>
             </div>
             <Button
-              label="Find"
               icon="aw-icon aw-icon-search"
               size="small"
               text
+              severity="secondary"
               :class="{ 'find-on': showDocumentSearch }"
+              aria-label="Find in this document"
+              v-tooltip.bottom="'Find in this document'"
               @click="toggleFind"
             />
-            <a :href="fileUrl" target="_blank" class="open-original">Open original</a>
-          </template>
-        </div>
-
-        <!-- The two states that need a sentence, in the fieldwork stale-strip
-             form. Everything else about the analysis is on the row or the tab. -->
-        <p v-if="selected.analysis_validity_state === 'stale'" class="strip warn">
-          <i class="aw-icon aw-icon-history" aria-hidden="true" />
-          <span>The analysis was made against an earlier version of this file. Refresh it before relying on it.</span>
-          <button type="button" :disabled="analysisBusy" @click="startAnalysis('refresh')">Refresh</button>
-        </p>
-        <p v-else-if="selected.candidate_analysis_id" class="strip info">
-          <i class="aw-icon aw-icon-git-compare" aria-hidden="true" />
-          <span>A refreshed analysis is waiting.</span>
-          <button type="button" @click="view = 'analysis'; compareCandidate = true">Compare</button>
-        </p>
-
-        <div v-if="view === 'preview'" class="detail-content preview-view">
-          <div v-if="showDocumentSearch" class="source-search-bar">
-            <InputText
-              ref="findInput"
-              v-model="sourceSearch"
-              placeholder="Search this document's text and transcripts"
-              @keyup.enter="runContentSearch(selected ? [selected.id] : [])"
+            <a :href="fileUrl" target="_blank" class="icon-link" aria-label="Open the original file" v-tooltip.bottom="'Open the original file'">
+              <i class="aw-icon aw-icon-external-link" aria-hidden="true" />
+            </a>
+            <Button
+              icon="aw-icon aw-icon-paperclip"
+              size="small"
+              text
+              severity="secondary"
+              aria-label="Add to the assistant's context"
+              v-tooltip.bottom="'Add to the assistant’s context'"
+              @click="attachToAssistant"
             />
-            <Button label="Search" icon="aw-icon aw-icon-search" severity="secondary" outlined :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
-          </div>
-          <div v-if="sourceResults.length && sourceSearch" class="inline-search-results">
-            <button v-for="result in sourceResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
-          </div>
-          <div v-if="current?.image_only && showTextView" class="scan-notice">
-            <i class="aw-icon aw-icon-image" />
-            <div>
-              <strong>{{ selected.analysis_vision_used && selected.analysis_validity_state === 'current' ? 'Visual source—analysis available' : 'Visual source' }}</strong>
-              <p v-if="selected.analysis_vision_used && selected.analysis_validity_state === 'current'">The extracted-text view is empty, but the current analysis includes an AI-derived visual transcription. Open the Analysis tab to review it.</p>
-              <p v-else-if="visionAvailable">This page has insufficient extractable text. Analyse it with the configured vision profile; the original remains the authoritative source.</p>
-              <p v-else>This page has insufficient extractable text. You can start analysis now; it will remain an open item without a model charge until a vision profile is configured.</p>
-            </div>
-          </div>
-          <img v-if="isImage" class="document-image" :src="fileUrl" :alt="selected.title" />
-          <iframe v-else-if="isPdf && sourceView === 'original'" :key="`${selected.id}:${currentPage}`" class="document-frame" :src="`${fileUrl}#page=${currentPage}`" :title="selected.title" />
-          <div v-else-if="isDocx && sourceView === 'original'" :key="selected.id" ref="docxContainer" class="docx-frame" :class="{ loading: docxLoading }" :aria-busy="docxLoading" />
-          <pre v-else class="page-text">{{ current?.text || 'No extractable text on this page.' }}</pre>
-          <details class="technical-details">
-            <summary>Technical details</summary>
-            <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="aw-icon aw-icon-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="aw-icon aw-icon-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div><div v-if="selected.updated"><dt>Replaced</dt><dd>{{ selected.updated }}</dd></div></dl>
-          </details>
-        </div>
+            <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
+          </header>
 
-        <div v-else-if="view === 'analysis'" class="detail-content analysis-view">
-          <div class="analysis-toolbar">
-            <span class="analysis-note">
-              {{ analysis?.effective
-                ? 'What the model read from this file, and what an auditor has added to it.'
-                : 'Nothing has been read from this file yet.' }}
-            </span>
-            <div class="analysis-actions">
-              <Button
-                v-if="selected.text_state === 'extracted' || selected.text_state === 'partial'"
-                :label="fullVisualCoverage ? `Full visual coverage (max ${visualPageLimit})` : 'Text coverage only'"
-                :icon="fullVisualCoverage ? 'aw-icon aw-icon-images' : 'aw-icon aw-icon-file'"
-                size="small"
-                severity="secondary"
-                outlined
-                v-tooltip.bottom="`Opt in to visual analysis of text-bearing pages, bounded to ${visualPageLimit} pages for this document.`"
-                @click="fullVisualCoverage = !fullVisualCoverage"
+          <div class="detail-content preview-view">
+            <div v-if="showDocumentSearch" class="source-search-bar">
+              <InputText
+                ref="findInput"
+                v-model="sourceSearch"
+                placeholder="Search this document's text and transcripts"
+                @keyup.enter="runContentSearch(selected ? [selected.id] : [])"
               />
-              <Button v-if="!analysis?.generated" label="Analyse" icon="aw-icon aw-icon-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
-              <Button v-else label="Refresh" icon="aw-icon aw-icon-refresh-cw" size="small" severity="secondary" outlined :loading="analysisBusy" @click="startAnalysis('refresh')" v-tooltip.bottom="'Re-read this document under the vocabulary its type already carries.'" />
-              <Button v-if="analysis?.candidate" label="Compare candidate" icon="aw-icon aw-icon-git-compare" size="small" severity="secondary" outlined @click="compareCandidate = !compareCandidate" />
+              <Button label="Search" icon="aw-icon aw-icon-search" severity="secondary" outlined :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
             </div>
-          </div>
-
-          <section v-if="selectedVocabulary" class="vocabulary-card" :class="{ thin: selectedVocabulary.thin }">
-            <p class="vocabulary-line">
-              <b>Read as {{ selectedVocabulary.document_type.replace(/_/g, ' ') }}</b>
-              <span class="aw-figure">
-                ·
-                <button type="button" class="fields-link" @click="fieldsOpen = !fieldsOpen">
-                  {{ selectedVocabulary.fields.length }} {{ selectedVocabulary.fields.length === 1 ? 'field' : 'fields' }}
-                  <i class="aw-icon" :class="fieldsOpen ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />
-                </button>
-                from {{ plural(selectedVocabulary.documents_read.length, 'document') }} ·
-                {{ selectedVocabulary.corroborated_fields ? `${selectedVocabulary.corroborated_fields} stated by two or more` : 'none stated by two' }}
-              </span>
-            </p>
-            <p v-if="selectedVocabulary.thin" class="strip warn inline">
-              <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />
-              <span>{{ thinReason(selectedVocabulary) }}</span>
-              <button v-if="isEvidence" type="button" :disabled="analysisBusy" @click="startAnalysis('revise_vocabulary')">Revise vocabulary</button>
-            </p>
-            <table v-if="fieldsOpen" class="vocabulary-fields">
-              <tbody>
-                <tr v-for="field in selectedVocabulary.fields" :key="field.name">
-                  <td class="vf-name">{{ field.name }}</td>
-                  <td class="vf-role">{{ field.role }}</td>
-                  <td class="vf-fill" :class="{ partial: field.fill_count < selectedVocabulary.documents_read.length }">
-                    {{ field.fill_count }} / {{ selectedVocabulary.documents_read.length }}
-                  </td>
-                  <td class="vf-unread">
-                    <span
-                      v-if="field.unread.length"
-                      v-tooltip.left="`${field.unread.length} document(s) were read before this field existed, so their silence about it means nobody asked — not that they do not state it.`"
-                    >{{ field.unread.length }} never asked</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <div v-if="analysis?.status.analysis_coverage_state === 'partial'" class="coverage-warning">
-            <i class="aw-icon aw-icon-triangle-alert" />
-            <div>
-              <strong>Partial source coverage</strong>
-              <p>Text pages: {{ analysis.effective?.coverage.text_analyzed_pages?.join(', ') || '—' }} · Visual pages: {{ analysis.effective?.coverage.vision_analyzed_pages?.join(', ') || '—' }}</p>
-              <ul v-if="analysis.effective?.coverage.omissions?.length">
-                <li v-for="item in analysis.effective.coverage.omissions" :key="`${item.page}:${item.reason}`">Page {{ item.page }} — {{ item.reason.replaceAll('_', ' ') }}</li>
-              </ul>
-              <p v-else>Omitted pages: {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}</p>
+            <div v-if="sourceResults.length && sourceSearch" class="inline-search-results">
+              <button v-for="result in sourceResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
             </div>
-          </div>
-          <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="aw-icon aw-icon-history" /><span>This analysis belongs to an earlier source identity. It remains available to agent context; refresh it before relying on it as current.</span></div>
-
-          <UiEmptyState v-if="!analysis?.effective" icon="aw-icon aw-icon-sparkles" title="Analyse this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
-          <template v-else>
-            <!-- A summary whose origin is the structured evidence is that
-                 evidence written out as bullets: the same fields, the same
-                 values, one screen apart. The sheet below is the better
-                 rendering of it, so the prose copy is not drawn at all. A
-                 model-written summary is a different thing and stays. -->
-            <section v-if="!hasStructuredSummary" class="analysis-editor">
-              <header>
-                <div>
-                  <h4 class="aw-label">Summary</h4>
-                  <small>Auditor edits are stored separately from the generated basis.</small>
-                </div>
-                <div><Button v-if="analysis.review.summary_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('summary')" /></div>
-              </header>
-              <MarkdownEditor v-model="summaryDraft" />
-            </section>
-            <section v-if="analysis.effective.records?.length" class="analysis-section">
-              <header>
-                <h4 class="aw-label">Structured evidence</h4>
-                <small>What the model read from the page, checked against the {{ (analysis.effective.schema_ref?.document_type || 'document').replace(/_/g, ' ') }} schema</small>
-              </header>
+            <div v-if="current?.image_only && showTextView" class="scan-notice">
+              <i class="aw-icon aw-icon-image" />
+              <div>
+                <strong>{{ selected.analysis_vision_used && selected.analysis_validity_state === 'current' ? 'Visual source—analysis available' : 'Visual source' }}</strong>
+                <p v-if="selected.analysis_vision_used && selected.analysis_validity_state === 'current'">The extracted-text view is empty, but the current reading includes an AI-derived visual transcription.</p>
+                <p v-else-if="visionAvailable">This page has insufficient extractable text. Analyse it with the configured vision profile; the original remains the authoritative source.</p>
+                <p v-else>This page has insufficient extractable text. You can start analysis now; it will remain an open item without a model charge until a vision profile is configured.</p>
+              </div>
+            </div>
+            <section v-if="showFields && analysis?.effective" class="fields-view">
               <StructuredEvidenceSheet
-                :records="analysis.effective.records"
+                :records="analysis.effective.records ?? []"
                 :schema="analysis.effective.schema_ref"
                 :citations="analysis.effective.citations"
                 :validated="analysis.status.analysis_coverage_state === 'complete'"
               />
             </section>
-            <section class="analysis-editor">
-              <header><div><h4 class="aw-label">Audit notes</h4><small>Freeform observations are not evidence that a control operated.</small></div><div><Button v-if="analysis.review.audit_notes_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('notes')" /></div></header>
-              <MarkdownEditor v-model="notesDraft" />
-            </section>
-            <div class="save-analysis"><Button :label="hasStructuredSummary ? 'Save notes' : 'Save edits'" icon="aw-icon aw-icon-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="aw-icon aw-icon-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
+            <img v-else-if="isImage" class="document-image" :src="fileUrl" :alt="selected.title" />
+            <iframe v-else-if="isPdf && sourceView === 'original'" :key="`${selected.id}:${currentPage}`" class="document-frame" :src="`${fileUrl}#page=${currentPage}`" :title="selected.title" />
+            <div v-else-if="isDocx && sourceView === 'original'" :key="selected.id" ref="docxContainer" class="docx-frame" :class="{ loading: docxLoading }" :aria-busy="docxLoading" />
+            <pre v-else class="page-text">{{ current?.text || 'No extractable text on this page.' }}</pre>
+          </div>
+        </main>
 
-            <section v-if="compareCandidate && analysis.candidate" class="candidate-compare">
-              <h4>Refresh candidate</h4>
-              <div><article><strong>Current effective summary</strong><MarkdownView :markdown="summaryDraft" /></article><article><strong>Candidate summary</strong><MarkdownView :markdown="analysis.candidate.summary_markdown" /></article></div>
-              <div class="candidate-actions"><Button v-if="!hasStructuredSummary" label="Copy candidate summary into edits" severity="secondary" @click="summaryDraft = analysis.candidate.summary_markdown" /><Button label="Copy candidate notes into edits" severity="secondary" @click="notesDraft = analysis.candidate.audit_notes_markdown" /><Button label="Accept candidate as generated basis" icon="aw-icon aw-icon-check" @click="acceptCandidate" /></div>
-            </section>
+        <!-- What was read from it, and the review of that reading. -->
+        <aside v-if="selected" class="reading-pane" aria-label="Reading">
+          <nav class="reading-tabs">
+            <button type="button" :class="{ on: readingTab === 'reading' }" @click="readingTab = 'reading'">Reading</button>
+            <button type="button" :class="{ on: readingTab === 'notes' }" @click="readingTab = 'notes'">Audit notes</button>
+            <button type="button" :class="{ on: readingTab === 'activity' }" @click="readingTab = 'activity'">
+              Activity<span v-if="activity.length" class="tab-badge aw-figure">{{ activity.length }}</span>
+            </button>
+            <span class="grow" />
+            <UiOverflowMenu v-if="readingTab === 'reading'" :items="readingActions" tooltip="Reading actions" />
+          </nav>
 
-            <section class="analysis-sources">
-              <h4 class="aw-label">Sources</h4>
-              <button v-for="citation in analysis.effective.citations" :key="`${citation.id}:${citation.page}`" @click="openCitation(citation)">
-                <strong>
-                  [{{ citation.id }}] Page {{ citation.page }}
-                  <Tag v-if="citation.evidence_kind === 'visual'" value="AI visual description" severity="info" />
-                </strong>
-                <span v-if="citation.evidence_kind === 'visual'">
-                  {{ citation.description || 'Visual region' }}
-                  <small v-if="citation.region"> · region {{ citation.region.x }}, {{ citation.region.y }}, {{ citation.region.width }} × {{ citation.region.height }}</small>
-                </span>
-                <span v-else>{{ citation.excerpt }}</span>
-              </button>
-              <p v-if="!analysis.effective.citations.length" class="muted">No validated source citations were generated.</p>
-            </section>
-            <details class="technical-details">
-              <summary>Technical provenance</summary>
-              <dl>
-                <div><dt>Analysis ID</dt><dd><code>{{ analysis.effective.id }}</code></dd></div>
-                <div><dt>Generated</dt><dd>{{ analysis.effective.generated_at }}</dd></div>
-                <div><dt>Provider / model</dt><dd>{{ analysis.effective.provider || '—' }} / {{ analysis.effective.model || '—' }}</dd></div>
-                <div><dt>Vision used</dt><dd>{{ analysis.effective.vision_used ? 'Yes' : 'No' }}</dd></div>
-                <div v-for="profile in analysis.effective.generation_profiles" :key="profile.profile_hash">
-                  <dt>{{ profile.name === 'vision' ? 'Vision profile' : 'Text profile' }}</dt>
-                  <dd>{{ profile.provider }} / {{ profile.model }} · <code>{{ profile.profile_hash }}</code></dd>
+          <!-- The two states that need a sentence. -->
+          <p v-if="selected.analysis_validity_state === 'stale'" class="strip warn">
+            <i class="aw-icon aw-icon-history" aria-hidden="true" />
+            <span>This reading was made against an earlier version of the file. Refresh it before relying on it.</span>
+            <button type="button" :disabled="analysisBusy" @click="startAnalysis('refresh')">Refresh</button>
+          </p>
+          <p v-else-if="selected.candidate_analysis_id" class="strip info">
+            <i class="aw-icon aw-icon-git-compare" aria-hidden="true" />
+            <span>A refreshed reading is waiting.</span>
+            <button type="button" @click="readingTab = 'reading'; compareCandidate = true">Compare</button>
+          </p>
+
+          <div class="reading-body">
+            <template v-if="readingTab === 'reading'">
+              <UiEmptyState
+                v-if="!analysis?.effective"
+                icon="aw-icon aw-icon-sparkles"
+                title="Not read yet"
+                description="Nothing has been read from this file. The original remains the authoritative source; a reading is what the matrix and the tests draw on."
+                compact
+              >
+                <Button label="Analyse this document" icon="aw-icon aw-icon-sparkles" :loading="analysisBusy" @click="startAnalysis('analyze')" />
+              </UiEmptyState>
+              <template v-else>
+                <p v-if="readingSource" class="reading-source">
+                  <span class="by" :data-edited="readingSource.edited || null">
+                    <i class="aw-icon" :class="readingSource.edited ? 'aw-icon-user-pen' : 'aw-icon-sparkles'" aria-hidden="true" />
+                    {{ readingSource.edited ? 'Edited by an auditor' : 'Written by the assistant' }}
+                  </span>
+                  <span v-if="readingSource.meta" class="aw-type-meta">{{ readingSource.meta }}</span>
+                </p>
+
+                <section v-if="selectedVocabulary" class="vocabulary-card" :class="{ thin: selectedVocabulary.thin }">
+                  <p class="vocabulary-line">
+                    <b>Read as {{ sentenceCase(selectedVocabulary.document_type) }}</b>
+                    <span>
+                      ·
+                      <button type="button" class="fields-link" @click="fieldsOpen = !fieldsOpen">
+                        {{ plural(selectedVocabulary.fields.length, 'field') }}
+                        <i class="aw-icon" :class="fieldsOpen ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right'" />
+                      </button>
+                      from {{ plural(selectedVocabulary.documents_read.length, 'document') }}
+                    </span>
+                  </p>
+                  <p v-if="selectedVocabulary.thin" class="strip warn inline">
+                    <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />
+                    <span>{{ thinReason(selectedVocabulary) }}</span>
+                  </p>
+                  <table v-if="fieldsOpen" class="vocabulary-fields">
+                    <tbody>
+                      <tr v-for="field in selectedVocabulary.fields" :key="field.name">
+                        <td class="vf-name">{{ field.name }}</td>
+                        <td class="vf-role">{{ field.role }}</td>
+                        <td class="vf-fill aw-figure" :class="{ partial: field.fill_count < selectedVocabulary.documents_read.length }">
+                          {{ field.fill_count }} / {{ selectedVocabulary.documents_read.length }}
+                        </td>
+                        <td class="vf-unread">
+                          <span
+                            v-if="field.unread.length"
+                            v-tooltip.left="`${field.unread.length} document(s) were read before this field existed, so their silence about it means nobody asked — not that they do not state it.`"
+                          >{{ field.unread.length }} never asked</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </section>
+
+                <div v-if="analysis.status.analysis_coverage_state === 'partial'" class="coverage-warning">
+                  <i class="aw-icon aw-icon-triangle-alert" />
+                  <div>
+                    <strong>Partial source coverage</strong>
+                    <p>Text pages: {{ analysis.effective.coverage.text_analyzed_pages?.join(', ') || '—' }} · Visual pages: {{ analysis.effective.coverage.vision_analyzed_pages?.join(', ') || '—' }}</p>
+                    <ul v-if="analysis.effective.coverage.omissions?.length">
+                      <li v-for="item in analysis.effective.coverage.omissions" :key="`${item.page}:${item.reason}`">Page {{ item.page }} — {{ item.reason.replaceAll('_', ' ') }}</li>
+                    </ul>
+                    <p v-else>Omitted pages: {{ analysis.effective.coverage.omitted_pages.join(', ') || '—' }}</p>
+                  </div>
                 </div>
-                <div><dt>Prompt version</dt><dd><code>{{ analysis.effective.prompt_version }}</code></dd></div>
-                <div><dt>Extracted text hash</dt><dd><code>{{ analysis.effective.extracted_text_sha1 }}</code></dd></div>
-                <div><dt>Transcription hash</dt><dd><code>{{ analysis.effective.derived_text_sha256 || '—' }}</code></dd></div>
-                <div><dt>Prepared media</dt><dd><code>{{ analysis.effective.prepared_media_set_hash || '—' }}</code></dd></div>
-              </dl>
-            </details>
-          </template>
-        </div>
 
-        <div v-else class="detail-content timeline">
-          <article v-for="item in activity" :key="item.id"><i class="aw-icon aw-icon-sparkles" /><div><strong>{{ item.purpose.replace('_', ' ') }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · response {{ item.response_hash || 'not available' }}</code></details></div></article>
-          <p v-if="!activity.length" class="muted">No model activity references this document.</p>
-        </div>
-      </main>
-      <UiEmptyState v-else icon="aw-icon aw-icon-file" title="Choose a document" description="Select a document from the inventory to preview it." compact />
+                <!-- A summary whose origin is the structured evidence is that
+                     evidence written out as bullets; the sheet is the better
+                     rendering of it, so only a model-written summary is drawn. -->
+                <template v-if="!hasStructuredSummary">
+                  <MarkdownEditor v-if="editingReading" v-model="summaryDraft" class="reading-editor" />
+                  <MarkdownView v-else :markdown="summaryDraft || '_No summary was written._'" class="reading-text" />
+                </template>
+                <button
+                  v-if="analysis.effective.records?.length"
+                  type="button"
+                  class="fields-door"
+                  @click="sourceView = 'fields'; pane = 'original'"
+                >
+                  <i class="aw-icon aw-icon-table" aria-hidden="true" />
+                  <span><b>Structured evidence</b> · {{ plural(analysis.effective.records.length, 'record') }} read against the {{ sentenceCase(analysis.effective.schema_ref?.document_type || 'document') }} schema</span>
+                  <i class="aw-icon aw-icon-arrow-right" aria-hidden="true" />
+                </button>
+
+                <section v-if="compareCandidate && analysis.candidate" class="candidate-compare">
+                  <h4>The refreshed reading</h4>
+                  <MarkdownView :markdown="analysis.candidate.summary_markdown" />
+                  <div class="candidate-actions">
+                    <Button v-if="!hasStructuredSummary" label="Use its summary" size="small" severity="secondary" outlined @click="summaryDraft = analysis.candidate.summary_markdown; editingReading = true" />
+                    <Button label="Use its notes" size="small" severity="secondary" outlined @click="notesDraft = analysis.candidate.audit_notes_markdown; readingTab = 'notes'" />
+                    <Button label="Accept it as the reading" icon="aw-icon aw-icon-check" size="small" severity="secondary" outlined @click="acceptCandidate" />
+                  </div>
+                </section>
+
+                <section v-if="analysis.effective.citations.length" class="analysis-sources">
+                  <h4 class="aw-label">Where it says so</h4>
+                  <button v-for="citation in analysis.effective.citations" :key="`${citation.id}:${citation.page}`" type="button" @click="openCitation(citation)">
+                    <strong>
+                      <span class="aw-figure">{{ citation.id }}</span> · Page {{ citation.page }}
+                      <span v-if="citation.evidence_kind === 'visual'" class="visual-tag">AI visual description</span>
+                    </strong>
+                    <span v-if="citation.evidence_kind === 'visual'">{{ citation.description || 'Visual region' }}</span>
+                    <span v-else>{{ citation.excerpt }}</span>
+                  </button>
+                </section>
+                <p v-else class="muted">No validated source citations were generated.</p>
+
+                <details class="technical-details">
+                  <summary>Technical provenance</summary>
+                  <dl>
+                    <div><dt>Analysis ID</dt><dd><code>{{ analysis.effective.id }}</code></dd></div>
+                    <div><dt>Generated</dt><dd>{{ analysis.effective.generated_at }}</dd></div>
+                    <div><dt>Provider / model</dt><dd>{{ analysis.effective.provider || '—' }} / {{ analysis.effective.model || '—' }}</dd></div>
+                    <div><dt>Vision used</dt><dd>{{ analysis.effective.vision_used ? 'Yes' : 'No' }}</dd></div>
+                    <div v-for="profile in analysis.effective.generation_profiles" :key="profile.profile_hash">
+                      <dt>{{ profile.name === 'vision' ? 'Vision profile' : 'Text profile' }}</dt>
+                      <dd>{{ profile.provider }} / {{ profile.model }} · <code>{{ profile.profile_hash }}</code></dd>
+                    </div>
+                    <div><dt>Prompt version</dt><dd><code>{{ analysis.effective.prompt_version }}</code></dd></div>
+                    <div><dt>Extracted text hash</dt><dd><code>{{ analysis.effective.extracted_text_sha1 }}</code></dd></div>
+                    <div><dt>Transcription hash</dt><dd><code>{{ analysis.effective.derived_text_sha256 || '—' }}</code></dd></div>
+                    <div><dt>Prepared media</dt><dd><code>{{ analysis.effective.prepared_media_set_hash || '—' }}</code></dd></div>
+                  </dl>
+                </details>
+              </template>
+            </template>
+
+            <template v-else-if="readingTab === 'notes'">
+              <p class="aw-type-meta notes-hint">Freeform observations — what an auditor noticed. They are not evidence that a control operated.</p>
+              <MarkdownEditor v-model="notesDraft" class="reading-editor" />
+              <div class="notes-actions">
+                <Button v-if="analysis?.review.audit_notes_override != null" label="Revert to generated" text size="small" severity="secondary" @click="revertAnalysisField('notes')" />
+                <span class="grow" />
+                <Button label="Save notes" icon="aw-icon aw-icon-save" size="small" severity="secondary" outlined :disabled="!analysis?.effective" :loading="analysisBusy" @click="saveAnalysis(false)" />
+              </div>
+            </template>
+
+            <div v-else class="timeline">
+              <article v-for="item in activity" :key="item.id"><i class="aw-icon aw-icon-sparkles" /><div><strong>{{ sentenceCase(item.purpose) }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · response {{ item.response_hash || 'not available' }}</code></details></div></article>
+              <p v-if="!activity.length" class="muted">No model activity references this document.</p>
+              <details class="technical-details">
+                <summary>Technical details</summary>
+                <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="aw-icon aw-icon-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="aw-icon aw-icon-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div><div v-if="selected.updated"><dt>Replaced</dt><dd>{{ selected.updated }}</dd></div></dl>
+              </details>
+            </div>
+          </div>
+
+          <!-- The review, where the reading ends: the eye reaches it having
+               read the thing it vouches for. The page's one filled button. -->
+          <footer v-if="analysis?.effective" class="reading-foot">
+            <!-- Its own line: beside the two buttons it was what the pane's
+                 width could not fit, and both buttons clipped to make room. -->
+            <span class="queue-position aw-type-meta">{{ queuePosition }}</span>
+            <template v-if="editingReading">
+              <Button label="Cancel" size="small" text severity="secondary" @click="cancelReadingEdit" />
+              <Button label="Save edits" icon="aw-icon aw-icon-save" size="small" severity="secondary" outlined :loading="analysisBusy" @click="saveReadingEdit" />
+            </template>
+            <Button
+              v-else-if="readingTab === 'reading' && !hasStructuredSummary"
+              label="Edit reading"
+              icon="aw-icon aw-icon-pencil"
+              size="small"
+              severity="secondary"
+              outlined
+              @click="editingReading = true"
+            />
+            <span class="grow" />
+            <Button
+              v-if="!isReviewed(selected)"
+              :label="nextToReview ? 'Mark reviewed and next' : 'Mark reviewed'"
+              icon="aw-icon aw-icon-check"
+              size="small"
+              :loading="analysisBusy"
+              @click="markReviewedAndNext"
+            />
+            <Button
+              v-else
+              label="Next to review"
+              icon="aw-icon aw-icon-arrow-right"
+              iconPos="right"
+              size="small"
+              severity="secondary"
+              outlined
+              :disabled="!nextToReview"
+              @click="nextToReview && selectDocument(nextToReview.id, 1)"
+            />
+          </footer>
+        </aside>
+        <UiEmptyState v-if="!selected" class="no-selection" icon="aw-icon aw-icon-file" title="Choose a document" description="Select a document from the list to read it beside what was read from it." compact />
+      </div>
     </div>
     <UiEmptyState v-else icon="aw-icon aw-icon-file-plus" title="Add engagement documents" description="Upload policies, contracts, evidence, reports, and other files. Extraction happens locally.">
       <Button label="Add documents" icon="aw-icon aw-icon-plus" @click="emit('import-requested')" />
@@ -1158,117 +1343,214 @@ onUnmounted(() => {
 
 <style scoped>
 .documents-tab { display: flex; flex-direction: column; gap: .75rem; height: 100%; min-height: 36rem; min-width: 0; }
-
 .grow { flex: 1; }
 
-/* One 32px row: the pill, the filename, and the acts. Everything the old
-   three-line header restated is on the list row or on `Mark reviewed`. */
-.detail-head { display: flex; align-items: center; gap: .5rem; min-height: 2rem; padding: .5rem 1.25rem; border-bottom: 1px solid var(--aw-border); }
-/* A button keeps its label whole and the title gives way. With the assistant
-   open the row was narrower than its controls, and `Mark reviewed` wrapped
-   onto two lines inside its own button. */
-.detail-head :deep(.p-button) { flex: none; }
-.detail-head h2 { margin: 0; min-width: 0; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-md); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.held { flex: none; padding: .1rem .5rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 600; text-transform: capitalize; }
-.held[data-empty='true'] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
-.held-as { display: flex; align-items: center; gap: .35rem; color: var(--aw-muted); font-size: var(--aw-text-2xs); }
-.held-as :deep(.p-select) { min-width: 7.5rem; text-transform: capitalize; }
+.head-copy { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; min-width: 0; }
+.head-count { margin: 0; }
+
+/* A running background job, not a problem to be solved. */
+.indexing-chip { display: inline-flex; align-items: center; gap: .4rem; min-height: var(--aw-control-height-sm); padding: .2rem .6rem; border: 1px solid var(--aw-info-line); border-radius: var(--aw-radius-pill); background: var(--aw-info-soft); color: var(--aw-info); font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap; }
+
+/* --- three panes ---------------------------------------------------------- */
+/* The layout is its own container, so the panes give way to the width they
+   actually have — the assistant beside the page takes a third of it. */
+.document-layout { container: documents / inline-size; flex: 1 1 auto; min-height: 0; display: flex; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); overflow: hidden; }
+.document-grid {
+  flex: 1; min-width: 0; min-height: 0; display: grid;
+  grid-template-columns: minmax(15rem, 18.5rem) minmax(0, 1fr) minmax(19rem, 23.75rem);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "list viewer reading";
+}
+.document-rail { grid-area: list; }
+.viewer-pane { grid-area: viewer; }
+.reading-pane { grid-area: reading; }
+.no-selection { grid-column: 2 / -1; margin: 1.25rem; }
+.pane-switch { display: none; }
+
+/* Too narrow for three columns: the original and the reading share one, and
+   a switch above it says which is showing. */
+@container documents (max-width: 60rem) {
+  .document-grid {
+    grid-template-columns: minmax(14rem, 17rem) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "list switch" "list pane";
+  }
+  .pane-switch { grid-area: switch; display: flex; gap: 2px; margin: .5rem .75rem 0; padding: 3px; border-radius: var(--aw-radius-control); background: var(--aw-raised); align-self: start; justify-self: start; }
+  .pane-switch button { display: inline-flex; align-items: center; gap: .375rem; height: 1.75rem; padding: 0 .75rem; border: 0; border-radius: 6px; background: transparent; color: var(--aw-ink-soft); font: inherit; font-size: var(--aw-text-sm); cursor: pointer; }
+  .pane-switch button.on { background: var(--aw-panel); color: var(--aw-ink-strong); font-weight: 600; box-shadow: var(--aw-shadow-sm); }
+  .switch-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--aw-warn); }
+  .viewer-pane, .reading-pane { grid-area: pane; border-left: 0; }
+  .document-grid[data-pane='reading'] .viewer-pane,
+  .document-grid[data-pane='original'] .reading-pane { display: none; }
+  .no-selection { grid-column: 2; grid-row: 1 / -1; }
+}
+@container documents (max-width: 36rem) {
+  .document-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "list" "switch" "pane"; }
+  .document-rail { max-height: 16rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }
+}
+
+/* --- the list ------------------------------------------------------------- */
+.document-rail { min-height: 0; padding: .75rem; border-right: 1px solid var(--aw-border); background: var(--aw-canvas); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.rail-tools { position: sticky; top: -.75rem; z-index: 1; display: flex; align-items: center; gap: .5rem; margin: -.75rem -.75rem .5rem; padding: .75rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-canvas); }
+.rail-tools :deep(.p-iconfield) { flex: 1; min-width: 0; }
+.rail-tools :deep(.p-inputtext) { width: 100%; }
+.group-by { display: inline-flex; align-items: center; gap: .25rem; flex: none; padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-transform: capitalize; cursor: pointer; }
+.rail-empty { padding: 2rem .5rem; text-align: center; color: var(--aw-muted); }
+.doc-group { display: grid; gap: .125rem; }
+.group-head { display: flex; align-items: center; gap: .4rem; width: 100%; margin: .5rem 0 .125rem; padding: .2rem .25rem; border: 0; border-radius: var(--aw-radius-control); background: transparent; color: var(--aw-muted); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-align: left; cursor: pointer; }
+.group-head:hover { color: var(--aw-teal); }
+.group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-count { margin-left: auto; font-weight: 400; }
+.doc-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .625rem; width: 100%; padding: .375rem .5rem; border: 1px solid transparent; border-radius: var(--aw-radius-control); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.doc-row:hover { border-color: var(--aw-border); background: var(--aw-panel); }
+.doc-row.active { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
+.dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
+.dot[data-tone='ok'] { background: var(--aw-ok); }
+.dot[data-tone='warn'] { background: var(--aw-warn); }
+.dot[data-tone='bad'] { background: var(--aw-danger); }
+.dot[data-tone='info'] { background: var(--aw-info); }
+.doc-identity { display: grid; min-width: 0; gap: 1px; }
+.doc-name { overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.doc-ref { font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); letter-spacing: -0.01em; }
+.doc-row.active .doc-name { color: var(--aw-teal-strong); font-weight: 600; }
+.doc-meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.doc-meta [data-tone='warn'] { color: var(--aw-warn-ink); }
+.doc-meta [data-tone='bad'] { color: var(--aw-danger); }
+.doc-meta [data-tone='agent'] { color: var(--aw-accent); }
+.reviewed-mark { color: var(--aw-ok); font-size: var(--aw-text-sm); }
+.rail-deep-search { display: flex; align-items: center; gap: .45rem; width: 100%; margin-top: .7rem; padding: .5rem .6rem; border: 1px dashed var(--aw-border); border-radius: var(--aw-radius-control); background: transparent; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); text-align: left; cursor: pointer; }
+.rail-deep-search:hover { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
+.rail-deep-search span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-results { display: flex; flex-direction: column; gap: .3rem; margin-top: .6rem; }
+.rail-results-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+.rail-results-head button { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); cursor: pointer; }
+.rail-result { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: .45rem .55rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); font: inherit; text-align: left; cursor: pointer; }
+.rail-result:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
+.rail-result .excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); line-height: 1.4; }
+
+/* --- the original --------------------------------------------------------- */
+.viewer-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--aw-raised); }
+/* One row. A control keeps its label whole and the filename gives way. */
+.viewer-head { display: flex; align-items: center; gap: .375rem; min-height: 3rem; padding: .375rem .75rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-panel); }
+.viewer-head > :deep(.p-button), .viewer-head > .icon-link, .viewer-head > .source-toggle, .viewer-head > .page-nav { flex: none; }
+.viewer-head h2 { flex: 0 1 auto; min-width: 3rem; margin: 0 0 0 .25rem; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.held-select { flex: none; }
+.viewer-head :deep(.held-select.p-select) { min-height: 1.75rem; border-radius: var(--aw-radius-pill); }
+.viewer-head :deep(.held-select .p-select-label) { padding: .125rem .25rem .125rem .625rem; font-size: var(--aw-text-xs); font-weight: 600; }
+.viewer-head :deep(.held-select .p-select-dropdown) { width: 1.75rem; }
+.viewer-head :deep(.find-on) { color: var(--aw-teal); }
+.icon-link { display: grid; place-items: center; width: var(--aw-control-height); height: var(--aw-control-height); border-radius: var(--aw-radius-control); color: var(--aw-ink-soft); }
+.icon-link:hover { background: var(--aw-raised); color: var(--aw-ink-strong); }
+.page-nav { display: flex; align-items: center; gap: .125rem; color: var(--aw-muted); font-size: var(--aw-text-sm); white-space: nowrap; }
+.source-toggle { display: flex; padding: 2px; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.source-toggle button { height: 1.5rem; padding: 0 .625rem; border: 0; border-radius: 6px; background: transparent; color: var(--aw-ink-soft); font: inherit; font-size: var(--aw-text-xs); cursor: pointer; white-space: nowrap; }
+.source-toggle button.active { background: var(--aw-panel); color: var(--aw-ink-strong); font-weight: 600; box-shadow: var(--aw-shadow-sm); }
+.detail-content { flex: 1 1 auto; min-height: 0; padding: 1rem; overflow-y: auto; overscroll-behavior: contain; }
+.preview-view { display: flex; flex-direction: column; }
+.preview-view > * { flex: none; }
+.source-search-bar { display: flex; gap: .4rem; margin-bottom: .75rem; }
+.source-search-bar .p-inputtext { flex: 1; min-width: 12rem; max-width: 24rem; }
+.inline-search-results { display: grid; gap: .5rem; margin-bottom: .75rem; }
+.inline-search-results button { display: grid; gap: .35rem; width: 100%; padding: .75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.inline-search-results button:hover { border-color: var(--aw-teal); }
+.inline-search-results span { color: var(--aw-muted); line-height: 1.45; }
+.scan-notice { display: flex; gap: .75rem; padding: .9rem; margin-bottom: .75rem; border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control); background: var(--aw-warn-soft); }
+.scan-notice p { margin: .25rem 0 0; }
+.document-image { display: block; max-width: 100%; max-height: 34rem; margin: auto; }
+/* `flex: 1`, not a height guessed from the chrome above it. */
+.document-frame { width: 100%; flex: 1 1 auto; min-height: 24rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
+.docx-frame { flex: 1 1 auto; min-height: 24rem; overflow: auto; border-radius: var(--aw-radius-surface); }
+.docx-frame.loading { opacity: .5; }
+.docx-frame :deep(.docx-wrapper) { background: transparent; padding: 0; }
+.docx-frame :deep(.docx-wrapper > section.docx) { margin: 0 auto 1rem; box-shadow: var(--aw-shadow-md); }
+.fields-view { max-width: 56rem; width: 100%; margin: 0 auto; padding: 1rem 1.25rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); box-shadow: var(--aw-shadow-sm); }
+.fields-door { display: flex; align-items: center; gap: .5rem; width: 100%; padding: .625rem .75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); color: var(--aw-ink-soft); font: inherit; font-size: var(--aw-text-sm); text-align: left; cursor: pointer; }
+.fields-door:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
+.fields-door > span { flex: 1; min-width: 0; }
+.fields-door b { color: var(--aw-ink-strong); font-weight: 600; }
+.fields-door .aw-icon { color: var(--aw-teal); }
+.page-text { min-height: 25rem; margin: 0; padding: 1.35rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); font-family: var(--aw-font-sans); white-space: pre-wrap; line-height: 1.65; box-shadow: var(--aw-shadow-sm); }
+
+/* --- the reading ---------------------------------------------------------- */
+.reading-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--aw-border); background: var(--aw-panel); }
+.reading-tabs { display: flex; align-items: flex-end; gap: 1rem; min-height: 3rem; padding: 0 .5rem 0 1rem; border-bottom: 1px solid var(--aw-border); }
+.reading-tabs > button { display: inline-flex; align-items: center; gap: .3rem; height: 2.5rem; padding: 0 .125rem; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--aw-ink-soft); font: inherit; font-size: var(--aw-text-sm); font-weight: 500; cursor: pointer; }
+.reading-tabs > button:hover { color: var(--aw-ink-strong); }
+.reading-tabs > button.on { border-bottom-color: var(--aw-teal); color: var(--aw-teal-strong); font-weight: 600; }
+.reading-tabs > :deep(*:last-child) { align-self: center; }
+.tab-badge { padding: 0 .3rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-2xs); }
+.reading-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: .875rem; padding: 1rem; overflow-y: auto; overscroll-behavior: contain; font-size: var(--aw-text-sm); line-height: 1.55; }
+.reading-source { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin: 0; }
+.reading-source .by { display: inline-flex; align-items: center; gap: .3rem; padding: .125rem .5rem; border-radius: var(--aw-radius-pill); background: var(--aw-accent-soft); color: var(--aw-accent); font-size: var(--aw-text-xs); font-weight: 600; }
+.reading-source .by[data-edited] { background: var(--aw-raised); color: var(--aw-ink-soft); }
+.reading-text { color: var(--aw-ink); }
+.reading-editor { min-height: 14rem; }
+.notes-hint { margin: 0; }
+.notes-actions { display: flex; align-items: center; gap: .5rem; }
+.reading-foot { display: flex; align-items: center; flex-wrap: wrap; gap: .375rem .5rem; padding: .5rem .75rem .625rem; border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
+.reading-foot > :deep(.p-button) { flex: none; }
+.queue-position { flex-basis: 100%; white-space: nowrap; }
 
 /* The two states that need a sentence, in the fieldwork strip form. */
-.strip { display: flex; align-items: center; gap: .5rem; margin: 0; padding: .5rem 1.25rem; border-bottom: 1px solid var(--aw-border); font-size: var(--aw-text-sm); line-height: 1.4; }
+.strip { display: flex; align-items: center; gap: .5rem; margin: 0; padding: .5rem 1rem; border-bottom: 1px solid var(--aw-border); font-size: var(--aw-text-sm); line-height: 1.4; }
 .strip.warn { border-bottom-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 .strip.info { border-bottom-color: var(--aw-info-line); background: var(--aw-info-soft); color: var(--aw-info); }
 .strip span { flex: 1; min-width: 0; }
 .strip button { flex: none; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .strip.inline { margin: .4rem 0 0; padding: .4rem .625rem; border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control); }
 
-.tab-badge { margin-left: .3rem; padding: 0 .3rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-2xs); }
-
-/* One row per document: a readiness dot, the filename, and what the row owes. */
-.doc-row { display: flex; align-items: center; gap: .625rem; }
-.dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
-.dot[data-tone='ok'] { background: var(--aw-ok); }
-.dot[data-tone='warn'] { background: var(--aw-warn); }
-.dot[data-tone='bad'] { background: var(--aw-danger); }
-.dot[data-tone='info'] { background: var(--aw-info); }
-.doc-name { overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); text-overflow: ellipsis; white-space: nowrap; }
-.doc-row.active .doc-name { color: var(--aw-ink-strong); font-weight: 600; }
-.doc-meta { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
-.doc-meta [data-tone='warn'] { color: var(--aw-warn-ink); }
-.doc-meta [data-tone='bad'] { color: var(--aw-danger); }
-.doc-meta [data-tone='agent'] { color: var(--aw-accent); }
-
-.group-by { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-align: left; text-transform: capitalize; cursor: pointer; }
-
-/* Deep-search results replace the list where the list was. */
-.rail-results { display: flex; flex-direction: column; gap: .3rem; margin-top: .6rem; }
-.rail-results-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
-.rail-results-head button { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-2xs); cursor: pointer; }
-.rail-result { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: .45rem .55rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); text-align: left; cursor: pointer; }
-.rail-result:hover { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
-.rail-result .excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); line-height: 1.4; }
-
-.vocabulary-card { display: flex; flex-direction: column; gap: .2rem; padding: .7rem .85rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
+.vocabulary-card { display: flex; flex-direction: column; gap: .2rem; padding: .625rem .75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
 .vocabulary-card.thin { border-color: var(--aw-warn-line); }
 .vocabulary-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }
-.vocabulary-line b { color: var(--aw-ink-strong); font-size: var(--aw-text-sm); text-transform: capitalize; }
+.vocabulary-line b { color: var(--aw-ink-strong); font-size: var(--aw-text-sm); }
 .fields-link { padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; cursor: pointer; }
+.vocabulary-fields { width: 100%; border-collapse: collapse; font-size: var(--aw-text-xs); }
+.vocabulary-fields td { padding: .18rem .35rem; border-top: 1px solid var(--aw-border); }
+.vf-name { font-family: var(--aw-font-mono); }
+.vf-role { color: var(--aw-muted); }
+.vf-fill { text-align: right; }
+.vf-fill.partial { color: var(--aw-warn); }
+.vf-unread { color: var(--aw-muted); text-align: right; }
 
-.analysis-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.coverage-warning { display: flex; align-items: flex-start; gap: .6rem; padding: .75rem; border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.coverage-warning p { margin: .25rem 0 0; }
+.coverage-warning ul { margin: .35rem 0 0; padding-left: 1.1rem; }
 .analysis-section { display: flex; flex-direction: column; gap: .5rem; }
-.analysis-section header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
-.analysis-section h4 { margin: 0; }
-.analysis-section small { color: var(--aw-muted); font-size: var(--aw-text-2xs); text-align: right; }
+.analysis-sources { display: grid; gap: .375rem; }
+.analysis-sources h4, .analysis-section h4 { margin: 0; }
+.analysis-sources button { display: grid; gap: .25rem; width: 100%; padding: .5rem .625rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: inherit; font: inherit; font-size: var(--aw-text-xs); text-align: left; cursor: pointer; }
+.analysis-sources button:hover { border-color: var(--aw-teal); }
+.analysis-sources button strong { display: flex; align-items: center; gap: .375rem; color: var(--aw-ink-strong); font-weight: 600; }
+.analysis-sources button > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; color: var(--aw-ink-soft); line-height: 1.45; }
+.visual-tag { padding: 0 .375rem; border-radius: var(--aw-radius-pill); background: var(--aw-accent-soft); color: var(--aw-accent); font-size: var(--aw-text-2xs); font-weight: 600; }
+.candidate-compare { display: grid; gap: .625rem; padding: .75rem; border: 1px solid var(--aw-info-line); border-radius: var(--aw-radius-control); background: var(--aw-info-soft); }
+.candidate-compare h4 { margin: 0; font-size: var(--aw-text-sm); }
+.candidate-actions { display: flex; flex-wrap: wrap; gap: .375rem; }
 
+.technical-details, .timeline details { padding: .65rem .75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.technical-details summary, .timeline summary { cursor: pointer; font-weight: 600; }
+.technical-details dl { display: grid; gap: .45rem; margin: .7rem 0 0; }
+.technical-details dl div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .6rem; }
+.technical-details dt { font-weight: 600; }
+.technical-details dd { display: flex; align-items: center; gap: .3rem; margin: 0; overflow-wrap: anywhere; }
+.technical-details dd code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.timeline { display: grid; gap: .75rem; }
+.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }
+.timeline p { margin: .25rem 0; color: var(--aw-muted); }
+.timeline code { overflow-wrap: anywhere; font-size: var(--aw-text-xs); }
+
+/* --- drawers -------------------------------------------------------------- */
 .pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }
 .pack-toolbar .p-inputtext { flex: 1; }
 .pack-list { display: flex; flex-direction: column; gap: .5rem; }
-.pack-list article { padding: .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }
+.pack-list article, .search-results article { padding: .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }
 .pack-scope { float: right; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
+.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }
 .drawer-foot { display: flex; justify-content: flex-end; gap: .5rem; padding-top: .875rem; border-top: 1px solid var(--aw-border); }
-.document-layout { display: grid; flex: 1 1 auto; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 0; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }
-/* A running background job, not a problem to be solved. The sentence it used
-   to spell out over two lines is on the tooltip. */
-.indexing-chip { display:inline-flex; align-items:center; gap:.4rem; min-height:var(--aw-control-height-sm); padding:.2rem .6rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-pill); background:var(--aw-info-soft); color:var(--aw-info); font-size:var(--aw-text-xs); font-weight:600; white-space:nowrap; }
-.indexing-chip .aw-icon { font-size:var(--aw-text-xs); }
-.document-rail { min-height:0; padding:.75rem; border-right:1px solid var(--aw-border); background:var(--aw-canvas); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--aw-border); background:var(--aw-canvas); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--aw-border-strong); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:var(--aw-text-sm); }
-.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:var(--aw-text-2xs); }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-control); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:var(--aw-panel); }.doc-row.active { border-color:var(--aw-teal-line); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); font-size:var(--aw-text-sm); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:var(--aw-text-sm); }.doc-identity small { color:var(--aw-muted); font-size:var(--aw-text-2xs); }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:var(--aw-text-xs); }.doc-status.processing { color:var(--aw-info); }.doc-status.attention { color:var(--aw-warn); }.doc-status.attention.failed { color:var(--aw-danger); }.doc-subgroup { display:flex; align-items:center; gap:.4rem; margin:.35rem 0 .05rem; padding:.1rem .25rem .1rem 1.15rem; color:var(--aw-muted); font-size:var(--aw-text-2xs); font-weight:700; letter-spacing:.02em; text-transform:capitalize; }.subgroup-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.subgroup-count { margin-left:auto; font-weight:400; }.doc-row.nested { margin-left:.9rem; }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
-.subgroup-thin { color:var(--aw-warn); font-size:var(--aw-text-2xs); }
-.subgroup-fields { color:var(--aw-muted); font-weight:400; font-variant-numeric:tabular-nums; }
-.vocabulary-panel { display:grid; gap:.5rem; margin:.75rem 0; padding:.7rem .85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }
-.vocabulary-panel.thin { border-color:var(--aw-warn); }
-.vocabulary-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:.5rem; justify-content:space-between; }
-.vocabulary-summary { color:var(--aw-muted); font-size:var(--aw-text-xs); }
-.vocabulary-warning { display:flex; align-items:flex-start; gap:.45rem; margin:0; color:var(--aw-warn); font-size:var(--aw-text-xs); }
-.vocabulary-fields { width:100%; border-collapse:collapse; font-size:var(--aw-text-xs); }
-.vocabulary-fields td { padding:.18rem .35rem; border-top:1px solid var(--aw-border); }
-.vf-name { font-family:var(--aw-font-mono, monospace); }
-.vf-role { color:var(--aw-muted); }
-.vf-fill { text-align:right; font-variant-numeric:tabular-nums; }
-.vf-fill.partial { color:var(--aw-warn); }
-.vf-unread { color:var(--aw-muted); text-align:right; }
-.rail-deep-search { display:flex; align-items:center; gap:.45rem; width:100%; margin-top:.7rem; padding:.5rem .6rem; border:1px dashed var(--aw-border); border-radius:var(--aw-radius-control); background:transparent; color:var(--aw-teal); font-size:var(--aw-text-xs); text-align:left; cursor:pointer; }.rail-deep-search:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft); }.rail-deep-search span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.document-detail { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
-/* One line: the name, its state, and whatever the viewer does not say itself. */
-.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:.6rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { display:flex; align-items:baseline; gap:.55rem; min-width:0; }.detail-identity h3 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.detail-identity p { margin:0; color:var(--aw-muted); font-size:var(--aw-text-xs); white-space:nowrap; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }
-/* Which view, and how that view is set up, on one row. They were a tab bar
-   above a tool bar, which spent two bands on one decision. */
-.detail-views { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; padding:.25rem 1.25rem; border-bottom:1px solid var(--aw-border); }
-.detail-tabs { display:flex; gap:.15rem; }.detail-tabs button { padding:.35rem .7rem; border:0; border-radius:var(--aw-radius-pill); background:transparent; color:var(--aw-muted); font-size:var(--aw-text-sm); cursor:pointer; text-transform:capitalize; }.detail-tabs button:hover { background:var(--aw-raised); }.detail-tabs button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:700; }
-.page-nav { display:flex; align-items:center; gap:.2rem; margin-left:.35rem; color:var(--aw-muted); font-size:var(--aw-text-sm); white-space:nowrap; }
-.detail-views .find-on { color:var(--aw-teal); font-weight:700; }
-.open-original { margin-left:auto; color:var(--aw-teal); font-size:var(--aw-text-sm); white-space:nowrap; }
-/* A column, so the viewer can take the height the bars above it gave back. */
-.detail-content { flex:1 1 auto; min-height:0; padding:1.25rem; overflow-y:auto; overscroll-behavior:contain; }.preview-view { display:flex; flex-direction:column; min-height:100%; }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow: var(--aw-shadow-sm); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }/* `flex: 1`, not `calc(100vh - 26rem)`: the old rule subtracted a hard-coded
-   guess at the chrome above it, so trimming that chrome would have handed the
-   height back as whitespace rather than as document. */
-.document-frame { width:100%; flex:1 1 auto; min-height:24rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-panel); }.docx-frame { flex:1 1 auto; min-height:24rem; overflow:auto; border:1px solid var(--aw-border); border-radius:var(--aw-radius-surface); background:var(--aw-raised); }.docx-frame.loading { opacity:.5; }.docx-frame :deep(.docx-wrapper) { background:var(--aw-raised); padding:1.25rem; }.docx-frame :deep(.docx-wrapper > section.docx) { margin-bottom:1rem; box-shadow: var(--aw-shadow-md); }.source-toggle { display:flex; margin-left:.5rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); overflow:hidden; }.source-toggle button { padding:.28rem .75rem; border:0; background:transparent; color:var(--aw-muted); font-size:var(--aw-text-xs); cursor:pointer; }.source-toggle button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:600; }
-.classification-field { display:flex; align-items:center; gap:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs); }.classification-field :deep(.p-select) { min-width:8rem; min-height:2rem; font-size:var(--aw-text-sm); text-transform:capitalize; }.classification-field.read-only strong { color:var(--aw-ink); font-size:var(--aw-text-sm); font-weight:600; text-transform:capitalize; }
-.preview-view .source-search-bar { display:flex; gap:.4rem; }
-.preview-view .source-search-bar,.preview-view .inline-search-results { flex:none; margin-bottom:.75rem; }
-.preview-view .scan-notice,.preview-view .document-image,.preview-view .page-text,.preview-view .technical-details { flex:none; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
-.technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-muted); font-size:var(--aw-text-xs); }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
-.timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: var(--aw-text-xs); }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
-.analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }.coverage-warning p { margin:.25rem 0 0; }.coverage-warning ul { margin:.35rem 0 0; padding-left:1.1rem; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor,.analysis-fields { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small,.analysis-fields small { color:var(--aw-muted); }.analysis-editor :deep(.markdown-editor) { min-height:18rem; }.analysis-fields>summary { display:flex; align-items:center; justify-content:space-between; gap:1rem; cursor:pointer; list-style:none; }.analysis-fields>summary::-webkit-details-marker { display:none; }.analysis-fields>summary span { display:grid; gap:.2rem; }.analysis-fields>summary i { transition:transform .15s ease; }.analysis-fields[open]>summary i { transform:rotate(180deg); }.analysis-fields pre { max-height:32rem; margin:.8rem 0 0; overflow:auto; padding:1rem; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); font:500 .78rem/1.55 var(--aw-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); white-space:pre; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.analysis-sources button strong { display:flex; align-items:center; gap:.45rem; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-control); background:var(--aw-info-soft); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results button > div > span { display:flex; gap:.35rem; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }.vision-settings { display:grid; gap:1rem; }.vision-settings > p { margin:0; color:var(--aw-muted); line-height:1.5; }.vision-settings label { display:grid; gap:.35rem; font-weight:600; }.vision-settings label :deep(.p-select),.vision-settings label .p-inputtext { width:100%; }.vision-settings .settings-warning { padding:.65rem; border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }
-@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-identity { flex-wrap:wrap; }.detail-actions { justify-content:flex-start; }.open-original { margin-left:0; } }
+.vision-settings { display: grid; gap: 1rem; }
+.vision-settings > p { margin: 0; color: var(--aw-muted); line-height: 1.5; }
+.vision-settings label { display: grid; gap: .35rem; font-weight: 600; }
+.vision-settings label :deep(.p-select), .vision-settings label .p-inputtext { width: 100%; }
+.vision-settings .settings-warning { padding: .65rem; border-radius: var(--aw-radius-control); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 </style>

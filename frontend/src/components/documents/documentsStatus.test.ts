@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { AuditDocument, DocumentVocabulary } from '../../types'
 import {
-  DOCUMENT_CHIPS, documentMeta, documentTone, documentsStatus, filterDocuments,
+  DOCUMENT_QUEUES, documentLabel, documentMeta, documentTone, documentsStatus, filterDocuments,
 } from './documentsStatus'
 import type { DocumentsFacts } from './documentsStatus'
 
@@ -47,8 +47,8 @@ describe('documents status', () => {
     const known = new Set(
       (documentsStatus([], FACTS).filters ?? []).flatMap(group => group.options.map(option => option.key)),
     )
-    for (const chip of DOCUMENT_CHIPS) expect(known.has(chip.filter)).toBe(true)
-    expect(DOCUMENT_CHIPS).toHaveLength(6)
+    for (const queue of DOCUMENT_QUEUES) if (queue.key) expect(known.has(queue.key)).toBe(true)
+    expect(DOCUMENT_QUEUES[0].key).toBe('')
   })
 })
 
@@ -98,5 +98,15 @@ describe('what a row says', () => {
     expect(documentTone(document('a'), FACTS)).toBe('ok')
     expect(documentTone(document('a', { text_state: 'failed' }), FACTS)).toBe('bad')
     expect(documentTone(document('a', { text_state: 'pending' }), FACTS)).toBe('info')
+  })
+
+  it('names a row by its reference, or by its words less the folder ordinal', () => {
+    expect(documentLabel({ source: 'PMT-2025-00462_Payment_Instruction.pdf' }))
+      .toEqual({ reference: 'PMT-2025-00462', name: 'Payment Instruction' })
+    expect(documentLabel({ source: 'BR-002-2025-0475_Broker_Contract_Note.pdf' }))
+      .toEqual({ reference: 'BR-002-2025-0475', name: 'Broker Contract Note' })
+    expect(documentLabel({ source: '01_Treasury_and_Investment_Policy.docx' }))
+      .toEqual({ reference: '', name: 'Treasury and Investment Policy' })
+    expect(documentLabel({ source: 'scan.png' })).toEqual({ reference: '', name: 'scan' })
   })
 })

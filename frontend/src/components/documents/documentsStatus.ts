@@ -1,7 +1,5 @@
 import { portion } from '../ui/statusLanes'
-import type {
-  ReviewChip, StatusFilterGroup, StatusLane, StatusModel,
-} from '../ui/statusLanes'
+import type { StatusFilterGroup, StatusLane, StatusModel } from '../ui/statusLanes'
 import { documentStatus } from '../../composables/documentStatus'
 import { sentenceCase } from '../../format'
 import type { AuditDocument, DocumentVocabulary } from '../../types'
@@ -161,17 +159,20 @@ export function documentsStatus(documents: AuditDocument[], facts: DocumentsFact
 }
 
 /**
- * The six narrowings worth a permanent chip, in reading order: what has not
- * been read, what nobody has checked, what is broken, what has no type, what
- * the model typed, and what the type cannot support.
+ * The page's one filter control, in reading order: everything, what nobody has
+ * checked, what has not been read, what is broken, what has no type, and what
+ * its type cannot support. All and To review always stand; the rest appear
+ * while something matches them. Who typed a document is a second axis and is
+ * not here — the page offers it as a checkbox beside this.
  */
-export const DOCUMENT_CHIPS: ReviewChip[] = [
-  { filter: 'not_analysed', tone: 'warn', label: 'Not analysed' },
-  { filter: 'needs_review', tone: 'warn', label: 'Analysis to review' },
-  { filter: 'attention', tone: 'bad', label: 'Needs attention' },
-  { filter: 'unidentified', tone: 'warn', label: 'Not identified' },
-  { filter: 'model_typed', tone: 'agent', label: 'Typed by the model' },
-  { filter: 'thin_vocabulary', tone: 'warn', label: 'Thin vocabulary' },
+export const DOCUMENT_QUEUES: Array<{ key: DocumentsFilter | ''; label: string }> = [
+  { key: '', label: 'All' },
+  { key: 'needs_review', label: 'To review' },
+  { key: 'not_analysed', label: 'Not analysed' },
+  { key: 'stale_analysis', label: 'Stale' },
+  { key: 'attention', label: 'Needs attention' },
+  { key: 'unidentified', label: 'Not identified' },
+  { key: 'thin_vocabulary', label: 'Thin vocabulary' },
 ]
 
 export function filterDocuments(
@@ -203,6 +204,30 @@ export function documentTone(
   if (status.level === 'processing') return 'info'
   if (status.level === 'attention') return status.failed ? 'bad' : 'warn'
   return isRead(document) ? 'ok' : 'neutral'
+}
+
+/**
+ * What a list row calls a document: its reference where the file carries one,
+ * else its name in words.
+ *
+ * The row used to print the filename, and a folder of evidence is named the way
+ * a filing clerk names it — `PMT-2025-00462_Payment_Instruction.pdf` — so a
+ * dozen rows ended-truncated to `PMT-2025-00…` and the one part that told them
+ * apart was the part cut off. The reference is what an auditor quotes; the rest
+ * of the name restates the type, which the line under it already gives. A file
+ * with no reference reads as words, less the ordinal a folder sorts by
+ * (`01_Treasury_and_Investment_Policy` is `Treasury and Investment Policy`).
+ * The filename itself stays on the row's tooltip and in the viewer.
+ */
+export function documentLabel(document: Pick<AuditDocument, 'source'>): { reference: string; name: string } {
+  const stem = document.source.replace(/\.[a-z0-9]{1,5}$/i, '')
+  const tokens = stem.split(/[_\s]+/).filter(Boolean)
+  if (tokens.length > 1 && /^\d+$/.test(tokens[0])) tokens.shift()
+  const lead = tokens[0] ?? ''
+  if (/[a-z]/i.test(lead) && /\d/.test(lead) && lead.includes('-')) {
+    return { reference: lead, name: tokens.slice(1).join(' ') }
+  }
+  return { reference: '', name: tokens.join(' ') || document.source }
 }
 
 /**

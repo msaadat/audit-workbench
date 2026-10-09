@@ -584,6 +584,20 @@ button, input, textarea, select { font: inherit; }
   border-radius: var(--aw-radius-surface);
 }
 
+/* The filter row under a list page's header: one segmented choice of what the
+   list shows, each segment carrying its count, and an optional checkbox for a
+   second axis. It replaced a row of count chips over three progress lanes,
+   which said every number twice. Documents and Source tables draw it. */
+.aw-filter-row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.aw-segmented { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.aw-segmented > button { display: inline-flex; align-items: center; gap: .375rem; height: 1.75rem; padding: 0 .625rem; border: 0; border-radius: 6px; background: transparent; color: var(--aw-ink-soft); font: inherit; font-size: var(--aw-text-sm); font-weight: 500; white-space: nowrap; cursor: pointer; }
+.aw-segmented > button:hover { color: var(--aw-ink-strong); }
+.aw-segmented > button.on { background: var(--aw-panel); color: var(--aw-ink-strong); font-weight: 600; box-shadow: var(--aw-shadow-sm); }
+.aw-segmented .aw-figure { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.aw-filter-check { display: inline-flex; align-items: center; gap: .4rem; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); cursor: pointer; }
+.aw-filter-check input { accent-color: var(--aw-accent); }
+.aw-filter-check .aw-figure { color: var(--aw-accent); }
+
 /* The `.ui-page-header` block that used to sit here — an `h2` with a
    description and an actions column — is gone with its component. Every work
    product carries the `.page-head` row instead; see the type roles. */
