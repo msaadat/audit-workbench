@@ -849,34 +849,53 @@ def _reading_payload(
         {"fields": [dict(field) for field in record.get("fields") or []]}
         for record in proposal.get("records") or []
     ]
+    document_fields = [
+        dict(field) for field in proposal.get("document_fields") or []
+    ]
     renames = {
         str(item.get("from")): str(item.get("to"))
         for item in proposal.get("renames") or []
     }
     for field in proposal.get("fields_for_records") or []:
+        document_scope = str(field.get("scope") or "") == "document"
         for value in field.get("values") or []:
+            stated = {
+                "name": str(field.get("name")),
+                "entry": value.get("entry"),
+                "value": value.get("value"),
+                "citation": value.get("citation"),
+            }
+            if document_scope:
+                document_fields.append(stated)
+                continue
             index = int(value.get("record") or 1) - 1
             if 0 <= index < len(records):
-                records[index]["fields"].append(
-                    {
-                        "name": str(field.get("name")),
-                        "entry": value.get("entry"),
-                        "value": value.get("value"),
-                        "citation": value.get("citation"),
-                    }
-                )
+                records[index]["fields"].append(stated)
     # A renamed field's value travelled under the old name, because that is the
     # only name the enum offered. The master is renamed at commit and the stored
     # record has to follow in the same act, or the reading holds a value under a
     # name its own vocabulary no longer explains.
-    for record in records:
-        for stored in record["fields"]:
-            name = str(stored.get("name"))
-            if name in renames:
-                stored["name"] = renames[name]
+    for stored in [
+        *document_fields,
+        *(field for record in records for field in record["fields"]),
+    ]:
+        name = str(stored.get("name"))
+        if name in renames:
+            stored["name"] = renames[name]
     return {
         "analysis_profile": "structured",
-        "records": records,
+        # What the document states once, kept as read so the summary can show
+        # it once; and the records with it folded in front of each one's own
+        # fields, so every line stands alone wherever a record is read — the
+        # population, the cycle linker, the sampler, the chat's record reader.
+        # Folding here rather than in each of those is what lets none of them
+        # learn that a header exists.
+        "document_fields": document_fields,
+        "records": [
+            {"fields": [*(dict(field) for field in document_fields), *record["fields"]]}
+            for record in records
+        ],
+        "own_records": records,
         "citations": [dict(item) for item in proposal.get("citations") or []],
         "audit_notes": [str(item) for item in proposal.get("audit_notes") or []],
     }
@@ -997,12 +1016,16 @@ def execute_document_read(
         # what widens a field's cardinality, so it has to survive the trip from
         # the reading to the master rather than being flattened to a name set.
         stated: dict[str, int] = {}
-        for record in proposal.get("records") or []:
-            for field in record.get("fields") or []:
-                name = str(field.get("name"))
-                stated[name] = max(
-                    stated.get(name, 1), int(field.get("entry") or 1)
-                )
+        for field in [
+            *(proposal.get("document_fields") or []),
+            *(
+                field
+                for record in proposal.get("records") or []
+                for field in record.get("fields") or []
+            ),
+        ]:
+            name = str(field.get("name"))
+            stated[name] = max(stated.get(name, 1), int(field.get("entry") or 1))
         master = document_masters.apply_reading(
             fresh,
             target.document_type,
@@ -1021,8 +1044,15 @@ def execute_document_read(
         )
         payload["master_ref"] = str(master.get("master_ref") or "")
         payload["master_type"] = target.document_type
-        payload["summary_markdown"] = document_analysis.render_structured_summary(
-            payload["records"]
+        own_records = payload.pop("own_records")
+        # A header only means something above several records; over one it would
+        # split a single transaction's facts across two headings.
+        payload["summary_markdown"] = (
+            document_analysis.render_structured_summary(
+                own_records, document_fields=payload["document_fields"]
+            )
+            if len(own_records) > 1
+            else document_analysis.render_structured_summary(payload["records"])
         )
         payload["summary_origin"] = "structured_evidence"
         # The renderer consolidates *analyses*, each carrying its own

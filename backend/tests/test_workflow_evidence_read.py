@@ -337,6 +337,146 @@ def test_a_multi_record_first_document_declares_once_and_fills_every_record(
     ] == [["01 Jan"], ["02 Jan"]]
 
 
+def test_a_statement_is_read_as_a_header_and_one_record_per_line(monkeypatch):
+    """The account is stated once and every line carries it.
+
+    A statement has two kinds of fact — what it says once (the account) and
+    what each line says — and with one bucket for both, nineteen identical
+    statements came back in four shapes. ``document_fields`` is the second
+    bucket, and the commit folds it onto every record so that a population, the
+    cycle linker and the sampler each see a line that stands alone.
+    """
+
+    ws = workspaces.create_workspace("Statement read")
+    created = [
+        documents.add_document(
+            ws,
+            f"statement-{index}.txt",
+            (
+                "NOSTRO-USD-CITI-3610044821\n"
+                f"2025-02-0{index + 5}  Interbank clearing  279,000.00  95,959,000.00\n"
+                f"2025-02-0{index + 6}  PMT-2025-00133  900,000.00  95,059,000.00"
+            ).encode(),
+            category="evidence",
+        )
+        for index in range(2)
+    ]
+    citations = [
+        {"id": "h", "page": 1, "excerpt": "NOSTRO-USD-CITI-3610044821"},
+        {"id": "l1", "page": 1, "excerpt": "Interbank clearing  279,000.00"},
+        {"id": "l2", "page": 1, "excerpt": "PMT-2025-00133  900,000.00"},
+    ]
+    first = {
+        "records": [{"fields": []}, {"fields": []}],
+        "document_fields": [],
+        "new_fields": [
+            _declared(
+                "account_name",
+                role="identifier",
+                value_type="identifier",
+                scope="document",
+                values=[{"entry": 1, "value": "NOSTRO-USD-CITI-3610044821",
+                         "citation": "h"}],
+            ),
+            _declared(
+                "transaction_date",
+                value_type="date",
+                scope="record",
+                values=[
+                    {"record": 1, "entry": 1, "value": "2025-02-05", "citation": "l1"},
+                    {"record": 2, "entry": 1, "value": "2025-02-06", "citation": "l2"},
+                ],
+            ),
+            _declared(
+                "credit",
+                value_type="number",
+                scope="record",
+                values=[{"record": 1, "entry": 1, "value": "279,000.00",
+                         "citation": "l1"}],
+            ),
+            _declared(
+                "debit",
+                value_type="number",
+                scope="record",
+                values=[{"record": 2, "entry": 1, "value": "900,000.00",
+                         "citation": "l2"}],
+            ),
+        ],
+        "renames": [],
+        "audit_notes": [],
+        "citations": citations,
+    }
+    second = {
+        "records": [
+            {"fields": [
+                {"name": "transaction_date", "entry": 1, "value": "2025-02-06",
+                 "citation": "l1"},
+                {"name": "credit", "entry": 1, "value": "279,000.00", "citation": "l1"},
+            ]},
+            {"fields": [
+                {"name": "transaction_date", "entry": 1, "value": "2025-02-07",
+                 "citation": "l2"},
+                {"name": "debit", "entry": 1, "value": "900,000.00", "citation": "l2"},
+            ]},
+        ],
+        "document_fields": [
+            {"name": "account_name", "entry": 1,
+             "value": "NOSTRO-USD-CITI-3610044821", "citation": "h"},
+        ],
+        "new_fields": [],
+        "renames": [],
+        "audit_notes": [],
+        "citations": citations,
+    }
+    fake = _fake(monkeypatch, [first, second], classify="bank_statement")
+    finished = _run(ws, created)
+    assert finished["status"] == "completed"
+
+    reloaded = workspaces.load_workspace(ws.id)
+    master = document_masters.master(reloaded, "bank_statement")
+    scopes = {field["name"]: field.get("scope") for field in master["fields"]}
+    assert scopes == {
+        "account_name": "document",
+        "credit": None,
+        "debit": None,
+        "transaction_date": None,
+    }
+    # Stated by both statements — once each, however many lines carried it.
+    account = next(field for field in master["fields"] if field["name"] == "account_name")
+    assert account["fill_count"] == 2
+
+    for document in created:
+        record = document_analysis.generated_record(reloaded, document["id"])
+        assert [field["name"] for field in record["document_fields"]] == ["account_name"]
+        # Every line carries the account, ahead of its own fields.
+        assert [
+            [field["name"] for field in item["fields"]] for item in record["records"]
+        ] == [
+            ["account_name", "transaction_date", "credit"],
+            ["account_name", "transaction_date", "debit"],
+        ]
+        assert "### Document" in record["summary_markdown"]
+        assert "### Record 2" in record["summary_markdown"]
+
+    # The second statement was never offered the account as a line's field.
+    second_call = [call for call in fake.calls if call["tag"] == READ_TAG][1]
+    properties = second_call["tools"][0]["function"]["parameters"]["properties"]
+    record_names = properties["records"]["items"]["properties"]["fields"]["items"][
+        "properties"
+    ]["name"]["enum"]
+    assert "account_name" not in record_names
+    assert "account_name" in properties["document_fields"]["items"]["properties"][
+        "name"
+    ]["enum"]
+    assert "stated once for the whole document" in _read_prompts(fake)[1]
+
+    # And the stamp keeps the distinction, so the next run's reads see it too.
+    schema = document_schemas.get_schema(reloaded, "bank_statement")
+    assert {field["name"]: field.get("scope") for field in schema["fields"]}[
+        "account_name"
+    ] == "document"
+
+
 def test_a_late_field_records_which_documents_were_never_asked(monkeypatch):
     """``second_approver`` escaped the schema on 3 of 18 payment instructions,
     and D5 is a payment released under a single signature above the

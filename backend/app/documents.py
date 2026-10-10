@@ -47,6 +47,10 @@ def display_name(document: object, fallback: str = "") -> str:
 
 
 MIN_TEXT_CHARACTERS = 40
+#: Bumped when the layout view's rendering changes. A cached PDF extraction
+#: below it carries no ``layout_text`` and is given one by :func:`ensure_layout`
+#: the next time a reader needs it.
+LAYOUT_VERSION = 1
 ASSISTANT_DOCUMENT_CONTEXT_MAX_CHARACTERS = 80_000
 
 
@@ -294,11 +298,41 @@ def remove_document(workspace: Workspace, doc_id: str) -> None:
     workspace.save()
 
 
+def _layout_text(page) -> str:
+    """One PDF page as it is laid out: a table's columns stay in columns.
+
+    The plain extraction puts every cell of a table on its own line and drops
+    the empty ones, so a statement line reading ``279,000.00  95,959,000.00``
+    no longer says whether 279,000.00 sat under Debit or under Credit — and
+    measured on nineteen nostro statements, six of fifty-three amounts were read
+    onto the wrong side. Position is the only thing that says, and this keeps
+    it. Vertical spacing is dropped, a page-wide indent is trimmed, and nothing
+    else is touched, because a cell's horizontal position *is* the column.
+
+    Kept beside ``text`` rather than replacing it: chunking, search,
+    categorization and every hash downstream are keyed to the plain text, and
+    the reader is the one consumer that needs columns.
+    """
+
+    try:
+        raw = page.extract_text(
+            extraction_mode="layout", layout_mode_space_vertically=False
+        )
+    except Exception:
+        return ""
+    lines = [line.rstrip() for line in (raw or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    indent = min(len(line) - len(line.lstrip(" ")) for line in lines)
+    return "\n".join(line[indent:] for line in lines)
+
+
 def _pdf_pages(path: Path) -> list[dict]:
     reader = PdfReader(str(path))
     pages = []
     for number, page in enumerate(reader.pages, 1):
         text = (page.extract_text() or "").strip()
+        layout = _layout_text(page) if text else ""
         images = 0
         try:
             resources = page.get("/Resources") or {}
@@ -310,7 +344,7 @@ def _pdf_pages(path: Path) -> list[dict]:
             )
         except Exception:
             images = 0
-        pages.append({
+        entry = {
             "page": number,
             "text": text,
             "characters": len(text),
@@ -319,8 +353,58 @@ def _pdf_pages(path: Path) -> list[dict]:
             "no_usable_text_no_image": (
                 len(text) < MIN_TEXT_CHARACTERS and images == 0
             ),
-        })
+        }
+        if layout:
+            entry["layout_text"] = layout
+        pages.append(entry)
     return pages
+
+
+def ensure_layout(workspace: Workspace, doc_id: str) -> dict | None:
+    """Give a cached PDF extraction its layout view, once, and return it.
+
+    For PDFs extracted before the layout view existed. Re-extracting them would
+    work and would also re-set their status and queue a search reindex for text
+    that has not changed; this writes only the layout beside the text it already
+    has, so ``extracted_text_sha1`` and everything keyed to it stay put. A
+    payload already at :data:`LAYOUT_VERSION`, or one that is not a PDF, is
+    returned as it is.
+    """
+
+    payload = _read_extraction(workspace, doc_id)
+    if payload is None or payload.get("source_suffix") != ".pdf":
+        return payload
+    if int(payload.get("layout_version") or 0) >= LAYOUT_VERSION:
+        return payload
+    doc = _document(workspace, doc_id)
+    try:
+        reader = PdfReader(str(document_path(workspace, doc)))
+        layouts = {
+            number: _layout_text(page)
+            for number, page in enumerate(reader.pages, 1)
+        }
+    except Exception:
+        layouts = {}
+    upgraded = {
+        **payload,
+        "layout_version": LAYOUT_VERSION,
+        "pages": [
+            {
+                **page,
+                **(
+                    {"layout_text": layouts[int(page.get("page") or 0)]}
+                    if page.get("text") and layouts.get(int(page.get("page") or 0))
+                    else {}
+                ),
+            }
+            for page in payload.get("pages") or []
+        ],
+    }
+    write_json_atomic(cache_path(workspace, doc_id), upgraded)
+    cache = _extraction_cache.get()
+    if cache is not None:
+        cache[(str(workspace.root), str(doc_id))] = upgraded
+    return upgraded
 
 
 def _docx_page(path: Path) -> list[dict]:
@@ -411,6 +495,8 @@ def extract_document(workspace: Workspace, doc_id: str, *, force: bool = False) 
             "extracted_at": utcnow(),
             "error": None,
         }
+        if suffix == ".pdf":
+            payload["layout_version"] = LAYOUT_VERSION
     except Exception as error:
         payload = {
             "document_id": doc_id,

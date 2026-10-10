@@ -1622,6 +1622,7 @@ WORKERS.register(CLASSIFY_WORKER)
 # commit — same roles, same value types, same errors, one definition each.
 _FIELD_ROLES = ("identifier", "party", "attribute", "control")
 _VALUE_TYPES = ("identifier", "date", "number", "text", "boolean")
+_FIELD_SCOPES = ("record", "document")
 
 
 def _schema_field(raw: object, label: str) -> dict[str, Any]:
@@ -1651,7 +1652,12 @@ def _schema_field(raw: object, label: str) -> dict[str, Any]:
     verbatim = raw.get("verbatim", True)
     if not isinstance(verbatim, bool):
         raise WorkerResponseValidationError(f"{label} needs a boolean verbatim.")
-    return {
+    scope = str(raw.get("scope") or "record").strip()
+    if scope not in _FIELD_SCOPES:
+        raise WorkerResponseValidationError(
+            f"{label} has an unsupported scope '{scope}'."
+        )
+    field = {
         "name": name,
         "role": role,
         "value_type": value_type,
@@ -1660,6 +1666,10 @@ def _schema_field(raw: object, label: str) -> dict[str, Any]:
         "confidence": confidence,
         "label": str(raw.get("label") or "").strip(),
     }
+    # Written only when it says something, as ``document_schemas`` stores it.
+    if scope == "document":
+        field["scope"] = scope
+    return field
 
 
 # --------------------------------------------------------------------------- #
@@ -2118,13 +2128,13 @@ def master_descriptor(
         return (
             f"DOCUMENT TYPE {document_type}\n"
             "No document of this type has been read yet, so it carries no fields "
-            "and the records[].fields array must stay empty. This document is the "
-            "first: every fact it states is a new field. Report all of them under "
-            "new_fields, each with a full descriptor — name, role, value_type, "
-            "cardinality, verbatim, confidence, label, reason — and a values "
-            "array naming every record that states it. Return one entry in "
-            "records per record the document carries, each with an empty fields "
-            "array."
+            "and the records[].fields and document_fields arrays must stay empty. "
+            "This document is the first: every fact it states is a new field. "
+            "Report all of them under new_fields, each with a full descriptor — "
+            "name, role, value_type, cardinality, scope, verbatim, confidence, "
+            "label, reason — and a values array. Return one entry in records per "
+            "record the document carries, each with an empty fields array; a "
+            "record-scope field's values name the record each belongs to."
         )
     lines = [
         f"DOCUMENT TYPE {document_type}",
@@ -2139,6 +2149,8 @@ def master_descriptor(
         fill = field.get("fill_count")
         if fill is not None:
             parts.append(f"stated by {fill} of {documents_read}")
+        if str(field.get("scope") or "") == "document":
+            parts.append("stated once for the whole document; report under document_fields")
         if str(field.get("cardinality") or "one") == "many":
             parts.append("may appear more than once")
         if not bool(field.get("verbatim", True)):
@@ -2169,24 +2181,58 @@ that this document does not print is simply absent — but silence about a field
 the document does print is a false absence, and absence is what an audit reads
 as the finding.
 
+A record is one transaction the document evidences. A payment instruction, a
+dealing ticket or a confirmation is one transaction, so one record. A bank
+statement, a ledger extract, or an invoice listing several lines carries one
+record per line: each dated line of a statement is its own record. Never fold
+several lines into one record as lists of values — a record holding three dates
+and two amounts cannot say which amount belongs to which date.
+
+A document that carries several records usually also states facts about all of
+them at once: a statement's account, currency and opening balance; an invoice's
+number and supplier above its lines. Those go under document_fields, once. They
+apply to every record, so do not repeat them on the records and do not make a
+record of them — a record holding only the header is not a transaction.
+
 records is an array. Each entry is one record the document carries, with:
   fields — the fields *listed above* that this record states, as
-    {{"name": one of the names above, "entry": 1-based ordinal when the field may
-      appear more than once, "value": the value exactly as printed,
+    {{"name": one of the names above, "entry": 1-based position when this one
+      record states the field more than once (two signatories, the two legs of a
+      swap) — never a line number, because separate lines are separate records,
+      "value": the value exactly as printed,
       "citation": the id of a citation showing it}}
+
+document_fields is an array of the fields *listed above* that the document
+states once for all of its records, in the same shape as a record's fields.
+Leave it empty when the document is a single transaction: its facts are that
+one record's.
 
 new_fields is for a fact this document states that no field above can hold. Each
 entry both *declares* the field for the type and *fills* it wherever this
 document states it:
-  {{"name": lower_snake_case, "role", "value_type", "cardinality", "verbatim",
-    "confidence", "label", "reason": why the type needs this field,
+  {{"name": lower_snake_case, "role", "value_type", "cardinality", "scope",
+    "verbatim", "confidence", "label", "reason": why the type needs this field,
     "values": [{{"record": the 1-based index of the record in records this value
-      belongs to, "entry", "value", "citation"}}]}}
+      belongs to — omit it for a document-scope field, "entry", "value",
+      "citation"}}]}}
+
+scope says where the field is stated:
+  record   — a fact about one transaction. On a single-transaction document,
+             every fact is record scope.
+  document — a fact the document states once that is true of all of its
+             records, such as a statement's account or currency.
 
 Declare each field once, however many records state it, and list one entry in
-its values array per record. A statement with twenty transaction lines declares
-its columns once and fills each of them twenty times — declaring the same name
-twice is refused.
+its values array per record. A statement with twenty transaction lines is twenty
+records: it declares its columns once with scope record and fills each of them
+on twenty records, and declares its account once with scope document and one
+value — declaring the same name twice is refused.
+
+The document text keeps each page's layout. A table's columns stay aligned under
+their headings, and a cell left blank is blank space: take a value's column from
+where it sits under the headings, not from its order along the line. A statement
+line that shows one amount and a balance has the amount under Debit or under
+Credit, and which one it is decides the field it fills.
 
 Add a field freely — a document stating something the vocabulary has no place
 for is the common case, and it cannot invalidate an earlier reading. But do not
@@ -2227,8 +2273,9 @@ citations is an array of objects with id, page, and a short exact `excerpt`
 copied verbatim from the document. Every excerpt must appear character for
 character — do not join separate lines, tidy spacing, or paraphrase. Quote the
 line carrying the fact and no more: at most {CITATION_EXCERPT_LINES} lines and
-{CITATION_EXCERPT_CHARACTERS} characters. A value you read from a page image
-cites that page, with the excerpt as you transcribed it.
+{CITATION_EXCERPT_CHARACTERS} characters. Each line of a table is cited by its
+own excerpt, so each record cites the line it was read from. A value you read
+from a page image cites that page, with the excerpt as you transcribed it.
 
 Every value you report must carry a citation, except a field marked interpretive
 above.
@@ -2267,13 +2314,18 @@ def _read_descriptor_field(raw: object, label: str) -> dict[str, Any]:
             f"{label} declares a field but states no value. A field enters the "
             "vocabulary only by being filled in the document that introduces it."
         )
+    document_scope = descriptor.get("scope") == "document"
     values = []
     for position, item in enumerate(supplied):
         where = f"{label}.values[{position}]"
         if not isinstance(item, Mapping):
             raise WorkerResponseValidationError(f"{where} must be an object.")
-        record = item.get("record", 1)
-        if isinstance(record, bool) or not isinstance(record, int) or record < 1:
+        # A document-scope value belongs to every record, so it names none; a
+        # record index sent with one anyway is ignored rather than refused.
+        record = None if document_scope else item.get("record", 1)
+        if not document_scope and (
+            isinstance(record, bool) or not isinstance(record, int) or record < 1
+        ):
             raise WorkerResponseValidationError(
                 f"{where} needs the 1-based index of the record it appears on."
             )
@@ -2321,6 +2373,13 @@ def _read_response_schema(response: str) -> Mapping[str, Any]:
                 ]
             }
         )
+    raw_document_fields = payload.get("document_fields") or []
+    if not isinstance(raw_document_fields, list):
+        raise WorkerResponseValidationError("document_fields must be an array.")
+    document_fields = [
+        _structured_value(item, f"document_fields[{position}]", extra=False)
+        for position, item in enumerate(raw_document_fields)
+    ]
     new_fields = [
         _read_descriptor_field(item, f"new_fields[{position}]")
         for position, item in enumerate(payload.get("new_fields") or [])
@@ -2347,6 +2406,7 @@ def _read_response_schema(response: str) -> Mapping[str, Any]:
     return {
         "analysis_profile": "structured",
         "records": records,
+        "document_fields": document_fields,
         "new_fields": new_fields,
         "renames": renames,
         "audit_notes": list(payload.get("audit_notes") or []),
@@ -2354,8 +2414,19 @@ def _read_response_schema(response: str) -> Mapping[str, Any]:
     }
 
 
-def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
+def _read_submission_tool(
+    record_names: Sequence[str], document_names: Sequence[str] | None = None
+) -> dict[str, Any]:
     """The provider-enforced shape for one whole-document reading.
+
+    ``record_names`` are what a record may state: the type's record-scope
+    fields. ``document_names`` are what ``document_fields`` may carry, which is
+    every field the type has — a record-scope fact a multi-line document states
+    once for all its lines lands on every record either way, so offering it
+    there costs nothing. The reverse is the one closed door: a document-scope
+    field is never offered to a record, because a header fact on one line is
+    exactly the reading that leaves the other lines without it. Omitted,
+    ``document_names`` is ``record_names``.
 
     A merge of two shapes that already exist rather than new machinery:
     ``_structured_submission_tool`` constrains ``name`` to an enum of the type's
@@ -2391,38 +2462,48 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
     # implicit new field — is ``additional_fields`` by another name: a name and a
     # value with no descriptor, no role, and no reason. The descriptor is the
     # point.
-    name_property: dict[str, Any] = (
-        {"type": "string", "enum": list(master_names)}
-        if master_names
-        else {"type": "string", "minLength": 1}
+    all_names = list(
+        dict.fromkeys(record_names if document_names is None else document_names)
     )
-    stated = {
-        "type": "object",
-        "properties": {
-            "name": dict(name_property),
-            "entry": {"type": "integer", "minimum": 1},
-            "value": {"type": "string", "minLength": 1},
-            # Required, and empty where the field is interpretive: demanding a
-            # quote for a value the document never prints is unsatisfiable.
-            "citation": {"type": "string"},
-        },
-        "required": ["name", "entry", "value", "citation"],
-        "additionalProperties": False,
-    }
-    stated_array: dict[str, Any] = (
-        {"type": "array", "items": stated}
-        if master_names
-        else {"type": "array", "items": stated, "maxItems": 0}
-    )
+
+    def name_property(names: Sequence[str]) -> dict[str, Any]:
+        return (
+            {"type": "string", "enum": list(names)}
+            if names
+            else {"type": "string", "minLength": 1}
+        )
+
+    def stated_array(names: Sequence[str]) -> dict[str, Any]:
+        stated = {
+            "type": "object",
+            "properties": {
+                "name": name_property(names),
+                "entry": {"type": "integer", "minimum": 1},
+                "value": {"type": "string", "minLength": 1},
+                # Required, and empty where the field is interpretive: demanding
+                # a quote for a value the document never prints is unsatisfiable.
+                "citation": {"type": "string"},
+            },
+            "required": ["name", "entry", "value", "citation"],
+            "additionalProperties": False,
+        }
+        return (
+            {"type": "array", "items": stated}
+            if names
+            else {"type": "array", "items": stated, "maxItems": 0}
+        )
+
     filled = {
         "type": "object",
         "properties": {
+            # Not required: a document-scope field's value belongs to every
+            # record and names none.
             "record": {"type": "integer", "minimum": 1},
             "entry": {"type": "integer", "minimum": 1},
             "value": {"type": "string", "minLength": 1},
             "citation": {"type": "string", "minLength": 1},
         },
-        "required": ["record", "entry", "value", "citation"],
+        "required": ["entry", "value", "citation"],
         "additionalProperties": False,
     }
     declared = {
@@ -2432,6 +2513,7 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
             "role": {"type": "string", "enum": list(_FIELD_ROLES)},
             "value_type": {"type": "string", "enum": list(_VALUE_TYPES)},
             "cardinality": {"type": "string", "enum": ["one", "many"]},
+            "scope": {"type": "string", "enum": list(_FIELD_SCOPES)},
             "verbatim": {"type": "boolean"},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
             "label": {"type": "string"},
@@ -2449,6 +2531,7 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
             "role",
             "value_type",
             "cardinality",
+            "scope",
             "verbatim",
             "confidence",
             "label",
@@ -2460,7 +2543,7 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
     renamed = {
         "type": "object",
         "properties": {
-            "from": dict(name_property),
+            "from": name_property(all_names),
             "to": {"type": "string", "minLength": 1},
             "reason": {"type": "string", "minLength": 1},
         },
@@ -2472,8 +2555,10 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
         "function": {
             "name": READ_SUBMISSION_TOOL,
             "description": (
-                "Submit every record this document states, under the fields its "
-                "type carries, declaring any field the type does not yet have. "
+                "Submit every record this document states — one per transaction, "
+                "one per line of a statement — under the fields its type carries, "
+                "with what the document states once for all its records under "
+                "document_fields, declaring any field the type does not yet have. "
                 "Submit an empty records array only when the document states no "
                 "record at all."
             ),
@@ -2484,11 +2569,12 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "properties": {"fields": dict(stated_array)},
+                            "properties": {"fields": stated_array(record_names)},
                             "required": ["fields"],
                             "additionalProperties": False,
                         },
                     },
+                    "document_fields": stated_array(all_names),
                     "new_fields": {"type": "array", "items": declared},
                     "renames": {"type": "array", "items": renamed},
                     "citations": {
@@ -2512,6 +2598,7 @@ def _read_submission_tool(master_names: Sequence[str]) -> dict[str, Any]:
                 },
                 "required": [
                     "records",
+                    "document_fields",
                     "new_fields",
                     "renames",
                     "citations",
@@ -2566,6 +2653,7 @@ def validate_read_proposal(
         for field in request.unit_input.get("master_fields") or []
     }
     records = list(proposal.get("records") or [])
+    document_fields = list(proposal.get("document_fields") or [])
     new_fields = list(proposal.get("new_fields") or [])
     renames = list(proposal.get("renames") or [])
     citations = {
@@ -2574,8 +2662,10 @@ def validate_read_proposal(
         if isinstance(item, Mapping)
     }
 
-    stated_values = sum(len(record.get("fields") or []) for record in records) + sum(
-        len(field.get("values") or []) for field in new_fields
+    stated_values = (
+        sum(len(record.get("fields") or []) for record in records)
+        + len(document_fields)
+        + sum(len(field.get("values") or []) for field in new_fields)
     )
     if not stated_values and citations:
         # Self-contradictory, and the shape a validator can name with certainty.
@@ -2628,25 +2718,53 @@ def validate_read_proposal(
                 "vocabulary exists to prevent."
             )
 
+    def check_stated(field: Mapping[str, Any], where: str) -> None:
+        name = str(field.get("name"))
+        definition = known.get(name)
+        if definition is None:
+            raise WorkerResponseValidationError(
+                f"{where} names field '{name}', which this document type does "
+                "not carry yet. Declare it under new_fields with a full "
+                "descriptor, or use one of the names listed."
+            )
+        if bool(definition.get("verbatim", True)) and not field.get("citation"):
+            raise WorkerResponseValidationError(
+                f"Field '{name}' is stated on the document and needs a citation."
+            )
+        if field.get("citation") and field["citation"] not in citations:
+            raise WorkerResponseValidationError(
+                f"Field '{name}' cites '{field['citation']}', which is not a "
+                "citation you declared."
+            )
+
     for index, record in enumerate(records):
         for field in record.get("fields") or []:
+            check_stated(field, f"records[{index}]")
             name = str(field.get("name"))
-            definition = known.get(name)
-            if definition is None:
+            if str(known[name].get("scope") or "") == "document":
+                # The enum already withholds these from a record; this is the
+                # same rule for a provider that does not enforce it.
                 raise WorkerResponseValidationError(
-                    f"records[{index}] names field '{name}', which this document "
-                    "type does not carry yet. Declare it under new_fields with a "
-                    "full descriptor, or use one of the names listed."
+                    f"records[{index}] states '{name}', which this type states "
+                    "once for the whole document. Report it under "
+                    "document_fields, where it applies to every record."
                 )
-            if bool(definition.get("verbatim", True)) and not field.get("citation"):
-                raise WorkerResponseValidationError(
-                    f"Field '{name}' is stated on the record and needs a citation."
-                )
-            if field.get("citation") and field["citation"] not in citations:
-                raise WorkerResponseValidationError(
-                    f"Field '{name}' cites '{field['citation']}', which is not a "
-                    "citation you declared."
-                )
+    for position, field in enumerate(document_fields):
+        check_stated(field, f"document_fields[{position}]")
+    on_document = {str(field.get("name")) for field in document_fields}
+    on_records = {
+        str(field.get("name"))
+        for record in records
+        for field in record.get("fields") or []
+    }
+    both = sorted(on_document & on_records)
+    if both:
+        raise WorkerResponseValidationError(
+            f"'{both[0]}' is reported both under document_fields and on a record. "
+            "A fact the document states once for all its records goes under "
+            "document_fields only; a fact that differs line by line goes on each "
+            "record only."
+        )
 
     renamed_to = {str(item.get("to")) for item in renames}
     for position, field in enumerate(new_fields):
@@ -2662,9 +2780,12 @@ def validate_read_proposal(
                 "same response also produces. A split is a rename plus a "
                 "different new name."
             )
+        document_scope = str(field.get("scope") or "") == "document"
+        if document_scope:
+            on_document.add(name)
         for index, value in enumerate(field.get("values") or []):
             where = f"new_fields[{position}].values[{index}]"
-            if int(value.get("record") or 1) > len(records):
+            if not document_scope and int(value.get("record") or 1) > len(records):
                 raise WorkerResponseValidationError(
                     f"{where} fills record {value.get('record')}, but you "
                     f"returned {len(records)} record(s). A field enters the "
@@ -2686,7 +2807,89 @@ def validate_read_proposal(
             "new_fields declares one name twice. Declare a field once and list "
             "every record that states it under its own values array."
         )
+    _validate_record_shape(records, new_fields, on_document, known)
     return proposal
+
+
+def _validate_record_shape(
+    records: Sequence[Mapping[str, Any]],
+    new_fields: Sequence[Mapping[str, Any]],
+    on_document: Collection[str],
+    known: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Refuse the three shapes that leave a multi-line document unreadable.
+
+    Measured on nineteen identically laid-out nostro statements: one record per
+    line came back in only twelve. Five folded the three lines into one record as
+    parallel lists — three dates, three balances, two debits, one credit — where
+    an ``entry`` counts values within a field, so a blank Debit cell shifts every
+    later value and nothing can say which amount belongs to which date. Two made
+    the statement's header a record of its own, which a population then counts
+    as a transaction with no date and no amount.
+    """
+
+    # Each record's own values, by name. Document-level values are kept apart:
+    # they are copied onto every record at commit and say nothing about whether
+    # the records were split correctly.
+    own: list[dict[str, int]] = [{} for _ in records]
+    for index, record in enumerate(records):
+        for field in record.get("fields") or []:
+            name = str(field.get("name"))
+            own[index][name] = own[index].get(name, 0) + 1
+    value_types = {
+        name: str(definition.get("value_type") or "")
+        for name, definition in known.items()
+    }
+    for field in new_fields:
+        name = str(field.get("name"))
+        value_types[name] = str(field.get("value_type") or "")
+        if str(field.get("scope") or "") == "document":
+            continue
+        for value in field.get("values") or []:
+            index = int(value.get("record") or 1) - 1
+            if 0 <= index < len(own):
+                own[index][name] = own[index].get(name, 0) + 1
+
+    if on_document and not records:
+        raise WorkerResponseValidationError(
+            "You reported document_fields and no record. document_fields are "
+            "facts about the records a document carries, so there must be at "
+            "least one: a single transaction is one record holding its own "
+            "facts, and a statement is one record per line."
+        )
+    if len(records) > 1:
+        for index, counts in enumerate(own):
+            if not counts:
+                raise WorkerResponseValidationError(
+                    f"records[{index}] states nothing of its own. A document's "
+                    "header is not a transaction: report what it states once "
+                    "for every record under document_fields, and keep records "
+                    "for the transactions themselves."
+                )
+    for index, counts in enumerate(own):
+        repeated = {name: count for name, count in counts.items() if count > 1}
+        dated = {
+            name: count
+            for name, count in repeated.items()
+            if value_types.get(name) == "date"
+        }
+        amounts = {
+            name: count
+            for name, count in repeated.items()
+            if value_types.get(name) == "number"
+        }
+        lengths = {*dated.values(), *amounts.values()}
+        if dated and amounts and len(lengths) > 1:
+            listed = ", ".join(
+                f"{count} × {name}" for name, count in sorted({**dated, **amounts}.items())
+            )
+            raise WorkerResponseValidationError(
+                f"records[{index}] lists {listed}. Values of different fields in "
+                "one record cannot be paired, so this loses which amount belongs "
+                "to which date. Report each dated line as its own record, with "
+                "what the document states once for all of them under "
+                "document_fields."
+            )
 
 
 def run_read_worker(
@@ -2743,17 +2946,23 @@ def run_read_worker(
         },
     )
     descriptor = str(request.unit_input.get("master_descriptor") or "")
-    master_names = [
-        str(field.get("name"))
+    master_fields = [
+        field
         for field in request.unit_input.get("master_fields") or []
         if str(field.get("name") or "")
+    ]
+    master_names = [str(field.get("name")) for field in master_fields]
+    record_names = [
+        str(field.get("name"))
+        for field in master_fields
+        if str(field.get("scope") or "") != "document"
     ]
     message = gateway.complete(
         _read_system(descriptor),
         user,
         activity,
         attempt=attempt.number,
-        tools=[_read_submission_tool(master_names)],
+        tools=[_read_submission_tool(record_names, master_names)],
         tool_choice={
             "type": "function",
             "function": {"name": READ_SUBMISSION_TOOL},
@@ -2766,7 +2975,8 @@ def run_read_worker(
 READ_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.evidence_read.response",
     schema_hash=_sha256_text(
-        "documents-evidence-read-response:records-new-fields-renames-citations"
+        "documents-evidence-read-response:"
+        "records-document-fields-new-fields-renames-citations"
     ),
     validator=_read_response_schema,
 )

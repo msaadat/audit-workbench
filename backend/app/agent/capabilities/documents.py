@@ -876,6 +876,13 @@ def evidence_read_text(workspace: Workspace, document_id: str) -> str:
     bound is applied by :func:`read_over_window`, which reports rather than
     truncating — a citation binds to text the worker saw, and a master built
     from a clipped document would record absence for pages nobody read.
+
+    A PDF page is given as laid out (``layout_text``) where the extraction has
+    it, because a table's columns are only legible by position: the plain text
+    drops empty cells, and a statement line's lone amount then reads the same
+    under Debit as under Credit. Layout spacing can roughly double a page, so a
+    document the layout view alone pushes over the bound is read as plain text
+    rather than reported — losing columns is better than not being read.
     """
 
     extracted = analyzable(workspace, document_id)
@@ -885,7 +892,17 @@ def evidence_read_text(workspace: Workspace, document_id: str) -> str:
         (page for page in (extracted.get("pages") or []) if page.get("text")),
         key=lambda page: int(page.get("page") or 0),
     )
-    return "\n\n".join(str(page.get("text") or "").strip() for page in pages).strip()
+    plain = "\n\n".join(str(page.get("text") or "").strip() for page in pages).strip()
+    laid_out = "\n\n".join(
+        str(page.get("layout_text") or page.get("text") or "").strip()
+        for page in pages
+    ).strip()
+    if (
+        len(laid_out) > presets.EVIDENCE_READ_CHARACTERS
+        and len(plain) <= presets.EVIDENCE_READ_CHARACTERS
+    ):
+        return plain
+    return laid_out
 
 
 def evidence_read_pages(workspace: Workspace, document_id: str) -> list[int]:

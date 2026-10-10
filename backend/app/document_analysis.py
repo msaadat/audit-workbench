@@ -56,12 +56,21 @@ def _evidence_value(envelope: Mapping[str, object]) -> str:
     return f"{text} {markers}".rstrip()
 
 
-def render_structured_summary(records: list[dict], document_type: str = "") -> str:
+def render_structured_summary(
+    records: list[dict],
+    document_type: str = "",
+    *,
+    document_fields: list[dict] | None = None,
+) -> str:
     """Render schema-extracted records as the analysis summary, locally.
 
     Derived rather than generated: the facts are already exact and typed, so a
     model turn here would only paraphrase them and could introduce a value the
     record never stated.
+
+    ``document_fields`` is what a multi-line document states once for all its
+    records, such as a statement's account. It is shown once, ahead of the
+    records, which are then passed with only their own fields.
     """
 
     if not records:
@@ -70,6 +79,11 @@ def render_structured_summary(records: list[dict], document_type: str = "") -> s
     if document_type:
         lines.append("")
         lines.append(f"Read as **{document_type}**.")
+    if document_fields:
+        lines.append("")
+        lines.append("### Document")
+        for field in document_fields:
+            lines.append(f"- **{field.get('name')}**: {field.get('value')}")
     for position, record in enumerate(records, start=1):
         lines.append("")
         lines.append(f"### Record {position}")
@@ -652,6 +666,10 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             # the records a schema-guided extraction states.
             "fields": dict(output.get("fields") or {}),
             "records": list(output.get("records") or []),
+            # What a whole-document read found stated once for all its records.
+            # Already folded into each record above; kept so the reading can
+            # still say which facts were the document's rather than a line's.
+            "document_fields": list(output.get("document_fields") or []),
             "analysis_profile": str(output.get("analysis_profile") or "standard"),
             # What vocabulary this extraction was made against. Exact-matched on
             # read, so a re-derived schema makes the analysis stale rather than

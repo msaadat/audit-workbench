@@ -29,6 +29,7 @@ from .. import (
     document_types,
     intake,
 )
+from .. import documents as document_service
 from ..text import counted
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceError
@@ -916,6 +917,9 @@ class DocumentWorkflowExecution(BaseRunner):
         document_type = str(
             unit_input.get("document_type") or ""
         ) or document_classification.document_type(self.ws, document_id)
+        # A PDF extracted before the layout view existed gets it here, the one
+        # moment it is needed, rather than re-extracting every document.
+        document_service.ensure_layout(self.ws, document_id)
         extracted = analyzable(self.ws, document_id)
         if extracted is None:
             return self._unreadable_document(document_id)

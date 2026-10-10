@@ -37,6 +37,12 @@ FIELD_ROLES = frozenset({"identifier", "party", "attribute", "control"})
 VALUE_TYPES = frozenset({"identifier", "date", "number", "text", "boolean"})
 CARDINALITIES = frozenset({"one", "many"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
+#: Where a field is stated. ``record`` — one transaction's fact, the default and
+#: the only scope a field had before a document could carry a header — or
+#: ``document``: stated once and true of every record, like a statement's
+#: account. Only ``document`` is ever written, so every field that predates the
+#: distinction keeps the hash it was stamped with.
+SCOPES = frozenset({"record", "document"})
 
 _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
@@ -162,7 +168,10 @@ def _validate_field(raw: object, label: str) -> dict:
     verbatim = raw.get("verbatim", True)
     if not isinstance(verbatim, bool):
         raise WorkspaceError(f"{label} needs a boolean 'verbatim'.")
-    return {
+    scope = str(raw.get("scope") or "record")
+    if scope not in SCOPES:
+        raise WorkspaceError(f"{label} has an unsupported scope '{scope}'.")
+    field = {
         "name": name,
         "role": role,
         "value_type": value_type,
@@ -171,6 +180,9 @@ def _validate_field(raw: object, label: str) -> dict:
         "confidence": confidence,
         "label": str(raw.get("label") or "").strip(),
     }
+    if scope == "document":
+        field["scope"] = scope
+    return field
 
 
 def validate_fields(value: object) -> list[dict]:

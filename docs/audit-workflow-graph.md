@@ -532,7 +532,7 @@ it: `llm.chat` retries transport and rate-limit errors up to
 | `reporting.finding_consolidation` | `{groups[]: finding_ids, lead_finding_id, relation, basis, proposed_title, root_cause_hypothesis, rationale; singletons[]}` | yes | 1 | — | yes — every draft placed once; a `same_condition` group needs every pair in the overlap table at Jaccard ≥ 0.5; a `shared_cause` group needs every pair in the table or in one process |
 | `documents.category` | `{category, confidence, rationale}` | yes | 1 | — | no |
 | `documents.classification` | document type assignment | yes | 1 | — | yes |
-| `documents.evidence_read` | `{records[]: fields[], new_fields[]}` | yes | **2** | — | yes |
+| `documents.evidence_read` | `{records[]: fields[], document_fields[], new_fields[]}` | yes | **2** | — | yes |
 | `documents.analysis_chunk` | `{summary_markdown, audit_notes_markdown, citations[]}` | yes | 1 | — | yes |
 | `documents.analysis_structured` | structured chunk analysis | yes | 1 | — | yes |
 | `documents.analysis_visual_page` | page analysis | yes | 1 | **vision** | yes |
@@ -802,8 +802,8 @@ fields and left evidence out of scope entirely.
 | Depends on | `documents.types_classified` |
 | Units | one per evidence document, keyed by type (`evidence_read:<type>:<doc>`) |
 | Binding | pipeline — worker `documents.evidence_read`, executor `documents.read` |
-| Context | `documents.evidence_read` — the document's pages (48k) plus up to 6 page images |
-| Output | `{records[]: {fields[]}, new_fields[]}` — field values read against the type's accumulating master |
+| Context | `documents.evidence_read` — the document's pages (48k) plus up to 6 page images; a PDF page is supplied as laid out (`layout_text`), so a table's columns stay legible, unless that alone pushes the document over the bound |
+| Output | `{records[]: {fields[]}, document_fields[], new_fields[]}` — field values read against the type's accumulating master; one record per transaction (per line, on a statement), with what the document states once for all its records under `document_fields` |
 | Repairs | **2**, not the usual 1 |
 | Barrier | **sequential, and here that is the mechanism.** A serialized unit sees its predecessor's work by rebinding against committed state; the parallel path binds every unit before running any of them. Per-document calls can only agree about a vocabulary if they are not independent — "make the read parallel and lock the master" is not an option, because the reads would not be *wrong* about the master, they would never have been shown it. |
 
@@ -811,6 +811,21 @@ The double repair allowance is earned: this worker's refusals are precise and
 recoverable ("you returned 18 citations and not one field value"), and what a
 lost read costs is not one document but its type's whole vocabulary, because a
 type with an unread document is never stamped.
+
+**A record is a transaction, and a header is not one.** A master field carries
+`scope: document` when the document states it once for every record — a
+statement's account, currency, opening balance — and no scope (a record's)
+otherwise. The tool never offers a document-scope field to a record, and the
+executor folds `document_fields` onto the front of every record at commit, so a
+population, the cycle linker and the sampler each read a line that stands alone
+without learning a header exists; `document_fields` is also kept on the artifact
+so the summary can show it once. The validator refuses the three shapes measured
+on nineteen identical nostro statements, which came back in four: lines folded
+into one record as parallel lists (a repeated date beside a repeated amount, in
+unequal counts), a header made a record of its own, and `document_fields` with no
+record. Only `scope: document` is ever written, so every schema stamped before the
+distinction keeps its hash; an existing type gains scope when `revise_vocabulary`
+rebuilds it.
 
 ### `documents.schemas_stamped` — Document schemas
 

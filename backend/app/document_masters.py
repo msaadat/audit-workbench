@@ -156,6 +156,13 @@ def has_read(workspace: Workspace, document_type: str, document_id: str) -> bool
     ]
 
 
+def field_scope(field: Mapping[str, object]) -> str:
+    """``document`` for a field stated once and true of every record, else
+    ``record``. Absent means ``record``: see ``document_schemas.SCOPES``."""
+
+    return "document" if str(field.get("scope") or "") == "document" else "record"
+
+
 def _highest_entry(field: Mapping[str, object]) -> int:
     """The largest ``entry`` a declared field was filled at in one document."""
 
@@ -299,6 +306,11 @@ def apply_reading(
                 if key in item
             }
             field["name"] = name
+            # Written only when it says something. A field with no scope is a
+            # record's, which is what every field was before a document could
+            # carry a header, so leaving it absent keeps their hashes unmoved.
+            if str(item.get("scope") or "record") == "document":
+                field["scope"] = "document"
             # Filled by the document that introduces it, by construction — the
             # response contract carries the value and citation alongside the
             # descriptor, so a zero-fill field cannot enter here.
@@ -441,6 +453,7 @@ def vocabulary(workspace: Workspace, document_type: str) -> dict:
                 "role": str(field.get("role")),
                 "value_type": str(field.get("value_type")),
                 "cardinality": str(field.get("cardinality") or "one"),
+                "scope": field_scope(field),
                 "label": str(field.get("label") or ""),
                 "fill_count": int(field.get("fill_count") or 0),
                 "introduced_at": int(field.get("introduced_at") or 0),
@@ -554,6 +567,7 @@ __all__ = [
     "catalog",
     "empty",
     "field_names",
+    "field_scope",
     "has_read",
     "index",
     "late_fields",
