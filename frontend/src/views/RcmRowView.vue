@@ -21,6 +21,7 @@ import EvidenceAnchorDialog from '../components/EvidenceAnchorDialog.vue'
 import ProvenanceRail from '../components/agent/ProvenanceRail.vue'
 import LinkTestDialog from '../components/planning/LinkTestDialog.vue'
 import RcmControlAttributesEditor from '../components/planning/RcmControlAttributesEditor.vue'
+import { removeRcmRowPrompt } from '../components/planning/rcmRemoval'
 import UiEmptyState from '../components/ui/UiEmptyState.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 import type {
@@ -227,24 +228,13 @@ async function acceptAndReview() {
 function remove() {
   const current = row.value
   if (!current) return
-  const linked = current.test_refs?.length ?? 0
-  confirm.require({
-    header: 'Remove RCM row',
-    message: `Remove "${current.process?.trim() || current.id}"?`
-      + (linked
-        ? ` Its ${plural(linked, 'linked test')} will be unlinked, not deleted; findings will be unlinked too.`
-        : ' Any linked findings will be unlinked.'),
-    icon: 'aw-icon aw-icon-triangle-alert',
-    acceptProps: { label: 'Remove', severity: 'danger' },
-    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
-    accept: async () => {
-      try {
-        await api.del(`/api/workspaces/${props.id}/rcm/${current.id}`)
-        void context?.reloadStatus()
-        await router.replace(nav.to('rcm'))
-      } catch (error) { fail('Could not remove the risk', error) }
-    },
-  })
+  confirm.require(removeRcmRowPrompt(current, async () => {
+    try {
+      await api.del(`/api/workspaces/${props.id}/rcm/${current.id}`)
+      void context?.reloadStatus()
+      await router.replace(nav.to('rcm'))
+    } catch (error) { fail('Could not remove the risk', error) }
+  }))
 }
 async function exportMatrix() {
   try {

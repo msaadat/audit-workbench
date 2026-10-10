@@ -18,6 +18,7 @@ import type { RcmFilter } from './planning/rcmStatus'
 import RcmGrid from './planning/RcmGrid.vue'
 import LinkTestDialog from './planning/LinkTestDialog.vue'
 import RcmRowDrawer from './planning/RcmRowDrawer.vue'
+import { removeRcmRowPrompt } from './planning/rcmRemoval'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import { plural } from '../format'
 
@@ -239,6 +240,20 @@ async function saveRcmRow(changes: Partial<RcmRow>) {
     detailOpen.value = false
     toast.add({ severity: 'success', summary: 'RCM row saved', life: 1800 })
   } finally { saving.value = false }
+}
+/** The drawer asks for removal; the prompt is the one the row's own page asks. */
+function removeRcmRow() {
+  const current = selectedRcm.value
+  if (!current) return
+  confirm.require(removeRcmRowPrompt(current, async () => {
+    try {
+      await api.del(`/api/workspaces/${props.workspace.id}/rcm/${current.id}`)
+      closeRcm()
+      await reload()
+      emit('changed')
+      toast.add({ severity: 'success', summary: 'RCM row removed', life: 1800 })
+    } catch (error) { fail('Could not remove the risk', error) }
+  }))
 }
 async function refreshRollup() {
   try {
@@ -562,6 +577,7 @@ const rcmActions = computed(() => [
         :saving="saving"
         @save="saveRcmRow"
         @close="closeRcm"
+        @remove="removeRcmRow"
         @paper="openRcmRow('paper')"
         @openRow="openRcmRow"
         @openTest="openTest"

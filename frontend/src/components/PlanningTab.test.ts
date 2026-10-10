@@ -249,3 +249,25 @@ describe('PlanningTab working paper', () => {
     expect(toastAdd).not.toHaveBeenCalled()
   })
 })
+
+describe('PlanningTab row removal', () => {
+  beforeEach(() => { vi.restoreAllMocks(); toastAdd.mockClear(); confirmRequire.mockClear() })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('removes the drawer row behind the same prompt the row page asks', async () => {
+    const del = vi.spyOn(api, 'del').mockResolvedValue({} as never)
+    const wrapper = mountTab([row('R1', 'draft'), row('R2', 'draft')])
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'RcmGrid' }).vm.$emit('open', row('R2', 'draft'))
+    await flushPromises()
+    await wrapper.find('button[aria-label="Remove row"]').trigger('click')
+    await flushPromises()
+
+    // The cost is stated before anything is deleted: tests survive, unlinked.
+    expect(confirmRequire.mock.calls[0][0].message).toContain('1 linked test will be unlinked, not deleted')
+    expect(del).toHaveBeenCalledWith('/api/workspaces/WS-1/rcm/R2')
+    expect(wrapper.findComponent({ name: 'RcmRowDrawer' }).exists()).toBe(false)
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'RCM row removed' }))
+  })
+})

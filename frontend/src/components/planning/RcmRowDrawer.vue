@@ -33,6 +33,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   save: [changes: Partial<RcmRow>]
   close: []
+  remove: []
   paper: []
   openRow: [tab?: string]
   openTest: [rollup: TestRollup]
@@ -178,6 +179,19 @@ function testTone(rollup: TestRollup) {
         <span>Mark reviewed</span>
       </label>
       <span class="grow" />
+      <!-- A row added by mistake, or a duplicate the agent wrote, is noticed
+           while walking the matrix — here — so removing it should not need the
+           full record. The host asks before anything is deleted. -->
+      <Button
+        v-tooltip.top="'Remove row'"
+        icon="aw-icon aw-icon-trash-2"
+        aria-label="Remove row"
+        size="small"
+        outlined
+        severity="danger"
+        :disabled="saving"
+        @click="emit('remove')"
+      />
       <Button label="Cancel" size="small" outlined severity="secondary" @click="emit('close')" />
       <Button label="Save row" size="small" :loading="saving" @click="emit('save', { ...draft })" />
     </footer>
