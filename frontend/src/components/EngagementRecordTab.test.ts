@@ -392,6 +392,7 @@ describe('EngagementRecordTab', () => {
     // Fieldwork and the roll-up settle the instant their run starts, because
     // the tests they gather already ran. "0m" reads as a broken clock.
     const wrapper = await render([filed({ history: history({ elapsed_ms: 382, measured_attempts: 1 }) })])
+    await openRow(wrapper)
 
     expect(wrapper.text()).toContain('<1s')
     expect(wrapper.text()).not.toContain('0m')
@@ -399,6 +400,7 @@ describe('EngagementRecordTab', () => {
 
   it('leaves the duration unstated when nothing about the work was timed', async () => {
     const wrapper = await render([filed({ history: history({ elapsed_ms: null, measured_attempts: 0 }) })])
+    await openRow(wrapper)
 
     expect(wrapper.find('.stamp').text()).toContain('—')
   })
@@ -457,7 +459,10 @@ describe('EngagementRecordTab', () => {
     })])
 
     expect(wrapper.find('.none').exists()).toBe(true)
-    expect(wrapper.text()).toContain('A stage the record has never seen')
+    // With nothing to count, the row's line is the opening of its summary.
+    expect(wrapper.find('.meta .text').text()).toBe('Prepared 1 evidence-linked finding draft (1 critical)')
+    await openRow(wrapper)
+    expect(wrapper.find('.sen').text()).toBe('A stage the record has never seen')
   })
 
   it('omits the size of a work product that has no meaningful count', async () => {
@@ -498,10 +503,12 @@ describe('EngagementRecordTab', () => {
         details: { eligible: 37 },
       },
     })])
-    await openRow(wrapper)
-
     expect(wrapper.find('.ct').text()).toBe('35')
-    expect(wrapper.find('.left').text()).toContain('2 eligible observations need finding drafts')
+    expect(wrapper.find('.meta .owed').text()).toBe('2 eligible observations need finding drafts')
+
+    // Said once: opening the row does not repeat the warning on its face.
+    await openRow(wrapper)
+    expect(wrapper.find('.left').exists()).toBe(false)
   })
 
   // ---------------------------------------------------------------- forward
@@ -560,10 +567,8 @@ describe('EngagementRecordTab', () => {
     ])
 
     const ghost = wrapper.find('.row.ghost')
-    // `Waits for the memorandum.` was the whole content of nine rows at once.
-    // Beside the row it is one phrase, and the row says what it is instead.
-    expect(ghost.find('.dep').text()).toBe('after the memorandum')
-    expect(ghost.text()).not.toContain('Waits for')
+    // The server's sentence, set as the first fact on the row's line.
+    expect(ghost.find('.dep').text()).toBe('Waits for the memorandum')
     expect(ghost.find('button').exists()).toBe(false)
   })
 
@@ -694,13 +699,17 @@ describe('EngagementRecordTab', () => {
       highlights: [{ severity: 'warning', label: 'Invoices over PO', detail: '3 of 52 rows', artifact_ref: '' }],
     })])
 
+    // The shut row states what it holds; what the run said of it is behind
+    // the fold with the rest.
     expect(wrapper.find('.row').classes()).toContain('shut')
-    expect(wrapper.text()).toContain('Finding drafts prepared')
+    expect(wrapper.find('.meta').text()).toBe('35 findings')
+    expect(wrapper.find('.sen').exists()).toBe(false)
     expect(wrapper.find('.dsc').exists()).toBe(false)
     expect(wrapper.find('.hl').exists()).toBe(false)
 
     await openRow(wrapper)
     expect(wrapper.find('.row').classes()).not.toContain('shut')
+    expect(wrapper.find('.sen').text()).toBe('Finding drafts prepared')
     expect(wrapper.find('.dsc').text()).toContain('evidence-linked finding draft')
     expect(wrapper.findAll('.hl li')).toHaveLength(1)
   })
@@ -1030,7 +1039,9 @@ describe('EngagementRecordTab', () => {
     })])
 
     const doors = wrapper.findAll('.door')
-    expect(doors.map(door => door.text())).toEqual(['Documents8', 'Tables6'])
+    // Set as the phrase they are, each still the link it was.
+    expect(doors.map(door => door.text())).toEqual(['8 documents', '6 tables'])
+    expect(wrapper.find('.meta').text()).toBe('8 documents·6 tables')
     expect(doors.map(door => door.attributes('href'))).toEqual(['/documents', '/data'])
     // The label itself opens nothing — there is no combined Sources page.
     expect(wrapper.find('.name .wp').attributes('href')).toBeUndefined()
@@ -1055,7 +1066,7 @@ describe('EngagementRecordTab', () => {
     })])
 
     const doors = wrapper.findAll('.door')
-    expect(doors.map(door => door.text())).toEqual(['Data tests12/32', 'Document tests0/22'])
+    expect(doors.map(door => door.text())).toEqual(['12 of 32 data tests', '0 of 22 document tests'])
     expect(doors.map(door => door.attributes('href'))).toEqual(['/data-tests', '/doc-tests'])
     wrapper.unmount()
   })
@@ -1074,7 +1085,7 @@ describe('EngagementRecordTab', () => {
     })])
 
     expect(wrapper.findAll('.door').map(door => door.text()))
-      .toEqual(['Data tests15/15', 'Document tests0'])
+      .toEqual(['15 of 15 data tests', '0 document tests'])
     wrapper.unmount()
   })
 
@@ -1127,6 +1138,7 @@ describe('EngagementRecordTab', () => {
     // Two columns of the old ledger — a Time that read "—" on nine rows of
     // twelve, and a Took beside it — are one phrase beside the row instead.
     const wrapper = await render([filed()])
+    await openRow(wrapper)
 
     expect(wrapper.find('.stamp').text()).toContain('· 2m')
   })
@@ -1168,9 +1180,8 @@ describe('EngagementRecordTab', () => {
     const wrapper = await render([filed(), owed()], { next: { kind: 'stage', ...owed() } })
 
     expect(wrapper.find('.brief').exists()).toBe(false)
-    // The phase holding it carries the badge and the sentence instead.
-    expect(wrapper.find('.phase[data-state="current"] .pel').text())
-      .toBe('Nothing is blocking it.')
+    // The phase holding it is the one being worked, and its row is the lead.
+    expect(wrapper.find('.phase[data-state="current"] .row.lead').exists()).toBe(true)
   })
 
   it('keeps a review debt on screen while a run is in flight', async () => {
@@ -1187,64 +1198,52 @@ describe('EngagementRecordTab', () => {
     wrapper.unmount()
   })
 
-  /* --- the whole plan, as one strip ---------------------------------------- */
+  /* --- the whole plan, one bar per phase ----------------------------------- */
   /*
-   * The phases fold, so three of the four say nothing about their size. The
-   * strip is where the whole engagement stays visible: one segment per stage,
-   * each phase as wide as the number of stages it holds.
+   * The later phases fold, so they say nothing about their size below. The
+   * bar is where the whole engagement stays visible: one column per phase,
+   * stating how far through it is in the words its header uses.
    */
 
-  it('draws one segment per stage, each phase as wide as the stages it holds', async () => {
+  it('gives each phase a column stating how far through it is', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
+    const columns = wrapper.findAll('.progress .pcol')
 
-    expect(wrapper.findAll('.seg')).toHaveLength(11)
-    expect(wrapper.findAll('.sphase').map(phase =>
-      phase.findAll('.seg').map(segment => segment.attributes('data-state')).join(','),
-    )).toEqual([
-      'held,held,held', 'lead,owed,owed', 'owed,owed,owed', 'owed,owed',
-    ])
-    expect(wrapper.find('.segs').attributes('style')).toContain('3fr 3fr 3fr 2fr')
-  })
-
-  it('names the phase being worked under the stretch of strip that is its', async () => {
-    const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
-    const labels = wrapper.findAll('.slabels span')
-
-    expect(labels.map(label => label.text())).toEqual([
+    expect(columns.map(column => column.find('.ptl').text())).toEqual([
       'Understand the data', 'Plan the engagement', 'Do the fieldwork', 'Write it up',
     ])
-    expect(labels.map(label => label.attributes('data-current')))
-      .toEqual([undefined, 'true', undefined, undefined])
+    expect(columns.map(column => column.find('.pss').text()))
+      .toEqual(['Done', '0 of 3', 'Not started', 'Not started'])
+    expect(columns.map(column => column.attributes('data-state')))
+      .toEqual(['done', 'current', 'later', 'later'])
   })
 
-  it('colours a stage under way rather than leaving it grey in the plan', async () => {
+  it('fills each bar to the fraction its phase holds', async () => {
+    const wrapper = await render(spine([...HELD, 'planning.apm_ready']), {}, { phases: 'as drawn' })
+
+    expect(wrapper.findAll('.ptrack i').map(bar => bar.attributes('style')))
+      .toEqual(['width: 100%;', 'width: 33%;', 'width: 0%;', 'width: 0%;'])
+    expect(wrapper.findAll('.pcol')[1].find('.pss').text()).toBe('1 of 3')
+  })
+
+  it('colours a phase under way rather than leaving it grey in the plan', async () => {
     liveRun([{ capability: 'planning.apm_ready', status: 'running' }])
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
+    const column = wrapper.findAll('.pcol')[1]
 
-    expect(wrapper.findAll('.sphase')[1].findAll('.seg').map(s => s.attributes('data-state')))
-      .toEqual(['live', 'owed', 'owed'])
+    expect(column.attributes('data-state')).toBe('live')
+    expect(column.find('.pss').text()).toBe('Running')
     wrapper.unmount()
   })
 
-  it('takes a filed stage out of the teal while it is being written again', async () => {
+  it('takes a finished phase out of its done colour while it is being written again', async () => {
     liveRun([{ capability: 'sources.imported', status: 'running' }])
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
-    // Teal is what the engagement holds; work happening now is neither that
-    // nor what it owes, so the segment leaves the teal while it runs.
-    expect(wrapper.findAll('.sphase')[0].findAll('.seg').map(s => s.attributes('data-state')))
-      .toEqual(['live', 'held', 'held'])
+    // Done is what the engagement holds; work happening now is neither that
+    // nor what it owes, so the column leaves the done colour while it runs.
+    expect(wrapper.findAll('.pcol')[0].attributes('data-state')).toBe('live')
     wrapper.unmount()
-  })
-
-  it('draws the strip and nothing that says the same thing in words', async () => {
-    const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
-
-    const strip = wrapper.find('.strip')
-    expect(strip.exists()).toBe(true)
-    // The phase names, and nothing else: no count, no clock, no run tally.
-    expect(strip.text()).not.toMatch(/\d/)
-    expect(strip.findAll('.slabels span')).toHaveLength(4)
   })
 
   it('shows how far through the run it is, as the number its step count is', async () => {
@@ -1270,7 +1269,7 @@ describe('EngagementRecordTab', () => {
     wrapper.unmount()
   })
 
-  it('leaves the footer what it cost, and the strip what the engagement holds', async () => {
+  it('leaves the footer what it cost, and the bar what the engagement holds', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
     const footer = wrapper.find('.summary')
 
@@ -1310,35 +1309,29 @@ describe('EngagementRecordTab', () => {
     ])
   })
 
-  it('badges the phase being worked, and it holds the only call to action', async () => {
+  it('marks the phase being worked, and it holds the only call to action', async () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
     const current = wrapper.findAll('.phase')[1]
 
-    expect(wrapper.findAll('.pnext')).toHaveLength(1)
-    expect(current.find('.pnext').text()).toBe('Next')
-    expect(current.find('.pel').text()).toBe('Nothing is blocking it.')
+    expect(wrapper.findAll('.pico').map(icon => icon.attributes('aria-label')))
+      .toEqual(['Done', 'In progress', 'Not started', 'Not started'])
     expect(wrapper.findAll('.row.ghost.lead')).toHaveLength(1)
     expect(current.findAll('.row.ghost.lead')).toHaveLength(1)
   })
 
-  it('counts a phase as a fraction, and one that cannot start in stages', async () => {
+  it('counts a phase as a fraction, and one that cannot start in words', async () => {
+    // `0 of 3` on work whose turn has not come reads as a failure rather than
+    // as a plan. The phase being worked keeps its fraction even at nought.
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
-    const phases = wrapper.findAll('.phase')
 
-    expect(phases[0].find('.pst').text()).toBe('3/3')
-    expect(phases[1].find('.pst').text()).toBe('0/3')
-    expect(phases[2].find('.pst').text()).toBe('3 stages · after planning')
-    expect(phases[3].find('.pst').text()).toBe('2 stages · after fieldwork')
+    expect(wrapper.findAll('.phase .pst').map(tally => tally.text()))
+      .toEqual(['3 of 3', '0 of 3', 'Not started', 'Not started'])
   })
 
-  it('states no fraction for a phase of one stage', async () => {
-    // `1/1` is a fraction with nothing to compare, on a header read down a
-    // column of four.
-    const alone = spine(HELD).filter(stage =>
-      !['analysis.executed', 'documents.analysis_generated'].includes(stage.capability))
-    const wrapper = await render(alone, {}, { phases: 'as drawn' })
+  it('counts a later phase that already holds something', async () => {
+    const wrapper = await render(spine([...HELD, 'findings.drafted']), {}, { phases: 'as drawn' })
 
-    expect(wrapper.findAll('.phase')[0].find('.pst').exists()).toBe(false)
+    expect(wrapper.findAll('.phase')[2].find('.pst').text()).toBe('1 of 3')
   })
 
   it('says what a folded phase covers rather than hiding it', async () => {
@@ -1381,6 +1374,6 @@ describe('EngagementRecordTab', () => {
 
     expect(wrapper.findAll('.phase').map(phase => phase.attributes('data-state')))
       .toEqual(['done', 'later', 'later', 'current'])
-    expect(wrapper.findAll('.phase')[3].find('.pnext').exists()).toBe(true)
+    expect(wrapper.findAll('.phase')[3].find('.pico').attributes('aria-label')).toBe('In progress')
   })
 })
