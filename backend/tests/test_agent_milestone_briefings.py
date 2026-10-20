@@ -177,7 +177,8 @@ def test_the_planning_highlights_are_what_the_memorandum_left_open():
     assert highlights[0]["detail"] == (
         "The extract carries no version or effective date."
     )
-    assert all(item["severity"] == "warning" for item in highlights)
+    # Matters to confirm are part of the plan, not flags against it.
+    assert all(item["severity"] == "info" for item in highlights)
 
 
 def test_a_memorandum_with_no_matters_section_is_not_reported_as_having_none():
@@ -455,3 +456,20 @@ def test_emphasis_inside_a_plain_bullet_is_stripped_too(monkeypatch):
     observation = document_analysis.audit_observations(_Workspace(), "d_sop")[0]
 
     assert observation["statement"] == "The SOP has no effective date and no owner."
+
+
+def test_control_conclusions_are_tallied_as_excepted_and_passed_rows():
+    from app.agent.audit_execution import _conclusion_tally
+
+    tally = _conclusion_tally([
+        {"exceptions": 2, "completed": 1},
+        {"failed": 1, "completed": 1},
+        {"exceptions": 0, "completed": 2},
+        {"completed": 0},
+    ])
+
+    assert [(item["label"], item["value"]) for item in tally] == [
+        ("with exceptions", 2), ("passed", 1), ("not tested", 1),
+    ]
+    # A fully tested matrix reads as two numbers.
+    assert len(_conclusion_tally([{"completed": 1}])) == 2

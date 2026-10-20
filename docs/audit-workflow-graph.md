@@ -107,14 +107,13 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                                 results.rolled_up
                        ┌───────────────┼───────────────┐
                        ▼               ▼               ▼
-             findings.drafted   working_papers.   report.working_draft
-                       │          generated        (+ planning.apm_ready,
-                       ▼               │            findings.consolidated ─ partial)
-            findings.consolidated      │                 ▲
-                       │               │                 │
-                       └──────────────►│◄────────────────┘
-                                       ▼
-                                 audit.verified
+             findings.drafted ──────────────────► report.working_draft
+                       │          working_papers.  (+ planning.apm_ready)
+                       │            generated              │
+                       ▼               │                   │
+            findings.consolidated      └───────►◄──────────┘
+              (optional leaf)                  ▼
+                                         audit.verified
 
   planning.change_assessed   (← apm_ready, rcm_ready; only ever asked for by name — §8)
 ```
@@ -158,14 +157,15 @@ DAG, not a chain.
   it assesses exist, and a request for one on an unplanned engagement plans it
   first instead of reporting itself blocked and stopping. It is on no template
   and outside `FULL_AUDIT_OUTCOMES`; the steering loop requests it by name.
-- **`findings.consolidated` sits between the drafts and the report, and the
-  report's edge to it is partial.** One model turn sees every draft at once —
-  which the per-observation finding worker never can — and proposes which of
-  them report one issue. It is proposal-only: the suggestion set is the durable
-  outcome and the auditor accepts or dismisses each group on the Findings page.
-  An unreviewed suggestion settles `review_required` and never withholds the
-  report, which carries every undecided draft exactly as it did before the
-  stage existed. See [findings-consolidation-design.md](findings-consolidation-design.md).
+- **`findings.consolidated` is optional: a leaf off the drafts, with nothing
+  depending on it.** One model turn sees every draft at once — which the
+  per-observation finding worker never can — and proposes which of them report
+  one issue. It is proposal-only: the suggestion set is the durable outcome and
+  the auditor accepts or dismisses each group on the Findings page. It is
+  outside `FULL_AUDIT_OUTCOMES` and the report does not depend on it; it runs
+  only when asked for (the `finding_consolidation` template, or the Findings
+  page). The report reads whatever has been decided and carries every other
+  draft as it stands. The engagement record draws no row for it. See [findings-consolidation-design.md](findings-consolidation-design.md).
 
 ### Outcome sets
 
@@ -174,7 +174,7 @@ request asks for. The transitive closure of those outcomes is the plan.
 
 | Template | Requested outcomes |
 | --- | --- |
-| `full_audit_working_draft` | `analysis.summarized`, `findings.drafted`, `findings.consolidated`, `working_papers.generated`, `report.working_draft`, `audit.verified` |
+| `full_audit_working_draft` | `analysis.summarized`, `findings.drafted`, `working_papers.generated`, `report.working_draft`, `audit.verified` |
 | `planning` | `planning.apm_ready`, `planning.rcm_ready`, `tests.specified` |
 | `apm_only` | `planning.apm_ready` |
 | `rcm_only` | `planning.rcm_ready` |
@@ -338,7 +338,7 @@ the dependent can still do.*
 | `tests.specified` | `tests.cycle_ruleset_approved` | Generation has always been able to proceed without a cycle — it writes document-question tests instead. Blocking here would withhold every test in the engagement, data tests included, to wait on an approval permission mode is not allowed to make. |
 | `fieldwork.executed` | `tests.specified`, `tests.promoted_from_analysis` | One unsatisfiable promotion must not block every test that already exists. |
 | `results.rolled_up` | `fieldwork.executed` | |
-| `report.working_draft` | `findings.drafted`, `findings.consolidated` | A consolidation suggestion the auditor has not decided settles `review_required`; the report carries every undecided draft separately rather than waiting on a review it cannot make. |
+| `report.working_draft` | `findings.drafted` | |
 | `audit.verified` | `working_papers.generated`, `report.working_draft` | |
 | `documents.analysis_chunks_ready` | `documents.text_ready` only | One unextractable document must not withhold the others. The `documents.categorized` edge is **blocking**: a failed category unit withholds chunk analysis. |
 | `documents.analysis_generated` | `documents.analysis_chunks_ready` | One unanalyzable document must not withhold the others. |
@@ -1280,7 +1280,7 @@ suggestions. Nothing merges without a click.
 
 | | |
 | --- | --- |
-| Depends on | `planning.apm_ready`, `results.rolled_up`, `findings.drafted` (partial), `findings.consolidated` (partial) |
+| Depends on | `planning.apm_ready`, `results.rolled_up`, `findings.drafted` (partial) |
 | Units | one (`report`) |
 | Binding | **deterministic** (`reporting.report_draft`) — no worker, no model call |
 | Output | the assembled draft. An auditor-edited draft is preserved and its regenerated candidate left for reconciliation, recorded as `awaiting_confirmation`. Absorbed findings are excluded; a lead lists them under "Supporting procedures". Quality checks add `unreviewed_consolidation` (advisory) and `absorbed_finding_confirmed` (blocking). |

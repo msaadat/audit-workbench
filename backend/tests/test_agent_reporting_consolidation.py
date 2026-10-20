@@ -400,4 +400,8 @@ def test_the_binder_is_registered_as_proposal_only():
     source = open(audit_execution.__file__, encoding="utf-8").read()
     assert '"findings.consolidated": (' in source
     assert '{"worker": "reporting.finding_consolidation", "executor": None}' in source
-    assert audit_execution._PARTIAL_DEPENDENCIES["report.working_draft"] == {"findings.drafted", "findings.consolidated"}
+    # Optional: the report does not depend on it at all, partially or otherwise.
+    assert audit_execution._PARTIAL_DEPENDENCIES["report.working_draft"] == {"findings.drafted"}
+    from app.agent.workflows import audit as audit_workflow
+    assert "findings.consolidated" not in audit_workflow.dependencies("report.working_draft")
+    assert "findings.consolidated" not in audit_workflow.FULL_AUDIT_OUTCOMES

@@ -474,6 +474,20 @@ def test_a_stage_the_record_has_not_learned_yet_shows_its_own_briefing(stub_stor
     assert row["action"] == ""
 
 
+def test_optional_consolidation_draws_no_row(stub_store):
+    """Consolidation is work the auditor asks for, not a step the engagement
+    owes, so a run of it files nothing on the ledger — not a spine row, and not
+    the nameless fallback row it used to draw under the findings."""
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("findings.consolidated", "2026-08-14T06:01:00+00:00",
+                         headline="Consolidation review")]),
+    ])
+    rows = _rows(engagement_record.record(_Workspace()))
+
+    assert "findings.consolidated" not in rows
+
+
 def test_every_stage_row_carries_the_same_keys(stub_store):
     """The spine row is the shape; a row outside it must not be a subset.
 

@@ -263,6 +263,30 @@ def _rating_tally(by_rating: dict[str, list[dict]], incomplete: list[dict]) -> l
     return tally
 
 
+def _conclusion_tally(rollups: list[Mapping]) -> list[dict]:
+    """The rolled-up matrix as a distribution: rows with exceptions, rows that passed.
+
+    Read before any single row, the same way the matrix's rating tally is. A
+    row whose linked work has not completed is neither, and is stated only
+    where there is one, so a fully tested matrix reads as two numbers.
+    """
+    excepted = passed = untested = 0
+    for rollup in rollups:
+        if int(rollup.get("exceptions") or 0) or int(rollup.get("failed") or 0):
+            excepted += 1
+        elif int(rollup.get("completed") or 0):
+            passed += 1
+        else:
+            untested += 1
+    tally = [
+        {"label": "with exceptions", "value": excepted, "severity": "warning"},
+        {"label": "passed", "value": passed, "severity": "info"},
+    ]
+    if untested:
+        tally.append({"label": "not tested", "value": untested, "severity": "info"})
+    return tally
+
+
 def _rcm_row_highlight(row: Mapping) -> dict:
     """One row read out in full: the risk, then what is relied on against it."""
     control = _lead_sentence(str(row.get("control") or row.get("control_description") or ""))
@@ -635,8 +659,11 @@ class AuditWorkflowExecution(ActionExecution):
                         "artifact_ref": "planning:apm",
                     }
                 ] if partial else []) + [
+                    # A matter to confirm is part of the plan, not a defect in
+                    # it: the memorandum names it so fieldwork can settle it.
+                    # Graded "info" so the record does not count it as a flag.
                     {
-                        "severity": "warning",
+                        "severity": "info",
                         "label": statement,
                         "detail": detail,
                         "artifact_ref": "planning:apm",
@@ -836,6 +863,7 @@ class AuditWorkflowExecution(ActionExecution):
                         if covered else []
                     ),
                 ],
+                "stats": _conclusion_tally(rows),
                 # Where the exceptions landed, worst first — the question an
                 # auditor asks the moment fieldwork stops.
                 "highlights": [
@@ -2684,10 +2712,7 @@ _PARTIAL_DEPENDENCIES = {
     # wait on an approval that stage is not allowed to make.
     "tests.specified": {"tests.cycle_ruleset_approved"},
     "results.rolled_up": {"fieldwork.executed"},
-    # A consolidation suggestion the auditor has not decided settles
-    # ``review_required`` and must never withhold the report: the report
-    # carries every undecided draft exactly as it did before the stage existed.
-    "report.working_draft": {"findings.drafted", "findings.consolidated"},
+    "report.working_draft": {"findings.drafted"},
     "audit.verified": {
         "working_papers.generated",
         "report.working_draft",

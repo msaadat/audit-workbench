@@ -185,17 +185,20 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "findings.drafted": ("results.rolled_up",),
     # One model turn over every draft, proposing which of them are one
     # finding. Proposal-only: the suggestion set is the durable outcome and
-    # the auditor accepts or dismisses each group on the Findings page. The
-    # edge into the report is partial (``_PARTIAL_DEPENDENCIES``): an
-    # unreviewed suggestion never withholds the report, which carries every
-    # undecided draft exactly as it did before this stage existed.
+    # the auditor accepts or dismisses each group on the Findings page.
+    #
+    # Optional, and therefore a leaf. Nothing depends on it and no template
+    # but its own requests it: it runs when the auditor asks for it, from the
+    # Findings page or by name. The report reads whatever has been decided —
+    # an accepted group is drafted as one finding — and carries every other
+    # draft as it stands, so a run that never consolidated produces the same
+    # report it always did.
     "findings.consolidated": ("findings.drafted",),
     "working_papers.generated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
         "results.rolled_up",
         "findings.drafted",
-        "findings.consolidated",
     ),
     # Dashboard curation was a stage here once, and is not one now. Arranging
     # tiles over results the roll-up already produced changes how an engagement
@@ -266,7 +269,6 @@ BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
 FULL_AUDIT_OUTCOMES = [
     "analysis.summarized",
     "findings.drafted",
-    "findings.consolidated",
     "working_papers.generated",
     "report.working_draft",
     "audit.verified",

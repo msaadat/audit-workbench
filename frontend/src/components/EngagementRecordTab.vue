@@ -483,7 +483,7 @@ function foldable(stage: EngagementStage): boolean {
   // put a chevron on every stage that has not run, opening onto what the row
   // already said.
   return Boolean(
-    stage.summary || stage.stats.length || stage.highlights.length
+    stage.summary || stage.highlights.length
     || attemptNote(stage) || remaining(stage) || stamp(stage),
   )
 }
@@ -500,7 +500,7 @@ function isOpen(stage: EngagementStage): boolean {
 function hasBody(stage: EngagementStage): boolean {
   const open = isOpen(stage)
   return Boolean(
-    (open && (saying(stage) || remaining(stage) || stage.stats.length
+    (open && (saying(stage) || remaining(stage)
       || stage.highlights.length || attemptNote(stage) || stamp(stage)))
     || liveState(stage.capability)
     || stage.open_points.length,
@@ -532,39 +532,40 @@ interface RowChip { label: string; value: string; severity: string }
  * What the folded body is standing in for, counted. Each chip keeps the colour
  * the block it replaces had, so the rows worth opening are the amber ones; a
  * row with nothing to say carries no chip, which is what makes that legible.
+ *
+ * Only flags are chipped. A distribution is stated in full on the row's own
+ * line, and a row's highlights there are its tiers read out — a matrix's high
+ * rows, a roll-up's excepted ones — so counting them again as flags called a
+ * risk rating a defect. A highlight graded `info` is context, not a flag. How
+ * many attempts a stage took is how it was produced, not what it holds, and
+ * stays behind the fold.
  */
 function chips(stage: EngagementStage): RowChip[] {
-  const out: RowChip[] = []
+  if (stage.stats.length) return []
+  const flags = stage.highlights.filter(item => item.severity === 'warning' || item.severity === 'error')
+  if (!flags.length) return []
+  return [{
+    label: flags.length === 1 ? 'flag' : 'flags',
+    value: String(flags.length),
+    severity: flags.some(item => item.severity === 'error') ? 'error' : 'warning',
+  }]
+}
 
-  // A distribution is led by its most severe non-zero tier, which is the order
-  // the tiers already arrive in. Leading by volume instead made the shut row
-  // and the open one disagree in front of the reader: a matrix of 5 high and 12
-  // medium showed "12 medium" collapsed and a strip led by 5 high expanded, and
-  // the larger number was the less serious one. Zero critical is worth saying in
-  // the open row and worth nothing in a one-line summary, and a bucket whose
-  // value is not a number cannot be counted at all.
-  const counted = stage.stats
-    .map(item => ({ ...item, count: typeof item.value === 'number' ? item.value : Number(item.value) }))
-    .filter(item => Number.isFinite(item.count) && item.count > 0)[0]
-  if (counted) {
-    out.push({ label: counted.label, value: String(counted.count), severity: counted.severity })
-  }
-
-  if (stage.highlights.length) {
-    const severity = stage.highlights.some(item => item.severity === 'error') ? 'error' : 'warning'
-    out.push({
-      label: stage.highlights.length === 1 ? 'flag' : 'flags',
-      value: String(stage.highlights.length),
-      severity,
-    })
-  }
-
-  const attempts = stage.history?.attempts.length ?? 0
-  if (attempts > 1) {
-    out.push({ label: 'attempts', value: String(attempts), severity: '' })
-  }
-
-  return out
+/**
+ * A distribution, as the clause after the row's count: `32 rows: 0 critical,
+ * 18 high`. Every tier the server sent is said — zero critical is a finding
+ * about the matrix — and a bucket whose value is not a number cannot be.
+ */
+function breakdown(stage: EngagementStage): FactPart[] {
+  return stage.stats
+    .map(item => ({ item, count: typeof item.value === 'number' ? item.value : Number(item.value) }))
+    .filter(({ count }) => Number.isFinite(count))
+    .map(({ item, count }) => ({
+      figure: String(count),
+      text: item.label,
+      // Colour only a severe tier that holds something: nothing is wrong at zero.
+      severity: count > 0 && (item.severity === 'error' || item.severity === 'warning') ? item.severity : '',
+    }))
 }
 
 function openPoint(point: EngagementOpenPoint) {
@@ -769,13 +770,6 @@ function phaseTally(group: PhaseGroup): string {
   return `${group.held} of ${group.total}`
 }
 
-/** The glyph a phase header carries: settled, half way, or not begun. */
-const PHASE_GLYPH: Record<PhaseState, string> = {
-  done: 'aw-icon-circle-check',
-  current: 'aw-icon-contrast',
-  later: 'aw-icon-circle',
-}
-
 const PHASE_STATE_LABEL: Record<PhaseState, string> = {
   done: 'Done',
   current: 'In progress',
@@ -821,6 +815,8 @@ const progress = computed(() => groups.value.map(group => {
  */
 type FactKind = 'dep' | 'count' | 'door' | 'owed' | 'text' | 'tool'
 
+interface FactPart { figure: string; text: string; severity: string }
+
 interface Fact {
   kind: FactKind
   /** The figure, drawn in the ledger face. Empty on a fact with none. */
@@ -828,6 +824,8 @@ interface Fact {
   text: string
   title?: string
   to?: WorkspaceDestination | null
+  /** A distribution the count is cut into, said after it. */
+  parts?: FactPart[]
 }
 
 /** `Documents` → `documents`; `1` → `document`, since the labels are plural. */
@@ -850,8 +848,17 @@ function firstSentence(text: string): string {
 function facts(stage: EngagementStage): Fact[] {
   const out: Fact[] = []
   if (!stage.held && dependency(stage)) out.push({ kind: 'dep', figure: '', text: dependency(stage) })
+  const parts = breakdown(stage)
   if (count(stage)) {
-    out.push({ kind: 'count', figure: count(stage), text: unitWord(stage), title: size(stage) || undefined })
+    out.push({
+      kind: 'count',
+      figure: count(stage),
+      text: parts.length ? `${unitWord(stage)}:` : unitWord(stage),
+      title: size(stage) || undefined,
+      parts,
+    })
+  } else if (parts.length) {
+    out.push({ kind: 'count', figure: '', text: '', parts })
   }
   const tools: Fact[] = []
   for (const link of stage.links) {
@@ -1004,33 +1011,42 @@ function phaseNames(group: PhaseGroup): string {
            work products it covers. -->
       <section class="spine" aria-label="The engagement file">
         <section
-          v-for="group in groups"
+          v-for="(group, index) in groups"
           :key="group.id"
           class="phase"
           :data-state="group.state"
         >
+          <!-- The plan runs one phase after another, so the phases are
+               numbered and joined: a rail that is teal through the work behind
+               the engagement and grey through the work ahead of it. -->
+          <span class="rail" aria-hidden="true">
+            <span class="disc">{{ index + 1 }}</span>
+            <span v-if="index < groups.length - 1" class="track"></span>
+          </span>
+
+          <div class="pbody">
           <button
             type="button"
             class="phead"
             :aria-expanded="phaseOpen(group)"
             @click="togglePhase(group)"
           >
+            <span class="pt aw-type-section">{{ group.title }}</span>
             <i
-              class="aw-icon pico"
-              :class="PHASE_GLYPH[group.state]"
+              v-if="group.state === 'done'"
+              class="aw-icon aw-icon-circle-check pdone"
               role="img"
-              :aria-label="PHASE_STATE_LABEL[group.state]"
-              :title="PHASE_STATE_LABEL[group.state]"
+              :aria-label="PHASE_STATE_LABEL.done"
+              :title="PHASE_STATE_LABEL.done"
             />
-            <span class="pt">{{ group.title }}</span>
+            <span v-else-if="group.state === 'current'" class="pnow">{{ PHASE_STATE_LABEL.current }}</span>
             <span v-if="!phaseOpen(group) && group.total" class="pnames">{{ phaseNames(group) }}</span>
             <span class="grow"></span>
-            <span class="pst">{{ phaseTally(group) }}</span>
             <i class="aw-icon aw-icon-chevron-down pchev" aria-hidden="true" />
           </button>
 
           <ol v-if="phaseOpen(group)" class="ledger">
-            <template v-for="stage in group.stages" :key="stage.id">
+            <template v-for="(stage, step) in group.stages" :key="stage.id">
               <li
                 class="row"
                 :class="{ shut: !isOpen(stage), ghost: !stage.held, lead: stage.capability === leadStage }"
@@ -1050,6 +1066,8 @@ function phaseNames(group: PhaseGroup): string {
                 <span v-else class="wpi" aria-hidden="true"></span>
 
                 <span class="name">
+                  <!-- Where the stage sits in the plan: phase, then step. -->
+                  <span class="sn" aria-hidden="true">{{ index + 1 }}.{{ step + 1 }}</span>
                   <component
                     :is="destinationOf(stage) ? RouterLink : 'span'"
                     v-if="stage.filed"
@@ -1074,7 +1092,13 @@ function phaseNames(group: PhaseGroup): string {
                       v-if="fact.figure"
                       :class="fact.kind === 'count' ? 'ct' : 'n'"
                       :title="fact.title"
-                    >{{ fact.figure }}</b>{{ fact.figure ? ' ' : '' }}{{ fact.text }}</component>
+                    >{{ fact.figure }}</b>{{ fact.figure ? ' ' : '' }}{{ fact.text }}<template
+                      v-for="(part, at) in fact.parts ?? []"
+                      :key="part.text"
+                    >{{ at ? ', ' : fact.text ? ' ' : '' }}<b
+                      class="n"
+                      :data-severity="part.severity || null"
+                    >{{ part.figure }}</b> {{ part.text }}</template></component>
                   </template>
                 </span>
 
@@ -1174,20 +1198,6 @@ function phaseNames(group: PhaseGroup): string {
                     </template>
                   </span>
 
-                  <!-- A stage whose result is a distribution states it as one. A
-                       matrix is read as "one critical, eight high" before any
-                       single row is, and a paragraph cannot say that at a glance. -->
-                  <ul v-if="isOpen(stage) && stage.stats.length" class="tally">
-                    <li
-                      v-for="stat in stage.stats"
-                      :key="stat.label"
-                      :data-severity="stat.severity"
-                      :data-zero="stat.value ? null : '1'"
-                    >
-                      <b>{{ stat.value }}</b><span>{{ stat.label }}</span>
-                    </li>
-                  </ul>
-
                   <ul v-if="isOpen(stage) && stage.highlights.length" class="hl">
                     <li v-for="item in stage.highlights" :key="`${item.label}:${item.detail}`" :data-severity="item.severity">
                       <b>{{ item.label }}</b><span>{{ item.detail }}</span>
@@ -1236,6 +1246,7 @@ function phaseNames(group: PhaseGroup): string {
               </li>
             </template>
           </ol>
+          </div>
         </section>
       </section>
 
@@ -1374,64 +1385,89 @@ function phaseNames(group: PhaseGroup): string {
 .quiet { color: var(--aw-muted-strong); }
 
 /* --- the spine ------------------------------------------------------------ */
-/* One card for the whole file. A phase is a band inside it, so the rows of
-   every phase share one set of columns and the file reads top to bottom as one
-   list rather than as five boxes. */
-.spine {
-  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
-  background: var(--aw-panel); overflow: hidden;
+/* The plan as a run of numbered phases. A phase heading sits on the page, not
+   in the card, with its number on a rail down the left; its rows sit in a card
+   of their own beside the rail. The heading and the rows are different kinds
+   of thing, so they no longer share a band, a size or a background. */
+.spine { display: flex; flex-direction: column; }
+
+.phase {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  column-gap: 1.125rem;
 }
+
+.rail { display: flex; flex-direction: column; align-items: center; }
+.disc {
+  box-sizing: border-box; display: grid; place-items: center; flex: 0 0 auto;
+  width: 2.25rem; height: 2.25rem; border-radius: 50%;
+  border: 2px solid var(--aw-border-strong); background: var(--aw-panel); color: var(--aw-muted);
+  font-family: var(--aw-font-mono); font-size: var(--aw-text-md); font-weight: 600;
+}
+.phase[data-state='done'] .disc { border-color: var(--aw-teal); background: var(--aw-teal); color: var(--aw-on-accent); }
+.phase[data-state='current'] .disc {
+  border-color: var(--aw-teal); color: var(--aw-teal);
+  box-shadow: 0 0 0 5px var(--aw-teal-soft);
+}
+.track {
+  flex: 1 1 auto; width: 2px; min-height: 1.5rem; margin: .375rem 0;
+  border-radius: 2px; background: var(--aw-border-strong);
+}
+.phase[data-state='done'] .track { background: var(--aw-teal); }
+
+.pbody { min-width: 0; padding-bottom: 1.75rem; }
+.phase:last-child .pbody { padding-bottom: 0; }
 
 .phead {
   display: flex; align-items: center; gap: .625rem; width: 100%;
-  min-height: 2.5rem; padding: .375rem 1rem;
-  border: 0; border-top: 1px solid var(--aw-border); background: var(--aw-canvas);
-  color: var(--aw-ink-strong);
-  font: inherit; font-size: var(--aw-text-sm); font-weight: 600; text-align: left; cursor: pointer;
+  min-height: 2.25rem; margin-bottom: .625rem; padding: 0 .25rem 0 0;
+  border: 0; border-radius: var(--aw-radius-control); background: transparent;
+  font: inherit; text-align: left; cursor: pointer;
 }
-.phase:first-child .phead { border-top: 0; }
-.phead:hover { background: var(--aw-raised); }
-.phead:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: -2px; }
-
-.pico { flex: 0 0 auto; font-size: var(--aw-text-base); }
-.phase[data-state='done'] .pico { color: var(--aw-ok); }
-.phase[data-state='current'] .pico { color: var(--aw-teal); }
-.phase[data-state='later'] .pico { color: var(--aw-muted); }
+.phead:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
+.phead:hover .pchev { color: var(--aw-teal); }
+/* A folded phase has no card under it, so it needs no gap for one. */
+.phead[aria-expanded='false'] { margin-bottom: 0; }
 
 .pt { flex: 0 0 auto; }
 .phase[data-state='later'] .pt { color: var(--aw-ink-soft); }
+.pdone { flex: 0 0 auto; color: var(--aw-teal); font-size: var(--aw-text-lg); }
+.pnow {
+  flex: 0 0 auto; display: inline-flex; align-items: center; height: 1.375rem; padding: 0 .5625rem;
+  border-radius: var(--aw-radius-pill); background: var(--aw-teal-soft); color: var(--aw-teal-strong);
+  font-size: var(--aw-text-xs); font-weight: 600;
+}
 
 /* What a shut phase is standing in for. It is the one thing folding away a
    phase could hide, so it is said on the header rather than behind it. */
 .pnames {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--aw-muted); font-weight: 400;
+  color: var(--aw-muted); font-size: var(--aw-text-sm); font-weight: 400;
 }
-.pst {
-  flex: 0 0 auto; color: var(--aw-muted); font-weight: 400;
-  font-family: var(--aw-font-mono); font-variant-numeric: tabular-nums;
-}
-/* `Not started` is a word, and words are not set in the ledger face. */
-.phase[data-state='later'] .pst { font-family: inherit; }
 .pchev { flex: 0 0 auto; color: var(--aw-muted); font-size: var(--aw-text-sm); transition: transform .16s ease; }
 .phead[aria-expanded='true'] .pchev { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { .pchev { transition: none; } }
 
 /* --- the ledger ---------------------------------------------------------- */
-.ledger { margin: 0; padding: 0; list-style: none; }
+.ledger {
+  margin: 0; padding: 0; list-style: none;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface);
+  background: var(--aw-panel); overflow: hidden;
+}
 
 /* One line per work product, in five fixed columns so a reader scans down
    them rather than across each row: its state, what it is, its name, what it
    amounts to, and the one thing to do about it. */
 .row {
   display: grid;
-  grid-template-columns: 1rem 1rem minmax(8rem, 13.5rem) minmax(0, 1fr) auto;
+  grid-template-columns: 1rem 1rem minmax(8rem, 15.5rem) minmax(0, 1fr) auto;
   gap: 0 .75rem;
   align-items: center;
   min-height: 2.75rem;
   padding: .375rem 1rem;
-  border-top: 1px solid var(--aw-raised);
+  border-top: 1px solid var(--aw-border);
 }
+.row:first-child { border-top: 0; }
 .row.shut { cursor: pointer; }
 .row.shut:hover { background: color-mix(in srgb, var(--aw-raised) 45%, transparent); }
 /* The lead stage is the one being asked for, so it is the one row tinted. */
@@ -1467,7 +1503,12 @@ function phaseNames(group: PhaseGroup): string {
 .row.ghost.lead .wpi,
 .row[data-live] .wpi { color: var(--aw-teal); }
 
-.name { display: flex; align-items: center; min-width: 0; }
+.name { display: flex; align-items: center; gap: .625rem; min-width: 0; }
+/* The step's place in the plan, in the ledger face so 1.1 to 4.2 line up. */
+.sn {
+  flex: 0 0 1.75rem; color: var(--aw-muted);
+  font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-variant-numeric: tabular-nums;
+}
 /* The work product is the link. */
 .wp {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1569,28 +1610,18 @@ a.door[data-kind='tool']:hover { color: var(--aw-teal-strong); }
 .chev:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .chev i { transition: none; } }
 
-/* The tally reads left to right as a distribution, so it is not the stacked
-   bordered list every other block on this row uses. */
-.tally { display: flex; flex-wrap: wrap; gap: .3rem; margin: .35rem 0 .1rem; padding: 0; list-style: none; }
-.tally li {
-  display: inline-flex; align-items: baseline; gap: .3rem;
-  padding: .15rem .45rem;
-  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-pill);
-  background: var(--aw-raised); color: var(--aw-muted-strong);
-}
-.tally b { font-size: var(--aw-text-base); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--aw-ink-strong); }
-.tally span { font-size: var(--aw-text-xs); }
-/* Zero of something severe is worth saying and not worth colouring. */
-.tally li[data-severity="warning"]:not([data-zero]) { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
-.tally li[data-severity="warning"]:not([data-zero]) b { color: var(--aw-warn-ink); }
-.tally li[data-severity="error"]:not([data-zero]) { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
-.tally li[data-severity="error"]:not([data-zero]) b { color: var(--aw-danger-ink); }
+/* A distribution said on the row's own line. A severe tier that holds
+   something keeps its colour, so the matrix still reads amber where it should. */
+.meta b[data-severity="warning"] { color: var(--aw-warn-ink); }
+.meta b[data-severity="error"] { color: var(--aw-danger-ink); }
 
 .hl { display: grid; gap: .25rem; margin: .3rem 0 0; padding: 0; list-style: none; }
 .hl li { display: grid; gap: .05rem; padding-left: .6rem; border-left: 2px solid var(--aw-warn-line); }
 .hl li[data-severity="error"] { border-left-color: var(--aw-danger-line); }
+.hl li[data-severity="info"] { border-left-color: var(--aw-border); }
 .hl b { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); font-weight: 600; line-height: 1.4; }
 .hl li[data-severity="error"] b { color: var(--aw-danger-ink); }
+.hl li[data-severity="info"] b { color: var(--aw-ink); }
 .hl span { max-width: 70ch; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.45; }
 
 /* an open point hanging off the row that created it */
@@ -1678,5 +1709,7 @@ a.door[data-kind='tool']:hover { color: var(--aw-teal-strong); }
   .row .meta { grid-column: 3 / -1; grid-row: 2; margin-top: .125rem; }
   .row .body { grid-column: 3 / -1; grid-row: 3; }
   .pnames { display: none; }
+  .phase { column-gap: .75rem; grid-template-columns: 1.75rem minmax(0, 1fr); }
+  .disc { width: 1.75rem; height: 1.75rem; font-size: var(--aw-text-sm); }
 }
 </style>

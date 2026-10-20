@@ -260,6 +260,15 @@ _FILED_UNDER = {
     "doc_tests.executed": "fieldwork.executed",
 }
 
+# Optional work the auditor asks for, not a step the engagement owes. Finding
+# consolidation is a leaf of the audit graph that no template but its own
+# requests: it proposes which drafts are one finding, and the proposals are
+# decided on the Findings page. A row for it read as a stage every engagement
+# must pass through, and without a spine entry it was drawn by the unplaced-row
+# fallback as a nameless row under the findings. Its runs file nothing the
+# record sizes, so they are left off the ledger entirely.
+_OFF_SPINE = frozenset({"findings.consolidated"})
+
 # A run whose status is one of these stopped early, so the wall clock between
 # its start and its milestone is not time the agent spent working.
 _SETTLED = ("completed", "completed_with_issues", "completed_with_open_items",
@@ -1077,7 +1086,7 @@ def _stages(
     # drawing a row for a step the product does not have any more.
     registered = _registered()
     for capability, filed in history.items():
-        if capability in _SPINE or capability not in registered:
+        if capability in _SPINE or capability in _OFF_SPINE or capability not in registered:
             continue
         rows.append({
             "id": f"stage:{capability}",

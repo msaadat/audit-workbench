@@ -405,7 +405,7 @@ describe('EngagementRecordTab', () => {
     expect(wrapper.find('.stamp').text()).toContain('—')
   })
 
-  it('says how many attempts a collapsed row stands for, and how many were timed', async () => {
+  it('says how many attempts an opened row stands for, and how many were timed', async () => {
     const wrapper = await render([filed({ history: history({ attempts: [
         { run_id: 'r1', run_status: 'cancelled', at: '2026-08-14T19:36:20+00:00', elapsed_ms: null },
         { run_id: 'r2', run_status: 'failed', at: '2026-08-14T20:02:09+00:00', elapsed_ms: null },
@@ -413,8 +413,9 @@ describe('EngagementRecordTab', () => {
       ],
       measured_attempts: 1 }) })])
 
-    // Shut, the count is a chip; opened, it says what the count is made of.
-    expect(wrapper.find('.sig').text()).toBe('3attempts')
+    // How the work was produced is not what the row holds, so the shut row
+    // carries no chip for it; opened, it says what the count is made of.
+    expect(wrapper.find('.sig').exists()).toBe(false)
     await openRow(wrapper)
     expect(wrapper.text()).toContain('3 attempts · 2 not timed')
   })
@@ -714,42 +715,32 @@ describe('EngagementRecordTab', () => {
     expect(wrapper.findAll('.hl li')).toHaveLength(1)
   })
 
-  it('counts what the fold hides, keeping the colour of what it stands for', async () => {
+  it('counts the flags the fold hides, keeping the colour of the worst', async () => {
     const wrapper = await render([filed({
-      stats: [
-        { label: 'critical', value: 0, severity: 'error' },
-        { label: 'high', value: 8, severity: 'warning' },
-        { label: 'medium', value: 3, severity: 'info' },
-      ],
       highlights: [
         { severity: 'warning', label: 'One', detail: 'a', artifact_ref: '' },
         { severity: 'error', label: 'Two', detail: 'b', artifact_ref: '' },
+        { severity: 'info', label: 'Context', detail: 'c', artifact_ref: '' },
       ],
     })])
 
     const chips = wrapper.findAll('.sig')
-    // The most severe non-zero tier leads; zero critical says nothing here.
-    expect(chips[0].text()).toBe('8high')
-    expect(chips[0].attributes('data-severity')).toBe('warning')
-    // Two highlights, one of them severe: the pair is reported at its worst.
-    expect(chips[1].text()).toBe('2flags')
-    expect(chips[1].attributes('data-severity')).toBe('error')
+    // Context is not a flag; of the two that are, the pair reads at its worst.
+    expect(chips).toHaveLength(1)
+    expect(chips[0].text()).toBe('2flags')
+    expect(chips[0].attributes('data-severity')).toBe('error')
   })
 
-  it('leads the chip with the most severe tier, not the fullest one', async () => {
-    // The shut row and the open one described the same matrix differently: a
-    // chip reading "12 medium" over a strip led by 5 high, with the bigger
-    // number attached to the milder finding.
+  it('chips nothing on a distribution, whose highlights are its tiers read out', async () => {
     const wrapper = await render([filed({
       stats: [
         { label: 'critical', value: 0, severity: 'error' },
         { label: 'high', value: 5, severity: 'warning' },
-        { label: 'medium', value: 12, severity: 'info' },
-        { label: 'low', value: 5, severity: 'info' },
       ],
+      highlights: [{ severity: 'warning', label: 'A high row', detail: 'a', artifact_ref: '' }],
     })])
 
-    expect(wrapper.find('.sig').text()).toBe('5high')
+    expect(wrapper.find('.sig').exists()).toBe(false)
   })
 
   it('leaves a row with nothing hidden unchipped, so a chip means something', async () => {
@@ -805,34 +796,36 @@ describe('EngagementRecordTab', () => {
 
   /* --- a stage whose result is a distribution ----------------------------- */
 
-  it('states a distribution as a tally rather than as another paragraph', async () => {
-    // A matrix is read as "1 critical, 8 high" before any single row is, and a
-    // sentence cannot say that at a glance.
+  it('states a distribution after the count it cuts up', async () => {
+    // A matrix is read as "1 critical, 8 high" before any single row is, and
+    // the row's own line is where a reader scanning the phase looks.
     const wrapper = await render([filed({
       stats: [
         { label: 'critical', value: 1, severity: 'error' },
         { label: 'high', value: 8, severity: 'warning' },
+        { label: 'medium', value: 3, severity: 'info' },
       ],
     })])
 
+    expect(wrapper.find('.meta').text()).toBe('35 findings: 1 critical, 8 high, 3 medium')
+    const figures = wrapper.findAll('.meta .count b.n')
+    expect(figures[0].attributes('data-severity')).toBe('error')
+    expect(figures[2].attributes('data-severity')).toBeUndefined()
     await openRow(wrapper)
-    const chips = wrapper.findAll('.tally li')
-    expect(chips).toHaveLength(2)
-    expect(chips[0].text()).toBe('1critical')
-    expect(chips[0].attributes('data-severity')).toBe('error')
+    expect(wrapper.find('.tally').exists()).toBe(false)
   })
 
   it('leaves a severe tier at zero uncoloured, since nothing is wrong there', async () => {
     const wrapper = await render([filed({ stats: [{ label: 'critical', value: 0, severity: 'error' }] })])
 
-    await openRow(wrapper)
-    expect(wrapper.find('.tally li').attributes('data-zero')).toBe('1')
+    expect(wrapper.find('.meta').text()).toBe('35 findings: 0 critical')
+    expect(wrapper.find('.meta .count b.n').attributes('data-severity')).toBeUndefined()
   })
 
-  it('draws no tally for a stage whose result is not a distribution', async () => {
+  it('states no breakdown for a stage whose result is not a distribution', async () => {
     const wrapper = await render([filed()])
 
-    expect(wrapper.find('.tally').exists()).toBe(false)
+    expect(wrapper.find('.meta').text()).toBe('35 findings')
   })
 
   /* --- the run in flight -------------------------------------------------- */
@@ -1313,25 +1306,24 @@ describe('EngagementRecordTab', () => {
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
     const current = wrapper.findAll('.phase')[1]
 
-    expect(wrapper.findAll('.pico').map(icon => icon.attributes('aria-label')))
-      .toEqual(['Done', 'In progress', 'Not started', 'Not started'])
+    expect(wrapper.findAll('.phase').map(phase => phase.attributes('data-state')))
+      .toEqual(['done', 'current', 'later', 'later'])
+    // A finished phase says so with its icon alone; the one being worked in words.
+    expect(wrapper.findAll('.phase')[0].find('.pdone').attributes('aria-label')).toBe('Done')
+    expect(current.find('.pnow').text()).toBe('In progress')
     expect(wrapper.findAll('.row.ghost.lead')).toHaveLength(1)
     expect(current.findAll('.row.ghost.lead')).toHaveLength(1)
   })
 
-  it('counts a phase as a fraction, and one that cannot start in words', async () => {
-    // `0 of 3` on work whose turn has not come reads as a failure rather than
-    // as a plan. The phase being worked keeps its fraction even at nought.
+  it('numbers the phases in the order they run, and each step within them', async () => {
+    // The plan runs one phase after another; the numbers are what say so.
     const wrapper = await render(spine(HELD), {}, { phases: 'as drawn' })
 
-    expect(wrapper.findAll('.phase .pst').map(tally => tally.text()))
-      .toEqual(['3 of 3', '0 of 3', 'Not started', 'Not started'])
-  })
-
-  it('counts a later phase that already holds something', async () => {
-    const wrapper = await render(spine([...HELD, 'findings.drafted']), {}, { phases: 'as drawn' })
-
-    expect(wrapper.findAll('.phase')[2].find('.pst').text()).toBe('1 of 3')
+    expect(wrapper.findAll('.phase .disc').map(disc => disc.text())).toEqual(['1', '2', '3', '4'])
+    expect(wrapper.findAll('.phase')[1].findAll('.row .sn').map(step => step.text()))
+      .toEqual(['2.1', '2.2', '2.3'])
+    // No tally on the header: the rail and the icon already say how far along it is.
+    expect(wrapper.find('.pst').exists()).toBe(false)
   })
 
   it('says what a folded phase covers rather than hiding it', async () => {
@@ -1374,6 +1366,6 @@ describe('EngagementRecordTab', () => {
 
     expect(wrapper.findAll('.phase').map(phase => phase.attributes('data-state')))
       .toEqual(['done', 'later', 'later', 'current'])
-    expect(wrapper.findAll('.phase')[3].find('.pico').attributes('aria-label')).toBe('In progress')
+    expect(wrapper.findAll('.phase')[3].find('.pnow').text()).toBe('In progress')
   })
 })
