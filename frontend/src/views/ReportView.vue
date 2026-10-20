@@ -16,6 +16,7 @@ import type {
 import MarkdownEditor from '../components/MarkdownEditor.vue'
 import UiDocumentPage from '../components/ui/UiDocumentPage.vue'
 import UiEmptyState from '../components/ui/UiEmptyState.vue'
+import UiExportMenu from '../components/ui/UiExportMenu.vue'
 import UiMarkdownDocument from '../components/ui/UiMarkdownDocument.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 import { markdownOutline } from '../components/ui/markdownOutline'
@@ -320,6 +321,47 @@ const SEVERITY_COLOUR: Record<string, string> = Object.fromEntries(RISK_BANDS.ma
 const page = ref<HTMLElement | null>(null)
 function print() { printSheetIn(page.value) }
 
+/**
+ * The report as a Word document: the same cover and forms as the sheet, the
+ * rating panel under the conclusion and the severity bar under the summary.
+ * The issue strips are remarks about the draft, not part of it, so they stay
+ * out — as they do in print. The builder and `docx` load only on export.
+ */
+const exporting = ref(false)
+async function exportWord() {
+  if (!report.value) return
+  exporting.value = true
+  try {
+    const { markdownWord, saveWord } = await import('../components/ui/documentDocx')
+    const blob = await markdownWord({
+      markdown: report.value.markdown,
+      sheet: { cover: cover.value, runningHead: runningHead.value, footer: footer.value, endMark: 'End of report' },
+      inserts: {
+        afterHeading: entry => isConclusion(entry)
+          ? [{
+              kind: 'rating',
+              value: rating.value ? titled(rating.value) : 'Not assigned',
+              note: !rating.value && context.value?.preliminary ? 'Fieldwork remains open' : undefined,
+              scale: RATINGS.map(step => ({ label: titled(step), on: step === rating.value, tone: RATING_TONE[step] })),
+              figures: [
+                { label: 'findings included', value: statistic('findings').toLocaleString() },
+                { label: 'tests run', value: statistic('tests').toLocaleString() },
+                { label: 'controls', value: statistic('rcm_rows').toLocaleString() },
+              ],
+            }]
+          : [],
+        afterBody: (entry, body) => isSeveritySummary(entry) ? [{ kind: 'severity-bar', counts: severityCounts(body) }] : [],
+      },
+    })
+    saveWord(blob, `${props.workspace.name} - Draft audit report.docx`)
+  } catch (error) { fail('Could not export the report to Word', error) }
+  finally { exporting.value = false }
+}
+const exportItems = computed(() => [
+  { label: 'Word document', icon: 'aw-icon aw-icon-file-text', command: () => void exportWord() },
+  { label: 'Print or save as PDF', icon: 'aw-icon aw-icon-printer', command: () => print() },
+])
+
 /** The action a strip offers, where the page can actually take it. */
 function stripAction(issue: ReportQualityIssue): string {
   return issue.code === 'preliminary_label_missing' ? 'Add the label' : ''
@@ -359,15 +401,7 @@ function runStrip(issue: ReportQualityIssue) {
           :loading="busy"
           @click="check(false)"
         />
-        <Button
-          v-if="hasContent && !editing"
-          label="Print or PDF"
-          icon="aw-icon aw-icon-printer"
-          size="small"
-          outlined
-          severity="secondary"
-          @click="print"
-        />
+        <UiExportMenu v-if="hasContent && !editing" :items="exportItems" :loading="exporting" />
         <Button
           v-if="editing"
           label="Save"

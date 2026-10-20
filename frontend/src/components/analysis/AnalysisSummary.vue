@@ -9,6 +9,7 @@ import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 import MemoView from './MemoView.vue'
 import UiDocumentPage from '../ui/UiDocumentPage.vue'
 import UiEmptyState from '../ui/UiEmptyState.vue'
+import UiExportMenu from '../ui/UiExportMenu.vue'
 import UiVerdictBar from '../ui/UiVerdictBar.vue'
 import { markdownOutline } from '../ui/markdownOutline'
 import { documentDate } from '../ui/documentSheet'
@@ -38,6 +39,8 @@ const emit = defineEmits<{
   regenerate: []
   /** The header owns the primary, so it has to be told whether one exists. */
   loaded: [hasMemo: boolean]
+  /** Something this page tried failed; the tab says so, as it does for its own. */
+  failed: [summary: string, error: unknown]
 }>()
 
 const nav = useWorkspaceNav()
@@ -142,6 +145,20 @@ const footer = computed<SheetLine>(() => [
 const page = ref<HTMLElement | null>(null)
 function print() { printSheetIn(page.value) }
 
+/** The memo as a Word document, built by the view that holds its exhibits. */
+const memoView = ref<InstanceType<typeof MemoView> | null>(null)
+const exporting = ref(false)
+async function exportWord() {
+  exporting.value = true
+  try { await memoView.value?.exportWord(`${props.workspace.name} - Data analysis summary.docx`) }
+  catch (error) { emit('failed', 'Could not export the summary to Word', error) }
+  finally { exporting.value = false }
+}
+const exportItems = computed(() => [
+  { label: 'Word document', icon: 'aw-icon aw-icon-file-text', command: () => void exportWord() },
+  { label: 'Print or save as PDF', icon: 'aw-icon aw-icon-printer', command: () => print() },
+])
+
 const outstanding = computed(() => props.analyses.filter(item => item.state !== 'current').length)
 const staleSentence = computed(() => {
   if (memo.value?.stale) {
@@ -179,14 +196,7 @@ const staleSentence = computed(() => {
         <template v-else>Every procedure is cited.</template>
       </template>
       <template #actions>
-        <Button
-          label="Print or PDF"
-          icon="aw-icon aw-icon-printer"
-          size="small"
-          outlined
-          severity="secondary"
-          @click="print"
-        />
+        <UiExportMenu :items="exportItems" :loading="exporting" />
         <Button
           label="Regenerate"
           icon="aw-icon aw-icon-refresh-cw"
@@ -206,6 +216,7 @@ const staleSentence = computed(() => {
       railWidth="18.75rem"
     >
       <MemoView
+        ref="memoView"
         :workspace="workspace"
         :markdown="markdown"
         :analyses="analyses"

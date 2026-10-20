@@ -418,6 +418,7 @@ function fail(summaryText: string, error: unknown) {
       :analyses="analyses"
       @open="openAnalysis"
       @regenerate="writeSummary"
+      @failed="fail"
       @loaded="hasSummary = $event"
     />
 

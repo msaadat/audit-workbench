@@ -17,6 +17,7 @@ import type {
 import MarkdownEditor from '../components/MarkdownEditor.vue'
 import UiDocumentPage from '../components/ui/UiDocumentPage.vue'
 import UiEmptyState from '../components/ui/UiEmptyState.vue'
+import UiExportMenu from '../components/ui/UiExportMenu.vue'
 import UiMarkdownDocument from '../components/ui/UiMarkdownDocument.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 import { markdownOutline } from '../components/ui/markdownOutline'
@@ -280,6 +281,31 @@ const renderOptions = computed(() => ({
 
 const page = ref<HTMLElement | null>(null)
 function print() { printSheetIn(page.value) }
+
+/**
+ * The memorandum as a Word document, drawn from what this page draws: the
+ * same cover, the same forms, the cycle's steps. The builder and `docx` load
+ * only now, on the first export, never with the page.
+ */
+async function exportWord() {
+  exporting.value = true
+  try {
+    const { markdownWord, saveWord } = await import('../components/ui/documentDocx')
+    const blob = await markdownWord({
+      markdown: markdown.value,
+      sheet: { cover: cover.value, runningHead: runningHead.value, footer: footer.value, endMark: 'End of memorandum' },
+      options: renderOptions.value,
+    })
+    saveWord(blob, `${props.workspace.name} - Audit planning memorandum.docx`)
+  } catch (error) { fail('Could not export the memorandum to Word', error) }
+  finally { exporting.value = false }
+}
+
+const exportItems = computed(() => [
+  { label: 'Word document', icon: 'aw-icon aw-icon-file-text', command: () => void exportWord() },
+  { label: 'Print or save as PDF', icon: 'aw-icon aw-icon-printer', command: () => print() },
+  { label: 'Markdown file', icon: 'aw-icon aw-icon-file-code', command: () => void exportApm() },
+])
 </script>
 
 <template>
@@ -297,25 +323,7 @@ function print() { printSheetIn(page.value) }
         :loading="saving"
         @click="editing ? doneEditing() : (editing = true)"
       />
-      <Button
-        v-if="hasContent && !editing"
-        label="Print or PDF"
-        icon="aw-icon aw-icon-printer"
-        size="small"
-        outlined
-        severity="secondary"
-        @click="print"
-      />
-      <Button
-        v-if="hasContent"
-        label="Export"
-        icon="aw-icon aw-icon-download"
-        size="small"
-        outlined
-        severity="secondary"
-        :loading="exporting"
-        @click="exportApm"
-      />
+      <UiExportMenu v-if="hasContent && !editing" :items="exportItems" :loading="exporting" />
       <Button v-if="editing" label="Save" icon="aw-icon aw-icon-save" size="small" :loading="saving" @click="save(true)" />
       <!-- Regenerating replaces a written memorandum, so it is offered and
            never the filled button; with nothing written, the empty state

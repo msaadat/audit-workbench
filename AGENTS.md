@@ -1018,7 +1018,15 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   numbers agree. Nothing here is a prompt or template contract: the report and
   memo are assembled by code, and the memorandum's varying shapes are read as
   they come. Print goes through `ui/printDocument.ts`, which prints a copy of
-  the sheet alone, in the light theme.
+  the sheet alone, in the light theme. **Export → Word document** builds a
+  .docx in the browser (`ui/documentDocx.ts`; the memo's exhibits in
+  `analysis/memoDocx.ts`) from the same `ui/markdownForms.ts` and
+  `ui/documentUnits.ts` the sheet reads — the detection rules exist once, so
+  the file and the page cannot disagree. It sets Georgia and Calibri, writes
+  the running head and page numbers into Word's header and footer, leaves the
+  on-screen remarks out as print does, and caps an exhibit at eight columns
+  (tested first) with the rest counted in its caption. `docx` loads only on
+  export, in its own chunk.
 - Existing uncommitted workspace or code changes may be user-owned. Do not
   revert them unless explicitly asked.
 

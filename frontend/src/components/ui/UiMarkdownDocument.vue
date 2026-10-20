@@ -6,7 +6,7 @@ import UiDocumentHeading from './UiDocumentHeading.vue'
 import UiDocumentSheet from './UiDocumentSheet.vue'
 import type { DocumentCover, SheetLine } from './documentSheet'
 import type { DocumentOptions } from './markdownHtml'
-import { markdownBlocks } from './markdownBlocks'
+import { documentLayout } from './documentUnits'
 import { markdownOutline } from './markdownOutline'
 import type { OutlineEntry } from './markdownOutline'
 
@@ -51,111 +51,21 @@ const emit = defineEmits<{ 'open-finding': [findingId: string] }>()
 const entries = computed<OutlineEntry[]>(() => markdownOutline(props.markdown))
 defineExpose({ entries })
 
-/** Split at every heading, so each heading is an element with an id. */
-const blocks = computed(() => markdownBlocks(props.markdown, entries.value))
-
-const titleBlock = computed(() => blocks.value.find(block => block.entry?.level === 1) ?? null)
+/**
+ * Split at every heading, so each heading is an element with an id, and read
+ * the title, the parts and the assembled findings out of the split
+ * (`documentUnits.ts`, which the Word export reads too).
+ */
+const layout = computed(() => documentLayout(props.markdown, entries.value))
+const titleBlock = computed(() => layout.value.title)
 const titleEntry = computed(() => titleBlock.value?.entry ?? null)
-const hasParts = computed(() => entries.value.some(entry => entry.part))
+const hasParts = computed(() => layout.value.hasParts)
+const units = computed(() => layout.value.units)
 
 const sheetCover = computed<DocumentCover | null>(() => {
   const title = titleEntry.value?.text ?? props.cover?.title
   if (!props.cover && !title && !props.eyebrow) return null
   return { eyebrow: props.eyebrow || undefined, ...props.cover, title }
-})
-
-interface FindingRow { entry: OutlineEntry; body: string }
-interface FindingReference { id: string; href: string }
-interface FindingBlock {
-  severity: string
-  reference: FindingReference | null
-  intro: string
-  rows: FindingRow[]
-  response: string
-  consolidated: string
-}
-type Unit =
-  | { kind: 'lead'; body: string }
-  | { kind: 'section'; entry: OutlineEntry; body: string }
-  | { kind: 'finding'; entry: OutlineEntry; finding: FindingBlock }
-
-/** The line `report.py` writes under every finding heading it assembles. */
-const SEVERITY_LINE = /^\*\*Severity:\*\*\s*([A-Za-z]+)[^\n]*?(?:\*\*Reference:\*\*\s*([^\n]*))?\s*(?:\n|$)/
-const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/
-const TRAILER = /^\*\*(Supporting procedures|Management response):\*\*[ \t]*/gm
-
-function reference(text: string | undefined): FindingReference | null {
-  const match = LINK.exec(text ?? '')
-  if (!match) return null
-  const fromHref = /[?&]finding=([^&#]+)/.exec(match[2])?.[1]
-  const id = fromHref ? decodeURIComponent(fromHref) : match[1].trim().split(/\s+/).pop() ?? ''
-  return id ? { id, href: match[2] } : null
-}
-
-/**
- * What the report appends to a finding's narrative: the procedures it absorbed
- * and the response to it. They are read off the end of the last section, where
- * the assembler put them, so the narrative itself is left as written.
- */
-function trailers(text: string): { body: string; consolidated: string; response: string } {
-  const hits = [...text.matchAll(TRAILER)]
-  if (!hits.length) return { body: text, consolidated: '', response: '' }
-  let consolidated = ''
-  let response = ''
-  hits.forEach((hit, index) => {
-    const end = index + 1 < hits.length ? hits[index + 1].index : text.length
-    const content = text.slice((hit.index ?? 0) + hit[0].length, end).trim()
-    if (hit[1] === 'Supporting procedures') {
-      consolidated = content.replace(/^the following findings were consolidated into this one\.?\s*/i, '')
-    } else {
-      response = content
-    }
-  })
-  return { body: text.slice(0, hits[0].index).trimEnd(), consolidated, response }
-}
-
-const units = computed<Unit[]>(() => {
-  const out: Unit[] = []
-  const list = blocks.value.filter(block => block !== titleBlock.value)
-  let part: OutlineEntry | null = null
-  for (let index = 0; index < list.length; index += 1) {
-    const block = list[index]
-    if (!block.entry) { if (block.body) out.push({ kind: 'lead', body: block.body }); continue }
-    if (block.entry.level <= 2) part = block.entry.part ? block.entry : (block.entry.level === 2 ? null : part)
-    const severity = block.entry.level === 3 ? SEVERITY_LINE.exec(block.body) : null
-    const inFindings = !hasParts.value || /finding/i.test(part?.label ?? part?.text ?? '')
-    if (!severity || !inFindings) {
-      out.push({ kind: 'section', entry: block.entry, body: block.body })
-      continue
-    }
-    const rows: FindingRow[] = []
-    while (index + 1 < list.length && (list[index + 1].entry?.level ?? 0) >= 4) {
-      index += 1
-      rows.push({ entry: list[index].entry as OutlineEntry, body: list[index].body })
-    }
-    let intro = block.body.slice(severity[0].length).trim()
-    let tail = { body: '', consolidated: '', response: '' }
-    if (rows.length) {
-      tail = trailers(rows[rows.length - 1].body)
-      rows[rows.length - 1] = { ...rows[rows.length - 1], body: tail.body }
-    } else {
-      tail = trailers(intro)
-      intro = tail.body
-    }
-    out.push({
-      kind: 'finding',
-      entry: block.entry,
-      finding: {
-        severity: severity[1].toLowerCase(),
-        reference: reference(severity[2]),
-        intro,
-        rows,
-        response: tail.response,
-        consolidated: tail.consolidated,
-      },
-    })
-  }
-  return out
 })
 
 function sentence(value: string): string {

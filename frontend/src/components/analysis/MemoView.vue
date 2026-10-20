@@ -16,7 +16,8 @@ import { headingCount, markdownBlocks } from '../ui/markdownBlocks'
 import type { OutlineEntry } from '../ui/markdownOutline'
 import { classificationTone, foundSummary } from './analysisStatus'
 import MemoExhibitBody from './MemoExhibitBody.vue'
-import { memoCitations, memoSegments, memoUnits } from './memoExhibits'
+import type { ExhibitWord } from './memoDocx'
+import { memoCitations, memoSegments, memoUnits, testedColumns } from './memoExhibits'
 import type { Embed, Exhibit, MemoUnit } from './memoExhibits'
 
 // The memo is one markdown document with embedded result references. It is
@@ -186,6 +187,57 @@ function setTitle(unit: Extract<MemoUnit, { kind: 'exhibits' }>): string {
  * the links are inside rendered Markdown that no component owns.
  */
 const root = ref<InstanceType<typeof UiDocumentSheet> | null>(null)
+
+/** A chart the page has drawn, as a PNG; an exhibit closed in its set has none. */
+function chartImage(number: number): ExhibitWord['image'] {
+  const canvas = root.value?.sheet?.querySelector<HTMLCanvasElement>(
+    `[id="exhibit-${number}"] canvas, [id="exhibit-${number}"] + .exhibit-row-body canvas`,
+  )
+  if (!canvas || !canvas.width || !canvas.height) return null
+  return { data: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
+}
+
+/** What this page holds about one exhibit, handed to the Word builder as-is. */
+function exhibitWord(exhibit: Exhibit): ExhibitWord {
+  const id = exhibit.embed.analysis
+  const analysis = byId.value[id]
+  const rows = exhibit.embed.as === 'exception_table' ? flagged.value[id]?.frame ?? null : details.value[id]?.frame ?? null
+  return {
+    title: exhibitTitle(exhibit),
+    found: exhibitFound(exhibit),
+    tone: exhibitTone(exhibit),
+    id,
+    as: exhibit.embed.as,
+    caption: exhibit.embed.caption,
+    failed: failed.value.has(id),
+    frame: rows,
+    tested: rows && exhibit.embed.as === 'exception_table' ? testedColumns(analysis, rows.columns) : [],
+    image: exhibit.embed.as === 'chart' ? chartImage(exhibit.number) : null,
+    stats: (analysis?.last_result?.stats ?? []).map(stat => ({ label: String(stat.label), value: String(stat.value) })),
+  }
+}
+
+/**
+ * The memo as a Word document, from what this page has already loaded — the
+ * flagged rows, the results, any chart as drawn. The builder and `docx` load
+ * only on export.
+ */
+async function exportWord(filename: string): Promise<void> {
+  const [{ memoWord }, { saveWord }] = await Promise.all([
+    import('./memoDocx'),
+    import('../ui/documentDocx'),
+  ])
+  const blob = await memoWord({
+    sheet: { cover: props.cover, runningHead: props.runningHead, footer: props.footer, endMark: props.endMark },
+    markdown: props.markdown,
+    entries: props.entries,
+    options: renderOptions.value,
+    figures: figures.value,
+    exhibit: exhibitWord,
+  })
+  saveWord(blob, filename)
+}
+defineExpose({ exportWord })
 async function onClick(event: MouseEvent) {
   const target = event.target as HTMLElement | null
   const jump = target?.closest<HTMLElement>('[data-jump]')
