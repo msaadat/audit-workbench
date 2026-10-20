@@ -7,11 +7,20 @@ import '@milkdown/crepe/theme/frame.css'
 
 // WYSIWYG markdown editor: a thin v-model wrapper around Milkdown Crepe.
 // Crepe stores content as markdown natively, so it round-trips with workspace documents.
-const props = withDefaults(defineProps<{ modelValue: string; placeholder?: string }>(), {
+const props = withDefaults(defineProps<{
+  modelValue: string
+  placeholder?: string
+  /**
+   * A written work product: edit it on the same sheet it is read on — the
+   * same width, face and margin — so switching to Edit reflows no paragraph.
+   */
+  document?: boolean
+}>(), {
   // Crepe ships "Please enter…", which is neither this product's voice nor
   // this product's language. Callers override it with something about the
   // document they are editing.
   placeholder: 'Start writing, or generate a draft.',
+  document: false,
 })
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
 
@@ -90,7 +99,7 @@ function followInternalLink(event: MouseEvent) {
 <template>
   <!-- The tooltip is appended inside the editor's own DOM, so one delegated
        listener on the host catches it without reaching across the component. -->
-  <div ref="host" class="markdown-editor" @click="followInternalLink" />
+  <div ref="host" :class="['markdown-editor', { 'is-document': props.document }]" @click="followInternalLink" />
 </template>
 
 <style scoped>
@@ -166,6 +175,29 @@ function followInternalLink(event: MouseEvent) {
 .markdown-editor:focus-within {
   border-color: var(--aw-teal-600);
   box-shadow: 0 0 0 1px var(--aw-teal-600);
+}
+
+/* The sheet the document is read on (`UiDocumentSheet`), as an editor. A
+   shadow and no border, because it floats on the desk; the serif and the
+   sheet's own margin, so a paragraph breaks where it broke in the view. */
+.markdown-editor.is-document {
+  width: 100%; max-width: var(--aw-sheet-width);
+  margin-inline: auto;
+  border: 0; border-radius: 3px;
+  background: var(--aw-sheet);
+  box-shadow: var(--aw-sheet-shadow);
+}
+.markdown-editor.is-document:focus-within { box-shadow: var(--aw-sheet-shadow), 0 0 0 1px var(--aw-teal-600); }
+.markdown-editor.is-document :deep(.milkdown) {
+  --crepe-color-background: var(--aw-sheet);
+  --crepe-font-title: var(--aw-font-serif);
+  --crepe-font-default: var(--aw-font-serif);
+}
+.markdown-editor.is-document :deep(.milkdown .ProseMirror) {
+  padding: 2.75rem clamp(1.25rem, 9%, 4.5rem) 3rem;
+  font-family: var(--aw-font-serif);
+  font-size: var(--aw-text-doc);
+  line-height: 1.62;
 }
 
 /* Compact the Crepe top bar (toolbar) and align its controls with PrimeVue. */

@@ -209,3 +209,38 @@ export function collapseFindings(entries: OutlineEntry[], limit = 3): OutlineEnt
     ...entries.slice(tail),
   ]
 }
+
+/** The engagement ratings the report template allows, most favourable first. */
+export const RATINGS = ['satisfactory', 'fair', 'marginal', 'unsatisfactory'] as const
+export type Rating = typeof RATINGS[number]
+
+/**
+ * The rating the report asserts, read the way the backend's quality check
+ * reads it (`report.py`, `_RATING_CLAIM`): one of the four in bold, or after
+ * the word "rating". Two readers of one sentence must not disagree about
+ * whether it assigns a rating, so this mirrors that pattern rather than
+ * improving on it.
+ */
+const RATING_CLAIM = /\*\*\s*(satisfactory|fair|marginal|unsatisfactory)\s*\*\*|\brating\b[^A-Za-z0-9]{0,12}(satisfactory|fair|marginal|unsatisfactory)\b/i
+
+export function ratingClaim(markdown: string): Rating | null {
+  const match = RATING_CLAIM.exec(markdown || '')
+  return match ? ((match[1] ?? match[2]).toLowerCase() as Rating) : null
+}
+
+/**
+ * The Summary of Findings counts, read off the table the report assembles
+ * (`_summary_of_findings`): one column per severity, one row for the unit.
+ * Read from the document rather than the register, so the bar drawn under the
+ * table can never disagree with the table.
+ */
+export function severityCounts(markdown: string): Array<{ severity: string; count: number }> {
+  const rows = (markdown || '').split('\n').map(line => line.trim()).filter(line => line.startsWith('|'))
+  if (rows.length < 3) return []
+  const cells = (line: string) => line.replace(/^\||\|$/g, '').split('|').map(cell => cell.trim())
+  const header = cells(rows[0]).map(cell => cell.toLowerCase())
+  const values = cells(rows[2])
+  return header
+    .map((name, index) => ({ severity: name, count: Number(values[index]) }))
+    .filter(item => ['critical', 'high', 'medium', 'low'].includes(item.severity) && Number.isFinite(item.count))
+}

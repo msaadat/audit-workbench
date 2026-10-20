@@ -9,6 +9,10 @@ import Tooltip from 'primevue/tooltip'
 // Self-hosted fonts (no CDN — this tool runs fully local/offline).
 import '@fontsource-variable/inter'
 import '@fontsource-variable/jetbrains-mono'
+// The reading face of the written work products — memorandum, memo, report.
+// The optical-size axis is what keeps it crisp at 16 px and elegant at 40.
+import '@fontsource-variable/source-serif-4/opsz.css'
+import '@fontsource-variable/source-serif-4/opsz-italic.css'
 
 import App from './App.vue'
 import router from './router'

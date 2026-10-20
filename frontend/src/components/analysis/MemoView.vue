@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import { api } from '../../api'
 import type {
@@ -8,12 +8,16 @@ import type {
   SavedAnalysis,
   WorkspaceSummary,
 } from '../../types'
-import ChartView from '../ChartView.vue'
-import FrameTable from '../FrameTable.vue'
 import MarkdownView from '../MarkdownView.vue'
+import UiDocumentHeading from '../ui/UiDocumentHeading.vue'
+import UiDocumentSheet from '../ui/UiDocumentSheet.vue'
+import type { DocumentCover, SheetLine } from '../ui/documentSheet'
 import { headingCount, markdownBlocks } from '../ui/markdownBlocks'
 import type { OutlineEntry } from '../ui/markdownOutline'
 import { classificationTone, foundSummary } from './analysisStatus'
+import MemoExhibitBody from './MemoExhibitBody.vue'
+import { memoCitations, memoSegments, memoUnits } from './memoExhibits'
+import type { Embed, Exhibit, MemoUnit } from './memoExhibits'
 
 // The memo is one markdown document with embedded result references. It is
 // rendered by splitting at the embed fences and putting the real component
@@ -26,52 +30,30 @@ import { classificationTone, foundSummary } from './analysisStatus'
 // are computed once over the whole memo and handed down: a document rendered
 // in pieces must number its duplicate headings across the whole of itself.
 //
+// On the sheet each embed is an exhibit, numbered in the order the reader
+// meets it, and embeds with nothing written between them are one set — the
+// memo cites one finding's procedures together, and eight near-identical
+// one-row tables in a column are a wall, not evidence. A procedure the prose
+// cites becomes a superscript to its exhibit, or a chip where it has none.
+//
 // Only what the memo actually cites is fetched, one bounded request per embed.
 // A memo cites a handful of results, not every procedure in the engagement.
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   workspace: WorkspaceSummary
   markdown: string
   analyses: SavedAnalysis[]
   /** The whole memo's headings, in document order. */
   entries: OutlineEntry[]
-  /** The document's eyebrow, as `UiMarkdownDocument` draws it. */
-  eyebrow?: string
-}>()
+  cover?: DocumentCover | null
+  runningHead?: SheetLine | null
+  footer?: SheetLine | null
+  endMark?: string
+}>(), { cover: null, runningHead: null, footer: null, endMark: '' })
 const emit = defineEmits<{ open: [analysisId: string] }>()
 
-type Embed = { analysis: string; as: string; caption?: string }
-type Segment = { kind: 'prose'; text: string } | { kind: 'embed'; embed: Embed }
-
-const EMBED_BLOCK = /^```embed[ \t]*\n([\s\S]*?)^```[ \t]*$/gm
-
-function parseEmbed(body: string): Embed | null {
-  const fields: Record<string, string> = {}
-  for (const line of body.split('\n')) {
-    const match = /^([a-z_]+)\s*:\s*(.*)$/.exec(line.trim())
-    if (match) fields[match[1]] = match[2].trim()
-  }
-  if (!fields.analysis) return null
-  return { analysis: fields.analysis, as: fields.as || 'summary_table', caption: fields.caption }
-}
-
-const segments = computed<Segment[]>(() => {
-  const out: Segment[] = []
-  const source = props.markdown || ''
-  let cursor = 0
-  EMBED_BLOCK.lastIndex = 0
-  for (let match = EMBED_BLOCK.exec(source); match; match = EMBED_BLOCK.exec(source)) {
-    const prose = source.slice(cursor, match.index)
-    if (prose.trim()) out.push({ kind: 'prose', text: prose })
-    const embed = parseEmbed(match[1])
-    // A malformed directive is dropped rather than rendered as stray markup:
-    // the memo still reads correctly without it.
-    if (embed) out.push({ kind: 'embed', embed })
-    cursor = match.index + match[0].length
-  }
-  const tail = source.slice(cursor)
-  if (tail.trim()) out.push({ kind: 'prose', text: tail })
-  return out
-})
+const segments = computed(() => memoSegments(props.markdown))
+const units = computed(() => memoUnits(segments.value))
+const renderOptions = computed(() => ({ citations: memoCitations(props.analyses, units.value) }))
 
 const byId = computed(() => {
   const map: Record<string, SavedAnalysis> = {}
@@ -134,10 +116,6 @@ watch(
   { immediate: true, deep: true },
 )
 
-function statsFor(id: string) {
-  return byId.value[id]?.last_result?.stats ?? []
-}
-
 /**
  * Each prose segment, split at its headings against the whole memo's entries.
  *
@@ -154,184 +132,235 @@ const prose = computed(() => {
   })
   return out
 })
+
+/** The memo opens with its summary paragraph before any heading: the lede. */
+const firstProse = computed(() => units.value.find(unit => unit.kind === 'prose') as
+  Extract<MemoUnit, { kind: 'prose' }> | undefined)
+function isLede(unit: MemoUnit, position: number): boolean {
+  return unit === firstProse.value && position === 0 && !prose.value.get(unit.index)?.[0]?.entry
+}
+
+/** The figures beside the lede, counted off the procedures the page holds. */
+const figures = computed(() => {
+  const count = (classification: string) => props.analyses.filter(item => item.classification === classification).length
+  const unusual = count('unusual')
+  return [
+    // Received, not derived: a join is a frame the analysis built, and the
+    // memo's own data-received table counts only what was imported.
+    { value: props.workspace.tables.filter(table => table.kind === 'file').length, label: 'tables received' },
+    { value: props.analyses.filter(item => item.classification !== 'not_run').length, label: 'procedures run' },
+    { value: count('exception'), label: 'flag exceptions', tone: 'bad' },
+    { value: count('clear'), label: unusual ? `clean, ${unusual} unusual` : 'clean', tone: 'ok' },
+  ]
+})
+
+/** Which exhibit of each set is open. The first is, until the reader picks another. */
+const openExhibit = ref<Record<string, number>>({})
+function isOpen(unit: Extract<MemoUnit, { kind: 'exhibits' }>, exhibit: Exhibit): boolean {
+  return (openExhibit.value[unit.key] ?? unit.exhibits[0].number) === exhibit.number
+}
+function toggle(unit: Extract<MemoUnit, { kind: 'exhibits' }>, exhibit: Exhibit) {
+  openExhibit.value = { ...openExhibit.value, [unit.key]: isOpen(unit, exhibit) ? 0 : exhibit.number }
+}
+
+function exhibitTitle(exhibit: Exhibit): string {
+  return byId.value[exhibit.embed.analysis]?.title || exhibit.embed.analysis
+}
+function exhibitFound(exhibit: Exhibit): string {
+  const analysis = byId.value[exhibit.embed.analysis]
+  return analysis ? foundSummary(analysis) : ''
+}
+function exhibitTone(exhibit: Exhibit): string {
+  const analysis = byId.value[exhibit.embed.analysis]
+  return analysis ? classificationTone(analysis.classification) : 'neutral'
+}
+/** A set's title says what it holds without restating each procedure. */
+function setTitle(unit: Extract<MemoUnit, { kind: 'exhibits' }>): string {
+  const titles = new Set(unit.exhibits.map(exhibitTitle))
+  return titles.size === 1 ? [...titles][0] : `${unit.exhibits.length} procedures`
+}
+
+/**
+ * A citation in the prose: a superscript scrolls to its exhibit (and opens it
+ * in its set), a chip opens the procedure. One listener on the sheet, because
+ * the links are inside rendered Markdown that no component owns.
+ */
+const root = ref<InstanceType<typeof UiDocumentSheet> | null>(null)
+async function onClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  const jump = target?.closest<HTMLElement>('[data-jump]')
+  if (jump) {
+    event.preventDefault()
+    const number = Number(jump.dataset.jump?.replace('exhibit-', ''))
+    const unit = units.value.find(item => item.kind === 'exhibits' && item.exhibits.some(exhibit => exhibit.number === number))
+    if (unit?.kind === 'exhibits' && unit.exhibits.length > 1) openExhibit.value = { ...openExhibit.value, [unit.key]: number }
+    await nextTick()
+    root.value?.sheet?.querySelector(`#exhibit-${number}`)?.scrollIntoView({ block: 'start' })
+    return
+  }
+  const procedure = target?.closest<HTMLElement>('[data-procedure]')
+  if (procedure?.dataset.procedure) {
+    event.preventDefault()
+    emit('open', procedure.dataset.procedure)
+  }
+}
 </script>
 
 <template>
-  <article class="memo document">
-    <p v-if="eyebrow" class="eyebrow">{{ eyebrow }}</p>
-    <template v-for="(segment, index) in segments" :key="index">
-      <template v-if="segment.kind === 'prose'">
-        <template v-for="(block, position) in prose.get(index) ?? []" :key="position">
-          <component
-            :is="`h${block.entry.level}`"
-            v-if="block.entry"
-            :id="block.entry.id"
-            :class="`heading level-${block.entry.level}`"
-          >{{ block.entry.text }}</component>
-          <MarkdownView v-if="block.body" :markdown="block.body" class="body" />
+  <UiDocumentSheet
+    ref="root"
+    class="memo"
+    :cover="cover"
+    :runningHead="runningHead"
+    :footer="footer"
+    :endMark="endMark"
+    @click="onClick"
+  >
+    <template v-for="unit in units" :key="unit.kind === 'prose' ? `prose-${unit.index}` : unit.key">
+      <template v-if="unit.kind === 'prose'">
+        <template v-for="(block, position) in prose.get(unit.index) ?? []" :key="position">
+          <template v-if="isLede(unit, position)">
+            <div class="memo-lede">
+              <p class="memo-lede-label">In brief</p>
+              <MarkdownView :markdown="block.body" :document="renderOptions" class="memo-lede-text" />
+            </div>
+            <dl class="memo-figures">
+              <div v-for="figure in figures" :key="figure.label">
+                <dt>{{ figure.label }}</dt>
+                <dd :data-tone="figure.value ? figure.tone : undefined">{{ figure.value }}</dd>
+              </div>
+            </dl>
+          </template>
+          <template v-else>
+            <UiDocumentHeading v-if="block.entry" :entry="block.entry" />
+            <MarkdownView v-if="block.body" :markdown="block.body" :document="renderOptions" />
+          </template>
         </template>
       </template>
 
-      <!-- A cited result, drawn as a citation: which procedure produced it,
-           what it concluded, and the way back to it. The embed fence used to
-           drop a bare table between two paragraphs with the title alone above
-           it, so a reader could not tell a failing result from a clean one
-           without opening it. -->
-      <figure v-else class="memo-embed">
-        <button
-          type="button"
-          class="memo-embed-head"
-          @click="emit('open', segment.embed.analysis)"
-        >
-          <span
-            v-if="byId[segment.embed.analysis]"
-            class="memo-embed-dot"
-            :data-tone="classificationTone(byId[segment.embed.analysis]!.classification)"
-            aria-hidden="true"
-          />
-          <span class="memo-embed-id">{{ segment.embed.analysis }}</span>
-          <span class="memo-embed-title">
-            {{ byId[segment.embed.analysis]?.title || segment.embed.analysis }}
-          </span>
-          <span class="memo-embed-grow" />
-          <span v-if="byId[segment.embed.analysis]" class="memo-embed-found aw-figure">
-            {{ foundSummary(byId[segment.embed.analysis]!) }}
-          </span>
-          <i class="aw-icon aw-icon-chevron-right" aria-hidden="true" />
+      <!-- One exhibit: which procedure produced it, what it concluded, and
+           the way back to it, above the rows themselves. -->
+      <figure v-else-if="unit.exhibits.length === 1" :id="`exhibit-${unit.exhibits[0].number}`" class="exhibit">
+        <button type="button" class="exhibit-head" @click="emit('open', unit.exhibits[0].embed.analysis)">
+          <span class="exhibit-no">Exhibit {{ unit.exhibits[0].number }}</span>
+          <span class="exhibit-title">{{ exhibitTitle(unit.exhibits[0]) }}</span>
+          <span v-if="exhibitFound(unit.exhibits[0])" class="exhibit-found" :data-tone="exhibitTone(unit.exhibits[0])">{{ exhibitFound(unit.exhibits[0]) }}</span>
+          <span class="exhibit-id">{{ unit.exhibits[0].embed.analysis }}</span>
         </button>
+        <MemoExhibitBody
+          :embed="unit.exhibits[0].embed"
+          :number="unit.exhibits[0].number"
+          :analysis="byId[unit.exhibits[0].embed.analysis]"
+          :detail="details[unit.exhibits[0].embed.analysis]"
+          :flagged="flagged[unit.exhibits[0].embed.analysis]"
+          :failed="failed.has(unit.exhibits[0].embed.analysis)"
+        />
+      </figure>
 
-        <div v-if="failed.has(segment.embed.analysis)" class="memo-embed-error">
-          <i class="aw-icon aw-icon-triangle-alert" /> Could not load this result
+      <!-- A set: the procedures one passage cites together, one open and the
+           rest a line each. Print opens them all. -->
+      <figure v-else class="exhibit exhibit-set">
+        <div class="exhibit-head is-static">
+          <span class="exhibit-no">Exhibits {{ unit.exhibits[0].number }}–{{ unit.exhibits[unit.exhibits.length - 1].number }}</span>
+          <span class="exhibit-title">{{ setTitle(unit) }}</span>
         </div>
-
-        <template v-else-if="segment.embed.as === 'stats'">
-          <dl class="memo-stats">
-            <div v-for="stat in statsFor(segment.embed.analysis)" :key="stat.label">
-              <dt>{{ stat.label }}</dt>
-              <dd>{{ stat.value }}</dd>
-            </div>
-          </dl>
+        <template v-for="exhibit in unit.exhibits" :key="exhibit.number">
+          <button
+            :id="`exhibit-${exhibit.number}`"
+            type="button"
+            :class="['exhibit-row', { open: isOpen(unit, exhibit) }]"
+            :aria-expanded="isOpen(unit, exhibit)"
+            @click="toggle(unit, exhibit)"
+          >
+            <i :class="['aw-icon', isOpen(unit, exhibit) ? 'aw-icon-chevron-down' : 'aw-icon-chevron-right']" aria-hidden="true" />
+            <span class="exhibit-no">{{ exhibit.number }}</span>
+            <span class="exhibit-title">{{ exhibitTitle(exhibit) }}</span>
+            <span v-if="exhibitFound(exhibit)" class="exhibit-found" :data-tone="exhibitTone(exhibit)">{{ exhibitFound(exhibit) }}</span>
+            <span class="exhibit-id">{{ exhibit.embed.analysis }}</span>
+          </button>
+          <div v-show="isOpen(unit, exhibit)" class="exhibit-row-body">
+            <MemoExhibitBody
+              :embed="exhibit.embed"
+              :number="exhibit.number"
+              :analysis="byId[exhibit.embed.analysis]"
+              :detail="details[exhibit.embed.analysis]"
+              :flagged="flagged[exhibit.embed.analysis]"
+              :failed="failed.has(exhibit.embed.analysis)"
+            />
+          </div>
         </template>
-
-        <template v-else-if="segment.embed.as === 'exception_table'">
-          <FrameTable
-            v-if="flagged[segment.embed.analysis]?.frame"
-            :frame="flagged[segment.embed.analysis]!.frame!"
-            scrollHeight="260px"
-          />
-          <p v-else-if="flagged[segment.embed.analysis]" class="memo-embed-note">
-            This result recorded no flagged rows.
-          </p>
-          <div v-else class="memo-embed-loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /></div>
-        </template>
-
-        <template v-else>
-          <ChartView
-            v-if="segment.embed.as === 'chart' && details[segment.embed.analysis]?.frame"
-            :frame="details[segment.embed.analysis]!.frame!"
-            :viz="details[segment.embed.analysis]!.viz"
-            height="240px"
-          />
-          <FrameTable
-            v-else-if="details[segment.embed.analysis]?.frame"
-            :frame="details[segment.embed.analysis]!.frame!"
-            scrollHeight="260px"
-          />
-          <div v-else class="memo-embed-loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /></div>
-        </template>
-
-        <figcaption v-if="segment.embed.caption">{{ segment.embed.caption }}</figcaption>
       </figure>
     </template>
 
     <p v-if="!segments.length" class="memo-empty">This summary is empty.</p>
-  </article>
+  </UiDocumentSheet>
 </template>
 
 <style scoped>
-/* The memorandum's own card, on the same measure and the same padding, because
-   it is the same kind of thing: a written work product with a provenance
-   story. The measure is padding rather than a width, so the prose sits in one
-   column and a wide evidence table can still use the room beside it — which is
-   what the uncapped full-bleed version was really for. */
-.document {
-  min-width: 0;
-  padding-block: 1.5rem;
-  padding-inline: max(1.25rem, calc((100% - var(--aw-measure)) / 2));
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-surface);
-  background: var(--aw-panel);
-  font-size: var(--aw-text-md);
-  line-height: 1.65;
-}
-.eyebrow {
-  margin: 0 0 1rem;
-  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600;
-}
-.heading { color: var(--aw-ink-strong); scroll-margin-top: .75rem; }
-.heading.level-1 { margin: 0 0 1rem; font-size: var(--aw-text-2xl); font-weight: 700; letter-spacing: -0.02em; }
-.heading.level-2 { margin: 1.75rem 0 .5rem; font-size: var(--aw-text-xl); font-weight: 700; letter-spacing: -0.01em; }
-.heading.level-3 { margin: 1.25rem 0 .35rem; font-size: var(--aw-text-md); font-weight: 600; }
-.heading.level-4 { margin: 1rem 0 .3rem; font-size: var(--aw-text-base); font-weight: 600; }
-.document > .heading:first-of-type { margin-top: 0; }
-.body { color: var(--aw-ink); }
-
 /* Tables the memo writes itself — a data-received summary, a coverage matrix —
-   scroll rather than forcing the page to. */
+   scroll rather than forcing the sheet to. */
 .memo :deep(.markdown-view) { overflow-x: auto; }
-.memo :deep(.markdown-view table) { min-width: max-content; }
-.memo-embed {
-  margin: var(--aw-space-4) 0;
-  padding: var(--aw-space-3);
+
+.memo-lede { margin: 2rem 0 0; padding-top: 1.125rem; border-top: 1px solid var(--aw-border); }
+.memo-lede-label { margin: 0 0 .375rem; color: var(--aw-teal); font-family: var(--aw-font-sans); font-size: var(--aw-text-xs); font-weight: 650; }
+.memo-lede-text { color: var(--aw-ink-strong); font-size: 1.15em; line-height: 1.55; }
+
+.memo-figures {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  margin: .75rem 0 0;
+  border-top: 1px solid var(--aw-border); border-bottom: 1px solid var(--aw-border);
+}
+.memo-figures > div { display: flex; flex-direction: column-reverse; padding: .875rem .875rem .875rem 0; }
+.memo-figures dt { margin-top: .375rem; color: var(--aw-muted); font-family: var(--aw-font-sans); font-size: var(--aw-text-xs); }
+.memo-figures dd {
+  margin: 0; color: var(--aw-ink-strong);
+  font-family: var(--aw-font-serif); font-size: var(--aw-text-2xl); font-weight: 500; line-height: 1;
+}
+.memo-figures dd[data-tone='bad'] { color: var(--aw-danger); }
+.memo-figures dd[data-tone='ok'] { color: var(--aw-ok); }
+
+/* An exhibit, numbered in the order the reader meets it. */
+.exhibit {
+  margin: 1.125rem 0 1.25rem;
+  border: 1px solid var(--aw-border); border-radius: 6px;
   overflow: hidden;
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-control);
-  background: var(--aw-panel);
+  font-family: var(--aw-font-sans);
+  scroll-margin-top: .75rem;
+  break-inside: avoid;
 }
-.memo-embed-head {
-  display: flex;
-  align-items: center;
-  gap: var(--aw-space-2);
-  width: 100%;
-  margin: calc(var(--aw-space-3) * -1) calc(var(--aw-space-3) * -1) var(--aw-space-2);
-  padding: var(--aw-space-2) var(--aw-space-3);
-  width: calc(100% + var(--aw-space-3) * 2);
-  border: 0; border-bottom: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-control) var(--aw-radius-control) 0 0;
-  background: var(--aw-raised);
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
+.exhibit-head, .exhibit-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .375rem .75rem;
+  width: 100%; padding: .55rem .875rem;
+  border: 0; background: var(--aw-panel-wash);
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.memo-embed-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
-.memo-embed-dot[data-tone='ok'] { background: var(--aw-ok); }
-.memo-embed-dot[data-tone='warn'] { background: var(--aw-warn); }
-.memo-embed-dot[data-tone='bad'] { background: var(--aw-danger); }
-.memo-embed-id { flex: none; color: var(--aw-ink-soft); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap; }
-.memo-embed-title { min-width: 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-sm); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.memo-embed-grow { flex: 1; }
-.memo-embed-found { color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: nowrap; }
-.memo-embed-head .aw-icon { color: var(--aw-muted); font-size: var(--aw-text-xs); }
-.memo-embed-head:hover .memo-embed-title { text-decoration: underline; }
-.memo-embed figcaption {
-  margin-top: var(--aw-space-2);
-  color: var(--aw-muted);
-  font-size: var(--aw-text-xs);
+.exhibit-head { border-bottom: 1px solid var(--aw-border); background: var(--aw-raised); }
+.exhibit-head.is-static { cursor: default; }
+.exhibit-head:not(.is-static):hover .exhibit-title { text-decoration: underline; }
+.exhibit-row { border-top: 1px solid var(--aw-border); scroll-margin-top: .75rem; }
+.exhibit-head + .exhibit-row { border-top: 0; }
+.exhibit-row:hover { background: var(--aw-raised); }
+.exhibit-row.open { background: var(--aw-raised); }
+.exhibit-row .aw-icon { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.exhibit-row-body { border-top: 1px solid var(--aw-border); }
+.exhibit-no { color: var(--aw-teal); font-size: var(--aw-text-xs); font-weight: 700; white-space: nowrap; }
+.exhibit-title { flex: 1 1 12rem; min-width: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-sm); font-weight: 650; line-height: 1.35; }
+.exhibit-row .exhibit-title { font-weight: 600; }
+.exhibit-found {
+  padding: 0 .5rem;
+  border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-pill);
+  color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 600; white-space: nowrap;
 }
-.memo-embed-loading, .memo-embed-error {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  min-height: 6rem;
-  color: var(--aw-muted);
-  font-size: var(--aw-text-sm);
+.exhibit-found[data-tone='bad'] { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
+.exhibit-found[data-tone='warn'] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.exhibit-found[data-tone='ok'] { border-color: var(--aw-ok-line); background: var(--aw-ok-soft); color: var(--aw-ok); }
+.exhibit-id { color: var(--aw-teal); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); white-space: nowrap; }
+
+.memo-empty { color: var(--aw-muted); font-family: var(--aw-font-sans); }
+
+@media print {
+  .exhibit-row-body { display: block !important; }
+  .exhibit-row .aw-icon { display: none; }
+  .exhibit-set { break-inside: auto; }
 }
-.memo-embed-error { color: var(--aw-danger); }
-.memo-embed-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.memo-stats { display: flex; flex-wrap: wrap; gap: var(--aw-space-4); margin: 0; }
-.memo-stats dt { color: var(--aw-muted); font-size: var(--aw-text-xs); }
-.memo-stats dd { margin: 0; font-size: var(--aw-text-md); font-weight: 600; }
-.memo-empty { color: var(--aw-muted); }
 </style>

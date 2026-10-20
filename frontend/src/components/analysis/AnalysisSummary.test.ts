@@ -94,11 +94,11 @@ describe('AnalysisSummary', () => {
     const wrapper = render([failing, analysis()])
     await flushPromises()
 
-    expect(wrapper.findAll('.outline .entry').map(node => node.text())).toEqual([
-      'Data received and its limitations',
-      'What the analysis found',
-      '1. Invoices billed above approved amounts',
-      '2. Nothing else',
+    expect(wrapper.findAll('.outline .entry').map(node => node.findAll('.num, .text').map(part => part.text()).join(' '))).toEqual([
+      '1 Data received and its limitations',
+      '2 What the analysis found',
+      '1 Invoices billed above approved amounts',
+      '2 Nothing else',
     ])
   })
 
@@ -113,7 +113,7 @@ describe('AnalysisSummary', () => {
     await flushPromises()
 
     const marked = wrapper.findAll('.entry').filter(node => node.find('.mark').exists())
-    expect(marked.map(node => node.text())).toEqual(['1. Invoices billed above approved amounts'])
+    expect(marked.map(node => node.findAll('.num, .text').map(part => part.text()).join(' '))).toEqual(['1 Invoices billed above approved amounts'])
   })
 
   it('says what it cites and what it does not', async () => {

@@ -1003,6 +1003,22 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `--aw-measure`. Stored lower-case values pass through `format.sentenceCase`
   where they are shown. A piece of the audit file has one of five states,
   drawn by `ui/UiStateIcon.vue` as an icon and a word.
+- **The written work products are documents on a sheet.** The planning
+  memorandum, the EDA memo and the draft report render on
+  `ui/UiDocumentSheet.vue`: a desk, an A4-width sheet, a running head, a cover
+  carrying the page's own document control, and an end mark. Their running
+  text is the one use of the serif (`--aw-font-serif`, role
+  `.aw-type-document`). `markdownToHtml(md, { document })` draws the forms a
+  report has — label and value, numbered register, process steps (an ordered
+  bold-led list naming the cycle's steps), hanging labels, ruled tables,
+  severities, the preliminary band, gaps, and memo citations — from the
+  Markdown's own shape, and falls back to the plain rendering whenever the
+  shape is not there; chat and narratives never pass `document`. Section
+  numbers are computed once in `markdownOutline`, so the outline and the hung
+  numbers agree. Nothing here is a prompt or template contract: the report and
+  memo are assembled by code, and the memorandum's varying shapes are read as
+  they come. Print goes through `ui/printDocument.ts`, which prints a copy of
+  the sheet alone, in the light theme.
 - Existing uncommitted workspace or code changes may be user-owned. Do not
   revert them unless explicitly asked.
 

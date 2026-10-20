@@ -94,10 +94,11 @@ async function mountView() {
 describe('ReportView', () => {
   it('builds the outline from the headings and folds the detailed findings', async () => {
     const wrapper = await mountView()
-    const entries = wrapper.findAll('.outline .entry').map(node => node.text())
+    const entries = wrapper.findAll('.outline .entry').map(node => node.findAll('.num, .text').map(part => part.text()).join(' '))
 
+    // The report's own numbers are kept, set apart from the heading.
     expect(entries.slice(0, 3)).toEqual([
-      'Internal Audit Report', 'A. Executive Summary', '3. Audit Conclusion',
+      'Internal Audit Report', 'A Executive Summary', '3 Audit Conclusion',
     ])
     expect(entries).toContain('… 2 more')
     // The excluded findings are marked where the reader meets them.

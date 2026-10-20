@@ -18,6 +18,10 @@ body {
   /* --- Typography ------------------------------------------------------ */
   --aw-font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --aw-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  /* The written work products — memorandum, memo, report — are set in a
+     serif, so a document reads as a document and not as more interface. Inter
+     still draws their structure: labels, tables, numbers in the margin. */
+  --aw-font-serif: 'Source Serif 4 Variable', 'Source Serif 4', Georgia, 'Times New Roman', serif;
 
   /* One step per role, on whole pixels at the default 16 px root:
        2xs 11  column heads, the one uppercase in the app
@@ -39,6 +43,9 @@ body {
   --aw-text-xl: 1.375rem;
   --aw-text-2xl: 1.75rem;
   --aw-text-3xl: 2.25rem;
+  /* Running text on a document sheet. A serif reads smaller than Inter at the
+     same size, so it sits a step above the interface's reading size. */
+  --aw-text-doc: 1rem;
   --aw-weight-title: 650;
   /* A line of reading text. `ch` is the width of a zero, which is wider than
      an average letter, so 70ch at the reading size is about 80–85 characters
@@ -116,6 +123,13 @@ body {
   --aw-navy-950: #07162b;
   --aw-navy-900: #0d2340;
   --aw-navy-800: #14294a;
+  /* A written work product is a sheet on a desk: the desk a step below the
+     canvas, the sheet lifted off it by a shadow and no border, because it
+     floats. The width is A4 at 96 dpi, so what prints is what was read. */
+  --aw-desk: #e7ecf2;
+  --aw-sheet: #ffffff;
+  --aw-sheet-shadow: 0 1px 2px rgb(13 35 64 / 8%), 0 14px 36px rgb(13 35 64 / 9%);
+  --aw-sheet-width: 49.625rem;
 
   /* --- Borders --------------------------------------------------------- */
   --aw-border: #dce5ee;
@@ -204,6 +218,7 @@ body {
   --aw-text-xl: 1.6rem;
   --aw-text-2xl: 2.05rem;
   --aw-text-3xl: 2.6rem;
+  --aw-text-doc: 1.18rem;
 
   --aw-control-height: 2.4rem;
   --aw-control-height-sm: 2.1rem;
@@ -255,6 +270,9 @@ body {
     --aw-navy-950: #0a0e14;
     --aw-navy-900: #0d121a;
     --aw-navy-800: #1a2130;
+    --aw-desk: #0b1017;
+    --aw-sheet: #161c26;
+    --aw-sheet-shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 36px rgb(0 0 0 / 34%);
 
     --aw-border: #262f3d;
     --aw-border-strong: #35404f;
@@ -321,6 +339,9 @@ body {
   --aw-navy-950: #0a0e14;
   --aw-navy-900: #0d121a;
   --aw-navy-800: #1a2130;
+  --aw-desk: #0b1017;
+  --aw-sheet: #161c26;
+  --aw-sheet-shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 36px rgb(0 0 0 / 34%);
 
   --aw-border: #262f3d;
   --aw-border-strong: #35404f;
@@ -435,8 +456,10 @@ h1, h2, h3, h4 { color: var(--aw-ink); letter-spacing: -0.02em; font-weight: var
 h1 { font-size: var(--aw-text-2xl); line-height: 1.15; }
 
 /* =========================================================================
-   Type roles. Seven, and each is a size, a weight and a colour together, so
-   a page states a role rather than re-deriving one from the scale.
+   Type roles. Seven for the interface, and each is a size, a weight and a
+   colour together, so a page states a role rather than re-deriving one from
+   the scale. An eighth, `.aw-type-document`, is the running text of a written
+   work product on its sheet — the one place the serif face is used.
 
    Uppercase belongs to one role only — a table's column head — because a
    column head is the one label read sideways across a grid. Everywhere else a
@@ -453,6 +476,22 @@ h1 { font-size: var(--aw-text-2xl); line-height: 1.15; }
 .aw-type-body { color: var(--aw-ink); font-size: var(--aw-text-base); line-height: 1.5; }
 .aw-type-reading { max-width: var(--aw-measure); color: var(--aw-ink); font-size: var(--aw-text-md); line-height: 1.65; }
 .aw-type-meta { color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.45; }
+.aw-type-document { color: var(--aw-ink); font-family: var(--aw-font-serif); font-size: var(--aw-text-doc); line-height: 1.62; font-optical-sizing: auto; }
+
+/* A finding's severity, as the report states it. One pill wherever a severity
+   is written — a Key Findings cell, a finding's header — in the colours the
+   report rail's risk bar uses, so critical > high > medium > low reads the same
+   everywhere. Critical is the one solid fill: it is a label, not a button. */
+.aw-severity {
+  display: inline-block; padding: 0 .55rem;
+  border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-pill);
+  color: var(--aw-ink-soft); font-family: var(--aw-font-sans); font-size: var(--aw-text-xs); font-weight: 650;
+  line-height: 1.55; white-space: nowrap;
+}
+.aw-severity[data-sev='critical'] { border-color: var(--aw-danger); background: var(--aw-danger); color: var(--aw-on-accent); }
+.aw-severity[data-sev='high'] { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
+.aw-severity[data-sev='medium'] { border-color: color-mix(in srgb, var(--aw-low) 45%, transparent); background: var(--aw-low-soft); color: var(--aw-low-ink); }
+.aw-severity[data-sev='low'] { border-color: var(--aw-ok-line); background: var(--aw-ok-soft); color: var(--aw-ok); }
 .aw-type-column {
   color: var(--aw-muted);
   font-size: var(--aw-text-2xs);
@@ -923,6 +962,26 @@ html .aw-dense .p-multiselect { min-height: var(--aw-control-height-sm); }
   #app, .workspace-page { height: auto; display: block; }
   .ui-surface, .ui-surface__panel { display: block; overflow: visible; height: auto; }
   body { background: #ffffff; }
+}
+
+/* Printing one document sheet (`ui/printDocument.ts`): the copy of the sheet
+   at the top of <body> is the page, and nothing else is. What the page says
+   about the document rather than in it — issue strips, links back into the
+   app — is `aw-screen-only` and stays off the paper. */
+.aw-print-root { display: none; }
+@media print {
+  html.aw-printing body > :not(.aw-print-root) { display: none !important; }
+  html.aw-printing, html.aw-printing body { height: auto; overflow: visible; background: var(--aw-sheet); }
+  html.aw-printing .aw-print-root { display: block; }
+  .aw-screen-only { display: none !important; }
+}
+/* A4, the sheet's own size. The page number sits in the margin box, where the
+   browser supports one; a margin box does not inherit the document's custom
+   properties, so its type is stated rather than tokenised. */
+@page {
+  size: A4;
+  margin: 16mm 16mm 18mm;
+  @bottom-right { content: counter(page) ' / ' counter(pages); color: #5a6a81; font: 8pt 'Inter Variable', sans-serif; }
 }
 
 /* Keyed to the tab's own width: the nav rail and the assistant drawer both

@@ -103,8 +103,9 @@ describe('ApmView', () => {
   it('builds the outline from the memorandum headings', async () => {
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('.outline .entry').map(node => node.text())).toEqual([
-      'Audit Planning Memorandum', 'Engagement', 'Introduction and background',
+    // Each section carries the number the document hangs in its margin.
+    expect(wrapper.findAll('.outline .entry').map(node => node.findAll('.num, .text').map(part => part.text()).join(' '))).toEqual([
+      'Audit Planning Memorandum', '1 Engagement', '2 Introduction and background',
     ])
   })
 

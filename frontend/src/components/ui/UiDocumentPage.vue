@@ -123,7 +123,10 @@ const columns = computed(() => `13.75rem minmax(0, 1fr) ${props.railWidth}`)
         @click="jump(entry.id)"
       >
         <span v-if="marks[entry.id]" class="mark" :data-tone="marks[entry.id]" aria-hidden="true" />
-        <span class="text">{{ entry.text }}</span>
+        <!-- The number the document hangs in its margin, so an entry and the
+             heading it scrolls to are named the same way. -->
+        <span v-if="entry.number" class="num">{{ entry.number }}</span>
+        <span class="text">{{ entry.label ?? entry.text }}</span>
         <span v-if="badges[entry.id]" class="badge">{{ badges[entry.id] }}</span>
       </button>
       <p v-if="!entries.length" class="empty">Nothing drafted yet.</p>
@@ -166,6 +169,12 @@ const columns = computed(() => `13.75rem minmax(0, 1fr) ${props.railWidth}`)
 .entry.active { border-left-color: var(--aw-teal); color: var(--aw-teal-strong); font-weight: 600; }
 .entry.level-3, .entry.level-4 { padding-left: 1.25rem; font-size: var(--aw-text-xs); }
 .entry .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry .num {
+  flex: none; min-width: 1.5em;
+  color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.entry.active .num { color: var(--aw-teal); }
 .mark { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
 .mark[data-tone='bad'] { background: var(--aw-danger); }
 .mark[data-tone='warn'] { background: var(--aw-warn); }

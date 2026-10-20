@@ -20,6 +20,9 @@ import UiEmptyState from '../components/ui/UiEmptyState.vue'
 import UiMarkdownDocument from '../components/ui/UiMarkdownDocument.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 import { markdownOutline } from '../components/ui/markdownOutline'
+import { documentDate } from '../components/ui/documentSheet'
+import type { CoverField, DocumentCover, SheetLine } from '../components/ui/documentSheet'
+import { printSheetIn } from '../components/ui/printDocument'
 import { stamp } from '../components/report/reportStatus'
 
 /**
@@ -231,10 +234,56 @@ const menuItems = computed(() => [
 
 const rcmCount = computed(() => data.value?.rcm.length ?? 0)
 const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.process).filter(Boolean)).size)
+
+/**
+ * What the sheet says about the memorandum: who drafted it, who last changed
+ * it, and what was derived from it. All of it is already on this page — the
+ * provenance, the planning record, the cycle — so nothing new is fetched.
+ * There is deliberately no "reviewed" field: nothing records a review.
+ */
+const entity = computed(() => planning.value?.context?.entity?.trim() ?? '')
+const cover = computed<DocumentCover>(() => {
+  const fields: CoverField[] = [
+    attributed.value
+      ? { label: 'Prepared', value: 'Assistant draft', note: documentDate(attributed.value.unit.finished_at), tone: 'agent' }
+      : { label: 'Prepared', value: 'Auditor' },
+  ]
+  if (planning.value?.updated) {
+    fields.push({
+      label: 'Last edited',
+      value: planning.value.created_by === 'user' ? 'Auditor' : 'Assistant',
+      note: documentDate(planning.value.updated),
+    })
+  }
+  if (planning.value?.cycle) {
+    fields.push({
+      label: 'Feeds',
+      value: `${plural(planning.value.cycle.steps.length, 'step')} in the cycle`,
+      note: `${plural(rcmCount.value, 'risk')} in the matrix`,
+      tone: cycleStale.value ? 'warn' : undefined,
+    })
+  }
+  return { eyebrow: `Internal audit · ${props.workspace.name}`, fields }
+})
+const runningHead = computed<SheetLine>(() => [
+  [entity.value || props.workspace.name, planning.value?.cycle?.name].filter(Boolean).join(' · '),
+  'Audit planning memorandum',
+])
+const footer = computed<SheetLine>(() => [
+  `${props.workspace.name} · workspace revision ${props.workspace.revision}`,
+  'Audit Workbench',
+])
+/** The memorandum's process list is drawn as steps when it names these. */
+const renderOptions = computed(() => ({
+  stepNames: (planning.value?.cycle?.steps ?? []).map(step => step.name),
+}))
+
+const page = ref<HTMLElement | null>(null)
+function print() { printSheetIn(page.value) }
 </script>
 
 <template>
-  <div v-if="data" class="apm">
+  <div v-if="data" ref="page" class="apm">
     <header class="page-head">
       <h1>Audit planning memorandum</h1>
       <span class="grow" />
@@ -247,6 +296,15 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
         severity="secondary"
         :loading="saving"
         @click="editing ? doneEditing() : (editing = true)"
+      />
+      <Button
+        v-if="hasContent && !editing"
+        label="Print or PDF"
+        icon="aw-icon aw-icon-printer"
+        size="small"
+        outlined
+        severity="secondary"
+        @click="print"
       />
       <Button
         v-if="hasContent"
@@ -294,12 +352,16 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
         :fills="editing"
       >
         <div v-if="editing" class="editor">
-          <MarkdownEditor v-model="data.planning.apm_markdown" placeholder="Write the planning memorandum, or generate a draft from the engagement material." />
+          <MarkdownEditor v-model="data.planning.apm_markdown" document placeholder="Write the planning memorandum, or generate a draft from the engagement material." />
         </div>
         <UiMarkdownDocument
           v-else
           :markdown="markdown"
-          :eyebrow="`Audit planning memorandum · ${workspace.name}`"
+          :cover="cover"
+          :runningHead="runningHead"
+          :footer="footer"
+          :document="renderOptions"
+          endMark="End of memorandum"
         />
 
         <template #rail>
@@ -403,7 +465,11 @@ const processes = computed(() => new Set((data.value?.rcm ?? []).map(row => row.
 /* The editor fills the column and scrolls inside itself. Given a fixed height
    inside a scrolling column it produced two scrollbars for one text, and the
    outer one moved the editor rather than the document in it. */
-.editor { display: flex; flex-direction: column; min-height: 24rem; }
+.editor {
+  display: flex; flex-direction: column; min-height: 24rem;
+  padding: var(--aw-space-5) var(--aw-space-4) 0;
+  border-radius: var(--aw-radius-surface); background: var(--aw-desk);
+}
 .editor :deep(.markdown-editor) { flex: 1; min-height: 0; overflow-y: auto; }
 
 .card { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }

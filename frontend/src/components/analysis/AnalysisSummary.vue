@@ -11,6 +11,9 @@ import UiDocumentPage from '../ui/UiDocumentPage.vue'
 import UiEmptyState from '../ui/UiEmptyState.vue'
 import UiVerdictBar from '../ui/UiVerdictBar.vue'
 import { markdownOutline } from '../ui/markdownOutline'
+import { documentDate } from '../ui/documentSheet'
+import type { DocumentCover, SheetLine } from '../ui/documentSheet'
+import { printSheetIn } from '../ui/printDocument'
 import { stamp } from '../report/reportStatus'
 import { classificationTone, foundSummary, holdsExceptions } from './analysisStatus'
 
@@ -109,6 +112,36 @@ const marks = computed(() => {
   return out
 })
 
+/**
+ * What the sheet says about the memo: who wrote it, whether it still describes
+ * the results, and how much of the analysis it carries. The memo has no `#`
+ * title of its own — the assembler opens it with its summary paragraph — so
+ * the title is the page's.
+ */
+const exhibits = computed(() => (markdown.value.match(/^```embed/gm) ?? []).length)
+const cover = computed<DocumentCover>(() => ({
+  eyebrow: `Exploratory data analysis · ${props.workspace.name}`,
+  title: 'Data analysis summary',
+  fields: [
+    { label: 'Written', value: 'Assistant', note: documentDate(memo.value?.generated_at), tone: 'agent' },
+    memo.value?.stale
+      ? { label: 'Basis', value: 'Stale', note: 'results have changed since', tone: 'warn' }
+      : { label: 'Basis', value: 'Current', note: 'no conclusion has changed since', tone: 'ok' },
+    { label: 'Cites', value: `${cited.value.length} of ${plural(props.analyses.length, 'procedure')}`, note: `${plural(exhibits.value, 'exhibit')}` },
+    ...(memo.value?.run_id ? [{ label: 'Run', value: memo.value.run_id }] : []),
+  ],
+}))
+const runningHead = computed<SheetLine>(() => [
+  props.workspace.name,
+  ['Data analysis memo', documentDate(memo.value?.generated_at)].filter(Boolean).join(' · '),
+])
+const footer = computed<SheetLine>(() => [
+  `${props.workspace.name} · ${plural(cited.value.length, 'procedure')} cited`,
+  'Audit Workbench',
+])
+const page = ref<HTMLElement | null>(null)
+function print() { printSheetIn(page.value) }
+
 const outstanding = computed(() => props.analyses.filter(item => item.state !== 'current').length)
 const staleSentence = computed(() => {
   if (memo.value?.stale) {
@@ -147,6 +180,14 @@ const staleSentence = computed(() => {
       </template>
       <template #actions>
         <Button
+          label="Print or PDF"
+          icon="aw-icon aw-icon-printer"
+          size="small"
+          outlined
+          severity="secondary"
+          @click="print"
+        />
+        <Button
           label="Regenerate"
           icon="aw-icon aw-icon-refresh-cw"
           size="small"
@@ -157,6 +198,7 @@ const staleSentence = computed(() => {
       </template>
     </UiVerdictBar>
 
+    <div ref="page" class="memo-page">
     <UiDocumentPage
       :entries="entries"
       :marks="marks"
@@ -168,7 +210,10 @@ const staleSentence = computed(() => {
         :markdown="markdown"
         :analyses="analyses"
         :entries="entries"
-        :eyebrow="`Analysis summary · ${workspace.name}`"
+        :cover="cover"
+        :runningHead="runningHead"
+        :footer="footer"
+        endMark="End of memo"
         @open="id => emit('open', id)"
       />
 
@@ -234,6 +279,7 @@ const staleSentence = computed(() => {
         </section>
       </template>
     </UiDocumentPage>
+    </div>
   </template>
 
   <UiEmptyState
@@ -254,6 +300,9 @@ const staleSentence = computed(() => {
 </template>
 
 <style scoped>
+/* Only a handle for Print to find the sheet by: it takes no part in the
+   layout, so the document page still fills the tab as it did. */
+.memo-page { display: contents; }
 .meta { color: var(--aw-muted); font-size: var(--aw-text-sm); font-weight: 500; }
 
 .card { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }

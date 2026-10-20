@@ -21,9 +21,13 @@ import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 import { markdownOutline } from '../components/ui/markdownOutline'
 import { openItems } from '../components/findings/findingsStatus'
 import {
-  collapseFindings, issueHeading, outlineMarks, placeIssues, reportIssues,
-  stamp, staleSentence,
+  collapseFindings, issueHeading, outlineMarks, placeIssues, RATINGS, ratingClaim,
+  reportIssues, severityCounts, stamp, staleSentence,
 } from '../components/report/reportStatus'
+import { documentDate } from '../components/ui/documentSheet'
+import type { CoverField, DocumentCover, SheetLine } from '../components/ui/documentSheet'
+import type { OutlineEntry } from '../components/ui/markdownOutline'
+import { printSheetIn } from '../components/ui/printDocument'
 
 /**
  * The draft report: the document, what is wrong with it, and what it drew on.
@@ -259,6 +263,63 @@ const riskBands = computed(() => {
   return { bands: bands.map(band => ({ ...band, share: (band.count / total) * 100 })), total }
 })
 
+/**
+ * What the sheet says about the draft. The entity and period are the planning
+ * basis the report was written against, the rating is the one the document
+ * asserts — read as the quality check reads it — and "Preliminary" is the
+ * same fact the report's own notice states.
+ */
+const rating = computed(() => ratingClaim(markdown.value))
+const planningBasis = computed(() => (context.value?.planning ?? {}) as Record<string, unknown>)
+const entity = computed(() => String(planningBasis.value.entity ?? '').trim())
+const period = computed(() => String(planningBasis.value.period ?? '').trim())
+function titled(value: string): string { return value ? value[0].toUpperCase() + value.slice(1) : value }
+
+const cover = computed<DocumentCover>(() => {
+  const fields: CoverField[] = []
+  if (entity.value) fields.push({ label: 'Entity', value: entity.value })
+  if (period.value) fields.push({ label: 'Period', value: titled(period.value) })
+  fields.push(report.value?.generated_at
+    ? {
+        label: 'Generated',
+        value: 'Assistant',
+        note: [documentDate(report.value.generated_at), report.value.edited ? 'edited by an auditor' : ''].filter(Boolean).join(' · '),
+        tone: 'agent',
+      }
+    : { label: 'Written', value: 'Auditor', note: documentDate(report.value?.updated) })
+  fields.push(rating.value
+    ? { label: 'Rating', value: titled(rating.value) }
+    : { label: 'Rating', value: 'Not assigned', note: context.value?.preliminary ? 'Fieldwork open' : undefined })
+  return {
+    eyebrow: 'Internal audit report',
+    tag: context.value?.preliminary ? { label: 'Preliminary', tone: 'warn' } : undefined,
+    fields,
+  }
+})
+const runningHead = computed<SheetLine>(() => [
+  [entity.value, props.workspace.name].filter(Boolean).join(' · '),
+  context.value?.preliminary ? 'Internal audit report · preliminary draft' : 'Internal audit report',
+])
+const footer = computed<SheetLine>(() => [
+  [props.workspace.name, report.value?.generated_by_run ? `run ${report.value.generated_by_run}` : ''].filter(Boolean).join(' · '),
+  'Audit Workbench',
+])
+
+/** The section that carries the rating, and the one that counts the findings. */
+function isConclusion(entry: OutlineEntry | null): boolean {
+  return Boolean(entry && entry.level > 1 && /conclusion|opinion/i.test(entry.label ?? entry.text))
+}
+function isSeveritySummary(entry: OutlineEntry | null): boolean {
+  return Boolean(entry && entry.level > 1 && /summary of findings/i.test(entry.label ?? entry.text))
+}
+const RATING_TONE: Record<string, string> = {
+  satisfactory: 'ok', fair: 'low', marginal: 'warn', unsatisfactory: 'bad',
+}
+const SEVERITY_COLOUR: Record<string, string> = Object.fromEntries(RISK_BANDS.map(band => [band.key, band.colour]))
+
+const page = ref<HTMLElement | null>(null)
+function print() { printSheetIn(page.value) }
+
 /** The action a strip offers, where the page can actually take it. */
 function stripAction(issue: ReportQualityIssue): string {
   return issue.code === 'preliminary_label_missing' ? 'Add the label' : ''
@@ -269,7 +330,7 @@ function runStrip(issue: ReportQualityIssue) {
 </script>
 
 <template>
-  <div v-if="report" class="report">
+  <div v-if="report" ref="page" class="report">
     <header class="page-head">
       <h1>Draft audit report</h1>
       <span class="grow" />
@@ -297,6 +358,15 @@ function runStrip(issue: ReportQualityIssue) {
           severity="secondary"
           :loading="busy"
           @click="check(false)"
+        />
+        <Button
+          v-if="hasContent && !editing"
+          label="Print or PDF"
+          icon="aw-icon aw-icon-printer"
+          size="small"
+          outlined
+          severity="secondary"
+          @click="print"
         />
         <Button
           v-if="editing"
@@ -356,14 +426,69 @@ function runStrip(issue: ReportQualityIssue) {
         :fills="editing"
       >
         <div v-if="editing" class="editor">
-          <MarkdownEditor v-model="report.markdown" placeholder="Write the report, or generate a draft from the audit file." />
+          <MarkdownEditor v-model="report.markdown" document placeholder="Write the report, or generate a draft from the audit file." />
         </div>
-        <UiMarkdownDocument v-else :markdown="report.markdown">
+        <UiMarkdownDocument
+          v-else
+          :markdown="report.markdown"
+          :cover="cover"
+          :runningHead="runningHead"
+          :footer="footer"
+          endMark="End of report"
+          @open-finding="id => openRef(`finding:${id}`)"
+        >
           <template #after-heading="{ entry }">
+            <!-- A remark about the draft, not part of it: on screen, never on paper. -->
             <template v-for="issue in (entry && entry.id !== titleAnchor ? placed.bySection.get(entry.id) : placed.title) ?? []" :key="issue.code">
-              <p class="issue-strip" :data-tone="issue.severity">
+              <p class="issue-strip aw-screen-only" :data-tone="issue.severity">
                 <span><b>{{ issueHeading(issue.code) }}.</b> {{ issue.message }}</span>
                 <button v-if="stripAction(issue)" type="button" @click="runStrip(issue)">{{ stripAction(issue) }}</button>
+              </p>
+            </template>
+            <!-- The rating the report asserts, on the scale the template
+                 allows it — or none, which is what an open file asserts. -->
+            <div v-if="isConclusion(entry)" class="conclusion">
+              <div>
+                <p class="conclusion-label">Overall rating</p>
+                <p class="conclusion-value">{{ rating ? titled(rating) : 'Not assigned' }}</p>
+                <p v-if="!rating && context?.preliminary" class="conclusion-why">Fieldwork remains open</p>
+                <div
+                  class="conclusion-scale"
+                  role="img"
+                  :aria-label="rating ? `Rated ${rating} on a four-step scale` : 'No rating assigned on the four-step scale'"
+                >
+                  <span
+                    v-for="step in RATINGS"
+                    :key="step"
+                    :class="{ on: step === rating }"
+                    :data-tone="RATING_TONE[step]"
+                  >{{ titled(step) }}</span>
+                </div>
+              </div>
+              <dl class="conclusion-figures">
+                <div><dt>findings included</dt><dd>{{ statistic('findings').toLocaleString() }}</dd></div>
+                <div><dt>tests run</dt><dd>{{ statistic('tests').toLocaleString() }}</dd></div>
+                <div><dt>controls</dt><dd>{{ statistic('rcm_rows').toLocaleString() }}</dd></div>
+              </dl>
+            </div>
+          </template>
+          <template #after-body="{ entry, body }">
+            <template v-if="isSeveritySummary(entry) && severityCounts(body).some(item => item.count > 0)">
+              <div
+                class="severity-bar"
+                role="img"
+                :aria-label="severityCounts(body).filter(item => item.count).map(item => `${item.count} ${item.severity}`).join(', ')"
+              >
+                <i
+                  v-for="item in severityCounts(body).filter(entry => entry.count)"
+                  :key="item.severity"
+                  :style="{ flexGrow: item.count, background: SEVERITY_COLOUR[item.severity] }"
+                />
+              </div>
+              <p class="severity-legend">
+                <span v-for="item in severityCounts(body).filter(entry => entry.count)" :key="item.severity">
+                  <s :style="{ background: SEVERITY_COLOUR[item.severity] }" />{{ item.count }} {{ item.severity }}
+                </span>
               </p>
             </template>
           </template>
@@ -495,7 +620,11 @@ function runStrip(issue: ReportQualityIssue) {
 /* The editor fills the column and scrolls inside itself. Given a fixed height
    inside a scrolling column it produced two scrollbars for one text, and the
    outer one moved the editor rather than the document in it. */
-.editor { display: flex; flex-direction: column; min-height: 24rem; }
+.editor {
+  display: flex; flex-direction: column; min-height: 24rem;
+  padding: var(--aw-space-5) var(--aw-space-4) 0;
+  border-radius: var(--aw-radius-surface); background: var(--aw-desk);
+}
 .editor :deep(.markdown-editor) { flex: 1; min-height: 0; overflow-y: auto; }
 
 .reconcile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; flex: 1; min-height: 0; overflow-y: auto; }
@@ -509,7 +638,7 @@ function runStrip(issue: ReportQualityIssue) {
   padding: .5rem .75rem;
   border-left: 3px solid var(--aw-danger);
   background: var(--aw-danger-soft); color: var(--aw-danger-ink);
-  font-size: var(--aw-text-sm); line-height: 1.45;
+  font-family: var(--aw-font-sans); font-size: var(--aw-text-sm); line-height: 1.45;
 }
 .issue-strip[data-tone='warning'] { border-left-color: var(--aw-warn); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
 .issue-strip[data-tone='info'] { border-left-color: var(--aw-border-strong); background: var(--aw-raised); color: var(--aw-ink-soft); }
@@ -518,6 +647,58 @@ function runStrip(issue: ReportQualityIssue) {
   color: inherit; font: inherit; font-weight: 700;
   text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
 }
+
+/* The rating, on the scale the template allows. Part of the document — it is
+   the claim the conclusion makes — so it prints. */
+.conclusion {
+  display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 1.25rem;
+  margin: .25rem 0 1rem; padding: 1.125rem 1.25rem;
+  border: 1px solid var(--aw-border); border-radius: 6px;
+  background: var(--aw-panel-wash);
+  font-family: var(--aw-font-sans);
+  break-inside: avoid;
+}
+.conclusion p { margin: 0; }
+.conclusion-label { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+.conclusion-value {
+  margin-top: .25rem !important;
+  color: var(--aw-ink-strong); font-family: var(--aw-font-serif); font-size: var(--aw-text-xl); font-weight: 600;
+}
+.conclusion-why { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.conclusion-scale { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: .75rem; }
+.conclusion-scale span {
+  padding-top: .375rem; border-top: 4px solid var(--aw-border);
+  color: var(--aw-muted); font-size: var(--aw-text-2xs);
+}
+.conclusion-scale span.on { font-weight: 700; color: var(--aw-ink-strong); }
+.conclusion-scale span.on[data-tone='ok'] { border-top-color: var(--aw-ok); }
+.conclusion-scale span.on[data-tone='low'] { border-top-color: var(--aw-low); }
+.conclusion-scale span.on[data-tone='warn'] { border-top-color: var(--aw-warn); }
+.conclusion-scale span.on[data-tone='bad'] { border-top-color: var(--aw-danger); }
+.conclusion-figures {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: center; gap: .625rem;
+  margin: 0; padding-left: 1.25rem; border-left: 1px solid var(--aw-border);
+}
+.conclusion-figures div { display: flex; flex-direction: column-reverse; }
+.conclusion-figures dt { margin-top: .3rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.conclusion-figures dd {
+  margin: 0; color: var(--aw-ink-strong);
+  font-family: var(--aw-font-serif); font-size: var(--aw-text-2xl); font-weight: 500; line-height: 1;
+}
+@container doc-sheet (max-width: 34rem) {
+  .conclusion { grid-template-columns: minmax(0, 1fr); }
+  .conclusion-figures { padding-left: 0; border-left: 0; }
+}
+
+/* The Summary of Findings, as one bar under the table it is drawn from. */
+.severity-bar { display: flex; height: .5rem; margin: -.5rem 0 .4rem; border-radius: var(--aw-radius-pill); overflow: hidden; }
+.severity-bar i { display: block; flex-basis: 0; }
+.severity-legend {
+  display: flex; flex-wrap: wrap; gap: .1rem .875rem;
+  margin: 0 0 1rem; color: var(--aw-muted); font-family: var(--aw-font-sans); font-size: var(--aw-text-xs);
+}
+.severity-legend span { display: inline-flex; align-items: center; gap: .3rem; }
+.severity-legend s { width: .5rem; height: .5rem; border-radius: 2px; text-decoration: none; }
 
 .card { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
 .card header { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }

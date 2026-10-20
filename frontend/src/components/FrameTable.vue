@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import type { FramePayload } from '../types'
+import { figureColumnSet, formatCell, numericColumnSet } from './frameFormat'
 
 const props = defineProps<{
   frame: FramePayload
@@ -44,38 +45,13 @@ const withheld = computed(() =>
 )
 const expanded = ref<Record<string, unknown>[]>([])
 
-// An identifier that happens to be stored as an integer is not a quantity:
-// grouping its digits invents a value ("1,020") and right-aligning it sorts it
-// with the money. Read the name, not the dtype.
-const IDENTIFIER_NAME = /(^|_)(ID|NO|NUM|NUMBER|KEY|CODE|REF)$/i
-
-const numericColumns = computed(() => {
-  const numeric = new Set<string>()
-  props.frame.columns.forEach((column, index) => {
-    const dtype = props.frame.dtypes[index] ?? ''
-    if (/Int|Float|Decimal/.test(dtype) && !IDENTIFIER_NAME.test(column)) numeric.add(column)
-  })
-  return numeric
-})
-
-// Only figures get the mono ledger face. Putting whole tables in it — which is
-// what the old global `td { font-family: mono }` did — set vendor names and
-// status words in a code face and made every table read as noise.
-const figureColumns = computed(() => {
-  const figures = new Set(numericColumns.value)
-  props.frame.columns.forEach((column, index) => {
-    const dtype = props.frame.dtypes[index] ?? ''
-    if (/Date|Time|Bool/.test(dtype)) figures.add(column)
-  })
-  return figures
-})
+// Which columns are quantities and which are figures is `frameFormat`'s call,
+// shared with the memo's exhibits.
+const numericColumns = computed(() => numericColumnSet(props.frame))
+const figureColumns = computed(() => figureColumnSet(props.frame))
 
 function format(value: unknown, column: string): string {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'number' && numericColumns.value.has(column)) {
-    return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { maximumFractionDigits: 4 })
-  }
-  return String(value)
+  return formatCell(value, numericColumns.value.has(column))
 }
 </script>
 
