@@ -923,6 +923,16 @@ def _execute(seed: Workspace, run_id: str, handle: RunHandle) -> None:
         try:
             workspace = seed.reload()
             finished = store.load_run(workspace, run_id)
+            # A follow-up queued while the run was live sits on the handle until
+            # an engine drains it, and only the action path ever did. Whatever an
+            # engine left there is carried onto the record here, or it would
+            # leave with the handle and the chat would show it queued forever.
+            with handle.lock:
+                stranded, handle.command_queue = handle.command_queue[:], []
+            handle.command_queued.clear()
+            if stranded:
+                finished.setdefault("pending_commands", []).extend(stranded)
+                store.save_run(workspace, finished)
             if store.is_command_run(finished) and finished["status"] in store.TERMINAL_STATUSES:
                 _launch_next_command(workspace, finished)
         except Exception:

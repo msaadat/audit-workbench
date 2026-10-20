@@ -317,6 +317,52 @@ def test_execute_fails_closed_without_a_supported_explicit_engine(
     assert label in failed["error"]
 
 
+def test_a_follow_up_queued_on_the_live_handle_launches_after_the_run(
+    workspace_with_data,
+    monkeypatch,
+):
+    # A workflow run never drains the handle's command queue, so a redraft
+    # queued while it ran (consolidating a second group mid-redraft) was lost
+    # with the handle and the chat reported it queued forever.
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "redraft the first lead"},
+    )
+    run["engine"] = store.AGENT_ENGINE
+    run["status"] = "executing"
+    store.save_run(workspace_with_data, run)
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    queued = {"id": "follow-up-1", "text": "redraft the second lead",
+              "run_context": {"finding_id": "F-2"}}
+    launched = []
+
+    class FinishingLoop:
+        def __init__(self, workspace, record, _handle):
+            self.workspace, self.record = workspace, record
+
+        def execute(self):
+            handle.command_queue.append(queued)
+            handle.command_queued.set()
+            self.record["status"] = "completed"
+            store.save_run(self.workspace, self.record)
+
+    def capture_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.append({"command": command, "parent_run_id": parent_run_id,
+                         "context": context})
+        return {"id": "captured-follow-up"}
+
+    monkeypatch.setattr(agent_loop, "AgentLoop", FinishingLoop)
+    monkeypatch.setattr(runner, "start_command_run", capture_start)
+
+    runner._execute(workspace_with_data, run["id"], handle)
+
+    assert launched == [{"command": queued, "parent_run_id": run["id"],
+                         "context": {"finding_id": "F-2"}}]
+    assert store.load_run(workspace_with_data, run["id"])["pending_commands"] == []
+    assert handle.command_queue == []
+
+
 def test_terminal_crash_still_launches_the_next_queued_follow_up(
     workspace_with_data,
     monkeypatch,
