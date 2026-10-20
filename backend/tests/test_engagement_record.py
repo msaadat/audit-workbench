@@ -1440,6 +1440,25 @@ def test_a_part_confirmed_register_says_what_is_left_out(stub_store):
     )
 
 
+def test_absorbed_findings_are_not_counted_as_unconfirmed(stub_store):
+    """An absorbed finding reports under its lead, so confirming it changes
+    nothing. Procurement read "12 of 27 not confirmed" where the twelve were
+    exactly the absorbed ones and every reportable finding was confirmed."""
+    stub_store([])
+    absorbed = {"auditor_confirmed": False, "consolidation": {"role": "absorbed", "into": "F-1"}}
+    result = engagement_record.record(_Workspace(findings=[
+        {"id": "F-1", "auditor_confirmed": True, "management_response": "Accepted.",
+         "consolidation": {"role": "lead"}},
+        dict(absorbed), dict(absorbed),
+    ]))
+
+    assert not any(
+        item["key"] == "unconfirmed_findings" for item in result["open_points"]
+    )
+    # The register is sized the way the Findings page sizes it.
+    assert _rows(result)["findings.drafted"]["filed"]["count"] == 1
+
+
 def test_confirming_the_register_hands_the_row_back_to_the_cause_debt(stub_store):
     """One slot, two debts: the smaller one surfaces once the larger is settled."""
     stub_store([])
@@ -1579,8 +1598,8 @@ def test_the_record_reads_each_expensive_source_once(stub_store, monkeypatch):
     """The record asks the same two questions repeatedly; it may read once.
 
     Every stage's presence is tested, `_blocked_by` re-tests each one's
-    dependencies, and `_open_points` reads the roll-up again for the unread
-    -conclusion debt. Nothing recorded that the answer was already in hand, so
+    dependencies, and `_open_points` reads the roll-up again for the
+    conclusion debt. Nothing recorded that the answer was already in hand, so
     a real engagement rebuilt the document-test projection nine times and the
     roll-up five times to draw one screen — sixteen seconds, over an input that
     could not change while it was being read.
@@ -1606,6 +1625,22 @@ def test_the_record_reads_each_expensive_source_once(stub_store, monkeypatch):
     engagement_record.record(_Workspace(rcm=[{"id": "R1"}], apm="# APM"))
 
     assert calls == {"tests": 1, "completion": 1}
+
+
+def test_assistant_set_conclusions_raise_no_open_point(stub_store, monkeypatch):
+    """Conclusions the assistant set are disclosed on the pages that hold them,
+    not raised as a debt on the record."""
+    stub_store([])
+    monkeypatch.setattr(
+        engagement_record.rcm_execution, "completion",
+        lambda workspace: {"rcm_without_conclusion": [], "unreviewed_agent_conclusions": ["R1"]},
+    )
+
+    result = engagement_record.record(_Workspace(rcm=[{"id": "R1"}], apm="# APM"))
+
+    assert all(
+        point["capability"] != "results.rolled_up" for point in result["open_points"]
+    )
 
 
 def test_the_record_holds_the_document_test_cache_open(stub_store, monkeypatch):

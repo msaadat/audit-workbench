@@ -34,6 +34,7 @@ from . import (
     document_classification,
     documents as document_service,
     engagement,
+    finding_consolidation,
     rcm_execution,
     report,
 )
@@ -294,7 +295,13 @@ def _counts(workspace: Workspace) -> dict[str, int]:
         # What ran, as against what was written. Only the fieldwork row reads
         # these, and only as the numerator of its doors — see `_results`.
         **_results(workspace),
-        "findings": len(workspace.findings),
+        # The register as the Findings page counts it: a finding absorbed into
+        # a consolidated lead is reported under that lead and is not a finding
+        # of its own. Counting it drew "27 findings" over a page listing 15.
+        "findings": sum(
+            1 for item in workspace.findings
+            if not finding_consolidation.is_absorbed(item)
+        ),
     }
 
 
@@ -626,8 +633,8 @@ def _document_test_index(workspace: Workspace):
 
 
 def _document_tests(workspace: Workspace) -> list[dict]:
-    """The register as summaries — what `_counts` sizes and `_linked_test_count`
-    walks. Never handed to a presence test; see `_document_test_index`."""
+    """The register as summaries — what `_counts` sizes. Never handed to a
+    presence test; see `_document_test_index`."""
     return list(_document_test_index(workspace).summaries)
 
 
@@ -1129,7 +1136,7 @@ def _stages(
 # The two findings debts share one rank because they share one slot: only
 # ever one of them is raised, and which one is decided in `_open_points`.
 _OPEN_RANK = {
-    "unread_conclusions": 10, "conclusions_await_auditor": 15,
+    "conclusions_await_auditor": 15,
     "unconfirmed_findings": 20,
     "findings_followup": 20, "draft_rcm": 30,
 }
@@ -1138,25 +1145,6 @@ _OPEN_RANK = {
 def _open_points(workspace: Workspace) -> list[dict]:
     """Debts left behind by stages that completed."""
     points: list[dict] = []
-
-    try:
-        completion = _completion(workspace)
-        unread = len(completion.get("unreviewed_agent_conclusions") or [])
-        linked = _linked_test_count(workspace)
-    except Exception:
-        unread, linked = 0, 0
-    if unread:
-        points.append({
-            "key": "unread_conclusions",
-            "capability": "results.rolled_up",
-            "message": (
-                f"{unread} of {linked} conclusions were set by the assistant "
-                "and never read." if linked
-                else f"{unread} conclusions were set by the assistant and never read."
-            ),
-            "action": "Open them",
-            "destination": "rcm",
-        })
 
     # Raised where the stage has stopped being runnable, so the row that can no
     # longer be pressed still says what would close it. Without this the ledger
@@ -1202,11 +1190,19 @@ def _open_points(workspace: Workspace) -> list[dict]:
     # were identified over one holding twenty-four. Asking for root causes while
     # that is true names the smaller debt and hides the larger: the causes would
     # be written into findings the report still would not carry.
-    unconfirmed = [
-        item for item in workspace.findings if not item.get("auditor_confirmed")
-    ]
-    owed = [
+    #
+    # Counted over the findings the report can carry. A finding absorbed into a
+    # consolidated lead is reported through that lead and never on its own, so
+    # confirming it changes nothing. Counting the absorbed ones read "12 of 27
+    # findings are not confirmed" on a register whose every reportable finding
+    # was confirmed — the twelve were exactly the absorbed ones.
+    reportable = [
         item for item in workspace.findings
+        if not finding_consolidation.is_absorbed(item)
+    ]
+    unconfirmed = [item for item in reportable if not item.get("auditor_confirmed")]
+    owed = [
+        item for item in reportable
         if item.get("cause_pending")
         or not str(item.get("management_response") or "").strip()
     ]
@@ -1215,13 +1211,13 @@ def _open_points(workspace: Workspace) -> list[dict]:
             "key": "unconfirmed_findings",
             "capability": "findings.drafted",
             "message": (
-                f"{len(unconfirmed)} of {len(workspace.findings)} findings are "
+                f"{len(unconfirmed)} of {len(reportable)} findings are "
                 "not confirmed for reporting"
                 # Only true while nothing has been confirmed. On a part-confirmed
                 # register the report carries the rest, so the sentence says what
                 # is being left out rather than claiming the report is empty.
                 + (" — the report will carry none of them."
-                   if len(unconfirmed) == len(workspace.findings)
+                   if len(unconfirmed) == len(reportable)
                    else " and will be left out of the report.")
             ),
             "action": "Confirm findings",
@@ -1232,7 +1228,7 @@ def _open_points(workspace: Workspace) -> list[dict]:
             "key": "findings_followup",
             "capability": "findings.drafted",
             "message": (
-                f"{len(owed)} of {len(workspace.findings)} findings have no "
+                f"{len(owed)} of {len(reportable)} findings have no "
                 "root cause or management response."
             ),
             "action": "Add causes",
@@ -1258,21 +1254,6 @@ def _open_points(workspace: Workspace) -> list[dict]:
         })
 
     return sorted(points, key=lambda point: _OPEN_RANK.get(point["key"], 99))
-
-
-def _linked_test_count(workspace: Workspace) -> int:
-    """Tests attached to a row of the matrix.
-
-    The same rule the dashboard's `tests_linked` uses, rather than every test in
-    the workspace — a test with no `rcm_id` is not part of the population the
-    unread-conclusion disclosure is a fraction of, and the two figures appear on
-    screens one click apart.
-    """
-    rows = {str(row.get("id") or "") for row in workspace.rcm}
-    return sum(
-        1 for item in (*workspace.data_tests, *_document_tests(workspace))
-        if str(item.get("rcm_id") or "") in rows
-    )
 
 
 def record(workspace: Workspace) -> dict:
