@@ -402,9 +402,16 @@ frontend/src/
   access forfeits the narrowing rather than risking a `KeyError`.
 - `RLIMIT_AS` / `RLIMIT_CPU` / `RLIMIT_FSIZE` are applied inside the child, not
   through `preexec_fn`, which is unsafe in a process running agent threads.
-- Without bubblewrap a shared server refuses to run Python. A bare subprocess is
-  not a boundary: it shares the server's UID and can read the dotenv the parent's
-  environment was scrubbed of.
+- Without bubblewrap a shared Linux server refuses to run Python. A bare
+  subprocess is not a boundary: it shares the server's UID and can read the
+  dotenv the parent's environment was scrubbed of.
+- Windows has no bubblewrap, so a shared Windows server allows the `subprocess`
+  mode by default (`WORKBENCH_ALLOW_INPROCESS_PYTHON=0` restores the refusal).
+  The child is the base interpreter, not the venv launcher, so a timeout stops
+  the snippet itself; it gets an allow-listed Windows environment (Polars will
+  not load without `PROCESSOR_ARCHITECTURE`), and `sandbox_child` places itself
+  in a job object capping memory, CPU time, and active processes at one. The
+  same filesystem caveat applies.
 
 ### Workspace and persistence
 

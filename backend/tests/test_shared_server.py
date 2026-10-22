@@ -43,6 +43,7 @@ def test_python_runs_freely_on_a_single_user_install():
 def test_a_shared_server_without_isolation_still_refuses(multi_user, monkeypatch):
     """A bare subprocess is not a boundary: it runs as the same OS user and can
     read the ``.env`` the parent's environment was scrubbed of."""
+    monkeypatch.setattr(sandbox, "_IS_WINDOWS", False)
     monkeypatch.setenv("WORKBENCH_BWRAP", "/nonexistent/bwrap")
     assert sandbox.isolation_mode() == sandbox.MODE_SUBPROCESS
     assert sandbox.execution_allowed() is False
@@ -59,9 +60,38 @@ def test_the_gate_is_at_the_choke_point_not_the_route(multi_user, monkeypatch):
 
     source = inspect.getsource(assistant_routes.run_python)
     assert "single_user_mode" not in source
+    monkeypatch.setattr(sandbox, "_IS_WINDOWS", False)
     monkeypatch.setenv("WORKBENCH_BWRAP", "/nonexistent/bwrap")
     with pytest.raises(sandbox.SandboxError):
         sandbox.run("result = df", {"df": pl.DataFrame({"a": [1]})})
+
+
+def test_a_shared_windows_server_runs_python_in_a_subprocess_by_default(
+    multi_user, monkeypatch
+):
+    """Windows has no bubblewrap, so refusing without it would close the surface
+    on every Windows server. The default there is the subprocess mode."""
+    monkeypatch.setattr(sandbox, "_IS_WINDOWS", True)
+    monkeypatch.setenv("WORKBENCH_BWRAP", "/nonexistent/bwrap")
+    monkeypatch.delenv(sandbox.ALLOW_ENV_VAR, raising=False)
+    monkeypatch.delenv(sandbox.MODE_ENV_VAR, raising=False)
+    assert sandbox.isolation_mode() == sandbox.MODE_SUBPROCESS
+    assert sandbox.execution_allowed() is True
+
+
+def test_a_windows_operator_can_restore_the_refusal(multi_user, monkeypatch):
+    monkeypatch.setattr(sandbox, "_IS_WINDOWS", True)
+    monkeypatch.setenv("WORKBENCH_BWRAP", "/nonexistent/bwrap")
+    monkeypatch.setenv(sandbox.ALLOW_ENV_VAR, "0")
+    assert sandbox.execution_allowed() is False
+
+
+def test_the_windows_default_does_not_extend_to_in_process(multi_user, monkeypatch):
+    """The default admits a separate process with limits, not the server's own."""
+    monkeypatch.setattr(sandbox, "_IS_WINDOWS", True)
+    monkeypatch.delenv(sandbox.ALLOW_ENV_VAR, raising=False)
+    monkeypatch.setenv(sandbox.MODE_ENV_VAR, sandbox.MODE_INPROCESS)
+    assert sandbox.execution_allowed() is False
 
 
 def test_an_operator_can_opt_back_in_deliberately(multi_user, monkeypatch):

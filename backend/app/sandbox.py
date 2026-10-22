@@ -11,9 +11,10 @@ sandboxed in-process. That premise held while the app ran locally, under the
 user who launched it, against data already on their machine.
 
 On a shared server it does not. An escape reads every other tenant's audit data
-and the administrator's provider credentials in the environment, so execution is
-refused in multi-user mode unless an operator opts back in explicitly. See
-:func:`execution_allowed`.
+and the administrator's provider credentials in the environment, so multi-user
+mode runs snippets in a bubblewrap jail and refuses without one — except on
+Windows, which has no bubblewrap and defaults to a limited subprocess instead.
+See :func:`execution_allowed`.
 
 Contract: the snippet receives ``pl`` (Polars), every workspace table by name
 and via ``tables['name']``, and ``df`` (the first table). It must assign its
@@ -238,6 +239,23 @@ DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_MEMORY_MB = 2048
 _EXCHANGE_PREFIX = "aw-sandbox-"
 
+_IS_WINDOWS = os.name == "nt"
+
+# What a Windows child needs from the parent's environment to start at all.
+# ``platform.machine()`` reads PROCESSOR_ARCHITECTURE, and Polars refuses to
+# load when its CPU feature check cannot identify the processor; SYSTEMROOT is
+# how the interpreter and its DLLs find the system directory. None of these
+# carries a credential.
+_WINDOWS_INHERITED_ENV = (
+    "SYSTEMROOT", "WINDIR", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_ARCHITEW6432", "PROCESSOR_IDENTIFIER",
+)
+
+# A Windows child killed by its job object exits with a status, not a signal:
+# the CPU-time limit ends it with ERROR_NOT_ENOUGH_QUOTA, and an allocation the
+# memory limit refuses inside Polars aborts through __fastfail.
+_WINDOWS_LIMIT_EXIT_CODES = frozenset({1816, 0xC0000017, 0xC0000409})
+
 
 def _int_env(name: str, default: int) -> int:
     try:
@@ -295,6 +313,16 @@ def isolation_mode() -> str:
     return MODE_CONTAINER if bubblewrap_path() else MODE_SUBPROCESS
 
 
+def _allow_override() -> bool | None:
+    """The operator's explicit answer in ``ALLOW_ENV_VAR``, or None if unset."""
+    value = str(os.environ.get(ALLOW_ENV_VAR) or "").strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    return None
+
+
 def execution_allowed() -> bool:
     """Whether a snippet may run at all.
 
@@ -302,17 +330,26 @@ def execution_allowed() -> bool:
     is not, because the child shares the server's UID and can read the ``.env``
     the parent's environment was scrubbed of.  An operator whose users are all
     trusted with each other's data can still opt in explicitly.
+
+    Windows has no bubblewrap, so a shared Windows server could otherwise never
+    run Python.  There the default is to allow the ``subprocess`` mode — scrubbed
+    environment and job-object limits, but no filesystem boundary — and an
+    operator who wants the refusal back sets ``ALLOW_ENV_VAR=0``.
     """
     from . import auth
 
     if auth.single_user_mode():
         return True
-    if str(os.environ.get(ALLOW_ENV_VAR) or "").strip().lower() in {"1", "true", "yes"}:
+    override = _allow_override()
+    if override:
         return True
     try:
-        return isolation_mode() == MODE_CONTAINER
+        mode = isolation_mode()
     except SandboxError:
         return False
+    if mode == MODE_CONTAINER:
+        return True
+    return _IS_WINDOWS and override is None and mode == MODE_SUBPROCESS
 
 
 def require_execution() -> None:
@@ -333,9 +370,7 @@ def _child_environment() -> dict[str, str]:
     about every future variable, an allow-list only about the few that matter.
     """
     site_packages = str(Path(pl.__file__).resolve().parent.parent)
-    return {
-        "PATH": "/usr/bin:/bin",
-        "HOME": "/nonexistent",
+    environment = {
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "PYTHONPATH": os.pathsep.join([str(_APP_PARENT), site_packages]),
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -344,6 +379,16 @@ def _child_environment() -> dict[str, str]:
         # should not be able to claim the whole box.
         "POLARS_MAX_THREADS": str(_int_env("WORKBENCH_SANDBOX_THREADS", 2)),
     }
+    if not _IS_WINDOWS:
+        environment.update({"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"})
+        return environment
+
+    for key in _WINDOWS_INHERITED_ENV:
+        if os.environ.get(key):
+            environment[key] = os.environ[key]
+    system_root = environment.setdefault("SYSTEMROOT", r"C:\Windows")
+    environment["PATH"] = os.pathsep.join([str(Path(system_root) / "System32"), system_root])
+    return environment
 
 
 _APP_DIR = Path(__file__).resolve().parent
@@ -413,7 +458,13 @@ def _interpreter() -> str:
     A venv launcher finds its site-packages through ``pyvenv.cfg`` beside it,
     which is not mounted in the jail; the child is told where Polars lives
     through ``PYTHONPATH`` instead.
+
+    On Windows a venv's ``python.exe`` is not a symlink but a launcher process
+    that spawns the base interpreter, so a timeout would stop the launcher and
+    leave the snippet running. The base interpreter is started directly.
     """
+    if _IS_WINDOWS:
+        return getattr(sys, "_base_executable", None) or sys.executable
     return os.path.realpath(sys.executable)
 
 
@@ -455,6 +506,10 @@ def run_isolated(code: str, frames: dict[str, pl.DataFrame]) -> tuple[pl.DataFra
         else:
             command = [interpreter, "-m", "app.sandbox_child"]
             env = _child_environment()
+            if _IS_WINDOWS:
+                # Keep any temporary file the child writes inside the exchange
+                # directory, which is removed below.
+                env["TEMP"] = env["TMP"] = str(exchange)
 
         try:
             completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
@@ -474,7 +529,10 @@ def run_isolated(code: str, frames: dict[str, pl.DataFrame]) -> tuple[pl.DataFra
             detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
             # A child killed by the kernel — OOM or CPU limit — never gets to
             # write a response, so the exit signal is all there is to report.
-            if completed.returncode and completed.returncode < 0:
+            if completed.returncode and (
+                completed.returncode < 0
+                or (_IS_WINDOWS and completed.returncode in _WINDOWS_LIMIT_EXIT_CODES)
+            ):
                 raise SandboxError(
                     "The snippet exceeded its memory or CPU limit and was stopped."
                 )

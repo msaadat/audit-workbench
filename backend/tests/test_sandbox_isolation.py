@@ -11,6 +11,7 @@ question is what the *child* can do, not whether the guard can be beaten.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -161,6 +162,95 @@ def test_an_endless_snippet_is_stopped(isolated, monkeypatch):
     monkeypatch.setenv("WORKBENCH_SANDBOX_TIMEOUT_SECONDS", "5")
     with pytest.raises(sandbox.SandboxError, match="longer than|stopped"):
         sandbox.run("while True:\n    pass\nresult = df", {"df": pl.DataFrame({"a": [1]})})
+
+
+# --------------------------------------------------------- subprocess mode
+#
+# The mode a shared Windows server runs by default. It is not a filesystem
+# boundary, but it must start, scrub the environment, and enforce its limits.
+
+
+@pytest.fixture
+def subprocess_mode(monkeypatch):
+    monkeypatch.setenv("AUTH_MODE", "multi_user")
+    monkeypatch.setenv(sandbox.MODE_ENV_VAR, sandbox.MODE_SUBPROCESS)
+    monkeypatch.setenv(sandbox.ALLOW_ENV_VAR, "1")
+
+
+def test_a_snippet_returns_its_result_through_a_subprocess(subprocess_mode):
+    frames = {"transactions": pl.DataFrame({"amount": [1, 2, 3]})}
+    result, stdout = sandbox.run(
+        "print('working')\nresult = transactions.select(pl.col('amount').sum())", frames
+    )
+    assert result.item() == 6
+    assert "working" in stdout
+
+
+def test_a_subprocess_child_is_given_no_credentials(subprocess_mode, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-for-the-child")
+    environment = sandbox._child_environment()
+    assert not [key for key in environment if "KEY" in key or "TOKEN" in key]
+    assert "sk-not-for-the-child" not in environment.values()
+
+
+def test_a_windows_child_environment_can_start_polars(monkeypatch):
+    """Polars' CPU check reads the processor through ``platform.machine()``,
+    which on Windows is the environment; a Unix-shaped scrub broke it."""
+    monkeypatch.setattr(sandbox, "_IS_WINDOWS", True)
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-for-the-child")
+    environment = sandbox._child_environment()
+    assert environment["PROCESSOR_ARCHITECTURE"] == "AMD64"
+    assert environment["SYSTEMROOT"] == r"C:\Windows"
+    assert environment["PATH"].split(os.pathsep)[0].endswith("System32")
+    assert "HOME" not in environment
+    assert "OPENAI_API_KEY" not in environment
+
+
+def test_a_runaway_allocation_is_stopped_in_a_subprocess(subprocess_mode, monkeypatch):
+    monkeypatch.setenv("WORKBENCH_SANDBOX_MEMORY_MB", "256")
+    for code in (
+        "result = pl.DataFrame({'x': list(range(200_000_000))})",
+        "result = pl.int_range(0, 400_000_000, eager=True).to_frame()",
+    ):
+        with pytest.raises(sandbox.SandboxError, match="memory|stopped"):
+            sandbox.run(code, {"df": pl.DataFrame({"a": [1]})})
+
+
+def test_an_endless_snippet_is_stopped_in_a_subprocess(subprocess_mode, monkeypatch):
+    monkeypatch.setenv("WORKBENCH_SANDBOX_TIMEOUT_SECONDS", "5")
+    with pytest.raises(sandbox.SandboxError, match="longer than|stopped"):
+        sandbox.run("while True:\n    pass\nresult = df", {"df": pl.DataFrame({"a": [1]})})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the job object is Windows-only")
+def test_an_escaped_windows_snippet_cannot_spawn_a_process():
+    """Without a namespace, a process the snippet spawned would run outside
+    every limit; the job allows exactly one."""
+    exchange = Path(tempfile.mkdtemp(prefix="job-probe-"))
+    try:
+        (exchange / "probe.py").write_text(
+            "import json, subprocess\n"
+            "from app import sandbox_child\n"
+            "sandbox_child.apply_windows_limits({'cpu_seconds': 60})\n"
+            "try:\n"
+            "    subprocess.run(['cmd', '/c', 'echo'], capture_output=True, timeout=10)\n"
+            "    out = 'spawned'\n"
+            "except OSError as error:\n"
+            "    out = type(error).__name__\n"
+            "print(json.dumps({'job': sandbox_child._JOB_HANDLE is not None, 'spawn': out}))",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [sandbox._interpreter(), str(exchange / "probe.py")],
+            env=sandbox._child_environment(), cwd=exchange,
+            capture_output=True, text=True, timeout=60,
+        )
+        assert completed.stdout.strip(), completed.stderr[-500:]
+        assert json.loads(completed.stdout) == {"job": True, "spawn": "OSError"}
+    finally:
+        shutil.rmtree(exchange, ignore_errors=True)
 
 
 # --------------------------------------------------------- frame narrowing
