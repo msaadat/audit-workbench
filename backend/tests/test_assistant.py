@@ -483,6 +483,76 @@ def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
     assert body["base_url"] == "http://localhost:1234/v1"
 
 
+def test_lmstudio_base_url_override_is_the_endpoint_actually_called(monkeypatch):
+    """A bank-hosted model server is rarely on the application's own machine.
+
+    The override has to reach every place that names the endpoint — the status
+    the UI shows, the provider list, and the request itself — or the screen
+    says one address while the transport calls another.
+    """
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "lmstudio", "model": "local-model"})
+    monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", " http://gpu01.internal:1234/v1/ ")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    body = llm.status()
+    lmstudio = next(item for item in body["providers"] if item["id"] == "lmstudio")
+    assert body["configured"] is True
+    assert body["base_url"] == "http://gpu01.internal:1234/v1"
+    assert lmstudio["base_url"] == "http://gpu01.internal:1234/v1"
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["url"] == "http://gpu01.internal:1234/v1/chat/completions"
+
+
+def test_an_unset_base_url_keeps_the_catalog_endpoint(monkeypatch):
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
+    monkeypatch.setenv("MISTRAL_BASE_URL", "")
+
+    assert assistant_settings.base_url("lmstudio") == "http://localhost:1234/v1"
+    assert assistant_settings.base_url("mistral") == "https://api.mistral.ai/v1"
+
+
+def test_any_provider_endpoint_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("MISTRAL_BASE_URL", "https://llm-gateway.bank.internal/mistral/v1")
+
+    assert assistant_settings.base_url("mistral") == (
+        "https://llm-gateway.bank.internal/mistral/v1"
+    )
+    assert assistant_settings.base_url("groq") == "https://api.groq.com/openai/v1"
+
+
+def test_a_base_url_that_is_not_http_is_refused_without_breaking_status(monkeypatch):
+    assistant_settings.save({"provider": "lmstudio", "model": "local-model"})
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "gpu01.internal:1234/v1")
+
+    with pytest.raises(assistant_settings.SettingsError, match="LMSTUDIO_BASE_URL"):
+        assistant_settings.base_url("lmstudio")
+
+    body = llm.status()
+    assert body["configured"] is False
+    assert "LMSTUDIO_BASE_URL" in body["error"]
+    # The provider list rides on the error payload too, so it must not raise.
+    lmstudio = next(item for item in body["providers"] if item["id"] == "lmstudio")
+    assert lmstudio["base_url"] == "http://localhost:1234/v1"
+
+
 def test_assistant_settings_endpoint_persists_provider_model(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-key")
 

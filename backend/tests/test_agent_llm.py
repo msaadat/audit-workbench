@@ -67,3 +67,44 @@ def test_agent_status_bad_provider_is_unconfigured(monkeypatch):
     status = llm.agent_status()
     assert status["configured"] is False
     assert "nonsense" in status["error"]
+
+
+def test_agent_and_vision_profiles_call_the_overridden_endpoint(monkeypatch):
+    """Runs reach the provider through their snapshot profile, not the live
+    settings, so the override must hold on that path as well."""
+
+    monkeypatch.setenv("AGENT_PROVIDER", "lmstudio")
+    monkeypatch.setenv("AGENT_MODEL", "local-text")
+    monkeypatch.setenv("AGENT_VISION_PROVIDER", "lmstudio")
+    monkeypatch.setenv("AGENT_VISION_MODEL", "local-vision")
+    monkeypatch.setenv("AGENT_VISION_CAPABILITIES", "vision")
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
+    default_hashes = {
+        name: llm.resolve_model_profile(name).profile_hash for name in ("agent", "vision")
+    }
+
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "http://gpu01.internal:1234/v1")
+    endpoint = "http://gpu01.internal:1234/v1"
+    snapshot = llm.model_profile_snapshot()
+
+    assert snapshot["text"]["base_url"] == endpoint
+    assert snapshot["vision"]["base_url"] == endpoint
+    assert llm._settings("agent").base_url == endpoint
+    assert llm._settings("vision").base_url == endpoint
+    assert llm._settings(snapshot["text"]).base_url == endpoint
+    status = llm.agent_status()
+    assert status["base_url"] == endpoint
+    assert status["vision_configured"] is True
+    # Moving the server moves the endpoint, not the model: the profile
+    # identity durable proposals are keyed on must not change with it.
+    assert snapshot["text"]["profile_hash"] == default_hashes["agent"]
+    assert snapshot["vision"]["profile_hash"] == default_hashes["vision"]
+
+
+def test_an_invalid_endpoint_leaves_the_agent_unconfigured(monkeypatch):
+    monkeypatch.setenv("AGENT_PROVIDER", "lmstudio")
+    monkeypatch.setenv("AGENT_MODEL", "local-text")
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "ftp://gpu01.internal/v1")
+    status = llm.agent_status()
+    assert status["configured"] is False
+    assert "LMSTUDIO_BASE_URL" in status["error"]

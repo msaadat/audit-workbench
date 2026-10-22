@@ -117,7 +117,9 @@ show a setup or deterministic-fallback state while local analysis, evidence,
 findings, and editing continue to work. Provider/model choices are saved from
 Assistant settings. OpenCode Zen defaults to `deepseek-v4-flash-free`, and
 Cerebras defaults to `gpt-oss-120b`. LM Studio uses
-`http://localhost:1234/v1` and defaults its dummy key to `lm-studio`. Cloud
+`http://localhost:1234/v1` and defaults its dummy key to `lm-studio`; set
+`LMSTUDIO_BASE_URL` to reach a self-hosted model server on another host (any
+provider's endpoint can be overridden with `<PROVIDER>_BASE_URL`). Cloud
 requests default to 60 seconds and local LM Studio requests to 300 seconds.
 The Documents analysis view also exposes a separate vision profile. Known
 models use the built-in capability catalog; custom models must explicitly

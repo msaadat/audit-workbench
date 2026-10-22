@@ -186,6 +186,20 @@ def test_a_local_model_is_reported_as_local(monkeypatch):
     assert "machine" in destination["summary"]
 
 
+def test_a_self_hosted_model_on_another_host_names_that_host(monkeypatch):
+    # LMSTUDIO_BASE_URL can put the bank's model server on another machine;
+    # then requests do leave this one, and the line has to say where they go.
+    monkeypatch.setattr(engagement.llm, "agent_status", lambda: {
+        "configured": True, "provider": "lmstudio",
+        "model": "local/model", "base_url": "http://gpu01.internal:1234/v1",
+    })
+    destination = engagement.destination()
+
+    assert destination["local"] is True
+    assert "gpu01.internal" in destination["summary"]
+    assert "nothing leaves" not in destination["summary"].casefold()
+
+
 def test_an_unconfigured_model_says_the_agent_cannot_run(monkeypatch):
     monkeypatch.setattr(engagement.llm, "agent_status", lambda: {
         "configured": False, "provider": "", "model": "", "base_url": "",

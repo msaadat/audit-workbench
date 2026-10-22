@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import config  # noqa: F401  # data_root() and .env loading
 
@@ -177,6 +178,28 @@ def _default_model(provider: str) -> str:
     return str(PROVIDERS[provider]["default_model"])
 
 
+def base_url(provider: str) -> str:
+    """The endpoint a provider is called at, without a trailing slash.
+
+    ``<PROVIDER>_BASE_URL`` wins over the catalog, resolved the same way as
+    ``<PROVIDER>_MODEL`` and ``<PROVIDER>_API_KEY``. It exists for the local
+    provider above all: a bank-hosted model server is rarely on the machine the
+    application runs on, and the catalog can only name localhost. A value that
+    is not an http(s) URL is refused rather than sent requests that cannot land.
+    """
+    variable = f"{provider.upper()}_BASE_URL"
+    override = (os.environ.get(variable) or "").strip()
+    if not override:
+        return str(PROVIDERS[provider]["base_url"]).rstrip("/")
+    parsed = urlsplit(override)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise SettingsError(
+            f"{variable} must be an http(s) URL such as "
+            f"http://model-server:1234/v1, not '{override}'."
+        )
+    return override.rstrip("/")
+
+
 def _env_model(provider: str) -> str:
     return (os.environ.get(f"{provider.upper()}_MODEL") or "").strip()
 
@@ -304,11 +327,17 @@ def provider_options() -> list[dict]:
     options = []
     for provider, meta in PROVIDERS.items():
         api_key = str(meta["api_key_env"])
+        try:
+            endpoint = base_url(provider)
+        except SettingsError:
+            # The status payload already carries the error; the option list is
+            # also what that error path returns, so it must not raise again.
+            endpoint = str(meta["base_url"]).rstrip("/")
         options.append(
             {
                 "id": provider,
                 "label": meta["label"],
-                "base_url": meta["base_url"],
+                "base_url": endpoint,
                 "api_key_env": api_key,
                 "api_key_configured": bool((os.environ.get(api_key) or "").strip())
                 or bool(meta["local"]),

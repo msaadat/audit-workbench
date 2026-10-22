@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import statistics
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import llm, workspaces
 from .agent import store
@@ -235,7 +236,12 @@ def destination() -> dict[str, Any]:
     status = llm.agent_status()
     provider = str(status.get("provider") or status.get("backend") or "")
     base_url = str(status.get("base_url") or "")
-    local = bool(provider == "lmstudio" or "localhost" in base_url or "127.0.0.1" in base_url)
+    host = (urlsplit(base_url).hostname or "").lower()
+    on_this_machine = host in {"localhost", "127.0.0.1", "::1"}
+    # A self-hosted server is local in the sense that matters for the icon —
+    # no third party — but LMSTUDIO_BASE_URL can put it on another host, and
+    # then requests do leave this machine.
+    local = bool(provider == "lmstudio" or on_this_machine)
     return {
         "configured": bool(status.get("configured")),
         "provider": provider,
@@ -245,7 +251,10 @@ def destination() -> dict[str, Any]:
         # model. Stating the real destination is the entire point of the line.
         "summary": (
             "Nothing leaves this machine."
-            if local
+            if on_this_machine
+            else "Requests and bounded result previews go to the self-hosted "
+            f"model server at {host}."
+            if local and host
             else f"Requests and bounded result previews go to {provider}."
             if provider
             else "No model is configured, so the agent cannot run yet."

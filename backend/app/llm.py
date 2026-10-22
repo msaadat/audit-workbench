@@ -13,6 +13,8 @@ provider and model are normal application settings saved through the UI:
     OPENCODE_API_KEY         OpenCode Zen API key
     CEREBRAS_API_KEY         Cerebras API key
     LMSTUDIO_API_KEY         optional local dummy key
+    <PROVIDER>_BASE_URL      optional endpoint override, e.g. LMSTUDIO_BASE_URL
+                             for a model server on another host
     LLM_REQUEST_TIMEOUT      optional request timeout in seconds
     LLM_RATE_LIMIT_COOLDOWN  optional minimum cooldown after a HTTP 429,
                              in seconds (defaults to 60)
@@ -465,7 +467,7 @@ def resolve_model_profile(profile: str = "agent") -> ResolvedModelProfile:
         capabilities=capabilities,
         configuration_source=source,
         configured=configured,
-        base_url=str(provider_meta["base_url"]).rstrip("/"),
+        base_url=assistant_settings.base_url(provider),
         profile_hash=_profile_hash(
             profile, provider, model, capabilities, source
         ),
@@ -495,7 +497,7 @@ def _settings(profile: str | dict = "assistant") -> LLMSettings:
             backend=provider_name,
             api_key=api_key,
             model=model_name,
-            base_url=str(provider_meta["base_url"]).rstrip("/"),
+            base_url=assistant_settings.base_url(provider_name),
             extra_headers={},
             timeout=_request_timeout(
                 LOCAL_REQUEST_TIMEOUT if provider_meta["local"] else REQUEST_TIMEOUT
@@ -525,7 +527,7 @@ def _settings(profile: str | dict = "assistant") -> LLMSettings:
         backend=backend,
         api_key=api_key,
         model=model,
-        base_url=str(provider["base_url"]).rstrip("/"),
+        base_url=assistant_settings.base_url(backend),
         extra_headers={},
         timeout=_request_timeout(
             LOCAL_REQUEST_TIMEOUT if provider["local"] else REQUEST_TIMEOUT
