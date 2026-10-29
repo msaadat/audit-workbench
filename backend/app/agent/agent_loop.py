@@ -192,6 +192,7 @@ class AgentLoop(BaseRunner):
                 )
                 return
             turns += 1
+            self._refresh_workspace()
             self.set_activity(
                 "loop.turn",
                 "Working out what to do next",
@@ -416,6 +417,7 @@ class AgentLoop(BaseRunner):
         from . import runner
 
         self.checkpoint()
+        self._refresh_workspace()
         started = time.monotonic()
         try:
             child = runner.run_child_run(self.ws, self.run, command, context)
@@ -434,6 +436,24 @@ class AgentLoop(BaseRunner):
         self.save()
         self.emit("child_run", {"run_id": child["id"], "status": child.get("status")})
         return child
+
+    def _refresh_workspace(self) -> None:
+        """Read the workspace as it is now, not as it was when the request began.
+
+        Child runs and actions commit through their own transactions, so the
+        loop's copy goes stale the moment one lands. Everything the loop reads,
+        routes or resolves goes through this copy: a second request for the
+        same revision was materialized against the matrix as it stood before
+        the first had run, and asked again a question already answered.
+        """
+
+        current = self.ws.reload()
+        if current.revision == self.ws.revision:
+            return
+        self.ws = current
+        self.reads = ReadToolSession(current, chat_id=self.run.get("chat_id"))
+        if self._action_execution is not None:
+            self._action_execution.ws = current
 
     def ask_auditor(self, question: str, options: list[str]) -> str:
         """Put one question to the auditor and wait for the answer."""

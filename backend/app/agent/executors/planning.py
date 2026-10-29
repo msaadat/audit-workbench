@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
-from ... import cycle_vouching, planning_delta
+from ... import cycle_vouching, markdown_sections, planning_delta, planning_revision
 from ...workspaces import Workspace, WorkspaceError, slugify, validate_cycle
 from ..capabilities import _shared as audit_hashes
 from ..artifact_index import canonical_id
@@ -716,6 +716,43 @@ def match_rcm_revision(
     return (None, True) if ambiguous else (ranked[0][1], False)
 
 
+def match_retired_rcm(
+    workspace: Workspace,
+    spec: Mapping[str, object],
+) -> dict | None:
+    """The retirement a proposed new row would undo, if any.
+
+    The same bar :func:`match_rcm_revision` holds a revision to — exact semantic
+    id, then narrative similarity — because a redraft rewords a risk as readily
+    as it restates one, and a retired risk proposed again in new words is still
+    the risk someone retired.
+    """
+    retired = workspace.retired_rcm_rows()
+    if not retired:
+        return None
+    semantic = rcm_semantic_id(spec)
+    exact = next(
+        (entry for entry in retired if str(entry.get("semantic_id") or "") == semantic),
+        None,
+    )
+    if exact is not None:
+        return exact
+    narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
+    best = max(
+        retired,
+        key=lambda entry: _similarity(
+            narrative, f"{entry.get('process', '')} {entry.get('risk', '')}"
+        ),
+    )
+    score = _similarity(narrative, f"{best.get('process', '')} {best.get('risk', '')}")
+    return best if score >= RETIRED_MATCH_THRESHOLD else None
+
+
+#: The similarity at which a proposed row is taken to restate a retired one.
+#: The revision matcher's own threshold, for the reason given above.
+RETIRED_MATCH_THRESHOLD = 0.72
+
+
 def _plain_json(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): _plain_json(item) for key, item in value.items()}
@@ -816,6 +853,7 @@ def _rcm_result(
     revision_before: int,
     outcomes: list[dict],
     ambiguous: list[dict] | None = None,
+    retired_skipped: list[dict] | None = None,
 ) -> ExecutorResult:
     changed = [item for item in outcomes if item["action"] != "preserved"]
     # Preserved rows enter the receipt refs only when nothing changed, so the
@@ -835,6 +873,8 @@ def _rcm_result(
         output["flags"] = [_plain_json(item) for item in flags]
     if quarantined:
         output["quarantined"] = quarantined
+    if retired_skipped:
+        output["retired_skipped"] = [_plain_json(item) for item in retired_skipped]
     return ExecutorResult(
         executor_id=request.executor_id,
         capability_id=request.capability_id,
@@ -869,6 +909,7 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
         parent_sha1 = stamps[RCM_PARENT_REF]
         outcomes: list[dict] = []
         deferred: list[dict] = []
+        skipped: list[dict] = []
         for spec in rows:
             # Resolved inside the transaction, against the documents as they
             # stand at commit.
@@ -925,6 +966,19 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                     }
                 )
                 continue
+            retired = match_retired_rcm(fresh, spec)
+            if retired is not None:
+                # Someone took this risk out of the matrix. A redraft from the
+                # memorandum does not get to put it back; only a person asking
+                # for it does (an auditor's own add, or a requested revision).
+                skipped.append(
+                    {
+                        "semantic_id": spec["semantic_id"],
+                        "risk": str(spec.get("risk") or ""),
+                        "retired_semantic_id": str(retired.get("semantic_id") or ""),
+                    }
+                )
+                continue
             item = fresh.add_rcm(
                 {
                     **spec,
@@ -944,10 +998,15 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
             # No row could be placed, so there is no partial matrix worth
             # keeping. Raising inside the transaction leaves the workspace
             # untouched rather than saving an empty commit.
+            if not deferred:
+                raise WorkspaceError(
+                    "Every proposed RCM row restates a risk that was retired "
+                    "from the matrix; nothing was added."
+                )
             raise WorkspaceError(
                 f"Ambiguous RCM revision for '{deferred[0]['risk']}'."
             )
-        return outcomes, deferred
+        return outcomes, deferred, skipped
 
     committed = mutate(
         target.workspace,
@@ -955,13 +1014,14 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
         expected_parents=request.expected_parents,
     )
     target.workspace = committed.workspace
-    outcomes, deferred = committed.value
+    outcomes, deferred, skipped = committed.value
     return _rcm_result(
         request,
         committed.workspace,
         revision_before=state["revision_before"],
         outcomes=outcomes,
         ambiguous=deferred,
+        retired_skipped=skipped,
     )
 
 
@@ -1006,6 +1066,9 @@ def reconcile_rcm(
             # never part of the applied set and can neither prove nor disprove
             # an interrupted commit. A matrix where every row is ambiguous still
             # reconciles as not applied, on the empty ``changed`` set below.
+            continue
+        if existing is None and match_retired_rcm(current, spec) is not None:
+            # Skipped at commit for the same reason, so it proves nothing either.
             continue
         if (
             existing
@@ -1091,6 +1154,7 @@ __all__ = [
     "execute_planning_context",
     "execute_rcm",
     "match_rcm_revision",
+    "match_retired_rcm",
     "rcm_semantic_id",
     "reconcile_apm",
     "reconcile_planning_context",
@@ -1252,3 +1316,441 @@ DELTA_EXECUTOR = ExecutorDefinition(
 )
 
 EXECUTORS.register(DELTA_EXECUTOR)
+
+
+# --------------------------------------------------------------------------- #
+# planning.rcm_revision — apply a revision the auditor asked for
+# --------------------------------------------------------------------------- #
+RCM_REVISION_EXECUTOR_ID = "planning.rcm_revision"
+
+
+@dataclass
+class RcmRevisionExecutorTarget:
+    """The rows a revision decided about, and the request it answers."""
+
+    workspace: Workspace
+    run_id: str
+    request_key: str
+    row_ids: tuple[str, ...]
+    target_refs: tuple[str, ...] = ()
+    instruction: str = ""
+    assessment: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("RCM revision target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("RCM revision target requires a run_id.")
+        self.request_key = str(self.request_key or "").strip()
+        if not self.request_key:
+            raise ValueError("RCM revision target requires the request it answers.")
+        self.row_ids = tuple(str(value) for value in self.row_ids if str(value or "").strip())
+        if not self.row_ids:
+            raise ValueError("RCM revision target requires the rows in scope.")
+        self.target_refs = tuple(str(value) for value in self.target_refs)
+
+
+def _validated_rcm_revision(
+    request: ExecutorRequest, target: object
+) -> tuple[RcmRevisionExecutorTarget, list[dict], list[dict]]:
+    if not isinstance(target, RcmRevisionExecutorTarget):
+        raise WorkspaceError("RCM revision executor requires an RcmRevisionExecutorTarget.")
+    expected = {RCM_PARENT_REF, *(f"rcm:{row_id}" for row_id in target.row_ids)}
+    if not expected <= set(request.expected_parents) <= {*expected, CYCLE_ARTIFACT_REF}:
+        raise WorkspaceError(
+            "RCM revision executor requires the memorandum's hash and every "
+            "revised row's own."
+        )
+    decisions = [_plain_json(item) for item in request.proposal.get("decisions") or []]
+    decided = {str(item.get("rcm_id")) for item in decisions}
+    if decided != set(target.row_ids):
+        raise WorkspaceError("The accepted revision does not decide about every row in scope.")
+    for item in decisions:
+        if item.get("decision") not in planning_revision.RCM_DECISIONS:
+            raise WorkspaceError(f"Unknown revision decision '{item.get('decision')}'.")
+    additions = [
+        _plain_json(item.get("row") or {})
+        for item in request.proposal.get("additions") or []
+        if isinstance(item, Mapping)
+    ]
+    return target, decisions, additions
+
+
+def _revision_scope_rows(workspace: Workspace, target: RcmRevisionExecutorTarget) -> list[dict]:
+    """The rows the revision covers now, by the rule readiness reads them by."""
+
+    return audit_hashes.rows(workspace, {"target_refs": list(target.target_refs)})
+
+
+def _exact_attributes(
+    workspace: Workspace, values: dict, flags: list[dict], label: str
+) -> dict:
+    """Make a revised control's attributes exact, or leave the old ones."""
+
+    if "control_attributes" not in values:
+        return values
+    try:
+        values["control_attributes"] = cycle_vouching.validate_control_attributes(
+            values["control_attributes"], workspace=workspace
+        )
+    except cycle_vouching.CycleSchemaError as error:
+        values.pop("control_attributes")
+        flags.append({"row": label, "message": f"control attributes not applied: {error}"})
+    return values
+
+
+def _rcm_revision_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    target: RcmRevisionExecutorTarget,
+    record: dict,
+    *,
+    revision_before: int,
+) -> ExecutorResult:
+    outcomes = list(record.get("outcomes") or [])
+    touched = [item for item in outcomes if item.get("action") != "kept"]
+    refs = list(
+        dict.fromkeys(
+            f"rcm:{item['id']}" for item in (touched or outcomes) if item.get("id")
+        )
+    )
+    counts: dict[str, int] = {}
+    for item in outcomes:
+        counts[str(item.get("action"))] = counts.get(str(item.get("action")), 0) + 1
+    output: dict[str, object] = {
+        "status": "updated",
+        "summary": record.get("summary") or "",
+        "rows": outcomes,
+        "counts": counts,
+        "rows_before": len(target.row_ids),
+        "request_key": target.request_key,
+    }
+    flags = [
+        *[_plain_json(item) for item in request.proposal.get("flags") or []],
+        *list(record.get("flags") or []),
+    ]
+    if flags:
+        output["flags"] = flags
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, refs),
+        output=output,
+    )
+
+
+def execute_rcm_revision(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Apply one accepted revision to the matrix in one guarded transaction.
+
+    Revisions first, so a survivor reads as revised before anything is folded
+    into it; then merges, which relink what the merged row carried; then
+    retirements; then additions, which may lift a retirement because a person
+    asked for this revision. The request's record is written last, inside the
+    same lock, stamped with the scope as the commit left it — which is what
+    readiness reads to say the revision holds.
+    """
+
+    target, decisions, additions = _validated_rcm_revision(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        stamps = parent_hashes(fresh, [RCM_PARENT_REF, CYCLE_ARTIFACT_REF])
+        provenance = {
+            "workflow_parent_sha1": stamps[RCM_PARENT_REF],
+            "workflow_parents": stamps,
+        }
+        outcomes: list[dict] = []
+        flags: list[dict] = []
+        for item in decisions:
+            if item["decision"] != "revise":
+                continue
+            changes = _exact_attributes(
+                fresh, dict(item.get("changes") or {}), flags, item["rcm_id"]
+            )
+            fresh.update_rcm(item["rcm_id"], {**changes, **provenance}, agent=True)
+            outcomes.append(
+                {
+                    "id": item["rcm_id"],
+                    "action": "revised",
+                    "fields": sorted(key for key in changes if key != "control_attributes"),
+                    "reason": item.get("reason") or "",
+                }
+            )
+        for item in decisions:
+            reason = str(item.get("reason") or "")
+            if item["decision"] == "merge":
+                into = str(item.get("into") or "")
+                fresh.merge_rcm(item["rcm_id"], into, reason=reason, run_id=target.run_id)
+                outcomes.append(
+                    {"id": item["rcm_id"], "action": "merged", "into": into, "reason": reason}
+                )
+            elif item["decision"] == "retire":
+                fresh.remove_rcm(item["rcm_id"], reason=reason, run_id=target.run_id)
+                outcomes.append({"id": item["rcm_id"], "action": "retired", "reason": reason})
+            elif item["decision"] == "keep":
+                outcomes.append({"id": item["rcm_id"], "action": "kept"})
+        for spec in additions:
+            spec = _exact_attributes(fresh, dict(spec), flags, str(spec.get("risk") or ""))
+            spec["semantic_id"] = rcm_semantic_id(spec)
+            retired = match_retired_rcm(fresh, spec)
+            if retired is not None:
+                # The auditor asked for this revision, so restoring a risk they
+                # or someone before them retired is theirs to decide.
+                fresh.lift_rcm_retirements({str(retired.get("semantic_id") or "")})
+            item = fresh.add_rcm({**spec, "agent_run_id": target.run_id, **provenance})
+            outcomes.append(
+                {"id": item["id"], "action": "created", "restored": retired is not None}
+            )
+        record = planning_revision.save(
+            fresh,
+            "rcm",
+            target.request_key,
+            run_id=target.run_id,
+            unit_id=request.unit_id,
+            applied_sha1=planning_revision.rcm_scope_sha1(
+                _revision_scope_rows(fresh, target)
+            ),
+            summary=str(request.proposal.get("summary") or ""),
+            outcomes=outcomes,
+            instruction=target.instruction,
+            assessment=target.assessment,
+        )
+        return {**record, "flags": flags}
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _rcm_revision_result(
+        request,
+        committed.workspace,
+        target,
+        committed.value,
+        revision_before=state["revision_before"],
+    )
+
+
+def reconcile_rcm_revision(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    """Classify an interrupted revision: its record is written last, in the lock."""
+
+    target, _decisions, _additions = _validated_rcm_revision(request, raw_target)
+    current = Workspace(target.workspace.root)
+    record = planning_revision.load(current, "rcm", target.request_key)
+    if (
+        record is not None
+        and record.get("run_id") == target.run_id
+        and record.get("unit_id") == request.unit_id
+    ):
+        target.workspace = current
+        return ExecutorReconciliation(
+            "already_applied",
+            result=_rcm_revision_result(
+                request,
+                current,
+                target,
+                record,
+                revision_before=max(request.expected_revision, current.revision - 1),
+            ),
+            reason="The revision is already on file.",
+        )
+    return _parent_conflict(current, request) or ExecutorReconciliation("not_applied")
+
+
+def _parent_conflict(
+    current: Workspace, request: ExecutorRequest
+) -> ExecutorReconciliation | None:
+    """A conflict naming the first guarded parent that moved, if one did."""
+
+    now = parent_hashes(current, list(request.expected_parents))
+    for ref, expected in request.expected_parents.items():
+        if now[ref] != expected:
+            return ExecutorReconciliation(
+                "conflict",
+                reason=str(ParentConflict(ref, expected, now[ref], current.revision)),
+            )
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# planning.apm_revision — rewrite the sections an auditor asked about
+# --------------------------------------------------------------------------- #
+APM_REVISION_EXECUTOR_ID = "planning.apm_revision"
+
+
+@dataclass
+class ApmRevisionExecutorTarget:
+    """The memorandum a revision rewrites sections of, and the request."""
+
+    workspace: Workspace
+    run_id: str
+    request_key: str
+    instruction: str = ""
+    assessment: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("APM revision target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("APM revision target requires a run_id.")
+        self.request_key = str(self.request_key or "").strip()
+        if not self.request_key:
+            raise ValueError("APM revision target requires the request it answers.")
+
+
+def _validated_apm_revision(
+    request: ExecutorRequest, target: object
+) -> tuple[ApmRevisionExecutorTarget, list[dict]]:
+    if not isinstance(target, ApmRevisionExecutorTarget):
+        raise WorkspaceError("APM revision executor requires an ApmRevisionExecutorTarget.")
+    if set(request.expected_parents) != {APM_ARTIFACT_REF}:
+        raise WorkspaceError("APM revision executor requires exactly the memorandum's hash.")
+    replaced = [
+        _plain_json(item)
+        for item in request.proposal.get("sections") or []
+        if isinstance(item, Mapping)
+    ]
+    for item in replaced:
+        if markdown_sections.breaks_structure(str(item.get("markdown") or "")):
+            raise WorkspaceError(
+                f"The revision of '{item.get('heading')}' would start a section of its own."
+            )
+    return target, replaced
+
+
+def _apm_revision_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    record: dict,
+    *,
+    revision_before: int,
+) -> ExecutorResult:
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=[APM_ARTIFACT_REF],
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, [APM_ARTIFACT_REF]),
+        output={
+            "status": "updated",
+            "summary": record.get("summary") or "",
+            "sections": list(record.get("outcomes") or []),
+        },
+    )
+
+
+def execute_apm_revision(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Splice the rewritten sections in, and change nothing else.
+
+    Every other line of the memorandum stays byte for byte, and the heading set
+    must come out exactly as it went in. Ownership is left alone — a revision
+    made at the auditor's request does not make their memorandum the agent's —
+    and so is the parent stamp, so a memorandum behind its planning context
+    stays honestly behind it.
+    """
+
+    target, replaced = _validated_apm_revision(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        current = str(fresh.planning.get("apm_markdown") or "")
+        try:
+            revised = markdown_sections.replace_bodies(
+                current, {item["heading"]: item["markdown"] for item in replaced}
+            )
+        except ValueError as error:
+            raise WorkspaceError(f"The revision does not fit the memorandum: {error}.") from error
+        if markdown_sections.section_headings(revised) != markdown_sections.section_headings(current):
+            raise WorkspaceError("The revision changed the memorandum's sections.")
+        if revised != current:
+            fresh.update_planning(
+                {"apm_markdown": revised, "agent_run_id": target.run_id}, agent=True
+            )
+        return planning_revision.save(
+            fresh,
+            "apm",
+            target.request_key,
+            run_id=target.run_id,
+            unit_id=request.unit_id,
+            applied_sha1=planning_revision.apm_scope_sha1(fresh),
+            summary=str(request.proposal.get("summary") or ""),
+            outcomes=[
+                {"section": item["heading"], "action": "replaced", "reason": item.get("reason") or ""}
+                for item in replaced
+            ],
+            instruction=target.instruction,
+            assessment=target.assessment,
+        )
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _apm_revision_result(
+        request,
+        committed.workspace,
+        committed.value,
+        revision_before=state["revision_before"],
+    )
+
+
+def reconcile_apm_revision(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    target, _replaced = _validated_apm_revision(request, raw_target)
+    current = Workspace(target.workspace.root)
+    record = planning_revision.load(current, "apm", target.request_key)
+    if (
+        record is not None
+        and record.get("run_id") == target.run_id
+        and record.get("unit_id") == request.unit_id
+    ):
+        target.workspace = current
+        return ExecutorReconciliation(
+            "already_applied",
+            result=_apm_revision_result(
+                request,
+                current,
+                record,
+                revision_before=max(request.expected_revision, current.revision - 1),
+            ),
+            reason="The revision is already on file.",
+        )
+    return _parent_conflict(current, request) or ExecutorReconciliation("not_applied")
+
+
+APM_REVISION_EXECUTOR = ExecutorDefinition(
+    executor_id=APM_REVISION_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_apm_revision,
+    reconciler=reconcile_apm_revision,
+)
+
+EXECUTORS.register(APM_REVISION_EXECUTOR)
+
+
+RCM_REVISION_EXECUTOR = ExecutorDefinition(
+    executor_id=RCM_REVISION_EXECUTOR_ID,
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_rcm_revision,
+    reconciler=reconcile_rcm_revision,
+)
+
+EXECUTORS.register(RCM_REVISION_EXECUTOR)

@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_rulesets, cycle_vouching, planning_cycle
+from ... import cycle_rulesets, cycle_vouching, markdown_sections, planning_cycle
 from ...text import counted, relevance_tokens
 from .. import prompts
 from ..prompts import JSON_RULES, LANGUAGE_RULES
@@ -606,6 +606,8 @@ Follow the ACTIVE RISK TEMPLATE for methodology. Its non-negotiable rules:
   first thing a reviewer uses to direct effort.
 - One risk per row, and two rows describing the same underlying failure are one
   row. Say it once, in the wording that covers both.
+- RETIRED RISKS were taken out of this matrix on purpose. Do not propose one
+  again, in its own words or in new ones.
 {JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
 
 
@@ -2207,6 +2209,17 @@ def _rcm_risks_user(request: WorkerRequest) -> str:
                 for row in _current_rcm_rows(request)
                 if isinstance(row, Mapping)
             ],
+            # Risks taken out of the matrix on purpose. The commit will not add
+            # one back, so a row spent on it is a row lost.
+            "RETIRED RISKS": [
+                {
+                    "process": str(row.get("process") or ""),
+                    "risk": str(row.get("risk") or ""),
+                    "reason": str(row.get("reason") or ""),
+                }
+                for row in _supplied_items(request, "retired_rcm")
+                if isinstance(row, Mapping)
+            ],
             "RESOLVED CONTEXT": _context_from_sources(
                 request, "planning_context", "methodology"
             ),
@@ -3014,6 +3027,538 @@ RCM_WORKER = WorkerDefinition(
 )
 
 WORKERS.register(RCM_WORKER)
+
+
+# --------------------------------------------------------------------------- #
+# planning.rcm_revision worker
+# --------------------------------------------------------------------------- #
+RCM_REVISION_WORKER_ID = "planning.rcm_revision"
+#: What a revision may decide about one existing row. The store keeps the same
+#: vocabulary (``planning_revision.RCM_DECISIONS``); a worker may not import it.
+RCM_REVISION_DECISIONS = ("keep", "revise", "merge", "retire")
+#: The fields a revision may rewrite on a row. What a row *says* — never its
+#: links, its ownership or its provenance, which are the workbench's.
+RCM_REVISION_FIELDS = (
+    "process",
+    "risk",
+    "risk_rating",
+    "control",
+    "control_type",
+    "control_owner",
+    "criteria",
+)
+#: A revised field that changes what the control asserts, and so what its
+#: attributes must say.
+_RCM_REVISED_CONTROL_FIELDS = frozenset({"control", "control_type"})
+_RCM_RATINGS = ("low", "medium", "high", "critical")
+
+RCM_REVISION_SYSTEM = f"""[agent:rcm_revision]
+Revise an existing risk and control matrix the way the auditor asked.
+
+You are shown every row in scope, the memorandum the matrix was drawn from, the
+cycle's process names, the risks already retired from this matrix, and the
+auditor's instruction. Decide something about every row in scope:
+
+- keep: the row stays exactly as it is.
+- revise: the row stays under its id and some of what it says changes. Give
+  only the fields that change, in `changes`, chosen from process, risk,
+  risk_rating (low|medium|high|critical), control, control_type, control_owner
+  and criteria.
+- merge: another row in scope already covers this row's risk, and survives.
+  Name it in `into`; that row must itself be kept or revised. Where the
+  survivor's wording should widen to cover what it absorbs, revise the survivor.
+- retire: the row leaves the matrix.
+
+Return an object with:
+- summary: one paragraph for the auditor. Say how many rows were in scope and
+  how many there will be, and why the rows that leave are the ones that leave.
+- decisions: exactly one entry per row in scope, each with rcm_id (copied
+  exactly), decision, reason, and `changes` for revise or `into` for merge. A
+  row you leave out is an error, not a keep.
+- additions: rows the instruction needs that no existing row can become, each
+  {{row: {{process, risk, risk_rating, control, control_type, control_owner,
+  criteria}}, reason}}. Usually empty. A retired risk comes back only when the
+  instruction asks for it.
+
+Rules:
+- The instruction decides what changes. Do not improve rows it did not ask
+  about: a revision written to look thorough is worse than a small one.
+- Every reason is one sentence an auditor can check against the row.
+- Choose a revised or added row's process from PROCESS NAMES, spelled exactly.
+- A row with tests or findings attached has been relied on. Retire or merge one
+  only when the instruction calls for it, and say so in its reason.
+{JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
+
+
+def _rcm_revision_rows(request: WorkerRequest) -> list[Mapping[str, Any]]:
+    return [
+        row for row in _supplied_items(request, "current_rcm") if isinstance(row, Mapping)
+    ]
+
+
+def _rcm_revision_scope(request: WorkerRequest) -> list[str]:
+    """The rows this revision must decide about, in matrix order."""
+
+    named = [
+        str(value)
+        for value in request.unit_input.get("row_ids") or []
+        if str(value or "").strip()
+    ]
+    return named or [str(row.get("id")) for row in _rcm_revision_rows(request)]
+
+
+def _rcm_revision_user(request: WorkerRequest, attempt: WorkerAttempt) -> str:
+    payload: dict[str, Any] = {
+        "auditor_instruction": auditor_instruction(request),
+        "ROWS IN SCOPE": [_plain_json(row) for row in _rcm_revision_rows(request)],
+        "PROCESS NAMES": _rcm_process_names(request),
+        "RETIRED RISKS": [
+            {key: row.get(key) for key in ("process", "risk", "reason")}
+            for row in _supplied_items(request, "retired_rcm")
+            if isinstance(row, Mapping)
+        ],
+        "MEMORANDUM": str(_supplied_items(request, "current_apm")[0])
+        if _supplied_items(request, "current_apm")
+        else "",
+    }
+    if attempt.is_repair:
+        payload["PREVIOUS RESPONSE"] = attempt.previous_response or ""
+        payload["VALIDATION ERRORS"] = list(attempt.validation_errors)
+        payload["REPAIR"] = (
+            "Return the whole response again with every listed error fixed and "
+            "nothing else changed."
+        )
+    return json.dumps(payload, indent=1, ensure_ascii=False, default=str)
+
+
+def run_rcm_revision_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Decide about every row in scope, then classify the controls that moved.
+
+    Two calls, for the reason the matrix itself takes three: deciding what the
+    matrix should say and stating what a control's attributes are are different
+    jobs, and the second already has a registered prompt. It runs only over the
+    rows whose control text this revision changed or added — a kept row's
+    attributes were classified when it was written.
+
+    A revision that cannot see a row cannot decide about it, so a scope that did
+    not fit the declared context fails here, before anything is spent, rather
+    than revising the rows that happened to fit.
+    """
+
+    supplied = {str(row.get("id")) for row in _rcm_revision_rows(request)}
+    scope = _rcm_revision_scope(request)
+    unseen = [row_id for row_id in scope if row_id not in supplied]
+    if unseen:
+        raise WorkerContractError(
+            f"{len(unseen)} of {len(scope)} rows in scope did not fit in one "
+            "revision's context, and a revision cannot decide about rows it "
+            "was not shown. Name fewer rows to revise at once."
+        )
+    if not auditor_instruction(request):
+        raise WorkerContractError("A revision needs an instruction saying what to change.")
+    response = gateway.complete(
+        RCM_REVISION_SYSTEM,
+        _rcm_revision_user(request, attempt),
+        _rcm_activity(request, "rcm_revision"),
+        attempt=attempt.number,
+    )
+    try:
+        proposal = _first_json_object(response)
+    except WorkerResponseValidationError:
+        # Handed back verbatim so the registry rejects it and runs the repair.
+        return response
+    return json.dumps(_with_revision_attributes(request, gateway, attempt, proposal))
+
+
+def _with_revision_attributes(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    proposal: dict,
+) -> dict:
+    """Ask for attributes of the controls this revision rewrote or added."""
+
+    by_id = {str(row.get("id")): row for row in _rcm_revision_rows(request)}
+    decisions = proposal.get("decisions")
+    additions = proposal.get("additions")
+    targets: list[tuple[str, int, dict]] = []
+    for index, entry in enumerate(decisions if isinstance(decisions, list) else []):
+        if not isinstance(entry, Mapping) or entry.get("decision") != "revise":
+            continue
+        changes = entry.get("changes")
+        if not isinstance(changes, Mapping) or not _RCM_REVISED_CONTROL_FIELDS & set(changes):
+            continue
+        current = by_id.get(str(entry.get("rcm_id")))
+        if current is None:
+            continue
+        targets.append(("decision", index, {**dict(current), **dict(changes)}))
+    for index, entry in enumerate(additions if isinstance(additions, list) else []):
+        row = entry.get("row") if isinstance(entry, Mapping) else None
+        if isinstance(row, Mapping):
+            targets.append(("addition", index, dict(row)))
+    if not targets:
+        return proposal
+    attributed = _with_attributes(
+        request, gateway, attempt, [row for _, _, row in targets]
+    )
+    for (where, index, _row), row in zip(targets, attributed):
+        attributes = row.get("control_attributes")
+        if not attributes:
+            continue
+        if where == "decision":
+            decisions[index] = {
+                **decisions[index],
+                "changes": {
+                    **dict(decisions[index].get("changes") or {}),
+                    "control_attributes": attributes,
+                },
+            }
+        else:
+            additions[index] = {
+                **additions[index],
+                "row": {**dict(additions[index].get("row") or {}), "control_attributes": attributes},
+            }
+    return proposal
+
+
+def _revision_attributes(
+    value: object, label: str, flags: list[dict]
+) -> list[dict] | None:
+    """Shape-checked attributes, or ``None`` with the reason flagged.
+
+    Attributes are the second call's classification of a control the first call
+    rewrote. One that will not validate is not a reason to throw the revision
+    away: the row is committed without them — a revised row keeps the ones it
+    had, an added row gets the manual default — and the auditor is told.
+    """
+
+    if value in (None, []):
+        return None
+    try:
+        return cycle_vouching.validate_control_attributes(value)
+    except cycle_vouching.CycleSchemaError as error:
+        flags.append({"row": label, "message": f"control attributes not applied: {error}"})
+        return None
+
+
+def validate_rcm_revision_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Hold a revision to deciding about exactly the rows it was shown.
+
+    Completeness is the property that matters: every row in scope has one
+    decision, so a row the response forgot is an error rather than a silent
+    keep, and a revision can never reach a row it was not shown. A merge must
+    land on a row that survives, and every change must be to a field a revision
+    may write.
+    """
+
+    scope = _rcm_revision_scope(request)
+    known = set(scope)
+    process_names = set(_rcm_process_names(request))
+    errors: list[str] = []
+    flags: list[dict] = []
+    summary = str(proposal.get("summary") or "").strip()
+    if not summary:
+        errors.append("summary is empty")
+    raw_decisions = proposal.get("decisions")
+    if not isinstance(raw_decisions, (list, tuple)):
+        raise WorkerResponseValidationError("decisions must be a list")
+    decided: dict[str, dict] = {}
+    for entry in raw_decisions:
+        if not isinstance(entry, Mapping):
+            errors.append("each decision must be an object")
+            continue
+        rcm_id = str(entry.get("rcm_id") or "").strip()
+        decision = str(entry.get("decision") or "").strip().casefold()
+        if rcm_id not in known:
+            errors.append(f"decision names row '{rcm_id}', which is not in scope")
+            continue
+        if rcm_id in decided:
+            errors.append(f"row '{rcm_id}' has more than one decision")
+            continue
+        if decision not in RCM_REVISION_DECISIONS:
+            errors.append(
+                f"row '{rcm_id}': decision must be one of {', '.join(RCM_REVISION_DECISIONS)}"
+            )
+            continue
+        reason = str(entry.get("reason") or "").strip()
+        if decision != "keep" and not reason:
+            errors.append(f"row '{rcm_id}': a {decision} needs a reason")
+        normalized: dict[str, Any] = {"rcm_id": rcm_id, "decision": decision, "reason": reason}
+        if decision == "revise":
+            changes = entry.get("changes")
+            if not isinstance(changes, Mapping) or not changes:
+                errors.append(f"row '{rcm_id}': a revise must say what changes")
+                continue
+            accepted = _revision_fields(changes, f"row '{rcm_id}'", errors, flags, process_names)
+            attributes = _revision_attributes(
+                changes.get("control_attributes"), rcm_id, flags
+            )
+            if attributes is not None:
+                accepted["control_attributes"] = attributes
+            if not accepted:
+                errors.append(f"row '{rcm_id}': a revise changed no field a revision may write")
+            normalized["changes"] = accepted
+        if decision == "merge":
+            normalized["into"] = str(entry.get("into") or "").strip()
+        decided[rcm_id] = normalized
+    missing = [row_id for row_id in scope if row_id not in decided]
+    if missing:
+        errors.append(
+            f"no decision for {len(missing)} row(s) in scope: {', '.join(missing[:12])}"
+        )
+    for rcm_id, entry in decided.items():
+        if entry["decision"] != "merge":
+            continue
+        into = entry["into"]
+        survivor = decided.get(into)
+        if not into or into not in known:
+            errors.append(f"row '{rcm_id}': merge must name a row in scope in `into`")
+        elif into == rcm_id:
+            errors.append(f"row '{rcm_id}' cannot merge into itself")
+        elif survivor is not None and survivor["decision"] not in ("keep", "revise"):
+            errors.append(
+                f"row '{rcm_id}' merges into '{into}', which is not kept or revised"
+            )
+    additions: list[dict] = []
+    raw_additions = proposal.get("additions") or []
+    if not isinstance(raw_additions, (list, tuple)):
+        errors.append("additions must be a list")
+        raw_additions = []
+    for index, entry in enumerate(raw_additions, start=1):
+        row = entry.get("row") if isinstance(entry, Mapping) else None
+        if not isinstance(row, Mapping):
+            errors.append(f"addition {index} must carry a row object")
+            continue
+        label = f"addition {index}"
+        accepted = _revision_fields(row, label, errors, flags, process_names)
+        for required in ("risk", "control"):
+            if not str(accepted.get(required) or "").strip():
+                errors.append(f"{label} needs a {required}")
+        accepted.setdefault("risk_rating", "medium")
+        attributes = _revision_attributes(row.get("control_attributes"), label, flags)
+        if attributes is not None:
+            accepted["control_attributes"] = attributes
+        additions.append({"row": accepted, "reason": str(entry.get("reason") or "").strip()})
+    if errors:
+        raise WorkerResponseValidationError(errors)
+    accepted_proposal: dict[str, Any] = {
+        "summary": summary,
+        "decisions": [decided[row_id] for row_id in scope],
+        "additions": additions,
+    }
+    if flags:
+        accepted_proposal["flags"] = flags
+    return accepted_proposal
+
+
+def _revision_fields(
+    values: Mapping[str, Any],
+    label: str,
+    errors: list[str],
+    flags: list[dict],
+    process_names: set[str],
+) -> dict[str, str]:
+    accepted: dict[str, str] = {}
+    for key in RCM_REVISION_FIELDS:
+        if key not in values:
+            continue
+        text = str(values.get(key) or "").strip()
+        if key == "risk_rating":
+            text = text.casefold()
+            if text not in _RCM_RATINGS:
+                errors.append(f"{label}: risk_rating must be one of {', '.join(_RCM_RATINGS)}")
+                continue
+        if key in ("risk", "control", "process") and not text:
+            errors.append(f"{label}: {key} cannot be blank")
+            continue
+        accepted[key] = text
+    process = accepted.get("process")
+    if process and process_names and process not in process_names:
+        # Reported, not refused, for the reason ``_process_flags`` gives.
+        flags.append({"row": label, "message": f"process '{process}' is not a cycle step"})
+    return accepted
+
+
+RCM_REVISION_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="planning.rcm_revision.response",
+    schema_hash=_sha256_text(
+        "rcm-revision:v1:summary-decisions-keep-revise-merge-retire-additions"
+    ),
+    validator=decode_json_response,
+)
+RCM_REVISION_WORKER = WorkerDefinition(
+    worker_id=RCM_REVISION_WORKER_ID,
+    prompt_hash=_sha256_text(RCM_REVISION_SYSTEM + RCM_ATTRIBUTES_SYSTEM),
+    response_schema=RCM_REVISION_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair missing or duplicate row decisions, merges onto rows that do "
+            "not survive, and fields a revision may not write."
+        ),
+    ),
+    implementation=run_rcm_revision_worker,
+    semantic_validator=validate_rcm_revision_proposal,
+)
+
+WORKERS.register(RCM_REVISION_WORKER)
+
+
+# --------------------------------------------------------------------------- #
+# planning.apm_revision worker
+# --------------------------------------------------------------------------- #
+APM_REVISION_WORKER_ID = "planning.apm_revision"
+APM_REVISION_SYSTEM = f"""[agent:apm_revision]
+Revise an existing audit planning memorandum the way the auditor asked.
+
+You are shown the whole memorandum, the list of its SECTIONS, and the
+auditor's instruction. Rewrite only the sections the instruction concerns.
+
+Return an object with:
+- summary: one paragraph for the auditor saying what changed and why.
+- sections: one entry per section you rewrite, each with heading (copied
+  exactly from SECTIONS), markdown (the section's complete new body, without
+  its heading line) and reason (one sentence).
+
+Rules:
+- A section you do not return is kept exactly as it is. Return only what the
+  instruction asks you to change; a revision written to look thorough is worse
+  than a small one.
+- The body may use ### subheadings, lists and tables, but never a # or ##
+  heading: the memorandum's sections are set by its template.
+- Keep every fact, figure, citation and placeholder note in a rewritten section
+  unless the instruction is about it. Do not invent facts the memorandum does
+  not already state.
+{JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
+
+
+def _apm_revision_sections(request: WorkerRequest) -> list[str]:
+    """The memorandum's section headings, as the binder read them whole."""
+
+    return [
+        str(value)
+        for value in request.unit_input.get("sections") or []
+        if str(value or "").strip()
+    ]
+
+
+def run_apm_revision_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    if not auditor_instruction(request):
+        raise WorkerContractError("A revision needs an instruction saying what to change.")
+    payload: dict[str, Any] = {
+        "auditor_instruction": auditor_instruction(request),
+        "SECTIONS": _apm_revision_sections(request),
+        "MEMORANDUM": str(_resolved_item(request, "current_apm") or ""),
+    }
+    if attempt.is_repair:
+        payload["PREVIOUS RESPONSE"] = attempt.previous_response or ""
+        payload["VALIDATION ERRORS"] = list(attempt.validation_errors)
+        payload["REPAIR"] = (
+            "Return the whole response again with every listed error fixed and "
+            "nothing else changed."
+        )
+    activity = dict(request.activity or {})
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "apm_revision",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(
+        APM_REVISION_SYSTEM,
+        json.dumps(payload, indent=1, ensure_ascii=False),
+        activity,
+        attempt=attempt.number,
+    )
+
+
+def validate_apm_revision_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Hold a revision to the memorandum's own sections and its shape."""
+
+    known = {markdown_sections.heading_key(value): value for value in _apm_revision_sections(request)}
+    errors: list[str] = []
+    summary = str(proposal.get("summary") or "").strip()
+    if not summary:
+        errors.append("summary is empty")
+    raw = proposal.get("sections")
+    if not isinstance(raw, (list, tuple)):
+        raise WorkerResponseValidationError("sections must be a list")
+    accepted: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            errors.append("each section entry must be an object")
+            continue
+        key = markdown_sections.heading_key(str(entry.get("heading") or ""))
+        if key not in known:
+            errors.append(
+                f"section '{entry.get('heading')}' is not one of the memorandum's SECTIONS"
+            )
+            continue
+        if key in seen:
+            errors.append(f"section '{known[key]}' is rewritten more than once")
+            continue
+        seen.add(key)
+        body = str(entry.get("markdown") or "").strip("\n")
+        if not body.strip():
+            errors.append(f"section '{known[key]}' has an empty body")
+            continue
+        if markdown_sections.breaks_structure(body):
+            errors.append(
+                f"section '{known[key]}' contains a # or ## heading; use ### "
+                "inside a section"
+            )
+            continue
+        accepted.append(
+            {
+                "heading": known[key],
+                "markdown": body,
+                "reason": str(entry.get("reason") or "").strip(),
+            }
+        )
+    if errors:
+        raise WorkerResponseValidationError(errors)
+    return {"summary": summary, "sections": accepted}
+
+
+APM_REVISION_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="planning.apm_revision.response",
+    schema_hash=_sha256_text("apm-revision:v1:summary-section-replacements"),
+    validator=decode_json_response,
+)
+APM_REVISION_WORKER = WorkerDefinition(
+    worker_id=APM_REVISION_WORKER_ID,
+    prompt_hash=_sha256_text(APM_REVISION_SYSTEM),
+    response_schema=APM_REVISION_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair unknown or repeated section headings, empty bodies, and "
+            "bodies that start a section of their own."
+        ),
+    ),
+    implementation=run_apm_revision_worker,
+    semantic_validator=validate_apm_revision_proposal,
+)
+
+WORKERS.register(APM_REVISION_WORKER)
 
 
 # --------------------------------------------------------------------------- #

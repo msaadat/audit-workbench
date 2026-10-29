@@ -76,7 +76,16 @@ How to work:
   have supplied a document and asks whether the plan should change, call
   assess_change first and read what it says: impact "none" means the plan
   already accounts for it, and saying so is a complete answer. Only run the
-  revisions the assessment names, in the order it names them.
+  revisions it names in revise_next, in that order, passing its basis_sha1 as
+  from_assessment.
+- To change an existing memorandum or matrix the way the auditor asked —
+  shorten it, merge rows, reword a section, retire risks — run
+  planning.apm_revised or planning.rcm_revised with their words as the
+  instruction (rcm refs narrow a matrix revision to those rows). Those see the
+  whole artifact and decide about every part of it. Do not read the artifact
+  piece by piece and edit or delete it yourself: write content yourself only
+  for a small, exact change, found with search_document and made with
+  edit_document_text.
 - Ask at most when it changes what you would do.
 - Finish by calling finish with a summary that names what was produced, what
   was left, and why.

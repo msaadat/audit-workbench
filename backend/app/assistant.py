@@ -235,6 +235,49 @@ _TOOL_SCHEMAS = [
         },
     ),
     tooling.function_tool(
+        "search_document",
+        (
+            "Find lines in a long written document — the memorandum "
+            "(planning:apm), a finding's narrative (finding:<id>), the report "
+            "(report:working) or the analysis memo (analysis_summary:current). "
+            "Returns each matching line with its line number and section, and "
+            "the document's sha1 that an edit must name."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Text to find, case-insensitive.",
+                },
+                "regex": {
+                    "type": "boolean",
+                    "description": "Treat pattern as a regular expression.",
+                },
+            },
+            "required": ["ref", "pattern"],
+        },
+    ),
+    tooling.function_tool(
+        "read_document",
+        (
+            "Read a long written document in numbered windows: one whole "
+            "section by heading, or from a line number on. The first window "
+            "carries the outline. Says where it stopped (next_offset) and the "
+            "document's sha1. Copy text for an edit without the line numbers."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "section": {"type": "string", "description": "A heading to read whole."},
+                "offset": {"type": "integer", "minimum": 1},
+            },
+            "required": ["ref"],
+        },
+    ),
+    tooling.function_tool(
         "get_artifact",
         (
             "Read one audit artifact in full by typed ref (datatest:DAT-1234, "
@@ -427,6 +470,8 @@ _TOOL_HANDLERS = {
     "list_artifacts": "list_artifacts",
     "get_artifact": "get_artifact",
     "get_document_records": "get_document_records",
+    "search_document": "search_document",
+    "read_document": "read_document",
     "list_tables": "list_tables",
     "describe_table": "describe_table",
     "query_table": "query_table",
@@ -930,6 +975,26 @@ class _Session:
 
     def get_artifact(self, args: dict):
         return self._artifact_read("get_artifact", args)
+
+    def search_document(self, args: dict):
+        from . import markdown_artifacts
+
+        return markdown_artifacts.search(
+            self.workspace,
+            str(args.get("ref") or ""),
+            str(args.get("pattern") or ""),
+            regex=bool(args.get("regex")),
+        ), None
+
+    def read_document(self, args: dict):
+        from . import markdown_artifacts
+
+        return markdown_artifacts.read(
+            self.workspace,
+            str(args.get("ref") or ""),
+            section=str(args.get("section") or "").strip() or None,
+            offset=int(args.get("offset") or 1),
+        ), None
 
     def get_document_records(self, args: dict):
         """The structured readings, or — with nothing named — what exists."""

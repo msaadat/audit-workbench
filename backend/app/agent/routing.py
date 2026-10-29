@@ -624,6 +624,11 @@ def resolution_scope(
     instruction = str((run.get("context") or {}).get("instruction") or "").strip()
     if instruction:
         scope["instruction"] = instruction
+    # A change assessment a revision was asked to apply, by the basis it is
+    # filed under. Copied for the same reason the instruction is.
+    assessment = str((run.get("context") or {}).get("from_assessment") or "").strip()
+    if assessment:
+        scope["from_assessment"] = assessment
     if document_scope_route:
         # A resolved document scope is durable on the workflow record, so a
         # checkpoint answer or an explicitly selected document survives a resume.

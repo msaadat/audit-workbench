@@ -77,6 +77,7 @@ def test_operations_name_both_ways_to_change_an_artifact():
     assert {item["action"] for item in ops["actions"]} == {
         "edit_finding",
         "delete_finding",
+        "edit_document_text",
     }
     assert [item["risk"] for item in ops["actions"] if item["action"] == "delete_finding"] == [
         "destructive"

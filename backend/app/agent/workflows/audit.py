@@ -110,6 +110,12 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # it assesses exist, and a request for one on an unplanned engagement plans
     # it first rather than reporting itself blocked and stopping.
     "planning.change_assessed": ("planning.apm_ready", "planning.rcm_ready"),
+    # Revisions an auditor asked for. No edges, deliberately: a revision is of
+    # the artifact as it stands, and an edge would let a stale matrix be
+    # redrafted first — a regeneration nobody asked for. Readiness refuses a
+    # missing or out-of-date artifact instead.
+    "planning.rcm_revised": (),
+    "planning.apm_revised": (),
     "planning.cycle_ready": (
         "planning.apm_ready",
         "sources.imported",
@@ -252,9 +258,9 @@ BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
         "analysis.executed",
     ),
     "planning:context": ("planning.context_ready",),
-    "planning:apm": ("planning.apm_ready",),
+    "planning:apm": ("planning.apm_ready", "planning.apm_revised"),
     "planning:cycle": ("planning.cycle_ready",),
-    "rcm": ("planning.rcm_ready",),
+    "rcm": ("planning.rcm_ready", "planning.rcm_revised"),
     "test": ("tests.specified", "tests.promoted_from_analysis"),
     "execution": ("fieldwork.executed",),
     "rollup": ("results.rolled_up",),

@@ -689,8 +689,10 @@ def test_assess_change_names_the_revisions_to_run_and_their_order(
         next(item for item in conversation if item["role"] == "tool")["content"]
     )
     # The matrix reads the memorandum, so a plan that revises both revises them
-    # in that order.
-    assert result["revise_next"] == ["planning.apm_ready", "planning.rcm_ready"]
+    # in that order — through the revisions, which apply the assessment by its
+    # basis rather than redrafting either artifact from scratch.
+    assert result["revise_next"] == ["planning.apm_revised", "planning.rcm_revised"]
+    assert result["basis_sha1"]
     assert result["assessment"]["rcm_changes"][0]["rcm_id"] == row_id
     # Still nothing rewritten: naming the revisions is not making them.
     assert ws.reload().planning["apm_markdown"] == COMPLETE_APM

@@ -108,6 +108,8 @@ def test_read_tools_are_registered_once_with_matching_handlers():
         "list_artifacts",
         "get_artifact",
         "get_document_records",
+        "search_document",
+        "read_document",
         "list_tables",
         "describe_table",
         "query_table",

@@ -23,7 +23,9 @@ from .. import (
     cycle_measurement,
     finding_consolidation,
     findings as findings_module,
+    markdown_sections,
     planning_delta,
+    planning_revision,
     cycle_rulesets,
     cycle_vouching,
     doc_tests,
@@ -55,6 +57,7 @@ from .capabilities.documents import (
     analysis_unit_specs,
     resolve_document_scope,
 )
+from .capabilities import planning as planning_capabilities
 from .capabilities import tests as test_capabilities
 from .capabilities._shared import (
     named_observation_ids,
@@ -77,6 +80,8 @@ from .context import (
     finding_consolidation_scope,
     finding_draft_scope,
     planning_context_scope,
+    apm_revision_scope,
+    rcm_revision_scope,
     rcm_scope,
     test_generate_scope,
 )
@@ -92,10 +97,12 @@ from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     CYCLE_EDIT_PRESERVED,
     ApmExecutorTarget,
+    ApmRevisionExecutorTarget,
     CycleExecutorTarget,
     DeltaExecutorTarget,
     PlanningContextExecutorTarget,
     RcmExecutorTarget,
+    RcmRevisionExecutorTarget,
 )
 from .executors.tests import CycleRulesetExecutorTarget, TestGenerateExecutorTarget
 from .executors.reporting import (
@@ -1420,6 +1427,371 @@ class AuditWorkflowExecution(ActionExecution):
             on_committed=on_committed,
         )
 
+    def _revision_brief(self, instruction: str, assessment: str, kind: str) -> str:
+        """The instruction a revision worker reads: the auditor's words, then
+        the change assessment it was asked to apply, if any."""
+
+        parts = [instruction] if instruction else []
+        if assessment:
+            rendered = planning_revision.assessment_instruction(self.ws, assessment, kind)
+            if rendered:
+                parts.append(rendered)
+        return "\n\n".join(parts)
+
+    def _bind_rcm_revision(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind a requested matrix revision to the shared ``UnitPipeline``.
+
+        One unit over every row in scope. The row hashes join the memorandum's
+        as guarded parents, so a row edited while the turn ran conflicts the
+        commit instead of being overwritten by a decision made about its old
+        wording.
+        """
+
+        self.ws = subject
+        scope = workflow_scope(self.run)
+        instruction, assessment, key = planning_capabilities.revision_request(scope, "rcm")
+        brief = self._revision_brief(instruction, assessment, "rcm")
+        row_ids = list(target_rcm_ids(self.ws, scope))
+        rows_before = {str(row["id"]): row for row in self.ws.rcm if row["id"] in row_ids}
+        cycle = self.ws.planning.get("cycle") or {}
+        expected = parent_hashes(
+            self.ws,
+            [
+                "planning:apm",
+                *(["planning:cycle"] if cycle.get("steps") else []),
+                *(f"rcm:{row_id}" for row_id in row_ids),
+            ],
+        )
+        target = RcmRevisionExecutorTarget(
+            self.ws,
+            self.run["id"],
+            request_key=key,
+            row_ids=tuple(row_ids),
+            target_refs=tuple(scope.get("target_refs") or ()),
+            instruction=instruction,
+            assessment=assessment,
+        )
+        task = self.add_task("rcm_revision", "workflow:rcm_revision", "Matrix revision")
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                rcm_revision_scope(self.ws, row_ids=row_ids, instruction=brief),
+            )
+
+        def approval_provider(proposal):
+            # One item per change. Approving a keep would be noise, so keeps are
+            # not offered; a rejected change becomes a keep, and a rejected
+            # addition is dropped — which is the only reading of "no" that
+            # leaves every row in scope decided.
+            items = []
+            for decision in proposal.get("decisions") or []:
+                if decision.get("decision") == "keep":
+                    continue
+                before = rows_before.get(str(decision.get("rcm_id"))) or {}
+                spec = {
+                    **dict(decision),
+                    "risk": before.get("risk"),
+                    "tests": len(before.get("test_refs") or []),
+                }
+                items.append(
+                    self.proposal_item(
+                        f"{str(decision.get('decision')).capitalize()} "
+                        f"{decision.get('rcm_id')}: {before.get('risk') or ''}",
+                        str(decision.get("reason") or ""),
+                        spec,
+                    )
+                )
+            for addition in proposal.get("additions") or []:
+                row = dict(addition.get("row") or {})
+                items.append(
+                    self.proposal_item(
+                        f"Add: {row.get('risk') or ''}",
+                        str(addition.get("reason") or ""),
+                        {"decision": "add", "row": row, "reason": addition.get("reason")},
+                    )
+                )
+            if not items:
+                return dict(proposal)
+            accepted = self.request_approval("rcm_revision", task, items)
+            if not accepted:
+                return None
+            chosen = {
+                str(item["spec"].get("rcm_id")): item["spec"]
+                for item in accepted
+                if item["spec"].get("decision") != "add"
+            }
+            decisions = []
+            for decision in proposal.get("decisions") or []:
+                spec = chosen.get(str(decision.get("rcm_id")))
+                if spec is None or decision.get("decision") == "keep":
+                    decisions.append({"rcm_id": decision.get("rcm_id"), "decision": "keep", "reason": ""})
+                    continue
+                decisions.append(
+                    {key: spec.get(key) for key in ("rcm_id", "decision", "changes", "into", "reason") if key in spec}
+                )
+            # A merge whose survivor was rejected into a retire cannot stand.
+            surviving = {
+                str(item["rcm_id"]) for item in decisions if item["decision"] in ("keep", "revise")
+            }
+            decisions = [
+                {**item, "decision": "keep"}
+                if item["decision"] == "merge" and str(item.get("into")) not in surviving
+                else item
+                for item in decisions
+            ]
+            additions = [
+                {"row": item["spec"].get("row") or {}, "reason": item["spec"].get("reason") or ""}
+                for item in accepted
+                if item["spec"].get("decision") == "add"
+            ]
+            return {**dict(proposal), "decisions": decisions, "additions": additions}
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            output = (outcome.receipt.output if outcome.receipt else None) or {}
+            rows = list(output.get("rows") or [])
+            counts = dict(output.get("counts") or {})
+            remaining = len(
+                [row for row in self.ws.rcm if row["id"] in row_ids]
+            ) + int(counts.get("created") or 0)
+            changed = ", ".join(
+                f"{counts[action]} {label}"
+                for action, label in (
+                    ("revised", "revised"),
+                    ("merged", "merged"),
+                    ("retired", "retired"),
+                    ("created", "added"),
+                )
+                if counts.get(action)
+            ) or "no change"
+            narration.say(
+                self.run,
+                self.emit,
+                f"Revised the matrix as asked: {len(row_ids)} rows in scope, "
+                f"{remaining} now ({changed}).",
+            )
+            for row in rows:
+                if row.get("action") == "kept":
+                    continue
+                before = rows_before.get(str(row.get("id"))) or {}
+                self.record_artifact(
+                    "rcm",
+                    str(row["id"]),
+                    str(before.get("semantic_id") or ""),
+                    str(row.get("action")),
+                    task,
+                )
+            for flag in output.get("flags") or []:
+                self.warn(f"Check RCM revision ({flag.get('row')}): {flag.get('message')}")
+            # What the revision left out of date, said rather than discovered.
+            revised_with_tests = [
+                row["id"]
+                for row in rows
+                if row.get("action") == "revised"
+                and (rows_before.get(str(row["id"])) or {}).get("test_refs")
+            ]
+            if revised_with_tests:
+                self.warn(
+                    f"{counted(len(revised_with_tests), 'revised row')} "
+                    f"{verb(len(revised_with_tests), 'has', 'have')} tests written "
+                    "against the earlier wording; re-specify them "
+                    "(tests.specified) to bring them into line."
+                )
+            unlinked = sum(
+                len((rows_before.get(str(row["id"])) or {}).get("test_refs") or [])
+                for row in rows
+                if row.get("action") == "retired"
+            )
+            if unlinked:
+                self.warn(
+                    f"{counted(unlinked, 'test')} lost {verb(unlinked, 'its', 'their')} "
+                    "row when it was retired; the tests remain, unlinked."
+                )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.rcm_revision",
+                executor_id="planning.rcm_revision",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                    "request_key": key,
+                    "row_ids": row_ids,
+                    "process_names": cycle_process_names(cycle),
+                    "business_cycle": str(cycle.get("name") or ""),
+                    "document_types": document_classification.evidence_type_counts(
+                        self.ws
+                    ),
+                },
+                activity={
+                    "artifact_refs": [f"rcm:{row_id}" for row_id in row_ids],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected,
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=(
+                    "rcm_revision" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(target.workspace, scope),
+            on_committed=on_committed,
+        )
+
+    def _bind_apm_revision(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind a requested memorandum revision to the shared ``UnitPipeline``."""
+
+        self.ws = subject
+        scope = workflow_scope(self.run)
+        instruction, assessment, key = planning_capabilities.revision_request(scope, "apm")
+        brief = self._revision_brief(instruction, assessment, "apm")
+        current = str(self.ws.planning.get("apm_markdown") or "")
+        target = ApmRevisionExecutorTarget(
+            self.ws,
+            self.run["id"],
+            request_key=key,
+            instruction=instruction,
+            assessment=assessment,
+        )
+        task = self.add_task("apm_revision", "workflow:apm_revision", "Memorandum revision")
+
+        def context_provider():
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                apm_revision_scope(self.ws, instruction=brief),
+            )
+
+        def approval_provider(proposal):
+            items = [
+                self.proposal_item(
+                    f"Rewrite section: {section.get('heading')}",
+                    str(section.get("reason") or ""),
+                    {
+                        **dict(section),
+                        "before": markdown_sections.section_body(
+                            current, str(section.get("heading") or "")
+                        ),
+                    },
+                )
+                for section in proposal.get("sections") or []
+            ]
+            if not items:
+                return dict(proposal)
+            accepted = self.request_approval("apm_revision", task, items)
+            if not accepted:
+                return None
+            return {
+                **dict(proposal),
+                "sections": [
+                    {key: item["spec"].get(key) for key in ("heading", "markdown", "reason")}
+                    for item in accepted
+                ],
+            }
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            output = (outcome.receipt.output if outcome.receipt else None) or {}
+            sections = list(output.get("sections") or [])
+            narration.say(
+                self.run,
+                self.emit,
+                (
+                    f"Revised the memorandum as asked: rewrote "
+                    f"{counted(len(sections), 'section')}."
+                    if sections
+                    else "Read the memorandum; no section needed rewriting for that request."
+                ),
+            )
+            if sections:
+                self.record_artifact("planning", "apm", "planning:apm", "revised", task)
+            # The cycle and the matrix were read out of the earlier text.
+            # Readiness already says so; saying it here is what puts it in
+            # front of the auditor who asked for the edit.
+            registry = audit_capabilities.REGISTRY
+            stale = [
+                title
+                for capability_id, title in (
+                    ("planning.cycle_ready", "cycle design"),
+                    ("planning.rcm_ready", "matrix"),
+                )
+                if registry.get(capability_id).readiness(self.ws, {}).state == "stale"
+            ]
+            if sections and stale:
+                self.warn(
+                    f"The {' and the '.join(stale)} {verb(len(stale), 'was', 'were')} "
+                    "drawn from the earlier memorandum and now read as out of "
+                    "date. Redraft or revise them when the memorandum is settled."
+                )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.apm_revision",
+                executor_id="planning.apm_revision",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                    "request_key": key,
+                    "sections": markdown_sections.section_headings(current),
+                },
+                activity={"artifact_refs": [APM_ARTIFACT_REF], "task_id": task["id"]},
+                expected_revision=self.ws.revision,
+                expected_parents=parent_hashes(self.ws, [APM_ARTIFACT_REF]),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=(
+                    "apm_revision" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(target.workspace, scope),
+            on_committed=on_committed,
+        )
+
     def _bind_cycle(
         self,
         subject: Workspace,
@@ -1675,6 +2047,18 @@ class AuditWorkflowExecution(ActionExecution):
                 self.warn(
                     f"RCM row '{row.get('risk')}' was drafted but not added to "
                     f"the matrix: {reason}"
+                )
+            # Rows the memorandum still argues for but someone retired. Named,
+            # so a matrix that stays short reads as a decision being kept.
+            for row in (
+                (outcome.receipt.output.get("retired_skipped") or [])
+                if outcome.receipt
+                else []
+            ):
+                self.warn(
+                    f"RCM row '{row.get('risk')}' was not added back: that risk "
+                    "was retired from the matrix. Add it yourself, or ask for a "
+                    "revision that restores it."
                 )
             # A theme no row mentions at all. Enforced once, and it rejected
             # matrices over the memo's markdown rather than over their coverage
@@ -2877,6 +3261,14 @@ def build_audit_workflow_runner(
         "planning.change_assessed": (
             adapter._bind_delta_review,
             {"worker": "planning.delta_review", "executor": "planning.delta"},
+        ),
+        "planning.rcm_revised": (
+            adapter._bind_rcm_revision,
+            {"worker": "planning.rcm_revision", "executor": "planning.rcm_revision"},
+        ),
+        "planning.apm_revised": (
+            adapter._bind_apm_revision,
+            {"worker": "planning.apm_revision", "executor": "planning.apm_revision"},
         ),
         "tests.cycle_ruleset_proposed": (
             adapter._bind_cycle_ruleset,

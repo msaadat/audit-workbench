@@ -972,6 +972,29 @@ def unlink_rcm(workspace: Workspace, rcm_id: str) -> list[str]:
     return unlinked
 
 
+def relink_rcm(workspace: Workspace, from_id: str, to_id: str) -> list[str]:
+    """Move every Document Test linked to one RCM row onto another.
+
+    Used when a row is merged into another, so its tests follow the control
+    they test instead of being left unlinked. Like :func:`unlink_rcm`, written
+    in place inside the caller's own workspace mutation.
+    """
+    moved = []
+    for summary in list_tests(workspace):
+        if summary.get("rcm_id") != from_id:
+            continue
+        test = load_test(workspace, summary["id"])
+        test["rcm_id"] = to_id
+        test["rcm_refs"] = list(
+            dict.fromkeys(
+                to_id if ref == from_id else ref for ref in test.get("rcm_refs") or []
+            )
+        )
+        write_test(workspace, test)
+        moved.append(test["id"])
+    return moved
+
+
 def _base_test(workspace: Workspace, payload: dict, kind: str | None) -> dict:
     if kind is not None and kind not in KINDS:
         raise WorkspaceError(

@@ -43,6 +43,7 @@ from .. import (
     explore,
     findings,
     intake,
+    markdown_artifacts,
     model_context,
     rcm_execution,
     report,
@@ -620,6 +621,14 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "edit_apm":
         item = workspace.update_planning({"apm_markdown": args["apm_markdown"], "agent_run_id": run["id"], "created_by": "agent"}, agent=True)
         return _receipt(action, item, refs=["planning:apm"])
+    if type_ == "edit_document_text":
+        kind = str((action.get("target") or {}).get("kind") or "")
+        ref = f"{kind}:{target_id}"
+        markdown_artifacts.edit(
+            workspace, ref, args["old_str"], args["new_str"],
+            expected_sha1=str(args.get("sha1") or ""), run_id=run["id"],
+        )
+        return _receipt(action, artifact_snapshot(workspace, kind, target_id), refs=[ref])
     if type_ == "create_rcm_row":
         item = workspace.add_rcm({**args, "agent_run_id": run["id"]})
         return _receipt(action, item, refs=[f"rcm:{item['id']}"])
@@ -627,7 +636,8 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         item = workspace.update_rcm(target_id, args["changes"], agent=True)
         return _receipt(action, item, refs=[f"rcm:{target_id}"])
     if type_ == "delete_rcm_row":
-        workspace.remove_rcm(target_id); return _receipt(action, refs=[f"rcm:{target_id}"])
+        workspace.remove_rcm(target_id, reason=str(args.get("reason") or ""), run_id=run["id"])
+        return _receipt(action, refs=[f"rcm:{target_id}"])
     if type_ == "create_procedure":
         item = workspace.add_procedure({**args, "agent_run_id": run["id"]})
         return _receipt(action, item, refs=[f"procedure:{item['id']}"])
@@ -878,6 +888,20 @@ def _reconcile(workspace: Workspace, action: dict) -> str:
     kind = target.get("kind")
     item_id = target.get("resolved_id") or (action.get("resolution") or {}).get("resolved_id")
     args = action.get("args") or {}
+    if action["type"] == "edit_document_text":
+        # The edit's result is not known before it runs, so it is recognised
+        # from the text: the passage it removed is gone and the one it wrote is
+        # there. The document as it was read means it never ran.
+        try:
+            text, _label = markdown_artifacts.document_text(workspace, f"{kind}:{item_id}")
+        except WorkspaceError:
+            return "conflict"
+        if markdown_artifacts.text_sha1(text) == str(args.get("sha1") or ""):
+            return "retry"
+        old, new = str(args.get("old_str") or ""), str(args.get("new_str") or "")
+        if new in text and (old not in text or old in new):
+            return "already_applied"
+        return "conflict"
     create_kinds = {
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
         "draft_finding_from_observation": "finding",
@@ -985,6 +1009,19 @@ def _register(
 
 _register("update_planning_context", "Update engagement planning context", "reversible_mutation", ("planning",), ("changes",), {"changes": OBJ})
 _register("edit_apm", "Edit APM content", "reversible_mutation", ("planning",), ("apm_markdown",), {"apm_markdown": STR}, model="draft")
+# One exact passage of a long document, the way an editor changes a file: the
+# passage must occur once, the document must be the one that was read (``sha1``
+# from read_document or search_document), and the template's sections must
+# survive. The memorandum is ``planning:apm``, the report ``report:working``.
+_register(
+    "edit_document_text",
+    "Replace one exact passage of the memorandum, a finding's narrative or the report",
+    "reversible_mutation",
+    ("planning", "finding", "report"),
+    ("old_str", "new_str", "sha1"),
+    {"old_str": STR, "new_str": STR, "sha1": STR},
+    model="draft",
+)
 _register(
     "create_rcm_row", "Create one complete RCM row", "create", required=("risk",),
     properties={
@@ -995,7 +1032,7 @@ _register(
     },
 )
 _register("edit_rcm_row", "Edit one RCM row", "reversible_mutation", ("rcm",), ("changes",), {"changes": OBJ})
-_register("delete_rcm_row", "Delete one RCM row", "destructive", ("rcm",))
+_register("delete_rcm_row", "Delete one RCM row", "destructive", ("rcm",), properties={"reason": STR})
 _register(
     "create_procedure", "Legacy compatibility: create an audit procedure", "create", required=("objective",),
     properties={

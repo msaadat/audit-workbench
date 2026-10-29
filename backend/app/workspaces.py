@@ -314,6 +314,10 @@ _ARTIFACT_OBJECTS: dict[str, str] = {
     # unlike the APM it needs no separate ``.md`` file to edit and no
     # ownership flip — the markdown rides inside the object.
     "analysis_summary": "Analyses/.summary.json",
+    # The RCM rows removed from the matrix, and why. Read by the matrix's own
+    # redraft so a risk someone retired is not proposed again; outside
+    # ``Planning/RCM`` so the collection's ``*.json`` glob never reads it as a row.
+    "rcm_retired": "Planning/.retired_rcm.json",
 }
 # Row-level exception evidence for a saved analysis lives beside the
 # definitions, never inside them.  ``Analyses/*.json`` is an artifact
@@ -1981,6 +1985,9 @@ class Workspace:
         if item["risk_rating"] not in ("low", "medium", "high", "critical"):
             raise WorkspaceError("Risk rating must be low, medium, high, or critical.")
         item = _normalize_rcm_row(item, now=now)
+        if not payload.get("agent_run_id"):
+            # An auditor adding a risk back is the decision that un-retires it.
+            self.lift_rcm_retirements({item["semantic_id"]})
         self.rcm.append(item)
         self.save()
         return item
@@ -2133,15 +2140,29 @@ class Workspace:
             self.save()
         return {"updated": changed, "matched": len(planned), "unmatched": unmatched}
 
-    def remove_rcm(self, item_id: str) -> None:
+    def remove_rcm(
+        self,
+        item_id: str,
+        *,
+        reason: str = "",
+        run_id: str | None = None,
+        merged_into: str | None = None,
+    ) -> None:
         """Delete one RCM row, unlinking — never deleting — the tests it linked.
 
         A test is a durable artifact in its own right, so losing its row leaves
         it as an unlinked test rather than destroying the work.
+
+        The removal is also recorded as a retirement. A row someone deleted is a
+        decision about the matrix, and without a record of it the next redraft
+        from the memorandum proposes the same risk again and quietly undoes it.
         """
         from . import doc_tests
 
         item = self._planning_record(self.rcm, item_id, "RCM row")
+        self._record_rcm_retirement(
+            item, reason=reason, run_id=run_id, merged_into=merged_into
+        )
         self.rcm.remove(item)
         for procedure in self.work_program:
             procedure["rcm_refs"] = [ref for ref in procedure.get("rcm_refs", []) if ref != item_id]
@@ -2157,6 +2178,106 @@ class Workspace:
         # an ``evidence_warnings`` entry and a support issue instead, and the
         # ``rcm_semantic_refs`` beside it still name the process.
         self.save()
+
+    def merge_rcm(
+        self,
+        item_id: str,
+        into_id: str,
+        *,
+        reason: str = "",
+        run_id: str | None = None,
+    ) -> dict:
+        """Fold one RCM row into another and retire it.
+
+        What the merged row carried moves to the row it was folded into: its
+        tests are relinked rather than left unlinked, and every finding that
+        cited it also cites the survivor. Findings keep the old reference too —
+        the same rule :meth:`remove_rcm` follows — because what a control showed
+        does not change when the matrix is reorganised around it.
+        """
+        from . import doc_tests
+
+        if item_id == into_id:
+            raise WorkspaceError("An RCM row cannot be merged into itself.")
+        merged = self._planning_record(self.rcm, item_id, "RCM row")
+        survivor = self._planning_record(self.rcm, into_id, "RCM row")
+        survivor["test_refs"] = list(
+            dict.fromkeys(
+                [*(survivor.get("test_refs") or []), *(merged.get("test_refs") or [])]
+            )
+        )
+        for test in self.data_tests:
+            if test.get("rcm_id") == item_id:
+                test["rcm_id"] = into_id
+        doc_tests.relink_rcm(self, item_id, into_id)
+        for procedure in self.work_program:
+            refs = procedure.get("rcm_refs") or []
+            if item_id in refs:
+                procedure["rcm_refs"] = list(
+                    dict.fromkeys(into_id if ref == item_id else ref for ref in refs)
+                )
+        for finding in self.findings:
+            refs = [str(ref) for ref in finding.get("rcm_refs") or []]
+            if item_id in refs and into_id not in refs:
+                finding["rcm_refs"] = [*refs, into_id]
+        self.remove_rcm(item_id, reason=reason, run_id=run_id, merged_into=into_id)
+        return survivor
+
+    def retired_rcm_rows(self) -> list[dict]:
+        """Every RCM row removed from the matrix, oldest first."""
+        return [
+            dict(entry)
+            for entry in (self.rcm_retired or {}).get("rows") or []
+            if isinstance(entry, dict)
+        ]
+
+    def lift_rcm_retirements(self, semantic_ids: list[str] | set[str]) -> list[dict]:
+        """Forget the retirements of these risks, so they may be drafted again.
+
+        Only a person's request lifts one: an auditor adding the row back, or a
+        revision they asked for. Regeneration never does.
+        """
+        wanted = {str(value) for value in semantic_ids if str(value or "").strip()}
+        if not wanted:
+            return []
+        kept, lifted = [], []
+        for entry in self.retired_rcm_rows():
+            (lifted if str(entry.get("semantic_id") or "") in wanted else kept).append(entry)
+        if lifted:
+            self.rcm_retired = {**(self.rcm_retired or {}), "rows": kept}
+        return lifted
+
+    def _record_rcm_retirement(
+        self,
+        item: dict,
+        *,
+        reason: str,
+        run_id: str | None,
+        merged_into: str | None,
+    ) -> None:
+        semantic_id = str(
+            item.get("semantic_id")
+            or f"rcm:{slugify(str(item.get('process') or ''))}:{slugify(str(item.get('risk') or ''))}"
+        )
+        rows = [
+            entry
+            for entry in self.retired_rcm_rows()
+            if str(entry.get("semantic_id") or "") != semantic_id
+        ]
+        rows.append(
+            {
+                "rcm_id": str(item.get("id") or ""),
+                "semantic_id": semantic_id,
+                "process": str(item.get("process") or ""),
+                "risk": str(item.get("risk") or ""),
+                "reason": str(reason or "").strip(),
+                "merged_into": merged_into,
+                "retired_by": "agent" if run_id else "user",
+                "run_id": run_id,
+                "retired_at": self._updated_now(),
+            }
+        )
+        self.rcm_retired = {**(self.rcm_retired or {}), "rows": rows}
 
     def add_procedure(self, payload: dict) -> dict:
         from .evidence import normalize_many

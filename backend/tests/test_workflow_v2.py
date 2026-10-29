@@ -397,6 +397,10 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "planning.context_ready": ("sources.imported", "documents.analysis_generated"),
         "planning.apm_ready": ("planning.context_ready",),
         "planning.change_assessed": ("planning.apm_ready", "planning.rcm_ready"),
+        "planning.rcm_revised": (),
+        "planning.apm_revised": (),
+    "planning.rcm_revised": (),
+    "planning.apm_revised": (),
         "planning.cycle_ready": (
             "planning.apm_ready",
             "sources.imported",

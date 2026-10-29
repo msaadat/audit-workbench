@@ -4,7 +4,7 @@ What each stage of an audit run actually does: what it waits for, what it is
 shown, what it asks a model, what it writes back, and what it costs.
 
 This is a reference for the **executable** audit lifecycle as the code declares
-it today — `audit_workflow_v3`, 31 capabilities. It is derived from
+it today — `audit_workflow_v3`, 33 capabilities. It is derived from
 `backend/app/agent/workflows/audit.py`, the grouped capability declarations
 under `backend/app/agent/capabilities/`, the context presets in
 `backend/app/agent/context/presets.py`, and the execution bindings in
@@ -116,6 +116,8 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                                          audit.verified
 
   planning.change_assessed   (← apm_ready, rcm_ready; only ever asked for by name — §8)
+  planning.rcm_revised       (no edges; asked for by name, with an instruction)
+  planning.apm_revised       (no edges; asked for by name, with an instruction)
 ```
 
 The parallel branches after `results.rolled_up` are intentional; the graph is a
@@ -960,6 +962,51 @@ embed directives already flattened to citations.
 
 Off every template. The steering loop asks for it by name when an auditor asks
 what new evidence changes.
+
+### `planning.rcm_revised` — Matrix revision
+
+A revision is a request — "trim the matrix to the core risks", "merge the two
+approval rows" — applied by one worker that sees **every row in scope** and must
+decide about each of them. It exists because the alternative was the steering
+loop reading the matrix through its tool-result cap and deleting rows one call
+at a time, which on a 32-row matrix spent its whole token budget enumerating.
+
+| | |
+| --- | --- |
+| Depends on | nothing. An edge would let a stale matrix be redrafted before it is revised — a regeneration nobody asked for. Readiness refuses instead. |
+| Readiness | `blocked` with no instruction (or an assessment with no matrix changes), with no matrix, when the named rows do not exist, and **when the matrix is stale** against its memorandum (redraft first). `satisfied` when the request's record (`Planning/.revisions/rcm-<key>.json`) carries the scope hash the rows have now; `missing` otherwise. The key is the request — instruction, assessment basis, named rows — so the same request is answered from disk and a matrix touched since re-asks. |
+| Units | one (`rcm_revision`), parents `rcm:<id>` for every row in scope |
+| Binding | pipeline — worker `planning.rcm_revision`, executor `planning.rcm_revision` |
+| Context | `planning.rcm_revision` — every row in scope (required, a narrow projection without control attributes but with test and finding counts), retired risks, the memorandum, the attributes template and table names for the second call, and the instruction (required, 8,000 characters so an assessment fits as a brief) |
+| Output | `{summary, decisions[], additions[]}` — exactly one decision per row in scope: `keep`, `revise` (only `process`, `risk`, `risk_rating`, `control`, `control_type`, `control_owner`, `criteria`), `merge` (into a row that survives) or `retire`. A row the response leaves out is an error, not a keep. |
+| Guards | the worker refuses **before calling the model** if any row in scope did not fit the context; the commit is guarded on the memorandum **and every row's own hash**, so a row edited mid-turn conflicts rather than being overwritten |
+| Commit | revisions, then merges (tests relinked and findings given the survivor's ref), then retirements, then additions (which may lift a retirement — the auditor asked), then the request's record. Revised and added rows whose control changed get attributes from the RCM worker's own attributes call. |
+| Approval | permission mode: one item per non-keep decision; a rejected change becomes a keep, a rejected merge onto a rejected survivor becomes a keep. Auto mode: none, as for every other mutation. |
+
+Every removal from the matrix — a revision's retire or merge, the
+`delete_rcm_row` action, the Planning tab's delete — is recorded in
+`Planning/.retired_rcm.json`. `planning.rcm_ready` shows the retired risks to
+its risks call and **refuses to add one back** at commit (same matcher as row
+revision: semantic id, then narrative similarity ≥ 0.72), reporting it as
+`retired_skipped`. Only a person lifts a retirement: an auditor adding the row,
+or a revision they asked for.
+
+### `planning.apm_revised` — Memorandum revision
+
+| | |
+| --- | --- |
+| Depends on | nothing |
+| Readiness | `blocked` with no instruction or no memorandum; `satisfied` when the request's record carries the memorandum's current text hash. Staleness is **not** refused: a revision leaves the parent stamp alone, so a memorandum behind its planning context stays behind it rather than being declared current by an edit. |
+| Units | one (`apm_revision`) |
+| Binding | pipeline — worker `planning.apm_revision`, executor `planning.apm_revision` |
+| Context | `planning.apm_revision` — the whole memorandum and the instruction |
+| Output | `{summary, sections[]}` — only the sections that change, each a heading from the memorandum and its complete new body; a body may not contain a `#`/`##` heading |
+| Commit | the bodies are spliced in by `markdown_sections.replace_bodies`; every other line is unchanged and the heading set must come out exactly as it went in. Ownership is left as it was. The binding warns when the cycle or matrix now reads as stale. |
+
+A change assessment reaches either revision by its basis: `assess_change`
+returns `revise_next` (the revision outcomes, memorandum first) and
+`basis_sha1`, which `run_outcomes` passes as `from_assessment`; the binder
+renders that assessment's changes into the worker's instruction.
 
 ### `tests.cycle_ruleset_proposed` — Cycle rules proposed for review
 

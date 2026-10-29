@@ -936,6 +936,28 @@ def rcm_current_row_candidates(workspace: Workspace) -> tuple[ContextCandidate, 
     return tuple(candidates)
 
 
+RCM_RETIRED_ROWS_SOURCE_ID = "retired_rcm"
+
+
+def rcm_retired_row_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Expose each retired risk as the narrative it was retired under."""
+    candidates = []
+    for entry in workspace.retired_rcm_rows():
+        projection = {
+            key: entry.get(key)
+            for key in ("semantic_id", "process", "risk", "reason")
+        }
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"retired_rcm:{entry.get('semantic_id')}",
+                source=projection,
+                representations={"current_artifact": projection},
+                metadata={"semantic_id": str(entry.get("semantic_id") or "")},
+            )
+        )
+    return tuple(candidates)
+
+
 def rcm_scope(
     workspace: Workspace,
     *,
@@ -1007,6 +1029,7 @@ def rcm_scope(
                 ),
             ),
             RCM_CURRENT_ROWS_SOURCE_ID: rcm_current_row_candidates(workspace),
+            RCM_RETIRED_ROWS_SOURCE_ID: rcm_retired_row_candidates(workspace),
             RCM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
                 workspace, imported_only=True
             ),
@@ -1032,6 +1055,123 @@ def rcm_scope(
             INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={**context, "rcm_query": rcm_query},
+    )
+
+
+#: What a revision is shown of each row: what the row says, who owns it, and
+#: how much has been built on it. No control attributes — a revision rewrites
+#: what a control says and the attributes call re-derives the rest — which is
+#: what lets a whole matrix fit one turn.
+_RCM_REVISION_ROW_FIELDS = (
+    "id",
+    "process",
+    "risk",
+    "risk_rating",
+    "control",
+    "control_type",
+    "control_owner",
+    "criteria",
+    "review_status",
+    "created_by",
+)
+
+
+def rcm_revision_row_candidates(
+    workspace: Workspace, row_ids: Iterable[str]
+) -> tuple[ContextCandidate, ...]:
+    """Each row in a revision's scope, with the counts that say it was relied on."""
+
+    wanted = {str(value) for value in row_ids}
+    finding_counts: dict[str, int] = {}
+    for finding in workspace.findings:
+        for ref in {str(value) for value in finding.get("rcm_refs") or []}:
+            finding_counts[ref] = finding_counts.get(ref, 0) + 1
+    candidates = []
+    for row in workspace.rcm:
+        if str(row.get("id")) not in wanted:
+            continue
+        projection = {
+            **{key: row.get(key) for key in _RCM_REVISION_ROW_FIELDS},
+            "test_count": len(row.get("test_refs") or []),
+            "finding_count": finding_counts.get(str(row.get("id")), 0),
+        }
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"rcm:{row['id']}",
+                source=projection,
+                representations={"current_artifact": projection},
+                metadata={"rcm_id": str(row["id"])},
+            )
+        )
+    return tuple(candidates)
+
+
+def rcm_revision_scope(
+    workspace: Workspace,
+    *,
+    row_ids: Iterable[str],
+    instruction: str | None = None,
+) -> ContextScope:
+    """What a matrix revision decides over, and what it decides against."""
+
+    current_apm = str(workspace.planning.get("apm_markdown") or "")
+    attributes_template = templates_store.get_template(
+        workspace, "rcm_attributes"
+    )["markdown"]
+    return ContextScope(
+        candidates={
+            RCM_CURRENT_ROWS_SOURCE_ID: rcm_revision_row_candidates(workspace, row_ids),
+            RCM_RETIRED_ROWS_SOURCE_ID: rcm_retired_row_candidates(workspace),
+            RCM_CURRENT_APM_SOURCE_ID: (
+                (
+                    ContextCandidate(
+                        source_ref="planning:apm",
+                        source=current_apm,
+                        representations={"current_artifact": current_apm},
+                        metadata={"artifact": "apm"},
+                    ),
+                )
+                if current_apm.strip()
+                else ()
+            ),
+            RCM_ATTRIBUTES_TEMPLATE_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="template:rcm_attributes",
+                    source=attributes_template,
+                    representations={"artifact_template": attributes_template},
+                    metadata={"template": "rcm_attributes"},
+                ),
+            ),
+            RCM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
+                workspace, imported_only=True
+            ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
+        },
+        selector_context=dict(workspace.planning.get("context") or {}),
+    )
+
+
+def apm_revision_scope(
+    workspace: Workspace,
+    *,
+    instruction: str | None = None,
+) -> ContextScope:
+    """What a memorandum revision reads: the memorandum, and what was asked."""
+
+    current_apm = str(workspace.planning.get("apm_markdown") or "")
+    return ContextScope(
+        candidates={
+            RCM_CURRENT_APM_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:apm",
+                    source=current_apm,
+                    representations={"current_artifact": current_apm},
+                    metadata={"artifact": "apm"},
+                ),
+            ),
+            INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
+        },
+        selector_context=dict(workspace.planning.get("context") or {}),
     )
 
 

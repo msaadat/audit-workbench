@@ -51,6 +51,10 @@ UNOFFERED_ACTIONS = frozenset(
         "edit_procedure",
         "delete_procedure",
         "generate_working_paper",
+        # Replaces the whole memorandum with text the loop wrote, from a view
+        # of it far smaller than the document. A change to the memorandum is
+        # planning.apm_revised, or one exact passage through edit_document_text.
+        "edit_apm",
     }
 )
 
@@ -223,6 +227,14 @@ def tool_schemas() -> list[dict]:
                         "description": (
                             "Ask the auditor before each stage runs. Only has "
                             "an effect in permission mode."
+                        ),
+                    },
+                    "from_assessment": {
+                        "type": "string",
+                        "description": (
+                            "For planning.rcm_revised or planning.apm_revised: "
+                            "the basis_sha1 assess_change returned, to apply "
+                            "that assessment's changes."
                         ),
                     },
                 },
@@ -560,6 +572,9 @@ class LoopTools:
         context = {"instruction": instruction} if instruction else {}
         if bool(args.get("review_each_stage")):
             context["review_each_stage"] = True
+        assessment = str(args.get("from_assessment") or "").strip()
+        if assessment:
+            context["from_assessment"] = assessment
         child = self.loop.child_run(command, context)
         return {
             "definition": definition_id,
@@ -713,10 +728,8 @@ class LoopTools:
         context = {"instruction": instruction} if instruction else {}
         child = self.loop.child_run(command, context)
         report = self._run_report(child)
-        assessment = planning_delta.load(
-            self.ws.reload(),
-            planning_delta.basis_sha1(self.ws.reload(), document_ids),
-        )
+        basis = planning_delta.basis_sha1(self.ws.reload(), document_ids)
+        assessment = planning_delta.load(self.ws.reload(), basis)
         if assessment is None:
             return {**report, "assessment": None}
         return {
@@ -726,14 +739,16 @@ class LoopTools:
                 for key in ("impact", "summary", "apm_changes", "rcm_changes")
             },
             # Naming the next move rather than leaving it to be inferred: the
-            # matrix reads the memorandum, so a plan that revises both revises
-            # them in that order.
+            # revisions that apply this assessment, in order — the matrix reads
+            # the memorandum, so a plan that revises both revises it first —
+            # and the basis each takes as ``from_assessment``.
             "revise_next": {
                 "none": [],
-                "apm": ["planning.apm_ready"],
-                "rcm": ["planning.rcm_ready"],
-                "both": ["planning.apm_ready", "planning.rcm_ready"],
+                "apm": ["planning.apm_revised"],
+                "rcm": ["planning.rcm_revised"],
+                "both": ["planning.apm_revised", "planning.rcm_revised"],
             }[str(assessment.get("impact") or "none")],
+            "basis_sha1": basis,
         }
 
     def ask_auditor(self, args: dict) -> dict:

@@ -2,7 +2,8 @@
 
 Owns the planning outcomes of the authoritative audit graph:
 ``planning.context_ready``, ``planning.apm_ready``, ``planning.cycle_ready``
-and ``planning.rcm_ready``.
+and ``planning.rcm_ready``, and the two revisions an auditor may ask of them,
+``planning.rcm_revised`` and ``planning.apm_revised``.
 Drafting the tests an RCM row needs belongs to the tests capability group.
 
 Each capability is declared here: its readiness, its semantic unit expansion,
@@ -23,7 +24,7 @@ declares it as a parent.
 
 from __future__ import annotations
 
-from ... import planning_delta
+from ... import planning_delta, planning_revision
 from ...text import counted, verb
 from ...workspaces import Workspace, planning_apm_sha1
 from ..workflow import Capability, Readiness, UnitSpec
@@ -40,6 +41,8 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "planning.cycle_ready",
     "planning.rcm_ready",
     "planning.change_assessed",
+    "planning.rcm_revised",
+    "planning.apm_revised",
 )
 
 
@@ -360,6 +363,164 @@ def _planning_change_assessed() -> Capability:
     )
 
 
+# --------------------------------------------------------------------------- #
+# planning.rcm_revised / planning.apm_revised — revisions an auditor asked for
+# --------------------------------------------------------------------------- #
+def revision_request(scope: dict, kind: str) -> tuple[str, str, str]:
+    """What this revision was asked, and the key its answer is filed under.
+
+    One derivation for the readiness, the expansion and the binder, so the three
+    cannot disagree about which request a record answers.
+    """
+
+    instruction = str(scope.get("instruction") or "").strip()
+    assessment = str(scope.get("from_assessment") or "").strip()
+    key = planning_revision.request_key(
+        kind,
+        instruction=instruction,
+        assessment=assessment,
+        target_refs=scope.get("target_refs") or [],
+    )
+    return instruction, assessment, key
+
+
+def _assessment_names_changes(workspace: Workspace, basis: str, kind: str) -> bool:
+    """Whether a change assessment on file asks anything of this artifact."""
+
+    if not basis:
+        return False
+    assessment = planning_delta.load(workspace, basis) or {}
+    return bool(assessment.get(f"{kind}_changes"))
+
+
+def _rcm_revised(workspace: Workspace, scope: dict) -> Readiness:
+    """Whether the matrix already reads the way this request asked.
+
+    Not "is the matrix good": a revision is a requested outcome, and the only
+    question its readiness can answer is whether *this* request has been carried
+    out against the rows as they stand. A matrix out of date with its memorandum
+    is refused rather than redrafted first — a revision that quietly triggers a
+    regeneration has done something nobody asked for.
+    """
+
+    instruction, assessment, key = revision_request(scope, "rcm")
+    if not instruction and not _assessment_names_changes(workspace, assessment, "rcm"):
+        return Readiness("blocked", ("say what should change in the matrix",))
+    rows = _rows(workspace, scope)
+    record = planning_revision.load(workspace, "rcm", key)
+    if record is not None and record.get("applied_sha1") == planning_revision.rcm_scope_sha1(rows):
+        return Readiness(
+            "satisfied",
+            details={"artifact_count": len(rows), "revised_by_run": record.get("run_id")},
+        )
+    if not workspace.rcm:
+        return Readiness("blocked", ("there is no matrix to revise; draft it first",))
+    if not rows:
+        return Readiness("blocked", ("none of the named rows is in the matrix",))
+    if _rcm_ready(workspace, scope).state == "stale":
+        return Readiness(
+            "blocked",
+            (
+                "the matrix is out of date with its memorandum; redraft it "
+                "(planning.rcm_ready) before revising it",
+            ),
+        )
+    return Readiness(
+        "missing",
+        (f"{counted(len(rows), 'RCM row')} not yet revised as asked",),
+        details={"artifact_count": len(rows)},
+    )
+
+
+def _rcm_revision_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    _instruction, _assessment, key = revision_request(scope, "rcm")
+    rows = _rows(workspace, scope)
+    if not rows:
+        return []
+    if _rcm_revised(workspace, scope).state != "missing":
+        return []
+    return [
+        UnitSpec(
+            "rcm_revision",
+            "rcm_revision",
+            f"Revise {counted(len(rows), 'RCM row')} as asked",
+            tuple(f"rcm:{row['id']}" for row in rows),
+            {"request_key": key, "row_ids": [str(row["id"]) for row in rows]},
+        )
+    ]
+
+
+def _planning_rcm_revised() -> Capability:
+    return Capability(
+        "planning.rcm_revised",
+        "rcm_revision",
+        "Matrix revision",
+        "rcm_revision",
+        audit_workflow.dependencies("planning.rcm_revised"),
+        _rcm_revised,
+        _rcm_revision_units,
+        context="planning.rcm_revision",
+        invalidate_on=("planning:apm", "rcm"),
+        produces=("rcm",),
+        accepts_refs=("rcm",),
+        redoes_named=("rcm",),
+    )
+
+
+def _apm_revised(workspace: Workspace, scope: dict) -> Readiness:
+    """Whether the memorandum already reads the way this request asked.
+
+    Staleness is not refused here, unlike the matrix: a memorandum behind its
+    planning context is still the document the auditor wants a section of
+    rewritten, and a revision leaves its parent stamp alone, so it stays as
+    stale as it was rather than being declared current by an edit.
+    """
+
+    instruction, assessment, key = revision_request(scope, "apm")
+    if not instruction and not _assessment_names_changes(workspace, assessment, "apm"):
+        return Readiness("blocked", ("say what should change in the memorandum",))
+    record = planning_revision.load(workspace, "apm", key)
+    if record is not None and record.get("applied_sha1") == planning_revision.apm_scope_sha1(workspace):
+        return Readiness(
+            "satisfied",
+            details={"artifact_count": 1, "revised_by_run": record.get("run_id")},
+        )
+    if not str(workspace.planning.get("apm_markdown") or "").strip():
+        return Readiness("blocked", ("there is no memorandum to revise; draft it first",))
+    return Readiness("missing", ("the memorandum is not yet revised as asked",))
+
+
+def _apm_revision_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    _instruction, _assessment, key = revision_request(scope, "apm")
+    if _apm_revised(workspace, scope).state != "missing":
+        return []
+    return [
+        UnitSpec(
+            "apm_revision",
+            "apm_revision",
+            "Revise the memorandum as asked",
+            ("planning:apm",),
+            {"request_key": key},
+        )
+    ]
+
+
+def _planning_apm_revised() -> Capability:
+    return Capability(
+        "planning.apm_revised",
+        "apm_revision",
+        "Memorandum revision",
+        "apm_revision",
+        audit_workflow.dependencies("planning.apm_revised"),
+        _apm_revised,
+        _apm_revision_units,
+        context="planning.apm_revision",
+        invalidate_on=("planning:apm",),
+        produces=("planning",),
+        accepts_refs=(),
+    )
+
+
 # Locally-owned declaration builders keyed by capability ID.
 _BUILDERS = {
     "planning.context_ready": _planning_context_ready,
@@ -367,6 +528,8 @@ _BUILDERS = {
     "planning.cycle_ready": _planning_cycle_ready,
     "planning.rcm_ready": _planning_rcm_ready,
     "planning.change_assessed": _planning_change_assessed,
+    "planning.rcm_revised": _planning_rcm_revised,
+    "planning.apm_revised": _planning_apm_revised,
 }
 
 

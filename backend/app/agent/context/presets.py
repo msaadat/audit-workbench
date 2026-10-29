@@ -964,6 +964,17 @@ PRESETS.register(
                     representations=(ContextRepresentation("current_artifact"),),
                     budget=ContextBudget(max_items=200, max_characters=40_000),
                 ),
+                # Risks someone took out of the matrix. The commit refuses to
+                # add them back whatever the turn proposes; showing them here
+                # is what stops the turn spending rows on them first.
+                ContextSource(
+                    id="retired_rcm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=60, max_characters=12_000),
+                ),
                 ContextSource(
                     id="table_metadata",
                     source_type="tables",
@@ -1045,7 +1056,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=2_000),
                 ),
             ),
-            budget=ContextBudget(max_items=255, max_characters=138_000),
+            budget=ContextBudget(max_items=315, max_characters=138_000),
             privacy=ContextPrivacy(
                 allow_auditor_instruction=True,
                 allow_planning_context=True,
@@ -1054,6 +1065,119 @@ PRESETS.register(
                 allow_table_metadata=True,
                 allow_table_profiles=True,
                 allow_small_table_rows=True,
+            ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="planning.rcm_revision",
+        spec=ContextSpec(
+            sources=(
+                # Every row in scope, or the revision does not run: the worker
+                # checks the supplied ids against the scope and refuses a
+                # partial matrix rather than deciding about the rows that fit.
+                # The projection is narrower than the drafting turn's — no
+                # control attributes — so a full matrix fits in one turn.
+                ContextSource(
+                    id="current_rcm",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=400, max_characters=60_000),
+                ),
+                ContextSource(
+                    id="retired_rcm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=60, max_characters=12_000),
+                ),
+                # What the matrix was drawn from, so "keep the core risks" is
+                # judged against the risks the memorandum argues are core.
+                ContextSource(
+                    id="current_apm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=60_000),
+                ),
+                # The attributes call's two inputs, for the controls a revision
+                # rewrites or adds.
+                ContextSource(
+                    id="rcm_attributes_template",
+                    source_type="templates",
+                    required=True,
+                    selector=ContextSelector(selector_id="templates.current"),
+                    representations=(ContextRepresentation("artifact_template"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="table_metadata",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=12, max_characters=8_000),
+                ),
+                # Required here, unlike the drafting presets: a revision with
+                # nothing asked of it has nothing to do. Wider than theirs too,
+                # because a change assessment arrives through it as a brief.
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=True,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=480, max_characters=160_000),
+            privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
+                allow_document_text=True,
+                allow_template_text=True,
+                allow_table_metadata=True,
+            ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="planning.apm_revision",
+        spec=ContextSpec(
+            sources=(
+                # The whole memorandum: a section rewritten without the rest in
+                # view repeats what another section already says, or contradicts
+                # it.
+                ContextSource(
+                    id="current_apm",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=80_000),
+                ),
+                ContextSource(
+                    id="instruction",
+                    source_type="instructions",
+                    required=True,
+                    selector=ContextSelector(selector_id="instructions.current"),
+                    representations=(ContextRepresentation("auditor_instruction"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=2, max_characters=88_000),
+            privacy=ContextPrivacy(
+                allow_auditor_instruction=True,
+                allow_document_text=True,
             ),
         ),
     )

@@ -329,6 +329,23 @@ def _delta_review(getfixture):
     return _assessment(), delta_request()
 
 
+@builds("planning.rcm_revision")
+def _rcm_revision(getfixture):
+    from test_planning_revision import _revision, rcm_request
+
+    return _revision(), rcm_request()
+
+
+@builds("planning.apm_revision")
+def _apm_revision(getfixture):
+    from test_planning_revision import apm_request
+
+    return {
+        "summary": "Shortened the engagement section.",
+        "sections": [{"heading": "Engagement", "markdown": "Shorter.", "reason": "Asked."}],
+    }, apm_request()
+
+
 @builds("reporting.finding")
 def _finding(getfixture):
     from test_agent_reporting_finding import _draft, _request

@@ -19,8 +19,23 @@ const kindLabel: Record<string, string> = {
   context: 'Planning context updates',
   apm: 'Audit planning memorandum',
   rcm: 'Risk and control matrix',
+  rcm_revision: 'Matrix revision',
+  apm_revision: 'Memorandum revision',
   work_program: 'Audit program',
 }
+
+// A revision proposes one decision per item. The decision is the headline,
+// so it is drawn as a tag beside the title rather than buried in the spec.
+const decisionLabel: Record<string, string> = {
+  revise: 'Revise',
+  merge: 'Merge',
+  retire: 'Retire',
+  add: 'Add',
+}
+
+// Fields a revision item carries that the summary grid must not dump: section
+// bodies run to pages, and the change list is drawn as its own list below.
+const REVISION_DETAIL_KEYS = new Set(['markdown', 'before', 'changes', 'row', 'reason', 'decision'])
 
 interface ItemState {
   action: 'approve' | 'reject'
@@ -85,8 +100,23 @@ function apply() {
   emit('decide', decisions)
 }
 
+function revisionKind(): boolean {
+  return props.approval.kind === 'rcm_revision' || props.approval.kind === 'apm_revision'
+}
+
+// The fields a revise decision rewrites, or an added row's fields, as
+// "field: new value" lines. Attributes are classified separately and omitted.
+function revisionChanges(spec: Record<string, unknown>): Array<{ label: string; value: string }> {
+  const source = (spec.changes ?? spec.row) as Record<string, unknown> | undefined
+  if (!source || typeof source !== 'object') return []
+  return Object.entries(source)
+    .filter(([key, value]) => key !== 'control_attributes' && typeof value === 'string' && value)
+    .map(([key, value]) => ({ label: key.replaceAll('_', ' '), value: String(value) }))
+}
+
 function readableSpec(spec: Record<string, unknown>): Array<{ label: string; value: string }> {
   return Object.entries(spec)
+    .filter(([key]) => !revisionKind() || !REVISION_DETAIL_KEYS.has(key))
     .filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value) || (Array.isArray(value) && value.every(item => ['string', 'number'].includes(typeof item))))
     .slice(0, 6)
     .map(([key, value]) => ({
@@ -128,6 +158,11 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
       :class="{ rejected: items[item.id].action === 'reject' }"
     >
       <div class="item-head">
+        <Tag
+          v-if="revisionKind() && decisionLabel[String(item.spec.decision)]"
+          :value="decisionLabel[String(item.spec.decision)]"
+          severity="secondary"
+        />
         <span class="item-title">{{ item.title }}</span>
         <span class="grow" />
         <Button
@@ -151,6 +186,12 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
       <dl v-if="readableSpec(item.spec).length" class="spec-summary">
         <div v-for="field in readableSpec(item.spec)" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
       </dl>
+      <ul v-if="revisionKind() && revisionChanges(item.spec).length" class="changes">
+        <li v-for="change in revisionChanges(item.spec)" :key="change.label">
+          <span class="aw-label">{{ change.label }}</span> {{ change.value }}
+        </li>
+      </ul>
+      <pre v-if="approval.kind === 'apm_revision' && item.spec.markdown" class="section-preview">{{ item.spec.markdown }}</pre>
       <small v-if="items[item.id].edited" class="edited">
         <i class="aw-icon aw-icon-pencil" /> edited — the modified spec will be applied
       </small>
@@ -215,6 +256,21 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
 .spec-summary dt { color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 700; text-transform: capitalize; }
 .spec-summary dd { margin: .08rem 0 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .edited { display: block; color: var(--aw-teal); font-size: var(--aw-text-xs); margin-top: 0.15rem; }
+.changes { margin: .4rem 0 0; padding: 0; list-style: none; font-size: var(--aw-text-xs); }
+.changes li { padding: .1rem 0; }
+.changes .aw-label { margin-right: .3rem; color: var(--aw-muted); }
+.section-preview {
+  max-height: 12rem;
+  margin: .45rem 0 0;
+  padding: .45rem;
+  overflow: auto;
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-canvas);
+  color: var(--aw-ink);
+  font-family: inherit;
+  font-size: var(--aw-text-xs);
+  white-space: pre-wrap;
+}
 .editor { margin-top: 0.45rem; }
 .editor :deep(textarea) { width: 100%; font-family: ui-monospace, monospace; font-size: var(--aw-text-sm); }
 .editor-actions { display: flex; gap: 0.4rem; margin-top: 0.35rem; }

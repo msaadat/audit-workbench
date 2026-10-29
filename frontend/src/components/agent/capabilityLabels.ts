@@ -32,6 +32,8 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'planning.cycle_ready': 'Cycle design',
   'planning.rcm_ready': 'Risk and control matrix',
   'planning.change_assessed': 'Change assessment',
+  'planning.rcm_revised': 'Matrix revision',
+  'planning.apm_revised': 'Memorandum revision',
   'tests.cycle_ruleset_proposed': 'Cycle rules proposed for review',
   'tests.cycle_ruleset_approved': 'Cycle rules made effective',
   'tests.specified': 'Executable test specifications',

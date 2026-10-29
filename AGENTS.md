@@ -179,6 +179,15 @@ backend/app/
 |- templates_store.py          - editable markdown template persistence and the
 |                                shared `##`-section parsing those templates
 |                                define (headings, bodies, scaffold)
+|- markdown_sections.py        - pure section structure of a written work
+|                                product: sections, bodies, splicing, and the
+|                                heading-set invariant every partial edit keeps
+|- markdown_artifacts.py       - search, numbered read windows, and exact-passage
+|                                edits of the memorandum, finding narratives and
+|                                the report, each against the sha1 it read
+|- planning_revision.py        - requested revisions' records, keyed by the
+|                                request and stamped with the scope hash the
+|                                commit left; the change-assessment brief
 |- debug_store.py              - telemetry writes for calls/events/state, into
 |                                the workspace telemetry database
 |- debug_service.py            - debug read models, timing, causal analysis
@@ -535,6 +544,26 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `Planning/.delta/<basis>.json`, so the same question is answered from disk and
   a changed artifact re-asks. The framework still assesses currency nowhere: this
   is a requested outcome, off every template.
+- **Revising an existing artifact is a capability, not the loop's prose.**
+  `planning.rcm_revised` and `planning.apm_revised` take the auditor's words as
+  their instruction (or a change assessment by `from_assessment`), and one worker
+  sees the whole artifact in scope. A matrix revision returns exactly one
+  decision per row — keep, revise, merge into a survivor, retire — plus any
+  additions; a memorandum revision returns replacement bodies for named sections
+  and the commit refuses any change to the heading set. Both are filed in
+  `Planning/.revisions/` by the request they answer. Neither declares an edge: a
+  matrix revision refuses a stale matrix rather than redrafting it first. Every
+  row removal is recorded in `Planning/.retired_rcm.json`, and
+  `planning.rcm_ready` will not add a retired risk back; only a person lifts a
+  retirement. For a small, exact change the loop has `search_document`,
+  `read_document` and the `edit_document_text` action (one passage, against the
+  sha1 it read); `edit_apm`, which replaced the whole memorandum with text the
+  loop wrote, is no longer offered to it. Details in
+  [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md).
+- The loop reloads the workspace at the top of every turn and before every child
+  run. Child runs and actions commit through their own transactions, and a loop
+  that kept its first copy routed a second request against the artifact as it
+  stood before the first had changed it.
 - What can be done to an artifact is derived, not written twice.
   `agent/operations.py` joins the action catalog's `target_kinds` to the
   capability registry's `produces` / `accepts_refs` / `redoes_named`, and
@@ -578,7 +607,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   audit-shaped glue: which worker/executor and declared context a unit uses,
   approval items, post-commit bookkeeping, checkpoint handlers, and the audit
   completion projection.
-- The audit graph is 31 capabilities and is documented stage by stage —
+- The audit graph is 33 capabilities and is documented stage by stage —
   dependencies, readiness rules, unit expansions, per-stage context, worker and
   executor bindings, input/output shapes, budgets, and the on-disk sidecars — in
   [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md). Its structure in
@@ -744,7 +773,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
 - Phase 7 completed with the audit lifecycle declared in exactly one place. The
   dependency graph lives in `agent/workflows/audit.py`; the capability
   declarations live in the grouped `agent/capabilities/` package, which is the
-  live registry (twelve at the time, 29 today — see the audit-graph note under
+  live registry (twelve at the time, 33 today — see the audit-graph note under
   §6); and each capability's execution is a registered worker/executor
   pair or a deterministic local computation under `agent/workers/` and
   `agent/executors/`, with declared context presets in `agent/context/`. Every

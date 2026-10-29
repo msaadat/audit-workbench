@@ -124,6 +124,8 @@ from .adapters import (
     delta_review_scope,
     rcm_current_row_candidates,
     cycle_scope,
+    apm_revision_scope,
+    rcm_revision_scope,
     rcm_scope,
 )
 
@@ -243,5 +245,7 @@ __all__ = [
     "delta_review_scope",
     "rcm_current_row_candidates",
     "cycle_scope",
+    "apm_revision_scope",
+    "rcm_revision_scope",
     "rcm_scope",
 ]
