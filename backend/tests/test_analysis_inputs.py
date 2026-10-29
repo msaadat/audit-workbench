@@ -207,6 +207,55 @@ def test_chain_uses_the_dimension_column_after_a_name_collision(authority):
     assert result["LIMIT"].is_not_null().sum()==55
 
 
+def test_catalog_routes_match_diagnosing_every_pair(mixed, monkeypatch):
+    """Filtering before diagnosing is an optimisation, never a different answer.
+
+    The reference below is the catalog's route loop as it stood before the
+    filter moved: every left column diagnosed against every right key, the
+    affinity and value-support test applied afterwards.
+    """
+    from itertools import permutations
+    from app.agent import joins
+    table(mixed, "staff", {"STAFF_ID": [f"S{i}" for i in range(6)],
+        "REF_CODE": [f"PO{i}" for i in range(6)], "GRADE": ["A", "B"] * 3})
+    names = tuple(sorted(t["name"] for t in mixed.tables))
+    entities = joins.entity_tokens(names)
+    frames = {n: mixed.get_frame(n) for n in names}
+    expected = []
+    for left, right in permutations(names, 2):
+        lf, rf = frames[left], frames[right]
+        right_keys = [c for c in rf.columns if joins._is_plausible_key(rf, c)]
+        found = []
+        for lc in lf.columns:
+            if not (probes.reference_shaped(lc) or joins._is_plausible_key(lf, lc, dimension=False)):
+                continue
+            for rc in right_keys:
+                affinity = joins._name_affinity(lc, rc, right, entities)
+                diag = joins.diagnose(lf, rf, lc, rc)
+                supported = probes.reference_shaped(lc) and probes.reference_shaped(rc) and diag["matched_keys"]
+                if affinity <= 0 and not supported:
+                    continue
+                found.append((left, right, lc, rc, affinity, diag))
+        found.sort(key=lambda r: (-r[4], -r[5]["match_rate"], f"relationship:{r[0]}:{r[1]}:{r[2]}:{r[3]}"))
+        expected.extend(found[:alignment_catalog.MAX_ROUTES_PER_PAIR])
+    reference_calls = sum(
+        1 for left, right in permutations(names, 2)
+        for lc in frames[left].columns
+        if probes.reference_shaped(lc) or joins._is_plausible_key(frames[left], lc, dimension=False)
+        for rc in frames[right].columns if joins._is_plausible_key(frames[right], rc)
+    )
+
+    calls = []
+    diagnose = joins.diagnose
+    monkeypatch.setattr(joins, "diagnose", lambda *a, **k: calls.append(1) or diagnose(*a, **k))
+    alignment_catalog._CACHE.clear()
+    routes = alignment_catalog.catalog(mixed, names)["routes"]
+
+    assert [(r["left"], r["right"], r["left_on"][0], r["right_on"][0], r["affinity"], r["diagnostics"])
+            for r in routes] == expected
+    assert len(calls) < reference_calls
+
+
 def test_saved_alignment_keeps_population_provenance_after_reload(mixed):
     from app.agent import joins
     recipe=route(mixed,"invoices","requisitions","PO_NUMBER_LINK")

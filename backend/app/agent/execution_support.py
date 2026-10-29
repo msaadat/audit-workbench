@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .. import stage_status
 from ..workspaces import Workspace, load_workspace
 from .context import (
     ContextBundle,
@@ -51,6 +52,9 @@ def refresh_workspace(host: ExecutionHost) -> Workspace:
 
     state = host.run.setdefault("workflow", {})
     previous = int(state.get("workspace_revision") or 0)
+    # Called after a unit commits. A commit that wrote only sidecars leaves the
+    # revision where it was and saves nothing, so the save hook alone misses it.
+    stage_status.mark_dirty(host.ws)
     host.ws = host.ws.reload()
     state["workspace_revision"] = host.ws.revision
     if host.ws.revision != previous:

@@ -37,6 +37,7 @@ from . import (
     finding_consolidation,
     rcm_execution,
     report,
+    stage_status,
 )
 from .agent import capabilities as audit_capabilities
 from .agent import store
@@ -792,21 +793,49 @@ def _readiness(workspace: Workspace) -> dict[str, dict]:
     """
 
     def read() -> dict[str, dict]:
-        state: dict[str, dict] = {}
-        drawn = tuple(_SPINE)
-        for project in (
-            audit_capabilities.workflow_state,
-            audit_capabilities.analysis_workflow_state,
-            audit_capabilities.documents_workflow_state,
-            audit_capabilities.doc_tests_workflow_state,
-        ):
-            try:
-                state.update(project(workspace, only=drawn))
-            except Exception:
-                continue
-        return state
+        if not stage_status.enabled(workspace.root):
+            return _sweep(workspace)
+        stored = stage_status.lookup(workspace.root)
+        if stored.stages is not None and stored.current:
+            return stored.stages
+        if stored.stages is not None and stage_status.SERVE_STALE:
+            # The last answer, said to be out of date, while the refresher
+            # draws the next one — rather than holding the page on the sweep.
+            memo = _MEMO.get()
+            if memo is not None:
+                memo["refreshing"] = True
+            stage_status.schedule_refresh(workspace.root)
+            return stored.stages
+        return stage_status.refresh(workspace.root, lambda: _sweep(workspace))
 
     return _once("readiness", read)
+
+
+def _sweep(workspace: Workspace) -> dict[str, dict]:
+    """The readiness of every drawn stage, from the four registries."""
+    state: dict[str, dict] = {}
+    drawn = tuple(_SPINE)
+    for project in (
+        audit_capabilities.workflow_state,
+        audit_capabilities.analysis_workflow_state,
+        audit_capabilities.documents_workflow_state,
+        audit_capabilities.doc_tests_workflow_state,
+    ):
+        try:
+            state.update(project(workspace, only=drawn))
+        except Exception:
+            continue
+    return state
+
+
+def compute_readiness(workspace: Workspace) -> dict[str, dict]:
+    """:func:`_sweep` inside the read scope that makes it affordable.
+
+    What :mod:`stage_status` stores. Never reads the store, so a refresh is
+    always a real sweep.
+    """
+    with _one_read():
+        return _sweep(workspace)
 
 
 def _dependencies(capability: str) -> tuple[str, ...]:
@@ -1336,4 +1365,7 @@ def record(workspace: Workspace) -> dict:
                 "first_at": min((str(item["first_at"] or "") for item in settled), default=None) or None,
                 "last_at": timeline[-1] if timeline else None,
             },
+            # The stage states above are the last stored answer and a newer
+            # one is being drawn; the page asks again rather than waiting.
+            "refreshing": bool((_MEMO.get() or {}).get("refreshing")),
         }

@@ -15,7 +15,7 @@ from array import array
 from collections import Counter
 from pathlib import Path
 
-from . import embedding
+from . import embedding, stage_status
 from .evidence import document_anchor
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
@@ -495,6 +495,9 @@ def _index_worker() -> None:
                         _queued_documents.discard(_queue_key(workspace, document_id))
                     job["active_document_id"] = None
                     write_json_atomic(_job_path(workspace, job_id), job)
+                    # The indexer is the one writer that is neither a request
+                    # nor a run, so it announces its own writes.
+                    stage_status.mark_dirty(workspace)
                 if position + 1 < len(job["document_ids"]) and INDEX_DOCUMENT_PACE_SECONDS:
                     time.sleep(INDEX_DOCUMENT_PACE_SECONDS)
             job.update(

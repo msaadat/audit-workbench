@@ -78,24 +78,44 @@ const FILED_ICONS: Record<string, string> = {
   Verification: 'aw-icon aw-icon-layout-grid',
 }
 
-async function load() {
-  loading.value = true
+// A stored stage status that is out of date comes back marked `refreshing`
+// while the server draws the next one. The page shows the last states and asks
+// again shortly, rather than holding the whole record on the redraw. Bounded,
+// so a refresh that keeps failing does not poll for ever.
+const REFRESH_POLL_MS = 1500
+const REFRESH_POLL_LIMIT = 20
+let pollTimer = 0
+let polls = 0
+
+async function load(options: { quiet?: boolean } = {}) {
+  window.clearTimeout(pollTimer)
+  if (!options.quiet) {
+    loading.value = true
+    polls = 0
+  }
   try {
     data.value = await api.get<EngagementRecordPayload>(
       `/api/workspaces/${props.workspace.id}/engagement/record`,
     )
+    if (data.value.refreshing && polls < REFRESH_POLL_LIMIT) {
+      polls += 1
+      pollTimer = window.setTimeout(() => { void load({ quiet: true }) }, REFRESH_POLL_MS)
+    }
   } catch (error) {
-    toast.add({
-      severity: 'error',
-      summary: 'Could not load the engagement record',
-      detail: error instanceof ApiError ? error.message : String(error),
-      life: 6000,
-    })
+    if (!options.quiet) {
+      toast.add({
+        severity: 'error',
+        summary: 'Could not load the engagement record',
+        detail: error instanceof ApiError ? error.message : String(error),
+        life: 6000,
+      })
+    }
   } finally {
-    loading.value = false
+    if (!options.quiet) loading.value = false
   }
 }
 void load()
+onUnmounted(() => window.clearTimeout(pollTimer))
 
 // The record is a projection of committed runs, so a commit while it is on
 // screen has to refresh it.
@@ -900,6 +920,9 @@ function phaseNames(group: PhaseGroup): string {
          what is left is the controls and a label small enough to be one. -->
     <div class="bar">
       <h2>Engagement record</h2>
+      <span v-if="data?.refreshing" class="updating" role="status">
+        <i class="aw-icon aw-icon-spin aw-icon-loader-circle" aria-hidden="true" />Updating status…
+      </span>
       <span class="grow"></span>
       <div class="dens" role="group" aria-label="Row density">
         <button
@@ -921,7 +944,7 @@ function phaseNames(group: PhaseGroup): string {
         outlined
         aria-label="Refresh the record"
         :loading="loading"
-        @click="load"
+        @click="load()"
       />
       <!-- The one thing the record cannot draw as a row. Every other work
            product is a row here, because a row is something the engagement
@@ -1282,6 +1305,7 @@ function phaseNames(group: PhaseGroup): string {
 
 <style scoped>
 .record { display: flex; flex-direction: column; gap: .75rem; min-height: 0; }
+.updating { display: inline-flex; align-items: center; gap: .35rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .loading { display: grid; place-content: center; gap: .4rem; padding: 3rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
 /* --- the toolbar --------------------------------------------------------- */

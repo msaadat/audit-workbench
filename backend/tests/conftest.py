@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import accounts, assistant_settings, config, db, llm, loader, registry, telemetry_db, usage, workspaces  # noqa: E402
+from app import accounts, assistant_settings, config, db, llm, loader, registry, stage_status, telemetry_db, usage, workspaces  # noqa: E402
 from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
@@ -236,8 +236,16 @@ def isolated_workspaces(tmp_path, monkeypatch):
     # Likewise reasoning: a checkout running end-to-end trials with it switched
     # off must not turn the default the suite pins into whatever is in .env.
     monkeypatch.delenv("LLM_REASONING", raising=False)
+    # And telemetry: `full` in a developer's .env snapshots state on every
+    # artifact write, which slowed agent runs past `wait_run`'s deadline and
+    # failed 28 tests that pass at the default level.
+    monkeypatch.delenv("DEBUG_TELEMETRY", raising=False)
     loader.clear_cache()
     workspaces.clear_artifact_cache()
+    # A new workspace sweeps its record on every read, as one created before
+    # the stored stage status does; `test_stage_status` turns the store on.
+    # Left on, every save would wake the background refresher mid-test.
+    monkeypatch.setattr(stage_status, "ENABLED_FOR_NEW", False)
     yield
     db.close_all()
     telemetry_db.close_all()

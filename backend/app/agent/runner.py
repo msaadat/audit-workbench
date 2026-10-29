@@ -21,7 +21,7 @@ import os
 import re
 import threading
 
-from .. import debug_store, llm
+from .. import debug_store, llm, stage_status
 from ..workspaces import Workspace, WorkspaceError
 from . import store
 from .runtime import submit_approval_response, submit_interaction_response
@@ -920,6 +920,12 @@ def _execute(seed: Workspace, run_id: str, handle: RunHandle) -> None:
             current = _HANDLES.get(run_id)
             if current is handle:
                 _HANDLES.pop(run_id, None)
+        # Whatever the run committed, including sidecars written after its last
+        # workspace save, is in what the stored stage status must now answer.
+        try:
+            stage_status.mark_dirty(seed)
+        except Exception:
+            pass
         try:
             workspace = seed.reload()
             finished = store.load_run(workspace, run_id)

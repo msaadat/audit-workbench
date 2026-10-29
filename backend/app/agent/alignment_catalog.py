@@ -32,6 +32,9 @@ def catalog(workspace, tables):
     frames = {n: workspace.get_frame(n) for n in tables}
     routes = []
     omitted = 0
+    # Every left column is diagnosed against every right key of every other
+    # table, so one column's key values are wanted many times over.
+    key_cache = {}
     for left, right in permutations(tables, 2):
         lf, rf = frames[left], frames[right]
         # Retain alternate right keys, including value-supported mixed-domain
@@ -43,12 +46,15 @@ def catalog(workspace, tables):
                 continue
             for rc in right_keys:
                 affinity = joins._name_affinity(lc, rc, right, entities)
-                diag = joins.diagnose(lf, rf, lc, rc)
-                value_supported = (
-                    probes.reference_shaped(lc) and probes.reference_shaped(rc)
-                    and diag["matched_keys"]
-                )
-                if affinity <= 0 and not value_supported:
+                # A pair with no name affinity survives only on value support,
+                # which needs both columns reference-shaped. Deciding that before
+                # diagnosing skipped four of every five diagnoses on the
+                # procurement engagement, and changes no route.
+                shaped = probes.reference_shaped(lc) and probes.reference_shaped(rc)
+                if affinity <= 0 and not shaped:
+                    continue
+                diag = joins.diagnose(lf, rf, lc, rc, key_cache=key_cache)
+                if affinity <= 0 and not diag["matched_keys"]:
                     continue
                 candidates.append({"left": left, "right": right, "left_on": [lc],
                     "right_on": [rc], "how": "left", "strength": joins.classify(diag),

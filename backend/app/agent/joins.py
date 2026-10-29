@@ -245,8 +245,17 @@ def reference_candidates(
     return [(column, key) for _, column, key in scored]
 
 
-def _key_series(df: pl.DataFrame, column: str) -> pl.Series:
-    """Key values as trimmed strings so an int code matches its text twin."""
+def _key_series(df: pl.DataFrame, column: str, cache: dict | None = None) -> pl.Series:
+    """Key values as trimmed strings so an int code matches its text twin.
+
+    ``cache`` is keyed by frame identity, so it must not outlive the frames it
+    was filled from — one catalog build, not a process.
+    """
+    if cache is not None:
+        key = (id(df), column)
+        if key not in cache:
+            cache[key] = _key_series(df, column)
+        return cache[key]
     return (
         df.head(SAMPLE_VALUES)[column]
         .cast(pl.String)
@@ -321,10 +330,12 @@ def diagnose(
     right_df: pl.DataFrame,
     left_on: str,
     right_on: str,
+    *,
+    key_cache: dict | None = None,
 ) -> dict:
     """Aggregate join evidence for one key pair (no row values)."""
-    left_keys = _key_series(left_df, left_on)
-    right_keys = _key_series(right_df, right_on)
+    left_keys = _key_series(left_df, left_on, key_cache)
+    right_keys = _key_series(right_df, right_on, key_cache)
     left_total = len(left_keys)
     right_distinct = right_keys.n_unique()
     right_unique = right_distinct == len(right_keys)

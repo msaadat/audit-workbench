@@ -298,6 +298,7 @@ function payload(
       first_at: '2026-08-13T19:22:24+00:00',
       last_at: '2026-08-15T12:10:00+00:00',
     },
+    refreshing: false,
     ...extra,
   }
 }
@@ -375,6 +376,27 @@ describe('EngagementRecordTab', () => {
     // against a preference that was never stored.
     installLocalStorage()
     window.localStorage.clear()
+  })
+
+  it('shows the stored states while a refresh is drawn, then asks again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const stage = filed({
+        filed: { label: 'Analysis library', destination: 'analysis', unit: 'analysis', unit_plural: 'analyses', count: 28 },
+      })
+      get.mockResolvedValueOnce(payload([stage], { refreshing: true }))
+      const wrapper = await render([stage])
+      expect(wrapper.find('.updating').exists()).toBe(true)
+      expect(wrapper.find('.ct').text()).toBe('28')
+
+      await vi.advanceTimersByTimeAsync(1600)
+      await wrapper.vm.$nextTick()
+
+      expect(get).toHaveBeenCalledTimes(2)
+      expect(wrapper.find('.updating').exists()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('states an irregular unit from the declared plural, not by appending s', async () => {

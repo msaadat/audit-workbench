@@ -37,7 +37,7 @@ from pathlib import Path
 import polars as pl
 
 from . import config  # noqa: F401  # loads .env before any path is resolved
-from . import loader, profiler
+from . import loader, profiler, stage_status
 from .field_names import resolve_columns
 from .text import counted, plural_word
 
@@ -112,6 +112,8 @@ def _traces_artifact_transitions(path: Path) -> bool:
     writes are the telemetry itself and must never recursively trace themselves.
     """
     if "Debug" in path.parts or ".Transactions" in path.parts:
+        return False
+    if stage_status.DIRNAME in path.parts:
         return False
     if path.name == "workspace.json":
         return False
@@ -1010,6 +1012,9 @@ class Workspace:
         # Set for workspaces that predate the uid, so links carrying the old
         # slug still resolve.
         self.legacy_slug: str = str(definition.get("legacy_slug") or "")
+        # Whether the record's stage states are stored rather than swept on
+        # every read; set at creation only, so older workspaces read as before.
+        self.status_store: bool = bool(definition.get(stage_status.FLAG))
         self.name: str = definition.get("name") or self.dir_name
         self.description: str = definition.get("description") or ""
         self.created: str = definition.get("created") or ""
@@ -1127,6 +1132,7 @@ class Workspace:
             "uid": self.uid,
             "owner_id": self.owner_id,
             **({"legacy_slug": self.legacy_slug} if self.legacy_slug else {}),
+            **({stage_status.FLAG: True} if self.status_store else {}),
             "name": self.name,
             "description": self.description,
             "created": self.created,
@@ -1163,6 +1169,7 @@ class Workspace:
         self.revision = current + 1
         self.schema_version = SCHEMA_VERSION
         self._artifact_snapshot = after_artifacts
+        stage_status.mark_dirty(self)
         if request_state is not None:
             request_state["revision"] = self.revision
         # Debug telemetry is best-effort and must never make the auditor's
@@ -2472,6 +2479,21 @@ def load_workspace(workspace_id: str, actor=None) -> Workspace:
     return open_workspace(_actor(actor), workspace_id)
 
 
+def workspace_root_of(workspace_id: str, actor=None) -> Path:
+    """The root a reference resolves to for ``actor``, without loading it.
+
+    The same resolution and access check as :func:`open_workspace`, minus the
+    artifact hydration: for middleware that needs to know where a workspace is
+    and nothing else.
+    """
+    from .registry import accessible, resolve_ref, workspace_root
+
+    row = resolve_ref(_actor(actor).user_id, workspace_id)
+    if row is None or not accessible(_actor(actor), row):
+        raise WorkspaceError(f"Workspace '{workspace_id}' not found.")
+    return workspace_root(row["owner_id"], row["dir_name"])
+
+
 def read_revision(workspace_id: str, actor=None) -> int:
     """The stored revision, without hydrating the workspace's artifacts.
 
@@ -2486,12 +2508,7 @@ def read_revision(workspace_id: str, actor=None) -> int:
     revision it would leave behind is the one already on disk; the route's own
     ``load_workspace`` still performs the recovery pass before reading anything.
     """
-    from .registry import accessible, resolve_ref, workspace_root
-
-    row = resolve_ref(_actor(actor).user_id, workspace_id)
-    if row is None or not accessible(_actor(actor), row):
-        raise WorkspaceError(f"Workspace '{workspace_id}' not found.")
-    path = workspace_root(row["owner_id"], row["dir_name"]) / "workspace.json"
+    path = workspace_root_of(workspace_id, actor) / "workspace.json"
     try:
         definition = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -2526,6 +2543,7 @@ def create_workspace(name: str, description: str = "", actor=None) -> Workspace:
                 "created": date.today().isoformat(),
                 "tables": [],
                 "joins": [],
+                **({stage_status.FLAG: True} if stage_status.ENABLED_FOR_NEW else {}),
             },
             indent=2,
         ),

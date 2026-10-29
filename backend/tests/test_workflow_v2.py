@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 from types import SimpleNamespace
 
-import httpx
+import httpx2 as httpx
 import polars as pl
 import pytest
 

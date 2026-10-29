@@ -164,6 +164,16 @@ def create_app() -> FastAPI:
         finally:
             if token is not None:
                 reset_request_revision(token)
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                # Whatever the route wrote, and however it wrote it, the stored
+                # stage status no longer answers for it.
+                try:
+                    from . import stage_status
+                    from .workspaces import workspace_root_of
+
+                    stage_status.mark_dirty(workspace_root_of(workspace_id))
+                except WorkspaceError:
+                    pass
         try:
             from .workspaces import read_revision
 

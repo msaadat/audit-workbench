@@ -2723,6 +2723,11 @@ export interface EngagementRecordPayload {
     first_at: string | null
     last_at: string | null
   }
+  /**
+   * The stage states are the last stored answer and a newer one is being
+   * drawn. Always false for a workspace that sweeps on every read.
+   */
+  refreshing: boolean
 }
 
 /**
