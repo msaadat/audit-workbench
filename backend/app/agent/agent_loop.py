@@ -155,6 +155,7 @@ class AgentLoop(BaseRunner):
     def execute(self) -> None:
         try:
             self.mark_started()
+            self._install_prompt_budget()
             self.set_status("executing")
             self._resume_children()
             self._load_conversation()
@@ -167,13 +168,74 @@ class AgentLoop(BaseRunner):
             self._close("cancelled")
         except LimitExceeded as error:
             self.warn(str(error))
-            self._close("completed_with_open_items", note=str(error))
+            self._close("completed_with_open_items", note=self._stopped_note(error))
         except llm.LLMError as error:
             self.warn(str(error))
-            self._close("completed_with_open_items", note=str(error))
+            self._close("completed_with_open_items", note=self._stopped_note(error))
         except Exception as error:  # a fault, not an outcome
             self.run["error"] = str(error)
             self._close("failed")
+
+    def _install_prompt_budget(self) -> None:
+        """Size the prompt-token cap from what one loop turn actually sends.
+
+        The runtime's default is ten thousand tokens a model turn, which is right
+        for a single-shot worker and about half what a loop turn costs: the
+        system prompt, every tool definition, and a conversation allowed to grow
+        to ``MAX_CONVERSATION_CHARS`` go out on every turn. Measured on a live
+        request, that default ended the loop at turn fourteen of twenty-four,
+        having spent its budget before it could act. So the cap here is the turn
+        allowance times the largest request a turn can make.
+
+        Written once and kept on the record, like every loop budget, so a resumed
+        request is bounded by what it started with. A cap a caller already set is
+        left alone.
+        """
+
+        limits = self.run.setdefault("limits", {})
+        if limits.get("max_estimated_prompt_tokens"):
+            return
+        turn_characters = (
+            len(prompts.LOOP_SYSTEM)
+            + len(json.dumps(self._tool_schemas, default=str, ensure_ascii=False))
+            # The conversation is trimmed back to its cap before each turn, but
+            # the newest tool result is never trimmed and can sit on top of it.
+            + MAX_CONVERSATION_CHARS
+            + MAX_TOOL_RESULT_CHARS
+        )
+        turns = int(
+            limits.get("max_model_turns") or store.LOOP_LIMITS["max_model_turns"]
+        )
+        # Four characters a token, the gateway's own estimate.
+        limits["max_estimated_prompt_tokens"] = turns * (turn_characters // 4)
+        self.save()
+
+    def _stopped_note(self, error: Exception) -> str:
+        """What a request a limit or the provider stopped says it left behind.
+
+        The bare error read as though something had been half done. Whether
+        anything changed is the first thing the auditor needs, and the record
+        already knows: the child runs it started and the actions it took.
+        """
+
+        lines = [f"I stopped before finishing: {error}."]
+        account = self._committed_account()
+        if account:
+            self.run["committed_account"] = account["items"]
+            lines.append(account["text"])
+        acted = sorted(
+            {
+                str(action.get("type"))
+                for action in self.run.get("actions") or []
+                if action.get("status") == "succeeded"
+            }
+        )
+        if acted:
+            lines.append("Actions that ran: " + ", ".join(acted) + ".")
+        if not self.run.get("children") and not acted:
+            lines.append("Nothing was changed.")
+        lines.append("Tell me what to do next and I'll carry on.")
+        return "\n\n".join(lines)
 
     def _loop(self) -> None:
         turns = 0

@@ -1235,3 +1235,60 @@ def test_a_loop_run_projects_its_children_into_the_chat(monkeypatch, workspace_w
     assert projections[run["id"]]["children"] == run["children"]
     assert projections[run["id"]]["engine"] == store.AGENT_ENGINE
     assert run["children"][0] in projections
+
+
+# --------------------------------------------------------------------------- #
+# The prompt-token budget
+# --------------------------------------------------------------------------- #
+def test_a_loop_turn_is_charged_for_the_tool_definitions_it_sends(monkeypatch):
+    """The estimate is of the request, and the tools are most of it."""
+
+    ws = workspaces.create_workspace("Loop tool estimate")
+    configured(monkeypatch, LoopScript(finish_turn("Nothing to do.")))
+
+    run = wait_run(ws, start_loop(ws, "Say hello")["id"])
+
+    schemas = agent_loop.AgentLoop(ws, run, None)._tool_schemas
+    tool_characters = len(json.dumps(schemas, default=str, ensure_ascii=False))
+    assert run["usage"]["request_characters"] > tool_characters
+
+
+def test_a_loop_sizes_its_prompt_budget_from_what_a_turn_sends(monkeypatch):
+    """Ten thousand tokens a turn ended a real request at turn fourteen."""
+
+    ws = workspaces.create_workspace("Loop budget")
+    configured(monkeypatch, LoopScript(finish_turn("Nothing to do.")))
+
+    run = wait_run(ws, start_loop(ws, "Say hello")["id"])
+
+    limits = run["limits"]
+    per_turn = limits["max_estimated_prompt_tokens"] // limits["max_model_turns"]
+    # At least the conversation cap and the tool definitions, in tokens.
+    schemas = agent_loop.AgentLoop(ws, run, None)._tool_schemas
+    floor = (
+        agent_loop.MAX_CONVERSATION_CHARS
+        + len(json.dumps(schemas, default=str, ensure_ascii=False))
+    ) // 4
+    assert per_turn >= floor > 10_000
+
+
+def test_a_budget_a_caller_set_is_kept(monkeypatch):
+    ws = workspaces.create_workspace("Loop budget kept")
+    configured(monkeypatch, LoopScript(finish_turn("Nothing to do.")))
+
+    started = start_loop_with_limits(ws, {"max_estimated_prompt_tokens": 500_000})
+    run = wait_run(ws, started["id"])
+
+    assert run["limits"]["max_estimated_prompt_tokens"] == 500_000
+
+
+def test_a_request_a_limit_stops_says_whether_anything_changed(monkeypatch):
+    ws = workspaces.create_workspace("Loop stopped by a limit")
+    configured(monkeypatch, LoopScript(finish_turn("Unreachable.")))
+
+    started = start_loop_with_limits(ws, {"max_estimated_prompt_tokens": 10})
+    run = wait_run(ws, started["id"])
+
+    assert run["status"] == "completed_with_open_items"
+    assert "I stopped before finishing" in run["summary_markdown"]
+    assert "Nothing was changed." in run["summary_markdown"]

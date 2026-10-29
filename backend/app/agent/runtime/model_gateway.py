@@ -487,7 +487,14 @@ class DefaultModelGateway:
             if conversation is not None
             else user
         )
-        request_characters = len(system) + len(request_user)
+        # Tool definitions go out with every turn that offers them, and on the
+        # steering loop they are about forty per cent of each request. Left out,
+        # the estimate read a 25k-token loop turn as 15k: the pre-call check never
+        # fired, and the provider's own count ended the run instead.
+        tool_characters = (
+            len(json.dumps(tools, default=str, ensure_ascii=False)) if tools else 0
+        )
+        request_characters = len(system) + len(request_user) + tool_characters
         text_token_estimate = max(1, request_characters // 4)
         image_token_estimate = len(handles) * FALLBACK_IMAGE_TOKENS
         estimated_input_tokens = text_token_estimate + image_token_estimate

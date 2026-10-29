@@ -1033,6 +1033,13 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   changes the workspace only through child runs and registered actions. Every
   other call in `agent/` — every worker, the router, the action interpreter — is
   single-turn, bounded, and budgeted through `BaseRunner`.
+  Its prompt-token cap is not the runtime's ten-thousand-a-turn default: at
+  start the loop sets `max_estimated_prompt_tokens` to `max_model_turns` times
+  the largest request a turn can make (system prompt, every tool definition, the
+  conversation cap and one untrimmed result), unless the run already carries
+  one. The gateway's estimate counts the tool definitions it sends, which on a
+  loop turn are about forty per cent of the request. A loop a limit or the
+  provider stops says what its runs committed, or that nothing changed.
 - **Frontend foundations** live in `frontend/src/style.css` and two source
   scans hold them (`src/foundations.test.ts`, `src/icons.test.ts`). Icons are
   Lucide glyphs drawn as `aw-icon aw-icon-<lucide name>` classes — the shape
