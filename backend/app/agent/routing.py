@@ -104,8 +104,25 @@ GOAL_TEMPLATES: dict[str, dict] = {
             "cover it."
         ),
     },
-    "apm_only": {"objective": "Prepare or revise only the audit planning memorandum."},
-    "rcm_only": {"objective": "Prepare or revise only the risk and control matrix."},
+    "apm_only": {
+        "objective": (
+            "Draft the audit planning memorandum, or redraft it once what it was "
+            "drawn from has changed."
+        ),
+    },
+    "rcm_only": {
+        "objective": (
+            "Draft the risk and control matrix, or redraft it once the "
+            "memorandum it was drawn from has changed."
+        ),
+    },
+    # The auditor's message is the instruction: see ``resolution_scope``.
+    "apm_revision": {
+        "objective": "Change the existing audit planning memorandum as the auditor asked.",
+    },
+    "rcm_revision": {
+        "objective": "Change the existing risk and control matrix as the auditor asked.",
+    },
     "finding_draft": {
         "objective": "Draft evidence-linked findings for the selected observation or risk.",
     },
@@ -143,6 +160,10 @@ GOAL_TEMPLATES: dict[str, dict] = {
     },
     "document_test_execution": {"objective": "Execute the Document Tests in scope."},
 }
+
+#: Templates whose outcome is a requested revision, so the message that
+#: started them is what the revision is asked to do.
+REVISION_TEMPLATES = frozenset({"apm_revision", "rcm_revision"})
 
 # Run-context keys a template may carry from a caller. Anything else is
 # rejected: run context is scope, never a routing override.
@@ -622,6 +643,16 @@ def resolution_scope(
     # copied here so a binder reads it from the same place it reads every other
     # narrowing rather than reaching back into the record.
     instruction = str((run.get("context") or {}).get("instruction") or "").strip()
+    command = run.get("command") or {}
+    if (
+        not instruction
+        and str(command.get("goal_template") or "") in REVISION_TEMPLATES
+        and not str(command.get("text") or "").strip().startswith("/")
+    ):
+        # A revision started from a registered command has no other place to
+        # carry what was asked: the auditor's own message is the instruction.
+        # A bare slash command carries none, and the revision says so.
+        instruction = str(command.get("text") or "").strip()
     if instruction:
         scope["instruction"] = instruction
     # A change assessment a revision was asked to apply, by the basis it is

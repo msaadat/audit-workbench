@@ -558,7 +558,13 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   retirement. For a small, exact change the loop has `search_document`,
   `read_document` and the `edit_document_text` action (one passage, against the
   sha1 it read); `edit_apm`, which replaced the whole memorandum with text the
-  loop wrote, is no longer offered to it. Details in
+  loop wrote, is no longer offered to it. The chat reaches the revisions
+  directly through the `revise_rcm` / `revise_apm` commands (goal templates
+  `rcm_revision` / `apm_revision`), whose message is the instruction;
+  `generate_rcm` / `generate_apm` only draft, or redraft what is out of date,
+  and leave a current artifact alone — described as able to "revise", the
+  coordinator once chose one for "shorten the matrix", which then did nothing
+  and reported success. Details in
   [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md).
 - The loop reloads the workspace at the top of every turn and before every child
   run. Child runs and actions commit through their own transactions, and a loop

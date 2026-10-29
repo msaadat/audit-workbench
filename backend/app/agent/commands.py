@@ -66,7 +66,15 @@ COMMANDS: dict[str, Command] = {
         Command(
             "generate_apm", "apm_only", "Generate APM",
             slash=("generate apm", "apm"),
-            description="Prepare or revise only the audit planning memorandum.",
+            # Not "revise": this drafts a memorandum that is missing or out of
+            # date and leaves a current one exactly as it is. Saying "revise"
+            # here had the coordinator start it for "shorten the memo", which
+            # then ran, found nothing to do, and reported success.
+            description=(
+                "Draft the audit planning memorandum, or redraft it after its "
+                "planning context changed. Leaves a current memorandum as it "
+                "is; to change one, use revise_apm."
+            ),
             phrases=(
                 "generate the apm", "draft the apm", "update the apm",
                 "generate the audit planning memorandum",
@@ -75,10 +83,35 @@ COMMANDS: dict[str, Command] = {
         Command(
             "generate_rcm", "rcm_only", "Generate RCM",
             slash=("generate rcm", "rcm"),
-            description="Prepare or revise only the risk and control matrix.",
+            description=(
+                "Draft the risk and control matrix, or redraft it after the "
+                "memorandum changed. Leaves a current matrix as it is; to "
+                "change one, use revise_rcm."
+            ),
             phrases=(
                 "generate the rcm", "draft the rcm", "update the rcm",
                 "generate the risk and control matrix",
+            ),
+        ),
+        # The auditor's message is the revision's instruction, so these are
+        # started from a sentence that says what to change, and match no
+        # phrase: a bare "revise the rcm" asks nothing in particular.
+        Command(
+            "revise_apm", "apm_revision", "Revise APM",
+            slash=("revise apm",),
+            description=(
+                "Change the existing audit planning memorandum as the message "
+                "says — rewrite, shorten or correct sections. The message itself "
+                "is the instruction."
+            ),
+        ),
+        Command(
+            "revise_rcm", "rcm_revision", "Revise RCM",
+            slash=("revise rcm",),
+            description=(
+                "Change the existing risk and control matrix as the message says "
+                "— shorten it, merge or retire rows, reword risks or controls. "
+                "The message itself is the instruction."
             ),
         ),
         Command(

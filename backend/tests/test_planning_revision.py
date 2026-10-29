@@ -541,3 +541,60 @@ def test_a_change_assessment_is_applied_through_the_matrix_revision(
     assert "Require two approvers above 50,000." in seen["instruction"]
     row = next(item for item in ws.reload().rcm if item["id"] == ids[2])
     assert row["control"] == "Two approvers sign payments above 50,000"
+
+
+# --------------------------------------------------------------------------- #
+# The registered command
+# --------------------------------------------------------------------------- #
+def test_the_revise_command_takes_the_message_as_its_instruction(
+    monkeypatch, workspace_with_data
+):
+    """The shortcut the chat reached for instead of the loop, made to do the work.
+
+    "Generate RCM" was described as able to revise, was chosen for a request to
+    shorten the matrix, found a current matrix, and reported success having
+    done nothing. The revision has its own command now, and the message that
+    starts it is what it is asked to do.
+    """
+
+    from app.agent import runner, store
+
+    ws, ids = _planned_workspace(workspace_with_data)
+    message = "the rcm has 3 rows. keep only the core one"
+    seen: dict = {}
+
+    def revision(user: str) -> dict:
+        seen["instruction"] = json.loads(user)["auditor_instruction"]
+        return {
+            "summary": "Three rows in scope, one after the revision.",
+            "decisions": [
+                {"rcm_id": ids[0], "decision": "keep", "reason": ""},
+                {"rcm_id": ids[1], "decision": "retire", "reason": "Not core."},
+                {"rcm_id": ids[2], "decision": "retire", "reason": "Not core."},
+            ],
+            "additions": [],
+        }
+
+    configured(monkeypatch, LoopScript(finish_turn("unused")), {"agent:rcm_revision": revision})
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {"source": "goal_template", "text": message, "goal_template": "rcm_revision"},
+    )
+    run = wait_run(ws, started["id"], timeout=90)
+
+    assert run["engine"] == "workflow"
+    assert run["status"] == "completed", run.get("summary_markdown")
+    assert seen["instruction"] == message
+    assert [row["id"] for row in ws.reload().rcm] == [ids[0]]
+
+
+def test_the_generate_commands_no_longer_claim_to_revise():
+    from app.agent import commands
+
+    for command_id in ("generate_rcm", "generate_apm"):
+        description = commands.COMMANDS[command_id].description
+        assert "Leaves a current" in description
+    assert commands.COMMANDS["revise_rcm"].goal_template == "rcm_revision"
+    assert commands.COMMANDS["revise_apm"].goal_template == "apm_revision"

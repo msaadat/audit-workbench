@@ -222,6 +222,8 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
         ("document_test_preparation", "workflow", ["tests.specified"]),
         ("document_test_execution", "workflow", ["doc_tests.executed"]),
         ("finding_consolidation", "workflow", ["findings.consolidated"]),
+        ("apm_revision", "workflow", ["planning.apm_revised"]),
+        ("rcm_revision", "workflow", ["planning.rcm_revised"]),
     ],
 )
 def test_every_registered_goal_template_has_a_deterministic_local_route(
@@ -244,6 +246,8 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
         "document_test_preparation",
         "document_test_execution",
         "report",
+        "apm_revision",
+        "rcm_revision",
     }
 
     resolution = _classify_command(

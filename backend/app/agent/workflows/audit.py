@@ -293,6 +293,8 @@ TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     ],
     "apm_only": ["planning.apm_ready"],
     "rcm_only": ["planning.rcm_ready"],
+    "apm_revision": ["planning.apm_revised"],
+    "rcm_revision": ["planning.rcm_revised"],
     "finding_draft": ["findings.drafted"],
     "finding_consolidation": ["findings.consolidated"],
     # Preparing an RCM row's Document Tests is the ``tests.specified``
