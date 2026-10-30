@@ -1811,6 +1811,29 @@ def test_an_untested_row_is_not_asked_of_the_auditor(stub_store):
     assert "conclusions_await_auditor" not in keys
 
 
+def test_a_row_whose_tests_have_not_run_is_not_asked_of_the_auditor(stub_store):
+    """A linked test is not a test anybody looked at.
+
+    The procurement engagement drew "9 controls have reached no conclusion"
+    under a fieldwork row reading 0 of 8 data tests: every row had a specified
+    test, none had run, and the row was waiting on the fieldwork run.
+    """
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM",
+        rcm=[{"id": "R1", "execution_rollup": {"control_conclusion": "no_conclusion"}}],
+        data_tests=[{
+            "id": "DAT-1", "rcm_id": "R1", "status": "ready", "engine": "python",
+            "control_conclusion_source": "none",
+        }],
+    )
+
+    result = engagement_record.record(workspace)
+
+    keys = [point["key"] for point in result["open_points"]]
+    assert "conclusions_await_auditor" not in keys
+
+
 def test_the_controls_awaiting_a_conclusion_are_named_and_capped(stub_store):
     """Three names, then a count: a ledger line, not a list of thirty."""
     stub_store([])

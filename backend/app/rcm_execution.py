@@ -185,6 +185,28 @@ def data_test_has_durable_result(test: dict) -> bool:
     return bool(test.get("last_run"))
 
 
+def awaits_execution(test: dict) -> bool:
+    """Whether a fieldwork run would still execute this test.
+
+    The same line `fieldwork.executed` draws between pending work and work that
+    is waiting on somebody: a specified, executable test with no durable result
+    is the run's to perform, unless it is blocked on evidence or is a Document
+    Test the runner already handed to review. Takes the ``{kind, item}`` form
+    :func:`_tests` returns.
+    """
+    item = test["item"]
+    if not _specified(test) or not _executable(test):
+        return False
+    has_result = (
+        data_test_has_durable_result(item)
+        if test["kind"] == "datatest"
+        else doc_test_has_durable_result(item)
+    )
+    if has_result or item.get("status") == "blocked":
+        return False
+    return not (test["kind"] == "doctest" and item.get("status") == "review_required")
+
+
 def test_manifest(workspace: Workspace) -> list[dict]:
     """Build a bounded, model-safe view of every RCM row's linked tests.
 
@@ -1124,10 +1146,16 @@ def conclusions_await_auditor(
     # for is the fieldwork, not a judgment. Asking the auditor to conclude a
     # control nobody tested names the wrong debt, and names it on the row that
     # would otherwise say plainly that the tests have not run.
-    tested = [
-        rcm_id for rcm_id in unconcluded
-        if _tests(workspace, rcm_id, document_tests)
-    ]
+    #
+    # A linked test is not a test somebody looked at either. A row whose tests
+    # are specified and waiting for the fieldwork run is owed that run, not a
+    # judgment: counting it here told the auditor to conclude nine controls on
+    # an engagement whose fieldwork had not started.
+    tested = []
+    for rcm_id in unconcluded:
+        row_tests = _tests(workspace, rcm_id, document_tests)
+        if row_tests and not any(awaits_execution(test) for test in row_tests):
+            tested.append(rcm_id)
     if not tested:
         return []
     if unconcluded_data_tests(
