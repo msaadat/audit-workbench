@@ -977,6 +977,32 @@ def _holds(workspace: Workspace, capability: str, counts: dict[str, int]) -> boo
     return bool(counts.get(key)) if key else False
 
 
+def _inherited_reasons(readiness: dict[str, dict], capability: str) -> list[str]:
+    """Why a stage blocked only by its dependencies is blocked.
+
+    The graph marks a stage ``blocked`` whenever anything it depends on is
+    unsatisfied, and leaves the stage's own reasons as they were — none, for a
+    stage whose own work is complete. The record draws that as needing
+    attention, so without this an analysis library whose every procedure had
+    run sat amber with nothing beside it. The reason is the one given where the
+    cascade starts: the first dependency that is unsatisfied on its own
+    account rather than by inheritance.
+    """
+    seen: set[str] = set()
+    pending = list((readiness.get(capability) or {}).get("blocking_on") or [])
+    while pending:
+        dependency = pending.pop(0)
+        if dependency in seen:
+            continue
+        seen.add(dependency)
+        state = readiness.get(dependency) or {}
+        own = list(state.get("reasons") or [])
+        if own:
+            return own
+        pending.extend(state.get("blocking_on") or [])
+    return []
+
+
 def _stages(
     workspace: Workspace,
     counts: dict[str, int],
@@ -1010,6 +1036,7 @@ def _stages(
         headline = str(spec.get("headline") or "")
         count_key = spec.get("count")
         state = readiness.get(capability) or {}
+        reasons = list(state.get("reasons") or []) or _inherited_reasons(readiness, capability)
         unit = str(spec.get("unit") or "")
         # Live where the projection can answer, the milestone's own account
         # otherwise — a stage narrated by another workflow has no audit
@@ -1093,7 +1120,7 @@ def _stages(
             # different sentences, both true.
             "readiness": {
                 "state": str(state.get("state") or ""),
-                "reasons": list(state.get("reasons") or []),
+                "reasons": reasons,
                 "details": {
                     key: value for key, value in state.items()
                     if key not in ("state", "reasons", "blocking_on")

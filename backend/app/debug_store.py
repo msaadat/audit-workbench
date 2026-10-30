@@ -469,8 +469,8 @@ def capture_structural_state(workspace: Any, *, trigger: str, run_id: str | None
     for entry in workspace.tables:
         path = workspace.data_dir / entry["file"]
         try:
-            stat = path.stat(); signature = loader.file_signature(path)
-            cached = any(key[0] == str(path.resolve()) and key[1:] == signature[1:] for key in loader._cache)
+            stat = path.stat()
+            cached = loader._signature(path) in loader._cache
             try:
                 frame = workspace.get_frame(entry["name"])
                 dimensions = {"rows": frame.height, "columns": frame.width,

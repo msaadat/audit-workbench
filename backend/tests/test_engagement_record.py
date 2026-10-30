@@ -813,6 +813,41 @@ def test_a_readiness_cascade_never_makes_a_held_stage_look_unwritten(
     assert row["readiness"]["state"] == "blocked"
 
 
+def test_a_row_blocked_by_inheritance_says_where_the_cascade_starts(
+    stub_store, monkeypatch,
+):
+    """Amber with nothing beside it is the record contradicting itself.
+
+    The procurement analysis library had run all twenty-three procedures and
+    still drew as needing attention, with no reason, because a stage two steps
+    upstream was unsatisfied. The reason shown is the one given where the
+    cascade starts, past any stage that is blocked only by inheritance.
+    """
+    stub_store([])
+    monkeypatch.setattr(
+        engagement_record, "_readiness",
+        lambda workspace: {
+            "data.relationships_inferred": {
+                "state": "missing",
+                "reasons": ["5 table pairs have no established relationship"],
+            },
+            "analysis.inputs_ready": {
+                "state": "blocked", "reasons": [],
+                "blocking_on": ["data.relationships_inferred"],
+            },
+            "analysis.executed": {
+                "state": "blocked", "reasons": [],
+                "blocking_on": ["analysis.inputs_ready"],
+            },
+        },
+    )
+
+    row = _rows(engagement_record.record(_Workspace()))["analysis.executed"]
+
+    assert row["readiness"]["state"] == "blocked"
+    assert row["readiness"]["reasons"] == ["5 table pairs have no established relationship"]
+
+
 def test_a_rows_body_describes_the_workspace_not_the_run_that_wrote_it(
     stub_store, monkeypatch,
 ):

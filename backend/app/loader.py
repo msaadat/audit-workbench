@@ -18,6 +18,7 @@ the stale file is swept away once the fresh one is written.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -80,13 +81,40 @@ class _ExcelSheetFrame:
 
 
 def _signature(path: Path) -> tuple:
+    """Where and when this file was written: the key of this machine's caches.
+
+    Right for the frame cache and the parquet sidecar, which live and die with
+    this checkout — a miss re-reads the file. Wrong for anything persisted: the
+    path changes when a workspace moves, and the mtime when it is copied or
+    unzipped, so a fingerprint built on them reports unchanged data as changed.
+    """
     stat = path.stat()
     return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
 
 
+# Content digests by local signature, so a file is hashed once per version per
+# process rather than on every workspace load.
+_digests: dict[tuple, str] = {}
+
+
 def file_signature(path: Path) -> tuple:
-    """Public signature for a source file, for callers that cache alongside it."""
-    return _signature(Path(path))
+    """What a source file contains, for callers that persist a fingerprint of it.
+
+    Size and a digest of the bytes, and nothing about where the file sits or
+    when it was written. Every stored judgement about a table — a pair settled
+    as unrelated, a result's staleness, a finding's evidence hash — is keyed by
+    this, and keyed by path and mtime they all went stale the moment an
+    engagement was moved under a new home or restored from a zip, though not
+    one byte of its data had changed.
+    """
+    path = Path(path)
+    local = _signature(path)
+    digest = _digests.get(local)
+    if digest is None:
+        with path.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha1").hexdigest()
+        _digests[local] = digest
+    return ("sha1", local[1], digest)
 
 
 def _parquet_cache_path(path: Path, sig: tuple) -> Path:

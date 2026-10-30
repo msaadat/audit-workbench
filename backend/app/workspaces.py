@@ -2386,8 +2386,10 @@ class Workspace:
 
     def _table_signature(self, name: str, _seen: frozenset = frozenset()) -> tuple:
         """A hashable fingerprint of a table's content: the source file's
-        (size, mtime) for base tables, or the join spec plus both sides'
-        signatures, recursively. Used to key the on-disk profile cache.
+        size and digest for base tables (`loader.file_signature`), or the join
+        spec plus both sides' signatures, recursively. Used to key the on-disk
+        profile cache and every persisted judgement about a table, so it must
+        not move when the workspace does.
 
         Callers across data_tests/doc_tests/findings/analysis_results each
         re-derive this for overlapping sets of tables, and joins-of-joins

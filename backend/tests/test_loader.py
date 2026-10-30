@@ -111,3 +111,28 @@ def test_excel_multi_sheet_workbook_with_different_columns_keeps_first_sheet(tmp
     assert frame.shape == (2, 2)
     assert frame.columns == ["id", "amount"]
     assert frame.rows() == [(1, 10), (2, 20)]
+
+
+def test_file_signature_is_the_content_not_where_or_when_it_was_written(tmp_path):
+    """Moving or unzipping an engagement must not make its data look changed.
+
+    Every persisted judgement about a table is keyed by this signature. Built on
+    the resolved path and mtime, a workspace moved under a new home reopened
+    every table pair the join stage had already settled.
+    """
+    import os
+    import shutil
+
+    original = tmp_path / "a" / "invoices.csv"
+    original.parent.mkdir()
+    original.write_text("id,amount\n1,10\n2,20\n", encoding="utf-8")
+    moved = tmp_path / "b" / "invoices.csv"
+    moved.parent.mkdir()
+    shutil.copyfile(original, moved)
+    stat = moved.stat()
+    os.utime(moved, ns=(stat.st_atime_ns, stat.st_mtime_ns + 7_000_000_000))
+
+    assert loader.file_signature(moved) == loader.file_signature(original)
+
+    moved.write_text("id,amount\n1,10\n2,21\n", encoding="utf-8")
+    assert loader.file_signature(moved) != loader.file_signature(original)
