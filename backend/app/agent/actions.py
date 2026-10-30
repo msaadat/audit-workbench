@@ -41,6 +41,7 @@ from .. import (
     data_tests,
     doc_tests,
     explore,
+    finding_consolidation,
     findings,
     intake,
     markdown_artifacts,
@@ -403,6 +404,15 @@ def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | N
         return copy.deepcopy(next((item for item in test.get("items") or [] if item.get("id") == child_id), None))
     if kind == "report" and item_id == "working":
         return copy.deepcopy(report.hydrate(workspace))
+    if kind == "consolidation":
+        group = next(
+            (
+                item for item in finding_consolidation.current_groups(workspace)
+                if item.get("group_id") == item_id
+            ),
+            None,
+        )
+        return artifact_index.consolidation_record(group) if group is not None else None
     if kind == "table":
         return copy.deepcopy(next((item for item in [*workspace.tables, *workspace.joins] if item.get("name") == item_id), None))
     return None
@@ -443,6 +453,10 @@ def expected_postcondition(action: dict) -> dict:
         return {"fields": dict(args.get("changes") or {})}
     if type_ == "reconcile_report":
         return {"reconcile": args.get("action")}
+    if type_ == "accept_consolidation":
+        return {"fields": {"decision": "accepted"}}
+    if type_ == "dismiss_consolidation":
+        return {"fields": {"decision": "dismissed"}}
     return {}
 
 
@@ -859,6 +873,8 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "apply_import_batch":
         result = intake.apply_batch(workspace, args["batch_id"], args.get("decisions"))
         return _receipt(action, result={key: result.get(key) for key in ("id", "status", "summary")})
+    if type_ in {"accept_consolidation", "dismiss_consolidation"}:
+        return _decide_consolidation(workspace, action, run, target_id)
     if type_ == "undo_action":
         from . import store
         source_run_id = str(args.get("run_id") or run["id"])
@@ -881,6 +897,66 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         restored = _restore_snapshot(workspace, kind, item_id, before)
         return _receipt(action, restored, refs=[f"{kind}:{item_id}"], result={"undid_action_id": source["id"]})
     raise WorkspaceError(f"Action '{type_}' has no executor.")
+
+
+def _decide_consolidation(workspace: Workspace, action: dict, run: dict, group_id: str) -> dict:
+    """Accept or dismiss one suggested group, as the Findings page does.
+
+    Accepting follows :func:`finding_consolidation.apply_group`: a group none
+    of whose members is drafted is marked and drafted once, as one finding,
+    the next time findings are drafted; a group with drafts already written
+    merges them and leaves the lead's narrative pending a redraft. The receipt
+    says which, because the two leave different work behind. Who decided is
+    the run's mode: a permission run's approval is the auditor's answer, an
+    auto run's is the agent's.
+    """
+    args = action.get("args") or {}
+    basis = finding_consolidation.basis_sha1(workspace)
+    group = next(
+        (item for item in finding_consolidation.current_groups(workspace) if item.get("group_id") == group_id),
+        None,
+    )
+    if group is None:
+        raise WorkspaceError(
+            f"Consolidation group '{group_id}' is not in the current suggestions; "
+            "the exceptions have changed since the review, so review them again."
+        )
+    if group.get("decision"):
+        raise WorkspaceError(f"Consolidation group '{group_id}' was already {group['decision']}.")
+    decided_by = "agent" if run.get("mode") == "auto" else "auditor"
+    refs = [f"consolidation:{group_id}", *(f"observation:{value}" for value in group.get("observation_ids") or [])]
+    if action["type"] == "dismiss_consolidation":
+        finding_consolidation.decide(workspace, basis, group_id, "dismissed", decided_by=decided_by)
+        result = {"decision": "dismissed", "next": "Each member is drafted as its own finding."}
+    else:
+        lead = finding_consolidation.apply_group(
+            workspace,
+            group,
+            basis=basis,
+            lead_observation_id=str(args.get("lead_observation_id") or "") or None,
+            title=str(args.get("title") or "") or None,
+            decided_by=decided_by,
+            include_confirmed=bool(args.get("include_confirmed")),
+        )
+        finding_consolidation.decide(workspace, basis, group_id, "accepted", decided_by=decided_by)
+        if lead is not None:
+            refs.append(f"finding:{lead['id']}")
+            result = {
+                "decision": "accepted",
+                "merged_into": lead["id"],
+                "narrative_pending": True,
+                "next": (
+                    f"The members were already drafted and are merged into {lead['id']}; "
+                    f"its narrative is redrafted by requesting findings.drafted naming finding:{lead['id']}."
+                ),
+            }
+        else:
+            result = {
+                "decision": "accepted",
+                "narrative_pending": False,
+                "next": "No member was drafted yet; the group is drafted as one finding the next time findings.drafted runs.",
+            }
+    return _receipt(action, artifact_snapshot(workspace, "consolidation", group_id), refs=refs, result=result)
 
 
 def _reconcile(workspace: Workspace, action: dict) -> str:
@@ -956,6 +1032,13 @@ def _restore_snapshot(workspace: Workspace, kind: str, item_id: str, before: dic
         test["items"][index] = copy.deepcopy(before); doc_tests.save_test(workspace, test); return test["items"][index]
     if kind == "report":
         workspace.report = copy.deepcopy(before); workspace.save(); return workspace.report
+    if kind == "consolidation":
+        # Only a dismissal is undone this way: an acceptance marked
+        # observations or merged findings, which a group record cannot restore.
+        if before.get("decision"):
+            raise WorkspaceError("Only a dismissed consolidation can be undone.")
+        finding_consolidation.reopen(workspace, finding_consolidation.basis_sha1(workspace), item_id)
+        return artifact_snapshot(workspace, "consolidation", item_id)
     raise WorkspaceError("This artifact kind cannot be restored by undo.")
 
 
@@ -1167,6 +1250,30 @@ _register("reconcile_report", "Reconcile generated and edited report content", "
 _register("run_report_quality", "Run deterministic report quality checks", "compute")
 _register("classify_import_batch", "Classify a staged import batch", "compute", required=("batch_id",), properties={"batch_id": STR}, model="plan")
 _register("apply_import_batch", "Apply a classified import batch", "create", required=("batch_id",), properties={"batch_id": STR})
+# A suggested consolidation, decided the way the Findings page decides it.
+# Accepting is a broad rewrite rather than a reversible mutation: it marks every
+# member observation, or merges drafted findings, and is taken apart member by
+# member rather than undone. A dismissal only records an answer, and is undone.
+_register(
+    "accept_consolidation",
+    "Accept a suggested consolidation: its exceptions become one finding, or its drafts are merged into one",
+    "broad_rewrite",
+    ("consolidation",),
+    properties={
+        "lead_observation_id": STR,
+        "title": STR,
+        "include_confirmed": {
+            "type": "boolean",
+            "description": "Required to merge an auditor-confirmed finding; the merged finding is then unconfirmed.",
+        },
+    },
+)
+_register(
+    "dismiss_consolidation",
+    "Dismiss a suggested consolidation so its exceptions are reported as separate findings",
+    "reversible_mutation",
+    ("consolidation",),
+)
 _register("undo_action", "Undo an eligible reversible action", "reversible_mutation", required=("action_id",), properties={"action_id": STR, "run_id": STR})
 
 

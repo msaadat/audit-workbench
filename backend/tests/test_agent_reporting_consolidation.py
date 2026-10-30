@@ -572,3 +572,120 @@ def test_the_binder_is_registered_as_proposal_only_and_drafting_does_not_wait_on
     from app.agent.workflows import audit as audit_workflow
     assert "findings.consolidated" in audit_workflow.dependencies("findings.drafted")
     assert "findings.consolidated" not in audit_workflow.dependencies("report.working_draft")
+
+
+# --------------------------------------------------------------------------- #
+# The chat: suggestions are artifacts, and deciding one is an action
+# --------------------------------------------------------------------------- #
+def _decision(type_, group_id, **args):
+    action = {
+        "type": type_,
+        "args": args,
+        "target": {"kind": "consolidation", "resolved_id": group_id},
+        "idempotency_key": f"{type_}:{group_id}",
+    }
+    from app.agent import actions
+
+    action["postcondition"] = actions.expected_postcondition(action)
+    return action
+
+
+def test_the_chat_lists_and_reads_suggested_consolidations(workspace_with_data):
+    from app.agent import action_tools
+
+    ws = _two_exceptions(workspace_with_data)
+    _basis, group = _suggest(ws)
+    session = action_tools.ActionToolSession(ws, [])
+
+    listed = session.dispatch("list_artifacts", {"kinds": ["consolidation"]})
+    [entry] = listed["artifacts"]
+    assert entry["ref"] == f"consolidation:{group['group_id']}"
+    assert entry["status"] == "undecided"
+    assert entry["title"] == "One issue"
+    assert set(entry["linked_refs"]) == {f"observation:{value}" for value in group["observation_ids"]}
+    assert listed["kind_counts"]["consolidation"] == 1
+    assert {item["action"] for item in listed["operations_by_kind"]["consolidation"]["actions"]} == {
+        "accept_consolidation", "dismiss_consolidation",
+    }
+
+    read = session.dispatch("get_artifact", {"ref": entry["ref"]})
+    record = read["record"]
+    assert record["rationale"] == "Same invoices."
+    assert [member["title"] for member in record["members"]] == ["Left", "Right"]
+
+
+def test_accepting_through_the_catalog_groups_before_drafting(workspace_with_data):
+    from app.agent import actions
+
+    ws = _two_exceptions(workspace_with_data)
+    _basis, group = _suggest(ws)
+    action = _decision("accept_consolidation", group["group_id"], title="Chosen")
+
+    receipt = actions._execute(ws, action, {"id": "run-chat", "mode": "auto"})
+
+    assert receipt["result"]["decision"] == "accepted"
+    assert receipt["result"]["narrative_pending"] is False
+    assert "drafted as one finding" in receipt["result"]["next"]
+    ws = workspaces.load_workspace(ws.id)
+    left, right = _by_test(ws)
+    assert left["consolidation"]["role"] == "lead"
+    assert left["consolidation"]["decided_by"] == "agent"
+    assert right["consolidation"]["into"] == left["id"]
+    assert actions._reconcile(ws, action) == "already_applied"
+    with pytest.raises(workspaces.WorkspaceError, match="already accepted"):
+        actions._execute(ws, action, {"id": "run-chat", "mode": "auto"})
+
+
+def test_accepting_drafted_members_merges_them_and_says_a_redraft_is_owed(workspace_with_data):
+    from app.agent import actions
+
+    ws = _two_drafts(workspace_with_data)
+    _basis, group = _suggest(ws)
+
+    receipt = actions._execute(
+        ws, _decision("accept_consolidation", group["group_id"]), {"id": "run-chat", "mode": "permission"},
+    )
+
+    lead_id = receipt["result"]["merged_into"]
+    assert receipt["result"]["narrative_pending"] is True
+    assert f"finding:{lead_id}" in receipt["result_refs"]
+    assert f"naming finding:{lead_id}" in receipt["result"]["next"]
+    ws = workspaces.load_workspace(ws.id)
+    assert finding_consolidation.current_groups(ws)[0]["decided_by"] == "auditor"
+
+
+def test_a_dismissal_through_the_catalog_can_be_undone(workspace_with_data):
+    from app.agent import actions
+
+    ws = _two_exceptions(workspace_with_data)
+    _basis, group = _suggest(ws)
+    before = actions.artifact_snapshot(ws, "consolidation", group["group_id"])
+
+    actions._execute(ws, _decision("dismiss_consolidation", group["group_id"]), {"id": "run-chat", "mode": "auto"})
+    assert actions.artifact_snapshot(ws, "consolidation", group["group_id"])["status"] == "dismissed"
+    assert all("consolidation" not in item for item in workspaces.load_workspace(ws.id).observations)
+
+    restored = actions._restore_snapshot(ws, "consolidation", group["group_id"], before)
+    assert restored["status"] == "undecided"
+    # An acceptance is taken apart member by member, never undone wholesale.
+    accepted = actions._execute(ws, _decision("accept_consolidation", group["group_id"]), {"id": "run-chat", "mode": "auto"})
+    assert accepted["result"]["decision"] == "accepted"
+    with pytest.raises(workspaces.WorkspaceError, match="Only a dismissed"):
+        actions._restore_snapshot(ws, "consolidation", group["group_id"], {**before, "decision": "accepted"})
+
+
+def test_a_suggestion_the_exceptions_have_outgrown_cannot_be_decided(workspace_with_data):
+    from app.agent import actions
+
+    ws = _two_exceptions(workspace_with_data)
+    _basis, group = _suggest(ws)
+    twin = next(item for item in ws.data_tests if item["title"] == "Right")
+    data_tests.update(ws, twin["id"], {
+        "spec": {"schema_version": 2, "steps": [{"label": "Right", "instruction": "Right", "table_refs": ["transactions"], "code": _selecting(1001)}]},
+    })
+    data_tests.run_all(ws)
+    ws = workspaces.load_workspace(ws.id)
+
+    assert actions.artifact_snapshot(ws, "consolidation", group["group_id"]) is None
+    with pytest.raises(workspaces.WorkspaceError, match="review them again"):
+        actions._execute(ws, _decision("accept_consolidation", group["group_id"]), {"id": "run-chat", "mode": "auto"})

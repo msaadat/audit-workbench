@@ -7,7 +7,7 @@ import json
 import re
 from difflib import SequenceMatcher
 
-from .. import doc_tests, report
+from .. import doc_tests, finding_consolidation, report
 from ..workspaces import Workspace
 
 STRONG_SCORE = 0.86
@@ -96,11 +96,39 @@ def build(workspace: Workspace) -> dict:
                 str(item.get("execution_ref") or ""),
             ],
         ))
+    # The suggested consolidations of the current exceptions, one artifact per
+    # group: what the review proposed and what was decided. Without them a
+    # reader could see a group once it was accepted — on the observations and
+    # the finding it produced — but never the suggestions still waiting.
+    for group in finding_consolidation.current_groups(workspace):
+        entries.append(_entry(
+            "consolidation", group["group_id"],
+            group.get("proposed_title") or group["group_id"],
+            consolidation_record(group),
+            body=" ".join(
+                str(group.get(key) or "")
+                for key in ("relation", "root_cause_hypothesis", "rationale")
+            ),
+            linked=[
+                *[f"observation:{value}" for value in group.get("observation_ids") or []],
+                *[
+                    f"finding:{member['finding_id']}"
+                    for member in group.get("members") or []
+                    if member.get("finding_id")
+                ],
+            ],
+        ))
     for name in workspace.table_names():
         source = next((v for v in [*workspace.tables, *workspace.joins] if v.get("name") == name), {"name": name})
         entries.append(_entry("table", name, name, source))
     revision = canonical_sha1([{k: item.get(k) for k in ("ref", "sha1")} for item in entries])
     return {"revision": f"sha1:{revision}", "entries": entries}
+
+
+def consolidation_record(group: dict) -> dict:
+    """One suggested group as a reader sees it: the group, its members, and
+    its decision as a ``status`` — ``undecided`` until someone answers."""
+    return {**group, "status": str(group.get("decision") or "undecided")}
 
 
 def compact(index: dict) -> dict:

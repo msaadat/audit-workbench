@@ -1344,6 +1344,19 @@ severity the highest, absorbed findings marked `into` the lead and kept), with
 any undrafted members joining the lead by reference. A manual group of findings
 takes the merge path and is filed beside the suggestions.
 
+The chat reaches the same decisions. Each group of the current suggestion is a
+`consolidation` artifact (`consolidation:<group_id>`) in the artifact index —
+title, members with their tests and any finding that reports them, reasoning,
+and a `status` of `undecided`, `accepted` or `dismissed` — so `list_artifacts`
+and `get_artifact` show the suggestions still waiting, not only the groups
+already marked on observations. Two catalog actions decide one:
+`accept_consolidation` (a broad rewrite: it marks every member or merges
+drafts, and is taken apart member by member rather than undone; its receipt
+says whether the group is drafted once on the next run or a merged lead now
+awaits a redraft) and `dismiss_consolidation` (reversible). A suggestion the
+exceptions have outgrown is not current, so it is neither listed nor
+decidable.
+
 ### `working_papers.generated` — RCM working papers
 
 | | |

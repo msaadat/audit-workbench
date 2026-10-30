@@ -218,8 +218,10 @@ _TOOL_SCHEMAS = [
         (
             "List current audit artifacts compactly: id, typed ref, kind, "
             "title, status, linked refs. Kinds are rcm, procedure, datatest, "
-            "doctest, doctest_item, observation, finding, analysis, ruleset, "
-            "document, report, table. kind_counts totals every kind, including "
+            "doctest, doctest_item, observation, consolidation, finding, "
+            "analysis, ruleset, document, report, table. A consolidation is a "
+            "suggested group of exceptions to report as one finding; its status "
+            "is undecided, accepted or dismissed. kind_counts totals every kind, including "
             "any the limit cut off."
         ),
         {

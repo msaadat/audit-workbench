@@ -364,6 +364,26 @@ def decide(
     return _write(workspace, payload)
 
 
+def reopen(workspace: Workspace, basis: str, group_id_value: str) -> dict:
+    """Take a dismissal back, leaving the group undecided again.
+
+    Only a dismissal: an accepted group has marked observations or merged
+    findings, and is taken apart member by member instead
+    (:func:`ungroup_observation`, :func:`findings.unconsolidate`).
+    """
+    payload = load(workspace, basis)
+    group = next(
+        (item for item in (payload or {}).get("groups") or [] if item.get("group_id") == group_id_value),
+        None,
+    )
+    if group is None:
+        raise WorkspaceError(f"Consolidation group '{group_id_value}' is not in this suggestion.")
+    if group.get("decision") != "dismissed":
+        raise WorkspaceError(f"Consolidation group '{group_id_value}' is not dismissed.")
+    group.update(decision=None, decided_by=None, decided_at=None)
+    return _write(workspace, payload)
+
+
 def record_manual_group(workspace: Workspace, basis: str, group: Mapping) -> dict:
     """Append an auditor-made merge of findings, already accepted.
 
@@ -558,17 +578,14 @@ def ungroup_observation(workspace: Workspace, observation_id: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# The page's view
+# Reading the suggestions: the page, and the chat's artifact index
 # --------------------------------------------------------------------------- #
-def summary(workspace: Workspace) -> dict:
-    """The current basis, its suggestion set, and each group's members in the
-    shape the panel renders."""
+def _member_view(workspace: Workspace):
+    """A function from an observation id to the member summary every reader
+    renders: the test that found it, its row's process, and the finding, if
+    any, that reports it."""
     from . import doc_tests
 
-    candidates = candidate_observations(workspace)
-    groupable = groupable_observations(workspace)
-    basis = basis_sha1(workspace)
-    suggestion = load(workspace, basis)
     observations = {str(item.get("id") or ""): item for item in workspace.observations}
     rows = {str(row.get("id")): row for row in workspace.rcm}
     test_titles = {str(item.get("id")): str(item.get("title") or "") for item in workspace.data_tests}
@@ -593,8 +610,11 @@ def summary(workspace: Workspace) -> dict:
         finding = standing.get(observation_id)
         return {
             "id": observation_id,
-            "title": str(item.get("summary") or test_titles.get(test_id) or test_id),
+            # The test's title says which control found it; an observation's
+            # summary is often boilerplate shared by every document test.
+            "title": str(test_titles.get(test_id) or item.get("summary") or test_id),
             "test_title": test_titles.get(test_id, ""),
+            "summary": str(item.get("summary") or ""),
             "process": str((rows.get(str(item.get("rcm_id") or "")) or {}).get("process") or ""),
             "rcm_id": str(item.get("rcm_id") or ""),
             "test_refs": [test_id] if test_id else [],
@@ -605,18 +625,38 @@ def summary(workspace: Workspace) -> dict:
             "grouped": str((item.get("consolidation") or {}).get("role") or "") or None,
         }
 
+    return member
+
+
+def _with_members(suggestion: Mapping, member) -> list[dict]:
+    return [
+        {**group, "members": [member(value) for value in group.get("observation_ids") or []]}
+        for group in suggestion.get("groups") or []
+    ]
+
+
+def current_groups(workspace: Workspace) -> list[dict]:
+    """The groups of the suggestion made against the current basis, decided
+    or not, each with its members — the ``consolidation`` artifacts the chat
+    lists, reads, and accepts or dismisses by ``group_id``. A suggestion the
+    exceptions have outgrown is not current, so nothing in it can be acted on.
+    """
+    suggestion = load(workspace, basis_sha1(workspace))
+    if suggestion is None:
+        return []
+    return _with_members(suggestion, _member_view(workspace))
+
+
+def summary(workspace: Workspace) -> dict:
+    """The current basis, its suggestion set, and each group's members in the
+    shape the panel renders."""
+    candidates = candidate_observations(workspace)
+    groupable = groupable_observations(workspace)
+    basis = basis_sha1(workspace)
+    suggestion = load(workspace, basis)
     view = None
     if suggestion is not None:
-        view = {
-            **suggestion,
-            "groups": [
-                {
-                    **group,
-                    "members": [member(value) for value in group.get("observation_ids") or []],
-                }
-                for group in suggestion.get("groups") or []
-            ],
-        }
+        view = {**suggestion, "groups": _with_members(suggestion, _member_view(workspace))}
     stale = None
     if suggestion is None:
         newest = latest(workspace)
@@ -647,6 +687,7 @@ __all__ = [
     "apply_group",
     "basis_sha1",
     "candidate_observations",
+    "current_groups",
     "decide",
     "drafted_observation_ids",
     "group_id",
@@ -659,6 +700,7 @@ __all__ = [
     "normalize_group",
     "path",
     "record_manual_group",
+    "reopen",
     "save",
     "summary",
     "undecided_groups",

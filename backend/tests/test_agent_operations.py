@@ -28,13 +28,12 @@ def test_every_capability_declares_what_it_produces():
             if not capability.produces
         }
     )
-    # Three outcomes write no artifact, and all are deliberate: ``audit.verified``
-    # reads the engagement and settles, ``planning.change_assessed`` records a
-    # judgment about artifacts rather than changing one, and
-    # ``findings.consolidated`` proposes groups the auditor decides on.
-    assert undeclared == [
-        "audit.verified", "findings.consolidated", "planning.change_assessed",
-    ]
+    # Two outcomes write no artifact, and both are deliberate: ``audit.verified``
+    # reads the engagement and settles, and ``planning.change_assessed`` records
+    # a judgment about artifacts rather than changing one.
+    # ``findings.consolidated`` left this list when its suggestions became
+    # ``consolidation`` artifacts the chat can list and decide.
+    assert undeclared == ["audit.verified", "planning.change_assessed"]
 
 
 def test_declared_refs_are_a_subset_of_the_known_artifact_kinds():
@@ -50,6 +49,14 @@ def test_declared_refs_are_a_subset_of_the_known_artifact_kinds():
             # Naming an artifact can only mean "redo it" for a ref the
             # capability accepts in the first place.
             assert set(capability.redoes_named) <= set(capability.accepts_refs), capability.id
+
+
+def test_a_suggested_consolidation_offers_its_decisions_and_its_review():
+    offered = operations.artifact_operations("consolidation")
+    assert {item["action"] for item in offered["actions"]} == {
+        "accept_consolidation", "dismiss_consolidation",
+    }
+    assert [item["outcome"] for item in offered["outcomes"]] == ["findings.consolidated"]
 
 
 def test_the_redraft_outcome_for_a_named_test_is_the_first_one_offered():

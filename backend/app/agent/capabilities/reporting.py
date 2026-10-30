@@ -432,9 +432,10 @@ def _findings_consolidated() -> Capability:
         _consolidation_units,
         context="reporting.finding_consolidation",
         invalidate_on=("observation",),
-        # Proposal-only: nothing is produced. The decisions are marked on the
-        # observations by the binding, and the suggestion set is the record.
-        produces=(),
+        # Proposal-only: no workspace artifact is committed. What it produces
+        # is the suggestion set — the ``consolidation`` artifacts the chat
+        # lists and decides — and the decisions marked on the observations.
+        produces=("consolidation",),
         accepts_refs=("observation",),
     )
 

@@ -464,8 +464,10 @@ frontend/src/
   nowhere to put.
 - `list_artifacts` and `get_artifact` reach every audit artifact the index
   holds — including data tests, document tests and their question items,
-  observations and validation rulesets, none of which an
-  `inspect_audit_artifacts` area covers. Both surfaces have them, in two
+  observations, suggested finding consolidations and validation rulesets, none
+  of which an `inspect_audit_artifacts` area covers. A suggested consolidation
+  is decided by the `accept_consolidation` / `dismiss_consolidation` actions,
+  the same decisions the Findings page makes. Both surfaces have them, in two
   variants of one handler: `ActionToolSession(include_operations=False)` for
   the chat, which answers questions and hands work over as a brief, and the
   full payload for the loop, which spends that action vocabulary.
