@@ -758,7 +758,32 @@ def reaffirm_evidence(
 
 
 def remove(workspace: Workspace, finding_id: str) -> None:
-    workspace.findings.remove(_record(workspace, finding_id))
+    """Delete a finding that stands on its own.
+
+    A consolidation is taken apart before either side of it is deleted. An
+    absorbed finding is the record of what its control showed and is reported
+    under its lead; deleting it leaves the lead naming a member that no longer
+    exists, which fails the lead's support check and drops it from the report.
+    A lead deleted with members still absorbed strands them pointing at nothing.
+    An agent once read absorbed findings as duplicates and deleted five.
+    """
+    from . import finding_consolidation
+
+    item = _record(workspace, finding_id)
+    consolidation = item.get("consolidation") or {}
+    if finding_consolidation.is_absorbed(item):
+        raise WorkspaceError(
+            f"Finding '{finding_id}' is absorbed into '{consolidation.get('into')}' and is kept "
+            "as the record of what its control showed; it is reported under that finding, "
+            "not as a duplicate. Restore it from the consolidation before deleting it."
+        )
+    members = [value for value in consolidation.get("members") or [] if value]
+    if finding_consolidation.is_lead(item) and members:
+        raise WorkspaceError(
+            f"Finding '{finding_id}' leads a consolidation of {', '.join(members)}; "
+            "restore those findings before deleting it."
+        )
+    workspace.findings.remove(item)
     workspace.save()
 
 

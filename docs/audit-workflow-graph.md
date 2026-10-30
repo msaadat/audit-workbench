@@ -1357,6 +1357,15 @@ awaits a redraft) and `dismiss_consolidation` (reversible). A suggestion the
 exceptions have outgrown is not current, so it is neither listed nor
 decidable.
 
+Neither side of a merge can be deleted until it is taken apart:
+`findings.remove` refuses an absorbed finding and a lead that still has
+members, and a listing states each finding's role as its `status` (`absorbed
+into F-… (kept; reported under it)`, `consolidated lead`, `draft`,
+`confirmed`). Both exist because an agent asked to leave no exception
+"double-counted" read five absorbed findings as duplicates and deleted them,
+which left every lead failing its support check for members that no longer
+existed.
+
 ### `working_papers.generated` — RCM working papers
 
 | | |

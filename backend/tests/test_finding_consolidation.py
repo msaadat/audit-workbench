@@ -515,3 +515,59 @@ def test_a_confirmed_absorbed_finding_blocks_the_report(workspace_with_data):
     issues = {issue["code"]: issue for issue in report.quality_checks(ws)["issues"]}
     assert issues["absorbed_finding_confirmed"]["severity"] == "error"
     assert report.build_context(ws)["findings"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Absorbed findings are kept: not deletable, and labelled as such
+# --------------------------------------------------------------------------- #
+def test_neither_side_of_a_consolidation_can_be_deleted_until_it_is_taken_apart(workspace_with_data):
+    # An agent once read five absorbed findings as duplicates and deleted
+    # them, leaving every lead naming members that no longer existed.
+    ws = _two_drafts(workspace_with_data)
+    lead, member = _lead_and_member(ws)
+    findings.consolidate(ws, finding_ids=[lead["id"], member["id"]], lead_id=lead["id"], relation="shared_cause")
+
+    with pytest.raises(workspaces.WorkspaceError, match="kept as the record"):
+        findings.remove(ws, member["id"])
+    with pytest.raises(workspaces.WorkspaceError, match="restore those findings"):
+        findings.remove(ws, lead["id"])
+    client = TestClient(create_app())
+    assert client.delete(f"/api/workspaces/{ws.id}/findings/{member['id']}").status_code >= 400
+
+    # Taken apart, either may go.
+    findings.unconsolidate(ws, member["id"])
+    findings.remove(ws, member["id"])
+    findings.remove(ws, lead["id"])
+    assert workspaces.load_workspace(ws.id).findings == []
+
+
+def test_the_listing_says_which_findings_are_absorbed_and_which_lead(workspace_with_data):
+    from app.agent import action_tools
+
+    ws = _two_drafts(workspace_with_data)
+    lead, member = _lead_and_member(ws)
+    third = findings.add(ws, {"title": "Standalone"})
+    findings.consolidate(ws, finding_ids=[lead["id"], member["id"]], lead_id=lead["id"], relation="shared_cause")
+
+    listed = action_tools.ActionToolSession(ws, []).dispatch("list_artifacts", {"kinds": ["finding"]})
+    status = {item["id"]: item["status"] for item in listed["artifacts"]}
+
+    assert status[lead["id"]] == "consolidated lead"
+    assert status[member["id"]].startswith(f"absorbed into {lead['id']}")
+    assert "kept" in status[member["id"]]
+    assert status[third["id"]] == "draft"
+
+
+def test_a_merge_receipt_says_the_absorbed_findings_are_kept(workspace_with_data):
+    from app.agent import actions
+    from test_agent_reporting_consolidation import _decision
+
+    ws = _two_drafts(workspace_with_data)
+    _basis, group = _suggest(ws)
+
+    receipt = actions._execute(
+        ws, _decision("accept_consolidation", group["group_id"]), {"id": "run-chat", "mode": "auto"},
+    )
+
+    assert len(receipt["result"]["absorbed"]) == 1
+    assert "not deleted" in receipt["result"]["next"]

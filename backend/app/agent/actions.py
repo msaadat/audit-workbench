@@ -945,9 +945,14 @@ def _decide_consolidation(workspace: Workspace, action: dict, run: dict, group_i
                 "decision": "accepted",
                 "merged_into": lead["id"],
                 "narrative_pending": True,
+                "absorbed": [
+                    str(value) for value in (lead.get("consolidation") or {}).get("members") or []
+                ],
                 "next": (
                     f"The members were already drafted and are merged into {lead['id']}; "
-                    f"its narrative is redrafted by requesting findings.drafted naming finding:{lead['id']}."
+                    f"its narrative is redrafted by requesting findings.drafted naming finding:{lead['id']}. "
+                    "The absorbed findings are kept as the record of each member's control and are "
+                    "reported under the lead: they are not duplicates, and are not deleted."
                 ),
             }
         else:

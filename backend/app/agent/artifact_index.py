@@ -24,12 +24,15 @@ def _tokens(value: object) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
 
-def _entry(kind: str, item_id: str, primary: str, item: dict, *, body: str = "", linked=None) -> dict:
+def _entry(
+    kind: str, item_id: str, primary: str, item: dict, *, body: str = "", linked=None, status=None,
+) -> dict:
     ref = f"{kind}:{item_id}"
     return {
         "ref": ref, "kind": kind, "id": item_id,
         "title": str(primary or ""),
-        "status": item.get("status"), "created_by": item.get("created_by"),
+        "status": item.get("status") if status is None else status,
+        "created_by": item.get("created_by"),
         "agent_run_id": item.get("agent_run_id"), "semantic_id": item.get("semantic_id"),
         "updated": item.get("updated") or item.get("created"),
         "sha1": canonical_sha1(item), "linked_refs": list(linked or []),
@@ -66,6 +69,7 @@ def build(workspace: Workspace) -> dict:
     for item in workspace.findings:
         entries.append(_entry("finding", item["id"], item.get("title") or item["id"], item,
                               body=str(item.get("narrative") or ""),
+                              status=finding_status(item),
                               linked=[
                                   *[f"rcm:{v}" for v in item.get("rcm_refs") or []],
                                   *[str(v) for v in item.get("test_refs") or []],
@@ -123,6 +127,22 @@ def build(workspace: Workspace) -> dict:
         entries.append(_entry("table", name, name, source))
     revision = canonical_sha1([{k: item.get(k) for k in ("ref", "sha1")} for item in entries])
     return {"revision": f"sha1:{revision}", "entries": entries}
+
+
+def finding_status(item: dict) -> str:
+    """A finding's standing as a listing shows it.
+
+    Findings carry no ``status`` field, so a listing showed none, and an
+    absorbed finding looked exactly like the lead that reports it. An agent
+    reading such a list took five absorbed findings for duplicates and deleted
+    them; the role is stated here so the list itself says what each one is.
+    """
+    consolidation = item.get("consolidation") or {}
+    if finding_consolidation.is_absorbed(item):
+        return f"absorbed into {consolidation.get('into')} (kept; reported under it)"
+    if finding_consolidation.is_lead(item):
+        return "consolidated lead"
+    return "confirmed" if item.get("auditor_confirmed") else "draft"
 
 
 def consolidation_record(group: dict) -> dict:
