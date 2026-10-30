@@ -846,11 +846,12 @@ class AuditWorkflowExecution(ActionExecution):
                 for item in subject.observations
             )
             return {
-                "status": (
-                    "completed_with_issues"
-                    if exceptions or attention
-                    else state
-                ),
+                # Exceptions are what the roll-up concludes, not a fault in it:
+                # a matrix with ineffective controls is a finished roll-up, and
+                # its tally and highlights already say where they landed. Marked
+                # as an issue, it drew the conclusions row amber on every
+                # engagement that found anything.
+                "status": state,
                 "headline": "Results and observations updated",
                 "summary": (
                     f"Rolled results into {counted(len(rows), 'RCM row')}. "

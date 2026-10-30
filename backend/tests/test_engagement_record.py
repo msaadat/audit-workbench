@@ -883,6 +883,28 @@ def test_a_rows_body_describes_the_workspace_not_the_run_that_wrote_it(
     assert row["history"]["summary"] == "25 rows covering 4 processes."
 
 
+def test_a_status_decided_by_the_artifact_is_read_live(stub_store, monkeypatch):
+    """The run left two rows incomplete and the auditor has since filled them.
+    Read from the milestone, the row stayed amber over a complete matrix."""
+    stub_store([
+        _run("r1", "2026-08-14T06:00:00+00:00",
+             [_milestone("planning.rcm_ready", "2026-08-14T06:02:00+00:00",
+                         status="completed_with_issues",
+                         headline="Risk and control matrix drafted — 2 rows incomplete")]),
+    ])
+    monkeypatch.setattr(
+        engagement_record, "_live_bodies",
+        lambda workspace: {"planning.rcm_ready": {
+            "status": "completed", "headline": "Risk and control matrix ready",
+            "summary": "2 rows covering 1 process.", "highlights": [],
+        }},
+    )
+    row = _rows(engagement_record.record(_Workspace(rcm=[{}] * 2)))["planning.rcm_ready"]
+
+    assert row["current"] == {"status": "completed", "headline": "Risk and control matrix ready"}
+    assert row["history"]["status"] == "completed_with_issues"
+
+
 def test_fieldwork_is_described_from_the_register_not_from_its_projection(stub_store):
     """Fieldwork's projection counts the units a run scheduled, so re-running it
     with no run to describe reports "0 scheduled tests". The register answers
@@ -929,6 +951,36 @@ def test_tests_settled_since_the_run_are_no_longer_named_as_needing_you(stub_sto
     assert row["highlights"] == []
     assert row["current"]["status"] == "completed"
     assert row["history"]["headline"] == "Fieldwork ran — 2 tests need you"
+
+
+def test_the_findings_register_is_described_from_the_register(stub_store):
+    """The projection reads only the findings one run drafted, and names the
+    most severe of them as highlights graded `error` — which the row chipped as
+    flags. Procurement drew "Prepared 4 drafts" and "3 flags" over a register
+    of ten with nothing wrong in it."""
+    stale = dict(
+        _milestone("findings.drafted", "2026-08-14T21:05:00+00:00",
+                   summary="Prepared 4 evidence-linked finding drafts (3 critical, 1 high)."),
+        highlights=[
+            {"severity": "error", "label": "Payments to inactive vendors",
+             "detail": "", "artifact_ref": "finding:F-1"},
+        ],
+    )
+    stub_store([_run("r1", "2026-08-14T21:00:00+00:00", [stale])])
+    workspace = _Workspace(findings=[
+        {"id": "F-1", "severity": "critical", "auditor_confirmed": True},
+        {"id": "F-2", "severity": "medium", "auditor_confirmed": True},
+        {"id": "F-3", "severity": "critical", "auditor_confirmed": True},
+        {"id": "F-4", "severity": "high", "auditor_confirmed": True,
+         "consolidation": {"role": "absorbed", "into": "F-1"}},
+    ])
+    row = _rows(engagement_record.record(workspace))["findings.drafted"]
+
+    assert row["live_body"] is True
+    assert row["summary"] == "3 findings in the register: 2 critical, 1 medium."
+    assert row["highlights"] == []
+    assert row["open_points"] == []
+    assert row["history"]["summary"].startswith("Prepared 4")
 
 
 def test_a_test_still_owed_is_named_with_why(stub_store):
@@ -1477,13 +1529,11 @@ def test_a_presence_test_that_raises_does_not_invent_absent_work(stub_store):
 # --------------------------------------------------------------------------- #
 def test_open_points_attach_to_the_stage_that_left_them(stub_store):
     stub_store([])
-    workspace = _Workspace(
-        findings=[{"cause_pending": True, "auditor_confirmed": True}] * 35
-    )
+    workspace = _Workspace(findings=[{"cause_pending": True}] * 35)
     result = engagement_record.record(workspace)
     row = _rows(result)["findings.drafted"]
 
-    assert [point["key"] for point in row["open_points"]] == ["findings_followup"]
+    assert [point["key"] for point in row["open_points"]] == ["unconfirmed_findings"]
     assert "35 of 35 findings" in row["open_points"][0]["message"]
 
 
@@ -1545,14 +1595,16 @@ def test_absorbed_findings_are_not_counted_as_unconfirmed(stub_store):
     assert _rows(result)["findings.drafted"]["filed"]["count"] == 1
 
 
-def test_confirming_the_register_hands_the_row_back_to_the_cause_debt(stub_store):
-    """One slot, two debts: the smaller one surfaces once the larger is settled."""
+def test_a_confirmed_register_is_not_asked_for_causes(stub_store):
+    """Root causes and management responses are the Findings page's own
+    completeness check; the record restating it read as a defect in a register
+    that had simply not collected responses yet."""
     stub_store([])
     result = engagement_record.record(_Workspace(findings=[
         {"auditor_confirmed": True, "cause_pending": True},
     ]))
 
-    assert [point["key"] for point in result["open_points"]] == ["findings_followup"]
+    assert [point["key"] for point in result["open_points"]] == []
 
 
 def test_a_settled_register_leaves_no_findings_debt(stub_store):
@@ -1610,13 +1662,11 @@ def test_a_fully_reviewed_matrix_leaves_no_sign_off_debt(stub_store):
 def test_review_outranks_unstarted_work_as_the_next_step(stub_store):
     """Auto mode runs the next stage by itself; only a person can read."""
     stub_store([])
-    workspace = _Workspace(
-        findings=[{"cause_pending": True, "auditor_confirmed": True}] * 35
-    )
+    workspace = _Workspace(findings=[{"cause_pending": True}] * 35)
     result = engagement_record.record(workspace)
 
     assert result["next"]["kind"] == "open_point"
-    assert result["next"]["key"] == "findings_followup"
+    assert result["next"]["key"] == "unconfirmed_findings"
     # ...and there was runnable work it deliberately did not choose.
     assert any(stage["runnable"] for stage in result["stages"])
 

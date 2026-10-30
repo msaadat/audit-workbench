@@ -458,6 +458,28 @@ def test_emphasis_inside_a_plain_bullet_is_stripped_too(monkeypatch):
     assert observation["statement"] == "The SOP has no effective date and no owner."
 
 
+def test_a_roll_up_that_found_exceptions_is_a_completed_roll_up():
+    """Exceptions are what the roll-up concludes, not a fault in it. Marked as
+    an issue, the conclusions row drew amber on procurement over a satisfied
+    stage whose tally already read "9 with exceptions, 1 passed"."""
+    workspace = _Workspace(rcm=[
+        _row("RCM-1", "high") | {"execution_rollup": {
+            "exceptions": 3, "completed": 1, "control_conclusion": "ineffective",
+        }},
+    ])
+    workspace.observations = []
+    execution = audit.AuditWorkflowExecution.__new__(audit.AuditWorkflowExecution)
+    milestone = execution.milestone_projection(
+        workspace,
+        {"id": "run-milestone", "planning_changes": {}},
+        SimpleNamespace(id="results.rolled_up"),
+        {"units": []},
+    )
+
+    assert milestone["status"] == "completed"
+    assert [item["severity"] for item in milestone["highlights"]] == ["error"]
+
+
 def test_control_conclusions_are_tallied_as_excepted_and_passed_rows():
     from app.agent.audit_execution import _conclusion_tally
 

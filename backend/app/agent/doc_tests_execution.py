@@ -421,7 +421,10 @@ class DocTestWorkflowExecution(BaseRunner):
             )
         }
         unexecuted = sum(unexecuted_items(test, subject) for test in tests)
-        needs_review = totals["exceptions"] + totals["manual_review"] + unexecuted
+        # Exceptions are what the tests found, not a fault in running them —
+        # the same line the roll-up draws. What still needs a person is an item
+        # left to manual review or one that never ran.
+        needs_review = totals["manual_review"] + unexecuted
         return {
             "status": "completed_with_issues" if needs_review else "completed",
             "headline": "Document testing complete",

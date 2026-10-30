@@ -35,6 +35,7 @@ from . import (
     documents as document_service,
     engagement,
     finding_consolidation,
+    findings as findings_service,
     rcm_execution,
     report,
     stage_status,
@@ -76,6 +77,14 @@ from .workspaces import Workspace
 # report zero. That is the test, and it is a cheap one — a delta over an empty
 # run reads "0 scheduled tests" and "no new drafts", where a figure read from
 # the workspace stays 22 rows, 54 tests, 30 findings.
+#
+# `live_headline` takes the projection's status and headline as well, for a
+# stage whose status is decided by the artifact alone — an incomplete matrix, a
+# row no test covers — rather than by how one run's units settled. Read from the
+# milestone instead, the status is a photograph: the row stayed amber after the
+# auditor had fixed what made it so. The report is the counter-example and is
+# left off: its reconciliation flag exists only in the run, and a projection
+# with no run always answers that none is pending.
 _SPINE: dict[str, dict[str, Any]] = {
     # The head of the chain, and the only row the agent does not produce. Its
     # card opens nothing because there is no one Sources page: the two doors
@@ -149,7 +158,7 @@ _SPINE: dict[str, dict[str, Any]] = {
         "label": "Audit planning memorandum", "destination": "apm",
         "unit": "", "count": None,
         "headline": "Draft the audit planning memorandum",
-        "prompt": "Draft the APM.", "live_body": True,
+        "prompt": "Draft the APM.", "live_body": True, "live_headline": True,
     },
     "planning.cycle_ready": {
         "label": "Cycle design", "destination": "cycle",
@@ -161,7 +170,7 @@ _SPINE: dict[str, dict[str, Any]] = {
         "label": "Risk and control matrix", "destination": "rcm",
         "unit": "row", "count": "rcm",
         "headline": "Build the risk and control matrix",
-        "prompt": "Generate the RCM.", "live_body": True,
+        "prompt": "Generate the RCM.", "live_body": True, "live_headline": True,
     },
     # Two registers, one programme. The row is sized by both — `tests` is the
     # data and document registers added together — so a single door to one of
@@ -172,7 +181,8 @@ _SPINE: dict[str, dict[str, Any]] = {
         "label": "Test programme", "destination": "",
         "unit": "test", "count": "tests",
         "headline": "Specify the tests each control needs",
-        "prompt": "Draft the tests the RCM rows still need.", "live_body": True,
+        "prompt": "Draft the tests the RCM rows still need.",
+        "live_body": True, "live_headline": True,
         "links": (
             {"label": "Data tests", "destination": "data-tests", "count": "data_tests"},
             {"label": "Document tests", "destination": "doc-tests", "count": "document_tests"},
@@ -198,7 +208,7 @@ _SPINE: dict[str, dict[str, Any]] = {
     # kept for is on this row now: "Document tests 5/8" says the same thing
     # about the same register, in the place the button that runs them lives.
     # Its runs are read onto this row, not lost — see `_FILED_UNDER`.
-    # Live, and the only row whose *headline* is live too. The milestone counts
+    # Live, headline included, and not from its projection. The milestone counts
     # the units one run scheduled, so it was left a photograph — and the
     # photograph kept saying "2 tests need you", with both tests named and an
     # attention mark, after one had been replaced and the other answered. The
@@ -226,13 +236,20 @@ _SPINE: dict[str, dict[str, Any]] = {
         "unit": "row", "count": "rcm",
         "headline": "Roll the results up into control conclusions",
         "prompt": "Roll the test results up into control conclusions.",
-        "live_body": True,
+        # Live status too: milestones filed before the projection stopped
+        # calling exceptions an issue still say `completed_with_issues`, and
+        # that photograph kept the row amber over a satisfied roll-up.
+        "live_body": True, "live_headline": True,
     },
+    # Live from the register rather than the projection, which reads only the
+    # findings one run drafted: "Prepared 4 drafts" over a register of ten. Its
+    # highlights were those drafts graded by severity, which the row counted as
+    # flags — a critical finding is the register's content, not a defect in it.
     "findings.drafted": {
         "label": "Findings register", "destination": "findings",
         "unit": "finding", "count": "findings",
         "headline": "Draft findings from the exceptions",
-        "prompt": "Draft findings.",
+        "prompt": "Draft findings.", "live_body": True,
     },
     "report.working_draft": {
         "label": "Report", "destination": "report",
@@ -760,6 +777,10 @@ def _live_bodies(workspace: Workspace) -> dict[str, dict]:
         except Exception:
             pass
         try:
+            bodies["findings.drafted"] = _findings_body(workspace)
+        except Exception:
+            pass
+        try:
             from .agent.audit_execution import AuditWorkflowExecution
 
             registry = audit_capabilities.REGISTRY_BY_WORKFLOW[audit_workflow.WORKFLOW_ID]
@@ -839,6 +860,36 @@ def _fieldwork_body(workspace: Workspace) -> dict:
             }
             for test, default in owed
         ][:HIGHLIGHT_LIMIT],
+    }
+
+
+def _findings_body(workspace: Workspace) -> dict:
+    """The findings register as it stands, sized the way `_counts` sizes it.
+
+    A sentence and nothing to read out: the register is one click away, and
+    naming its most severe findings here drew them as flags on the row.
+    """
+    reportable = [
+        item for item in workspace.findings
+        if not finding_consolidation.is_absorbed(item)
+    ]
+    tally: dict[str, int] = {}
+    for item in reportable:
+        severity = str(item.get("severity") or "unspecified").casefold()
+        tally[severity] = tally.get(severity, 0) + 1
+    rank = {name: index for index, name in enumerate(findings_service.SEVERITIES)}
+    distribution = ", ".join(
+        f"{count} {severity}"
+        for severity, count in sorted(
+            tally.items(), key=lambda pair: (rank.get(pair[0], len(rank)), pair[0])
+        )
+    )
+    return {
+        "summary": (
+            f"{counted(len(reportable), 'finding')} in the register"
+            + (f": {distribution}." if distribution else ".")
+        ),
+        "highlights": [],
     }
 
 
@@ -1276,12 +1327,10 @@ def _stages(
 # next stage is something the agent does by itself in auto mode; reading what it
 # decided is the one thing only a person can do, so that is what the record asks
 # for first.
-# The two findings debts share one rank because they share one slot: only
-# ever one of them is raised, and which one is decided in `_open_points`.
 _OPEN_RANK = {
     "conclusions_await_auditor": 15,
     "unconfirmed_findings": 20,
-    "findings_followup": 20, "draft_rcm": 30,
+    "draft_rcm": 30,
 }
 
 
@@ -1326,13 +1375,16 @@ def _open_points(workspace: Workspace) -> list[dict]:
             "destination": "rcm",
         })
 
-    # The findings row carries one debt at a time, and confirmation is the one
-    # that comes first. Only a confirmed finding reaches the report at all --
-    # `report.build_context` carries `auditor_confirmed` findings and no others
-    # -- so an unconfirmed register produces a report that states no findings
-    # were identified over one holding twenty-four. Asking for root causes while
-    # that is true names the smaller debt and hides the larger: the causes would
-    # be written into findings the report still would not carry.
+    # The findings row carries one debt: confirmation. Only a confirmed finding
+    # reaches the report at all -- `report.build_context` carries
+    # `auditor_confirmed` findings and no others -- so an unconfirmed register
+    # produces a report that states no findings were identified over one
+    # holding twenty-four.
+    #
+    # Root causes and management responses are not asked for here. They are
+    # the Findings page's own completeness check, and a card restating it on
+    # every register that had not collected responses yet read as a defect in
+    # the register rather than the next conversation with management.
     #
     # Counted over the findings the report can carry. A finding absorbed into a
     # consolidated lead is reported through that lead and never on its own, so
@@ -1344,11 +1396,6 @@ def _open_points(workspace: Workspace) -> list[dict]:
         if not finding_consolidation.is_absorbed(item)
     ]
     unconfirmed = [item for item in reportable if not item.get("auditor_confirmed")]
-    owed = [
-        item for item in reportable
-        if item.get("cause_pending")
-        or not str(item.get("management_response") or "").strip()
-    ]
     if unconfirmed:
         points.append({
             "key": "unconfirmed_findings",
@@ -1364,17 +1411,6 @@ def _open_points(workspace: Workspace) -> list[dict]:
                    else " and will be left out of the report.")
             ),
             "action": "Confirm findings",
-            "destination": "findings",
-        })
-    elif owed:
-        points.append({
-            "key": "findings_followup",
-            "capability": "findings.drafted",
-            "message": (
-                f"{len(owed)} of {len(reportable)} findings have no "
-                "root cause or management response."
-            ),
-            "action": "Add causes",
             "destination": "findings",
         })
 
