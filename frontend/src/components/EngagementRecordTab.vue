@@ -366,7 +366,7 @@ function stamp(stage: EngagementStage): string {
  */
 function rowState(stage: EngagementStage): UiState {
   if (stage.held) {
-    const issues = ['completed_with_issues', 'needs_review'].includes(stage.history?.status ?? '')
+    const issues = ['completed_with_issues', 'needs_review'].includes(stageStatus(stage))
     return issues || stage.readiness.state !== 'satisfied' ? 'attention' : 'done'
   }
   if (stage.capability === leadStage.value) return 'next'
@@ -407,7 +407,20 @@ function saying(stage: EngagementStage): string {
  * across two columns states nothing twice.
  */
 function title(stage: EngagementStage): string {
-  return stage.history?.headline || stage.headline || ''
+  return runHeadline(stage) || stage.headline || ''
+}
+
+/**
+ * What the stage says it amounts to: the workspace's reading where the server
+ * has one, the run's own account otherwise. A run's "2 tests need you" is true
+ * of that run and stops being true of the engagement once both are settled.
+ */
+function runHeadline(stage: EngagementStage): string {
+  return stage.current?.headline || stage.history?.headline || ''
+}
+
+function stageStatus(stage: EngagementStage): string {
+  return stage.current?.status || stage.history?.status || ''
 }
 
 /**
@@ -1073,7 +1086,7 @@ function phaseNames(group: PhaseGroup): string {
               <li
                 class="row"
                 :class="{ shut: !isOpen(stage), ghost: !stage.held, lead: stage.capability === leadStage }"
-                :data-status="stage.history?.status || null"
+                :data-status="stageStatus(stage) || null"
                 :data-live="liveState(stage.capability) || null"
                 @click="rowClick(stage, $event)"
               >
@@ -1196,7 +1209,7 @@ function phaseNames(group: PhaseGroup): string {
                 </span>
 
                 <span v-if="hasBody(stage)" class="body">
-                  <span v-if="isOpen(stage) && stage.history?.headline" class="sen">{{ stage.history.headline }}</span>
+                  <span v-if="isOpen(stage) && runHeadline(stage)" class="sen">{{ runHeadline(stage) }}</span>
                   <span v-if="isOpen(stage) && bodySaying(stage)" class="dsc">{{ bodySaying(stage) }}</span>
 
                   <!-- What a stage that has already filed still owes. The count

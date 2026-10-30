@@ -582,9 +582,11 @@ Return JSON with a non-empty `tests` array. A test is one of:
 
    A field no supplied schema lists is a field no record of that type states, so
    a question about it is unanswerable. Say so with `missing_evidence` on a step
-   carrying neither population nor document_ids, and name the field and the type
-   it is missing from. "No documents" is never the reason: the types and their
-   counts are in front of you.
+   carrying neither population nor document_ids, as
+   {{"document_type":"<supplied type>","field":"<the field it lacks>"}}. "No
+   documents" is never the reason: the types and their counts are in front of
+   you. Before calling a value missing, look in `table_metadata`: a value a
+   supplied table holds is answered by a Data Test, not requested as evidence.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
    requirement_refs, procedure_key, and selection. It has no assertions,
    definition, roles, or steps: the roles, the join keys and the assertions were
@@ -1353,6 +1355,63 @@ def _validate_generate_population(
     return normalized
 
 
+def _missing_evidence_gap(
+    path: str,
+    raw: object,
+    schema_fields: Mapping[str, set[str]],
+    errors: list[str],
+) -> tuple[str, dict | None]:
+    """Read ``missing_evidence`` as a sentence, or as the field a type lacks.
+
+    The prompt asks for "the field and the type it is missing from", and the
+    model answers that as ``{"document_type": ..., "field": ...}`` about as
+    often as in prose. ``str()`` of that object put a Python repr into the
+    test, its scope limitation, and every evidence request an auditor reads.
+
+    The structured form is also checkable, which the sentence is not: a type
+    no supplied schema describes was never in front of the model, and a field
+    the type's schema lists is not missing — it is a population question.
+    """
+
+    if raw is None or isinstance(raw, str):
+        return str(raw or "").strip(), None
+    if not isinstance(raw, Mapping):
+        errors.append(
+            f"{path}.missing_evidence must be a sentence, or an object naming "
+            "document_type and field"
+        )
+        return "", None
+    document_type = str(raw.get("document_type") or "").strip()
+    named = raw.get("fields") if raw.get("fields") is not None else raw.get("field")
+    if isinstance(named, str):
+        named = [named]
+    fields = (
+        list(dict.fromkeys(str(value).strip() for value in named if str(value).strip()))
+        if isinstance(named, (list, tuple))
+        else []
+    )
+    if not document_type or not fields:
+        errors.append(
+            f"{path}.missing_evidence must name both document_type and field"
+        )
+        return "", None
+    if schema_fields and document_type not in schema_fields:
+        errors.append(
+            f"{path}.missing_evidence names type '{document_type}', which no "
+            "supplied schema describes"
+        )
+    stated = [field for field in fields if field in schema_fields.get(document_type, set())]
+    if stated:
+        errors.append(
+            f"{path}.missing_evidence says {document_type} does not state "
+            f"'{stated[0]}', but its schema lists that field; ask about it "
+            "through a population instead"
+        )
+    listed = " or ".join(f"'{field}'" for field in fields)
+    text = f"No {document_type} record states {listed}"
+    return text, {"document_type": document_type, "fields": fields}
+
+
 def _validate_generate_document_step(
     path: str,
     raw_step: object,
@@ -1422,7 +1481,9 @@ def _validate_generate_document_step(
             "one or the other"
         )
     question = str(step.get("question") or step.get("instruction") or "").strip()
-    missing_evidence = str(step.get("missing_evidence") or "").strip()
+    missing_evidence, missing_fields = _missing_evidence_gap(
+        path, step.get("missing_evidence"), schema_fields or {}, errors
+    )
     scope_limitation = str(step.get("scope_limitation") or "").strip()
     normalized = {"label": label, "instruction": instruction, "mode": mode or ""}
     if mode == "question":
@@ -1442,6 +1503,7 @@ def _validate_generate_document_step(
         if not scope_limitation:
             scope_limitation = missing_evidence
         missing_evidence = ""
+        missing_fields = None
     if not document_ids and not population and not missing_evidence:
         errors.append(
             f"{path} names neither a population nor a document; missing_evidence "
@@ -1451,6 +1513,8 @@ def _validate_generate_document_step(
         document_ids=document_ids,
         missing_evidence=missing_evidence,
     )
+    if missing_fields:
+        normalized["missing_fields"] = missing_fields
     if population:
         normalized["population"] = population
     if scope_limitation:

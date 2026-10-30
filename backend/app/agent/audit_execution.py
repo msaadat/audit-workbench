@@ -751,6 +751,7 @@ class AuditWorkflowExecution(ActionExecution):
                     {"label": "Created", "value": int(changes.get("test_created") or 0)},
                     {"label": "Updated", "value": int(changes.get("test_updated") or 0)},
                     {"label": "Preserved", "value": int(changes.get("test_preserved") or 0)},
+                    {"label": "Retired", "value": int(changes.get("test_retired") or 0)},
                     {"label": "RCM rows without tests", "value": uncovered},
                 ],
                 # A risk nobody can test is the fact worth carrying out of this
@@ -2335,7 +2336,10 @@ class AuditWorkflowExecution(ActionExecution):
                 (outcome.receipt.output.get("tests") or []) if outcome.receipt else []
             ):
                 action = str(item.get("action"))
-                self.run["planning_changes"][f"test_{action}"] += 1
+                changes = self.run["planning_changes"]
+                # ``.get``: a run created before ``test_retired`` existed
+                # resumes without the key.
+                changes[f"test_{action}"] = changes.get(f"test_{action}", 0) + 1
                 self.record_artifact(
                     str(item["kind"]), str(item["id"]), "", action, None
                 )

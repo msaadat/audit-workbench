@@ -132,13 +132,16 @@ def _generation_result(
     revision_before: int,
     outcomes: list[dict],
 ) -> ExecutorResult:
-    changed = [item for item in outcomes if item["action"] != "preserved"]
+    # A retired test no longer exists, so it has no postcondition hash; its
+    # replacement is the ref that proves the commit.
+    present = [item for item in outcomes if item["action"] != "retired"]
+    changed = [item for item in present if item["action"] != "preserved"]
     # Preserved tests enter the receipt refs only when nothing changed, so the
     # receipt always has a verifiable postcondition set.
     refs = list(
         dict.fromkeys(
             artifact_test_ref(item["kind"], item["id"])
-            for item in (changed or outcomes)
+            for item in (changed or present)
         )
     )
     return ExecutorResult(
@@ -442,12 +445,35 @@ def _commit_document_test(
     else:
         doc_tests.update_plan(fresh, existing["id"], payload)
         test = doc_tests.apply_spec(fresh, existing["id"], payload)
+        _cancel_orphaned_requests(fresh, test)
     _generate_missing_evidence(fresh, test, steps, target=target, unit_id=unit_id)
     # After, not instead: a test can carry both an unattached scope-note step and
     # a population over a type nothing was imported for, and the two gaps are
     # requested separately because they are repaired separately.
     _population_evidence_requests(fresh, test, target=target, unit_id=unit_id)
     return test
+
+
+def _cancel_orphaned_requests(fresh: Workspace, test: dict) -> None:
+    """Cancel open requests filed for items a redraft no longer has.
+
+    A redraft rebuilds the items, and the requests it still needs are filed
+    again against the new ones. The old requests pointed at items that are
+    gone, so they were counted as open in the workspace while no item on the
+    test showed them — one redraft took an engagement from five open requests
+    to seven.
+    """
+
+    current = {str(item.get("id")) for item in test.get("items") or []}
+    for request in fresh.evidence_requests:
+        if (
+            request.get("document_test_id") == test["id"]
+            and request.get("status") == "open"
+            and str(request.get("item_id")) not in current
+        ):
+            request["status"] = "cancelled"
+            request["auditor_note"] = "Superseded by a redraft of this test."
+            request["updated"] = fresh._updated_now()
 
 
 def _population_evidence_requests(
@@ -575,28 +601,88 @@ def _generate_missing_evidence(
         label = str(
             (item or {}).get("label") or step.get("label") or ""
         )
+        # A field a type does not state is not closed by importing more of that
+        # type, so the type stays out of ``missing_document_types``: the
+        # availability notifier would read every new invoice as the evidence an
+        # invoice-field gap asked for.
+        gap = step.get("missing_fields") or {}
+        gap_fields = [str(value) for value in gap.get("fields") or []]
         evidence_request = {
             "id": f"ER-{uuid.uuid4().hex[:10].upper()}",
             "rcm_id": target.rcm_id,
             "document_test_id": test["id"],
             "item_id": (item or {}).get("id"),
             "transaction_identifier": _item_identifier(label),
-            "missing_document_types": ["supporting_evidence"],
+            "missing_document_types": [] if gap else ["supporting_evidence"],
             "status": "open",
             "reason": reason,
             "next_action": (
-                "Import or attach matching evidence, then continue the audit."
+                f"Supply a source that states {' or '.join(gap_fields)}, or revise "
+                "the test to answer it from data the engagement holds."
+                if gap
+                else "Import or attach matching evidence, then continue the audit."
             ),
             "blocked_unit_id": unit_id,
             "evidence_availability_sha1": evidence_hash,
             "created": fresh._updated_now(),
             "updated": fresh._updated_now(),
         }
+        if gap:
+            evidence_request["missing_fields"] = {
+                "document_type": str(gap.get("document_type") or ""),
+                "fields": gap_fields,
+            }
         fresh.evidence_requests.append(evidence_request)
         if item is not None:
             item.setdefault("evidence_request_ids", []).append(evidence_request["id"])
     doc_tests.save_test(fresh, test)
     fresh.save()
+
+
+def _retire_replaced_test(
+    fresh: Workspace,
+    target: TestGenerateExecutorTarget,
+    spec: Mapping[str, object],
+    kind: str,
+    committed_id: str,
+) -> dict | None:
+    """Remove the test a replacement of the *other* source says it revises.
+
+    ``match_test_revision`` matches within one source, so a document question
+    rewritten as a Data Test — the right answer when the value it asked about
+    lives in a table — was committed as an addition and the blocked original
+    stayed linked beside it, still holding its open evidence requests. Its
+    requests are cancelled rather than left to read as outstanding asks.
+    """
+
+    revises = str(spec.get("revises") or "")
+    if not revises or revises == committed_id:
+        return None
+    replaced = next(
+        (
+            item
+            for item in _linked_tests(fresh, target.rcm_id)
+            if item["id"] == revises and item["kind"] != kind
+        ),
+        None,
+    )
+    if replaced is None or not _may_overwrite(target, replaced):
+        return None
+    if replaced["kind"] == "doctest":
+        for request in fresh.evidence_requests:
+            if request.get("document_test_id") == revises and request.get("status") == "open":
+                request["status"] = "cancelled"
+                request["auditor_note"] = f"Superseded by {committed_id}."
+                request["updated"] = fresh._updated_now()
+        doc_tests.remove_test(fresh, revises)
+    else:
+        data_tests.remove(fresh, revises)
+    return {
+        "kind": replaced["kind"],
+        "id": revises,
+        "action": "retired",
+        "replaced_by": committed_id,
+    }
 
 
 def execute_test_generation(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
@@ -660,6 +746,9 @@ def execute_test_generation(request: ExecutorRequest, raw_target: object) -> Exe
                     "action": "created" if existing is None else "updated",
                 }
             )
+            retired = _retire_replaced_test(fresh, target, spec, kind, item["id"])
+            if retired is not None:
+                outcomes.append(retired)
         return outcomes
 
     committed = mutate(

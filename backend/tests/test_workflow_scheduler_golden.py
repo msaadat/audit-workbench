@@ -910,6 +910,78 @@ def test_a_scheduled_producer_of_a_declared_parent_redoes_the_work():
     assert plan.stages[1]["scheduled_because_refs"] == [SOURCES_READY]
 
 
+_RECORDS_REVIEWED = "catalog.records_reviewed"
+
+
+def _redraft_registry() -> workflow.CapabilityRegistry:
+    """Records that redraft when named, and a reviewer that only reads them."""
+
+    registry = workflow.CapabilityRegistry()
+    registry.register(
+        workflow.Capability(
+            id=RECORDS_READY,
+            stage_id="stage:catalog-records",
+            title="Normalize catalog records",
+            worker_kind="synthetic.normalize_record",
+            depends_on=(),
+            readiness=_readiness(RECORDS_READY),
+            expand_units=_single_unit(
+                "record:catalog", "catalog_record", "Normalize", {"record": "all"}
+            ),
+            accepts_refs=("record",),
+            redoes_named=("record",),
+        )
+    )
+    registry.register(
+        workflow.Capability(
+            id=_RECORDS_REVIEWED,
+            stage_id="stage:catalog-review",
+            title="Review catalog records",
+            worker_kind="synthetic.review_record",
+            depends_on=(RECORDS_READY,),
+            readiness=_readiness(_RECORDS_REVIEWED),
+            expand_units=_single_unit(
+                "review:catalog", "catalog_review", "Review", {"review": "all"}
+            ),
+            accepts_refs=("record",),
+        )
+    )
+    return registry
+
+
+def test_a_requested_outcome_redrafts_the_settled_artifact_it_was_named_with():
+    """Naming a test to redraft it once ran nothing and reported success."""
+
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({RECORDS_READY}))
+
+    plan = workflow.materialize(
+        _redraft_registry(),
+        catalog,
+        [RECORDS_READY],
+        {"target_refs": ["record:R-1", "other:X"]},
+    )
+
+    assert [stage["capability"] for stage in plan.stages] == [RECORDS_READY]
+    assert plan.stages[0]["scheduled_because"] == "named"
+    assert plan.stages[0]["scheduled_because_refs"] == ["record:R-1"]
+
+
+def test_naming_an_artifact_for_a_downstream_outcome_does_not_redraft_it():
+    """Naming a test to *run* it must not rewrite the test on the way."""
+
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({RECORDS_READY}))
+
+    plan = workflow.materialize(
+        _redraft_registry(),
+        catalog,
+        [_RECORDS_REVIEWED],
+        {"target_refs": ["record:R-1"]},
+    )
+
+    assert plan.reused == [RECORDS_READY]
+    assert [stage["capability"] for stage in plan.stages] == [_RECORDS_REVIEWED]
+
+
 def test_generation_mode_normalization_is_explicit_and_deterministic():
     assert workflow.command_generation_mode({"text": "Prepare the APM"}) == (
         "reuse_existing"

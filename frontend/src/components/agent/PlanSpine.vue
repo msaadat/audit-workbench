@@ -126,12 +126,18 @@ const stages = computed<WorkflowStage[]>(() => workflow.value?.stages ?? [])
 /**
  * Why a stage that was already settled is being done again.
  *
- * Only for `parent_rescheduled`: readiness said `satisfied` and so left no
- * reason, yet the stage is in the plan — the run is rewriting something it
- * reads. Every other cause already speaks for itself, through the readiness
- * reason (`missing`, `stale`) or through the request (`forced`).
+ * Only for `parent_rescheduled` and `named`: readiness said `satisfied` and so
+ * left no reason, yet the stage is in the plan — the run is rewriting something
+ * it reads, or redrafting what the request pointed at. Every other cause
+ * already speaks for itself, through the readiness reason (`missing`, `stale`)
+ * or through the request (`forced`).
  */
 function rescheduledBecause(stage: WorkflowStage) {
+  if (stage.scheduled_because === 'named') {
+    const refs = stage.scheduled_because_refs ?? []
+    if (!refs.length) return ''
+    return `redrafting ${refs.map(ref => ref.split(':').pop()).join(', ')} as asked`
+  }
   if (stage.scheduled_because !== 'parent_rescheduled') return ''
   const producers = stage.scheduled_because_refs ?? []
   if (!producers.length) return ''

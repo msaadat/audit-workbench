@@ -198,11 +198,18 @@ _SPINE: dict[str, dict[str, Any]] = {
     # kept for is on this row now: "Document tests 5/8" says the same thing
     # about the same register, in the place the button that runs them lives.
     # Its runs are read onto this row, not lost — see `_FILED_UNDER`.
+    # Live, and the only row whose *headline* is live too. The milestone counts
+    # the units one run scheduled, so it was left a photograph — and the
+    # photograph kept saying "2 tests need you", with both tests named and an
+    # attention mark, after one had been replaced and the other answered. The
+    # body is read from the test register instead (`_fieldwork_body`), and with
+    # it the headline and status, since those are the part that went stale.
     "fieldwork.executed": {
         "label": "Fieldwork results", "destination": "",
         "unit": "", "count": None,
         "headline": "Run the tests against the data and documents",
         "prompt": "Run the tests.",
+        "live_body": True, "live_headline": True,
         "links": (
             {
                 "label": "Data tests", "destination": "data-tests",
@@ -745,15 +752,23 @@ def _live_bodies(workspace: Workspace) -> dict[str, dict]:
     """
 
     def read() -> dict[str, dict]:
+        bodies: dict[str, dict] = {}
+        # Read from the register, not a projection, so it does not wait on the
+        # execution adapter below being constructible.
+        try:
+            bodies["fieldwork.executed"] = _fieldwork_body(workspace)
+        except Exception:
+            pass
         try:
             from .agent.audit_execution import AuditWorkflowExecution
 
             registry = audit_capabilities.REGISTRY_BY_WORKFLOW[audit_workflow.WORKFLOW_ID]
             execution = AuditWorkflowExecution(workspace, {}, None)
         except Exception:
-            return {}
-        bodies: dict[str, dict] = {}
+            return bodies
         for capability_id in _SPINE:
+            if capability_id in bodies:
+                continue
             try:
                 capability = registry.get(capability_id)
                 body = execution.milestone_projection(workspace, {}, capability, {})
@@ -767,6 +782,64 @@ def _live_bodies(workspace: Workspace) -> dict[str, dict]:
         return bodies
 
     return _once("live_bodies", read)
+
+
+_FIELDWORK_OWED = (
+    ("blocked", "Blocked on evidence."),
+    ("review", "Needs auditor review before it can run."),
+    ("pending", "Has not run yet."),
+)
+
+
+def _fieldwork_body(workspace: Workspace) -> dict:
+    """Fieldwork as the test register stands, not as the last run left it.
+
+    The milestone projection cannot be re-run for this: it counts the units a
+    run scheduled, and with no run it reports "0 scheduled tests". The register
+    can answer instead, through the same classification readiness uses.
+    """
+
+    from .agent.audit_execution import HIGHLIGHT_LIMIT
+    from .agent.capabilities.fieldwork import execution_state
+
+    state = execution_state(workspace, {}, _document_test_index(workspace))
+    total = sum(len(tests) for tests in state.values())
+    owed = [
+        (test, default)
+        for key, default in _FIELDWORK_OWED
+        for test in state[key]
+    ]
+    done = len(state["done"])
+    summary = f"{done} of {counted(total, 'test')} {verb(total, 'has', 'have')} a result."
+    if owed:
+        summary += " " + "; ".join(
+            f"{counted(len(state[key]), 'test')} {phrase}"
+            for key, phrase in (
+                ("blocked", "blocked on evidence"),
+                ("review", "awaiting review"),
+                ("pending", "not run yet"),
+            )
+            if state[key]
+        ) + "."
+    return {
+        "status": "completed_with_issues" if owed else "completed",
+        "headline": (
+            f"Fieldwork — {counted(len(owed), 'test')} {verb(len(owed))} you"
+            if owed else "Fieldwork complete"
+        ),
+        "summary": summary,
+        "highlights": [
+            {
+                "severity": "warning",
+                "label": str(test.get("title") or test["test_id"]),
+                "detail": str(
+                    next(iter(test.get("execution_issues") or []), "") or default
+                ),
+                "artifact_ref": f"{test['kind']}:{test['test_id']}",
+            }
+            for test, default in owed
+        ][:HIGHLIGHT_LIMIT],
+    }
 
 
 def _readiness(workspace: Workspace) -> dict[str, dict]:
@@ -1129,10 +1202,23 @@ def _stages(
             # What this stage amounts to now. The severity tally in particular
             # is read at a glance and was the most misleading thing on the row:
             # a matrix rated "22 high" when it holds five.
+            # A live empty list is an answer — nothing to read out now — and
+            # must not fall through to the photograph's rows, which is how two
+            # settled tests kept being named under a complete stage.
             "summary": str(body.get("summary") or past.get("summary") or ""),
-            "stats": list(body.get("stats") or past.get("stats") or []),
-            "highlights": list(body.get("highlights") or past.get("highlights") or []),
+            "stats": list(body["stats"] if "stats" in body else past.get("stats") or []),
+            "highlights": list(
+                body["highlights"] if "highlights" in body else past.get("highlights") or []
+            ),
             "live_body": bool(body),
+            # The headline and status as the workspace stands, where the spine
+            # says the milestone's own are a photograph that goes stale. Null
+            # everywhere else: the run's headline is still its own account.
+            "current": (
+                {"status": str(body.get("status") or ""),
+                 "headline": str(body.get("headline") or "")}
+                if body and spec.get("live_headline") else None
+            ),
             "open_points": points.get(capability, []),
             "history": history.get(capability),
         })
@@ -1176,6 +1262,7 @@ def _stages(
             "stats": list(filed.get("stats") or []),
             "highlights": list(filed.get("highlights") or []),
             "live_body": False,
+            "current": None,
             "open_points": points.get(capability, []),
             "history": filed,
         })

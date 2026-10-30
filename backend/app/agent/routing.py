@@ -864,6 +864,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
             "test_created": 0,
             "test_updated": 0,
             "test_preserved": 0,
+            "test_retired": 0,
         },
     )
 

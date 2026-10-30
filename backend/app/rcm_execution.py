@@ -207,15 +207,20 @@ def awaits_execution(test: dict) -> bool:
     return not (test["kind"] == "doctest" and item.get("status") == "review_required")
 
 
-def test_manifest(workspace: Workspace) -> list[dict]:
+def test_manifest(
+    workspace: Workspace, document_tests: DocumentTestIndex | None = None
+) -> list[dict]:
     """Build a bounded, model-safe view of every RCM row's linked tests.
 
     The manifest carries plan specifications and artifact metadata only; it never
     includes table rows or document text. It records whether a test has a durable
     result rather than merely whether a definition exists.
+
+    ``document_tests`` is an index the caller already built for this read; the
+    engagement record passes its own so one draw lists the register once.
     """
     manifest = []
-    document_tests = document_test_index(workspace)
+    document_tests = document_tests or document_test_index(workspace)
     for row in workspace.rcm:
         for test in _tests(workspace, row["id"], document_tests):
             item = test["item"]

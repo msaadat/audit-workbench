@@ -883,24 +883,75 @@ def test_a_rows_body_describes_the_workspace_not_the_run_that_wrote_it(
     assert row["history"]["summary"] == "25 rows covering 4 processes."
 
 
-def test_a_stage_with_no_live_projection_keeps_what_its_run_reported(stub_store):
+def test_fieldwork_is_described_from_the_register_not_from_its_projection(stub_store):
     """Fieldwork's projection counts the units a run scheduled, so re-running it
-    with no run to describe reports "0 scheduled tests". A stale sentence that
-    was true when written beats a fresh one that is false."""
+    with no run to describe reports "0 scheduled tests". The register answers
+    instead, and what the run said is kept as its own account."""
     stub_store([
         _run("r1", "2026-08-14T20:00:00+00:00",
              [dict(_milestone("fieldwork.executed", "2026-08-14T20:05:00+00:00"),
                    summary="Completed 77 of 81 scheduled tests.")]),
     ])
     workspace = _Workspace(
-        apm="# APM", rcm=[{"id": "R1"}],
-        data_tests=[_ran({"id": "T1", "status": "completed_with_exception"})],
+        apm="# APM", rcm=[{"id": "R1", "test_refs": ["datatest:T1"]}],
+        data_tests=[_ran({"id": "T1", "rcm_id": "R1", "engine": "polars", "status": "completed_with_exception"})],
     )
     row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
 
-    assert engagement_record._SPINE["fieldwork.executed"].get("live_body") is None
-    assert row["summary"] == "Completed 77 of 81 scheduled tests."
-    assert row["live_body"] is False
+    assert row["live_body"] is True
+    assert row["summary"] == "1 of 1 test has a result."
+    assert row["current"] == {"status": "completed", "headline": "Fieldwork complete"}
+    assert row["history"]["summary"] == "Completed 77 of 81 scheduled tests."
+
+
+def test_tests_settled_since_the_run_are_no_longer_named_as_needing_you(stub_store):
+    """The run blocked on two tests; one was replaced and the other answered.
+    Its milestone kept saying "2 tests need you" and naming both, under an
+    attention mark, while readiness said fieldwork was settled."""
+    stale = dict(
+        _milestone(
+            "fieldwork.executed", "2026-08-14T20:05:00+00:00",
+            status="completed_with_issues",
+            headline="Fieldwork ran — 2 tests need you",
+        ),
+        highlights=[
+            {"severity": "warning", "label": "Vendor master status",
+             "detail": "{'document_type': 'purchase_order'}", "artifact_ref": "doctest:D1"},
+        ],
+    )
+    stub_store([_run("r1", "2026-08-14T20:00:00+00:00", [stale])])
+    workspace = _Workspace(
+        apm="# APM", rcm=[{"id": "R1", "test_refs": ["datatest:T1"]}],
+        data_tests=[_ran({"id": "T1", "rcm_id": "R1", "engine": "polars", "status": "completed_with_exception"})],
+    )
+    row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
+
+    assert row["highlights"] == []
+    assert row["current"]["status"] == "completed"
+    assert row["history"]["headline"] == "Fieldwork ran — 2 tests need you"
+
+
+def test_a_test_still_owed_is_named_with_why(stub_store):
+    stub_store([])
+    workspace = _Workspace(
+        apm="# APM",
+        rcm=[{"id": "R1", "test_refs": ["datatest:T1", "datatest:T2"]}],
+        data_tests=[
+            _ran({"id": "T1", "rcm_id": "R1", "engine": "polars", "status": "completed_with_exception"}),
+            {"id": "T2", "rcm_id": "R1", "engine": "polars", "status": "ready", "title": "Vendor status"},
+        ],
+    )
+    row = _rows(engagement_record.record(workspace))["fieldwork.executed"]
+
+    assert row["current"] == {
+        "status": "completed_with_issues",
+        "headline": "Fieldwork — 1 test needs you",
+    }
+    assert row["summary"] == "1 of 2 tests have a result. 1 test not run yet."
+    assert [(item["label"], item["detail"], item["artifact_ref"])
+            for item in row["highlights"]] == [
+        ("Vendor status", "Has not run yet.", "datatest:T2"),
+    ]
 
 
 def test_an_owed_stage_describes_nothing_rather_than_describing_zero(stub_store):

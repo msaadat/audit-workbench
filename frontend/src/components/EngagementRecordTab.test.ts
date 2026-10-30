@@ -124,6 +124,7 @@ function filed(overrides: Partial<EngagementStage> = {}): EngagementStage {
     stats: [],
     highlights: [],
     live_body: true,
+    current: null,
     open_points: [],
     history: history(),
     ...overrides,
@@ -154,6 +155,7 @@ function owed(overrides: Partial<EngagementStage> = {}): EngagementStage {
     stats: [],
     highlights: [],
     live_body: false,
+    current: null,
     open_points: [],
     history: null,
     ...overrides,
@@ -735,6 +737,19 @@ describe('EngagementRecordTab', () => {
     expect(wrapper.find('.sen').text()).toBe('Finding drafts prepared')
     expect(wrapper.find('.dsc').text()).toContain('evidence-linked finding draft')
     expect(wrapper.findAll('.hl li')).toHaveLength(1)
+  })
+
+  it('draws what the stage amounts to now over what its last run reported', async () => {
+    // The run blocked on two tests and said so; both were settled afterwards,
+    // and the row kept the run's headline and its attention mark.
+    const wrapper = await render([filed({
+      history: history({ status: 'completed_with_issues', headline: 'Fieldwork ran — 2 tests need you' }),
+      current: { status: 'completed', headline: 'Fieldwork complete' },
+    })])
+
+    expect(wrapper.find('.row .ui-state').attributes('data-state')).toBe('done')
+    await openRow(wrapper)
+    expect(wrapper.find('.sen').text()).toBe('Fieldwork complete')
   })
 
   it('counts the flags the fold hides, keeping the colour of the worst', async () => {

@@ -2025,6 +2025,61 @@ def test_a_document_step_may_name_a_type_instead_of_listing_ids():
     }
 
 
+def _field_gap_step(gap):
+    return _question_step(document_ids=[], missing_evidence=gap)
+
+
+def test_a_field_gap_is_written_as_a_sentence_not_a_repr():
+    """The model names the gap as an object as often as in prose; ``str()`` of
+    that object reached the auditor as ``{'document_type': ...}``."""
+
+    gap = {"document_type": "payment_voucher", "field": "approver_signature"}
+    gateway = _Gateway(
+        [json.dumps({"tests": [_document_test(steps=[_field_gap_step(gap)])]})]
+    )
+
+    result = WORKERS.execute(_request(_population_bundle()), gateway)
+
+    step = tests_workers._plain_json(result.proposal["tests"][0]["steps"][0])
+    assert step["missing_evidence"] == (
+        "No payment_voucher record states 'approver_signature'"
+    )
+    assert step["missing_fields"] == {
+        "document_type": "payment_voucher",
+        "fields": ["approver_signature"],
+    }
+
+
+def test_a_field_gap_naming_a_field_the_schema_lists_is_refused():
+    gap = {"document_type": "payment_voucher", "field": "expense_category"}
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[_field_gap_step(gap)])]}),
+            json.dumps({"tests": [_document_test(steps=[_population_step()])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(_population_bundle()), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "its schema lists that field" in guidance
+
+
+def test_a_field_gap_naming_an_unsupplied_type_is_refused():
+    gap = {"document_type": "vendor_master", "field": "bank_account"}
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [_document_test(steps=[_field_gap_step(gap)])]}),
+            json.dumps({"tests": [_document_test(steps=[_population_step()])]}),
+        ]
+    )
+
+    WORKERS.execute(_request(_population_bundle()), gateway)
+
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "no supplied schema describes" in guidance
+
+
 def test_the_turn_is_shown_the_types_and_their_counts_not_the_documents():
     """The count is what decides whether the question is worth asking."""
 

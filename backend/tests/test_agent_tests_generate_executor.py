@@ -261,6 +261,86 @@ def test_generate_executor_missing_evidence_blocks_the_test_and_creates_a_reques
     assert committed["items"][0]["evidence_request_ids"] == [request_record["id"]]
 
 
+def test_redrafting_a_blocked_test_in_place_cancels_its_superseded_requests():
+    """The redraft rebuilds the items and files fresh requests; the old ones
+    pointed at items that no longer exist and stayed open beside them."""
+    workspace, rcm_id, doc_id = _workspace()
+
+    def blocked(question):
+        return _document_test(
+            doc_id,
+            steps=[
+                {
+                    "label": "Inspect approval evidence",
+                    "instruction": "Determine whether the payment was approved.",
+                    "mode": "question",
+                    "document_ids": [],
+                    "question": question,
+                    "missing_evidence": "Signed approval memo",
+                }
+            ],
+        )
+
+    first = TestGenerateExecutorTarget(workspace, "run-first", rcm_id)
+    EXECUTORS.execute(_request(workspace, rcm_id, [blocked("Was it approved?")]), first)
+    original_request = first.workspace.evidence_requests[0]["id"]
+
+    target = TestGenerateExecutorTarget(first.workspace, "run-redraft", rcm_id)
+    EXECUTORS.execute(
+        _request(first.workspace, rcm_id, [blocked("Was it approved before release?")]),
+        target,
+    )
+
+    by_id = {item["id"]: item for item in target.workspace.evidence_requests}
+    assert by_id[original_request]["status"] == "cancelled"
+    open_requests = [item for item in by_id.values() if item["status"] == "open"]
+    committed = doc_tests.load_test(
+        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
+    )
+    assert [item["id"] for item in open_requests] == (
+        committed["items"][0]["evidence_request_ids"]
+    )
+
+
+def test_generate_executor_files_a_field_gap_under_its_field_not_a_type():
+    """Importing another invoice does not supply a field invoices never state,
+    so the gap must not be filed where the availability notifier matches it."""
+
+    workspace, rcm_id, doc_id = _workspace()
+    blocked = _document_test(
+        doc_id,
+        steps=[
+            {
+                "label": "Vendor bank details",
+                "instruction": "Confirm the vendor's bank details.",
+                "mode": "question",
+                "document_ids": [],
+                "question": "Do the bank details match the vendor master?",
+                "missing_evidence": "No vendor_invoice record states 'vendor_master_bank'.",
+                "missing_fields": {
+                    "document_type": "vendor_invoice",
+                    "fields": ["vendor_master_bank"],
+                },
+            }
+        ],
+    )
+    request = _request(workspace, rcm_id, [blocked])
+    target = TestGenerateExecutorTarget(workspace, "run-field-gap", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    request_record = target.workspace.evidence_requests[0]
+    assert request_record["reason"] == (
+        "No vendor_invoice record states 'vendor_master_bank'."
+    )
+    assert request_record["missing_document_types"] == []
+    assert request_record["missing_fields"] == {
+        "document_type": "vendor_invoice",
+        "fields": ["vendor_master_bank"],
+    }
+    assert "vendor_master_bank" in request_record["next_action"]
+
+
 def test_generate_executor_updates_a_matched_test_and_preserves_its_id():
     workspace, rcm_id, doc_id = _workspace()
     first = _request(workspace, rcm_id, [_data_test()])
@@ -751,6 +831,50 @@ def test_naming_one_auditor_test_is_not_permission_over_another():
 
     assert receipt.output["tests"][0]["action"] == "preserved"
     assert target.workspace.data_tests[0]["objective"] == "Auditor objective"
+
+
+def test_a_document_test_rewritten_as_a_data_test_is_retired_not_kept_beside_it():
+    """Revision matched within one source, so the blocked original stayed linked
+    next to its replacement with its evidence requests still open."""
+    workspace, rcm_id, doc_id = _workspace()
+    blocked = _document_test(
+        doc_id,
+        title="Vendor master status",
+        steps=[
+            {
+                "label": "Vendor status",
+                "instruction": "Confirm the vendor was Active.",
+                "mode": "question",
+                "document_ids": [],
+                "question": "Was the vendor Active?",
+                "missing_evidence": "No purchase_order record states 'vendor_status'",
+            }
+        ],
+    )
+    first = TestGenerateExecutorTarget(workspace, "run-first", rcm_id)
+    EXECUTORS.execute(_request(workspace, rcm_id, [blocked]), first)
+    original = doc_tests.list_tests(first.workspace)[0]["id"]
+    assert len(first.workspace.evidence_requests) == 1
+
+    target = TestGenerateExecutorTarget(
+        first.workspace, "run-redraft", rcm_id, regenerate_test_ids=(original,)
+    )
+    receipt = EXECUTORS.execute(
+        _request(first.workspace, rcm_id, [_data_test(revises=original)]), target
+    )
+
+    replacement = target.workspace.data_tests[0]["id"]
+    assert [(item["id"], item["action"]) for item in receipt.output["tests"]] == [
+        (replacement, "created"),
+        (original, "retired"),
+    ]
+    assert list(receipt.artifact_refs) == [f"datatest:{replacement}"]
+    assert doc_tests.list_tests(target.workspace) == []
+    row = target.workspace.rcm[0]
+    assert row["test_refs"] == [f"datatest:{replacement}"]
+    request = target.workspace.evidence_requests[0]
+    assert request["status"] == "cancelled"
+    assert request["auditor_note"] == f"Superseded by {replacement}."
 
 
 # --------------------------------------------------------------------------- #

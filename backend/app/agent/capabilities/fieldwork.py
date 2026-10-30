@@ -33,11 +33,15 @@ CAPABILITY_IDS: tuple[str, ...] = (
 )
 
 
-def _scoped_manifest(workspace: Workspace, scope: dict) -> list[dict]:
+def _scoped_manifest(
+    workspace: Workspace,
+    scope: dict,
+    document_tests: rcm_execution.DocumentTestIndex | None = None,
+) -> list[dict]:
     selected = set(_target_rcm_ids(workspace, scope))
     return [
         item
-        for item in rcm_execution.test_manifest(workspace)
+        for item in rcm_execution.test_manifest(workspace, document_tests)
         if item["rcm_id"] in selected and item["specified"]
     ]
 
@@ -45,24 +49,43 @@ def _scoped_manifest(workspace: Workspace, scope: dict) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # fieldwork.executed (P7F)
 # --------------------------------------------------------------------------- #
-def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
-    pending = []
-    review = []
-    blocked = []
-    for test in _scoped_manifest(workspace, scope):
+def execution_state(
+    workspace: Workspace,
+    scope: dict,
+    document_tests: rcm_execution.DocumentTestIndex | None = None,
+) -> dict[str, list[dict]]:
+    """Every scoped test, by what fieldwork still owes it.
+
+    The one classification behind this capability's readiness and the
+    engagement record's fieldwork row, so the row cannot name a test as needing
+    the auditor while readiness reports the stage settled — which it did, from
+    the milestone of a run whose two blocked tests had since been redrafted and
+    answered.
+    """
+
+    state: dict[str, list[dict]] = {
+        "done": [], "pending": [], "review": [], "blocked": [],
+    }
+    for test in _scoped_manifest(workspace, scope, document_tests):
         # A test with a durable result counts as executed. Whether that result
         # predates changed inputs (``result_stale``) is currency, not structural
         # usability, and is not assessed by the framework.
         if not test.get("executable"):
-            review.append(test["test_id"])
+            state["review"].append(test)
         elif test.get("has_durable_result"):
-            continue
+            state["done"].append(test)
         elif test.get("status") == "blocked":
-            blocked.append(test["test_id"])
+            state["blocked"].append(test)
         elif test.get("status") == "review_required" and test["kind"] == "doctest":
-            review.append(test["test_id"])
+            state["review"].append(test)
         else:
-            pending.append(test["test_id"])
+            state["pending"].append(test)
+    return state
+
+
+def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
+    state = execution_state(workspace, scope)
+    pending, review, blocked = state["pending"], state["review"], state["blocked"]
     details = {
         "pending": len(pending),
         "review_required": len(review),

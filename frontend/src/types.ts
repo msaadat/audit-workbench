@@ -2680,6 +2680,12 @@ export interface EngagementStage {
   highlights: AgentMilestone['highlights']
   /** Whether the body above was recomputed, or is the milestone's own. */
   live_body: boolean
+  /**
+   * The headline and status as the workspace stands, on a stage whose
+   * milestone ones go stale — fieldwork's "2 tests need you" outlived both
+   * tests. Null wherever the run's own headline is still its account.
+   */
+  current: { status: string; headline: string } | null
   /** What this stage left open behind it. */
   open_points: EngagementOpenPoint[]
   history: EngagementStageHistory | null
@@ -3053,8 +3059,9 @@ export interface WorkflowStage {
   readiness_before?: { state: WorkflowReadinessState; reasons?: string[]; blocking_on?: string[] }
   // Why this stage is in the plan rather than reused. `parent_rescheduled`
   // carries the producer capability ids in `scheduled_because_refs`; `stale`
-  // carries the parent artifact refs that moved.
-  scheduled_because?: 'not_satisfied' | 'stale' | 'parent_rescheduled' | 'forced'
+  // carries the parent artifact refs that moved; `named` carries the refs the
+  // request named for redrafting.
+  scheduled_because?: 'not_satisfied' | 'stale' | 'parent_rescheduled' | 'forced' | 'named'
   scheduled_because_refs?: string[]
   started_at?: string | null
   finished_at?: string | null

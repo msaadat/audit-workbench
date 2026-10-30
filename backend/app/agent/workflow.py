@@ -334,6 +334,9 @@ SCHEDULED_BECAUSE = {
     #: A usable artifact exists and its parent has not moved *yet*, because a
     #: producer of that parent is being rewritten in this same run.
     "parent_rescheduled",
+    #: A usable artifact exists and the request named it to this outcome, whose
+    #: ``redoes_named`` makes naming it the instruction to redraft it.
+    "named",
 }
 #: Currency of a reused artifact, reported on ``reused_capability_details``.
 CURRENCY_STATUSES = {"current", "unstamped", "not_assessed"}
@@ -373,10 +376,21 @@ def materialize(
     turn comes. Depending is not reading: the planning chain depends on the
     documents so it runs *after* them, and a newly imported document is not a
     reason to redraft a memorandum that never mentioned one.
+
+    A third reason belongs to the request rather than the graph: a *requested*
+    outcome whose ``redoes_named`` covers a ref the request names. Readiness
+    asks whether the artifact is usable, and a test the auditor points at to
+    redraft usually is — so skipping on it turned "redraft DT-1" into a run that
+    did nothing and reported success. Only a requested outcome: naming a test to
+    *run* it puts ``tests.specified`` in the closure too, and must not redraft
+    it on the way.
     """
     scope = dict(scope or {})
     mode = normalize_generation_mode(generation_mode)
     resolved = registry.closure(requested_outcomes)
+    named = tuple(
+        dict.fromkeys(str(ref) for ref in scope.get("target_refs") or [] if ":" in str(ref))
+    )
     stages: list[dict] = []
     reused: list[str] = []
     reused_details: list[dict] = []
@@ -395,7 +409,21 @@ def materialize(
                 if producer in scheduled
             )
         )
-        if mode == "reuse_existing" and readiness.satisfied and not invalidated_by:
+        redrafts = (
+            tuple(
+                ref
+                for ref in named
+                if ref.split(":", 1)[0] in capability.redoes_named
+            )
+            if capability_id in requested_outcomes
+            else ()
+        )
+        if (
+            mode == "reuse_existing"
+            and readiness.satisfied
+            and not invalidated_by
+            and not redrafts
+        ):
             reused.append(capability_id)
             reused_details.append(
                 {
@@ -408,7 +436,9 @@ def materialize(
         # workspace. Unit ids are semantic (semantic_unit_id), so re-expanding
         # after a resume produces the same ids and the same work.
         specs = capability.expand_units(workspace, scope)
-        because, because_refs = _scheduled_because(mode, readiness, invalidated_by)
+        because, because_refs = _scheduled_because(
+            mode, readiness, invalidated_by, redrafts
+        )
         stages.append(
             {
                 "id": capability.stage_id,
@@ -439,7 +469,10 @@ def _currency_status(readiness: Readiness) -> str:
 
 
 def _scheduled_because(
-    mode: str, readiness: Readiness, invalidated_by: tuple[str, ...]
+    mode: str,
+    readiness: Readiness,
+    invalidated_by: tuple[str, ...],
+    redrafts: tuple[str, ...] = (),
 ) -> tuple[str, tuple[str, ...]]:
     if mode == "force":
         return "forced", ()
@@ -449,7 +482,9 @@ def _scheduled_because(
         )
     if not readiness.satisfied:
         return "not_satisfied", ()
-    return "parent_rescheduled", invalidated_by
+    if invalidated_by:
+        return "parent_rescheduled", invalidated_by
+    return "named", redrafts
 
 
 def recovery(workflow: dict) -> None:
