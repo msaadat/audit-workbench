@@ -81,14 +81,16 @@ actionable:
   rerunning the check.
 
 When SIBLING OBSERVATIONS is supplied, the finding is a consolidated one: the
-observation and its siblings are instances of one issue, and CONSOLIDATION
-BRIEF states the relation the auditor accepted, the title they chose, and the
-root-cause hypothesis they were shown. Then:
+observation and its siblings are instances of one issue, reported once, and
+CONSOLIDATION BRIEF states the relation the group was accepted under, the
+proposed title, and the root-cause hypothesis. Then:
 
 - The condition section must set out every instance, each led by the title of
   the test that found it (the control stage), stating what that test found and
-  naming its records as above. Never fold two instances into one sentence that
-  loses which control each record failed.
+  naming its records as above. INSTANCE TITLES lists those titles: write each
+  one exactly as given — it is checked word for word — even where the
+  instances flagged the same records. Never fold two instances into one
+  sentence that loses which control each record failed.
 - The root-cause section must state the one shared cause. Treat the brief's
   hypothesis as a hypothesis: keep it where the evidence supports it, and
   otherwise defer the cause as above.
@@ -273,6 +275,31 @@ def _finding_response_schema(response: str) -> Mapping[str, Any]:
     }
 
 
+def _instance_titles(request: WorkerRequest) -> list[str]:
+    """The test titles a consolidated draft must name, the lead's first.
+
+    Each sibling's test is the control stage its instance is led by. The
+    validator holds the narrative to exactly this list and the prompt states
+    it, so the two cannot disagree: briefed only with member summaries, the
+    model paraphrased the titles and every grouped draft paid for a repair.
+    """
+    siblings = [
+        item.content
+        for item in request.context.items
+        if item.source_id == FINDING_SIBLING_OBSERVATIONS_SOURCE_ID
+    ]
+    if not siblings:
+        return []
+    lead_test = _optional_item(request, FINDING_TEST_SOURCE_ID)
+    titles = [str(lead_test.get("title") or "")] if isinstance(lead_test, Mapping) else []
+    titles.extend(
+        str((entry.get("test") or {}).get("title") or "")
+        for entry in siblings
+        if isinstance(entry, Mapping)
+    )
+    return [title for title in dict.fromkeys(titles) if title]
+
+
 def validate_finding_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
@@ -334,23 +361,11 @@ def validate_finding_proposal(
     # the control stage its instance is led by, so the narrative has to name
     # every one of them — the lead's own test included — or an instance has
     # been folded away and the report loses which control the record failed.
-    siblings = [
-        item.content
-        for item in request.context.items
-        if item.source_id == FINDING_SIBLING_OBSERVATIONS_SOURCE_ID
-    ]
-    if siblings:
+    stages = _instance_titles(request)
+    if stages:
         lowered = narrative.casefold()
-        lead_test = _optional_item(request, FINDING_TEST_SOURCE_ID)
-        stages = [
-            str((entry.get("test") or {}).get("title") or "")
-            for entry in siblings
-            if isinstance(entry, Mapping)
-        ]
-        if isinstance(lead_test, Mapping):
-            stages.append(str(lead_test.get("title") or ""))
         for stage in stages:
-            if stage and stage.casefold() not in lowered:
+            if stage.casefold() not in lowered:
                 errors.append(
                     "the consolidated finding must set out every instance in the "
                     f"condition section, each led by its test title; '{stage}' is not named"
@@ -384,6 +399,7 @@ def _sibling_material(request: WorkerRequest) -> dict[str, Any]:
         "CONSOLIDATION BRIEF": _optional_item(
             request, FINDING_CONSOLIDATION_BRIEF_SOURCE_ID
         ),
+        "INSTANCE TITLES": _instance_titles(request),
     }
 
 
@@ -485,28 +501,30 @@ WORKERS.register(FINDING_WORKER)
 # reporting.finding_consolidation worker
 # --------------------------------------------------------------------------- #
 CONSOLIDATION_WORKER_ID = "reporting.finding_consolidation"
-CONSOLIDATION_DRAFTS_SOURCE_ID = "draft_findings"
-CONSOLIDATION_KEYS_SOURCE_ID = "finding_exception_keys"
-CONSOLIDATION_OVERLAPS_SOURCE_ID = "finding_overlaps"
+CONSOLIDATION_OBSERVATIONS_SOURCE_ID = "exception_observations"
+CONSOLIDATION_KEYS_SOURCE_ID = "observation_exception_keys"
+CONSOLIDATION_OVERLAPS_SOURCE_ID = "observation_overlaps"
 CONSOLIDATION_RELATIONS = ("same_condition", "shared_cause")
 CONSOLIDATION_BASES = ("entity", "process")
-#: The Jaccard an entity-backed pair must reach before two drafts may be
+#: The Jaccard an entity-backed pair must reach before two observations may be
 #: called the same condition. Below it they share records but each still
 #: says something the other does not.
 CONSOLIDATION_SAME_CONDITION_JACCARD = 0.5
 
 CONSOLIDATION_SYSTEM = f"""[agent:finding_consolidation]
-Decide which draft audit findings report one issue.
+Decide which exception observations should be reported as one audit finding.
 
-You are shown every draft finding in the engagement — its title, severity,
-the process and control it sits under, and the test that produced it — the
+No finding has been drafted yet. You are shown every exception observation
+still to be written up — its summary, the process, risk and control it sits
+under, the test that produced it and how many exceptions it found — the
 identifiers of the records each one flagged, and an OVERLAP TABLE computed
-locally: every pair of findings that flagged the same records (with the count,
-the Jaccard, and the shared identifiers), and every pair that sits in the same
-process without sharing a record.
+locally: every pair of observations that flagged the same records (with the
+count, the Jaccard, and the shared identifiers), and every pair that sits in
+the same process without sharing a record. Each group you return is drafted as
+one finding; every other observation is drafted as its own.
 
 Return an object with:
-- groups: a list of {{finding_ids, lead_finding_id, relation, basis,
+- groups: a list of {{observation_ids, lead_observation_id, relation, basis,
   proposed_title, root_cause_hypothesis, rationale}}.
   - relation is "same_condition" when the members are the same exception
     observed more than once, or "shared_cause" when they are different
@@ -514,39 +532,44 @@ Return an object with:
   - basis is "entity" when every pair in the group appears in the overlap
     table with shared records, or "process" when the group rests only on
     the members sharing a process.
-  - lead_finding_id is the member whose draft best states the issue.
+  - lead_observation_id is the member whose test best states the issue.
   - proposed_title names the audit point for the combined finding.
   - root_cause_hypothesis states the one cause in a sentence; write it as a
-    hypothesis, since the auditor will confirm or edit it.
+    hypothesis, since the evidence and the auditor will confirm or edit it.
   - rationale says, in a sentence, why these are one finding — name the
     shared records or the shared stage.
-- singletons: the ids of every finding that stands alone.
+- singletons: the ids of every observation that stands alone.
 
 Rules:
-- Every finding appears exactly once: in one group or in singletons.
+- Every observation appears exactly once: in one group or in singletons.
 - A group needs at least two members and its lead must be a member.
 - A "same_condition" group must be basis "entity" and every pair in it must
   appear in the overlap table with a Jaccard of at least
-  {CONSOLIDATION_SAME_CONDITION_JACCARD}.
+  {CONSOLIDATION_SAME_CONDITION_JACCARD}. A same-condition group may be
+  accepted without review, so claim it only where the table shows it.
+  Members that flag exactly the same records are accepted together whatever
+  relation you name, so name the relation for what the members found, not to
+  decide whether they are merged.
 - A "shared_cause" group may rest on a process alone, but say so with basis
   "process"; do not claim shared records the table does not show.
-- Leaving every finding a singleton is a real answer. Do not group findings
-  to look thorough: two findings that merely sound alike are not one finding.
-- Do not rewrite any finding here. The merge and the redraft are separate,
-  reviewable steps the auditor triggers.
+- Leaving every observation a singleton is a real answer. Do not group
+  observations to look thorough: two that merely sound alike are not one
+  finding, and a test that flags a broad population overlapping many others
+  is not, on that alone, the same condition as each of them.
+- Do not draft any finding here.
 - {AUDITOR_INSTRUCTION_RULE}
 {JSON_RULES} {LANGUAGE_RULES}"""
 
 
-def _consolidation_drafts(request: WorkerRequest) -> dict[str, Mapping[str, Any]]:
-    drafts: dict[str, Mapping[str, Any]] = {}
+def _consolidation_observations(request: WorkerRequest) -> dict[str, Mapping[str, Any]]:
+    observations: dict[str, Mapping[str, Any]] = {}
     for item in request.context.items:
-        if item.source_id != CONSOLIDATION_DRAFTS_SOURCE_ID:
+        if item.source_id != CONSOLIDATION_OBSERVATIONS_SOURCE_ID:
             continue
         content = item.content
         if isinstance(content, Mapping) and content.get("id"):
-            drafts[str(content["id"])] = content
-    return drafts
+            observations[str(content["id"])] = content
+    return observations
 
 
 def _consolidation_pairs(request: WorkerRequest) -> dict[frozenset, Mapping[str, Any]]:
@@ -559,7 +582,7 @@ def _consolidation_pairs(request: WorkerRequest) -> dict[frozenset, Mapping[str,
             continue
         for pair in content.get("pairs") or []:
             if isinstance(pair, Mapping):
-                ids = frozenset(str(value) for value in pair.get("finding_ids") or [])
+                ids = frozenset(str(value) for value in pair.get("observation_ids") or [])
                 if len(ids) == 2:
                     pairs[ids] = pair
     return pairs
@@ -569,18 +592,18 @@ def validate_consolidation_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
 ) -> Mapping[str, Any]:
-    """Hold the proposal to the drafts it was shown and the overlap table.
+    """Hold the proposal to the observations it was shown and the overlap table.
 
     A group the table does not support is refused: a ``same_condition`` claim
     needs every pair of its members to share records at the Jaccard bar, and
     a ``shared_cause`` claim needs every pair either in the table or in one
-    process. Every supplied draft must be placed exactly once, so a finding
+    process. Every supplied observation must be placed exactly once, so one
     the model forgot cannot vanish from the review.
     """
-    drafts = _consolidation_drafts(request)
-    if not drafts:
+    observations = _consolidation_observations(request)
+    if not observations:
         raise WorkerContractError(
-            f"Context source '{CONSOLIDATION_DRAFTS_SOURCE_ID}' supplied no drafts."
+            f"Context source '{CONSOLIDATION_OBSERVATIONS_SOURCE_ID}' supplied no observations."
         )
     pairs = _consolidation_pairs(request)
     groups = list(proposal.get("groups") or [])
@@ -590,26 +613,26 @@ def validate_consolidation_proposal(
     for index, group in enumerate(groups):
         if not isinstance(group, Mapping):
             raise WorkerResponseValidationError(f"groups[{index}] must be an object")
-        finding_ids = [str(value) for value in group.get("finding_ids") or []]
-        if len(finding_ids) < 2:
+        member_ids = [str(value) for value in group.get("observation_ids") or []]
+        if len(member_ids) < 2:
             raise WorkerResponseValidationError(
-                f"groups[{index}] needs at least two finding_ids"
+                f"groups[{index}] needs at least two observation_ids"
             )
-        unknown = [value for value in finding_ids if value not in drafts]
+        unknown = [value for value in member_ids if value not in observations]
         if unknown:
             raise WorkerResponseValidationError(
-                f"groups[{index}] names '{unknown[0]}', which is not a supplied draft"
+                f"groups[{index}] names '{unknown[0]}', which is not a supplied observation"
             )
-        for value in finding_ids:
+        for value in member_ids:
             if value in placed:
                 raise WorkerResponseValidationError(
-                    f"finding '{value}' appears more than once (groups[{index}] and {placed[value]})"
+                    f"observation '{value}' appears more than once (groups[{index}] and {placed[value]})"
                 )
             placed[value] = f"groups[{index}]"
-        lead = str(group.get("lead_finding_id") or "")
-        if lead not in finding_ids:
+        lead = str(group.get("lead_observation_id") or "")
+        if lead not in member_ids:
             raise WorkerResponseValidationError(
-                f"groups[{index}] lead_finding_id must be one of its finding_ids"
+                f"groups[{index}] lead_observation_id must be one of its observation_ids"
             )
         relation = str(group.get("relation") or "").strip().casefold()
         if relation not in CONSOLIDATION_RELATIONS:
@@ -624,8 +647,8 @@ def validate_consolidation_proposal(
         if not str(group.get("rationale") or "").strip():
             raise WorkerResponseValidationError(f"groups[{index}] rationale is empty")
         shared: dict[str, set[str]] = {}
-        for position, left in enumerate(finding_ids):
-            for right in finding_ids[position + 1:]:
+        for position, left in enumerate(member_ids):
+            for right in member_ids[position + 1:]:
                 pair = pairs.get(frozenset((left, right)))
                 if relation == "same_condition":
                     if basis != "entity":
@@ -657,8 +680,8 @@ def validate_consolidation_proposal(
                     )
         normalized_groups.append(
             {
-                "finding_ids": finding_ids,
-                "lead_finding_id": lead,
+                "observation_ids": member_ids,
+                "lead_observation_id": lead,
                 "relation": relation,
                 "basis": basis,
                 "proposed_title": str(group.get("proposed_title") or "").strip(),
@@ -668,19 +691,19 @@ def validate_consolidation_proposal(
             }
         )
     for value in singletons:
-        if value not in drafts:
+        if value not in observations:
             raise WorkerResponseValidationError(
-                f"singletons names '{value}', which is not a supplied draft"
+                f"singletons names '{value}', which is not a supplied observation"
             )
         if value in placed:
             raise WorkerResponseValidationError(
-                f"finding '{value}' is both grouped and a singleton"
+                f"observation '{value}' is both grouped and a singleton"
             )
         placed[value] = "singletons"
-    missing = sorted(set(drafts) - set(placed))
+    missing = sorted(set(observations) - set(placed))
     if missing:
         raise WorkerResponseValidationError(
-            "every supplied draft must be placed in a group or in singletons; "
+            "every supplied observation must be placed in a group or in singletons; "
             f"missing {', '.join(missing)}"
         )
     return {"groups": normalized_groups, "singletons": list(dict.fromkeys(singletons))}
@@ -701,14 +724,14 @@ def run_consolidation_worker(
     user = json.dumps(
         {
             **({"auditor_instruction": instruction} if instruction else {}),
-            "DRAFT FINDINGS": list(_consolidation_drafts(request).values()),
+            "EXCEPTION OBSERVATIONS": list(_consolidation_observations(request).values()),
             "FLAGGED IDENTIFIERS": keys,
             "OVERLAP TABLE": overlaps,
             "REQUIRED OUTPUT": {
                 "groups": [
                     {
-                        "finding_ids": ["F-…", "F-…"],
-                        "lead_finding_id": "F-…",
+                        "observation_ids": ["OBS-…", "OBS-…"],
+                        "lead_observation_id": "OBS-…",
                         "relation": "same_condition | shared_cause",
                         "basis": "entity | process",
                         "proposed_title": "…",
@@ -716,7 +739,7 @@ def run_consolidation_worker(
                         "rationale": "…",
                     }
                 ],
-                "singletons": ["F-…"],
+                "singletons": ["OBS-…"],
             },
         },
         indent=1,
@@ -747,7 +770,7 @@ def run_consolidation_worker(
 
 CONSOLIDATION_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="reporting.finding_consolidation.response",
-    schema_hash=_sha256_text("finding-consolidation:groups-singletons"),
+    schema_hash=_sha256_text("finding-consolidation:observation-groups-singletons"),
     validator=decode_json_response,
 )
 CONSOLIDATION_WORKER = WorkerDefinition(
@@ -757,7 +780,7 @@ CONSOLIDATION_WORKER = WorkerDefinition(
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=1,
         guidance_hash=_sha256_text(
-            "Repair groups the overlap table does not support and unplaced drafts."
+            "Repair groups the overlap table does not support and unplaced observations."
         ),
     ),
     implementation=run_consolidation_worker,

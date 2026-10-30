@@ -249,6 +249,11 @@ class FindingExecutorTarget:
     #: redraft. The narrative lands on that finding and its unioned references
     #: are kept; the observation-derived id is not used.
     lead_finding_id: str | None = None
+    #: The group this observation leads when it was decided before drafting:
+    #: its ``consolidation`` mark, with ``members`` narrowed to the member
+    #: observations still exceptions. The draft is the group's one finding,
+    #: standing on every member's references.
+    group: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, Workspace):
@@ -261,6 +266,8 @@ class FindingExecutorTarget:
         if not isinstance(self.named_by_request, bool):
             raise ValueError("named_by_request must be a boolean.")
         self.lead_finding_id = str(self.lead_finding_id or "").strip() or None
+        if self.group is not None and not str(self.group.get("group_id") or ""):
+            raise ValueError("A grouped finding target requires its group id.")
 
 
 def _validated_finding(
@@ -291,6 +298,8 @@ def _validated_finding(
         )
         group_id = str(((lead or {}).get("consolidation") or {}).get("group_id") or "")
         return target, draft, consolidated_semantic_id(group_id or target.lead_finding_id)
+    if target.group is not None:
+        return target, draft, consolidated_semantic_id(str(target.group["group_id"]))
     return target, draft, finding_semantic_id(target.observation_id)
 
 
@@ -404,17 +413,8 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
         observation = _observation(fresh, target.observation_id)
         if target.lead_finding_id:
             return _commit_lead_redraft(fresh, target, draft, semantic, observation)
-        execution_ref = str(observation["execution_ref"])
-        anchor = findings.anchor_from_ref(fresh, execution_ref, run_id=target.run_id)
-        evidence_refs = list(observation.get("evidence_refs") or [])
-        if anchor:
-            evidence_refs.append(anchor)
-        evidence_refs = list(
-            {
-                str(value.get("id") or "")
-                or f"{value.get('source_kind')}:{value.get('source_id')}:{value.get('page')}:{value.get('field')}": value
-                for value in evidence_refs
-            }.values()
+        references = findings.observation_references(
+            fresh, observation, run_id=target.run_id
         )
         item = {
             **draft,
@@ -422,24 +422,47 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
             "semantic_id": semantic,
             "agent_run_id": target.run_id,
             "source_observation_id": target.observation_id,
-            "rcm_refs": [observation["rcm_id"]],
-            "rcm_semantic_refs": findings.rcm_semantic_refs(
-                fresh,
-                [observation["rcm_id"]],
-                [observation.get("rcm_semantic_id")],
-            ),
             "procedure_refs": [],
-            "test_refs": [observation["test_id"]],
-            # The duplicate tests on this row whose exception this finding
-            # answers. Recorded so the record says so; see
-            # `findings.covered_test_refs`.
-            "covered_test_refs": findings.covered_test_refs(
-                fresh, target.observation_id
-            ),
-            "execution_refs": [execution_ref],
-            "evidence_refs": evidence_refs,
+            # ``covered_test_refs`` names the duplicate tests on this row whose
+            # exception this finding answers. Recorded so the record says so;
+            # see `findings.covered_test_refs`.
+            **references,
             "auditor_confirmed": False,
         }
+        if target.group is not None:
+            # One finding for the whole group: every member's references join
+            # the lead's, and the record says which observations it reports.
+            members = [str(value) for value in target.group.get("members") or []]
+            by_id = {str(value.get("id") or ""): value for value in fresh.observations}
+            findings.union_references(
+                item,
+                *(
+                    findings.observation_references(fresh, by_id[value], run_id=target.run_id)
+                    for value in members
+                    if value in by_id
+                ),
+            )
+            item["rcm_semantic_refs"] = findings.rcm_semantic_refs(
+                fresh,
+                item["rcm_refs"],
+                [
+                    by_id[value].get("rcm_semantic_id")
+                    for value in [target.observation_id, *members]
+                    if value in by_id
+                ],
+            )
+            item["consolidation"] = {
+                key: target.group.get(key)
+                for key in (
+                    "group_id", "relation", "basis_sha1", "decided_by", "decided_at",
+                    "proposed_title", "root_cause_hypothesis",
+                )
+            } | {
+                "role": "lead",
+                "members": [],
+                "observations": [value for value in members if value in by_id],
+                "narrative_pending": False,
+            }
         issues = findings.support_issues(fresh, item)
         if issues:
             raise WorkspaceError(

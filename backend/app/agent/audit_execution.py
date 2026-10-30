@@ -78,6 +78,7 @@ from .context import (
     cycle_scope,
     delta_review_scope,
     finding_consolidation_scope,
+    flags_identical_records,
     finding_draft_scope,
     planning_context_scope,
     apm_revision_scope,
@@ -914,8 +915,10 @@ class AuditWorkflowExecution(ActionExecution):
             suggestion = finding_consolidation.load(subject, basis) or {}
             groups = list(suggestion.get("groups") or [])
             undecided = finding_consolidation.undecided_groups(suggestion)
+            accepted = [group for group in groups if group.get("decision") == "accepted"]
             entity_backed = sum(group.get("basis") == "entity" for group in groups)
             process_only = len(groups) - entity_backed
+            merged = sum(len(group.get("observation_ids") or []) - 1 for group in accepted)
             return {
                 "status": "needs_review" if undecided else state,
                 "headline": "Consolidation review",
@@ -923,15 +926,28 @@ class AuditWorkflowExecution(ActionExecution):
                     (
                         f"Suggested {counted(len(groups), 'consolidation')}: "
                         f"{entity_backed} backed by shared records, {process_only} by a "
-                        f"shared process. {counted(len(undecided), 'suggestion')} "
-                        f"{verb(len(undecided), 'awaits', 'await')} a decision on the "
-                        "Findings page."
+                        f"shared process. {counted(len(accepted), 'group')} "
+                        f"{verb(len(accepted), 'is', 'are')} drafted as one finding each"
+                        + (
+                            f", saving {counted(merged, 'draft')}"
+                            if merged
+                            else ""
+                        )
+                        + "."
+                        + (
+                            f" {counted(len(undecided), 'suggestion')} "
+                            f"{verb(len(undecided), 'awaits', 'await')} a decision on the "
+                            "Findings page; until then its observations are drafted separately."
+                            if undecided
+                            else ""
+                        )
                     )
                     if groups
-                    else "Reviewed the draft findings for consolidation; each stands on its own."
+                    else "Reviewed the exceptions for consolidation; each stands on its own."
                 ),
                 "metrics": [
                     {"label": "Groups suggested", "value": len(groups)},
+                    {"label": "Accepted", "value": len(accepted)},
                     {"label": "Entity-backed", "value": entity_backed},
                     {"label": "Process-only", "value": process_only},
                     {"label": "Undecided", "value": len(undecided)},
@@ -941,11 +957,11 @@ class AuditWorkflowExecution(ActionExecution):
                         "severity": "warning",
                         "label": str(group.get("proposed_title") or group.get("group_id") or ""),
                         "detail": (
-                            f"{counted(len(group.get('finding_ids') or []), 'finding')}, "
+                            f"{counted(len(group.get('observation_ids') or []), 'observation')}, "
                             f"{narration.humanize(str(group.get('relation') or ''))}. "
                             + str(group.get("rationale") or "")
                         ),
-                        "artifact_ref": f"finding:{group.get('lead_finding_id') or ''}",
+                        "artifact_ref": f"observation:{group.get('lead_observation_id') or ''}",
                     }
                     for group in undecided
                 ][:HIGHLIGHT_LIMIT],
@@ -2545,12 +2561,14 @@ class AuditWorkflowExecution(ActionExecution):
         )
         sibling_ids: tuple[str, ...] = ()
         brief: dict | None = None
+        group: dict | None = None
+        observations_by_id = {
+            str(item.get("id") or ""): item for item in self.ws.observations
+        }
         if lead is not None:
             members = findings_module.consolidation_members(self.ws, lead)
             sibling_ids = tuple(
-                str(member.get("source_observation_id") or "")
-                for member in members
-                if member.get("source_observation_id")
+                findings_module.consolidation_observation_ids(self.ws, lead)
             )
             consolidation = dict(lead.get("consolidation") or {})
             brief = {
@@ -2562,8 +2580,44 @@ class AuditWorkflowExecution(ActionExecution):
                 "members": [
                     {"id": str(member["id"]), "title": str(member.get("title") or "")}
                     for member in members
+                ]
+                + [
+                    {
+                        "id": value,
+                        "title": str((observations_by_id.get(value) or {}).get("summary") or ""),
+                    }
+                    for value in consolidation.get("observations") or []
                 ],
             }
+        else:
+            # A group decided before drafting: this observation leads it and
+            # its members were never drafted, so this one draft is the
+            # group's finding. Members whose exception has since cleared are
+            # left out — a finding cannot stand on them.
+            mark = dict(
+                (observations_by_id.get(observation_id) or {}).get("consolidation") or {}
+            )
+            if mark.get("role") == "lead":
+                sibling_ids = tuple(
+                    value
+                    for value in (str(item) for item in mark.get("members") or [])
+                    if (observations_by_id.get(value) or {}).get("outcome") == "exception"
+                )
+                group = {**mark, "members": list(sibling_ids)}
+                brief = {
+                    "group_id": str(mark.get("group_id") or ""),
+                    "relation": str(mark.get("relation") or ""),
+                    "proposed_title": str(mark.get("proposed_title") or ""),
+                    "root_cause_hypothesis": str(mark.get("root_cause_hypothesis") or ""),
+                    "decided_by": str(mark.get("decided_by") or ""),
+                    "members": [
+                        {
+                            "id": value,
+                            "title": str((observations_by_id.get(value) or {}).get("summary") or ""),
+                        }
+                        for value in sibling_ids
+                    ],
+                }
         target = FindingExecutorTarget(
             self.ws,
             self.run["id"],
@@ -2573,6 +2627,7 @@ class AuditWorkflowExecution(ActionExecution):
                 self.ws, (self.run.get("workflow") or {}).get("scope") or {}
             ),
             lead_finding_id=str(lead["id"]) if lead is not None else None,
+            group=group if group and sibling_ids else None,
         )
         task = self.add_task("findings", "workflow:findings", "Eligible finding drafts")
 
@@ -2598,7 +2653,12 @@ class AuditWorkflowExecution(ActionExecution):
                 [
                     self.proposal_item(
                         unit["title"],
-                        "Draft from an exception observation.",
+                        (
+                            f"Draft one finding from a group of "
+                            f"{counted(len(sibling_ids) + 1, 'exception observation')}."
+                            if sibling_ids
+                            else "Draft from an exception observation."
+                        ),
                         dict(proposal.get("finding") or {}),
                     )
                 ],
@@ -2667,26 +2727,31 @@ class AuditWorkflowExecution(ActionExecution):
         """Bind the one consolidation-review unit to the pipeline.
 
         Proposal-only, following ``_bind_delta_review``: one model turn over
-        every draft, a persisted proposal, approval in permission mode, and
-        no executor. What outlives the run is the suggestion set written on
-        commit through ``finding_consolidation.save``, every group undecided;
-        the Findings page is where a group is accepted or dismissed.
+        every exception observation not yet drafted, a persisted proposal,
+        approval in permission mode, and no executor. On commit the groups are
+        decided — the auditor's answers in permission mode; in auto mode the
+        same-condition groups, whose claim the overlap table settles, and any
+        group whose members flag exactly the same records, while any other
+        shared-cause group is left to the Findings page — and each accepted
+        group is marked on its observations, so the draft stage after this one
+        writes it once, as one finding.
         """
         self.ws = subject
         payload = dict(unit.get("input_payload") or {})
         basis = str(payload.get("basis_sha1") or finding_consolidation.basis_sha1(self.ws))
-        finding_ids = [str(value) for value in payload.get("finding_ids") or []] or [
+        observation_ids = [str(value) for value in payload.get("observation_ids") or []] or [
             ref.split(":", 1)[1]
             for ref in unit.get("parent_refs") or []
-            if str(ref).startswith("finding:")
+            if str(ref).startswith("observation:")
         ]
-        known = {str(item.get("id")) for item in self.ws.findings}
+        known = {str(item.get("id")) for item in self.ws.observations}
         expected = parent_hashes(
-            self.ws, [f"finding:{value}" for value in finding_ids if value in known]
+            self.ws, [f"observation:{value}" for value in observation_ids if value in known]
         )
         task = self.add_task(
             "finding_consolidation", "workflow:finding_consolidation", "Finding consolidation"
         )
+        permission = self.run["mode"] == "permission"
 
         def context_provider():
             return resolve_context(
@@ -2696,15 +2761,19 @@ class AuditWorkflowExecution(ActionExecution):
                 unit,
                 finding_consolidation_scope(
                     self.ws,
+                    observation_ids=observation_ids,
                     instruction=workflow_scope(self.run).get("instruction"),
                 ),
             )
 
+        def members_key(group) -> tuple[str, ...]:
+            return tuple(sorted(str(value) for value in group.get("observation_ids") or []))
+
         def approval_provider(proposal):
             groups = list(proposal.get("groups") or [])
             if not groups:
-                # Nothing to approve: every draft stands alone, and asking the
-                # auditor to approve an empty list is a click for nothing.
+                # Nothing to approve: every exception stands alone, and asking
+                # the auditor to approve an empty list is a click for nothing.
                 return dict(proposal)
             proposals = [
                 self.proposal_item(
@@ -2714,9 +2783,17 @@ class AuditWorkflowExecution(ActionExecution):
                 )
                 for group in groups
             ]
-            accepted = self.request_approval("finding_consolidation", task, proposals)
+            accepted = [
+                dict(item["spec"])
+                for item in self.request_approval("finding_consolidation", task, proposals)
+            ]
+            taken = {members_key(group) for group in accepted}
+            # A group the auditor declined is answered, not forgotten: it is
+            # recorded as dismissed so the same question is not asked again
+            # while the exceptions stand as they are.
             return {
-                "groups": [dict(item["spec"]) for item in accepted],
+                "groups": accepted,
+                "dismissed": [dict(group) for group in groups if members_key(group) not in taken],
                 "singletons": list(proposal.get("singletons") or []),
             }
 
@@ -2725,32 +2802,86 @@ class AuditWorkflowExecution(ActionExecution):
                 unit["id"], outcome.proposal_reference
             ) or {}
             proposal = dict(record.get("proposal") or {})
+            self.ws = self.ws.reload()
+            decided: list[dict] = []
+            refused: list[str] = []
+            for group in proposal.get("groups") or []:
+                entry = dict(group)
+                if permission:
+                    entry.update(decision="accepted", decided_by="auditor")
+                elif entry.get("relation") == "same_condition" or flags_identical_records(
+                    self.ws, entry.get("observation_ids") or ()
+                ):
+                    # Accepted on the evidence, not the label: members that
+                    # flag exactly the same records are one exception however
+                    # the review chose to describe them.
+                    entry.update(decision="accepted", decided_by="agent")
+                if entry.get("decision") == "accepted":
+                    try:
+                        finding_consolidation.apply_group(
+                            self.ws,
+                            entry,
+                            basis=basis,
+                            decided_by=str(entry["decided_by"]),
+                            persist=False,
+                        )
+                    except WorkspaceError as error:
+                        # An observation the review grouped has moved under
+                        # it; the group is left for the auditor to decide.
+                        entry.update(decision=None, decided_by=None)
+                        refused.append(f"{entry.get('proposed_title') or 'A group'}: {error}")
+                decided.append(entry)
+            decided.extend(
+                {**dict(group), "decision": "dismissed", "decided_by": "auditor"}
+                for group in proposal.get("dismissed") or []
+            )
+            self.ws.save()
             saved = finding_consolidation.save(
-                self.ws, basis, proposal, run_id=self.run["id"]
+                self.ws,
+                basis,
+                {"groups": decided, "singletons": list(proposal.get("singletons") or [])},
+                run_id=self.run["id"],
             )
-            groups = list(saved.get("groups") or [])
-            members = sum(len(group.get("finding_ids") or []) for group in groups)
-            self.task_detail(
-                task,
-                f"Suggested {counted(len(groups), 'consolidation')} across "
-                f"{counted(members, 'finding')}.",
+            new_ids = {
+                finding_consolidation.group_id(members_key(group)) for group in decided
+            }
+            groups = [group for group in saved.get("groups") or [] if group.get("group_id") in new_ids]
+            accepted = [group for group in groups if group.get("decision") == "accepted"]
+            undecided = [group for group in groups if not group.get("decision")]
+            merged = sum(len(group.get("observation_ids") or []) for group in accepted)
+            detail = (
+                f"Grouped {counted(merged, 'exception observation')} into "
+                f"{counted(len(accepted), 'finding')}"
+                if accepted
+                else "Grouped no exceptions"
             )
+            if undecided:
+                detail += (
+                    f"; {counted(len(undecided), 'suggestion')} "
+                    f"{verb(len(undecided), 'awaits', 'await')} a decision on the Findings page"
+                )
+            detail += "."
+            if refused:
+                detail += " " + " ".join(refused)
+            self.task_detail(task, detail)
             self.task_status(task, "completed")
             narration.say(
                 self.run,
                 self.emit,
                 (
-                    f"Suggested {counted(len(groups), 'consolidation')} across "
-                    f"{counted(members, 'finding')}. Review them on the Findings page; "
-                    "nothing merges until you accept a suggestion."
+                    detail
+                    + (
+                        " Their observations are drafted separately until you accept one."
+                        if undecided
+                        else ""
+                    )
                     if groups
-                    else "Reviewed the draft findings for consolidation: each one "
-                    "stands on its own."
+                    else "Reviewed the exceptions for consolidation: each one stands on its own."
                 ),
             )
             self.emit(
                 "workspace_changed",
-                {"kind": "finding", "id": "consolidation", "action": "updated"},
+                {"kind": "observation", "id": "consolidation", "action": "updated"},
             )
 
         def failure_handler(_stage, _unit, error) -> tuple[str, str] | None:
@@ -2768,18 +2899,16 @@ class AuditWorkflowExecution(ActionExecution):
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
                     "basis_sha1": basis,
-                    "finding_ids": finding_ids,
+                    "observation_ids": observation_ids,
                 },
                 activity={
-                    "artifact_refs": [f"finding:{value}" for value in finding_ids],
+                    "artifact_refs": [f"observation:{value}" for value in observation_ids],
                     "task_id": task["id"],
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected,
                 capability_definition_hash=workflow.capability_definition_hash(capability),
-                approval_kind=(
-                    "finding_consolidation" if self.run["mode"] == "permission" else None
-                ),
+                approval_kind="finding_consolidation" if permission else None,
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=None,
             ),
@@ -2788,9 +2917,7 @@ class AuditWorkflowExecution(ActionExecution):
                 capability, manifest
             ),
             target=None,
-            approval_provider=(
-                approval_provider if self.run["mode"] == "permission" else None
-            ),
+            approval_provider=approval_provider if permission else None,
             readiness_provider=lambda: capability.readiness(
                 self.ws, workflow_scope(self.run)
             ),
@@ -3100,6 +3227,11 @@ _PARTIAL_DEPENDENCIES = {
     # wait on an approval that stage is not allowed to make.
     "tests.specified": {"tests.cycle_ruleset_approved"},
     "results.rolled_up": {"fieldwork.executed"},
+    # Grouping before drafting saves turns; it never withholds a draft. A
+    # suggestion nobody has decided, or a review that failed, leaves every
+    # observation it named to be drafted on its own — the drafts the run would
+    # have written without the review.
+    "findings.drafted": {"findings.consolidated"},
     "report.working_draft": {"findings.drafted"},
     "audit.verified": {
         "working_papers.generated",

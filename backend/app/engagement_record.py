@@ -269,13 +269,13 @@ _FILED_UNDER = {
     "doc_tests.executed": "fieldwork.executed",
 }
 
-# Optional work the auditor asks for, not a step the engagement owes. Finding
-# consolidation is a leaf of the audit graph that no template but its own
-# requests: it proposes which drafts are one finding, and the proposals are
-# decided on the Findings page. A row for it read as a stage every engagement
-# must pass through, and without a spine entry it was drawn by the unplaced-row
-# fallback as a nameless row under the findings. Its runs file nothing the
-# record sizes, so they are left off the ledger entirely.
+# Part of drafting, not a step of its own. Finding consolidation runs ahead of
+# the drafts and decides which exceptions are written up as one finding; what
+# it leaves behind is the shape of the findings register, which the findings
+# row already sizes, plus suggestions decided on the Findings page. A row for
+# it read as a separate deliverable, and without a spine entry it was drawn by
+# the unplaced-row fallback as a nameless row beside the findings. Its runs
+# file nothing the record sizes, so they are left off the ledger entirely.
 _OFF_SPINE = frozenset({"findings.consolidated"})
 
 # A run whose status is one of these stopped early, so the wall clock between

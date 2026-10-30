@@ -1,7 +1,7 @@
 """Reporting capability group of the audit workflow.
 
 Owns the post-roll-up outcomes of the authoritative audit graph:
-``findings.drafted``, ``findings.consolidated``, ``working_papers.generated``,
+``findings.consolidated``, ``findings.drafted``, ``working_papers.generated``,
 ``report.working_draft``, and ``audit.verified``.
 
 Each capability is declared here: its readiness (existence and structural
@@ -27,13 +27,14 @@ from ..workflows import audit as audit_workflow
 from ._shared import all_tests as _all_tests
 from ._shared import covered_observations as _covered_observations
 from ._shared import eligible_observations as _eligible_observations
+from ._shared import grouped_observations as _grouped_observations
 from ._shared import named_observation_ids as _named_observation_ids
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
 
 CAPABILITY_IDS: tuple[str, ...] = (
-    "findings.drafted",
     "findings.consolidated",
+    "findings.drafted",
     "working_papers.generated",
     "report.working_draft",
     "audit.verified",
@@ -98,6 +99,9 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     covered = _covered_observations(workspace, scope)
     if covered:
         details["covered"] = len(covered)
+    grouped = _grouped_observations(workspace, scope)
+    if grouped:
+        details["grouped"] = len(grouped)
     if unsupported:
         details["unsupported"] = sorted(unsupported)
         details["unsupported_issues"] = {
@@ -207,7 +211,10 @@ def _findings_drafted() -> Capability:
         _findings_ready,
         _finding_units,
         context="reporting.finding_draft",
-        invalidate_on=("observation",),
+        # A group decided before drafting changes which observations expand
+        # and what the lead's draft reads, so a run that re-reviews the
+        # grouping has invalidated the drafts it would have reused.
+        invalidate_on=("observation", "consolidation"),
     
         produces=("finding",),
         accepts_refs=("observation", "finding", "rcm"),
@@ -353,28 +360,34 @@ def _audit_verified() -> Capability:
 # findings.consolidated
 # --------------------------------------------------------------------------- #
 def _consolidation_ready(workspace: Workspace, _scope: dict) -> Readiness:
-    """Whether the current draft set has been reviewed for consolidation.
+    """Whether the exception observations have been reviewed for grouping.
 
-    Satisfied when every group in the current-basis suggestion has a
-    decision, or when there is nothing to ask (fewer than two drafts).
-    ``review_required`` while undecided groups exist: the report proceeds on
-    the partial edge and carries every undecided draft, so an unreviewed
-    suggestion withholds nothing. ``missing`` when no suggestion exists for
-    the current basis, which is what a changed finding set looks like.
+    Satisfied when the current basis has a suggestion and every group in it is
+    decided, or when there is nothing to ask — fewer than two observations
+    still undrafted and ungrouped. ``review_required`` while undecided groups
+    exist: drafting proceeds on the partial edge and drafts their members
+    separately, so an undecided suggestion withholds nothing, and accepting it
+    later merges the drafts. ``missing`` when no suggestion exists for the
+    current basis, which is what a new or changed exception looks like.
     """
-    drafts = finding_consolidation.draft_findings(workspace)
-    if len(drafts) < 2:
-        return Readiness("satisfied", details={"drafts": len(drafts)})
+    groupable = finding_consolidation.groupable_observations(workspace)
     basis = finding_consolidation.basis_sha1(workspace)
     suggestion = finding_consolidation.load(workspace, basis)
+    details: dict = {"groupable": len(groupable), "basis_sha1": basis}
     if suggestion is None:
+        if len(groupable) < 2:
+            return Readiness("satisfied", details=details)
         return Readiness(
             "missing",
-            (f"{counted(len(drafts), 'draft finding')} have not been reviewed for consolidation",),
-            details={"drafts": len(drafts), "basis_sha1": basis},
+            (
+                f"{counted(len(groupable), 'exception observation')} "
+                f"{verb(len(groupable), 'has', 'have')} not been reviewed for consolidation",
+            ),
+            details=details,
         )
     groups = list(suggestion.get("groups") or [])
     undecided = finding_consolidation.undecided_groups(suggestion)
+    details.update(groups=len(groups))
     if undecided:
         return Readiness(
             "review_required",
@@ -382,36 +395,28 @@ def _consolidation_ready(workspace: Workspace, _scope: dict) -> Readiness:
                 f"{counted(len(undecided), 'suggested consolidation')} "
                 f"{verb(len(undecided), 'awaits', 'await')} a decision",
             ),
-            details={
-                "drafts": len(drafts),
-                "basis_sha1": basis,
-                "groups": len(groups),
-                "undecided": len(undecided),
-            },
+            details={**details, "undecided": len(undecided)},
         )
-    return Readiness(
-        "satisfied",
-        details={"drafts": len(drafts), "basis_sha1": basis, "groups": len(groups)},
-    )
+    return Readiness("satisfied", details=details)
 
 
 def _consolidation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     """One unit per engagement, and only when the basis has no suggestion."""
-    drafts = finding_consolidation.draft_findings(workspace)
-    if len(drafts) < 2:
+    groupable = finding_consolidation.groupable_observations(workspace)
+    if len(groupable) < 2:
         return []
     basis = finding_consolidation.basis_sha1(workspace)
     forced = str(scope.get("generation_mode") or "") == "force"
     if finding_consolidation.load(workspace, basis) is not None and not forced:
         return []
-    finding_ids = [str(item.get("id") or "") for item in drafts]
+    observation_ids = [str(item.get("id") or "") for item in groupable]
     return [
         UnitSpec(
             "finding_consolidation",
             "finding_consolidation",
-            "Review findings for consolidation",
-            tuple(f"finding:{value}" for value in finding_ids),
-            {"basis_sha1": basis, "finding_ids": finding_ids},
+            "Review exceptions for consolidation",
+            tuple(f"observation:{value}" for value in observation_ids),
+            {"basis_sha1": basis, "observation_ids": observation_ids},
         )
     ]
 
@@ -426,17 +431,17 @@ def _findings_consolidated() -> Capability:
         _consolidation_ready,
         _consolidation_units,
         context="reporting.finding_consolidation",
-        invalidate_on=("findings",),
-        # Proposal-only: nothing is produced, and the suggestion set the unit
-        # persists is decided on the Findings page rather than committed.
+        invalidate_on=("observation",),
+        # Proposal-only: nothing is produced. The decisions are marked on the
+        # observations by the binding, and the suggestion set is the record.
         produces=(),
-        accepts_refs=("finding",),
+        accepts_refs=("observation",),
     )
 
 
 _BUILDERS = {
-    "findings.drafted": _findings_drafted,
     "findings.consolidated": _findings_consolidated,
+    "findings.drafted": _findings_drafted,
     "working_papers.generated": _working_papers_generated,
     "report.working_draft": _report_working_draft,
     "audit.verified": _audit_verified,

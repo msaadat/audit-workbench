@@ -128,10 +128,10 @@ GOAL_TEMPLATES: dict[str, dict] = {
     },
     "finding_consolidation": {
         "objective": (
-            "Propose which draft findings report one issue, for the auditor "
-            "to accept or dismiss."
+            "Propose which exception observations report one issue, so each "
+            "issue is drafted as one finding."
         ),
-        "constraints": ["Do not rewrite any finding.", "Preserve auditor edits."],
+        "constraints": ["Do not draft or rewrite any finding.", "Preserve auditor edits."],
     },
     "report": {
         "objective": (

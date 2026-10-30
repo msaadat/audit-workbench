@@ -18,7 +18,7 @@ import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
-  AuditFinding, ConsolidationGroup, ConsolidationPayload, ConsolidationRelation, EvidenceRef,
+  AuditFinding, ConsolidationAcceptResult, ConsolidationGroup, ConsolidationPayload, ConsolidationRelation, EvidenceRef,
   FindingsPayload, WorkspaceSummary,
 } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
@@ -68,7 +68,7 @@ const riskPicker = ref<InstanceType<typeof Popover> | null>(null)
 const testPicker = ref<InstanceType<typeof Popover> | null>(null)
 const evidencePicker = ref<InstanceType<typeof Popover> | null>(null)
 
-/** The consolidation suggestions for the current draft set, or null before load. */
+/** The consolidation suggestions for the current exceptions, or null before load. */
 const consolidation = ref<ConsolidationPayload | null>(null)
 const consolidating = ref(false)
 const manualConsolidation = ref(false)
@@ -118,6 +118,17 @@ const owed = computed(() => (selected.value ? openItems(selected.value) : []))
 const memberLinks = computed(() => (selected.value?.consolidation?.members ?? []).map(id => ({
   id, title: allItems.value.find(item => item.id === id)?.title ?? id,
 })))
+/**
+ * The observations a lead reports that were grouped before drafting: they
+ * never had a finding of their own, so they are named by the observation and
+ * its test rather than linked.
+ */
+const memberObservations = computed(() => (selected.value?.consolidation?.observations ?? []).map(id => {
+  const member = (consolidation.value?.suggestion?.groups ?? [])
+    .flatMap(group => group.members ?? [])
+    .find(item => item.id === id)
+  return { id, title: member?.test_title || member?.title || id }
+}))
 const absorbedInto = computed(() => {
   const into = selected.value?.consolidation?.into
   return into ? { id: into, title: allItems.value.find(item => item.id === into)?.title ?? into } : null
@@ -168,15 +179,15 @@ async function refreshConsolidation() {
   try {
     await assistantChat.createChat()
     await assistantChat.send(
-      'Review the draft findings for consolidation.',
+      'Review the exceptions for consolidation.',
       'act', launchMode.value,
       { command: 'consolidate_findings', source: 'tab_button' },
     )
     agent.openPanel()
     toast.add({
       severity: 'success',
-      summary: 'Reviewing findings for consolidation',
-      detail: 'Suggestions appear above the register when the review lands. Nothing merges until you accept one.',
+      summary: 'Reviewing exceptions for consolidation',
+      detail: 'Suggestions appear above the register when the review lands. An accepted group is drafted as one finding.',
       life: 4000,
     })
   } catch (error) { fail('Could not start the consolidation review', error) }
@@ -207,17 +218,23 @@ async function redraftLead(lead: AuditFinding) {
   } finally { redrafting.value = false }
 }
 
-async function acceptConsolidation(group: ConsolidationGroup, choice: { lead_finding_id: string; title: string; include_confirmed: boolean }) {
+async function acceptConsolidation(group: ConsolidationGroup, choice: { lead_observation_id: string; title: string; include_confirmed: boolean }) {
   const proceed = async () => {
     consolidating.value = true
     try {
-      const lead = await api.post<AuditFinding>(
+      const { lead } = await api.post<ConsolidationAcceptResult>(
         `/api/workspaces/${props.workspace.id}/findings/consolidation/${group.group_id}/accept`, choice,
       )
-      await reload(lead.id)
+      await reload(lead?.id)
       emit('changed')
-      toast.add({ severity: 'success', summary: `Consolidated into ${lead.id}`, detail: 'The absorbed findings are kept and report under the lead.', life: 3500 })
-      await redraftLead(lead)
+      if (lead) {
+        // Its members were already drafted: the drafts are merged and the
+        // lead's narrative is redrafted from every member.
+        toast.add({ severity: 'success', summary: `Consolidated into ${lead.id}`, detail: 'The absorbed findings are kept and report under the lead.', life: 3500 })
+        await redraftLead(lead)
+      } else {
+        toast.add({ severity: 'success', summary: 'Group accepted', detail: 'Its exceptions are drafted as one finding the next time findings are generated.', life: 3500 })
+      }
     } catch (error) { fail('Could not accept the consolidation', error) }
     finally { consolidating.value = false }
   }
@@ -253,6 +270,18 @@ async function consolidateSelected(choice: { finding_ids: string[]; lead_finding
     toast.add({ severity: 'success', summary: `Consolidated into ${lead.id}`, life: 3000 })
     await redraftLead(lead)
   } catch (error) { fail('Could not consolidate the findings', error) }
+  finally { consolidating.value = false }
+}
+
+/** Take a grouped observation back out, to be drafted as its own finding. */
+async function separateObservation(observationId: string) {
+  consolidating.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/findings/consolidation/observations/${observationId}/ungroup`)
+    await reload(selected.value?.id)
+    emit('changed')
+    toast.add({ severity: 'success', summary: `${observationId} separated`, detail: 'It is drafted as its own finding the next time findings are generated.', life: 3000 })
+  } catch (error) { fail('Could not separate the observation', error) }
   finally { consolidating.value = false }
 }
 
@@ -617,7 +646,7 @@ const staleSentence = computed(() => {
     />
 
     <ConsolidationPanel
-      v-if="allItems.length"
+      v-if="allItems.length || (consolidation?.candidates ?? 0) >= 2"
       :payload="consolidation"
       :candidates="consolidationCandidates"
       :busy="consolidating"
@@ -697,7 +726,7 @@ const staleSentence = computed(() => {
             </template>
             <span v-else>Not confirmed for reporting</span>
             <span v-if="selected.consolidation?.role === 'lead'" class="pill lead" data-testid="lead-badge">
-              Consolidated: {{ plural(memberLinks.length, 'procedure') }}
+              Consolidated: {{ plural(memberLinks.length + memberObservations.length, 'procedure') }}
             </span>
             <span v-if="selected.consolidation?.role === 'lead' && selected.consolidation?.narrative_pending" class="pill warn" data-testid="narrative-pending">
               Narrative pending redraft
@@ -783,7 +812,7 @@ const staleSentence = computed(() => {
 
         <!-- A lead lists what it absorbed, so the reader sees each control
              that observed the issue without the issue reported once per control. -->
-        <section v-if="memberLinks.length" class="members" data-testid="lead-members">
+        <section v-if="memberLinks.length || memberObservations.length" class="members" data-testid="lead-members">
           <h3 class="aw-label">Consolidated procedures</h3>
           <button
             v-for="member in memberLinks"
@@ -795,6 +824,22 @@ const staleSentence = computed(() => {
             <span class="card-id">{{ member.id }}</span>
             <span class="clamp">{{ member.title }}</span>
           </button>
+          <!-- Grouped before drafting: no finding of its own to open, so the
+               way back is to separate it and have it drafted on its own. -->
+          <div v-for="member in memberObservations" :key="member.id" class="card-row" data-testid="lead-member-observation">
+            <span class="card static">
+              <span class="card-id">{{ member.id }}</span>
+              <span class="clamp">{{ member.title }}</span>
+            </span>
+            <Button
+              label="Separate"
+              size="small"
+              text
+              severity="secondary"
+              :loading="consolidating"
+              @click="separateObservation(member.id)"
+            />
+          </div>
         </section>
 
         <div class="body">
@@ -1126,6 +1171,9 @@ const staleSentence = computed(() => {
 .card-id { display: inline-flex; align-items: center; gap: .3rem; color: var(--aw-teal); font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); font-weight: 700; }
 .card-row { display: flex; align-items: flex-start; gap: .2rem; }
 .card-row .card { flex: 1; }
+/* A member with nothing to open: the same card, without the affordance. */
+.card.static { cursor: default; }
+.card.static:hover { border-color: var(--aw-border); background: var(--aw-panel); }
 .clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; color: var(--aw-ink-soft); line-height: 1.4; }
 .drafted { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .pill {

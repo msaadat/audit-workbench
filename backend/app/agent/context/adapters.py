@@ -2700,41 +2700,44 @@ def finding_draft_scope(
 # --------------------------------------------------------------------------- #
 # reporting.finding_consolidation
 # --------------------------------------------------------------------------- #
-CONSOLIDATION_DRAFTS_SOURCE_ID = "draft_findings"
-CONSOLIDATION_KEYS_SOURCE_ID = "finding_exception_keys"
-CONSOLIDATION_OVERLAPS_SOURCE_ID = "finding_overlaps"
-#: Identifiers admitted per finding. A cap, not a sample: a finding flagging
-#: more records than this states ``ids_withheld`` so the overlap it reports is
-#: never read as complete.
+CONSOLIDATION_OBSERVATIONS_SOURCE_ID = "exception_observations"
+CONSOLIDATION_KEYS_SOURCE_ID = "observation_exception_keys"
+CONSOLIDATION_OVERLAPS_SOURCE_ID = "observation_overlaps"
+#: Identifiers admitted per observation. A cap, not a sample: an observation
+#: flagging more records than this states ``ids_withheld`` so the overlap it
+#: reports is never read as complete.
 CONSOLIDATION_KEY_LIMIT = 50
 #: Shared identifiers named per overlapping pair; the count is always full.
 CONSOLIDATION_SHARED_ID_LIMIT = 10
 #: Pairs the overlap table carries, strongest first.
 CONSOLIDATION_PAIR_LIMIT = 200
-#: The key document-test findings contribute under: the documents whose
+#: The key document-test observations contribute under: the documents whose
 #: items failed, which is the record a document test flags.
 DOCUMENT_KEY = "DOCUMENT_ID"
 
 
-def _finding_row(workspace: Workspace, item: Mapping[str, object]) -> Mapping[str, object] | None:
-    """The row a finding sits under — by id, or by semantic id once the row
-    has been regenerated under another id."""
-    refs = {str(value) for value in item.get("rcm_refs") or []}
-    semantic = {str(value) for value in item.get("rcm_semantic_refs") or []}
+def _observation_row(
+    workspace: Workspace, item: Mapping[str, object]
+) -> Mapping[str, object] | None:
+    """The row an observation sits under — by id, or by semantic id once the
+    row has been regenerated under another id."""
+    rcm_id = str(item.get("rcm_id") or "")
+    semantic = str(item.get("rcm_semantic_id") or "")
     return next(
         (
             row
             for row in workspace.rcm
-            if str(row.get("id")) in refs or str(row.get("semantic_id") or "") in semantic
+            if str(row.get("id")) == rcm_id
+            or (semantic and str(row.get("semantic_id") or "") == semantic)
         ),
         None,
     )
 
 
-def finding_exception_keys(
+def observation_exception_keys(
     workspace: Workspace, item: Mapping[str, object]
 ) -> dict[str, object]:
-    """The identifiers one finding's execution results flagged, by key.
+    """The identifiers one observation's execution result flagged, by key.
 
     A Data Test contributes the distinct values of its run's ``entity_key``
     column from the exception frame — the key the exception profile resolved,
@@ -2746,7 +2749,8 @@ def finding_exception_keys(
 
     keys: dict[str, list[str]] = {}
     withheld = 0
-    for value in item.get("execution_refs") or []:
+    refs = [item["execution_ref"]] if item.get("execution_ref") else []
+    for value in refs:
         kind, _separator, source_id = str(value or "").partition(":")
         if kind == "datatest":
             artifact = data_tests.result_artifact(workspace, source_id)
@@ -2786,19 +2790,44 @@ def finding_exception_keys(
         supplied[key] = distinct[:CONSOLIDATION_KEY_LIMIT]
         withheld += max(0, len(distinct) - CONSOLIDATION_KEY_LIMIT)
     return {
-        "finding_id": str(item.get("id") or ""),
+        "observation_id": str(item.get("id") or ""),
         "keys": supplied,
         "ids_supplied": sum(len(values) for values in supplied.values()),
         "ids_withheld": withheld,
     }
 
 
-def finding_overlaps(
-    findings_keys: Mapping[str, Mapping[str, object]],
+def flags_identical_records(workspace: Workspace, observation_ids: Iterable[str]) -> bool:
+    """Whether every observation flagged exactly the same records.
+
+    The cross-row counterpart of the roll-up's same-row duplicate rule, and as
+    deterministic: the same key columns, the same non-empty id set under each,
+    and nothing withheld by the cap — a truncated set cannot prove two
+    populations equal. How the review labelled the group plays no part, which
+    is the point: the same five documents were called the same condition on
+    one run and a shared cause on the next.
+    """
+    by_id = {str(item.get("id") or ""): item for item in workspace.observations}
+    members = [by_id.get(str(value)) for value in observation_ids]
+    if len(members) < 2 or any(member is None for member in members):
+        return False
+    flagged = [observation_exception_keys(workspace, member) for member in members]
+    if any(int(item.get("ids_withheld") or 0) for item in flagged):
+        return False
+    shapes = {
+        frozenset((key, frozenset(values)) for key, values in dict(item.get("keys") or {}).items())
+        for item in flagged
+    }
+    [shape] = shapes if len(shapes) == 1 else [frozenset()]
+    return bool(shape) and all(values for _key, values in shape)
+
+
+def observation_overlaps(
+    observation_keys: Mapping[str, Mapping[str, object]],
     processes: Mapping[str, str],
 ) -> list[dict[str, object]]:
-    """Every pair of findings that share identifiers, and every same-process
-    pair that shares none, computed locally.
+    """Every pair of observations that share identifiers, and every
+    same-process pair that shares none, computed locally.
 
     Entity-backed pairs carry the count, the Jaccard over the union, and up to
     ten shared ids; the validator holds a ``same_condition`` group to them.
@@ -2806,12 +2835,12 @@ def finding_overlaps(
     propose a ``shared_cause`` group the auditor can weigh, and the validator
     can tell the two apart.
     """
-    ids = sorted(findings_keys)
+    ids = sorted(observation_keys)
     pairs: list[dict[str, object]] = []
     for index, left in enumerate(ids):
         for right in ids[index + 1:]:
-            left_keys = dict(findings_keys[left].get("keys") or {})
-            right_keys = dict(findings_keys[right].get("keys") or {})
+            left_keys = dict(observation_keys[left].get("keys") or {})
+            right_keys = dict(observation_keys[right].get("keys") or {})
             best: dict[str, object] | None = None
             for key in set(left_keys) & set(right_keys):
                 a = set(left_keys[key])
@@ -2820,7 +2849,7 @@ def finding_overlaps(
                 if not shared:
                     continue
                 candidate = {
-                    "finding_ids": [left, right],
+                    "observation_ids": [left, right],
                     "basis": "entity",
                     "key": key,
                     "shared_count": len(shared),
@@ -2841,7 +2870,7 @@ def finding_overlaps(
             if process and process == str(processes.get(right) or ""):
                 pairs.append(
                     {
-                        "finding_ids": [left, right],
+                        "observation_ids": [left, right],
                         "basis": "process",
                         "process": process,
                         "shared_count": 0,
@@ -2854,7 +2883,7 @@ def finding_overlaps(
             pair["basis"] != "entity",
             -int(pair["shared_count"]),
             -float(pair["jaccard"]),
-            tuple(pair["finding_ids"]),
+            tuple(pair["observation_ids"]),
         )
     )
     return pairs[:CONSOLIDATION_PAIR_LIMIT]
@@ -2863,74 +2892,73 @@ def finding_overlaps(
 def finding_consolidation_scope(
     workspace: Workspace,
     *,
+    observation_ids: Iterable[str] | None = None,
     instruction: str | None = None,
 ) -> ContextScope:
-    """Every draft finding, the ids each flagged, and the overlaps between them.
+    """Every exception observation still to draft, the ids each flagged, and
+    the overlaps between them.
 
-    Titles, severities, the row's process and control text, the test's title
-    and the run's entity key — and no narrative. The question is which drafts
-    are one finding, and the deterministic overlap table answers most of it;
-    the turn is for the judgment the table cannot make (is this one cause?)
-    and for the combined title and hypothesis the auditor will edit.
+    The row's process, risk and control, the test that found it, the count
+    and the run's entity key — and nothing a draft would add. The question is
+    which observations are one finding, and the deterministic overlap table
+    answers most of it; the turn is for the judgment the table cannot make (is
+    this one cause?) and for the combined title and hypothesis.
+    ``observation_ids`` is the unit's set; without it the groupable
+    observations are taken as they stand.
     """
     from ... import finding_consolidation
 
-    drafts = finding_consolidation.draft_findings(workspace)
+    if observation_ids is None:
+        selected = finding_consolidation.groupable_observations(workspace)
+    else:
+        wanted = {str(value) for value in observation_ids}
+        selected = [
+            item for item in workspace.observations if str(item.get("id") or "") in wanted
+        ]
     test_titles = {
         str(item.get("id")): str(item.get("title") or "") for item in workspace.data_tests
     }
     for summary in doc_tests.list_tests(workspace):
         test_titles[str(summary.get("id"))] = str(summary.get("title") or "")
-    keys_by_finding: dict[str, dict[str, object]] = {}
+    keys_by_observation: dict[str, dict[str, object]] = {}
     processes: dict[str, str] = {}
-    draft_candidates = []
+    observation_candidates = []
     key_candidates = []
-    for item in drafts:
-        finding_id = str(item.get("id") or "")
-        row = _finding_row(workspace, item) or {}
-        keys = finding_exception_keys(workspace, item)
-        keys_by_finding[finding_id] = keys
-        processes[finding_id] = str(row.get("process") or "")
+    for item in selected:
+        observation_id = str(item.get("id") or "")
+        row = _observation_row(workspace, item) or {}
+        keys = observation_exception_keys(workspace, item)
+        keys_by_observation[observation_id] = keys
+        processes[observation_id] = str(row.get("process") or "")
+        test_id = str(item.get("test_id") or "")
         projection = {
-            "id": finding_id,
-            "title": str(item.get("title") or ""),
-            "severity": str(item.get("severity") or ""),
-            "auditor_confirmed": bool(item.get("auditor_confirmed")),
-            "process": processes[finding_id],
+            "id": observation_id,
+            "summary": str(item.get("summary") or ""),
+            "exception_count": int(item.get("exception_count") or 0),
+            "process": processes[observation_id],
             "risk": str(row.get("risk") or ""),
             "control": str(row.get("control") or ""),
-            "tests": [
-                {"id": str(value), "title": test_titles.get(str(value), "")}
-                for value in item.get("test_refs") or []
-            ],
+            "test": {"id": test_id, "title": test_titles.get(test_id, "")},
             "entity_keys": sorted(dict(keys.get("keys") or {})),
-            "consolidation": (
-                {
-                    "role": "lead",
-                    "members": list((item.get("consolidation") or {}).get("members") or []),
-                }
-                if finding_consolidation.is_lead(item)
-                else None
-            ),
         }
-        draft_candidates.append(
+        observation_candidates.append(
             ContextCandidate(
-                source_ref=f"finding:{finding_id}",
+                source_ref=f"observation:{observation_id}",
                 source=projection,
                 representations={"current_artifact": projection},
-                metadata={"finding_id": finding_id},
-                lexical_text=projection["title"],
+                metadata={"observation_id": observation_id},
+                lexical_text=projection["summary"] or projection["test"]["title"],
             )
         )
         key_candidates.append(
             ContextCandidate(
-                source_ref=f"finding:{finding_id}:keys",
+                source_ref=f"observation:{observation_id}:keys",
                 source=keys,
                 representations={"datatest_exception_keys": keys},
-                metadata={"finding_id": finding_id},
+                metadata={"observation_id": observation_id},
             )
         )
-    overlaps = finding_overlaps(keys_by_finding, processes)
+    overlaps = observation_overlaps(keys_by_observation, processes)
     table = {
         "pairs": overlaps,
         "entity_pairs": sum(pair["basis"] == "entity" for pair in overlaps),
@@ -2938,11 +2966,11 @@ def finding_consolidation_scope(
     }
     return ContextScope(
         candidates={
-            CONSOLIDATION_DRAFTS_SOURCE_ID: tuple(draft_candidates),
+            CONSOLIDATION_OBSERVATIONS_SOURCE_ID: tuple(observation_candidates),
             CONSOLIDATION_KEYS_SOURCE_ID: tuple(key_candidates),
             CONSOLIDATION_OVERLAPS_SOURCE_ID: (
                 ContextCandidate(
-                    source_ref="findings:overlaps",
+                    source_ref="observations:overlaps",
                     source=table,
                     representations={"current_artifact": table},
                     metadata={"pairs": len(overlaps)},

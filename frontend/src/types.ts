@@ -1728,6 +1728,11 @@ export interface FindingConsolidation {
   into?: string
   /** Lead only: the absorbed finding ids. */
   members?: string[]
+  /**
+   * Lead only: member observations reported in this finding without a finding
+   * of their own — a group accepted before its members were drafted.
+   */
+  observations?: string[]
   relation: ConsolidationRelation
   basis_sha1: string
   decided_by: 'auditor' | 'agent'
@@ -1739,10 +1744,17 @@ export interface FindingConsolidation {
   narrative_pending?: boolean
 }
 
+/**
+ * A suggested group of exception observations, asked before any is drafted.
+ * Accepted, it is drafted as one finding; a manual group merges findings the
+ * auditor picked and names them as well.
+ */
 export interface ConsolidationGroup {
   group_id: string
-  finding_ids: string[]
-  lead_finding_id: string
+  observation_ids: string[]
+  lead_observation_id: string
+  manual?: boolean
+  finding_ids?: string[]
   relation: ConsolidationRelation
   basis: 'entity' | 'process'
   proposed_title: string
@@ -1756,14 +1768,19 @@ export interface ConsolidationGroup {
   members?: ConsolidationMember[]
 }
 
+/** One member observation, and the finding that reports it once drafted. */
 export interface ConsolidationMember {
   id: string
   title: string
-  severity: FindingSeverity
+  test_title?: string
   process: string
+  rcm_id?: string
   test_refs: string[]
+  exception_count?: number
+  finding_id?: string | null
+  severity?: FindingSeverity | null
   auditor_confirmed?: boolean
-  absorbed?: boolean
+  grouped?: 'lead' | 'member' | null
   missing?: boolean
 }
 
@@ -1771,6 +1788,10 @@ export interface ConsolidationPayload {
   basis_sha1: string
   /** Whether a suggestion set exists for the current basis. */
   current: boolean
+  /** Exception observations the basis is taken over. */
+  candidates: number
+  /** Of those, the ones still undrafted and ungrouped. */
+  groupable: number
   drafts: number
   suggestion: {
     basis_sha1: string
@@ -1782,6 +1803,12 @@ export interface ConsolidationPayload {
   /** The newest suggestion on file when the current basis has none. */
   stale_suggestion: { basis_sha1: string; groups: number; suggested_at?: string } | null
   undecided: number
+}
+
+/** Accepting a group: the panel's new state, and the merged lead if drafts existed. */
+export interface ConsolidationAcceptResult {
+  consolidation: ConsolidationPayload
+  lead: AuditFinding | null
 }
 
 export interface FindingSummary {

@@ -64,7 +64,10 @@ function trailers(text: string): { body: string; consolidated: string; response:
     const end = index + 1 < hits.length ? hits[index + 1].index : text.length
     const content = text.slice((hit.index ?? 0) + hit[0].length, end).trim()
     if (hit[1] === 'Supporting procedures') {
-      consolidated = content.replace(/^the following findings were consolidated into this one\.?\s*/i, '')
+      consolidated = content.replace(
+        /^the following (?:findings were consolidated into this one|procedures observed this issue and are reported in this finding)\.?\s*/i,
+        '',
+      )
     } else {
       response = content
     }

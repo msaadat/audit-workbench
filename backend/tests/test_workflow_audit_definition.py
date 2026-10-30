@@ -67,8 +67,8 @@ EXPECTED_DEPENDENCIES = {
     "tests.promoted_from_analysis": ("tests.specified",),
     "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
     "results.rolled_up": ("fieldwork.executed",),
-    "findings.drafted": ("results.rolled_up",),
-    "findings.consolidated": ("findings.drafted",),
+    "findings.consolidated": ("results.rolled_up",),
+    "findings.drafted": ("results.rolled_up", "findings.consolidated"),
     "working_papers.generated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
@@ -130,6 +130,9 @@ def test_full_audit_closure_is_topological():
         "tests.promoted_from_analysis",
         "fieldwork.executed",
         "results.rolled_up",
+        # Exceptions are grouped before any is drafted, so a group is
+        # written once rather than drafted per member and merged.
+        "findings.consolidated",
         "findings.drafted",
         "working_papers.generated",
         "report.working_draft",
@@ -151,9 +154,14 @@ def test_full_audit_closure_is_topological():
 
 
 def test_rollup_fans_out_into_parallel_branches():
-    # Working papers and finding drafts both depend only on results.rolled_up —
-    # they are intentionally independent siblings, not a linear chain.
-    assert audit.dependencies("findings.drafted") == ("results.rolled_up",)
+    # Working papers and the findings branch both hang off results.rolled_up —
+    # intentionally independent siblings, not a linear chain. Inside the
+    # findings branch, the grouping review runs ahead of the drafts.
+    assert audit.dependencies("findings.consolidated") == ("results.rolled_up",)
+    assert audit.dependencies("findings.drafted") == (
+        "results.rolled_up",
+        "findings.consolidated",
+    )
     assert audit.dependencies("working_papers.generated") == ("results.rolled_up",)
 
 

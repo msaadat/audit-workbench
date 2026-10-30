@@ -537,6 +537,14 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
                 issues.append(
                     f"absorbed finding {member_id}'s observation {source_id} is not a current exception"
                 )
+        # Members that were grouped before drafting have no finding of their
+        # own; the lead stands on their observations directly.
+        for source_id in consolidation.get("observations") or []:
+            source = observations.get(str(source_id))
+            if source is None:
+                issues.append(f"member observation {source_id} no longer exists")
+            elif source.get("outcome") != "exception":
+                issues.append(f"member observation {source_id} is not a current exception")
     return list(dict.fromkeys(issues))
 
 
@@ -613,6 +621,12 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "created": created,
         "updated": created,
     }
+    # A group decided before drafting is written as its lead from the start.
+    # Only the drafting path carries one; every other change to a finding's
+    # consolidation goes through the merge routes.
+    consolidation = payload.get("consolidation")
+    if source == "agent" and isinstance(consolidation, dict) and consolidation.get("role") == "lead":
+        item["consolidation"] = dict(consolidation)
     if any(row.get("id") == item["id"] for row in workspace.findings):
         raise WorkspaceError(f"Finding '{item['id']}' already exists.")
     if item["auditor_confirmed"]:
@@ -764,6 +778,50 @@ def _anchor_key(anchor: dict) -> str:
     )
 
 
+def observation_references(
+    workspace: Workspace, observation: dict, *, run_id: str | None = None
+) -> dict:
+    """The references a finding drafted from this observation carries.
+
+    Every one is derived from the observation — its row, its test, its
+    execution result and the immutable anchor on that result — so a finding
+    standing on several observations is the union of these, whichever path
+    joined them: a group decided before drafting, or a merge of drafts.
+    """
+    rcm_id = str(observation.get("rcm_id") or "")
+    test_id = str(observation.get("test_id") or "")
+    execution_ref = str(observation.get("execution_ref") or "")
+    evidence = list(observation.get("evidence_refs") or [])
+    anchor = anchor_from_ref(workspace, execution_ref, run_id=run_id) if execution_ref else None
+    if anchor:
+        evidence.append(anchor)
+    return {
+        "rcm_refs": [rcm_id] if rcm_id else [],
+        "rcm_semantic_refs": rcm_semantic_refs(
+            workspace, [rcm_id] if rcm_id else [], [observation.get("rcm_semantic_id")]
+        ),
+        "test_refs": [test_id] if test_id else [],
+        "covered_test_refs": covered_test_refs(workspace, str(observation.get("id") or "")),
+        "execution_refs": [execution_ref] if execution_ref else [],
+        "evidence_refs": list({_anchor_key(value): value for value in evidence}.values()),
+    }
+
+
+def union_references(item: dict, *sources: dict) -> None:
+    """Fold each source's references into ``item``, keeping ``item``'s first."""
+    for key in ("rcm_refs", "test_refs", "covered_test_refs", "execution_refs", "procedure_refs"):
+        if key in item or any(key in source for source in sources):
+            item[key] = _union(item.get(key), *(source.get(key) for source in sources))
+    item["covered_test_refs"] = [
+        value for value in item.get("covered_test_refs") or [] if value not in set(item.get("test_refs") or [])
+    ]
+    anchors: dict[str, dict] = {}
+    for source in (item, *sources):
+        for anchor in source.get("evidence_refs") or []:
+            anchors.setdefault(_anchor_key(anchor), anchor)
+    item["evidence_refs"] = list(anchors.values())
+
+
 def consolidate(
     workspace: Workspace,
     *,
@@ -776,6 +834,7 @@ def consolidate(
     root_cause_hypothesis: str | None = None,
     decided_by: str = "auditor",
     include_confirmed: bool = False,
+    observation_ids: list[str] | tuple[str, ...] = (),
 ) -> dict:
     """Merge several findings into one lead; mark, never delete, the rest.
 
@@ -788,14 +847,29 @@ def consolidate(
     ``auditor_confirmed``: a merged finding is a new statement nobody has yet
     confirmed.
 
+    ``observation_ids`` are members that were never drafted — a group decided
+    after some of its observations had findings and others did not. They join
+    the lead by reference under ``consolidation.observations``, with no
+    finding of their own to absorb.
+
     A confirmed member is refused unless the caller passes
     ``include_confirmed``; the UI asks first.
     """
     from . import finding_consolidation
 
     ids = _union(finding_ids)
-    if len(ids) < 2:
+    extra_observations = [
+        value for value in _union(observation_ids)
+        if value and value not in {
+            str(item.get("source_observation_id") or "")
+            for item in workspace.findings
+            if str(item.get("id")) in ids
+        }
+    ]
+    if len(ids) + len(extra_observations) < 2:
         raise WorkspaceError("A consolidation needs at least two findings.")
+    if not ids:
+        raise WorkspaceError("A consolidation needs a drafted finding to lead it.")
     lead_id = str(lead_id or "")
     if lead_id not in ids:
         raise WorkspaceError("The lead finding must be one of the findings consolidated.")
@@ -828,24 +902,20 @@ def consolidate(
         "decided_by": decided_by,
         "decided_at": now,
     }
-    lead["rcm_refs"] = _union(lead.get("rcm_refs"), *(item.get("rcm_refs") for item in absorbed))
+    by_observation = {str(value.get("id") or ""): value for value in workspace.observations}
+    missing = [value for value in extra_observations if value not in by_observation]
+    if missing:
+        raise WorkspaceError(f"Observation '{missing[0]}' not found.")
+    observation_sources = [
+        observation_references(workspace, by_observation[value]) for value in extra_observations
+    ]
+    sources = [*absorbed, *observation_sources]
+    union_references(lead, *sources)
     lead["rcm_semantic_refs"] = rcm_semantic_refs(
         workspace,
         lead["rcm_refs"],
-        _union(lead.get("rcm_semantic_refs"), *(item.get("rcm_semantic_refs") for item in absorbed)),
+        _union(lead.get("rcm_semantic_refs"), *(item.get("rcm_semantic_refs") for item in sources)),
     )
-    lead["test_refs"] = _union(lead.get("test_refs"), *(item.get("test_refs") for item in absorbed))
-    lead["execution_refs"] = _union(
-        lead.get("execution_refs"), *(item.get("execution_refs") for item in absorbed)
-    )
-    lead["procedure_refs"] = _union(
-        lead.get("procedure_refs"), *(item.get("procedure_refs") for item in absorbed)
-    )
-    anchors: dict[str, dict] = {}
-    for item in (lead, *absorbed):
-        for anchor in item.get("evidence_refs") or []:
-            anchors.setdefault(_anchor_key(anchor), anchor)
-    lead["evidence_refs"] = list(anchors.values())
     lead["severity"] = min(
         (str(item.get("severity") or "medium") for item in members),
         key=lambda value: _SEVERITY_RANK.get(value, len(SEVERITIES)),
@@ -859,6 +929,9 @@ def consolidate(
         **decision,
         "role": "lead",
         "members": all_members,
+        "observations": _union(
+            (lead.get("consolidation") or {}).get("observations"), extra_observations
+        ),
         "proposed_title": str(title or "").strip() or str(lead.get("title") or ""),
         "root_cause_hypothesis": str(root_cause_hypothesis or "").strip(),
         # Until the finding worker has redrafted the lead from every member
@@ -916,6 +989,24 @@ def consolidation_members(workspace: Workspace, lead: dict) -> list[dict]:
         for value in (lead.get("consolidation") or {}).get("members") or []
         if str(value) in by_id
     ]
+
+
+def consolidation_observation_ids(workspace: Workspace, lead: dict) -> list[str]:
+    """Every member observation a lead stands on besides its own.
+
+    The absorbed findings' source observations, then the observations that
+    joined the lead without ever being drafted — the members of a group decided
+    before drafting. Together they are what a redraft of the lead reads.
+    """
+    own = str(lead.get("source_observation_id") or "")
+    values = [
+        str(member.get("source_observation_id") or "")
+        for member in consolidation_members(workspace, lead)
+    ]
+    values.extend(
+        str(value) for value in (lead.get("consolidation") or {}).get("observations") or []
+    )
+    return [value for value in dict.fromkeys(values) if value and value != own]
 
 
 def anchor_from_ref(workspace: Workspace, value: str, *, run_id: str | None = None) -> dict | None:

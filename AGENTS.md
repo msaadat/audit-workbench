@@ -45,12 +45,13 @@ worth having: a bounded sample presented as the whole is worse than no sample.
 
 Beside the three row-level doors sits one key-level door,
 `allow_datatest_exception_keys`, for the one capability that must compare
-findings against each other: `findings.consolidated`. It admits the values of a
-run's `entity_key` column and nothing else, capped per finding
+exceptions against each other: `findings.consolidated`, which runs before any
+finding is drafted so that a group is written once. It admits the values of a
+run's `entity_key` column and nothing else, capped per observation
 (`CONSOLIDATION_KEY_LIMIT`, reporting `ids_withheld`); the overlaps between
-findings are computed locally and supplied as counts and shared ids. A pass that
-sees every finding at once must not see rows, only keys, which is why it is not
-a reuse of the finding-draft door.
+observations are computed locally and supplied as counts and shared ids. A pass
+that sees every exception at once must not see rows, only keys, which is why it
+is not a reuse of the finding-draft door.
 
 A fourth channel is row-*derived* rather than row-level and rides under
 `allow_table_metadata`: a column's complete value set, supplied so a generated
@@ -625,7 +626,8 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `cycle_ready` → `rcm_ready`; testing is `cycle_ruleset_proposed` →
   `cycle_ruleset_approved` → `tests.specified` → `tests.promoted_from_analysis`
   → `fieldwork.executed` → `results.rolled_up`; and findings, working papers and
-  the report branch off the roll-up into `audit.verified`.
+  the report branch off the roll-up into `audit.verified`, the findings branch
+  grouping its exceptions (`findings.consolidated`) before it drafts them.
 - `routing.classify_command(...)` is the deterministic pass and it is pure: it
   reads the command dict only, and never loads a workspace, executes an action,
   or mutates state. Four cases, in order, and no model turn in any of them: a

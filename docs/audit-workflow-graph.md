@@ -106,13 +106,14 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                                        │
                                 results.rolled_up
                        ┌───────────────┼───────────────┐
-                       ▼               ▼               ▼
-             findings.drafted ──────────────────► report.working_draft
-                       │          working_papers.  (+ planning.apm_ready)
-                       │            generated              │
-                       ▼               │                   │
-            findings.consolidated      └───────►◄──────────┘
-              (optional leaf)                  ▼
+                       ▼               ▼               │
+            findings.consolidated  working_papers.     │
+                       │  (partial)  generated         │
+                       ▼               │               ▼
+             findings.drafted ─────────┼────────► report.working_draft
+                                       │          (+ planning.apm_ready)
+                                       └───────►◄──────────┘
+                                               ▼
                                          audit.verified
 
   planning.change_assessed   (← apm_ready, rcm_ready; only ever asked for by name — §8)
@@ -159,15 +160,22 @@ DAG, not a chain.
   it assesses exist, and a request for one on an unplanned engagement plans it
   first instead of reporting itself blocked and stopping. It is on no template
   and outside `FULL_AUDIT_OUTCOMES`; the steering loop requests it by name.
-- **`findings.consolidated` is optional: a leaf off the drafts, with nothing
-  depending on it.** One model turn sees every draft at once — which the
-  per-observation finding worker never can — and proposes which of them report
-  one issue. It is proposal-only: the suggestion set is the durable outcome and
-  the auditor accepts or dismisses each group on the Findings page. It is
-  outside `FULL_AUDIT_OUTCOMES` and the report does not depend on it; it runs
-  only when asked for (the `finding_consolidation` template, or the Findings
-  page). The report reads whatever has been decided and carries every other
-  draft as it stands. The engagement record draws no row for it. See [findings-consolidation-design.md](findings-consolidation-design.md).
+- **`findings.consolidated` runs before the drafts, and the drafts wait on it
+  only partially.** One model turn sees every exception observation still to
+  be written up — which the per-observation finding worker never can — and
+  proposes which of them report one issue. Nothing it reads comes from a draft
+  (the row, the test, the records each result flagged, the overlaps between
+  them), so it is asked of the observations, and an accepted group is drafted
+  once, as one finding. Asked after drafting, as it used to be, a group of *k*
+  cost *k* drafts, all but one discarded, plus a redraft of the lead from every
+  member. An auto run accepts the same-condition groups (the claim the overlap
+  table settles) and any group whose members flag identical records; a
+  permission run asks; a shared-cause group an auto run
+  leaves undecided does not hold anything back — its members are drafted
+  separately, and accepting it later merges them. The edge into
+  `findings.drafted` is partial for that reason: an undecided or failed review
+  leaves the drafts exactly as they would have been without it. The engagement
+  record draws no row of its own for it. See [findings-consolidation-design.md](findings-consolidation-design.md).
 
 ### Outcome sets
 
@@ -531,7 +539,7 @@ it: `llm.chat` retries transport and rate-limit errors up to
 | `fieldwork.document_qa` | `{answer, conclusion, control_conclusion, outcome, citations[]}` | yes | 1 | — | yes |
 | `fieldwork.cycle_vouch` | `{cells[]: check_id, verdict, compared, reason}` | yes | 1 | — | yes |
 | `reporting.finding` | Markdown draft (title / severity / narrative) | **no** | 1 | — | yes |
-| `reporting.finding_consolidation` | `{groups[]: finding_ids, lead_finding_id, relation, basis, proposed_title, root_cause_hypothesis, rationale; singletons[]}` | yes | 1 | — | yes — every draft placed once; a `same_condition` group needs every pair in the overlap table at Jaccard ≥ 0.5; a `shared_cause` group needs every pair in the table or in one process |
+| `reporting.finding_consolidation` | `{groups[]: observation_ids, lead_observation_id, relation, basis, proposed_title, root_cause_hypothesis, rationale; singletons[]}` | yes | 1 | — | yes — every observation placed once; a `same_condition` group needs every pair in the overlap table at Jaccard ≥ 0.5; a `shared_cause` group needs every pair in the table or in one process |
 | `documents.category` | `{category, confidence, rationale}` | yes | 1 | — | no |
 | `documents.classification` | document type assignment | yes | 1 | — | yes |
 | `documents.evidence_read` | `{records[]: fields[], document_fields[], new_fields[]}` | yes | **2** | — | yes |
@@ -643,13 +651,13 @@ A fourth door is key-level rather than row-level:
 
 | Permission | What it admits | Who declares it |
 | --- | --- | --- |
-| `allow_datatest_exception_keys` | The values of a run's `entity_key` column — the identifiers of the records a Data Test flagged — and nothing else, capped per finding (`CONSOLIDATION_KEY_LIMIT`, reporting `ids_withheld`). A Document Test contributes the ids of the documents whose items failed. | `reporting.finding_consolidation` |
+| `allow_datatest_exception_keys` | The values of a run's `entity_key` column — the identifiers of the records a Data Test flagged — and nothing else, capped per observation (`CONSOLIDATION_KEY_LIMIT`, reporting `ids_withheld`). A Document Test contributes the ids of the documents whose items failed. | `reporting.finding_consolidation` |
 
 It is separate from `allow_datatest_exception_rows` because the two turns are
 different in kind: the finding draft sees one observation's rows; the
-consolidation pass sees every finding at once and must see keys only. The
-overlaps between findings are computed locally in the adapter and supplied as
-counts, Jaccard, and up to ten shared ids per pair. Each projection reports what it left out: the Data Test projection
+consolidation pass sees every exception observation at once and must see keys
+only. The overlaps between observations are computed locally in the adapter
+and supplied as counts, Jaccard, and up to ten shared ids per pair. Each projection reports what it left out: the Data Test projection
 reports `rows_withheld`, so a truncated table cannot be drafted as a complete
 population, and the analysis-exception projection reports `rows_supplied` and
 `exception_count` and leaves the subtraction to the reader. That reporting,
@@ -718,7 +726,7 @@ Budgets below are `items / characters`.
 | `fieldwork.document_qa` | 66 / 44k | document_text | `qa_item` (req, 4k), `document_reading` (opt, 1/4k — one record's structured reading), `criteria_excerpt` (opt, 4/12k — the policy the answer is judged against), `document_pages` (opt, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
 | `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
 | `reporting.finding_draft` | 32 / 280k | template_text, document_text, **datatest_exception_rows**, auditor_instruction | `observation`, `rcm_row`, `test`, `execution_result`, `finding_template` (all req), `exception_rows` (opt, 10k), `instruction`; for a consolidated lead's redraft also `sibling_observations`, `sibling_execution_results`, `sibling_exception_rows` (opt, 8 each, the same per-member caps) and `consolidation_brief` (opt) |
-| `reporting.finding_consolidation` | 320 / 100k | document_text, **datatest_exception_keys**, auditor_instruction | `draft_findings` (req, 60/48k — id, title, severity, process, control, test titles, entity keys; never the narrative), `finding_exception_keys` (req, 60/24k — the flagged ids per finding, capped), `finding_overlaps` (req, one table of every pair sharing ids or a process), `instruction` |
+| `reporting.finding_consolidation` | 320 / 100k | document_text, **datatest_exception_keys**, auditor_instruction | `exception_observations` (req, 60/48k — id, summary, count, process, risk, control, test title, entity keys), `observation_exception_keys` (req, 60/24k — the flagged ids per observation, capped), `observation_overlaps` (req, one table of every pair sharing ids or a process), `instruction` |
 | `documents.category` | 1 / 6k | document_text | `document_category` (req) — the opening page |
 | `documents.classification` | 1 / 6k | document_text | `document_classification` (req) |
 | `documents.evidence_read` | 7 / 49k | document_text, document_images | `document_pages` (req, 48k), `document_page_images` (opt, 6) |
@@ -1275,44 +1283,66 @@ observation carries its row's `rcm_semantic_id`, and every finding
 
 | | |
 | --- | --- |
-| Depends on | `results.rolled_up` |
-| Readiness | every eligible exception observation has a supported finding; `review_required` when a linked finding has support issues; `covered: n` in the details counts the observations a duplicate test stands for |
-| Units | one per eligible, uncovered exception observation (`finding:<obs>`), parents `observation:`, `rcm:`, and the execution ref |
+| Depends on | `results.rolled_up`, `findings.consolidated` (partial) |
+| Readiness | every eligible exception observation has a supported finding; `review_required` when a linked finding has support issues; `covered: n` in the details counts the observations a duplicate test stands for, `grouped: n` the members a group's lead stands for |
+| Units | one per eligible exception observation (`finding:<obs>`) — not covered by a duplicate, not a grouped member — parents `observation:`, `rcm:`, and the execution ref |
 | Binding | pipeline — worker `reporting.finding`, executor `reporting.finding` |
-| Context | `reporting.finding_draft` — observation, RCM row, test, execution result, the firm's finding template, and (for a Data Test) the **flagged rows**; for a consolidated lead, every member's observation, result and rows besides, and the brief the auditor accepted |
+| Context | `reporting.finding_draft` — observation, RCM row, test, execution result, the firm's finding template, and (for a Data Test) the **flagged rows**; for a group's lead, every member's observation, result and rows besides, and the brief the group was accepted under |
 | Output | **Markdown**: a title line, a severity line, and everything from the first `##` heading onward as the narrative — the prose copied into the report unchanged |
 
 The narrative's sections are the firm's, so the template is required *context*
 rather than a constant in the worker: a firm changes what a finding must say by
 editing the template, not the code.
 
-Naming a consolidated lead (`finding:<lead>`) redrafts it from every member
-observation: the condition section sets out each instance led by its test's
-title, the root cause states the shared cause, and the executor writes the
-narrative onto the lead — id and unioned references kept, semantic id
-`finding:consolidated:<group>`. Accepting a suggestion on the Findings page
-queues exactly that run; until it lands the lead shows "narrative pending
-redraft".
+The unit for a group's lead observation drafts the group's one finding: the
+condition section sets out each instance led by its test's title, the root
+cause states the shared cause, and the executor writes a finding standing on
+every member's references — semantic id `finding:consolidated:<group>`,
+`consolidation.observations` naming the members, which never get a finding of
+their own. A member can be separated again (`POST
+/findings/consolidation/observations/{id}/ungroup`), and is then drafted on its
+own.
+
+A group accepted after its members were drafted merges the drafts instead.
+Naming the merged lead (`finding:<lead>`) redrafts it from every member
+observation in the same way, onto the lead — id and unioned references kept.
+Accepting such a suggestion on the Findings page queues exactly that run; until
+it lands the lead shows "narrative pending redraft".
 
 ### `findings.consolidated` — Finding consolidation
 
 | | |
 | --- | --- |
-| Depends on | `findings.drafted` |
-| Readiness | `satisfied` with fewer than two drafts, or when every group in the current-basis suggestion has a decision; `review_required` while groups are undecided; `missing` when no suggestion exists for the current basis |
-| Units | one (`finding_consolidation`) per engagement, only when the basis has no suggestion (or force); parents `finding:` for every draft |
-| Binding | pipeline — worker `reporting.finding_consolidation`, **no executor** (proposal-only, like `planning.change_assessed`) |
-| Context | `reporting.finding_consolidation` — every draft's spine, the ids each flagged under the key-level door, and a locally computed overlap table |
-| Output | `Findings/.consolidation/<basis>.json`: groups with relation (`same_condition` / `shared_cause`), basis (`entity` / `process`), lead, proposed title, root-cause hypothesis, rationale, shared entities, and a `decision` the auditor makes on the Findings page |
+| Depends on | `results.rolled_up` |
+| Readiness | `satisfied` with fewer than two *groupable* observations (exceptions not yet drafted, not in a decided group, and draftable), or when every group in the current-basis suggestion has a decision; `review_required` while groups are undecided; `missing` when no suggestion exists for the current basis |
+| Units | one (`finding_consolidation`) per engagement, only when the basis has no suggestion (or force); parents `observation:` for every groupable observation |
+| Binding | pipeline — worker `reporting.finding_consolidation`, **no executor** (proposal-only, like `planning.change_assessed`); the binding decides and marks on commit |
+| Context | `reporting.finding_consolidation` — every groupable observation's spine, the ids each flagged under the key-level door, and a locally computed overlap table |
+| Output | `Findings/.consolidation/<basis>.json`: groups with relation (`same_condition` / `shared_cause`), basis (`entity` / `process`), lead, proposed title, root-cause hypothesis, rationale, shared entities, and a `decision` (`decided_by` `agent` or `auditor`); and on each accepted group's observations a `consolidation` mark — `role: lead` with its `members`, `role: member` with `into` |
 
-The basis is the sorted finding ids and each finding's own result hash. It
-moves when a finding is added, removed, or re-run against a changed result —
-not when one is confirmed, edited, or accepted into a group — so accepting one
-suggestion does not unsay the others the same turn proposed. Accept merges
-through `findings.consolidate` (references unioned, severity the highest,
-absorbed findings marked `into` the lead and kept); dismiss records against
-the basis. A manual group takes the same merge path and is filed beside the
-suggestions. Nothing merges without a click.
+Decisions are made on commit. In permission mode the run's approval card is the
+decision: an approved group is accepted, a declined one dismissed. In auto mode
+a `same_condition` group — whose every pair the validator held to the overlap
+table at Jaccard ≥ 0.5 — is accepted by the agent, and so is any group whose
+members flag exactly the same records (`adapters.flags_identical_records`: the
+same key columns, the same non-empty ids, nothing withheld), whatever relation
+the review gave it. The label proved unstable — the same five documents were a
+same condition on one procurement run and a shared cause on the next — while
+an identical flagged set is a fact, the cross-row counterpart of the roll-up's
+same-row duplicate rule. Any other `shared_cause` group is left undecided for
+the Findings page.
+
+The basis is the sorted candidate observation ids — every exception not covered
+by a duplicate — and each one's result hash. It moves when an exception
+appears, clears, or is re-run against a changed result — not when a group is
+decided, a member is separated, or a finding is drafted — so the same question
+is answered from disk. A drafted observation is not offered to the turn: the
+saving is gone once it is drafted, and the merge is the auditor's. Accepting a
+group on the Findings page marks its observations if none is drafted, and
+otherwise merges the drafts through `findings.consolidate` (references unioned,
+severity the highest, absorbed findings marked `into` the lead and kept), with
+any undrafted members joining the lead by reference. A manual group of findings
+takes the merge path and is filed beside the suggestions.
 
 ### `working_papers.generated` — RCM working papers
 

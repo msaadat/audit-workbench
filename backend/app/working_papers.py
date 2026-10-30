@@ -478,6 +478,14 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
         [
             f"- {item['id']}: {item.get('summary')} — outcome: "
             f"{item.get('outcome') or 'needs_manual_check'}"
+            # A member of a group decided before drafting has no finding of
+            # its own; it is reported in the one its group's lead heads.
+            + (
+                f" — grouped with {(item.get('consolidation') or {}).get('into')} "
+                "and reported in one finding"
+                if (item.get("consolidation") or {}).get("role") == "member"
+                else ""
+            )
             for item in observations
         ]
         or ["- No observations recorded."]

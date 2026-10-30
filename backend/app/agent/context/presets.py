@@ -1686,24 +1686,25 @@ PRESETS.register(
         preset_id="reporting.finding_consolidation",
         spec=ContextSpec(
             sources=(
-                # Every draft finding at once: id, title, severity, process,
-                # control text, test title, entity key. Never the narrative —
-                # the question is which drafts are one finding, and the
-                # deterministic overlap table below answers most of it.
+                # Every exception observation still to draft, at once: id,
+                # summary, count, process, control text, test title, entity
+                # key. Asked before drafting, so there is no narrative to
+                # send — the question is which observations are one finding,
+                # and the deterministic overlap table below answers most of it.
                 ContextSource(
-                    id="draft_findings",
+                    id="exception_observations",
                     source_type="artifacts",
                     required=True,
                     selector=ContextSelector(selector_id="artifacts.current"),
                     representations=(ContextRepresentation("current_artifact"),),
                     budget=ContextBudget(max_items=60, max_characters=48_000),
                 ),
-                # Per finding: the key column and the ids it flagged, capped.
-                # The one row-derived source in this declaration, under its
-                # own door, so that widening the finding draft's row admission
-                # never widens what a cross-finding pass may see.
+                # Per observation: the key column and the ids it flagged,
+                # capped. The one row-derived source in this declaration,
+                # under its own door, so that widening the finding draft's row
+                # admission never widens what a cross-observation pass may see.
                 ContextSource(
-                    id="finding_exception_keys",
+                    id="observation_exception_keys",
                     source_type="artifacts",
                     required=True,
                     selector=ContextSelector(selector_id="artifacts.current"),
@@ -1717,7 +1718,7 @@ PRESETS.register(
                 # none, flagged as such. The validator holds the proposal to
                 # this table.
                 ContextSource(
-                    id="finding_overlaps",
+                    id="observation_overlaps",
                     source_type="artifacts",
                     required=True,
                     selector=ContextSelector(selector_id="artifacts.current"),

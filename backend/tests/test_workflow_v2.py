@@ -426,8 +426,8 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "tests.promoted_from_analysis": ("tests.specified",),
         "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
         "results.rolled_up": ("fieldwork.executed",),
-        "findings.drafted": ("results.rolled_up",),
-        "findings.consolidated": ("findings.drafted",),
+        "findings.consolidated": ("results.rolled_up",),
+        "findings.drafted": ("results.rolled_up", "findings.consolidated"),
         "working_papers.generated": ("results.rolled_up",),
         "report.working_draft": (
             "planning.apm_ready",
@@ -481,6 +481,9 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "tests.promoted_from_analysis",
         "fieldwork.executed",
         "results.rolled_up",
+        # Exceptions are grouped before any is drafted, so a group is
+        # written once rather than drafted per member and merged.
+        "findings.consolidated",
         "findings.drafted",
         "working_papers.generated",
         "report.working_draft",
@@ -501,11 +504,11 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
     assert {
         capability_id: audit_capabilities.REGISTRY.get(capability_id).depends_on
         for capability_id in (
-            "findings.drafted",
+            "findings.consolidated",
             "working_papers.generated",
             )
     } == {
-        "findings.drafted": ("results.rolled_up",),
+        "findings.consolidated": ("results.rolled_up",),
         "working_papers.generated": ("results.rolled_up",),
     }
 
@@ -2893,3 +2896,103 @@ def test_the_matrix_commits_a_cycle_attribute_with_no_contract_and_one_call(
     assert [call["tag"] for call in fake.calls] == [
         "agent:rcm", "agent:rcm_controls", "agent:rcm_attributes"
     ]
+
+
+@pytest.mark.parametrize(
+    ("relation", "right_invoices", "grouped"),
+    [
+        # The claim the overlap table settles.
+        ("same_condition", (1001, 1003), True),
+        # Identical flagged records are one exception whatever the review
+        # calls them: the label was seen to flip between runs on one pair.
+        ("shared_cause", (1001, 1003), True),
+        # Overlapping but different records and a shared cause: a judgment,
+        # left to the auditor, and both are drafted meanwhile.
+        ("shared_cause", (1001, 1003, 1005), False),
+    ],
+)
+def test_auto_run_groups_matching_exceptions_before_drafting_them_once(
+    monkeypatch, workspace_with_data, relation, right_invoices, grouped
+):
+    """Two rows' tests flag the same invoices: one review turn groups them, and
+    the group is drafted once — not once per member and again as a merge."""
+    ws = workspace_with_data
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nAccounts payable.",
+        }
+    )
+    rows = [
+        ws.add_rcm({"process": "Procurement", "risk": risk, "control": "Automated validation", "risk_rating": "high"})
+        for risk in ("Invoices paid twice at entry", "Invoices paid twice at payment")
+    ]
+    stamp_planning_cycle(ws)
+    from test_finding_coverage import _polars_test, _selecting
+
+    for row, title, invoices in zip(
+        rows, ("Duplicates at entry", "Duplicates at payment"), ((1001, 1003), right_invoices)
+    ):
+        _polars_test(ws, row, title=title, code=_selecting(*invoices))
+    data_tests.run_all(ws)
+    ws = workspaces.load_workspace(ws.id)
+    titles = {item["id"]: item["title"] for item in ws.data_tests}
+    entry, payment = sorted(ws.observations, key=lambda item: titles[item["test_id"]])
+    narrative = FINDING_DRAFT["narrative"].replace(
+        "A duplicate invoice identifier was processed.",
+        "**Duplicates at entry.** Invoices 1001 and 1003 were entered twice.\n\n"
+        "**Duplicates at payment.** The same invoices were paid twice.",
+    )
+    fake = FakeAgentLLM(
+        {
+            "agent:finding_consolidation": {
+                "groups": [{
+                    "observation_ids": [entry["id"], payment["id"]],
+                    "lead_observation_id": entry["id"],
+                    "relation": relation,
+                    "basis": "entity",
+                    "proposed_title": "Duplicate invoices processed and paid",
+                    "root_cause_hypothesis": "No duplicate check exists at entry.",
+                    "rationale": "Both flag invoices 1001 and 1003.",
+                }],
+                "singletons": [],
+            },
+            "agent:finding": {"finding": {**FINDING_DRAFT, "narrative": narrative}},
+        }
+    )
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Draft eligible findings",
+            "requested_outcomes": ["findings.drafted"],
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    refreshed = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed", completed.get("error")
+    assert [call["tag"] for call in fake.calls].count("agent:finding_consolidation") == 1
+    if not grouped:
+        assert [call["tag"] for call in fake.calls].count("agent:finding") == 2
+        assert len(refreshed.findings) == 2
+        assert all("consolidation" not in item for item in refreshed.observations)
+        return
+    # One drafting turn for the group, where drafting first cost three.
+    assert [call["tag"] for call in fake.calls].count("agent:finding") == 1
+    [finding] = refreshed.findings
+    assert finding["source_observation_id"] == entry["id"]
+    assert finding["consolidation"]["role"] == "lead"
+    assert finding["consolidation"]["observations"] == [payment["id"]]
+    assert finding["consolidation"]["decided_by"] == "agent"
+    assert set(finding["rcm_refs"]) == {row["id"] for row in rows}
+    member = next(item for item in refreshed.observations if item["id"] == payment["id"])
+    assert member["consolidation"]["into"] == entry["id"]

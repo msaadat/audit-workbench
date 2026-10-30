@@ -11,6 +11,21 @@ under auditor control. Companion to
 - [3. Detailed implementation plan](#3-detailed-implementation-plan)
 - [4. Open questions](#4-open-questions)
 
+> **Revised 2026-10-30: the review now runs before drafting.** Sections 2 and
+> 3 describe the first build, where `findings.consolidated` ran after
+> `findings.drafted` over the drafts. Nothing that pass read came from a draft
+> — the row, the test, the flagged ids and the overlap table all exist once the
+> roll-up has run — so it now runs over the exception observations instead,
+> ahead of the drafts (`results.rolled_up → findings.consolidated →
+> findings.drafted`, the last edge partial). An accepted group is marked on its
+> observations and drafted once, by its lead's unit, rather than drafted per
+> member, merged, and redrafted: *k* + 1 drafting turns become one. An auto run
+> accepts same-condition groups, and any group whose members flag identical
+> records whatever it is labelled; other shared-cause groups wait for the auditor and
+> their members are drafted separately until then, and the merge described
+> below is what accepting one afterwards does. The current behaviour is in
+> [audit-workflow-graph.md](audit-workflow-graph.md).
+
 ---
 
 ## 1. Problem

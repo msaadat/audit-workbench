@@ -401,11 +401,14 @@ def eligible_observations(workspace: Workspace, scope: dict | None = None) -> li
     """Exception observations in scope that may become finding drafts."""
 
     # A covered observation is a duplicate measurement on the same row; its
-    # lead observation is the one that becomes a draft.
+    # lead observation is the one that becomes a draft. A grouped member is
+    # the same thing decided across rows: its group's lead is drafted from it.
     return [
         item
         for item in scoped_observations(workspace, scope or {})
-        if item.get("outcome") == "exception" and not item.get("covered_by")
+        if item.get("outcome") == "exception"
+        and not item.get("covered_by")
+        and (item.get("consolidation") or {}).get("role") != "member"
     ]
 
 
@@ -416,6 +419,18 @@ def covered_observations(workspace: Workspace, scope: dict | None = None) -> lis
         item
         for item in scoped_observations(workspace, scope or {})
         if item.get("outcome") == "exception" and item.get("covered_by")
+    ]
+
+
+def grouped_observations(workspace: Workspace, scope: dict | None = None) -> list[dict]:
+    """Exception observations in scope a consolidated group's lead stands for."""
+
+    return [
+        item
+        for item in scoped_observations(workspace, scope or {})
+        if item.get("outcome") == "exception"
+        and not item.get("covered_by")
+        and (item.get("consolidation") or {}).get("role") == "member"
     ]
 
 

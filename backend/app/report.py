@@ -122,8 +122,10 @@ def _safe_finding(item: dict, workspace: Workspace | None = None) -> dict:
     consolidation = dict(item.get("consolidation") or {})
     supporting = []
     if workspace is not None and consolidation.get("role") == "lead":
-        # The absorbed members, as the report lists them under the lead: the
-        # procedures that observed the same issue, by title and test.
+        # The members, as the report lists them under the lead: the procedures
+        # that observed the same issue, by title and test. An absorbed finding
+        # names itself; an observation grouped before drafting never had a
+        # finding, so it is named by its test.
         by_id = {str(row.get("id")): row for row in workspace.findings}
         supporting = [
             {
@@ -135,6 +137,21 @@ def _safe_finding(item: dict, workspace: Workspace | None = None) -> dict:
             for value in consolidation.get("members") or []
             if (member := by_id.get(str(value))) is not None
         ]
+        observations = {str(row.get("id")): row for row in workspace.observations}
+        titles = {str(row.get("id")): str(row.get("title") or "") for row in workspace.data_tests}
+        for value in consolidation.get("observations") or []:
+            observation = observations.get(str(value))
+            if observation is None:
+                continue
+            test_id = str(observation.get("test_id") or "")
+            if test_id and test_id not in titles and doc_tests.exists(workspace, test_id):
+                titles[test_id] = str(doc_tests.load_test(workspace, test_id).get("title") or "")
+            supporting.append({
+                "id": str(value),
+                "title": titles.get(test_id) or str(observation.get("summary") or test_id),
+                "severity": "",
+                "test_refs": [test_id] if test_id else [],
+            })
     return {
         key: item.get(key)
         for key in (
@@ -1023,8 +1040,8 @@ def _detailed_findings(context: dict) -> str:
             # reader can see each control that observed the issue without the
             # issue being reported once per control.
             parts.append(
-                "**Supporting procedures:** the following findings were consolidated "
-                "into this one.\n\n"
+                "**Supporting procedures:** the following procedures observed this issue "
+                "and are reported in this finding.\n\n"
                 + "\n".join(
                     f"- {member.get('title') or member.get('id')}"
                     + (
@@ -1685,9 +1702,9 @@ def _quality_checks(
             f"{verb(len(undecided), 'awaits', 'await')} a decision on the Findings page; "
             "the report carries the findings separately until then.",
             [
-                f"finding:{finding_id}"
+                f"observation:{observation_id}"
                 for group in undecided
-                for finding_id in group.get("finding_ids") or []
+                for observation_id in group.get("observation_ids") or []
             ],
         ))
     exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)

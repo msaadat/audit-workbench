@@ -188,18 +188,22 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "tests.promoted_from_analysis": ("tests.specified",),
     "fieldwork.executed": ("tests.specified", "tests.promoted_from_analysis"),
     "results.rolled_up": ("fieldwork.executed",),
-    "findings.drafted": ("results.rolled_up",),
-    # One model turn over every draft, proposing which of them are one
-    # finding. Proposal-only: the suggestion set is the durable outcome and
-    # the auditor accepts or dismisses each group on the Findings page.
+    # One model turn over every exception observation the roll-up left,
+    # proposing which of them are one finding — before any is drafted. Nothing
+    # it reads comes from a draft: the row, the test, the records each result
+    # flagged and the overlaps between them all exist once the roll-up has run.
+    # Asked after drafting instead, every member of a group was drafted, all
+    # but one narrative discarded, and the lead redrafted from every member:
+    # k + 1 drafting turns for what is now one.
     #
-    # Optional, and therefore a leaf. Nothing depends on it and no template
-    # but its own requests it: it runs when the auditor asks for it, from the
-    # Findings page or by name. The report reads whatever has been decided —
-    # an accepted group is drafted as one finding — and carries every other
-    # draft as it stands, so a run that never consolidated produces the same
-    # report it always did.
-    "findings.consolidated": ("findings.drafted",),
+    # Proposal-only. An auto run accepts a same-condition group — the claim the
+    # overlap table settles — and leaves a shared-cause group to the auditor;
+    # a permission run asks. The decisions are marked on the observations.
+    "findings.consolidated": ("results.rolled_up",),
+    # Partial on ``findings.consolidated`` (``_PARTIAL_DEPENDENCIES``): an
+    # undecided group must not withhold the drafts. Its members are drafted
+    # one by one, and accepting it afterwards merges them.
+    "findings.drafted": ("results.rolled_up", "findings.consolidated"),
     "working_papers.generated": ("results.rolled_up",),
     "report.working_draft": (
         "planning.apm_ready",
@@ -265,6 +269,7 @@ BASIS_PRODUCERS: dict[str, tuple[str, ...]] = {
     "execution": ("fieldwork.executed",),
     "rollup": ("results.rolled_up",),
     "observation": ("results.rolled_up",),
+    "consolidation": ("findings.consolidated",),
     "findings": ("findings.drafted",),
     "outputs": ("working_papers.generated", "report.working_draft"),
 }

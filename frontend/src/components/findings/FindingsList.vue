@@ -79,7 +79,7 @@ const groups = computed(() => SEVERITY_ORDER
                 · <span class="draft">absorbed into {{ item.consolidation.into }}</span>
               </template>
               <template v-else-if="item.consolidation?.role === 'lead'">
-                · <span class="lead">consolidated · {{ item.consolidation.members?.length ?? 0 }}</span>
+                · <span class="lead">consolidated · {{ (item.consolidation.members?.length ?? 0) + (item.consolidation.observations?.length ?? 0) }}</span>
                 <template v-if="!item.auditor_confirmed"> · <span class="draft">draft</span></template>
               </template>
               <template v-else-if="!item.auditor_confirmed"> · <span class="draft">draft</span></template>

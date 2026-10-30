@@ -267,4 +267,22 @@ describe('FindingsTab', () => {
     expect(wrapper.findAll('button').some(node => node.text() === 'Restore')).toBe(true)
     expect(wrapper.findAll('button').some(node => node.text() === 'Confirm for reporting')).toBe(false)
   })
+
+  it('lists the observations a group drafted once reports, and separates one on request', async () => {
+    // Grouped before drafting: the members never had findings, so the lead
+    // names their observations and offers the way back out.
+    const decided = { group_id: 'CG-1', relation: 'same_condition' as const, basis_sha1: 'b', decided_by: 'agent' as const, decided_at: '2026-09-09T00:00:00Z' }
+    const wrapper = await mountTab([
+      finding('F-1', { consolidation: { ...decided, role: 'lead', members: [], observations: ['OBS-2'], narrative_pending: false } }),
+    ])
+    const post = vi.spyOn(api, 'post').mockResolvedValue({})
+
+    expect(wrapper.find('[data-testid="lead-badge"]').text()).toContain('Consolidated: 1 procedure')
+    const member = wrapper.find('[data-testid="lead-member-observation"]')
+    expect(member.text()).toContain('OBS-2')
+    await member.findAll('button').find(node => node.text() === 'Separate')!.trigger('click')
+    await flushPromises()
+
+    expect(post).toHaveBeenCalledWith('/api/workspaces/WS-1/findings/consolidation/observations/OBS-2/ungroup')
+  })
 })

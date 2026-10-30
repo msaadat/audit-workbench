@@ -12,15 +12,19 @@ import { plural } from '../../format'
 /**
  * Suggested consolidations, one card per undecided group.
  *
- * The model proposed; the auditor decides. Each card shows what the members
- * share — the records, or only the process — the title the merge would take,
- * the root-cause hypothesis, and the rationale, with the lead defaulting to the
- * model's pick. Nothing merges without Accept. A dismissed suggestion stays
- * dismissed until the findings change, which the header reports as the basis
- * state: current, or outgrown and in need of a refresh.
+ * The review runs over the exception observations before they are drafted, so
+ * a group accepted here is written once, as one finding. A run in auto mode
+ * accepts the same-condition groups itself; what reaches this panel is what it
+ * left for the auditor — a shared cause is a judgment — and until a group is
+ * decided its observations are drafted separately. Each card shows what the
+ * members share — the records, or only the process — the title the finding
+ * would take, the root-cause hypothesis, and the rationale, with the lead
+ * defaulting to the model's pick. A member already drafted is merged rather
+ * than marked, and the card says so. A dismissed suggestion stays dismissed
+ * until the exceptions change, which the header reports as the basis state.
  *
- * Manual mode is the same card built from the findings the auditor picked, so
- * a group they see and the model did not takes the same merge path.
+ * Manual mode is a card built from the findings the auditor picked, so a group
+ * they see among the drafts and the model did not takes the merge path.
  */
 
 const props = defineProps<{
@@ -34,7 +38,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   refresh: []
-  accept: [group: ConsolidationGroup, choice: { lead_finding_id: string; title: string; include_confirmed: boolean }]
+  accept: [group: ConsolidationGroup, choice: { lead_observation_id: string; title: string; include_confirmed: boolean }]
   dismiss: [group: ConsolidationGroup]
   consolidate: [choice: { finding_ids: string[]; lead_finding_id: string; relation: ConsolidationRelation; title: string; include_confirmed: boolean }]
   closeManual: []
@@ -53,7 +57,7 @@ const edits = reactive<Record<string, { lead: string; title: string }>>({})
 watch(groups, items => {
   for (const group of items) {
     if (!edits[group.group_id]) {
-      edits[group.group_id] = { lead: group.lead_finding_id, title: group.proposed_title }
+      edits[group.group_id] = { lead: group.lead_observation_id, title: group.proposed_title }
     }
   }
 }, { immediate: true })
@@ -73,19 +77,23 @@ const manualLeadOptions = computed(() => manualChoice.ids.map(id => {
 }))
 
 function membersOf(group: ConsolidationGroup): ConsolidationMember[] {
-  return group.members ?? group.finding_ids.map(id => ({ id, title: id, severity: 'medium' as const, process: '', test_refs: [] }))
+  return group.members ?? group.observation_ids.map(id => ({ id, title: id, process: '', test_refs: [] }))
 }
 function confirmedIn(group: ConsolidationGroup): boolean {
   return membersOf(group).some(member => member.auditor_confirmed)
+}
+/** Accepting a group whose members are already drafted merges the drafts. */
+function draftedIn(group: ConsolidationGroup): number {
+  return membersOf(group).filter(member => member.finding_id).length
 }
 function sharedEntries(group: ConsolidationGroup): Array<{ key: string; ids: string[] }> {
   return Object.entries(group.shared_entities ?? {}).map(([key, ids]) => ({ key, ids }))
 }
 
 function accept(group: ConsolidationGroup) {
-  const edit = edits[group.group_id] ?? { lead: group.lead_finding_id, title: group.proposed_title }
+  const edit = edits[group.group_id] ?? { lead: group.lead_observation_id, title: group.proposed_title }
   emit('accept', group, {
-    lead_finding_id: edit.lead,
+    lead_observation_id: edit.lead,
     title: edit.title.trim(),
     include_confirmed: confirmedIn(group),
   })
@@ -107,23 +115,24 @@ function consolidate() {
 const basisState = computed(() => {
   const payload = props.payload
   if (!payload) return null
-  if (payload.drafts < 2) return { tone: 'idle', text: 'Consolidation needs at least two draft findings.' }
+  if ((payload.candidates ?? 0) < 2) return { tone: 'idle', text: 'Consolidation needs at least two exceptions.' }
   if (payload.current) {
     return groups.value.length
-      ? { tone: 'warn', text: `${plural(groups.value.length, 'suggested consolidation')} awaiting a decision. Suggestions current.` }
-      : { tone: 'ok', text: decided.value.length ? 'Every suggestion has been decided. Suggestions current.' : 'The findings have been reviewed: each stands on its own.' }
+      ? { tone: 'warn', text: `${plural(groups.value.length, 'suggested consolidation')} awaiting a decision. Until then their exceptions are drafted separately.` }
+      : { tone: 'ok', text: decided.value.length ? 'Every suggestion has been decided. Suggestions current.' : 'The exceptions have been reviewed: each stands on its own.' }
   }
+  if ((payload.groupable ?? 0) < 2) return { tone: 'ok', text: 'Every exception is drafted or grouped; nothing is left to review.' }
   return {
     tone: 'warn',
     text: payload.stale_suggestion
-      ? 'Findings changed since the last consolidation review — refresh the suggestions.'
-      : 'The draft findings have not been reviewed for consolidation.',
+      ? 'Exceptions changed since the last consolidation review — refresh the suggestions.'
+      : 'The exceptions have not been reviewed for consolidation.',
   }
 })
 </script>
 
 <template>
-  <section v-if="basisState && (payload?.drafts ?? 0) >= 2" class="consolidation" data-testid="consolidation-panel">
+  <section v-if="basisState && (payload?.candidates ?? 0) >= 2" class="consolidation" data-testid="consolidation-panel">
     <header class="head">
       <div class="copy">
         <h2 class="aw-label">Suggested consolidations</h2>
@@ -147,18 +156,22 @@ const basisState = computed(() => {
       </div>
 
       <ul class="members">
-        <li v-for="member in membersOf(group)" :key="member.id" :class="{ lead: member.id === (edits[group.group_id]?.lead ?? group.lead_finding_id) }">
+        <li v-for="member in membersOf(group)" :key="member.id" :class="{ lead: member.id === (edits[group.group_id]?.lead ?? group.lead_observation_id) }">
           <label class="member">
             <input
               type="radio"
               :name="`lead-${group.group_id}`"
               :value="member.id"
-              :checked="member.id === (edits[group.group_id]?.lead ?? group.lead_finding_id)"
+              :checked="member.id === (edits[group.group_id]?.lead ?? group.lead_observation_id)"
               @change="edits[group.group_id] = { ...(edits[group.group_id] ?? { title: group.proposed_title }), lead: member.id }"
             />
             <span class="member-id aw-figure">{{ member.id }}</span>
             <span class="member-title">{{ member.title }}</span>
-            <span class="member-meta">{{ member.severity }}<template v-if="member.process"> · {{ member.process }}</template></span>
+            <span class="member-meta">
+              <template v-if="member.finding_id">drafted as {{ member.finding_id }}</template>
+              <template v-else-if="member.exception_count">{{ plural(member.exception_count, 'exception') }}</template>
+              <template v-if="member.process"> · {{ member.process }}</template>
+            </span>
             <span v-if="member.auditor_confirmed" class="pill">Confirmed</span>
           </label>
         </li>
@@ -179,7 +192,7 @@ const basisState = computed(() => {
             :modelValue="edits[group.group_id]?.title ?? group.proposed_title"
             class="title-input"
             aria-label="Proposed title"
-            @update:modelValue="edits[group.group_id] = { ...(edits[group.group_id] ?? { lead: group.lead_finding_id }), title: String($event ?? '') }"
+            @update:modelValue="edits[group.group_id] = { ...(edits[group.group_id] ?? { lead: group.lead_observation_id }), title: String($event ?? '') }"
           />
         </dd>
         <template v-if="group.root_cause_hypothesis">
@@ -191,6 +204,7 @@ const basisState = computed(() => {
       </dl>
 
       <p v-if="confirmedIn(group)" class="note">A confirmed finding is in this group. Accepting merges it and leaves the combined finding unconfirmed.</p>
+      <p v-else-if="draftedIn(group)" class="note">{{ plural(draftedIn(group), 'member is', 'members are') }} already drafted. Accepting merges the drafts and redrafts the lead from every member.</p>
 
       <div class="actions">
         <Button label="Accept" icon="aw-icon aw-icon-check" size="small" :disabled="busy" @click="accept(group)" />

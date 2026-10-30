@@ -550,6 +550,17 @@ class WorkflowRunner:
                 if any(current.get(key) != value for key, value in refreshed.items()):
                     current.update(refreshed)
                     changed = True
+        # A unit expanded when the run was planned, and no longer expanded now
+        # that the stages before it have committed, is work the capability has
+        # stopped asking for — an earlier stage settled it, or folded it into
+        # another unit. Running it anyway would redo what was just decided
+        # against, so a unit nothing has started is skipped, never run.
+        expanded = {spec.id for spec in specs}
+        for unit in units:
+            if unit.get("status") == "queued" and str(unit["id"]) not in expanded:
+                workflow.transition_unit(unit, "skipped")
+                unit["skipped_reason"] = "no longer expanded"
+                changed = True
         if changed:
             self.runtime.save()
             self.runtime.emit("stage_update", {"stage": copy.deepcopy(stage)})

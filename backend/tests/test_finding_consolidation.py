@@ -1,10 +1,11 @@
 """Findings consolidation, phases 3 and 4: the merge, its routes, the redraft,
 and the report.
 
-Accepting a suggestion merges members into one lead — references unioned,
+A group accepted before drafting is marked on its observations and drafted
+once. Drafts that already exist are merged into one lead — references unioned,
 severity the highest, absorbed findings marked and kept — and the lead is
 redrafted by the finding worker from every member observation. The report
-carries leads only and lists what each absorbed as supporting procedures.
+carries leads only and lists their members as supporting procedures.
 """
 
 from __future__ import annotations
@@ -29,7 +30,13 @@ from app.agent.executors.reporting import FINDING_EXECUTOR, FindingExecutorTarge
 from app.agent.workers import WORKERS, WorkerRequest
 from app.main import create_app
 from app.workspace_transactions import parent_hashes
-from test_agent_reporting_consolidation import _commit_finding, _two_drafts
+from test_agent_reporting_consolidation import (
+    _by_test,
+    _commit_finding,
+    _suggest,
+    _two_drafts,
+    _two_exceptions,
+)
 from test_agent_reporting_finding import TEMPLATE, _Gateway, _markdown
 from test_finding_coverage import NARRATIVE, _polars_test, _row, _selecting
 
@@ -153,26 +160,8 @@ def test_a_lead_reports_a_support_issue_when_a_members_observation_is_no_longer_
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
-def _suggest(ws, *, relation="same_condition"):
-    basis = finding_consolidation.basis_sha1(ws)
-    ids = [item["id"] for item in ws.findings]
-    finding_consolidation.save(
-        ws, basis,
-        {
-            "groups": [{
-                "finding_ids": ids, "lead_finding_id": ids[0], "relation": relation,
-                "basis": "entity", "proposed_title": "One issue", "root_cause_hypothesis": "One cause.",
-                "rationale": "Same invoices.", "shared_entities": {"invoice_no": ["1001", "1003"]},
-            }],
-            "singletons": [],
-        },
-        run_id="run-c",
-    )
-    return basis, finding_consolidation.load(ws, basis)["groups"][0]
-
-
-def test_the_consolidation_routes_accept_dismiss_group_and_restore(workspace_with_data):
-    ws = _two_drafts(workspace_with_data)
+def test_the_consolidation_routes_accept_ungroup_and_merge(workspace_with_data):
+    ws = _two_exceptions(workspace_with_data)
     basis, group = _suggest(ws)
     client = TestClient(create_app())
     base = f"/api/workspaces/{ws.id}/findings"
@@ -180,46 +169,68 @@ def test_the_consolidation_routes_accept_dismiss_group_and_restore(workspace_wit
     listed = client.get(f"{base}/consolidation").json()
     assert listed["current"] is True
     assert listed["undecided"] == 1
-    assert [member["id"] for member in listed["suggestion"]["groups"][0]["members"]] == group["finding_ids"]
-    assert listed["suggestion"]["groups"][0]["members"][0]["process"] == "Procurement"
+    assert listed["candidates"] == 2
+    members = listed["suggestion"]["groups"][0]["members"]
+    assert [member["id"] for member in members] == group["observation_ids"]
+    assert members[0]["process"] == "Procurement"
+    assert members[0]["finding_id"] is None
 
+    # Before drafting, accepting marks the observations and merges nothing.
     accepted = client.post(f"{base}/consolidation/{group['group_id']}/accept", json={"title": "Chosen title"})
     assert accepted.status_code == 200, accepted.text
-    lead = accepted.json()
-    assert lead["id"] == group["lead_finding_id"]
-    assert lead["title"] == "Chosen title"
-    assert lead["consolidation"]["members"] == [group["finding_ids"][1]]
+    assert accepted.json()["lead"] is None
+    assert accepted.json()["consolidation"]["undecided"] == 0
     ws = workspaces.load_workspace(ws.id)
     assert finding_consolidation.load(ws, basis)["groups"][0]["decision"] == "accepted"
-    # Accepting does not move the basis, so a second suggestion of the same
-    # set is not re-asked and the decision is what the page reads back.
+    lead, member = _by_test(ws)
+    assert lead["consolidation"]["proposed_title"] == "Chosen title"
+    assert member["consolidation"]["into"] == lead["id"]
+    # Accepting does not move the basis, so the decision is what the page
+    # reads back, and a second accept is refused rather than applied twice.
     assert finding_consolidation.basis_sha1(ws) == basis
-    assert client.get(f"{base}/consolidation").json()["undecided"] == 0
-    # Already decided: a second accept is refused rather than merged twice.
     assert client.post(f"{base}/consolidation/{group['group_id']}/accept", json={}).status_code >= 400
 
-    # The register carries the roles; the absorbed finding is restorable.
-    items = client.get(base).json()["items"]
-    roles = {item["id"]: (item.get("consolidation") or {}).get("role") for item in items}
-    assert roles == {group["finding_ids"][0]: "lead", group["finding_ids"][1]: "absorbed"}
-    restored = client.post(f"{base}/{group['finding_ids'][1]}/unconsolidate").json()
-    assert restored.get("consolidation") is None
+    # The member can be taken back out, to be drafted on its own.
+    ungrouped = client.post(f"{base}/consolidation/observations/{member['id']}/ungroup")
+    assert ungrouped.status_code == 200, ungrouped.text
+    ws = workspaces.load_workspace(ws.id)
+    assert all("consolidation" not in item for item in ws.observations)
 
-    # A manual group through the same merge, recorded beside the suggestions.
+    # A manual merge of drafts, through the same merge, recorded beside the
+    # suggestions.
+    for observation in _by_test(ws):
+        ws = _commit_finding(ws, observation, title=f"Finding for {observation['id']}")
+    finding_ids = [item["id"] for item in sorted(ws.findings, key=lambda item: item["title"])]
     manual = client.post(
-        f"{base.rsplit('/', 1)[0]}/findings/consolidate",
-        json={"finding_ids": group["finding_ids"], "lead_finding_id": group["finding_ids"][1], "relation": "shared_cause", "title": "Manual"},
+        f"{base}/consolidate",
+        json={"finding_ids": finding_ids, "lead_finding_id": finding_ids[1], "relation": "shared_cause", "title": "Manual"},
     )
     assert manual.status_code == 200, manual.text
     assert manual.json()["consolidation"]["role"] == "lead"
     ws = workspaces.load_workspace(ws.id)
     recorded = finding_consolidation.load(ws, finding_consolidation.basis_sha1(ws))
-    manual_group = next(item for item in recorded["groups"] if item["decided_by"] == "auditor" and item["lead_finding_id"] == group["finding_ids"][1])
+    manual_group = next(item for item in recorded["groups"] if item.get("manual"))
     assert manual_group["decision"] == "accepted"
+    assert manual_group["finding_ids"] == finding_ids
+    restored = client.post(f"{base}/{finding_ids[0]}/unconsolidate").json()
+    assert restored.get("consolidation") is None
+
+
+def test_accepting_after_drafting_returns_the_lead_to_redraft(workspace_with_data):
+    ws = _two_drafts(workspace_with_data)
+    _basis, group = _suggest(ws)
+    client = TestClient(create_app())
+
+    response = client.post(f"/api/workspaces/{ws.id}/findings/consolidation/{group['group_id']}/accept", json={})
+
+    assert response.status_code == 200, response.text
+    lead = response.json()["lead"]
+    assert lead["consolidation"]["role"] == "lead"
+    assert lead["consolidation"]["narrative_pending"] is True
 
 
 def test_dismissing_a_suggestion_is_recorded_against_its_basis(workspace_with_data):
-    ws = _two_drafts(workspace_with_data)
+    ws = _two_exceptions(workspace_with_data)
     basis, group = _suggest(ws)
     client = TestClient(create_app())
     base = f"/api/workspaces/{ws.id}/findings"
@@ -229,20 +240,23 @@ def test_dismissing_a_suggestion_is_recorded_against_its_basis(workspace_with_da
     assert dismissed["undecided"] == 0
     assert dismissed["suggestion"]["groups"][0]["decision"] == "dismissed"
     ws = workspaces.load_workspace(ws.id)
-    assert all("consolidation" not in item for item in ws.findings)
-    # Dismissed stays dismissed until the findings change: the capability is
-    # satisfied and expands nothing.
-    from app.agent import capabilities as audit_capabilities
-
+    assert all("consolidation" not in item for item in ws.observations)
+    # Dismissed stays dismissed until the exceptions change: the capability is
+    # satisfied and expands nothing, and both observations are drafted.
     capability = audit_capabilities.REGISTRY.get("findings.consolidated")
     assert capability.readiness(ws, {}).state == "satisfied"
     assert capability.expand_units(ws, {}) == []
+    assert len(audit_capabilities.REGISTRY.get("findings.drafted").expand_units(ws, {})) == 2
 
 
-def test_accepting_a_suggestion_the_findings_have_outgrown_is_refused(workspace_with_data):
-    ws = _two_drafts(workspace_with_data)
+def test_accepting_a_suggestion_the_exceptions_have_outgrown_is_refused(workspace_with_data):
+    ws = _two_exceptions(workspace_with_data)
     _basis, group = _suggest(ws)
-    findings.add(ws, {"title": "A third finding moves the basis"})
+    twin = next(item for item in ws.data_tests if item["title"] == "Right")
+    data_tests.update(ws, twin["id"], {
+        "spec": {"schema_version": 2, "steps": [{"label": "Right", "instruction": "Right", "table_refs": ["transactions"], "code": _selecting(1001)}]},
+    })
+    data_tests.run_all(ws)
     client = TestClient(create_app())
 
     response = client.post(f"/api/workspaces/{ws.id}/findings/consolidation/{group['group_id']}/accept", json={})
@@ -334,6 +348,11 @@ def test_a_consolidated_draft_must_name_every_member_stage():
     assert sent["CONSOLIDATION BRIEF"]["proposed_title"] == "Payments released outside the control"
     assert [item["id"] for item in sent["SIBLING OBSERVATIONS"]] == ["OBS-2"]
     assert "SIBLING OBSERVATIONS" in gateway.calls[0]["system"]
+    # The titles the validator checks are the titles the prompt states, the
+    # lead's first: briefed with summaries alone, every grouped draft on the
+    # procurement engagement paraphrased them and paid for a repair.
+    assert sent["INSTANCE TITLES"] == ["Payment before goods receipt", "Vendor status at payment"]
+    assert "INSTANCE TITLES" in gateway.calls[0]["system"]
 
 
 def test_an_ordinary_draft_carries_no_sibling_keys():
@@ -444,16 +463,43 @@ def test_the_report_carries_the_lead_only_and_lists_its_supporting_procedures(wo
 
 
 def test_the_advisory_consolidation_check_fires_and_clears(workspace_with_data):
-    ws = _two_drafts(workspace_with_data)
+    ws = _two_exceptions(workspace_with_data)
     basis, group = _suggest(ws)
 
     fired = [issue for issue in report.quality_checks(ws)["issues"] if issue["code"] == "unreviewed_consolidation"]
     assert len(fired) == 1
     assert fired[0]["severity"] == "warning"
-    assert set(fired[0]["refs"]) == {f"finding:{value}" for value in group["finding_ids"]}
+    assert set(fired[0]["refs"]) == {f"observation:{value}" for value in group["observation_ids"]}
 
     finding_consolidation.decide(ws, basis, group["group_id"], "dismissed")
     assert not [issue for issue in report.quality_checks(ws)["issues"] if issue["code"] == "unreviewed_consolidation"]
+
+
+def test_a_group_drafted_once_lists_its_members_as_supporting_procedures(workspace_with_data):
+    ws = _two_exceptions(workspace_with_data)
+    basis, group = _suggest(ws)
+    finding_consolidation.apply_group(ws, group, basis=basis)
+    ws = workspaces.load_workspace(ws.id)
+    lead, member = _by_test(ws)
+    ws = _commit_finding(ws, lead, title="One issue", group=lead["consolidation"])
+    [finding] = ws.findings
+    findings.update(ws, finding["id"], {"auditor_confirmed": True})
+    ws = workspaces.load_workspace(ws.id)
+
+    context = report.build_context(ws)
+    assert [item["id"] for item in context["findings"]] == [finding["id"]]
+    assert context["absorbed_findings"] == []
+    [supporting] = context["findings"][0]["supporting_procedures"]
+    assert supporting["id"] == member["id"]
+    assert supporting["title"] == "Right"
+    assert supporting["test_refs"] == [member["test_id"]]
+    markdown = report.deterministic_markdown(ws, context)
+    assert "following procedures observed this issue" in markdown
+
+    # The member's row still says where its exception went.
+    paper = working_papers.generate_rcm(ws, member["rcm_id"])
+    assert f"grouped with {lead['id']}" in paper["markdown"]
+    assert finding["id"] in paper["markdown"]
 
 
 def test_a_confirmed_absorbed_finding_blocks_the_report(workspace_with_data):

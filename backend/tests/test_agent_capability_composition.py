@@ -140,17 +140,17 @@ _DECLARED = {
         ("test", "evidence"),
     ),
     "results.rolled_up": ("rollup", "rollup", None, ("execution",)),
-    "findings.drafted": (
-        "findings",
-        "finding_draft",
-        "reporting.finding_draft",
-        ("observation",),
-    ),
     "findings.consolidated": (
         "finding_consolidation",
         "finding_consolidation",
         "reporting.finding_consolidation",
-        ("findings",),
+        ("observation",),
+    ),
+    "findings.drafted": (
+        "findings",
+        "finding_draft",
+        "reporting.finding_draft",
+        ("observation", "consolidation"),
     ),
     "working_papers.generated": ("working_papers", "working_paper", None, ("rollup",)),
     "report.working_draft": (

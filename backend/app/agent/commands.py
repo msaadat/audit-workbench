@@ -126,7 +126,7 @@ COMMANDS: dict[str, Command] = {
         Command(
             "consolidate_findings", "finding_consolidation", "Review findings for consolidation",
             slash=("consolidate findings", "consolidation"),
-            description="Propose which draft findings report one issue, for the auditor to accept or dismiss.",
+            description="Propose which exception observations report one issue, so each issue is drafted as one finding.",
             phrases=(
                 "consolidate the findings", "review the findings for consolidation",
                 "suggest finding consolidations",
