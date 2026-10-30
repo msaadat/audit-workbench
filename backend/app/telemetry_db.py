@@ -29,6 +29,7 @@ from pathlib import Path
 DB_FILENAME = "telemetry.db"
 
 _local = threading.local()
+_open_guard = threading.Lock()
 _migration_guard = threading.Lock()
 _import_guard = threading.Lock()
 
@@ -197,8 +198,15 @@ def database_path(root: Path) -> Path:
 
 
 def _configure(connection: sqlite3.Connection) -> None:
-    connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA busy_timeout=5000")
+    # WAL is persistent in the file, so only the first open converts it.  The
+    # conversion needs an exclusive lock taken while holding a shared one, and
+    # SQLite answers two connections doing that at once with an immediate
+    # SQLITE_BUSY rather than the busy handler, since waiting would deadlock.
+    # Callers hold ``_open_guard`` so threads never race it in this process.
+    mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    if str(mode).lower() != "wal":
+        connection.execute("PRAGMA journal_mode=WAL")
     # Telemetry is disposable enough to trade a crash-window fsync for the
     # write rate a traced run actually produces.
     connection.execute("PRAGMA synchronous=NORMAL")
@@ -227,8 +235,11 @@ def connect(root: Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(key, check_same_thread=False)
         connection.row_factory = sqlite3.Row
-        _configure(connection)
-        migrate(connection)
+        # Each thread opens its own connection, so two fresh threads meet here
+        # on a brand-new file; see :func:`_configure`.
+        with _open_guard:
+            _configure(connection)
+            migrate(connection)
         cache[key] = connection
         import_legacy(root, connection)
     return connection
