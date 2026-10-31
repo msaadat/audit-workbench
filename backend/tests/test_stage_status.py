@@ -22,7 +22,7 @@ from app.main import create_app
 
 @pytest.fixture(autouse=True)
 def store_on(monkeypatch):
-    monkeypatch.setattr(stage_status, "ENABLED_FOR_NEW", True)
+    monkeypatch.setattr(stage_status, "ENABLED", True)
     monkeypatch.setattr(stage_status, "SERVE_STALE", True)
     monkeypatch.setattr(stage_status, "DEBOUNCE_SECONDS", 0.0)
     yield
@@ -78,7 +78,7 @@ def test_a_new_workspace_carries_the_flag_and_keeps_it_across_saves():
 
 
 def test_a_workspace_without_the_flag_sweeps_and_stores_nothing(monkeypatch):
-    monkeypatch.setattr(stage_status, "ENABLED_FOR_NEW", False)
+    monkeypatch.setattr(stage_status, "ENABLED", False)
     ws = workspaces.create_workspace("Legacy")
     ws.add_table("t.csv", _csv({"A": [1, 2]}))
     sweeps = []
@@ -92,6 +92,68 @@ def test_a_workspace_without_the_flag_sweeps_and_stores_nothing(monkeypatch):
     assert first["refreshing"] is False
     assert len(sweeps) == 2
     assert not (ws.root / stage_status.DIRNAME).exists()
+
+
+def _unflag(ws) -> int:
+    """Strip the flag as a workspace created before the store has none."""
+    definition = json.loads(ws.definition_path.read_text(encoding="utf-8"))
+    definition.pop(stage_status.FLAG)
+    ws.definition_path.write_text(json.dumps(definition), encoding="utf-8")
+    return int(definition["revision"])
+
+
+def test_opening_an_older_workspace_gives_it_the_flag_without_a_new_revision():
+    """An open tab's ETag must not go stale because somebody else opened it."""
+    ws = _engagement("Predates the store")
+    revision = _unflag(ws)
+
+    opened = workspaces.load_workspace(ws.id)
+
+    assert opened.status_store
+    stored = json.loads(ws.definition_path.read_text(encoding="utf-8"))
+    assert stored[stage_status.FLAG] is True
+    assert stored["revision"] == revision
+
+
+def test_an_adopted_workspace_stores_its_answer_and_reads_it_back(monkeypatch):
+    ws = _engagement("Adopted")
+    _unflag(ws)
+    client = TestClient(create_app())
+
+    client.get(f"/api/workspaces/{ws.id}/engagement/record")
+
+    assert stage_status.lookup(ws.root).current
+
+    def refuse(_workspace):
+        raise AssertionError("a current stored answer must not be swept again")
+
+    monkeypatch.setattr(engagement_record, "_sweep", refuse)
+    engagement_record.record(workspaces.load_workspace(ws.id))
+
+
+def test_an_instance_loaded_before_adoption_keeps_the_flag_when_it_saves():
+    """An agent run holds its workspace for minutes. Saving from a copy read
+    before the flag landed would otherwise write the flag back out."""
+    ws = _engagement("Held across adoption")
+    _unflag(ws)
+    held = ws.reload()
+    assert not held.status_store
+
+    workspaces.load_workspace(ws.id)
+    held.description = "Edited by a run that started earlier."
+    held.save()
+
+    stored = json.loads(ws.definition_path.read_text(encoding="utf-8"))
+    assert stored[stage_status.FLAG] is True
+
+
+def test_with_the_store_off_an_older_workspace_is_left_unflagged(monkeypatch):
+    monkeypatch.setattr(stage_status, "ENABLED", False)
+    ws = workspaces.create_workspace("Store off")
+
+    assert not workspaces.load_workspace(ws.id).status_store
+    stored = json.loads(ws.definition_path.read_text(encoding="utf-8"))
+    assert stage_status.FLAG not in stored
 
 
 def test_the_stored_answer_is_the_sweep():

@@ -21,8 +21,10 @@ writer that does not announce leaves a stored answer looking current when it is
 not — which is why the hooks are on those shared paths rather than on
 individual artifact writers.
 
-Workspaces created before this module have no flag and are read exactly as they
-were: the record sweeps readiness on every read.
+Workspaces created before this module are given the flag the first time they
+are opened (``workspaces.open_workspace``), so the sweep they paid on every
+read is paid once more and then stored. A workspace never opened since keeps
+no flag and is read exactly as it was: the record sweeps on every read.
 """
 
 from __future__ import annotations
@@ -43,9 +45,10 @@ FLAG = "status_store"
 DIRNAME = ".status"
 FILENAME = "stages.json"
 
-#: Whether ``create_workspace`` sets the flag. Off only in tests that exercise
-#: the record without the store.
-ENABLED_FOR_NEW = True
+#: Whether ``create_workspace`` sets the flag and ``open_workspace`` gives it to
+#: a workspace that predates it. Off only in tests that exercise the record
+#: without the store.
+ENABLED = True
 
 #: Serve a stored answer that is out of date, marked as refreshing, rather than
 #: recompute it inside the request. Off, a read of an out-of-date answer waits

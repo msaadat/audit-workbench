@@ -245,7 +245,7 @@ def isolated_workspaces(tmp_path, monkeypatch):
     # A new workspace sweeps its record on every read, as one created before
     # the stored stage status does; `test_stage_status` turns the store on.
     # Left on, every save would wake the background refresher mid-test.
-    monkeypatch.setattr(stage_status, "ENABLED_FOR_NEW", False)
+    monkeypatch.setattr(stage_status, "ENABLED", False)
     yield
     db.close_all()
     telemetry_db.close_all()

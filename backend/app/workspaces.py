@@ -1017,7 +1017,8 @@ class Workspace:
         # slug still resolve.
         self.legacy_slug: str = str(definition.get("legacy_slug") or "")
         # Whether the record's stage states are stored rather than swept on
-        # every read; set at creation only, so older workspaces read as before.
+        # every read; set at creation, and on first open for older workspaces
+        # (`_adopt_status_store`).
         self.status_store: bool = bool(definition.get(stage_status.FLAG))
         self.name: str = definition.get("name") or self.dir_name
         self.description: str = definition.get("description") or ""
@@ -1121,11 +1122,13 @@ class Workspace:
         current = 0
         if self.definition_path.exists():
             try:
-                current = int(
-                    json.loads(self.definition_path.read_text(encoding="utf-8")).get("revision")
-                    or 0
-                )
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                on_disk = json.loads(self.definition_path.read_text(encoding="utf-8"))
+                current = int(on_disk.get("revision") or 0)
+                # Sticky: an instance loaded before the flag was adopted must
+                # not write it back out of the manifest.
+                if on_disk.get(stage_status.FLAG):
+                    self.status_store = True
+            except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
                 current = 0
         if current != expected:
             raise WorkspaceConflict(expected, current)
@@ -2558,7 +2561,45 @@ def open_workspace(actor, workspace_ref: str) -> Workspace:
     from .workspace_transactions import recover_linked_writes
 
     recover_linked_writes(root)
+    _adopt_status_store(root)
     return Workspace(root)
+
+
+def _adopt_status_store(root: Path) -> None:
+    """Give a workspace that predates the stored stage status its flag.
+
+    Without it the record re-runs every capability's readiness on each
+    uncached read — 1.3 seconds on the procurement engagement, most of it
+    building join routes for the analysis row. With it, that sweep is stored
+    and refreshed in the background after writes; see `stage_status`.
+
+    Written the way `_migrate_artifacts` upgrades a manifest on open: under the
+    workspace's write lock and without advancing the revision. The flag
+    changes how status is computed, not what the engagement holds, so an
+    open tab's ETag must not go stale because somebody else opened it.
+    """
+    if not stage_status.ENABLED:
+        return
+    path = root / "workspace.json"
+
+    def unflagged() -> dict | None:
+        try:
+            definition = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(definition, dict) or definition.get(stage_status.FLAG):
+            return None
+        return definition
+
+    if unflagged() is None:
+        return
+    with workspace_write_lock(root):
+        # Another opener may have adopted it while we waited.
+        definition = unflagged()
+        if definition is None:
+            return
+        definition[stage_status.FLAG] = True
+        write_json_atomic(path, definition)
 
 
 def list_workspaces(actor=None) -> list[dict]:
@@ -2666,7 +2707,7 @@ def create_workspace(name: str, description: str = "", actor=None) -> Workspace:
                 "created": date.today().isoformat(),
                 "tables": [],
                 "joins": [],
-                **({stage_status.FLAG: True} if stage_status.ENABLED_FOR_NEW else {}),
+                **({stage_status.FLAG: True} if stage_status.ENABLED else {}),
             },
             indent=2,
         ),

@@ -127,12 +127,13 @@ backend/app/
 |                                escalates anything else to the derivation
 |                                beside it, and memoizes per workspace revision
 |- stage_status.py             - the record's stage states stored in
-|                                `.status/stages.json` for workspaces created
-|                                with `status_store`: the same readiness sweep,
+|                                `.status/stages.json` for workspaces carrying
+|                                `status_store`: the same readiness sweep,
 |                                marked out of date by every writer (request
 |                                middleware, save, run commit/end, indexer) and
-|                                redrawn by a background refresher; older
-|                                workspaces sweep on every read as before
+|                                redrawn by a background refresher. New
+|                                workspaces get the flag at creation; older ones
+|                                on first open, without a revision bump
 |- analysis_results.py         - the saved-analysis execution contract: run it,
 |                                bound it, record it, classify it
 |- analysis_memo.py            - the EDA memo's embed grammar: parsing and
