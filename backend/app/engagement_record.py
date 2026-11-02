@@ -1329,6 +1329,7 @@ def _stages(
 # for first.
 _OPEN_RANK = {
     "conclusions_await_auditor": 15,
+    "tests_without_conclusion": 16,
     "unconfirmed_findings": 20,
     "draft_rcm": 30,
 }
@@ -1337,6 +1338,11 @@ _OPEN_RANK = {
 def _open_points(workspace: Workspace) -> list[dict]:
     """Debts left behind by stages that completed."""
     points: list[dict] = []
+    try:
+        completion = _completion(workspace)
+    except Exception:
+        completion = {}
+    unconcluded_rows = list(completion.get("rcm_without_conclusion") or [])
 
     # Raised where the stage has stopped being runnable, so the row that can no
     # longer be pressed still says what would close it. Without this the ledger
@@ -1344,9 +1350,7 @@ def _open_points(workspace: Workspace) -> list[dict]:
     try:
         awaiting = rcm_execution.conclusions_await_auditor(
             workspace,
-            unconcluded=list(
-                _completion(workspace).get("rcm_without_conclusion") or []
-            ),
+            unconcluded=unconcluded_rows,
             document_tests=_document_test_index(workspace),
         )
     except Exception:
@@ -1373,6 +1377,42 @@ def _open_points(workspace: Workspace) -> list[dict]:
             ),
             "action": "Open the rows",
             "destination": "rcm",
+        })
+
+    # A row concludes from any one of its tests, so a completed test left
+    # without a conclusion of its own disappears behind a sibling that has one.
+    # Completion still counts it, and it alone kept the procurement report
+    # preliminary under a record that drew every conclusion as filed. Tests on a
+    # row the point above already names are left to it: that line asks for the
+    # same conclusion.
+    blank = list(dict.fromkeys(
+        str(item["test_id"])
+        for item in completion.get("blank_conclusions") or []
+        if item.get("rcm_id") not in unconcluded_rows
+    ))
+    if blank:
+        shown = ", ".join(blank[:3])
+        if len(blank) > 3:
+            shown += f" and {len(blank) - 3} more"
+        data_test_ids = {str(test.get("id")) for test in workspace.data_tests}
+        is_data = [test_id in data_test_ids for test_id in blank]
+        points.append({
+            "key": "tests_without_conclusion",
+            "capability": "results.rolled_up",
+            "message": (
+                f"{counted(len(blank), 'test')} without conclusion: {shown}. "
+                "Set a control conclusion on "
+                f"{'it' if len(blank) == 1 else 'each'}; "
+                "until then the report stays a preliminary draft."
+            ),
+            "action": "Open the tests",
+            # One register when they share one, the matrix that links both
+            # otherwise.
+            "destination": (
+                "data-tests" if all(is_data)
+                else "doc-tests" if not any(is_data)
+                else "rcm"
+            ),
         })
 
     # The findings row carries one debt: confirmation. Only a confirmed finding

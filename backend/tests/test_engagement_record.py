@@ -1921,6 +1921,97 @@ def test_a_row_that_cannot_be_run_still_says_what_would_close_it(stub_store):
     assert "Conclude the tests linked to it" in point["message"]
 
 
+def _with_blank_conclusions(monkeypatch, *pairs):
+    """The stubbed completion, plus tests completed without a conclusion."""
+    stubbed = engagement_record.rcm_execution.completion
+    monkeypatch.setattr(
+        engagement_record.rcm_execution, "completion",
+        lambda workspace: {
+            **stubbed(workspace),
+            "blank_conclusions": [
+                {"rcm_id": rcm_id, "test_id": test_id} for rcm_id, test_id in pairs
+            ],
+        },
+    )
+
+
+def test_a_completed_test_without_a_conclusion_is_named_with_its_count(
+    stub_store, monkeypatch,
+):
+    """A row concludes from any one of its tests, so a sibling hides the rest.
+
+    The procurement shape: RCM-F82EFA concluded from its data test, its document
+    test completed without a conclusion, and the report stayed preliminary under
+    a record that drew every conclusion as filed.
+    """
+    stub_store([])
+    _with_blank_conclusions(monkeypatch, ("R1", "DT-1"))
+    workspace = _Workspace(
+        apm="# APM",
+        rcm=[{"id": "R1", "conclusion": "effective"}],
+        doc_tests=[{"id": "DT-1", "rcm_id": "R1", "status": "completed_no_exception"}],
+    )
+
+    result = engagement_record.record(workspace)
+
+    point = next(
+        item for item in result["open_points"]
+        if item["key"] == "tests_without_conclusion"
+    )
+    assert point["capability"] == "results.rolled_up"
+    assert point["message"] == (
+        "1 test without conclusion: DT-1. Set a control conclusion on it; "
+        "until then the report stays a preliminary draft."
+    )
+    assert point["destination"] == "doc-tests"
+    assert point in _rows(result)["results.rolled_up"]["open_points"]
+
+
+def test_tests_without_a_conclusion_are_counted_named_and_capped(
+    stub_store, monkeypatch,
+):
+    """Same ledger line as the controls: three names, then the rest counted."""
+    stub_store([])
+    _with_blank_conclusions(
+        monkeypatch, *((f"R{index}", f"DAT-{index}") for index in range(1, 6))
+    )
+    workspace = _Workspace(
+        apm="# APM",
+        rcm=[{"id": f"R{index}", "conclusion": "effective"} for index in range(1, 6)],
+        data_tests=[
+            _ran({"id": f"DAT-{index}", "rcm_id": f"R{index}",
+                  "status": "completed_no_exception"})
+            for index in range(1, 6)
+        ],
+    )
+
+    result = engagement_record.record(workspace)
+
+    point = next(
+        item for item in result["open_points"]
+        if item["key"] == "tests_without_conclusion"
+    )
+    assert point["message"].startswith(
+        "5 tests without conclusion: DAT-1, DAT-2, DAT-3 and 2 more. "
+        "Set a control conclusion on each;"
+    )
+    assert point["destination"] == "data-tests"
+
+
+def test_tests_on_an_unconcluded_row_are_left_to_the_row_point(
+    stub_store, monkeypatch,
+):
+    """One debt, one line: the row point already asks for these tests."""
+    stub_store([])
+    _with_blank_conclusions(monkeypatch, ("R1", "DAT-1"))
+
+    result = engagement_record.record(_unconcluded_row(adoptable=False))
+
+    keys = [point["key"] for point in result["open_points"]]
+    assert "conclusions_await_auditor" in keys
+    assert "tests_without_conclusion" not in keys
+
+
 def test_a_dependency_outranks_the_auditor_reason(stub_store):
     """A stage waiting on earlier work is waiting on that, whatever else it needs."""
     stub_store([])
