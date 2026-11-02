@@ -597,15 +597,39 @@ type AnalysisAction = 'analyze' | 'refresh' | 'revise_vocabulary'
 // rebuilds that vocabulary from the pass. Naming them separately is the point:
 // one is a document, one is a type, and the expensive one is only ever reached
 // deliberately.
+const ANALYSIS_REQUESTS: Record<AnalysisAction, (title: string) => string> = {
+  analyze: title => `Analyse ${title}.`,
+  refresh: title => `Re-read ${title} under its type's current vocabulary.`,
+  revise_vocabulary: title => `Re-read every document of ${title}'s type and rebuild that type's vocabulary.`,
+}
+
 async function startAnalysis(action: AnalysisAction) {
   if (!selected.value) return
   analysisBusy.value = true
   try {
-    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis-runs`, {
-      action,
-      full_visual_coverage: fullVisualCoverage.value,
-    })
-    const finished = await waitForAnalysis(run.id)
+    const documentId = selected.value.id
+    await assistantChat.createChat()
+    const sent = await assistantChat.send(
+      ANALYSIS_REQUESTS[action](selected.value.title || documentId),
+      'act', agent.launchMode.value,
+      {
+        command: 'analyze_documents', source: 'tab_button',
+        runContext: {
+          document_ids: [documentId],
+          action,
+          ...(fullVisualCoverage.value ? { full_visual_document_ids: [documentId] } : {}),
+        },
+      },
+    )
+    agent.openPanel()
+    const outcome = (sent?.outcome ?? {}) as { kind?: string; run_id?: string }
+    if (outcome.kind !== 'run_started' || !outcome.run_id) {
+      // Queued behind a live run, or taken by it as a steer: the assistant
+      // carries it from here, and the tab refreshes on the run's own signal.
+      toast.add({ severity: 'info', summary: 'Document analysis queued', detail: 'Progress is visible in the assistant.', life: 3000 })
+      return
+    }
+    const finished = await waitForAnalysis(outcome.run_id)
     await loadDocuments(); await loadAnalysis()
     if (finished.status === 'failed') throw new Error(finished.error || 'Document analysis failed.')
     const open = finished.status === 'completed_with_open_items'

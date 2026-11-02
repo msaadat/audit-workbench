@@ -129,3 +129,28 @@ def test_generate_report_draft_preserves_an_auditor_edit_for_reconciliation(
     committed = workspaces.load_workspace(ws.id).report
     assert committed["markdown"] == "# Auditor rewrote the report"
     assert committed["generated_markdown"] != committed["markdown"]
+
+
+def test_generate_report_draft_drafts_its_prose_through_the_supplied_model(
+    workspace_with_data,
+):
+    """A run hands its gateway in, so the report's turns are the run's."""
+
+    ws = workspace_with_data
+    ws.update_planning({"context": {"objective": "Assess payments"}})
+    asked: list[str] = []
+
+    def model(system: str, user: str) -> str:
+        asked.append(system.split("]", 1)[0].lstrip("["))
+        if system.startswith("[agent:report_overview]"):
+            return (
+                "## Introduction\nDrafted introduction.\n\n"
+                "## Objective and Scope\nDrafted scope."
+            )
+        return json.dumps({"rating": "", "conclusion": "Drafted conclusion.", "rows": []})
+
+    generate_report_draft(ws, run_id="run-model", model=model)
+
+    assert asked[:2] == ["agent:report_overview", "agent:report_conclusion"]
+    assert len(asked) <= report.DRAFTING_TURNS
+    assert "Drafted introduction." in workspaces.load_workspace(ws.id).report["generated_markdown"]

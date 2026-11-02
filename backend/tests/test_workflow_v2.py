@@ -2279,7 +2279,9 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
         },
     )
     ws = workspaces.load_workspace(ws.id)
-    fake = FakeAgentLLM({})
+    # Unscripted, so the scope section keeps the deterministic text whose
+    # coverage disclosure this test reads.
+    fake = FakeAgentLLM({"agent:report_overview": None})
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm,
@@ -2304,7 +2306,15 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
     # which is exactly the partial outcome this status distinguishes.
     assert completed["status"] == "completed_with_failures"
     assert current.report["markdown"]
-    assert current.report["generation_warnings"] == [
+    # The fake has no script for the report's prose turns, so each section it
+    # would draft keeps its deterministic text and says so; what is pinned
+    # here is the coverage disclosure.
+    coverage_warnings = [
+        warning
+        for warning in current.report["generation_warnings"]
+        if "kept its deterministic draft" not in warning
+    ]
+    assert coverage_warnings == [
         "1 control in the matrix was not tested: no procedure was performed "
         "over them, which is not the same as a procedure that found no exception.",
         "Incomplete execution-definition coverage: 1 execution-definition step "

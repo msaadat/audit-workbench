@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import os
 
-from .. import doc_tests
+from .. import doc_tests, report
 from ..workspaces import Workspace, WorkspaceError
 from . import capabilities as audit_capabilities
 from . import narration, store, workflow
@@ -177,7 +177,9 @@ TEMPLATE_RUN_CONTEXT_KEYS: dict[str, frozenset[str]] = {
     # `_launch_command` turns it into the ``finding:`` ref the capability
     # expands from.
     "finding_draft": frozenset({"observation_id", "finding_id", "rcm_id", "rcm_ids"}),
-    "document_analysis": frozenset({"document_ids", "action"}),
+    "document_analysis": frozenset(
+        {"document_ids", "action", "full_visual_document_ids"}
+    ),
     "document_test_preparation": frozenset(),
     "document_test_execution": frozenset({"test_id", "test_ids"}),
     # The Analysis tab knows which frames the auditor is looking at. Passing
@@ -502,6 +504,7 @@ def _audit_model_turns(workspace: Workspace) -> int:
         + 2 * qa_pairs
         + 2 * eligible_findings
         + consolidation_turn
+        + report.DRAFTING_TURNS
     )
 
 
@@ -660,6 +663,8 @@ def resolution_scope(
     assessment = str((run.get("context") or {}).get("from_assessment") or "").strip()
     if assessment:
         scope["from_assessment"] = assessment
+    if (run.get("context") or {}).get("requested_only"):
+        scope["requested_only"] = True
     if document_scope_route:
         # A resolved document scope is durable on the workflow record, so a
         # checkpoint answer or an explicitly selected document survives a resume.

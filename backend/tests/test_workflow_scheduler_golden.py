@@ -982,6 +982,29 @@ def test_naming_an_artifact_for_a_downstream_outcome_does_not_redraft_it():
     assert [stage["capability"] for stage in plan.stages] == [_RECORDS_REVIEWED]
 
 
+def test_requested_only_reuses_the_closure_and_forces_only_what_was_asked():
+    """"Regenerate the report" once redrafted an out-of-date matrix first."""
+
+    catalog = SyntheticCatalog(ready_outcomes=frozenset())
+
+    plan = workflow.materialize(
+        synthetic_registry(),
+        catalog,
+        [PUBLISHED],
+        {"requested_only": True},
+        generation_mode="force",
+    )
+
+    assert [stage["capability"] for stage in plan.stages] == [PUBLISHED]
+    assert plan.stages[0]["scheduled_because"] == "forced"
+    assert plan.reused == [
+        SOURCES_READY,
+        RECORDS_READY,
+        PREVIEW_READY,
+        INDEX_READY,
+    ]
+
+
 def test_generation_mode_normalization_is_explicit_and_deterministic():
     assert workflow.command_generation_mode({"text": "Prepare the APM"}) == (
         "reuse_existing"

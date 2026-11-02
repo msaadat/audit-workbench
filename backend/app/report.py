@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import json
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -1150,17 +1151,33 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
     return _ensure_preliminary_label(rendered, bool(context.get("preliminary")))
 
 
-def _model_turn(workspace: Workspace, system: str, user: str, *, run_id: str | None = None) -> str:
-    stage = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent:report"
-    with debug_store.trace_context(
-        workspace_id=workspace.id, workspace_root=str(workspace.root), run_id=run_id, stage=stage,
-        purpose="report_generation", artifact_refs=["report:draft"],
-    ):
-        message = llm.chat(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            profile="agent",
-        )
-    content = str(message.get("content") or "").strip()
+#: A model turn as a run supplies it: system and user text in, content out.
+#: An agent run passes its gateway's call so the report's turns are budgeted
+#: and recorded with the run; without one, the transport is called directly.
+ModelTurn = Callable[[str, str], str]
+
+#: The model-written sections — introduction and scope, the conclusion, and the
+#: key-findings table — one bounded turn each. A run sizes its budget by it.
+DRAFTING_TURNS = 3
+
+
+def _model_turn(
+    workspace: Workspace, system: str, user: str, *, run_id: str | None = None,
+    model: ModelTurn | None = None,
+) -> str:
+    if model is not None:
+        content = str(model(system, user) or "").strip()
+    else:
+        stage = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent:report"
+        with debug_store.trace_context(
+            workspace_id=workspace.id, workspace_root=str(workspace.root), run_id=run_id, stage=stage,
+            purpose="report_generation", artifact_refs=["report:draft"],
+        ):
+            message = llm.chat(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                profile="agent",
+            )
+        content = str(message.get("content") or "").strip()
     if not content:
         raise llm.LLMError("The report model returned an empty response.")
     if content.startswith("```"):
@@ -1243,7 +1260,8 @@ KEY_FINDINGS_SYSTEM = (
 
 
 def _model_json(
-    workspace: Workspace, system: str, payload: dict, *, run_id: str | None = None
+    workspace: Workspace, system: str, payload: dict, *, run_id: str | None = None,
+    model: ModelTurn | None = None,
 ) -> dict:
     """One contracted model turn whose response must be a JSON object."""
     parsed = json.loads(
@@ -1252,6 +1270,7 @@ def _model_json(
             system,
             json.dumps(payload, ensure_ascii=False, default=str),
             run_id=run_id,
+            model=model,
         )
     )
     if not isinstance(parsed, dict):
@@ -1335,7 +1354,8 @@ def _key_findings_call_context(context: dict) -> dict:
 
 
 def _drafted_sections(
-    workspace: Workspace, context: dict, band: dict, *, run_id: str | None = None
+    workspace: Workspace, context: dict, band: dict, *, run_id: str | None = None,
+    model: ModelTurn | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """Draft the model-written sections, one bounded call each.
 
@@ -1358,6 +1378,7 @@ def _drafted_sections(
                     default=str,
                 ),
                 run_id=run_id,
+                model=model,
             )
         )
         for key in (_INTRODUCTION_SECTION_KEY, _SCOPE_SECTION_KEY):
@@ -1369,7 +1390,7 @@ def _drafted_sections(
     def conclusion() -> None:
         parsed = _model_json(
             workspace, CONCLUSION_SYSTEM,
-            _conclusion_call_context(context, band), run_id=run_id,
+            _conclusion_call_context(context, band), run_id=run_id, model=model,
         )
         rating = str(parsed.get("rating") or "").strip().casefold()
         if band["assignable"] and rating not in band["allowed"]:
@@ -1387,7 +1408,7 @@ def _drafted_sections(
     def key_findings() -> None:
         parsed = _model_json(
             workspace, KEY_FINDINGS_SYSTEM,
-            _key_findings_call_context(context), run_id=run_id,
+            _key_findings_call_context(context), run_id=run_id, model=model,
         )
         rows = parsed.get("rows")
         if not isinstance(rows, list):
@@ -1432,16 +1453,16 @@ def _record_activity(
 
 def generate(
     workspace: Workspace, *, use_model: bool = True, run_id: str | None = None,
-    workflow: dict | None = None,
+    workflow: dict | None = None, model: ModelTurn | None = None,
 ) -> dict:
     context = build_context(workspace, workflow=workflow)
     band = rating_band(context)
     sections = _deterministic_sections(workspace, context, band)
     warnings = _coverage_warnings(context["incomplete_coverage"])
     drafted_sections: list[str] = []
-    if use_model and llm.agent_status().get("configured"):
+    if use_model and (model is not None or llm.agent_status().get("configured")):
         drafted, drafting_warnings = _drafted_sections(
-            workspace, context, band, run_id=run_id
+            workspace, context, band, run_id=run_id, model=model
         )
         sections.update(drafted)
         warnings.extend(drafting_warnings)

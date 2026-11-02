@@ -357,6 +357,28 @@ def _streamed(message: dict, on_delta) -> dict:
     return message
 
 
+def _report_conclusion_response(user: str) -> dict:
+    """The least favourable rating the band allows, or none where it allows none."""
+    band = json.loads(user)["rating_band"]
+    return {
+        "rating": band["allowed"][-1] if band["assignable"] and band["allowed"] else "",
+        "conclusion": "**Scripted conclusion.** The control environment needs attention.",
+    }
+
+
+def _report_key_findings_response(user: str) -> dict:
+    return {
+        "rows": [
+            {
+                "finding_id": item["finding_id"],
+                "key_finding": "Scripted key finding.",
+                "recommendation": "Address the scripted finding.",
+            }
+            for item in json.loads(user)["findings"]
+        ]
+    }
+
+
 def _scripted_user_view(messages: list[dict]) -> str:
     """What the model was asked, as the one string a script reads.
 
@@ -531,6 +553,17 @@ class FakeAgentLLM:
             "confidence": "low",
             "rationale": "A fixture document with no catalogued form.",
         },
+        # The report draft's prose turns. Every audit run that reaches the
+        # report makes them, and a section the fake cannot answer would only
+        # keep its deterministic text and add a warning about it.
+        "agent:report_overview": {
+            "content": (
+                "## Introduction\nScripted introduction.\n\n"
+                "## Objective and Scope\nScripted objective.\n\nScripted scope."
+            )
+        },
+        "agent:report_conclusion": _report_conclusion_response,
+        "agent:report_key_findings": _report_key_findings_response,
     }
 
     def __init__(self, overrides: dict | None = None):

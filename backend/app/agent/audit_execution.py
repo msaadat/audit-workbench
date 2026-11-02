@@ -32,6 +32,7 @@ from .. import (
     document_analysis,
     document_classification,
     rcm_execution,
+    report,
     tooling,
 )
 from ..text import counted, verb
@@ -483,6 +484,7 @@ class AuditWorkflowExecution(ActionExecution):
             + 2 * qa_pairs + 2 * eligible_findings
             # One consolidation turn once there are two drafts to compare.
             + (1 if eligible_findings >= 2 or len(self.ws.findings) >= 2 else 0)
+            + report.DRAFTING_TURNS
         )
         document_scope = dict(
             (self.run.get("workflow") or {}).get("scope") or {}
@@ -2960,17 +2962,21 @@ class AuditWorkflowExecution(ActionExecution):
         """Deterministic execution for ``report.working_draft``.
 
         The workflow assembles the draft from current planning, results, and
-        findings without a model call, so this capability has no worker. An
-        auditor-edited draft is preserved and its regenerated candidate is left
-        for reconciliation, which is what ``awaiting_confirmation`` records. On
-        success the binder emits the ``workspace_changed`` report signal the
-        generic deterministic path does not.
+        findings, and drafts its three prose sections through this run's
+        gateway — each a bounded, budgeted turn that falls back to the
+        deterministic section on a rejected response — so the capability has
+        no worker of its own. An auditor-edited draft is preserved and its
+        regenerated candidate is left for reconciliation, which is what
+        ``awaiting_confirmation`` records. On success the binder emits the
+        ``workspace_changed`` report signal the generic deterministic path does
+        not.
         """
         self.ws = subject
         ref, requires_reconcile = generate_report_draft(
             self.ws,
             run_id=self.run["id"],
             workflow=self.run.get("workflow"),
+            model=lambda system, user: self._llm_content(system, user),
         )
         self.emit(
             "workspace_changed", {"kind": "report", "id": "draft", "action": "updated"}

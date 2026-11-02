@@ -8,6 +8,7 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { plural } from '../format'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditFinding, AuditReport, FindingsPayload, MarkdownTemplate,
@@ -47,6 +48,7 @@ const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const nav = useWorkspaceNav()
 const agent = useAgentRun(props.workspace.id)
+const assistantChat = useAssistantChat(props.workspace.id)
 
 const report = ref<AuditReport | null>(null)
 const context = ref<ReportContext | null>(null)
@@ -55,8 +57,15 @@ const busy = ref(false)
 const editing = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
-/** Set when `generate` came back with a draft that would overwrite an edit. */
+/** Set when a regeneration came back with a draft that would overwrite an edit. */
 const reconcile = ref<{ current: string; generated: string } | null>(null)
+/**
+ * The `generated_at` the report carried when this page asked for a new draft,
+ * or null when it asked for none. The draft is written by an assistant run, so
+ * the page learns it has landed from a reload whose stamp has moved — not from
+ * a run id, because a request queued behind a live run is carried by that run.
+ */
+const awaitingDraftSince = ref<string | null>(null)
 
 const markdown = computed(() => report.value?.markdown ?? '')
 const hasContent = computed(() => Boolean(markdown.value.trim()))
@@ -105,6 +114,18 @@ async function reload() {
   report.value = next
   context.value = ctx
   findings.value = register.items
+  if (awaitingDraftSince.value !== null && next.generated_at && next.generated_at !== awaitingDraftSince.value) {
+    awaitingDraftSince.value = null
+    if (next.edited && next.generated_markdown && next.generated_markdown !== next.markdown) {
+      // Two drafts of one document is a state of this page, not a modal over
+      // it: choosing between them means reading both, and a dialog holding two
+      // 24-row textareas is the one shape that cannot be read in.
+      reconcile.value = { current: next.markdown, generated: next.generated_markdown }
+    } else {
+      editing.value = false
+      toast.add({ severity: 'success', summary: 'Report draft generated', life: 2200 })
+    }
+  }
 }
 onMounted(() => void reload().catch(error => fail('Could not load the report', error)))
 const unsubscribe = agent.onWorkspaceInvalidated(() => {
@@ -130,29 +151,36 @@ async function doneEditing() {
   await save()
 }
 
+/**
+ * Redraft the report through the assistant, so the request and its run sit in
+ * the chat like every other generation. `requested_only` keeps it to the
+ * report: an out-of-date matrix upstream is not redrafted first, and the
+ * report says what it was drawn from instead. The draft lands through
+ * `reload`, on the run's workspace signal.
+ */
 async function generate() {
   if (!report.value) return
   if (report.value.markdown) await save(false)
   busy.value = true
   try {
-    const result = await api.post<AuditReport>(`/api/workspaces/${props.workspace.id}/report/generate`, { use_model: true })
-    report.value = result
-    context.value = await api.get<ReportContext>(`/api/workspaces/${props.workspace.id}/report/context`)
+    const regenerate = Boolean(report.value.generated_at)
+    awaitingDraftSince.value = report.value.generated_at ?? ''
+    await assistantChat.createChat()
+    await assistantChat.send(
+      regenerate ? 'Redraft the audit report from the current findings and results.' : 'Draft the audit report.',
+      'act', agent.launchMode.value,
+      {
+        source: 'tab_button',
+        requestedOutcomes: ['report.working_draft'],
+        runContext: { generation_mode: 'force', requested_only: true },
+      },
+    )
+    agent.openPanel()
     emit('changed')
-    if (result.requires_reconcile) {
-      // Two drafts of one document is a state of this page, not a modal over
-      // it: choosing between them means reading both, and a dialog holding two
-      // 24-row textareas is the one shape that cannot be read in.
-      reconcile.value = {
-        current: result.current_markdown ?? result.markdown,
-        generated: result.candidate_markdown ?? result.generated_markdown,
-      }
-    } else {
-      editing.value = false
-      toast.add({ severity: 'success', summary: result.used_model ? 'Report draft generated' : 'Deterministic report draft generated', life: 2200 })
-    }
-  } catch (error) { fail('Could not generate the report', error) }
-  finally { busy.value = false }
+  } catch (error) {
+    awaitingDraftSince.value = null
+    fail('Could not start the report draft', error)
+  } finally { busy.value = false }
 }
 
 async function settle(action: 'keep' | 'replace') {
@@ -167,14 +195,33 @@ async function settle(action: 'keep' | 'replace') {
   finally { busy.value = false }
 }
 
-async function check(editorial = false) {
+async function check() {
   if (hasContent.value) await save(false)
   busy.value = true
   try {
-    const quality = await api.post(`/api/workspaces/${props.workspace.id}/report/quality`, { editorial })
+    const quality = await api.post(`/api/workspaces/${props.workspace.id}/report/quality`, { editorial: false })
     if (report.value) report.value.quality = quality as AuditReport['quality']
   } catch (error) { fail('Could not run report quality checks', error) }
   finally { busy.value = false }
+}
+
+/**
+ * A wording review is a reading, not a check: it is asked of the assistant,
+ * which reads the saved draft and answers in the chat, where the auditor can
+ * follow up on any point it raises.
+ */
+async function editorialReview() {
+  if (hasContent.value) await save(false)
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      'Review the wording of the draft audit report. Flag unclear wording, duplicate findings, '
+        + 'severity that is inconsistent between findings, and tone, naming the section each '
+        + 'point is about. Do not change the report.',
+      'ask', agent.launchMode.value, { source: 'tab_button' },
+    )
+    agent.openPanel()
+  } catch (error) { fail('Could not start the editorial review', error) }
 }
 
 /**
@@ -191,7 +238,7 @@ async function addPreliminaryLabel() {
     ? `${body}\n\n${banner}\n`
     : `${body.slice(0, first)}\n\n${banner}${body.slice(first)}`
   await save(false)
-  await check(false)
+  await check()
 }
 
 async function copy() {
@@ -230,7 +277,7 @@ function startReport() {
 }
 
 const menuItems = computed(() => [
-  { label: 'Editorial review', icon: 'aw-icon aw-icon-sparkles', disabled: busy.value, command: () => void check(true) },
+  { label: 'Editorial review', icon: 'aw-icon aw-icon-sparkles', disabled: busy.value, command: () => void editorialReview() },
   { label: 'Report template', icon: 'aw-icon aw-icon-file-pen', command: () => void openTemplate() },
   { label: 'Copy Markdown', icon: 'aw-icon aw-icon-copy', disabled: !hasContent.value, command: () => void copy() },
 ])
@@ -399,7 +446,7 @@ function runStrip(issue: ReportQualityIssue) {
           outlined
           severity="secondary"
           :loading="busy"
-          @click="check(false)"
+          @click="check()"
         />
         <UiExportMenu v-if="hasContent && !editing" :items="exportItems" :loading="exporting" />
         <Button

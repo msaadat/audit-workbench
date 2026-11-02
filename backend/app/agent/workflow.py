@@ -384,9 +384,16 @@ def materialize(
     did nothing and reported success. Only a requested outcome: naming a test to
     *run* it puts ``tests.specified`` in the closure too, and must not redraft
     it on the way.
+
+    ``scope["requested_only"]`` narrows the run to the requested outcomes
+    themselves: every other capability in the closure is reused as it stands,
+    satisfied or not. "Regenerate the report" means the report, and an
+    out-of-date matrix upstream of it is not a reason to redraft the matrix
+    first — the report states what it was drawn from instead.
     """
     scope = dict(scope or {})
     mode = normalize_generation_mode(generation_mode)
+    requested_only = bool(scope.get("requested_only"))
     resolved = registry.closure(requested_outcomes)
     named = tuple(
         dict.fromkeys(str(ref) for ref in scope.get("target_refs") or [] if ":" in str(ref))
@@ -418,7 +425,7 @@ def materialize(
             if capability_id in requested_outcomes
             else ()
         )
-        if (
+        if (requested_only and capability_id not in requested_outcomes) or (
             mode == "reuse_existing"
             and readiness.satisfied
             and not invalidated_by

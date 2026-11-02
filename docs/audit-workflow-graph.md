@@ -295,6 +295,12 @@ the registry, not from a model**:
 or `generate … again` out of the request text and returns `force`, which makes
 materialization re-expand satisfied capabilities.
 
+A run context carrying `requested_only` (accepted on a requested-outcomes
+message) narrows that to the requested outcomes themselves: every other
+capability in the closure is reused as it stands, satisfied or not. The
+Report page's Regenerate uses it with `force` on `report.working_draft`, so a
+redraft of the report never redrafts an out-of-date cycle or matrix first.
+
 The scope resolved here (`target_refs`, `generation_mode`, `instruction`,
 `tables`, `test_ids`, …) is durable on the run and is what every readiness and
 expansion function reads. `_shared.target_scope` resolves `rcm:`, `datatest:`,
@@ -1381,7 +1387,7 @@ existed.
 | --- | --- |
 | Depends on | `planning.apm_ready`, `results.rolled_up`, `findings.drafted` (partial) |
 | Units | one (`report`) |
-| Binding | **deterministic** (`reporting.report_draft`) — no worker, no model call |
+| Binding | **deterministic** (`reporting.report_draft`) — no worker. The introduction and scope, the conclusion, and the key-findings table are drafted through the run's gateway, one bounded turn each (`report.DRAFTING_TURNS`, counted in the audit budget); a rejected response keeps that section's deterministic draft |
 | Output | the assembled draft. An auditor-edited draft is preserved and its regenerated candidate left for reconciliation, recorded as `awaiting_confirmation`. Absorbed findings are excluded; a lead lists them under "Supporting procedures". Quality checks add `unreviewed_consolidation` (advisory) and `absorbed_finding_confirmed` (blocking). |
 
 ### `audit.verified` — Audit verification

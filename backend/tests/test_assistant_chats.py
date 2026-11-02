@@ -313,6 +313,84 @@ def test_finding_draft_tab_button_scopes_a_batch_to_named_rcm_rows(workspace_wit
     assert launched["command"]["target_refs"] == ["rcm:RCM-1", "rcm:RCM-2"]
 
 
+def _capture_launch(monkeypatch) -> dict:
+    launched: dict = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.update(command=command, context=context)
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    return launched
+
+
+@pytest.mark.parametrize(
+    ("action", "mode"),
+    [("analyze", "reuse_existing"), ("refresh", "force"), ("revise_vocabulary", "force")],
+)
+def test_document_analysis_tab_button_carries_its_action_and_documents(
+    workspace_with_data, monkeypatch, action, mode
+):
+    """The Documents tab's buttons once started runs the chat never saw."""
+
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = _capture_launch(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Analyse invoice.pdf.",
+        "intent": "act", "mode": "auto", "request_id": f"request-doc-{action}",
+        "source": "tab_button", "command": "analyze_documents",
+        "run_context": {
+            "document_ids": ["DOC-1"], "action": action,
+            "full_visual_document_ids": ["DOC-1"],
+        },
+    })
+
+    assert result["outcome"]["kind"] != "error"
+    assert launched["command"]["target_refs"] == ["document:DOC-1"]
+    assert launched["command"]["generation_mode"] == mode
+    assert launched["context"]["full_visual_document_ids"] == ["DOC-1"]
+
+
+def test_document_analysis_tab_button_rejects_an_unknown_action(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    _capture_launch(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Analyse invoice.pdf.",
+        "intent": "act", "mode": "auto", "request_id": "request-doc-bad-action",
+        "source": "tab_button", "command": "analyze_documents",
+        "run_context": {"document_ids": ["DOC-1"], "action": "rebuild_everything"},
+    })
+
+    assert result["outcome"]["kind"] == "error"
+
+
+def test_report_regenerate_requests_only_the_report(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = _capture_launch(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Redraft the audit report.",
+        "intent": "act", "mode": "auto", "request_id": "request-report-redraft",
+        "source": "tab_button", "requested_outcomes": ["report.working_draft"],
+        "run_context": {"generation_mode": "force", "requested_only": True},
+    })
+
+    assert result["outcome"]["kind"] != "error"
+    assert launched["command"]["requested_outcomes"] == ["report.working_draft"]
+    assert launched["command"]["generation_mode"] == "force"
+    assert launched["context"]["requested_only"] is True
+
+
 def test_finding_draft_batch_rejects_a_malformed_row_list(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)

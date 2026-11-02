@@ -63,22 +63,26 @@ def generate_report_draft(
     *,
     run_id: str | None = None,
     workflow: Mapping[str, object] | None = None,
+    model: report.ModelTurn | None = None,
 ) -> tuple[str, bool]:
     """Assemble and commit the report working draft; return its ref and whether
     an auditor-edited draft still needs reconciliation.
 
-    Deterministic: the workflow path assembles the draft from current planning,
-    results, and findings without a model call (``use_model=False``), so this
-    capability has no worker. ``report.generate`` preserves an auditor-edited
+    The draft is assembled from current planning, results, and findings. With a
+    ``model`` — the run's gateway call, supplied by the binder — the
+    introduction, conclusion and key-findings sections are drafted through it,
+    so those turns are budgeted and recorded with the run; without one the
+    draft is deterministic. ``report.generate`` preserves an auditor-edited
     ``markdown`` and records the new candidate as ``generated_markdown``, which
     is what ``requires_reconcile`` reports.
     """
 
     result = report.generate(
         workspace,
-        use_model=False,
+        use_model=model is not None,
         run_id=run_id,
         workflow=dict(workflow or {}) or None,
+        model=model,
     )
     return REPORT_DRAFT_REF, bool(result.get("requires_reconcile"))
 

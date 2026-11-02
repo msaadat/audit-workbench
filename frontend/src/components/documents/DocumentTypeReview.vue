@@ -7,6 +7,9 @@ import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
 
 import { api } from '../../api'
+import { plural } from '../../format'
+import { useAgentRun } from '../../composables/useAgentRun'
+import { useAssistantChat } from '../../composables/useAssistantChat'
 import type {
   ClassifiedDocument,
   DocumentTypeCatalog,
@@ -19,6 +22,9 @@ const emit = defineEmits<{
   retyped: []
   error: [summary: string, error: unknown]
 }>()
+
+const agent = useAgentRun(props.workspaceId)
+const assistantChat = useAssistantChat(props.workspaceId)
 
 const catalog = ref<DocumentTypeCatalog | null>(null)
 const assignments = ref<ClassifiedDocument[]>([])
@@ -141,11 +147,31 @@ async function retype(documentId: string): Promise<void> {
   }
 }
 
-/** Re-examine the documents still unidentified against the grown catalog. */
+/**
+ * Re-examine the documents still unidentified against the grown catalog,
+ * through the assistant so the request and its run sit in the chat. Only the
+ * classification outcome is asked for: what a document is has no bearing on
+ * its analysis, which must not re-run.
+ */
 async function reExamine(): Promise<void> {
+  const ids = reclassifiable.value
+  if (!ids.length) return
   saving.value = 'reclassify'
   try {
-    await api.post(`${base.value}/reclassify`, {})
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Re-examine ${plural(ids.length, 'unidentified document')} against the current list of types.`,
+      'act', agent.launchMode.value,
+      {
+        source: 'tab_button',
+        requestedOutcomes: ['documents.types_classified'],
+        runContext: {
+          target_refs: ids.map(id => `document:${id}`),
+          generation_mode: 'reuse_existing',
+        },
+      },
+    )
+    agent.openPanel()
     emit('retyped')
     visible.value = false
   } catch (error) {

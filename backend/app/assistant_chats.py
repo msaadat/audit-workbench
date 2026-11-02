@@ -56,8 +56,17 @@ SOURCES = {"composer", "shortcut", "tab_button", "folder_intake"}
 # the question a "Redraft this test" button answers — and `instruction` says
 # what the auditor wants different about the result.
 OUTCOME_RUN_CONTEXT_KEYS = frozenset(
-    {"target_refs", "generation_mode", "instruction", "review_each_stage"}
+    {"target_refs", "generation_mode", "instruction", "review_each_stage", "requested_only"}
 )
+
+#: What a Documents-tab analysis request may ask, mapped to whether it redoes
+#: work already done. ``refresh`` re-reads under the current vocabulary and
+#: ``revise_vocabulary`` rebuilds it; both are forced, ``analyze`` is not.
+DOCUMENT_ANALYSIS_ACTIONS = {
+    "analyze": "reuse_existing",
+    "refresh": "force",
+    "revise_vocabulary": "force",
+}
 
 _file_locks: dict[str, threading.RLock] = {}
 _file_locks_guard = threading.Lock()
@@ -704,6 +713,17 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                     run_context.get("instruction"), str
                 ):
                     raise WorkspaceError("instruction must be a string.")
+                if "requested_only" in run_context and not isinstance(
+                    run_context.get("requested_only"), bool
+                ):
+                    raise WorkspaceError("requested_only must be a boolean.")
+                if "action" in run_context and (
+                    run_context.get("action") not in DOCUMENT_ANALYSIS_ACTIONS
+                ):
+                    raise WorkspaceError(
+                        "Document analysis action must be analyze, refresh, or "
+                        "revise_vocabulary."
+                    )
                 if "rcm_ids" in run_context:
                     raw_ids = run_context.get("rcm_ids")
                     if not isinstance(raw_ids, list) or any(
@@ -832,6 +852,14 @@ def _launch_command(
             for name in (planning_context.get("analysis_ids") or [])
             if (identifier := str(name or "").strip())
         ]
+    elif goal_template == "document_analysis":
+        # The Documents tab names the documents it is showing; they travel as
+        # refs, the same narrowing every document capability already reads.
+        target_refs = [
+            f"document:{identifier}"
+            for value in (planning_context.get("document_ids") or [])
+            if (identifier := str(value or "").strip())
+        ]
     elif not goal_template and requested_outcomes:
         # A requested-outcomes message has no template to derive scope from,
         # so a caller names it directly the same way the direct run-creation
@@ -841,11 +869,16 @@ def _launch_command(
             for item in (planning_context.get("target_refs") or [])
             if str(item or "").strip()
         ]
-    generation_mode = (
-        str(planning_context.get("generation_mode") or "").strip() or None
-        if not goal_template and requested_outcomes
-        else None
-    )
+    if goal_template == "document_analysis" and planning_context.get("action"):
+        # Whether to redo work follows from the action the button named, not
+        # from the words of the message that carried it.
+        generation_mode = DOCUMENT_ANALYSIS_ACTIONS[str(planning_context["action"])]
+    elif not goal_template and requested_outcomes:
+        generation_mode = (
+            str(planning_context.get("generation_mode") or "").strip() or None
+        )
+    else:
+        generation_mode = None
     command = {
         "source": source or (
             "goal_template" if goal_template
