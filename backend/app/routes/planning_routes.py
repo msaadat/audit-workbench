@@ -75,6 +75,8 @@ def get_planning(workspace_id: str):
                 "document_tests": doc_tests.list_tests(ws),
                 "findings": ws.findings,
                 "finding_rollups": findings.rollups(ws),
+                # Which rows have a paper, so the matrix can open one directly.
+                "working_papers": working_papers.rcm_paper_index(ws),
             }
 
     # A pure function of the workspace's files, and the largest read the

@@ -12,9 +12,7 @@ declared context. The dependency edges come from the authoritative graph in
 
 from __future__ import annotations
 
-import json
-
-from ... import finding_consolidation, findings, rcm_execution, report
+from ... import finding_consolidation, findings, rcm_execution, report, working_papers
 from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import (
@@ -227,18 +225,11 @@ def _findings_drafted() -> Capability:
 # --------------------------------------------------------------------------- #
 def _working_papers_ready(workspace: Workspace, scope: dict) -> Readiness:
     rcm_rows = _rows(workspace, scope)
-    missing = []
-    for row in rcm_rows:
-        path = workspace.root / "WorkingPapers" / f"{row['id']}.json"
-        if not path.is_file():
-            missing.append(row["id"])
-            continue
-        try:
-            json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            missing.append(row["id"])
-    # Existence and structural readability only; whether a paper predates changed
-    # source results is currency and is not assessed by the framework.
+    # Existence and readability, by the rule the record and the matrix read too.
+    missing = [
+        row["id"] for row in rcm_rows
+        if working_papers.stored_rcm_paper(workspace, row["id"]) is None
+    ]
     return (
         Readiness(
             "missing",

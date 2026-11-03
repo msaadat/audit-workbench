@@ -45,6 +45,7 @@ const rcmExporting = ref(false)
 const rcmImporting = ref(false)
 const generatingTests = ref(false)
 const generatingFindings = ref(false)
+const generatingPapers = ref(false)
 const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
 const markingReviewed = ref(false)
@@ -213,6 +214,10 @@ function openRcmRow(tab?: string) {
   if (!selectedRcmId.value) return
   void nav.push('rcm-row', { rcm: selectedRcmId.value, tab })
 }
+/** The matrix's paper column: the row's own page, on its paper tab. */
+function openPaper(row: RcmRow) {
+  void nav.push('rcm-row', { rcm: row.id, tab: 'paper' })
+}
 function openTest(rollup: TestRollup) {
   void nav.push(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id })
 }
@@ -300,6 +305,31 @@ async function generateAllFindings() {
     })
   } catch (error) { fail('Could not start finding generation', error) }
   finally { generatingFindings.value = false }
+}
+/**
+ * One paper per row, written from the roll-up as it stands. Forced and scoped
+ * to the papers alone, as the report's own button is: a paper exists after its
+ * first run, so an unforced request would leave a stale set untouched, and
+ * nothing upstream needs redoing to assemble one. Deterministic, so it waits
+ * on a run in flight but never on the model.
+ */
+async function generateWorkingPapers() {
+  generatingPapers.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Generate the working papers for ${plural(data.value?.rcm.length ?? 0, 'RCM row')}.`,
+      'act', launchMode.value,
+      {
+        source: 'tab_button',
+        requestedOutcomes: ['working_papers.generated'],
+        runContext: { generation_mode: 'force', requested_only: true },
+      },
+    )
+    agent.openPanel()
+    toast.add({ severity: 'success', summary: 'Generating working papers', life: 3000 })
+  } catch (error) { fail('Could not start working paper generation', error) }
+  finally { generatingPapers.value = false }
 }
 /** `testIds` runs the outstanding subset; omitted, it re-runs every linked test. */
 async function runAllDataTests(testIds?: string[]) {
@@ -406,7 +436,7 @@ const agentBusy = computed(() => isActive.value || !agent.state.status?.configur
 // Data Tests is deterministic and stays available on a workspace with no agent
 // configured, so only work actually in flight disables the lane.
 const rcmBusy = computed(() => isActive.value
-  || generatingTests.value || generatingFindings.value
+  || generatingTests.value || generatingFindings.value || generatingPapers.value
   || runningAllDataTests.value || runningAllDocumentTests.value
   || markingReviewed.value)
 /**
@@ -512,6 +542,16 @@ const rcmActions = computed(() => [
         @click="runAllDataTests()"
       />
       <Button
+        label="Generate working papers"
+        icon="aw-icon aw-icon-file-text"
+        size="small"
+        outlined
+        severity="secondary"
+        :loading="generatingPapers"
+        :disabled="!data.rcm.length || rcmBusy"
+        @click="generateWorkingPapers"
+      />
+      <Button
         v-if="findingsPending.length"
         :label="`Draft ${plural(findingsPending.length, 'finding')}`"
         icon="aw-icon aw-icon-flag"
@@ -550,7 +590,9 @@ const rcmActions = computed(() => [
         :rows="visibleRcm"
         :findingRollups="data.finding_rollups"
         :selectedId="detailOpen ? selectedRcmId : null"
+        :papers="data.working_papers"
         @open="openRcm"
+        @paper="openPaper"
       />
       <!-- A filter that hides every row would otherwise read as an empty RCM. -->
       <p v-if="data.rcm.length && !visibleRcm.length" class="empty">

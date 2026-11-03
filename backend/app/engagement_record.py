@@ -39,6 +39,7 @@ from . import (
     rcm_execution,
     report,
     stage_status,
+    working_papers,
 )
 from .agent import capabilities as audit_capabilities
 from .agent import store
@@ -241,6 +242,17 @@ _SPINE: dict[str, dict[str, Any]] = {
         # that photograph kept the row amber over a satisfied roll-up.
         "live_body": True, "live_headline": True,
     },
+    # The last of fieldwork: a paper documents what a row's tests found and
+    # what was concluded, so the fieldwork is not closed until each row has
+    # one. It had no row once, and verification, which requires the papers,
+    # sat unmet with nothing on the record saying why. The papers are a tab on
+    # each row's page, so the door is the matrix.
+    "working_papers.generated": {
+        "label": "Working papers", "destination": "rcm",
+        "unit": "paper", "count": "working_papers",
+        "headline": "Write a working paper for each control",
+        "prompt": "Generate the working papers.",
+    },
     # Live from the register rather than the projection, which reads only the
     # findings one run drafted: "Prepared 4 drafts" over a register of ten. Its
     # highlights were those drafts graded by severity, which the row counted as
@@ -327,7 +339,16 @@ def _counts(workspace: Workspace) -> dict[str, int]:
             1 for item in workspace.findings
             if not finding_consolidation.is_absorbed(item)
         ),
+        "working_papers": _working_papers(workspace),
     }
+
+
+def _working_papers(workspace: Workspace) -> int:
+    """How many matrix rows have a working paper, by the readiness's own rule."""
+    return _once("working_papers", lambda: sum(
+        1 for row in workspace.rcm
+        if working_papers.stored_rcm_paper(workspace, str(row.get("id") or "")) is not None
+    ))
 
 
 def _parsed(value: object) -> datetime | None:
@@ -609,7 +630,19 @@ _HOLDS: dict[str, Any] = {
         lambda ws: bool(((ws.planning or {}).get("cycle") or {}).get("steps")),
     "fieldwork.executed": _fieldwork_ran,
     "results.rolled_up": _conclusions_set,
+    # Every row, not any: sized by its count alone, one paper over a matrix of
+    # ten would read as filed, and verification would still refuse it.
+    "working_papers.generated":
+        lambda ws: bool(ws.rcm) and _working_papers(ws) == len(ws.rcm),
     "report.working_draft": lambda ws: bool(_report_markdown(ws).strip()),
+    # The one stage held by its readiness. Verification commits nothing, so
+    # there is no artifact to find: asked for one, it answered absent forever,
+    # drew greyed over an engagement whose completion, report quality and
+    # papers all passed, and kept the write-up phase from ever reading done.
+    # Its readiness is exactly the check it makes, cascaded through the papers
+    # and the report it requires.
+    "audit.verified":
+        lambda ws: (_readiness(ws).get("audit.verified") or {}).get("state") == "satisfied",
 }
 
 # What a stage's work product is called in a sentence about waiting for it.
@@ -628,6 +661,7 @@ _NOUNS = {
     "fieldwork.executed": "the test results",
     "results.rolled_up": "the conclusions",
     "findings.drafted": "the findings",
+    "working_papers.generated": "the working papers",
     "report.working_draft": "the report",
 }
 
@@ -1303,8 +1337,8 @@ def _stages(
             # the others: the frontend reads `stage.links.length` unguarded,
             # because the contract says it is always a list. Omitting it here
             # emptied the whole Record view the first time an engagement filed
-            # a stage outside the spine — working papers, which is registered
-            # and deliberately has no spine row.
+            # a stage outside the spine — working papers, before they had a
+            # spine row of their own.
             "action": "",
             "links": [],
             "filed": None,

@@ -69,8 +69,11 @@ _PHASE_OF_DOMAIN = {
     "doc_tests": "fieldwork",
     "fieldwork": "fieldwork",
     "results": "fieldwork",
-    "findings": "fieldwork",
-    "working_papers": "writeup",
+    # Papers close the fieldwork: they document what each row's tests found
+    # and concluded. Findings open the write-up: drafting one is writing the
+    # exception up for the report, which carries the narrative unchanged.
+    "working_papers": "fieldwork",
+    "findings": "writeup",
     "report": "writeup",
     "audit": "writeup",
 }
@@ -96,12 +99,12 @@ PLAN_PHASES: tuple[dict[str, str], ...] = (
     {
         "id": "fieldwork",
         "title": "Do the fieldwork",
-        "summary": "Run the tests, record results and observations, and draft findings where the evidence supports one.",
+        "summary": "Run the tests, conclude on each control, and document the work in a working paper per control.",
     },
     {
         "id": "writeup",
         "title": "Write it up",
-        "summary": "Produce the working papers, and draft the report with its quality checks.",
+        "summary": "Draft findings where the evidence supports one, then the report with its quality checks.",
     },
     {
         "id": _UNGROUPED_PHASE,

@@ -1622,6 +1622,8 @@ export interface PlanningPayload {
   document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status' | 'rcm_id' | 'rcm_refs'>>
   findings: AuditFinding[]
   finding_rollups: FindingRollups
+  /** RCM row id → when its working paper was generated; rows without one are absent. */
+  working_papers?: Record<string, string>
 }
 
 export interface RcmCoverage {

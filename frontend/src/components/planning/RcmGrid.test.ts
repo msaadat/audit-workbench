@@ -75,6 +75,44 @@ describe('RcmGrid', () => {
     expect(wrapper.find('.no-control').text()).toBe('No control identified')
   })
 
+  it('opens a row from the keyboard as a click does', async () => {
+    // The row is a focusable div now, so it no longer gets Enter and Space
+    // from being a button.
+    const wrapper = mountGrid([row()])
+
+    await wrapper.find('.row').trigger('keydown', { key: 'Enter' })
+    await wrapper.find('.row').trigger('keydown', { key: ' ' })
+
+    expect(wrapper.emitted('open')).toHaveLength(2)
+  })
+
+  it('opens a row\'s working paper from its own column, and only where one exists', async () => {
+    const wrapper = mountGrid([row(), row({ id: 'RCM-R2' })], {
+      papers: { 'RCM-R1': '2026-11-03T08:42:00+00:00' },
+    })
+
+    const columns = wrapper.findAll('.paper')
+    expect(columns[0].find('.paper-link').exists()).toBe(true)
+    expect(columns[0].find('.paper-link').attributes('aria-label'))
+      .toBe('Open the working paper for RCM-R1')
+    // No paper, nothing to open: a dash, as the finding column draws one.
+    expect(columns[1].find('.paper-link').exists()).toBe(false)
+    expect(columns[1].text()).toBe('—')
+
+    await columns[0].find('.paper-link').trigger('click')
+
+    expect(wrapper.emitted('paper')?.[0]).toEqual([expect.objectContaining({ id: 'RCM-R1' })])
+    // The paper, not the row's drawer: the click stops at the icon.
+    expect(wrapper.emitted('open')).toBeUndefined()
+  })
+
+  it('draws the paper column as a dash everywhere before any paper exists', () => {
+    const wrapper = mountGrid([row()])
+
+    expect(wrapper.find('.paper-link').exists()).toBe(false)
+    expect(wrapper.find('.paper').text()).toBe('—')
+  })
+
   it('says how many findings a row carries without listing them', () => {
     const wrapper = mountGrid([row()], {
       findingRollups: {

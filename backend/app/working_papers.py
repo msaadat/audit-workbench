@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 from datetime import datetime, timezone
 
@@ -530,6 +531,36 @@ def render_rcm(workspace: Workspace, rcm_id: str) -> dict:
         "markdown": markdown,
         "html": markdown_to_html(markdown),
     }
+
+
+def stored_rcm_paper(workspace: Workspace, rcm_id: str) -> dict | None:
+    """The working paper filed for one RCM row, or ``None`` without a readable one.
+
+    The one definition of "this row has a paper": the capability's readiness,
+    the engagement record's count and the matrix's paper column all read it, so
+    none of them can name a paper another says is missing. Existence and
+    structural readability only; whether a paper predates changed source
+    results is currency and is not assessed.
+    """
+    path = workspace.root / "WorkingPapers" / f"{rcm_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else {}
+
+
+def rcm_paper_index(workspace: Workspace) -> dict[str, str]:
+    """Each matrix row that has a paper, with when that paper was generated."""
+    index = {}
+    for row in workspace.rcm:
+        rcm_id = str(row.get("id") or "")
+        paper = stored_rcm_paper(workspace, rcm_id) if rcm_id else None
+        if paper is not None:
+            index[rcm_id] = str(paper.get("generated_at") or "")
+    return index
 
 
 def generate_rcm(workspace: Workspace, rcm_id: str) -> dict:

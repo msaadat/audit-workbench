@@ -234,7 +234,7 @@ def test_every_stage_names_a_phase_the_payload_declares(stub_store):
     """
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00")]),
+             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00")]),
     ])
     result = engagement_record.record(_Workspace())
     declared = {phase["id"] for phase in result["phases"]}
@@ -283,12 +283,15 @@ def test_the_default_spine_groups_into_the_four_audit_phases(stub_store):
             "planning.rcm_ready",
             "tests.specified",
         ],
+        # The papers close the fieldwork; verification requires them, and
+        # without a row of their own it sat unmet with nothing saying why.
         "fieldwork": [
             "fieldwork.executed",
             "results.rolled_up",
-            "findings.drafted",
+            "working_papers.generated",
         ],
-        "writeup": ["report.working_draft", "audit.verified"],
+        # Drafting a finding is writing the exception up for the report.
+        "writeup": ["findings.drafted", "report.working_draft", "audit.verified"],
     }
 
 
@@ -313,14 +316,71 @@ def test_phases_come_back_in_plan_order_and_only_where_stages_sit(stub_store):
 
 
 def test_a_stage_outside_the_spine_is_still_given_its_phase(stub_store):
-    """Working papers are registered and have no spine row, and still belong."""
+    """The cycle ruleset is registered and has no spine row, and still belongs."""
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00")]),
+             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00")]),
     ])
     rows = _rows(engagement_record.record(_Workspace()))
 
-    assert rows["working_papers.generated"]["phase"] == "writeup"
+    assert rows["tests.cycle_ruleset_proposed"]["phase"] == "planning"
+
+
+def _papers(root, *row_ids):
+    """Write a readable working paper for each named row under ``root``."""
+    folder = root / "WorkingPapers"
+    folder.mkdir(parents=True, exist_ok=True)
+    for row_id in row_ids:
+        (folder / f"{row_id}.json").write_text(json.dumps({"rcm_id": row_id}), encoding="utf-8")
+
+
+def test_the_papers_row_is_filed_only_when_every_row_has_one(stub_store, tmp_path):
+    """Verification refuses a partial set, so the row must not call one filed."""
+    stub_store([])
+    _papers(tmp_path, "R1")
+    workspace = _Workspace(
+        apm="# APM", root=tmp_path,
+        rcm=[{"id": "R1", "conclusion": "effective"}, {"id": "R2", "conclusion": "effective"}],
+    )
+
+    row = _rows(engagement_record.record(workspace))["working_papers.generated"]
+
+    assert row["held"] is False
+    assert row["filed"]["count"] == 1
+    assert row["filed"]["unit"] == "paper"
+    assert row["filed"]["destination"] == "rcm"
+    assert row["start"]["outcomes"] == ["working_papers.generated"]
+
+
+def test_a_full_set_of_papers_is_filed(stub_store, tmp_path):
+    stub_store([])
+    _papers(tmp_path, "R1", "R2")
+    workspace = _Workspace(
+        apm="# APM", root=tmp_path,
+        rcm=[{"id": "R1", "conclusion": "effective"}, {"id": "R2", "conclusion": "effective"}],
+    )
+
+    row = _rows(engagement_record.record(workspace))["working_papers.generated"]
+
+    assert row["held"] is True
+    assert row["filed"]["count"] == 2
+    assert row["start"] is None
+
+
+def test_an_unreadable_paper_is_not_counted(stub_store, tmp_path):
+    """The record counts by the readiness's own rule, not by file presence."""
+    stub_store([])
+    _papers(tmp_path, "R1")
+    (tmp_path / "WorkingPapers" / "R2.json").write_text("{not json", encoding="utf-8")
+    workspace = _Workspace(
+        apm="# APM", root=tmp_path,
+        rcm=[{"id": "R1", "conclusion": "effective"}, {"id": "R2", "conclusion": "effective"}],
+    )
+
+    row = _rows(engagement_record.record(workspace))["working_papers.generated"]
+
+    assert row["filed"]["count"] == 1
+    assert row["held"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -450,26 +510,26 @@ def test_a_run_that_cannot_be_loaded_is_skipped_rather_than_failing_the_record(
 def test_a_stage_the_record_has_not_learned_yet_shows_its_own_briefing(stub_store):
     """A stage the workflows declare and the record has no entry for.
 
-    `working_papers.generated` is exactly that today: a real capability of the
-    audit graph with no row of its own here. It shows what it filed rather than
-    vanishing because the record is behind the graph.
+    `tests.cycle_ruleset_proposed` is exactly that today: a real capability of
+    the audit graph with no row of its own here. It shows what it filed rather
+    than vanishing because the record is behind the graph.
     """
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00",
+             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00",
                          headline="A stage the record has never seen")]),
     ])
-    row = _rows(engagement_record.record(_Workspace()))["working_papers.generated"]
+    row = _rows(engagement_record.record(_Workspace()))["tests.cycle_ruleset_proposed"]
 
-    assert "working_papers.generated" not in engagement_record._SPINE
+    assert "tests.cycle_ruleset_proposed" not in engagement_record._SPINE
     assert row["filed"] is None
     assert row["history"]["headline"] == "A stage the record has never seen"
     # Present and empty, not absent. A reader of one row is entitled to the
     # shape of every other: the record view reads `stage.links.length` and
     # `stage.action` unguarded because the contract says they are always there.
     # Omitted, this row emptied the whole Record view the first time an
-    # engagement filed working papers — which is a registered capability with
-    # no spine row, so every complete engagement reaches it.
+    # engagement filed working papers, back when they had no spine row and
+    # every complete engagement reached the fallback.
     assert row["links"] == []
     assert row["action"] == ""
 
@@ -496,11 +556,11 @@ def test_every_stage_row_carries_the_same_keys(stub_store):
     """
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("working_papers.generated", "2026-08-14T06:01:00+00:00")]),
+             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00")]),
     ])
     rows = _rows(engagement_record.record(_Workspace()))
     spine = set(rows["sources.imported"])
-    assert set(rows["working_papers.generated"]) == spine
+    assert set(rows["tests.cycle_ruleset_proposed"]) == spine
 
     for capability, row in rows.items():
         for key in ("stats", "highlights", "links", "open_points"):
@@ -1067,6 +1127,39 @@ def test_a_stage_the_record_cannot_ask_for_is_never_drawn_as_owed(stub_store):
 
     assert "audit.verified" not in _owed(result)
     assert _rows(result)["audit.verified"]["runnable"] is False
+
+
+def test_verification_is_held_once_its_own_check_passes(stub_store, monkeypatch):
+    """It commits nothing, so its readiness is the only thing it can hold.
+
+    Asked for an artifact instead, it answered absent forever: procurement
+    passed completion, report quality and all ten papers, and the row stayed
+    greyed with the write-up phase stuck short of done.
+    """
+    stub_store([])
+    monkeypatch.setattr(
+        engagement_record, "_readiness",
+        lambda workspace: {"audit.verified": {"state": "satisfied"}},
+    )
+    row = _rows(engagement_record.record(_Workspace()))["audit.verified"]
+
+    assert row["held"] is True
+    assert row["runnable"] is False
+
+
+@pytest.mark.parametrize("state", ["review_required", "blocked", "missing"])
+def test_verification_that_does_not_pass_is_not_held_and_not_owed(
+    stub_store, monkeypatch, state,
+):
+    stub_store([])
+    monkeypatch.setattr(
+        engagement_record, "_readiness",
+        lambda workspace: {"audit.verified": {"state": state}},
+    )
+    result = engagement_record.record(_Workspace())
+
+    assert _rows(result)["audit.verified"]["held"] is False
+    assert "audit.verified" not in _owed(result)
 
 
 def test_a_stage_with_nothing_of_its_kind_is_neither_held_nor_owed(stub_store, tmp_path):
@@ -1696,10 +1789,12 @@ def test_an_empty_engagement_is_asked_to_import_before_anything_else(stub_store)
     assert result["next"]["start"] is None
 
 
-def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store):
+def test_a_finished_and_reviewed_engagement_proposes_nothing(stub_store, tmp_path):
     stub_store([])
+    # A finished engagement has documented its fieldwork: one paper per row.
+    _papers(tmp_path, "R1")
     workspace = _Workspace(
-        apm="# APM",
+        apm="# APM", root=tmp_path,
         # A finished engagement has a cycle: the matrix's process names come
         # from it, so a matrix that is reviewed and concluded was written
         # against one.

@@ -16,11 +16,12 @@ const PrimeVueToastSymbol = (
   PrimeVueToast as unknown as { PrimeVueToastSymbol: symbol }
 ).PrimeVueToastSymbol
 
-const { routeState, routerReplace, navTo, navPush } = vi.hoisted(() => ({
+const { routeState, routerReplace, navTo, navPush, chatSend } = vi.hoisted(() => ({
   routeState: { query: {} as Record<string, string>, params: { id: 'WS-1' } },
   routerReplace: vi.fn(),
   navTo: vi.fn((destination: string, state?: Record<string, unknown>) => ({ destination, state })),
   navPush: vi.fn(),
+  chatSend: vi.fn(),
 }))
 
 vi.mock('vue-router', async () => {
@@ -51,7 +52,7 @@ vi.mock('../composables/useAgentRun', async () => {
 })
 
 vi.mock('../composables/useAssistantChat', () => ({
-  useAssistantChat: () => ({ state: { busy: false }, createChat: vi.fn(), send: vi.fn() }),
+  useAssistantChat: () => ({ state: { busy: false }, createChat: vi.fn(), send: chatSend }),
 }))
 
 // The editors are irrelevant to sign-off and drag in CodeMirror; the grid is
@@ -217,6 +218,37 @@ describe('PlanningTab working paper', () => {
     routerReplace.mockClear(); navTo.mockClear(); navPush.mockClear()
   })
   afterEach(() => { vi.restoreAllMocks(); routeState.query = {} })
+
+  it('generates every paper from the header, scoped to the papers alone', async () => {
+    chatSend.mockClear()
+    const wrapper = mountTab([row('R1', 'draft'), row('R2', 'draft')])
+    await flushPromises()
+
+    const button = wrapper.findAll('header.page-head button')
+      .find(node => node.text().includes('Generate working papers'))
+    expect(button?.attributes('disabled')).toBeUndefined()
+    await button!.trigger('click')
+    await flushPromises()
+
+    expect(chatSend).toHaveBeenCalledWith(
+      'Generate the working papers for 2 RCM rows.', 'act', 'auto',
+      {
+        source: 'tab_button',
+        requestedOutcomes: ['working_papers.generated'],
+        // Forced, or a set that already exists is left as it was.
+        runContext: { generation_mode: 'force', requested_only: true },
+      },
+    )
+  })
+
+  it('offers no paper generation over an empty matrix', async () => {
+    const wrapper = mountTab([])
+    await flushPromises()
+
+    const button = wrapper.findAll('header.page-head button')
+      .find(node => node.text().includes('Generate working papers'))
+    expect(button?.attributes('disabled')).toBeDefined()
+  })
 
   it('sends the row drawer to the paper tab of the row it belongs to', async () => {
     const wrapper = mountTab([row('R1', 'draft'), row('R2', 'draft')])

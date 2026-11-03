@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app import data_tests, report, workspaces
+from app import data_tests, report, working_papers, workspaces
 from app.agent.executors.reporting import (
     REPORT_DRAFT_REF,
     VERIFICATION_REF,
@@ -73,6 +73,24 @@ def test_generate_working_paper_commits_paper_and_returns_stable_ref():
     paper = json.loads(paper_path.read_text(encoding="utf-8"))
     assert paper["rcm_id"] == row["id"]
     assert paper["markdown"].startswith(f"# RCM Working Paper — {row['id']}")
+
+
+def test_the_paper_index_names_only_rows_with_a_readable_paper():
+    """What the matrix's paper column reads: one rule with the readiness."""
+    ws = workspaces.create_workspace("Working paper index")
+    written = ws.add_rcm({"process": "AP", "risk": "Duplicate payments"})
+    unwritten = ws.add_rcm({"process": "AP", "risk": "Unapproved vendors"})
+    broken = ws.add_rcm({"process": "AP", "risk": "Late invoices"})
+
+    generate_working_paper(ws, written["id"])
+    (ws.root / "WorkingPapers" / f"{broken['id']}.json").write_text("{not json", encoding="utf-8")
+
+    index = working_papers.rcm_paper_index(ws)
+
+    assert set(index) == {written["id"]}
+    assert index[written["id"]]
+    assert working_papers.stored_rcm_paper(ws, unwritten["id"]) is None
+    assert working_papers.stored_rcm_paper(ws, broken["id"]) is None
 
 
 def test_generate_working_paper_is_deterministic_over_unchanged_state():

@@ -25,8 +25,10 @@ const props = defineProps<{
   findingRollups?: FindingRollups
   /** The row the drawer beside the grid has open. */
   selectedId?: string | null
+  /** RCM row id → when its working paper was generated; absent rows have none. */
+  papers?: Record<string, string>
 }>()
-const emit = defineEmits<{ open: [RcmRow] }>()
+const emit = defineEmits<{ open: [RcmRow]; paper: [RcmRow] }>()
 
 const CONCLUSIONS: Record<string, { label: string; tone: string }> = {
   effective: { label: 'Effective', tone: 'ok' },
@@ -85,6 +87,14 @@ function exceptions(row: RcmRow) { return row.execution_rollup.exceptions ?? 0 }
 function findingsFor(row: RcmRow): FindingSummary[] {
   return props.findingRollups?.by_rcm[row.id] ?? []
 }
+function hasPaper(row: RcmRow) { return Boolean(props.papers && row.id in props.papers) }
+function paperTitle(row: RcmRow) {
+  const at = props.papers?.[row.id]
+  const when = at ? new Date(at) : null
+  return when && !Number.isNaN(when.getTime())
+    ? `Open the working paper (generated ${when.toLocaleString()})`
+    : 'Open the working paper'
+}
 /** The `RCM-` prefix is on every row, so it identifies nothing. */
 function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 </script>
@@ -93,7 +103,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
   <div class="rcm-grid">
     <div class="head" role="row">
       <span>Risk</span><span>Statement</span><span>Control</span><span>Tests</span>
-      <span>Conclusion</span><span>Finding</span><span>Review</span><span />
+      <span>Conclusion</span><span>Finding</span><span>Paper</span><span>Review</span><span />
     </div>
 
     <template v-for="group in groups" :key="group.process">
@@ -109,13 +119,19 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
       </button>
 
       <template v-if="!collapsed.has(group.process)">
-        <button
+        <!-- A focusable div rather than a button, because the paper column
+             holds a control of its own and a button cannot contain one. Enter
+             and Space open the row exactly as a click does. -->
+        <div
           v-for="row in group.rows"
           :key="row.id"
-          type="button"
+          role="button"
+          tabindex="0"
           class="row"
           :class="{ selected: row.id === selectedId }"
           @click="emit('open', row)"
+          @keydown.enter.self.prevent="emit('open', row)"
+          @keydown.space.self.prevent="emit('open', row)"
         >
           <span class="identity">
             <span class="row-id">{{ shortId(row) }}</span>
@@ -153,6 +169,20 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
             <span v-else class="none">—</span>
           </span>
 
+          <span class="paper">
+            <button
+              v-if="hasPaper(row)"
+              type="button"
+              class="paper-link"
+              :aria-label="`Open the working paper for ${row.id}`"
+              :title="paperTitle(row)"
+              @click.stop="emit('paper', row)"
+            >
+              <i class="aw-icon aw-icon-file-text" />
+            </button>
+            <span v-else class="none" title="No working paper yet">—</span>
+          </span>
+
           <span class="review" :data-reviewed="row.review_status === 'reviewed'">
             <i v-if="row.review_status === 'reviewed'" class="aw-icon aw-icon-circle-check" />
             <span v-else class="draft-ring" />
@@ -160,7 +190,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
           </span>
 
           <i class="aw-icon aw-icon-chevron-right go" />
-        </button>
+        </div>
       </template>
     </template>
 
@@ -179,7 +209,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
    without a table and without the frozen-column shadows the old grid needed. */
 .head, .row {
   display: grid;
-  grid-template-columns: 6rem minmax(0, 1.2fr) minmax(0, 1.2fr) 7.5rem 8.125rem 8rem 5.25rem 1.75rem;
+  grid-template-columns: 6rem minmax(0, 1.2fr) minmax(0, 1.2fr) 7.5rem 8.125rem 8rem 3rem 5.25rem 1.75rem;
   gap: 0 .875rem;
   align-items: center;
   min-width: 0;
@@ -266,6 +296,18 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 .findings .more { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 .findings .none { color: var(--aw-border-strong); font-size: var(--aw-text-sm); }
 
+.paper { display: flex; align-items: center; }
+.paper .none { color: var(--aw-border-strong); font-size: var(--aw-text-sm); }
+.paper-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.75rem; height: 1.75rem; padding: 0;
+  border: 1px solid transparent; border-radius: var(--aw-radius-control);
+  background: none; color: var(--aw-teal); font: inherit; cursor: pointer;
+}
+.paper-link:hover { border-color: var(--aw-border); background: var(--aw-panel); }
+.paper-link:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
+.paper-link .aw-icon { font-size: var(--aw-text-base); }
+
 .review { display: inline-flex; align-items: center; gap: .3125rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .review[data-reviewed='true'] { color: var(--aw-ok); }
 .review .aw-icon { font-size: var(--aw-text-sm); }
@@ -279,7 +321,7 @@ function shortId(row: RcmRow) { return row.id.replace(/^RCM-/, '') }
 /* Below this the verdict columns are what survive: the two prose columns are
    the ones a reader can open the row for. */
 @container workspace-panel (max-width: 66rem) {
-  .head, .row { grid-template-columns: 6rem minmax(0, 1.4fr) 6.875rem 8.125rem 5.25rem 1.75rem; }
+  .head, .row { grid-template-columns: 6rem minmax(0, 1.4fr) 6.875rem 8.125rem 3rem 5.25rem 1.75rem; }
   .head > :nth-child(3), .row > :nth-child(3) { display: none; }
   .head > :nth-child(6), .row > :nth-child(6) { display: none; }
 }

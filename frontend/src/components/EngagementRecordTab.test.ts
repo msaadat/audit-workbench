@@ -200,7 +200,8 @@ const PLAN: Array<[phase: string, capability: string, label: string]> = [
   ['planning', 'tests.specified', 'Test programme'],
   ['fieldwork', 'fieldwork.executed', 'Fieldwork results'],
   ['fieldwork', 'results.rolled_up', 'Control conclusions'],
-  ['fieldwork', 'findings.drafted', 'Findings register'],
+  ['fieldwork', 'working_papers.generated', 'Working papers'],
+  ['writeup', 'findings.drafted', 'Findings register'],
   ['writeup', 'report.working_draft', 'Report'],
   ['writeup', 'audit.verified', 'Verification'],
 ]
@@ -209,7 +210,7 @@ const PLAN: Array<[phase: string, capability: string, label: string]> = [
 const HELD = ['sources.imported', 'analysis.executed', 'documents.analysis_generated']
 
 /**
- * The whole plan as one payload — eleven stages across four phases, the named
+ * The whole plan as one payload — twelve stages across four phases, the named
  * ones held and the first stage after them the lead. The phase sections are
  * about the shape of the whole record, so they are the one thing that cannot
  * be tested on a two-row fixture.
@@ -1368,7 +1369,7 @@ describe('EngagementRecordTab', () => {
     const later = wrapper.findAll('.phase')[2]
 
     expect(later.find('.pnames').text()).toBe(
-      'Fieldwork results · Control conclusions · Findings register',
+      'Fieldwork results · Control conclusions · Working papers',
     )
     expect(later.findAll('.row')).toHaveLength(0)
   })
