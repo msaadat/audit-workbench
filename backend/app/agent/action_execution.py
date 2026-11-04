@@ -204,7 +204,14 @@ class ActionExecution(BaseRunner):
                 continue
             proposed = next((action for action in self.run["actions"] if action["status"] == "proposed"), None)
             if proposed:
-                self._resolve_and_gate(proposed)
+                try:
+                    self._resolve_and_gate(proposed)
+                except (WorkspaceError, ValueError) as error:
+                    # A proposal its own gating rejects is settled here, not
+                    # left proposed: the pump takes the first proposed action,
+                    # so one bad proposal re-raised its error on every later
+                    # call and no other action in the run could execute.
+                    self._reject_proposal(proposed, error)
                 continue
             ready = next((action for action in self.run["actions"] if action["status"] == "ready" and self._dependencies_succeeded(action)), None)
             if ready:
@@ -214,6 +221,20 @@ class ActionExecution(BaseRunner):
                 time.sleep(0.05)
                 continue
             break
+
+    def _reject_proposal(self, action: dict, error: Exception) -> None:
+        """Settle a proposal its gating refused as ``failed``, with the reason."""
+
+        action["error"] = str(error)
+        action["finished_at"] = store.utcnow()
+        ledger.transition(action, "failed")
+        self._save_action(action)
+        self.set_activity(
+            "actions.failed",
+            "Action failed; continuing safely",
+            detail=str(error),
+            action_id=action["id"],
+        )
 
     def _pending_target_producer(self, action: dict) -> dict | None:
         """Return a dependency that will create this action's target locally."""

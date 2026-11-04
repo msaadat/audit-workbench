@@ -797,12 +797,33 @@ class AnalysisWorkflowExecution(BaseRunner):
     ) -> None:
         """Report the diagnosed relationships the utility gate did not admit."""
 
-        rejected = [
-            item
-            for item in list(record["strong"]) + list(record["moderate"])
-            if item is not applied
-            and decisions.get(str(item.get("ref")), {}).get("decision") != "retain"
-        ]
+        def key_pair(item: dict) -> frozenset:
+            # Unordered, so the same relationship diagnosed from either table
+            # is one relationship.
+            return frozenset((
+                tuple(item.get("left_on") or ()), tuple(item.get("right_on") or ()),
+            ))
+
+        applied_ref = str((applied or {}).get("ref") or "")
+        applied_pair = key_pair(applied) if applied is not None else None
+        rejected = []
+        seen_pairs: set[frozenset] = set()
+        for item in list(record["strong"]) + list(record["moderate"]):
+            # Identity alone let a copy of the applied candidate, or the same
+            # keys diagnosed in the other direction, be reported as "not
+            # applied" beside the one that was.
+            if applied is not None and (
+                item is applied
+                or (applied_ref and str(item.get("ref") or "") == applied_ref)
+                or key_pair(item) == applied_pair
+            ):
+                continue
+            if decisions.get(str(item.get("ref")), {}).get("decision") == "retain":
+                continue
+            if key_pair(item) in seen_pairs:
+                continue
+            seen_pairs.add(key_pair(item))
+            rejected.append(item)
         if not rejected:
             return
         described = "; ".join(

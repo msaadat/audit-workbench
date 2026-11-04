@@ -594,6 +594,53 @@ def test_interrupted_run_can_resume_to_completion(fake_agent_llm):
     assert done["status"] == "completed"
 
 
+def test_recovery_leaves_a_steering_loops_running_child_alone():
+    """A child shares its parent's thread; it is live, not orphaned.
+
+    Recovery used the thread-deduplicated admission list, so whichever of
+    parent and child registered second was marked interrupted on every run
+    listing while it was still executing.
+    """
+
+    ws = workspaces.create_workspace("Live child engagement")
+    parent = store.new_command_run(ws, "auto", {"source": "loop", "text": "Do work"})
+    child = store.new_command_run(
+        ws, "auto", {"source": "loop", "text": "Child work"}, parent_run_id=parent["id"]
+    )
+    unregistered = store.new_command_run(
+        ws, "auto", {"source": "loop", "text": "Not yet registered"},
+        parent_run_id=parent["id"],
+    )
+    orphan = store.new_command_run(ws, "auto", {"source": "loop", "text": "Orphan"})
+    for run in (parent, child, unregistered, orphan):
+        run["status"] = "executing"
+        store.save_run(ws, run)
+
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    parent_handle = runner.RunHandle(ws.id, parent["id"], owner_id=ws.owner_id)
+    parent_handle.thread = thread
+    child_handle = runner.RunHandle.child_of(parent_handle, child["id"])
+    with runner._HANDLES_LOCK:
+        runner._HANDLES[parent["id"]] = parent_handle
+        runner._HANDLES[child["id"]] = child_handle
+    try:
+        recovered = runner.recover_workspace(ws)
+    finally:
+        with runner._HANDLES_LOCK:
+            runner._HANDLES.pop(parent["id"], None)
+            runner._HANDLES.pop(child["id"], None)
+        release.set()
+        thread.join(timeout=5)
+
+    assert recovered == [orphan["id"]]
+    for run in (parent, child, unregistered):
+        persisted = store.load_run(ws, run["id"])
+        assert persisted["status"] == "executing"
+        assert not persisted["warnings"]
+
+
 # ------------------------------------------------------- terminal follow-ups
 def test_a_finished_intake_run_follows_up_as_a_command_run(monkeypatch):
     """Text sent to a finished protocol run starts a command run, not a replay."""

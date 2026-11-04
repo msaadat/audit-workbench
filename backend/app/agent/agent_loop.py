@@ -29,7 +29,7 @@ from ..workspaces import Workspace, WorkspaceError, write_json_atomic
 from . import loop_tools, narration, prompts, store
 from ..assistant_tools import ReadToolSession, loop_tool_schemas
 from .base import BaseRunner
-from .runtime import Cancelled, LimitExceeded
+from .runtime import Cancelled, LimitExceeded, ModelResponseUnusable
 
 #: One tool result the model is handed, at most this long. A read that returns
 #: more than this is one the loop should have narrowed.
@@ -169,12 +169,18 @@ class AgentLoop(BaseRunner):
         except LimitExceeded as error:
             self.warn(str(error))
             self._close("completed_with_open_items", note=self._stopped_note(error))
-        except llm.LLMError as error:
+        except (llm.LLMError, ModelResponseUnusable) as error:
+            # An empty completion after the gateway's own retry is the provider
+            # stopping the request, like any other provider error. It used to
+            # fall through to "failed" with a note saying nothing was finished,
+            # after the child runs had committed the work the auditor asked for.
             self.warn(str(error))
             self._close("completed_with_open_items", note=self._stopped_note(error))
         except Exception as error:  # a fault, not an outcome
             self.run["error"] = str(error)
-            self._close("failed")
+            # Still say what committed: a fault in the loop does not undo the
+            # work its child runs already wrote.
+            self._close("failed", note=self._stopped_note(error))
 
     def _install_prompt_budget(self) -> None:
         """Size the prompt-token cap from what one loop turn actually sends.
@@ -210,15 +216,17 @@ class AgentLoop(BaseRunner):
         limits["max_estimated_prompt_tokens"] = turns * (turn_characters // 4)
         self.save()
 
-    def _stopped_note(self, error: Exception) -> str:
+    def _stopped_note(self, error: Exception | None = None, *, opening: str = "") -> str:
         """What a request a limit or the provider stopped says it left behind.
 
         The bare error read as though something had been half done. Whether
         anything changed is the first thing the auditor needs, and the record
-        already knows: the child runs it started and the actions it took.
+        already knows: the child runs it started and the actions it took — and
+        the actions it tried that never ran, which is what a coordinator reading
+        this later needs in order not to claim the work was never asked for.
         """
 
-        lines = [f"I stopped before finishing: {error}."]
+        lines = [opening or f"I stopped before finishing: {error}."]
         account = self._committed_account()
         if account:
             self.run["committed_account"] = account["items"]
@@ -232,6 +240,21 @@ class AgentLoop(BaseRunner):
         )
         if acted:
             lines.append("Actions that ran: " + ", ".join(acted) + ".")
+        unrun = [
+            action for action in self.run.get("actions") or []
+            if action.get("status") != "succeeded"
+        ]
+        if unrun:
+            lines.append(
+                "Actions that did not run: "
+                + "; ".join(
+                    f"{action.get('type')} ({action.get('status')}"
+                    + (f": {str(action['error'])[:160]}" if action.get("error") else "")
+                    + ")"
+                    for action in unrun[-6:]
+                )
+                + "."
+            )
         if not self.run.get("children") and not acted:
             lines.append("Nothing was changed.")
         lines.append("Tell me what to do next and I'll carry on.")
@@ -246,10 +269,11 @@ class AgentLoop(BaseRunner):
             if turns >= maximum:
                 self._close(
                     "completed_with_open_items",
-                    note=(
-                        "I stopped after "
-                        f"{turns} steps, which is as far as one request goes. "
-                        "Tell me what to do next and I'll carry on."
+                    note=self._stopped_note(
+                        opening=(
+                            f"I stopped after {turns} steps, which is as far as "
+                            "one request goes."
+                        ),
                     ),
                 )
                 return

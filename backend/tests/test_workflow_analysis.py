@@ -4542,3 +4542,40 @@ def test_the_memo_endpoint_reports_staleness(workspace_with_data):
     )
     analysis_results.execute_and_record(later, added["id"])
     assert client.get(f"/api/workspaces/{ws.id}/analyses/memo").json()["stale"] is True
+
+
+def test_the_join_warning_never_lists_the_applied_key_as_not_applied():
+    """A copy of the applied candidate, or its reverse, is the applied join.
+
+    Filtered by identity, the warning read "only DEAL_ID → DEAL_ID was
+    materialized. Not applied: DEAL_ID → DEAL_ID".
+    """
+
+    from app.agent.analysis_execution import AnalysisWorkflowExecution
+
+    class Stub:
+        def __init__(self):
+            self.warnings: list[str] = []
+
+        def warn(self, text: str) -> None:
+            self.warnings.append(text)
+
+    applied = {"ref": "R1", "left_on": ["DEAL_ID"], "right_on": ["DEAL_ID"]}
+    record = {
+        "strong": [dict(applied)],
+        "moderate": [
+            {"ref": "R2", "left_on": ["DEAL_ID"], "right_on": ["DEAL_ID"]},
+            {"ref": "R3", "left_on": ["DEALER_ID"], "right_on": ["CONFIRMED_BY_ID"]},
+            {"ref": "R4", "left_on": ["DEALER_ID"], "right_on": ["CONFIRMED_BY_ID"]},
+        ],
+    }
+    stub = Stub()
+
+    AnalysisWorkflowExecution._warn_gate_rejection(
+        stub, "deals", "confirmations", record, {}, applied=applied
+    )
+
+    (warning,) = stub.warnings
+    not_applied = warning.split("Not applied:", 1)[1]
+    assert "DEAL_ID → DEAL_ID" not in not_applied
+    assert not_applied.count("DEALER_ID → CONFIRMED_BY_ID") == 1

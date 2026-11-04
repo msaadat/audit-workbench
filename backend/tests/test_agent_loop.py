@@ -12,7 +12,7 @@ import json
 import pytest
 
 from app import assistant, assistant_chats, llm, workspaces
-from app.agent import agent_loop, loop_tools, routing, runner, store
+from app.agent import agent_loop, ledger, loop_tools, routing, runner, store
 from app.workspaces import WorkspaceError
 from conftest import FakeAgentLLM, stamp_planning_cycle, wait_run
 
@@ -350,6 +350,65 @@ def test_the_turn_budget_ends_the_request_with_open_items(
     assert run["status"] == "completed_with_open_items"
     assert "as far as one request goes" in run["messages"][-1]["content"]
     assert run["children"] == []
+
+
+def test_an_action_its_gating_refuses_does_not_block_later_actions(
+    monkeypatch, workspace_with_data
+):
+    """One refused proposal settles as failed and leaves the ledger usable.
+
+    It used to stay ``proposed``; the pump resolves the first proposed action
+    on every call, so each later action re-raised the first one's error.
+    """
+
+    table = workspace_with_data.table_names()[0]
+    column = workspace_with_data.get_frame(table).columns[0]
+    script = LoopScript(
+        tool_turn(
+            "create_validation_rules",
+            {"args": {
+                "title": "Missing code",
+                "table": table,
+                "rules": [{"check": "expression", "column": column, "params": {}}],
+            }},
+        ),
+        tool_turn(
+            "run_analytics",
+            {"args": {"table": table, "test": "completeness", "params": {"columns": [column]}}},
+            "call_2",
+        ),
+        finish_turn("Checked completeness."),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop(workspace_with_data, text="Check completeness.")
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    refused, analytic = run["actions"]
+    assert refused["status"] == "failed"
+    assert "Expression needs Polars code" in refused["error"]
+    assert analytic["status"] == "succeeded"
+    results = [
+        json.loads(item["content"])
+        for item in agent_loop.ConversationStore(workspace_with_data, run["id"]).load()["messages"]
+        if item["role"] == "tool"
+    ]
+    assert "Expression needs Polars code" not in json.dumps(results[1])
+
+
+def test_a_retry_of_a_failed_action_is_not_a_duplicate_intent(workspace_with_data):
+    ws = workspace_with_data
+    run = store.new_command_run(ws, "auto", {"source": "loop", "text": "Do work"})
+    table = ws.table_names()[0]
+    proposal = {"type": "run_analytics", "args": {"table": table, "test": "completeness"}}
+    first = ledger.append_actions(run, [proposal])[0]
+    first["status"] = "failed"
+
+    retried = ledger.append_actions(run, [proposal])
+
+    assert len(retried) == 1 and len(run["actions"]) == 2
+    with pytest.raises(WorkspaceError, match="duplicate action intent"):
+        ledger.append_actions(run, [proposal])
 
 
 def test_a_finish_with_an_unfinished_child_is_refused(workspace_with_data, monkeypatch):
@@ -1292,3 +1351,54 @@ def test_a_request_a_limit_stops_says_whether_anything_changed(monkeypatch):
     assert run["status"] == "completed_with_open_items"
     assert "I stopped before finishing" in run["summary_markdown"]
     assert "Nothing was changed." in run["summary_markdown"]
+
+
+def test_an_empty_final_turn_after_committed_work_is_not_a_failure(
+    monkeypatch, workspace_with_data
+):
+    """The provider returning nothing ends the request, not the work.
+
+    It fell through to the generic fault handler, so a request whose child
+    run had committed what the auditor asked for closed as ``failed`` saying
+    it could not finish.
+    """
+
+    script = LoopScript(
+        tool_turn("run_outcomes", {"requested_outcomes": [APM_OUTCOME]}),
+        {"content": ""},
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop(workspace_with_data)
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    assert run["status"] == "completed_with_open_items"
+    assert len(run["children"]) == 1
+    closing = run["summary_markdown"]
+    assert closing.startswith("I stopped before finishing")
+    assert "What the runs actually did:" in closing
+
+
+def test_the_turn_cap_names_actions_that_never_ran(monkeypatch, workspace_with_data):
+    table = workspace_with_data.table_names()[0]
+    column = workspace_with_data.get_frame(table).columns[0]
+    script = LoopScript(
+        tool_turn(
+            "create_validation_rules",
+            {"args": {
+                "title": "Missing code",
+                "table": table,
+                "rules": [{"check": "expression", "column": column, "params": {}}],
+            }},
+        ),
+        tool_turn("get_audit_progress", {}, "call_2"),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop_with_limits(workspace_with_data, {"max_loop_turns": 2})
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    closing = run["summary_markdown"]
+    assert "as far as one request goes" in closing
+    assert "Actions that did not run: create_validation_rules (failed" in closing
+    assert "Expression needs Polars code" in closing

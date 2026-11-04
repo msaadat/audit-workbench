@@ -686,7 +686,10 @@ class LoopTools:
         except WorkspaceError as error:
             raise ToolError(str(error)) from error
         action = created[0]
-        action_catalog.canonicalize_action_fields(self.ws, action)
+        # Canonicalization runs inside gating, where a refusal settles this
+        # action as failed. Running it here first raised out of the tool with
+        # the action already in the ledger and still proposed — and the pump
+        # retries the first proposed action on every later call.
         self.loop.save()
         execution.drive_actions()
         settled = next(

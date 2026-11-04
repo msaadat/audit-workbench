@@ -9,7 +9,7 @@ import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
-import { useAssistantChat } from '../../composables/useAssistantChat'
+import { ChatNotSentError, useAssistantChat } from '../../composables/useAssistantChat'
 import type { AgentApproval, AgentDecision, AgentInteraction, AssistantChat, AssistantMessageIntent, AssistantSuggestion, AuditDocument, WorkspaceSummary } from '../../types'
 import ChatComposer from './ChatComposer.vue'
 import ChatTranscript from './ChatTranscript.vue'
@@ -27,6 +27,7 @@ const toast = useToast()
 const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
 const chats = useAssistantChat(props.workspace.id)
+const composerRef = ref<InstanceType<typeof ChatComposer> | null>(null)
 const pickerOpen = ref(false)
 const actionBusy = ref(false)
 const renameOpen = ref(false)
@@ -91,7 +92,12 @@ async function loadDocuments() {
 async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', command?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer', requestedOutcomes?: string[]) {
   try {
     await chats.send(content, sendIntent, mode.value, { command, source, requestedOutcomes })
-  } catch (error) { fail('Message failed', error) }
+  } catch (error) {
+    // The composer cleared its draft on submit; a message the server never
+    // saw goes back into it rather than disappearing.
+    if (error instanceof ChatNotSentError && source === 'composer') composerRef.value?.restore(content)
+    fail('Message not sent', error)
+  }
 }
 function nextStep(suggestion: AssistantSuggestion) {
   // An offer the agent left as a question goes back as a question: it has no
@@ -197,6 +203,7 @@ defineExpose({ rename, remove })
     <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" :needsSources="needsSources" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @import="shell?.requestImport()" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
     <ChatComposer
       v-if="activeChat"
+      ref="composerRef"
       v-model:mode="mode"
       :busy="chats.state.busy"
       :capabilities="chats.state.capabilities"

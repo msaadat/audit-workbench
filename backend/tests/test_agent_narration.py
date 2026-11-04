@@ -635,6 +635,83 @@ def test_a_queued_command_that_later_ran_shows_the_run_it_became(workspace_with_
     assert cards[1]["source_message_id"] == "msg_queued"
 
 
+def _queued_message(ws, chat_id: str, run_id: str, command_id: str) -> None:
+    record = assistant_chats._read(ws, chat_id)
+    record["messages"].append({
+        "id": f"msg_{command_id}", "ordinal": 1, "role": "user", "kind": "text",
+        "content": "Draft the findings.", "created_at": "2026-07-26T00:00:00+00:00",
+        "state": "complete", "requested_intent": "act", "resolved_intent": "act",
+        "reply_to_id": None, "artifact_ids": [], "error": None,
+        "outcome": {"kind": "command_queued", "run_id": run_id, "command_id": command_id, "position": 2},
+    })
+    write_json_atomic(assistant_chats._chat_path(ws, chat_id), record)
+
+
+def test_a_queued_command_handed_to_the_next_run_still_reads_as_queued(workspace_with_data):
+    """The queue travels with the run that starts; the card follows it.
+
+    Reading only the run it was first queued behind, the card said "Didn't
+    run" the moment that run finished — for a command still waiting its turn.
+    """
+
+    ws = workspace_with_data
+    owner = assistant_chats.create_chat(ws)
+    chat = assistant_chats.create_chat(ws)
+    first = store.new_command_run(ws, "auto", {"source": "chat", "text": "generate the apm", "chat_id": owner["id"]})
+    second = store.new_command_run(ws, "auto", {"source": "chat", "text": "draft the rcm", "chat_id": owner["id"]})
+    first["status"] = "completed"
+    first["launched_commands"] = {"cmd_0": second["id"]}
+    first["forwarded_commands"] = {"cmd_1": second["id"]}
+    second["status"] = "executing"
+    second["pending_commands"] = [{"id": "cmd_1", "text": "Draft the findings."}]
+    store.save_run(ws, first)
+    store.save_run(ws, second)
+    _queued_message(ws, chat["id"], first["id"], "cmd_1")
+
+    card = next(
+        item for item in assistant_chats.get_chat(ws, chat["id"])["transcript"]
+        if item.get("type") == "run" and ":command:" in item["id"]
+    )
+    assert card["status_label"] == "Queued"
+    assert "draft the rcm" in card["current_activity"]
+
+
+def test_a_command_held_when_its_run_was_stopped_reads_as_not_run(workspace_with_data):
+    ws = workspace_with_data
+    owner = assistant_chats.create_chat(ws)
+    chat = assistant_chats.create_chat(ws)
+    run = store.new_command_run(ws, "auto", {"source": "chat", "text": "generate the apm", "chat_id": owner["id"]})
+    run["status"] = "cancelled"
+    run["unrun_commands"] = [{"id": "cmd_1", "status": "not_run"}]
+    store.save_run(ws, run)
+    _queued_message(ws, chat["id"], run["id"], "cmd_1")
+
+    card = next(
+        item for item in assistant_chats.get_chat(ws, chat["id"])["transcript"]
+        if item.get("type") == "run" and ":command:" in item["id"]
+    )
+    assert card["status_label"] == "Didn't run"
+
+
+def test_a_request_queued_behind_a_paused_run_tells_the_coordinator_it_has_not_started(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    run = store.new_command_run(ws, "auto", {"source": "chat", "text": "full audit"})
+    run["status"] = "paused"
+    store.save_run(ws, run)
+
+    outcome = assistant_chats._queued_outcome(
+        ws, run["id"], {"command": {"id": "cmd_1"}, "position": 2}, {"id": "msg_1"}
+    )
+
+    assert outcome["kind"] == "command_queued"
+    assert outcome["waiting_on_status"] == "paused"
+    assert outcome["position"] == 2
+    assert outcome["note"].startswith("Not started.")
+    assert "paused" in outcome["note"]
+
+
 def test_status_labels_cover_every_status_the_store_can_produce():
     known = set(store.TERMINAL_STATUSES) | set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
     assert known <= set(assistant_chats._STATUS_LABELS)

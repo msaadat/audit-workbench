@@ -1949,7 +1949,7 @@ export interface IntakeBatch {
 export interface ColumnSchema {
   name: string
   dtype: string
-  kind: 'numeric' | 'date' | 'boolean' | 'text'
+  kind: 'numeric' | 'date' | 'time' | 'boolean' | 'text'
 }
 
 export interface FramePayload {

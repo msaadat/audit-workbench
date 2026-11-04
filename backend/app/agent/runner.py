@@ -145,10 +145,26 @@ def get_handle(run_id: str) -> RunHandle | None:
     return None
 
 
+def live_run_ids() -> set[str]:
+    """Every run id with a live worker thread, child runs included.
+
+    Not :func:`live_handles`, which keeps one handle per *thread* for
+    admission: a steering-loop child shares its parent's thread, so the dedupe
+    there dropped whichever of the two came second, and recovery then marked a
+    running child interrupted on every run listing.
+    """
+
+    with _HANDLES_LOCK:
+        return {
+            run_id
+            for run_id, handle in _HANDLES.items()
+            if handle.thread and handle.thread.is_alive()
+        }
+
+
 def recover_workspace(workspace: Workspace) -> list[str]:
     """Mark runs orphaned by a restart as interrupted (idempotent)."""
-    live = {h.run_id for h in live_handles()}
-    return store.recover_orphans(workspace, live)
+    return store.recover_orphans(workspace, live_run_ids())
 
 
 # ------------------------------------------------------------ control surface
@@ -198,6 +214,7 @@ def start_command_run(
     command: dict,
     parent_run_id: str | None = None,
     context: dict | None = None,
+    pending_commands: list[dict] | None = None,
 ) -> dict:
     """Start the unified engagement command runner.
 
@@ -241,6 +258,10 @@ def start_command_run(
     # creation even if local settings change while it is paused.
     run["model_profiles"] = model_profiles
     run["model_profiles_snapshotted"] = True
+    if pending_commands:
+        # Written before the thread starts: a live worker holds its record in
+        # memory and saves over anything added beside it.
+        run["pending_commands"] = [dict(item) for item in pending_commands]
     store.save_run(workspace, run)
     from .routing import resolve_route
 
@@ -672,12 +693,21 @@ def steer(
         if handle is not None:
             with handle.lock:
                 handle.command_queue.append(command)
+                in_memory = len(handle.command_queue)
             handle.command_queued.set()
         else:
+            in_memory = 0
             run.setdefault("pending_commands", []).append(command)
             store.save_run(workspace, run)
         store.append_event(workspace, run_id, "command_queued", {"command": command})
-        return {"handled": "queued_command", "run": run, "command": command}
+        # Both halves of the queue: a live handle holds new requests in memory
+        # until an engine drains them, so counting the record alone put every
+        # request "first in line".
+        position = len(run.get("pending_commands") or []) + in_memory
+        return {
+            "handled": "queued_command", "run": run, "command": command,
+            "position": max(1, position),
+        }
 
     # The only non-command run left is folder intake: an operational import,
     # not an engagement command. Once it has finished, text entered in the
@@ -939,25 +969,63 @@ def _execute(seed: Workspace, run_id: str, handle: RunHandle) -> None:
             if stranded:
                 finished.setdefault("pending_commands", []).extend(stranded)
                 store.save_run(workspace, finished)
-            if store.is_command_run(finished) and finished["status"] in store.TERMINAL_STATUSES:
+            if store.is_command_run(finished) and finished["status"] == "cancelled":
+                _hold_queue_after_cancel(workspace, finished)
+            elif store.is_command_run(finished) and finished["status"] in store.TERMINAL_STATUSES:
                 _launch_next_command(workspace, finished)
         except Exception:
             pass
+
+
+def _hold_queue_after_cancel(workspace: Workspace, run: dict) -> None:
+    """A run the auditor stopped does not hand its queue on.
+
+    The queue holds "do this after the current run". After a stop that is no
+    longer what was asked: the oldest request — often one the auditor had
+    already overtaken — used to start the moment the run died, while the newer
+    ones were left behind on the cancelled record. Each is settled as not run,
+    with the reason, and the chat offers to send it again.
+    """
+
+    pending = list(run.get("pending_commands") or [])
+    if not pending:
+        return
+    for command in pending:
+        command["status"] = "not_run"
+        command["not_run_reason"] = "The run it was queued behind was stopped."
+    run["pending_commands"] = []
+    run.setdefault("unrun_commands", []).extend(pending)
+    store.save_run(workspace, run)
+    store.append_event(
+        workspace, run["id"], "commands_not_run",
+        {"command_ids": [command.get("id") for command in pending], "reason": "cancelled"},
+    )
 
 
 def _launch_next_command(workspace: Workspace, run: dict) -> None:
     pending = run.get("pending_commands") or []
     if not pending:
         return
-    command = pending.pop(0)
+    command, rest = pending[0], pending[1:]
+    run["pending_commands"] = []
     store.save_run(workspace, run)
     try:
-        start_command_run(
+        # The rest of the queue travels with the run that starts now. Left on
+        # this finished record, nothing would ever start them: only a run's own
+        # end launches its queue.
+        started = start_command_run(
             workspace, run["mode"], command, parent_run_id=run["id"],
             context=command.get("run_context") or {},
+            **({"pending_commands": rest} if rest else {}),
         )
     except Exception as error:
         run = store.load_run(workspace, run["id"])
-        run.setdefault("pending_commands", []).insert(0, command)
+        run["pending_commands"] = [command, *rest]
         run.setdefault("warnings", []).append(f"Queued command could not start yet: {error}")
         store.save_run(workspace, run)
+        return
+    run = store.load_run(workspace, run["id"])
+    run.setdefault("launched_commands", {})[str(command.get("id") or "")] = started["id"]
+    for item in rest:
+        run.setdefault("forwarded_commands", {})[str(item.get("id") or "")] = started["id"]
+    store.save_run(workspace, run)

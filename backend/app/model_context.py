@@ -47,7 +47,7 @@ def project_column_profile(
         "nulls_pct": profile["blank_pct"],
         "distinct": profile["distinct_count"],
     }
-    if profile["inferred_type"] in ("numeric", "date"):
+    if profile["inferred_type"] in ("numeric", "date", "time"):
         meta.update(min=profile.get("min"), max=profile.get("max"))
         if profile.get("mean") is not None:
             meta["mean"] = profile["mean"]

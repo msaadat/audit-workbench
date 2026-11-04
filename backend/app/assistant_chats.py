@@ -551,6 +551,39 @@ def _orphaned_run(workspace: Workspace, summary: dict) -> bool:
         return True
 
 
+#: How far a queued command is followed from run to run. A queue is handed on
+#: one run at a time, so this only bounds a pathological chain.
+_QUEUE_FOLLOW_HOPS = 8
+
+
+def _queued_command_fate(
+    workspace: Workspace, run: dict, command_id: str
+) -> tuple[str, dict]:
+    """Where a queued command went: ``launched``, ``not_run`` or ``queued``.
+
+    A command queued behind run A may start when A ends, or be handed on with
+    the rest of A's queue to the run that started instead. Reading only A, the
+    card called every such command "Didn't run" — including the one that did.
+    Returns the fate and the run the command now sits on (or started from).
+    """
+
+    for _hop in range(_QUEUE_FOLLOW_HOPS):
+        if not command_id:
+            return "queued", run
+        if command_id in (run.get("launched_commands") or {}):
+            return "launched", run
+        if any(item.get("id") == command_id for item in run.get("unrun_commands") or []):
+            return "not_run", run
+        forwarded = (run.get("forwarded_commands") or {}).get(command_id)
+        if not forwarded:
+            return "queued", run
+        try:
+            run = store.load_run(workspace, forwarded)
+        except WorkspaceError:
+            return "queued", run
+    return "queued", run
+
+
 def _active_run(workspace: Workspace, summaries: list[dict] | None = None) -> dict | None:
     active = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
     if summaries is None:
@@ -907,9 +940,7 @@ def _launch_command(
         # the opposite of what happened.
         if response.get("handled") == "steering":
             return {"kind": "steering_delivered", "run_id": active["id"]}
-        queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
-        pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
-        return {"kind": "command_queued", "run_id": active["id"], "command_id": (queued or {}).get("id"), "position": max(1, pending_count)}
+        return _queued_outcome(workspace, active["id"], response, user)
 
     parent_id = None
     for item in reversed(record.get("messages") or []):
@@ -946,8 +977,46 @@ def _launch_command(
             requested_outcomes=requested_outcomes,
             generation_mode=generation_mode,
         )
-        queued = response.get("command") or {}
-        return {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}
+        return _queued_outcome(workspace, raced["id"], response, user)
+
+
+def _queued_outcome(workspace: Workspace, run_id: str, response: dict, user: dict) -> dict:
+    """A request that waits behind another run, stated so it cannot be misread.
+
+    This dict is what the coordinator's ``start_command``/``take_action`` tool
+    returns. With only a kind and a position, the model told the auditor the
+    work was "now underway" while it sat behind a paused run that would never
+    finish on its own. The note says what is true, and the status of the run
+    being waited on says why.
+    """
+
+    waiting_on = store.load_run(workspace, run_id)
+    queued = response.get("command") or next(
+        (
+            item for item in reversed(waiting_on.get("pending_commands") or [])
+            if item.get("source_message_id") == user["id"]
+        ),
+        None,
+    ) or {}
+    status = str(waiting_on.get("status") or "")
+    position = int(response.get("position") or 1)
+    if status == "paused":
+        note = (
+            "Not started. This request is queued behind a run that is paused; "
+            "it starts only after that run finishes. Tell the auditor it is "
+            "queued, not underway, and that they can resume or stop the paused "
+            "run to let it start."
+        )
+    else:
+        note = (
+            "Not started. This request is queued and starts when the current "
+            f"run finishes (position {position}). Tell the auditor it is queued, "
+            "not underway."
+        )
+    return {
+        "kind": "command_queued", "run_id": run_id, "command_id": queued.get("id"),
+        "position": position, "waiting_on_status": status, "note": note,
+    }
 
 
 def _commander(
@@ -1639,13 +1708,22 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         elif run_id and outcome.get("kind") == "command_queued":
             try:
                 parent_run = linked_runs.get(run_id) or store.load_run(workspace, run_id)
+                fate, parent_run = _queued_command_fate(
+                    workspace, parent_run, str(outcome.get("command_id") or "")
+                )
+                if fate == "launched":
+                    # It ran: the queue handed it on when the run ahead ended.
+                    # Its own run card is placed with the unplaced links below.
+                    continue
                 parent = _run_projection(parent_run)
                 position = (item.get("outcome") or {}).get("position") or 1
                 # A command only leaves the queue when its parent finishes
-                # cleanly. A parent that died, or whose chat was deleted, will
-                # never drain it, and reporting that as "queued" waits forever.
+                # cleanly. A parent that died, was stopped, or whose chat was
+                # deleted will never drain it, and reporting that as "queued"
+                # waits forever.
                 stranded = (
-                    parent_run.get("status") in store.TERMINAL_STATUSES
+                    fate == "not_run"
+                    or parent_run.get("status") in store.TERMINAL_STATUSES
                     or _orphaned_run(workspace, parent)
                 )
                 # The card sits directly beneath the message that produced it,

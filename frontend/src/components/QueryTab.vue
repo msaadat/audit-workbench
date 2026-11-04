@@ -89,6 +89,7 @@ function fieldIcon(field: string): string {
   const kind = kindOf(field)
   if (kind === 'numeric') return 'aw-icon aw-icon-hash'
   if (kind === 'date') return 'aw-icon aw-icon-calendar'
+  if (kind === 'time') return 'aw-icon aw-icon-clock'
   if (kind === 'boolean') return 'aw-icon aw-icon-square-check'
   return 'aw-icon aw-icon-text-align-start'
 }

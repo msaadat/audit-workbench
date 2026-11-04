@@ -443,9 +443,11 @@ def test_queued_commands_keep_fifo_order_and_survive_a_terminal_crash(
     monkeypatch.setattr(runner, "_launch", lambda *args: launched.append(args))
 
     runner._launch_next_command(workspace_with_data, started)
-    remaining = store.load_run(workspace_with_data, started["id"])["pending_commands"]
+    finished = store.load_run(workspace_with_data, started["id"])
 
-    assert [item["text"] for item in remaining] == ["Pin this result"]
+    # The rest of the queue travels with the run that started: left on the
+    # finished record, nothing would ever launch it.
+    assert finished["pending_commands"] == []
     assert len(launched) == 1
     follow_up = next(
         item
@@ -454,6 +456,56 @@ def test_queued_commands_keep_fifo_order_and_survive_a_terminal_crash(
     )
     # A queued follow-up is a sentence, so it drains to the steering loop.
     assert follow_up["route"]["route"] == "agent"
+    carried = store.load_run(workspace_with_data, follow_up["id"])["pending_commands"]
+    assert [item["text"] for item in carried] == ["Pin this result"]
+    assert finished["launched_commands"] == {"cmd_first": follow_up["id"]}
+    assert finished["forwarded_commands"] == {"cmd_second": follow_up["id"]}
+
+
+def test_a_stopped_run_holds_its_queue_instead_of_launching_it(
+    monkeypatch, workspace_with_data
+):
+    """Stopping a run is not "carry on with what was queued".
+
+    The oldest queued request — often one the auditor had since overtaken —
+    used to start the moment the run was cancelled.
+    """
+
+    _configured(monkeypatch)
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "loop", "text": "Do the work"}
+    )
+    run["engine"] = store.AGENT_ENGINE
+    run["status"] = "executing"
+    run["pending_commands"] = [
+        {"id": "cmd_stale", "source": "follow_up", "text": "Stop after the roll-up"},
+    ]
+    store.save_run(workspace_with_data, run)
+    started: list = []
+    monkeypatch.setattr(runner, "start_command_run", lambda *a, **k: started.append(a))
+
+    class CancelledLoop:
+        def __init__(self, workspace, record, _handle):
+            self.workspace, self.record = workspace, record
+
+        def execute(self):
+            self.record["status"] = "cancelled"
+            store.save_run(self.workspace, self.record)
+
+    from app.agent import agent_loop
+    monkeypatch.setattr(agent_loop, "AgentLoop", CancelledLoop)
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    handle.command_queue.append(
+        {"id": "cmd_newer", "source": "follow_up", "text": "Draft the findings"}
+    )
+
+    runner._execute(workspace_with_data, run["id"], handle)
+
+    stopped = store.load_run(workspace_with_data, run["id"])
+    assert started == []
+    assert stopped["pending_commands"] == []
+    assert [item["id"] for item in stopped["unrun_commands"]] == ["cmd_stale", "cmd_newer"]
+    assert {item["status"] for item in stopped["unrun_commands"]} == {"not_run"}
 
 
 def test_retry_and_continue_link_to_their_parent_run(monkeypatch, workspace_with_data):

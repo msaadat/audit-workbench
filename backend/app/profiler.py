@@ -99,6 +99,13 @@ def profile_column(df: pl.DataFrame, column: str) -> dict:
         profile["mean"] = _fmt(float(values.mean()))
         if not _UNSUMMABLE_NAME_RE.search(column):
             profile["sum"] = _fmt(float(values.sum()))
+    elif dtype == pl.Time:
+        # A time of day is temporal but places nothing in a period: typed as a
+        # date, "09:18:34" won every string min() against real dates and a
+        # memo reported the deal book as covering "09:18:34 to 2025-05-12".
+        profile["inferred_type"] = "time"
+        profile["min"] = _fmt(values.min())
+        profile["max"] = _fmt(values.max())
     elif dtype.is_temporal():
         profile["inferred_type"] = "date"
         profile["min"] = _fmt(values.min())
@@ -166,6 +173,8 @@ def schema_payload(df: pl.DataFrame) -> list[dict]:
         kind = "text"
         if dtype.is_numeric():
             kind = "numeric"
+        elif dtype == pl.Time:
+            kind = "time"
         elif dtype.is_temporal():
             kind = "date"
         elif dtype == pl.Boolean:

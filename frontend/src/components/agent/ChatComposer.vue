@@ -95,6 +95,9 @@ async function selectCommand(item: AssistantSlashCommand) {
 }
 
 function submit() { const value = draft.value.trim(); if (!value || !canSend.value) return; draft.value = ''; menuOpen.value = false; emit('send', value) }
+/** Put back a message the thread could not send, unless something new was typed. */
+function restore(text: string) { if (!draft.value.trim()) draft.value = text }
+defineExpose({ restore })
 function openModeMenu(event: Event) { modeMenu.value?.toggle(event) }
 function keydown(event: KeyboardEvent) {
   if (menuOpen.value && commandMatches.value.length) {

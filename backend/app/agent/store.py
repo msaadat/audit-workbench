@@ -639,7 +639,13 @@ def recover_orphans(workspace: Workspace, live_run_ids: set[str]) -> list[str]:
             run = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if run["status"] in ACTIVE_STATUSES and run["id"] not in live_run_ids:
+        # A child is saved before its handle registers, on its parent's
+        # thread; a live parent is proof the child is not orphaned.
+        if (
+            run["status"] in ACTIVE_STATUSES
+            and run["id"] not in live_run_ids
+            and str(run.get("parent_run_id") or "") not in live_run_ids
+        ):
             run["status"] = "interrupted"
             run["warnings"].append(
                 "The backend stopped while this run was active; it was "

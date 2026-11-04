@@ -14,7 +14,10 @@ ACTION_STATUSES = {
     "running", "succeeded", "failed", "skipped", "cancelled",
 }
 TRANSITIONS = {
-    "proposed": {"awaiting_input", "awaiting_confirmation", "ready", "blocked", "skipped", "cancelled"},
+    # ``failed`` straight from ``proposed`` is a proposal its own gating
+    # rejected (a semantic preflight, an unknown target kind): it never ran,
+    # and leaving it ``proposed`` made every later pump retry it first.
+    "proposed": {"awaiting_input", "awaiting_confirmation", "ready", "blocked", "skipped", "cancelled", "failed"},
     "awaiting_input": {"proposed", "awaiting_confirmation", "ready", "blocked", "cancelled"},
     "awaiting_confirmation": {"ready", "skipped", "cancelled", "blocked"},
     "ready": {"running", "blocked", "cancelled", "awaiting_confirmation", "awaiting_input"},
@@ -73,6 +76,9 @@ def new_action(run: dict, proposal: dict, *, depth: int = 0) -> dict:
     return action
 
 
+_RETRYABLE_TERMINAL = frozenset({"failed", "skipped", "cancelled"})
+
+
 def transition(action: dict, status: str) -> None:
     if status not in ACTION_STATUSES:
         raise WorkspaceError(f"Unknown action status '{status}'.")
@@ -101,6 +107,10 @@ def validate_graph(run: dict) -> None:
         missing = [dep for dep in action["depends_on"] if dep not in by_id]
         if missing:
             raise WorkspaceError(f"Action '{action['id']}' depends on unknown action '{missing[0]}'.")
+        # A settled attempt that changed nothing is not an intent the graph
+        # still holds: asking again after a failure is a retry, not a duplicate.
+        if action.get("status") in _RETRYABLE_TERMINAL:
+            continue
         identity = hashlib.sha1(json.dumps({
             "type": action["type"], "args": action["args"], "target": action["target"],
         }, sort_keys=True, default=str).encode()).hexdigest()

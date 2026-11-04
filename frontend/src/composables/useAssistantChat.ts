@@ -52,6 +52,13 @@ function state(workspaceId: string): ChatState {
   return value
 }
 
+/**
+ * A message refused before it reached the server. Distinct from a failed POST,
+ * which the transcript keeps as a failed bubble with Retry: this one left no
+ * trace, so the composer must get its text back.
+ */
+export class ChatNotSentError extends Error {}
+
 function requestId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `request-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -164,7 +171,12 @@ export function useAssistantChat(workspaceId: string) {
     options: { command?: string | null; goalTemplate?: string | null; source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'; requestedOutcomes?: string[]; runKind?: 'intake'; runContext?: Record<string, unknown>; requestId?: string } = {},
   ) {
     await init()
-    if (!store.activeChatId || store.busy) return
+    // Never a silent return: the composer has already cleared its draft by the
+    // time this runs, so returning nothing here lost the auditor's message
+    // with no bubble, no error and no Retry. Refusing says why, and the caller
+    // hands the text back to the composer.
+    if (!store.activeChatId) await createChat()
+    if (store.busy) throw new ChatNotSentError('The previous message is still being sent. Send this one again in a moment.')
     store.busy = true
     store.error = null
     const rid = options.requestId ?? requestId()
