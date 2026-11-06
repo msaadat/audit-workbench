@@ -318,6 +318,11 @@ _ARTIFACT_OBJECTS: dict[str, str] = {
     # redraft so a risk someone retired is not proposed again; outside
     # ``Planning/RCM`` so the collection's ``*.json`` glob never reads it as a row.
     "rcm_retired": "Planning/.retired_rcm.json",
+    # Risks the matrix's last draft weighed and did not carry, each with the
+    # reason (out of scope, not applicable, covered by a row, answered by a
+    # substantive procedure). The record that a risk was considered without
+    # spending a row on it; replaced whole by each draft.
+    "rcm_considered": "Planning/.considered_rcm.json",
 }
 # Row-level exception evidence for a saved analysis lives beside the
 # definitions, never inside them.  ``Analyses/*.json`` is an artifact
@@ -2225,6 +2230,20 @@ class Workspace:
                 finding["rcm_refs"] = [*refs, into_id]
         self.remove_rcm(item_id, reason=reason, run_id=run_id, merged_into=into_id)
         return survivor
+
+    def record_rcm_considered(self, rows: list[dict], *, run_id: str | None) -> None:
+        """Replace the list of risks the matrix's last draft did not carry.
+
+        Read before it is written: the save writes an artifact object only once
+        it has been hydrated, and an assignment alone never hydrates it.
+        """
+        previous = self.rcm_considered or {}
+        self.rcm_considered = {
+            **({"previous_run_id": previous.get("run_id")} if previous.get("run_id") else {}),
+            "rows": [dict(item) for item in rows],
+            "run_id": run_id,
+            "updated": self._updated_now(),
+        }
 
     def retired_rcm_rows(self) -> list[dict]:
         """Every RCM row removed from the matrix, oldest first."""

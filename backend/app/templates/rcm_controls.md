@@ -23,6 +23,12 @@ Record the control management asserts is in place, as it currently operates.
 - Describe the control's mechanics — who performs it, over what population, how
   often, and what happens when it detects an error. Do not describe how it will
   be tested.
+- **The control must address this row's risk itself.** A rule the basis states
+  for a different aspect of the same step is not this risk's control. A
+  timeliness rule ("every deal is captured within 15 minutes of execution")
+  does not prevent or detect a deal that is never captured; offered as that
+  risk's control, it hides the design gap the row exists to show. Where nothing
+  in the basis addresses the risk itself, write "No control identified".
 
 **Never assert a system behaviour the planning basis does not state.** Do not
 write that a system enforces, prevents, blocks, validates, restricts, or makes
@@ -75,9 +81,12 @@ control; leave the exceptions to the tests.
   `criteria_hint`. It is a hint and nothing more: the quote is what is matched
   back to its document, so a wrong or absent hint costs nothing and a quote
   that is not verbatim costs the citation.
-- **control_owner** — the role accountable for operating the control. **Name a
-  role only if that role appears verbatim in the planning basis. If the basis
-  names no owner for this control, leave the field empty.** An empty owner is a
+- **control_owner** — the role that performs this control, as the basis states
+  it for this duty. **Name a role only if that role appears verbatim in the
+  planning basis. If the basis names no owner for this control, leave the field
+  empty.** A document's process owner, policy owner or approver is not the owner
+  of every control the document describes: the receipt check belongs to whoever
+  the basis says checks receipts. An empty owner is a
   question to put to the client; an invented one is a false attribution that
   survives into the working paper. Never infer an owner from the nature of the
   control — a system-enforced control does not imply an IT or systems

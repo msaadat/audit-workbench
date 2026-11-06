@@ -676,6 +676,7 @@ def _similarity(left: object, right: object) -> float:
 def _ranked_rcm_matches(
     workspace: Workspace,
     spec: Mapping[str, object],
+    exclude: frozenset[str] = frozenset(),
 ) -> list[tuple[float, dict]]:
     """Rank existing rows against one proposed row's narrative, best first."""
     narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
@@ -688,6 +689,7 @@ def _ranked_rcm_matches(
                 row,
             )
             for row in workspace.rcm
+            if str(row.get("id")) not in exclude
         ),
         key=lambda item: (-item[0], str(item[1].get("id"))),
     )
@@ -697,9 +699,19 @@ def match_rcm_revision(
     workspace: Workspace,
     spec: Mapping[str, object],
     semantic: str,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[dict | None, bool]:
     """Match one proposed revision to an existing row: exact id, semantic id,
-    then bounded narrative similarity with an explicit ambiguity outcome."""
+    then bounded narrative similarity with an explicit ambiguity outcome.
+
+    ``exclude`` names rows the same commit has just created. A sibling drafted
+    in the same pass is never the row this one revises: matched against them,
+    two risks at one step that read alike ("dated before the purchase order",
+    "dated before financial approval") were taken for one, and the second
+    either overwrote the first or was set aside as ambiguous. That is the first
+    draft that reported "Created 26, Updated 2" (B17).
+    """
     explicit = canonical_id(spec.get("rcm_id") or spec.get("id"), "rcm")
     if explicit:
         return (
@@ -709,7 +721,7 @@ def match_rcm_revision(
     exact = workspace.find_semantic("rcm", semantic)
     if exact:
         return exact, False
-    ranked = _ranked_rcm_matches(workspace, spec)
+    ranked = _ranked_rcm_matches(workspace, spec, exclude)
     if not ranked or ranked[0][0] < 0.72:
         return None, False
     ambiguous = len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08
@@ -875,6 +887,9 @@ def _rcm_result(
         output["quarantined"] = quarantined
     if retired_skipped:
         output["retired_skipped"] = [_plain_json(item) for item in retired_skipped]
+    considered = request.proposal.get("considered")
+    if isinstance(considered, (list, tuple)) and considered:
+        output["considered"] = [_plain_json(item) for item in considered]
     return ExecutorResult(
         executor_id=request.executor_id,
         capability_id=request.capability_id,
@@ -910,11 +925,23 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
         outcomes: list[dict] = []
         deferred: list[dict] = []
         skipped: list[dict] = []
+        created_now: set[str] = set()
+        considered = request.proposal.get("considered")
+        if isinstance(considered, (list, tuple)):
+            # Replaced whole: it is what *this* draft weighed, and a stale list
+            # beside a redrafted matrix would claim reasons nobody gave it.
+            # Recorded before the rows, because each row commit saves and the
+            # transaction does not save again after a callback that did.
+            fresh.record_rcm_considered(
+                [_plain_json(item) for item in considered], run_id=target.run_id
+            )
         for spec in rows:
             # Resolved inside the transaction, against the documents as they
             # stand at commit.
             spec = {**spec, "criteria_refs": _resolved_criteria_refs(fresh, spec)}
-            existing, ambiguous = match_rcm_revision(fresh, spec, spec["semantic_id"])
+            existing, ambiguous = match_rcm_revision(
+                fresh, spec, spec["semantic_id"], exclude=frozenset(created_now)
+            )
             if ambiguous:
                 # The rows are independent, so one the matcher cannot place is
                 # not a reason to drop the rest of the matrix. It travels to the
@@ -987,6 +1014,7 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                     "workflow_parents": stamps,
                 }
             )
+            created_now.add(str(item["id"]))
             outcomes.append(
                 {
                     "id": item["id"],

@@ -661,3 +661,58 @@ def test_planning_executor_has_no_gateway_worker_or_provider_dependency():
     assert "app.llm" not in source
     assert "ModelGateway" not in source
     assert ".complete(" not in source
+
+
+def test_rcm_executor_records_what_the_draft_considered_and_did_not_carry():
+    """Out-of-scope and not-applicable risks are kept with their reasons.
+
+    Without a place for them, the only way to show a risk was weighed was a
+    row, which is how a seven-clause scope became a 26-row matrix.
+    """
+
+    workspace = _rcm_workspace("RCM considered")
+    considered = [{
+        "theme": "Settlement", "risk": "The same obligation may be settled twice.",
+        "disposition": "out_of_scope", "reason": "Section 8 is outside scope.",
+    }]
+    request = ExecutorRequest(
+        executor_id="planning.rcm",
+        capability_id="planning.rcm_ready",
+        unit_id="rcm",
+        proposal={"rows": [_rcm_row()], "considered": considered},
+        expected_revision=workspace.revision,
+        expected_parents=parent_hashes(workspace, [RCM_PARENT_REF]),
+        activity={"artifact_refs": ["planning:apm"]},
+    )
+    target = RcmExecutorTarget(workspace, "run-rcm")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    stored = workspaces.load_workspace(workspace.id).rcm_considered
+    assert stored["rows"] == considered
+    assert stored["run_id"] == "run-rcm"
+    assert [dict(item) for item in receipt.output["considered"]] == considered
+
+
+def test_a_first_draft_never_matches_a_row_to_its_own_sibling():
+    """Concrete risks at one step read alike; each is still its own row.
+
+    Matched against rows the same commit had just created, the second of
+    "dated before the purchase order" / "dated before financial approval"
+    either overwrote the first ("Created 26, Updated 2" on a first draft) or
+    was set aside as ambiguous.
+    """
+
+    workspace = _rcm_workspace("RCM siblings")
+    rows = [
+        _rcm_row(process="Purchase Order", risk="A purchase order may be dated before the date of financial approval."),
+        _rcm_row(process="Purchase Order", risk="A purchase order may be dated before the date of the requisition."),
+        _rcm_row(process="Purchase Order", risk="A purchase order may be dated before the date of the vendor quotation."),
+    ]
+    target = RcmExecutorTarget(workspace, "run-rcm")
+
+    receipt = EXECUTORS.execute(_rcm_request(workspace, rows), target)
+
+    assert [item["action"] for item in receipt.output["rows"]] == ["created"] * 3
+    assert len(target.workspace.rcm) == 3
+    assert "quarantined" not in receipt.output

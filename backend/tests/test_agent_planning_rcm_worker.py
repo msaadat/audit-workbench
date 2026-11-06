@@ -2211,3 +2211,122 @@ def test_no_cycle_means_no_process_flag_at_all():
         flag for flag in result.proposal.get("flags") or ()
         if flag["kind"] == "process_outside_cycle"
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Considered, not carried; content warnings
+# --------------------------------------------------------------------------- #
+def test_risks_weighed_and_not_carried_reach_the_proposal_with_their_reasons():
+    """Considering a risk no longer forces a row: it is kept with its reason."""
+
+    considered = [{
+        "theme": "Rates and notionals not economic",
+        "risk": "Deal rates may not be economic against market rates.",
+        "disposition": "out_of_scope",
+        "reason": "Section 6 (rates and valuation) is outside scope.",
+    }]
+    gateway = _Gateway([json.dumps({"rows": [_row()], "considered": considered})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert [dict(item) for item in result.proposal["considered"]] == considered
+
+
+def test_the_risk_pass_is_asked_for_duties_first_and_a_considered_list():
+    gateway = _Gateway([json.dumps({"rows": [_row()]})])
+
+    WORKERS.execute(_request(), gateway)
+
+    risks = gateway.calls[0]
+    assert "`considered`" in risks["system"]
+    assert "Duties first" in risks["system"]
+    # The procure-to-pay override examples are gone: they reappeared as
+    # treasury rows ("the same obligation may be settled more than once").
+    assert "paying the same obligation twice" not in risks["system"]
+    assert "standard risks of every in-scope process" not in risks["user"]
+
+
+def test_the_control_pass_is_told_a_neighbouring_rule_is_not_the_control():
+    assert "does not control a deal never being" in planning.RCM_CONTROLS_SYSTEM
+    assert "process owner" in planning.RCM_CONTROLS_SYSTEM
+
+
+@pytest.mark.parametrize("disposition, kept", [
+    ("out_of_scope", "out_of_scope"),
+    ("covered_by:RCM-1", "covered_by"),
+    ("something else", "not_applicable"),
+])
+def test_considered_entries_are_kept_whatever_their_disposition(disposition, kept):
+    entries = planning.normalized_considered([
+        {"theme": "Splitting", "risk": "Deals may be split.", "disposition": disposition,
+         "reason": "No limit clause is in scope."},
+        {"theme": "", "risk": "", "disposition": "out_of_scope"},
+    ])
+
+    assert entries == [{
+        "theme": "Splitting", "risk": "Deals may be split.", "disposition": kept,
+        "reason": "No limit clause is in scope.",
+    }]
+
+
+def test_a_memo_theme_set_aside_in_considered_is_answered():
+    considered = [{"theme": "Rates and notionals not economic", "risk": "x",
+                   "disposition": "out_of_scope", "reason": "Section 6 is excluded."}]
+
+    assert planning.answered_by_considered("Rates and notionals not economic", considered)
+    assert not planning.answered_by_considered("Inaccurate capture of deal terms", considered)
+
+
+def test_a_bundled_risk_is_reported_and_a_single_failure_is_not():
+    rows = [
+        {"risk": "Transactions may be approved below the required level, approved after "
+                 "the fact, approved without verification, or split to circumvent a limit.",
+         "risk_rating": "high"},
+        {"risk": "A requisition may be approved by the person who verified it.",
+         "risk_rating": "medium"},
+    ]
+
+    flags = planning.rcm_content_flags(rows)
+
+    assert [(flag["kind"], flag["row_index"]) for flag in flags] == [("bundled_risk", 1)]
+
+
+def test_a_matrix_where_most_rows_share_one_rating_is_reported():
+    """Procurement drafted 23 of 35 rows "high": a rating that directs nothing."""
+
+    rows = [{"risk": f"Risk {n}.", "risk_rating": "high"} for n in range(7)]
+    rows += [{"risk": "Risk x.", "risk_rating": "medium"}, {"risk": "Risk y.", "risk_rating": "low"}]
+
+    flags = planning.rcm_content_flags(rows)
+
+    assert [flag["kind"] for flag in flags] == ["rating_spread"]
+    assert flags[0]["row_index"] is None
+    assert "7 of 9 risks are rated high" in flags[0]["message"]
+    # An evenly rated matrix says nothing.
+    assert planning.rcm_content_flags(rows[:2] + rows[-2:]) == []
+
+
+def test_the_risk_pass_receives_the_memo_themes_to_account_for_by_name():
+    """Considered entries named in the model's own words never matched the theme
+    check ("Rates and valuation" for "Rates and notionals not economic"), so
+    every answered theme still warned. The headings are now supplied to copy."""
+
+    apm = (
+        "# APM\n\n## Key risks and planned response\n\n"
+        "- **Dealing outside approved hours.** Test deal times.\n"
+        "- **Rates and notionals not economic.** Not applicable; section 6 is excluded.\n"
+    )
+    gateway = _Gateway([json.dumps({"rows": [_row()]})])
+
+    WORKERS.execute(_request(_bundle(apm=apm)), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert payload["MEMORANDUM THEMES"] == planning.planned_risk_themes(apm)
+    assert "Rates and notionals not economic" in " ".join(payload["MEMORANDUM THEMES"])
+    assert "exactly as listed" in gateway.calls[0]["system"]
+
+
+def test_the_risk_pass_is_told_not_to_split_one_duty_and_how_to_anchor_ratings():
+    system = planning.RCM_RISKS_SYSTEM
+    assert "confirm, verify or release" in system
+    assert "usually high or critical" in system

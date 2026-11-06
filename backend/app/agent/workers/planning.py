@@ -565,14 +565,19 @@ WORKERS.register(DELTA_WORKER)
 RCM_WORKER_ID = "planning.rcm"
 RCM_RISKS_SYSTEM = f"""[agent:rcm]
 Revise the risk set of the current risk and control matrix, using durable RCM
-ids. Return an object with `rows`, each row containing operation
-(update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), and business_cycle. Nothing else: the
-control, its type, its owner, its criteria and the control attributes are each
-decided by a later pass, and a field you write here that they own is discarded.
+ids. Return an object with `rows` and `considered`.
 
-All ids and narrative fields are strings. business_cycle names the cycle this
-row belongs to; BUSINESS CYCLE gives it, and every row carries that value.
+Each row contains operation (update|create), rcm_id for updates, process,
+risk, risk_rating (low|medium|high|critical), and business_cycle. Nothing else:
+the control, its type, its owner, its criteria and the control attributes are
+each decided by a later pass, and a field you write here that they own is
+discarded. All ids and narrative fields are strings. business_cycle names the
+cycle this row belongs to; BUSINESS CYCLE gives it, and every row carries that
+value.
+
+Each `considered` entry contains theme, risk, disposition (out_of_scope |
+not_applicable | covered_by | responded_by_substantive_procedure) and reason:
+risks you weighed and are not carrying as rows, and why.
 
 You are shown the memorandum and the methodology, and no engagement documents,
 tables or profiles. That is deliberate. A risk is what could go wrong in this
@@ -580,32 +585,38 @@ cycle whether or not this engagement's data happens to show it, and a risk set
 assembled from the supplied evidence is a description of the evidence.
 
 Follow the ACTIVE RISK TEMPLATE for methodology. Its non-negotiable rules:
-- Cover the standard risks a competent auditor would consider for every in-scope
-  process, drawn from your own knowledge of the cycle. Supplied observations
-  refine the risk set; they never define it. Never emit a row whose only content
-  is a restatement of a supplied observation or audit note.
-- Every risk theme the planning memorandum organises its assessment under must
-  be owned by a row. Where the memorandum assesses fraud risk and management
-  override, the override patterns it names are risks in their own right —
-  circumventing an approval threshold by dividing a commitment, paying the same
-  obligation twice, and directing payment to a party the entity has not
-  approved are matrix rows, not narrative. A theme the memo plans a response
-  for and the matrix omits is a planned procedure that will never run.
-- Write risks in generic, condition-independent auditor wording. Never quote
-  percentages, counts, null rates, column names, or file names in a risk, never
-  embed the cause, and never pre-conclude that a deficiency exists.
+- Duties first. Every duty the memorandum describes for an in-scope step (a
+  requirement, approval, record, limit or timeframe) is answered by at least one
+  row, one row per distinct duty. The risk is that the duty is not performed.
+- Then gaps. Add a row no stated duty covers only for a concrete failure at an
+  in-scope step that this engagement could find evidence of, or that the
+  memorandum names as a key risk.
+- Scope binds. A risk whose subject the planning context puts out of scope is
+  never a row: record it in `considered` as out_of_scope.
+- Account for every theme in MEMORANDUM THEMES in `considered`, one entry per
+  theme, with `theme` copied exactly as listed: `covered_by` naming the rows
+  that answer it, or the disposition and reason it is not carried. A theme the
+  memorandum itself sets aside as not applicable keeps the memorandum's reason.
+- Write each risk concretely: the event, the step where it happens, and what
+  goes wrong, in the cycle's own nouns. One failure per row; a list of failures
+  is a bundle. Never quote percentages, counts, null rates, column names, or
+  file names in a risk, never embed the cause, and never pre-conclude that a
+  deficiency exists.
 - process groups the rows; it does not label them. Choose each row's process
-  from PROCESS NAMES, spelled exactly as given: those are the steps of this
-  cycle, already read from the memorandum, and the matrix is grouped by them.
-  A cycle has a handful of steps and each carries several risks, so a matrix
-  whose every row names a different process has not grouped anything. Using
-  fewer process names never means covering fewer of them: every step keeps its
-  risks, under the name the cycle gives it.
+  from PROCESS NAMES, spelled exactly as given. A duty that spans steps sits at
+  the step where it would be breached.
 - Rate against the band the template describes, not against the row beside it.
-  A set of risks with no medium in it has not been rated, and the rating is the
-  first thing a reviewer uses to direct effort.
-- One risk per row, and two rows describing the same underlying failure are one
-  row. Say it once, in the wording that covers both.
+  A set of risks with no medium in it has not been rated, and neither has one
+  where most rows share a rating. Money or settlement released without the
+  required approval or match, segregation breaches and approval beyond
+  authority are usually high or critical; record-keeping lapses and timeliness
+  slips with no loss attached are usually medium or low.
+- Two rows describing the same failure are one row. Say it once. Do not split
+  the other way either: a duty naming several actions of one kind ("shall not
+  confirm, verify or release", "amended or cancelled") is one row. Split only
+  where the failures need different evidence or carry different exposure.
+- Size follows the duties, not the checklist: one to three rows per duty and a
+  few gap rows is the normal shape.
 - RETIRED RISKS were taken out of this matrix on purpose. Do not propose one
   again, in its own words or in new ones.
 {JSON_RULES} {LANGUAGE_RULES}""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}"
@@ -648,6 +659,15 @@ Follow the ACTIVE CONTROL TEMPLATE. Its non-negotiable rules:
   afterwards. A row whose control is "No control identified" leaves it empty:
   there is no control to classify, and naming a kind for one that does not exist
   asserts mechanics the basis never described.
+- The control must address this row's risk itself. A rule the basis states for
+  a different aspect of the same step is not this risk's control: a timeliness
+  rule ("captured within 15 minutes") does not control a deal never being
+  captured at all. Where nothing in the basis addresses the risk itself, write
+  "No control identified" — that is the design gap the row exists to show.
+- control_owner is the role that performs this control as the basis states it.
+  A document's process owner, policy owner or approver is not the owner of every
+  control in it: use the role the basis gives for this duty, or leave the field
+  empty.
 - control_owner names a role only where that role appears verbatim in the
   supplied basis. Copy it as the basis spells it. Where the basis names no owner
   for this control, leave the field empty: an empty owner is a question to put
@@ -1025,6 +1045,136 @@ def _resolved_refs(entry: dict[str, Any]) -> list[dict[str, Any]]:
     }]
 
 
+
+# --------------------------------------------------------------------------- #
+# Considered, not carried
+# --------------------------------------------------------------------------- #
+RCM_CONSIDERED_DISPOSITIONS = (
+    "out_of_scope",
+    "not_applicable",
+    "covered_by",
+    "responded_by_substantive_procedure",
+)
+_MAX_CONSIDERED = 60
+
+
+def normalized_considered(raw: object) -> list[dict[str, str]]:
+    """The risks the pass weighed and did not carry, cleaned and bounded.
+
+    Never a reason to reject a matrix: an entry with an unknown disposition is
+    kept as ``not_applicable`` with its reason, because the record that a risk
+    was weighed is the point, and dropping it would make the weighing silent.
+    """
+
+    entries: list[dict[str, str]] = []
+    for item in raw if isinstance(raw, (list, tuple)) else ():
+        if not isinstance(item, Mapping):
+            continue
+        risk = " ".join(str(item.get("risk") or item.get("theme") or "").split())
+        if not risk:
+            continue
+        disposition = str(item.get("disposition") or "").strip().lower()
+        if disposition.startswith("covered_by"):
+            disposition = "covered_by"
+        if disposition not in RCM_CONSIDERED_DISPOSITIONS:
+            disposition = "not_applicable"
+        entries.append({
+            "theme": " ".join(str(item.get("theme") or "").split())[:200],
+            "risk": risk[:400],
+            "disposition": disposition,
+            "reason": " ".join(str(item.get("reason") or "").split())[:400],
+        })
+        if len(entries) >= _MAX_CONSIDERED:
+            break
+    return entries
+
+
+def _parsed_considered(response: object) -> list[dict[str, str]]:
+    try:
+        payload = _first_json_object(str(response or ""))
+    except WorkerResponseValidationError:
+        return []
+    return normalized_considered(payload.get("considered"))
+
+
+def _content_words(value: object) -> set[str]:
+    return {
+        word for word in re.findall(r"[a-z]+", str(value or "").casefold())
+        if len(word) > 3 and word not in _FUNCTION_WORDS
+    }
+
+
+def answered_by_considered(theme: str, considered: object) -> bool:
+    """Whether a memorandum theme was weighed and set aside in ``considered``.
+
+    The theme checks predate the considered list, and without this they told
+    the auditor to add a row for a theme the draft had already answered with a
+    reason ("rates not economic: section 6 is outside scope").
+    """
+
+    wanted = _content_words(theme)
+    if not wanted:
+        return False
+    for item in considered if isinstance(considered, (list, tuple)) else ():
+        if not isinstance(item, Mapping):
+            continue
+        named = _content_words(item.get("theme"))
+        if named and len(wanted & named) / len(wanted) >= 0.6:
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
+# Content warnings: reported, never enforced
+# --------------------------------------------------------------------------- #
+#: Separators between failure modes in one risk sentence.
+_FAILURE_SEPARATOR = re.compile(r",|;|\bor\b|\band/or\b", re.IGNORECASE)
+#: Three or more failure modes in one risk is a bundle.
+_BUNDLE_SEPARATORS = 3
+#: A rating shared by more than this share of a matrix is not discriminating.
+_RATING_SHARE = 0.6
+_RATING_MIN_ROWS = 8
+
+
+def rcm_content_flags(rows: object) -> list[dict[str, Any]]:
+    """Bundled risks, and a rating spread that does not direct effort.
+
+    Warnings for the auditor, never a reason to reject: whether two joined
+    failures are one duty, and whether most risks really are high, are
+    judgements a reviewer makes better than a count.
+    """
+
+    proposed = [row for row in rows or () if isinstance(row, Mapping)]
+    flags: list[dict[str, Any]] = []
+    for index, row in enumerate(proposed, start=1):
+        if len(_FAILURE_SEPARATOR.findall(str(row.get("risk") or ""))) >= _BUNDLE_SEPARATORS:
+            flags.append({
+                "row_index": index,
+                "kind": "bundled_risk",
+                "message": "states several failures in one risk; one row is one failure",
+            })
+    ratings = [
+        str(row.get("risk_rating") or "").strip().lower()
+        for row in proposed
+        if str(row.get("risk_rating") or "").strip()
+    ]
+    if len(ratings) >= _RATING_MIN_ROWS:
+        rating, count = max(
+            ((value, ratings.count(value)) for value in set(ratings)),
+            key=lambda pair: pair[1],
+        )
+        if count / len(ratings) > _RATING_SHARE:
+            flags.append({
+                "row_index": None,
+                "kind": "rating_spread",
+                "message": (
+                    f"{count} of {len(ratings)} risks are rated {rating}; a "
+                    "rating most rows share does not direct effort"
+                ),
+            })
+    return flags
+
+
 def _current_rcm_rows(request: WorkerRequest) -> list[object]:
     return [
         item.content
@@ -1067,6 +1217,10 @@ def _rcm_response_schema(response: str) -> Mapping[str, Any]:
     # and discarding every row that was correct.
     if isinstance(payload.get("quarantined"), list):
         parsed["quarantined"] = payload["quarantined"]
+    # What the risk pass weighed and did not carry. Optional, so a matrix
+    # drafted before the list existed still parses.
+    if isinstance(payload.get("considered"), list):
+        parsed["considered"] = payload["considered"]
     return parsed
 
 
@@ -1260,6 +1414,7 @@ def _partition_rcm_rows(
                 }
             )
     flags.extend(_near_duplicate_flags(rows))
+    flags.extend(rcm_content_flags(rows))
     return normalized, failures, flags
 
 
@@ -2149,6 +2304,9 @@ def validate_rcm_proposal(
     quarantined = proposal.get("quarantined")
     if isinstance(quarantined, (list, tuple)) and quarantined:
         accepted["quarantined"] = [_plain_json(item) for item in quarantined]
+    considered = normalized_considered(proposal.get("considered"))
+    if considered:
+        accepted["considered"] = considered
     if flags:
         # Reported, never enforced. Each is a judgement an auditor makes better
         # than a regex: whether the basis really does say the portal blocks it,
@@ -2198,6 +2356,11 @@ def _rcm_risks_user(request: WorkerRequest) -> str:
             # there — an engagement with no cycle designed gets an empty list
             # and the flag below rather than silence.
             "PROCESS NAMES": _rcm_process_names(request),
+            # The themes the memorandum plans a response for, as headings, so
+            # `considered` can name each exactly. Paraphrased ("Rates and
+            # valuation" for "Rates and notionals not economic"), they never
+            # matched the theme check and every answered theme still warned.
+            "MEMORANDUM THEMES": planned_risk_themes(current_apm),
             "BUSINESS CYCLE": str(request.unit_input.get("business_cycle") or ""),
             "EXISTING RISKS": [
                 {
@@ -2224,14 +2387,16 @@ def _rcm_risks_user(request: WorkerRequest) -> str:
                 request, "planning_context", "methodology"
             ),
             "INSTRUCTIONS": (
-                "Return the full set of proposed risks. Work in two passes: "
-                "first enumerate the standard risks of every in-scope process from "
-                "your own knowledge of the cycle, then tailor wording, rating and "
-                "process to this engagement using the memorandum. Do not stop at "
-                "the risks the supplied material happens to comment on. For an "
-                "existing risk, include operation='update' and its exact rcm_id. Use "
-                "operation='create' only for a genuinely uncovered risk. Omission "
-                "never deletes an existing row."
+                "Return the full set of proposed risks and what you considered. "
+                "First write one row per distinct duty the memorandum describes "
+                "for each in-scope step. Then add gap rows only for concrete, "
+                "in-scope failures no duty covers. Record every other risk you "
+                "weighed, and every memorandum theme no row answers, in "
+                "`considered` with its disposition and reason, and account for "
+                "every MEMORANDUM THEME there by its exact heading. For an existing "
+                "risk, include operation='update' and its exact rcm_id. Use "
+                "operation='create' only for a genuinely uncovered risk. "
+                "Omission never deletes an existing row."
             ),
         },
         indent=1,
@@ -2508,9 +2673,13 @@ def run_rcm_worker(
         # rejected — and repaired — through the normal path. Nothing is spent on
         # the later calls over rows that do not parse.
         return response
+    considered = _parsed_considered(response)
     rows = _with_controls(request, gateway, attempt, rows)
     return _rcm_document(
-        request, attempt, _with_attributes(request, gateway, attempt, rows)
+        request,
+        attempt,
+        _with_attributes(request, gateway, attempt, rows),
+        considered,
     )
 
 
@@ -2641,6 +2810,7 @@ def _rcm_document(
     request: WorkerRequest,
     attempt: WorkerAttempt,
     rows: list[dict],
+    considered: list[dict] | None = None,
 ) -> str:
     """Serialize the finished rows, quarantining what will not repair.
 
@@ -2651,11 +2821,12 @@ def _rcm_document(
     nothing to commit — and the gate reports it.
     """
 
+    extra = {"considered": list(considered)} if considered else {}
     if attempt.number < 1 + _RCM_MAX_REPAIR_ATTEMPTS:
-        return json.dumps({"rows": rows}, ensure_ascii=False)
+        return json.dumps({"rows": rows, **extra}, ensure_ascii=False)
     accepted, still_failing, _flags = _partition_rcm_rows(rows, request)
     if not accepted or not still_failing:
-        return json.dumps({"rows": rows}, ensure_ascii=False)
+        return json.dumps({"rows": rows, **extra}, ensure_ascii=False)
     dropped = {failure["index"] for failure in still_failing}
     return json.dumps(
         {
@@ -2665,6 +2836,7 @@ def _rcm_document(
                 if index not in dropped
             ],
             "quarantined": _quarantined(still_failing),
+            **extra,
         },
         ensure_ascii=False,
     )
@@ -2803,6 +2975,7 @@ def _repaired_rcm(
         request,
         attempt,
         _repaired_attributes(request, gateway, attempt, repaired, pending),
+        _parsed_considered(attempt.previous_response),
     )
 
 
@@ -2923,9 +3096,13 @@ def _redrafted_matrix(
         rows = _parsed_rows(response)
     except WorkerResponseValidationError:
         return response
+    considered = _parsed_considered(response)
     rows = _with_controls(request, gateway, attempt, rows)
     return _rcm_document(
-        request, attempt, _with_attributes(request, gateway, attempt, rows)
+        request,
+        attempt,
+        _with_attributes(request, gateway, attempt, rows),
+        considered,
     )
 
 
@@ -3064,9 +3241,12 @@ auditor's instruction. Decide something about every row in scope:
   only the fields that change, in `changes`, chosen from process, risk,
   risk_rating (low|medium|high|critical), control, control_type, control_owner
   and criteria.
-- merge: another row in scope already covers this row's risk, and survives.
-  Name it in `into`; that row must itself be kept or revised. Where the
-  survivor's wording should widen to cover what it absorbs, revise the survivor.
+- merge: another row in scope states the same failure, and survives. Name it
+  in `into`; that row must itself be kept or revised. Merge only the same
+  failure. Never widen the survivor's risk into a list of what it absorbs: a
+  row that lists several failures cannot be tested or reported, and a shorter
+  matrix of bundles is worse than a longer one. A risk that is real but not
+  worth a row of its own is retired, with the reason it needs none.
 - retire: the row leaves the matrix.
 
 Return an object with:

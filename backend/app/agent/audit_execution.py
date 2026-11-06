@@ -2051,9 +2051,16 @@ class AuditWorkflowExecution(ActionExecution):
             # Judgements the gate declined to enforce, because each is right
             # about as often as it is wrong and a regex cannot tell which.
             for flag in (outcome.receipt.output.get("flags") or []) if outcome.receipt else []:
+                # A matrix-wide flag (the rating spread) names no row.
                 self.warn(
                     f"Check RCM row {flag.get('row_index')}: {flag.get('message')}"
+                    if flag.get("row_index")
+                    else f"Check the RCM: {flag.get('message')}"
                 )
+            considered = (
+                (outcome.receipt.output.get("considered") or [])
+                if outcome.receipt else []
+            )
             # Rows that were drafted but not committed: the worker could not
             # repair them, or the commit could not place them against an
             # existing row. Warned rather than left in the receipt alone,
@@ -2087,6 +2094,8 @@ class AuditWorkflowExecution(ActionExecution):
             for theme in planning_workers.unowned_themes(
                 str(self.ws.planning.get("apm_markdown") or ""), self.ws.rcm
             ):
+                if planning_workers.answered_by_considered(theme, considered):
+                    continue
                 self.warn(
                     f"Check that the matrix covers the planned risk theme "
                     f"'{theme}': no row mentions it. Add a row whose risk and "
@@ -2100,6 +2109,8 @@ class AuditWorkflowExecution(ActionExecution):
             for theme in planning_workers.weakly_owned_themes(
                 str(self.ws.planning.get("apm_markdown") or ""), self.ws.rcm
             ):
+                if planning_workers.answered_by_considered(theme, considered):
+                    continue
                 self.warn(
                     f"Check that the matrix covers the planned risk theme "
                     f"'{theme}': no row states it in the memorandum's terms."
