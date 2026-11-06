@@ -306,7 +306,9 @@ def test_an_evidence_blocked_test_blocks_against_its_request(monkeypatch):
 
     executed = _units(finished, "doc_tests.executed")
     assert [unit["status"] for unit in executed] == ["blocked"]
-    assert "signed voucher" in str(executed[0]["error"])
+    # A stable code; the reason ("signed voucher") stays on the test and its
+    # evidence request, which is what the Document Tests page reads.
+    assert executed[0]["error"] == "document_test_awaits_evidence"
 
 
 # --------------------------------------------------------------------------- #

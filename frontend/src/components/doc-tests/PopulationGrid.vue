@@ -5,13 +5,14 @@ import Button from 'primevue/button'
 import { api } from '../../api'
 import type {
   AuditFinding,
-  ControlConclusion,
   DocTest,
   PopulationGrid,
   PopulationGridRow,
   PopulationRowOutcome,
 } from '../../types'
 import UiEmptyState from '../ui/UiEmptyState.vue'
+import { CONTROL_CONCLUSIONS, useConclusionDraft } from './conclusionDraft'
+import type { ConclusionChanges } from './conclusionDraft'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 
 /**
@@ -45,41 +46,22 @@ const emit = defineEmits<{
   changed: []
   run: []
   openDocument: [documentId: string]
-  saveConclusion: []
-  saveScopeLimitation: [note: string]
+  saveConclusion: [changes: ConclusionChanges]
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
   openRcm: [rcmId: string]
 }>()
 
-const CONTROL_CONCLUSIONS: Array<{ label: string; value: ControlConclusion }> = [
-  { label: 'Not concluded', value: 'no_conclusion' },
-  { label: 'Effective', value: 'effective' },
-  { label: 'Partially effective', value: 'partially_effective' },
-  { label: 'Ineffective', value: 'ineffective' },
-  { label: 'Not applicable', value: 'not_applicable' },
-]
-const savedConclusion = ref(props.test.control_conclusion)
-watch(() => props.test.id, () => { savedConclusion.value = props.test.control_conclusion })
-watch(() => props.test.control_conclusion, value => {
-  if (working.value === null && !loading.value) savedConclusion.value = savedConclusion.value ?? value
-})
-const conclusionChanged = computed(
-  () => props.test.control_conclusion !== savedConclusion.value,
-)
-// The auditor's own scope text. The disclosure written beneath it is the
-// file's, regenerated on every save, so it is shown and never edited.
-const scopeNote = ref(props.test.scope_limitation_note ?? '')
-const savedScopeNote = ref(props.test.scope_limitation_note ?? '')
-watch(() => props.test.id, () => {
-  scopeNote.value = props.test.scope_limitation_note ?? ''
-  savedScopeNote.value = props.test.scope_limitation_note ?? ''
-})
-watch(() => props.test.scope_limitation_note, value => {
-  scopeNote.value = value ?? ''
-  savedScopeNote.value = value ?? ''
-})
-const scopeNoteChanged = computed(() => scopeNote.value !== savedScopeNote.value)
+// One draft for the conclusion and the scope limitation, saved together: see
+// `conclusionDraft.ts` for the two-Save trap this replaced.
+const draft = useConclusionDraft(() => ({
+  key: props.test.id,
+  conclusion: props.test.control_conclusion,
+  scopeNote: props.test.scope_limitation_note ?? '',
+}))
+function saveDraft() {
+  if (draft.dirty) emit('saveConclusion', draft.changes())
+}
 const scopeDisclosure = computed(() => props.test.scope_limitation_disclosure ?? '')
 /** Every record has a call, so the test is ready to be concluded over. */
 const undispositioned = computed(() =>
@@ -384,6 +366,12 @@ defineExpose({ loadGrid })
         />
       </div>
 
+      <!-- Calls are withheld while a run is live, so say so: disabled buttons
+           are skipped by the keyboard and read as no control at all. -->
+      <p v-if="busy" class="calls-paused">
+        Your calls are unavailable while the assistant is running or paused. Stop or finish the run to record them.
+      </p>
+
       <div class="page-bar">
         <span>{{ pageLabel }}</span>
         <div>
@@ -462,9 +450,9 @@ defineExpose({ loadGrid })
                       @click="setRow(row, 'needs_review')"
                     />
                     <Button
-                      icon="aw-icon aw-icon-refresh-cw"
+                      icon="aw-icon aw-icon-undo-2"
                       text rounded size="small" severity="secondary"
-                      v-tooltip.top="'Clear'"
+                      v-tooltip.top="'Clear your call'"
                       :aria-label="`Clear the call on ${row.document_title} record ${row.record_index}`"
                       :disabled="busy || row.disposition === 'pending' || working === row.key"
                       @click="setRow(row, 'pending')"
@@ -527,19 +515,11 @@ defineExpose({ loadGrid })
       <div class="footer-row">
         <div class="footer-cell">
           <p class="aw-label">Conclusion</p>
-          <select v-model="test.control_conclusion" class="conclusion-select">
+          <select v-model="draft.conclusion" class="conclusion-select" aria-label="Control conclusion">
             <option v-for="option in CONTROL_CONCLUSIONS" :key="option.value" :value="option.value">
               {{ option.label }}
             </option>
           </select>
-          <Button
-            v-if="conclusionChanged"
-            label="Save"
-            icon="aw-icon aw-icon-check"
-            size="small"
-            :disabled="busy"
-            @click="emit('saveConclusion')"
-          />
         </div>
         <div class="footer-cell">
           <p class="aw-label">Finding</p>
@@ -574,21 +554,17 @@ defineExpose({ loadGrid })
       <div class="footer-cell scope-cell">
         <p class="aw-label">Scope limitation</p>
         <input
-          v-model="scopeNote"
+          v-model="draft.scopeNote"
           class="scope-input"
           type="text"
           aria-label="Scope limitation"
           placeholder="What the evidence could not establish"
+          @keydown.enter.prevent="saveDraft"
         />
-        <Button
-          v-if="scopeNoteChanged"
-          label="Save"
-          icon="aw-icon aw-icon-check"
-          size="small"
-          :disabled="busy"
-          aria-label="Save scope limitation"
-          @click="emit('saveScopeLimitation', scopeNote)"
-        />
+      </div>
+      <div v-if="draft.dirty" class="footer-cell footer-save">
+        <Button label="Save" icon="aw-icon aw-icon-check" size="small" :disabled="busy" aria-label="Save conclusion and scope limitation" @click="saveDraft" />
+        <Button label="Discard" size="small" text severity="secondary" :disabled="busy" @click="draft.discard()" />
       </div>
       <p v-if="scopeDisclosure" class="footer-disclosure">{{ scopeDisclosure }}</p>
         <!-- A warning, not a block: concluding over open records is the
@@ -659,7 +635,13 @@ td small { color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 td.missing span { color: var(--aw-muted); }
 .status-column { width: 3.5rem; min-width: 3.5rem; }
 .reason-column { width: 20rem; min-width: 14rem; }
-.call-column { width: 11rem; min-width: 11rem; }
+/* Pinned to the right edge. The table is as wide as its fields, so with a
+   dozen schema columns the one column that takes the auditor's call sat past
+   the scroll edge, and the Treasury run concluded a test "over unresolved
+   items" because no per-row control could be seen. */
+.call-column { position: sticky; right: 0; z-index: 2; width: 11rem; min-width: 11rem; border-left: 1px solid var(--aw-border-strong); }
+thead th.call-column { z-index: 6; }
+.calls-paused { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .call-actions { display: flex; gap: .05rem; margin-top: .2rem; }
 .call-actions :deep(.p-button) { width: 1.85rem; height: 1.85rem; }
 .call-actions :deep(.p-button.is-current) { background: var(--aw-teal-soft); }

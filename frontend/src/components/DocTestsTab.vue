@@ -17,7 +17,6 @@ import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
   AuditFinding,
-  ControlConclusion,
   DocTest,
   DocTestDispositionState,
   DocTestItem,
@@ -47,6 +46,7 @@ import {
   DOC_TEST_CHIPS, docTestStatus, filterDocTestEntries,
 } from './doc-tests/docTestStatus'
 import type { DocTestFilter } from './doc-tests/docTestStatus'
+import type { ConclusionChanges } from './doc-tests/conclusionDraft'
 import { findingCoverage } from './findings/findingCoverage'
 import { plural } from '../format'
 
@@ -550,50 +550,30 @@ async function setSelectedStates(state: DocTestDispositionState) {
   } catch (error) { fail('Could not record your call on the selected items', error) }
   finally { bulkBusy.value = false }
 }
-async function saveConclusion() {
-  if (!currentTest.value) return
-  try {
-    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${currentTest.value.id}`, {
-      conclusion: currentTest.value.conclusion,
-      control_conclusion: currentTest.value.control_conclusion,
-    })
-    await refresh()
-    toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
-  } catch (error) { fail('Could not save the conclusion', error) }
-}
-/** The cycle grid's conclusion, saved without the test ever being loaded.
- *  `saveConclusion` above reads `currentTest`, which is null while the grid is
- *  up: the grid works from the paged projection alone, which is what keeps a
- *  large population cheap to open. So the value travels with the event. */
-/** The auditor's own scope text. Saved on its own, without a conclusion: a
- *  limitation is worth stating whether or not one has been reached yet. The
- *  disclosure beneath it is rebuilt server-side on every such save. */
-async function saveScopeLimitation(note: string, testId?: string) {
+/** The conclusion and the scope limitation, saved together in one PATCH.
+ *  They were two handlers, and the one that saved the scope limitation
+ *  reloaded the test over a conclusion the auditor had chosen but not saved.
+ *  The cycle grid works from its paged projection rather than a loaded test
+ *  (which keeps a large population cheap to open), so its test id travels
+ *  with the event. */
+async function saveConclusion(changes: ConclusionChanges, testId?: string) {
   const id = testId ?? currentTest.value?.id
-  if (!id) return
+  if (!id || !Object.keys(changes).length) return
   try {
-    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${id}`, {
-      scope_limitations: note,
-    })
+    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${id}`, changes)
     await refresh()
     if (testId) await cycleGrid.value?.loadGrid()
-    toast.add({ severity: 'success', summary: 'Scope limitation saved', life: 1800 })
-  } catch (error) { fail('Could not save the scope limitation', error) }
-}
-function saveCycleScopeLimitation(note: string) {
-  return saveScopeLimitation(note, selectedCycleTestId.value ?? undefined)
-}
-async function saveCycleConclusion(conclusion: ControlConclusion) {
-  const testId = selectedCycleTestId.value
-  if (!testId) return
-  try {
-    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${testId}`, {
-      control_conclusion: conclusion,
+    const both = 'control_conclusion' in changes && 'scope_limitations' in changes
+    toast.add({
+      severity: 'success',
+      summary: both ? 'Conclusion and scope limitation saved'
+        : 'control_conclusion' in changes ? 'Conclusion saved' : 'Scope limitation saved',
+      life: 1800,
     })
-    await refresh()
-    await cycleGrid.value?.loadGrid()
-    toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
   } catch (error) { fail('Could not save the conclusion', error) }
+}
+function saveCycleConclusion(changes: ConclusionChanges) {
+  return saveConclusion(changes, selectedCycleTestId.value ?? undefined)
 }
 async function updateEvidenceRequest(requestId: string, status: 'received' | 'cancelled') {
   try {
@@ -949,7 +929,6 @@ function onRulesetApproved(): void {
           @run="runTest"
           @changed="refresh"
           @saveConclusion="saveCycleConclusion"
-          @saveScopeLimitation="saveCycleScopeLimitation"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
         />
@@ -974,7 +953,6 @@ function onRulesetApproved(): void {
             @saveAttributes="saveAttributes"
             @setState="setItemState"
             @saveConclusion="saveConclusion"
-          @saveScopeLimitation="saveScopeLimitation"
             @generateFinding="generateFinding"
             @openFinding="openFinding"
             @updateEvidenceRequest="updateEvidenceRequest"
@@ -1030,7 +1008,6 @@ function onRulesetApproved(): void {
           @run="runTest"
           @openDocument="openDocument"
           @saveConclusion="saveConclusion"
-          @saveScopeLimitation="saveScopeLimitation"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
           @openRcm="openRcm"
@@ -1051,7 +1028,6 @@ function onRulesetApproved(): void {
           @saveAttributes="saveAttributes"
           @setState="setItemState"
           @saveConclusion="saveConclusion"
-          @saveScopeLimitation="saveScopeLimitation"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
           @updateEvidenceRequest="updateEvidenceRequest"

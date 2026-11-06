@@ -157,6 +157,43 @@ describe('the assistant in three widths', () => {
   })
 })
 
+describe('docking on a laptop', () => {
+  function withWidth(width: number, body: () => void) {
+    const original = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+    try { body() } finally {
+      Object.defineProperty(window, 'innerWidth', { value: original, configurable: true })
+    }
+  }
+
+  it('docks at 1280px, the width the Treasury run was driven at', () => {
+    // Sized from the panel's default width, a 1280px window was answered with
+    // the expanded panel, which covers the page it was opened beside.
+    withWidth(1280, () => expect(affordableMode('docked')).toBe('docked'))
+  })
+
+  it('gives the page its minimum width by narrowing the docked panel', () => {
+    withWidth(1280, () => {
+      const wrapper = mountPanel('docked')
+      const style = wrapper.find('.assistant-panel').attributes('style') ?? ''
+      // 1280 - 880 for the page.
+      expect(style).toContain('width: 400px')
+    })
+  })
+
+  it('offers no Dock button where docking would be answered with expansion', () => {
+    withWidth(EXPAND_BELOW - 1, () => {
+      const wrapper = mountPanel('expanded')
+      expect(wrapper.find('[aria-label="Dock the assistant"]').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="Close the assistant"]').exists()).toBe(true)
+    })
+    withWidth(EXPAND_BELOW + 1, () => {
+      const wrapper = mountPanel('expanded')
+      expect(wrapper.find('[aria-label="Dock the assistant"]').exists()).toBe(true)
+    })
+  })
+})
+
 describe('what the window can accommodate', () => {
   it('answers a request to dock with expansion when the page would be squeezed', () => {
     const original = window.innerWidth

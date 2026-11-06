@@ -163,7 +163,13 @@ def test_run_document_test_registers_the_blocked_unit_on_open_evidence_requests(
     outcome = run_document_test(ws, test["id"], unit_id="unit-blocked", run_id="run-1")
 
     assert outcome.status == "blocked"
-    assert outcome.error == "The signed approval was never provided."
+    # A stable code, so every evidence-gap test reads as one fact on the run
+    # card instead of one differently worded alarm each. The reason stays on
+    # the test, where the Document Tests page and the evidence request read it.
+    assert outcome.error == "document_test_awaits_evidence"
+    assert doc_tests.load_test(workspaces.load_workspace(ws.id), test["id"])["scope_limitations"] == (
+        "The signed approval was never provided."
+    )
     # Nothing ran, so the caller must not announce a workspace change.
     assert outcome.executed is False
     # The open request now points at the unit a later import would unblock.

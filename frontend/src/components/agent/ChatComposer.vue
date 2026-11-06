@@ -14,6 +14,10 @@ const props = defineProps<{
   documents: AuditDocument[]
   selectedIds: string[]
   runActive?: boolean
+  /** The active run reads what is sent to it (the steering loop); a workflow
+   *  run does not, and a request sent during one waits behind it. */
+  runSteerable?: boolean
+  runPaused?: boolean
 }>()
 const emit = defineEmits<{
   send: [string]
@@ -51,8 +55,14 @@ const placeholder = computed(() => {
   // Capabilities are unknown while the chat is still loading; only a loaded
   // "nothing configured" state should show the configuration hint.
   if (props.capabilities && !props.capabilities.ask && !props.capabilities.act) return 'Configure an assistant or agent model first'
-  // Steering a live run has always worked; nothing ever said so.
-  if (props.runActive) return 'Send a message to steer the run…'
+  // Only the steering loop reads a message mid-run. A workflow run does not:
+  // a request sent during one waits until it ends, and behind a paused run it
+  // waits until that run is resumed. "Steer the run" promised otherwise, and
+  // the Treasury run's "carry on and draft the findings" sat behind a paused
+  // run while every signal said it was in progress.
+  if (props.runActive && props.runSteerable) return 'Send a message to steer the run…'
+  if (props.runActive && props.runPaused) return 'Ask a question — a request will wait until the paused run is resumed…'
+  if (props.runActive) return 'Ask a question, or queue a request for after this run…'
   return 'Ask a question, or type / for commands…'
 })
 

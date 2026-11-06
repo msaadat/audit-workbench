@@ -2779,7 +2779,9 @@ export interface AgentBlocker {
   subjects: string[]
   code: string | null
   status: string
-  severity: 'blocked' | 'failed' | 'review'
+  /** `evidence`: a test correctly waiting on evidence nobody supplied — a fact
+   *  about the engagement, drawn without the alarm colour. */
+  severity: 'blocked' | 'failed' | 'review' | 'evidence'
   message: string
   where: string | null
   suggestions: Array<{ label: string; command: string }>
@@ -2808,6 +2810,19 @@ export interface AssistantRunProjection extends AgentRunSummary {
   children?: string[]
   /** Next steps the loop offered when it finished. */
   suggestions?: AssistantRunSuggestion[]
+  /** Set when this card is a request waiting on another run, not a run. */
+  queued_command?: AssistantQueuedCommand
+}
+
+/** A chat request queued behind another run, and what became of it. */
+export interface AssistantQueuedCommand {
+  command_id: string
+  state: 'queued' | 'not_run'
+  position: number
+  waiting_on_run_id: string | null
+  waiting_on_status: string
+  /** The words it was sent with, for "Send again". */
+  resend_text: string
 }
 
 /** One clickable next step a finished steering loop offered. */

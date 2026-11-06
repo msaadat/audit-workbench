@@ -23,8 +23,17 @@ const run = ref<AgentRun | null>(null)
 const busy = ref(false)
 const clock = ref(Date.now())
 let clockTimer: number | undefined
-const active = computed(() => ['queued','interpreting','executing','awaiting_approval','awaiting_input','verifying','paused','interrupted'].includes(props.projection.status))
-const working = computed(() => ['queued','interpreting','executing','verifying'].includes(props.projection.status))
+// A request waiting on another run. The projection fills the card from the run
+// it waits behind, so judged by status alone it drew that run's spinner, live
+// border and Pause/Stop buttons — up to five sets of them for one paused run —
+// and read as a request already underway.
+const queued = computed(() => props.projection.queued_command ?? null)
+const waitingOnPausedRun = computed(
+  () => queued.value?.state === 'queued' && queued.value.waiting_on_status === 'paused',
+)
+const canResend = computed(() => queued.value?.state === 'not_run' && Boolean(queued.value.resend_text))
+const active = computed(() => !queued.value && ['queued','interpreting','executing','awaiting_approval','awaiting_input','verifying','paused','interrupted'].includes(props.projection.status))
+const working = computed(() => !queued.value && ['queued','interpreting','executing','verifying'].includes(props.projection.status))
 function duration(value: number | null | undefined) {
   if (value == null) return ''
   const seconds = Math.max(0, Math.floor(value / 1000))
@@ -96,6 +105,9 @@ watch(
   () => { if (needsDetail.value) void load().catch(() => undefined) },
   { immediate: true },
 )
+function resend() {
+  if (queued.value?.resend_text) emit('command', queued.value.resend_text)
+}
 async function control(action: 'pause'|'resume'|'cancel') {
   busy.value = true
   try { await api.post(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/${action}`); await load(); emit('changed') }
@@ -151,7 +163,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
          card used to restate is already in the narration above it. -->
     <div class="head-row">
       <span class="run-head">
-        <span class="icon"><i :class="active ? 'aw-icon aw-icon-spin aw-icon-loader-circle' : 'aw-icon aw-icon-sparkles'" /></span>
+        <span class="icon" :class="{ waiting: queued }"><i :class="queued ? (queued.state === 'not_run' ? 'aw-icon aw-icon-ban' : 'aw-icon aw-icon-clock') : active ? 'aw-icon aw-icon-spin aw-icon-loader-circle' : 'aw-icon aw-icon-sparkles'" /></span>
         <span class="identity">
           <strong>{{ projection.title }}</strong>
           <small>{{ subline }}</small>
@@ -160,7 +172,12 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       <Tag v-if="projection.status === 'failed'" :value="projection.status_label" severity="danger" />
       <Tag v-else-if="projection.status === 'completed_with_failures'" :value="projection.status_label" severity="warn" />
       <Tag v-else-if="projection.pending_attention" value="Needs you" severity="warn" />
-      <template v-if="active">
+      <!-- A queued request owns no run, so its only controls are the two that
+           change its own fate: resume the paused run it waits behind, or send
+           it again once it can no longer run. -->
+      <button v-if="waitingOnPausedRun" type="button" class="retry-go" :disabled="busy" @click="control('resume')">Resume that run</button>
+      <button v-else-if="canResend" type="button" class="retry-go" :disabled="busy" @click="resend">Send again</button>
+      <template v-else-if="active">
         <button v-if="!['paused','interrupted'].includes(projection.status)" class="control" :disabled="busy" title="Pause" aria-label="Pause the run" @click="control('pause')"><i class="aw-icon aw-icon-pause" /></button>
         <button v-else class="control" :disabled="busy" title="Resume" aria-label="Resume the run" @click="control('resume')"><i class="aw-icon aw-icon-play" /></button>
         <button class="control danger" :disabled="busy" title="Stop" aria-label="Stop the run" @click="control('cancel')"><i class="aw-icon aw-icon-circle-stop" /></button>
@@ -222,6 +239,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 .head-row{display:flex;align-items:center;gap:.3rem;padding:.35rem .45rem}
 .run-head{display:flex;align-items:center;gap:.45rem;flex:1;min-width:0;padding:.1rem;text-align:left;color:inherit}
 .icon{display:grid;place-items:center;width:1.4rem;height:1.4rem;flex:0 0 auto;border-radius:var(--aw-radius-control);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-2xs)}
+.icon.waiting{background:var(--aw-raised);color:var(--aw-muted)}
 .identity{display:grid;gap:.05rem;min-width:0;flex:1}
 .identity strong,.identity small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .identity strong{font-size:var(--aw-text-xs);font-weight:500}

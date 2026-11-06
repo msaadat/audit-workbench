@@ -47,6 +47,8 @@ const needsSources = computed(() => !props.workspace.tables.length && !props.wor
 const activeChat = computed(() => chats.state.chat)
 const status = computed(() => activeChat.value?.active_workspace_run?.status ?? '')
 const runActive = computed(() => agent.isActive.value)
+const runSteerable = computed(() => agent.state.run?.engine === 'agent')
+const runPaused = computed(() => agent.state.run?.status === 'paused')
 const displayChat = computed<AssistantChat | null>(() => {
   const chat = activeChat.value
   const global = chat?.active_workspace_run
@@ -210,6 +212,8 @@ defineExpose({ rename, remove })
       :documents="documents"
       :selectedIds="activeChat.composer_context.document_ids"
       :runActive="runActive"
+      :runSteerable="runSteerable"
+      :runPaused="runPaused"
       @send="send"
       @documents="pickerOpen = true"
       @removeDocument="chats.removeDocument"

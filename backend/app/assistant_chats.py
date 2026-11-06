@@ -584,6 +584,16 @@ def _queued_command_fate(
     return "queued", run
 
 
+def _queued_command_text(run: dict, command_id: str) -> str:
+    """The words a queued command was sent with, for "Send again"."""
+
+    for field in ("pending_commands", "unrun_commands"):
+        for command in run.get(field) or []:
+            if command.get("id") == command_id:
+                return str(command.get("text") or "").strip()
+    return ""
+
+
 def _active_run(workspace: Workspace, summaries: list[dict] | None = None) -> dict | None:
     active = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
     if summaries is None:
@@ -1603,7 +1613,10 @@ def _run_projection(run: dict) -> dict:
         "pending_attention": bool(
             any(item.get("status") == "pending" for item in run.get("approvals") or [])
             or any(item.get("status") == "pending" for item in run.get("interactions") or [])
-            or any(item["severity"] != "review" for item in open_items)
+            # Waiting on evidence is not a question for the auditor here: it is
+            # answered on the Document Tests page by supplying the evidence, and
+            # flagging it made every fieldwork run read "Needs you".
+            or any(item["severity"] not in {"review", "evidence"} for item in open_items)
         ),
         "status_label": _STATUS_LABELS.get(status, status.replace("_", " ")),
         "plan_line": (run.get("workflow") or {}).get("workflow_explanation") or "",
@@ -1729,13 +1742,34 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 # The card sits directly beneath the message that produced it,
                 # so titling it with that same text printed the request twice.
                 # It identifies the run being waited on instead.
+                command_id = str(outcome.get("command_id") or "")
+                waiting_on_status = str(parent_run.get("status") or "")
+                paused = not stranded and waiting_on_status == "paused"
                 parent.update({
                     "id": f"run:{run_id}:command:{(item.get('outcome') or {}).get('command_id')}",
+                    # What the card is: a request waiting on another run, not
+                    # that run. Without it the card inherited the run's own
+                    # status, so it drew a spinner, a live border and a second
+                    # set of Pause/Stop buttons for the run ahead — and looked,
+                    # in every way, like the request was already running.
+                    "queued_command": {
+                        "command_id": command_id,
+                        "state": "not_run" if stranded else "queued",
+                        "position": position,
+                        "waiting_on_run_id": parent_run.get("id"),
+                        "waiting_on_status": waiting_on_status,
+                        "resend_text": _queued_command_text(parent_run, command_id),
+                    },
                     "status": "cancelled" if stranded else "queued",
                     "status_label": "Didn't run" if stranded else "Queued",
                     "current_activity": (
                         "the run it was waiting for ended first — send it again"
                         if stranded
+                        # A paused run never finishes on its own, so "waiting
+                        # for it to finish" promised a start that would not
+                        # come. Say what will start it.
+                        else f"waiting behind “{parent['title']}”, which is paused — resume it to start this"
+                        if paused
                         else f"waiting for “{parent['title']}” to finish"
                         if position <= 1
                         else f"number {position} in the queue behind “{parent['title']}”"

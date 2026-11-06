@@ -1,5 +1,4 @@
 import { shallowMount } from '@vue/test-utils'
-import Select from 'primevue/select'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('primevue/select', () => ({
@@ -178,7 +177,7 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
 
     // Narrow selection is a fact the coverage line reports, not a restriction:
     // whether it can carry a conclusion is the auditor's judgment to make.
-    expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
+    expect(wrapper.get('select[aria-label="Control conclusion"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('.footer-warn').exists()).toBe(false)
     // Coverage now reads beside the assessment it qualifies, not in a Result
     // block that restated the outcome a fourth time.
@@ -188,7 +187,7 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
   it('enables an auditor conclusion for a current signed sample', () => {
     const wrapper = render('sample')
 
-    expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
+    expect(wrapper.get('select[aria-label="Control conclusion"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('.footer-warn').exists()).toBe(false)
     expect(wrapper.find('.coverage').text()).toContain('Sampled population')
   })
@@ -205,7 +204,7 @@ describe('DocTestItemDetail Cycle-vouch assurance', () => {
     } as unknown as DocTestItem
     const wrapper = mount({ test: { ...test, items: [unrun] } as DocTest, item: unrun })
 
-    expect(wrapper.findComponent(Select).props('disabled')).toBeFalsy()
+    expect(wrapper.get('select[aria-label="Control conclusion"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('.footer-warn').text()).toContain('You can still conclude')
   })
 })
@@ -358,9 +357,23 @@ describe('DocTestItemDetail footer row', () => {
     expect(wrapper.find('.footer-note').text()).toBe('Record your call first.')
     expect(wrapper.findAll('button').some(node => node.text() === 'Save')).toBe(false)
 
-    // The select writes through to the test, which is what the tab saves.
-    await wrapper.setProps({ test: { ...test, control_conclusion: 'ineffective' } as DocTest })
+    await wrapper.get('select[aria-label="Control conclusion"]').setValue('ineffective')
     expect(wrapper.findAll('button').some(node => node.text() === 'Save')).toBe(true)
+    await wrapper.get('button[aria-label="Save conclusion and scope limitation"]').trigger('click')
+    expect(wrapper.emitted('saveConclusion')).toEqual([[{ control_conclusion: 'ineffective' }]])
+  })
+
+  it('does not let a reload of the test discard an unsaved conclusion', async () => {
+    // B39: the select wrote into the test prop, so the reload that followed
+    // saving the scope limitation put the filed conclusion back.
+    const { test, item } = itemFirst('failed')
+    const wrapper = mount({ test, item })
+
+    await wrapper.get('select[aria-label="Control conclusion"]').setValue('ineffective')
+    await wrapper.setProps({ test: { ...test, sha1: 'reloaded', scope_limitation_note: 'From the file.' } as DocTest })
+
+    expect((wrapper.get('select[aria-label="Control conclusion"]').element as HTMLSelectElement).value).toBe('ineffective')
+    expect((wrapper.get('input[aria-label="Scope limitation"]').element as HTMLInputElement).value).toBe('From the file.')
   })
 
   it('puts provenance behind a link rather than a permanent rail', async () => {

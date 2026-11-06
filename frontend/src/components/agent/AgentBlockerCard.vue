@@ -10,6 +10,12 @@ import type { AgentBlocker } from '../../types'
 defineProps<{ blocker: AgentBlocker; busy?: boolean }>()
 const emit = defineEmits<{ command: [string] }>()
 
+const icons: Record<string, string> = {
+  failed: 'aw-icon aw-icon-circle-x',
+  review: 'aw-icon aw-icon-eye',
+  evidence: 'aw-icon aw-icon-hourglass',
+}
+
 const destinations: Record<string, string> = {
   documents: 'Documents tab',
   'doc-tests': 'Document Tests tab',
@@ -22,7 +28,7 @@ const destinations: Record<string, string> = {
        an identifier back into the reading surface. -->
   <div class="blocker" :class="blocker.severity" :title="blocker.code ?? undefined">
     <div class="head">
-      <i :class="blocker.severity === 'failed' ? 'aw-icon aw-icon-circle-x' : blocker.severity === 'review' ? 'aw-icon aw-icon-eye' : 'aw-icon aw-icon-triangle-alert'" />
+      <i :class="icons[blocker.severity] ?? 'aw-icon aw-icon-triangle-alert'" />
       <p>{{ blocker.message }}</p>
     </div>
     <small v-if="blocker.where" class="where">Review it in the {{ destinations[blocker.where] ?? blocker.where }}.</small>
@@ -44,11 +50,11 @@ const destinations: Record<string, string> = {
 <style scoped>
 .blocker{display:grid;gap:.45rem;padding:.65rem .7rem;border:1px solid var(--aw-warn-line);border-radius:var(--aw-radius-control);background:var(--aw-warn-soft)}
 .blocker.failed{border-color:var(--aw-danger-line);background:var(--aw-danger-soft)}
-.blocker.review{border-color:var(--aw-border);background:var(--aw-canvas)}
+.blocker.review,.blocker.evidence{border-color:var(--aw-border);background:var(--aw-canvas)}
 .head{display:grid;grid-template-columns:1rem minmax(0,1fr);gap:.5rem;align-items:start}
 .head>i{margin-top:.12rem;color:var(--aw-warn)}
 .blocker.failed .head>i{color:var(--aw-danger)}
-.blocker.review .head>i{color:var(--aw-muted)}
+.blocker.review .head>i,.blocker.evidence .head>i{color:var(--aw-muted)}
 .head p{margin:0;font-size:var(--aw-text-sm);line-height:1.45}
 .where{font-size:var(--aw-text-xs);color:var(--aw-muted)}
 .choices{display:flex;flex-wrap:wrap;gap:.35rem}

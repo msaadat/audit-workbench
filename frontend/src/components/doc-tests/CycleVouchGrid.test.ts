@@ -206,7 +206,37 @@ describe('CycleVouchGrid conclusion', () => {
 
     expect(saveConclusion).toHaveBeenCalledTimes(1)
     // The value travels with the request: the page never loaded the test.
-    expect(saveConclusion).toHaveBeenCalledWith('effective')
+    expect(saveConclusion).toHaveBeenCalledWith({ control_conclusion: 'effective' })
+  })
+
+  it('keeps an unsaved conclusion when the grid reloads, and saves both together', async () => {
+    // B39: saving the scope limitation reloaded the grid, which put the filed
+    // conclusion back over one the auditor had chosen and not yet saved.
+    const get = vi.spyOn(api, 'get').mockResolvedValue(payload)
+    const saveConclusion = vi.fn()
+    const wrapper = mount(CycleVouchGrid, {
+      props: { ...props },
+      attrs: { onSaveConclusion: saveConclusion },
+      global,
+    })
+    await flushPromises()
+
+    await wrapper.get('select[aria-label="Control conclusion"]').setValue('ineffective')
+    get.mockResolvedValue({ ...payload, scope_limitation_note: 'Saved elsewhere.' })
+    await (wrapper.vm as unknown as { loadGrid: () => Promise<void> }).loadGrid()
+    await flushPromises()
+
+    expect((wrapper.get('select[aria-label="Control conclusion"]').element as HTMLSelectElement).value).toBe('ineffective')
+    expect((wrapper.get('input[aria-label="Scope limitation"]').element as HTMLInputElement).value).toBe('Saved elsewhere.')
+
+    await wrapper.get('input[aria-label="Scope limitation"]').setValue('Only one deal pack supplied.')
+    // One Save for both fields.
+    expect(wrapper.findAll('button').filter(button => button.text() === 'Save')).toHaveLength(1)
+    await wrapper.get('button[aria-label="Save conclusion and scope limitation"]').trigger('click')
+    expect(saveConclusion).toHaveBeenCalledWith({
+      control_conclusion: 'ineffective',
+      scope_limitations: 'Only one deal pack supplied.',
+    })
   })
 
   it('says what is still unanswered without refusing the conclusion', async () => {
@@ -245,22 +275,22 @@ describe('CycleVouchGrid conclusion', () => {
 describe('CycleVouchGrid scope limitation', () => {
   it('offers the auditor a scope limitation to state', async () => {
     vi.spyOn(api, 'get').mockResolvedValue(payload)
-    const saveScopeLimitation = vi.fn()
+    const saveConclusion = vi.fn()
     const wrapper = mount(CycleVouchGrid, {
       props: { ...props },
-      attrs: { onSaveScopeLimitation: saveScopeLimitation },
+      attrs: { onSaveConclusion: saveConclusion },
       global,
     })
     await flushPromises()
 
     // Nothing to save until it differs from what was filed.
-    expect(wrapper.find('button[aria-label="Save scope limitation"]').exists()).toBe(false)
+    expect(wrapper.find('button[aria-label="Save conclusion and scope limitation"]').exists()).toBe(false)
 
     await wrapper.get('input[aria-label="Scope limitation"]')
       .setValue('Management did not provide the extract.')
-    await wrapper.get('button[aria-label="Save scope limitation"]').trigger('click')
+    await wrapper.get('button[aria-label="Save conclusion and scope limitation"]').trigger('click')
 
-    expect(saveScopeLimitation).toHaveBeenCalledWith('Management did not provide the extract.')
+    expect(saveConclusion).toHaveBeenCalledWith({ scope_limitations: 'Management did not provide the extract.' })
   })
 
   it('shows the disclosure the file wrote without offering it for edit', async () => {

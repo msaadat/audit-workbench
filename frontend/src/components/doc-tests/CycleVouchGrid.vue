@@ -5,13 +5,14 @@ import Button from 'primevue/button'
 import { api } from '../../api'
 import type {
   AuditFinding,
-  ControlConclusion,
   CycleAssertionVerdict,
   CycleEvaluationState,
   CycleVouchGridComparison,
   CycleVouchGridPayload,
   CycleVouchMetadata,
 } from '../../types'
+import { CONTROL_CONCLUSIONS, useConclusionDraft } from './conclusionDraft'
+import type { ConclusionChanges } from './conclusionDraft'
 import UiEmptyState from '../ui/UiEmptyState.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 import {
@@ -36,30 +37,11 @@ const emit = defineEmits<{
   openRules: []
   run: []
   changed: []
-  saveConclusion: [conclusion: ControlConclusion]
-  saveScopeLimitation: [note: string]
+  saveConclusion: [changes: ConclusionChanges]
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
 }>()
 
-const CONTROL_CONCLUSIONS: Array<{ label: string; value: ControlConclusion }> = [
-  { label: 'Not concluded', value: 'no_conclusion' },
-  { label: 'Effective', value: 'effective' },
-  { label: 'Partially effective', value: 'partially_effective' },
-  { label: 'Ineffective', value: 'ineffective' },
-  { label: 'Not applicable', value: 'not_applicable' },
-]
-// Read from the grid projection rather than from the test. The grid never
-// fetches the test itself — that is what keeps a large population cheap to
-// open — so the two records it stands in for travel with the projection.
-const conclusion = ref<ControlConclusion>('no_conclusion')
-const savedConclusion = ref<ControlConclusion>('no_conclusion')
-const conclusionChanged = computed(() => conclusion.value !== savedConclusion.value)
-// The auditor's own scope text. The disclosure written beneath it is the
-// file's, regenerated on every save, so it is shown and never edited.
-const scopeNote = ref('')
-const savedScopeNote = ref('')
-const scopeNoteChanged = computed(() => scopeNote.value !== savedScopeNote.value)
 const scopeDisclosure = computed(() => payload.value?.scope_limitation_disclosure ?? '')
 /** Records still carrying no call. A warning beside the conclusion, never a
  *  block: concluding over open records is the auditor's to make, and the
@@ -69,6 +51,19 @@ const undispositioned = computed(() =>
 )
 
 const payload = ref<CycleVouchGridPayload | null>(null)
+// One draft for the conclusion and the scope limitation, saved together. The
+// grid reloads after every save; a field the auditor has moved survives that
+// reload, which is what the two separate Saves did not do.
+const draft = useConclusionDraft(() => payload.value
+  ? {
+      key: props.testId,
+      conclusion: payload.value.control_conclusion,
+      scopeNote: payload.value.scope_limitation_note ?? '',
+    }
+  : null)
+function saveDraft() {
+  if (draft.dirty) emit('saveConclusion', draft.changes())
+}
 const loading = ref(false)
 const loadError = ref<string | null>(null)
 const offset = ref(0)
@@ -133,7 +128,12 @@ function displayValue(value: unknown): string {
 }
 
 function dispositionStatus(row: CycleVouchGridPayload['rows'][number]): string {
-  return row.disposition_stale ? 'stale' : row.disposition_state
+  if (row.disposition_stale) return 'stale'
+  // Evaluated and not yet decided is the auditor's turn, not "Not run".
+  if (row.disposition_state === 'pending' && ['passed', 'failed'].includes(String(row.evaluation_state ?? ''))) {
+    return 'awaiting_call'
+  }
+  return row.disposition_state
 }
 
 // Dispositioning from the grid. The column already showed the decision; opening
@@ -210,14 +210,6 @@ async function loadGrid() {
       `/api/workspaces/${props.workspaceId}/doc-tests/${props.testId}/grid?offset=${offset.value}&limit=${limit.value}`,
     )
     if (payload.value.page.offset !== offset.value) offset.value = payload.value.page.offset
-    // Reseed from what was filed, so paging or a reload after saving does not
-    // leave the select showing an edit the file never took.
-    conclusion.value = payload.value.control_conclusion
-    savedConclusion.value = payload.value.control_conclusion
-    // `?? ''` rather than trusting the field: a server that predates it sends
-    // null, and null in a text input is not an empty string.
-    scopeNote.value = payload.value.scope_limitation_note ?? ''
-    savedScopeNote.value = payload.value.scope_limitation_note ?? ''
   } catch (error) {
     payload.value = null
     loadError.value = error instanceof Error ? error.message : String(error)
@@ -346,6 +338,12 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
       </div>
     </div>
 
+    <!-- Dispositions are withheld while a run is live (paused included), so
+         say so: disabled buttons are skipped by the keyboard and read as no
+         control at all. -->
+    <p v-if="payload && busy" class="calls-paused">
+      Dispositions are unavailable while the assistant is running or paused. Stop or finish the run to record them.
+    </p>
     <div v-if="payload" ref="scrollContainer" class="grid-scroll" tabindex="0" aria-label="Scrollable Cycle vouch results">
       <table>
         <thead>
@@ -406,13 +404,13 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
                   @click="setDisposition(row, 'exception')"
                 />
                 <Button
-                  icon="aw-icon aw-icon-refresh-cw"
+                  icon="aw-icon aw-icon-undo-2"
                   text
                   rounded
                   size="small"
                   severity="secondary"
                   :aria-label="`Clear the disposition on ${row.label || row.item_id}`"
-                  v-tooltip.top="'Clear'"
+                  v-tooltip.top="'Clear your call'"
                   :disabled="busy || dispositioning === row.item_id || row.disposition_state === 'pending'"
                   @click="setDisposition(row, 'pending')"
                 />
@@ -475,19 +473,11 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
     <div v-if="payload" class="footer-row">
       <div class="footer-cell">
         <p class="aw-label">Conclusion</p>
-        <select v-model="conclusion" class="conclusion-select" aria-label="Control conclusion">
+        <select v-model="draft.conclusion" class="conclusion-select" aria-label="Control conclusion">
           <option v-for="option in CONTROL_CONCLUSIONS" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
-        <Button
-          v-if="conclusionChanged"
-          label="Save"
-          icon="aw-icon aw-icon-check"
-          size="small"
-          :disabled="busy"
-          @click="emit('saveConclusion', conclusion)"
-        />
       </div>
       <div class="footer-cell">
         <p class="aw-label">Finding</p>
@@ -522,21 +512,17 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
       <div class="footer-cell scope-cell">
         <p class="aw-label">Scope limitation</p>
         <input
-          v-model="scopeNote"
+          v-model="draft.scopeNote"
           class="scope-input"
           type="text"
           aria-label="Scope limitation"
           placeholder="What the evidence could not establish"
+          @keydown.enter.prevent="saveDraft"
         />
-        <Button
-          v-if="scopeNoteChanged"
-          label="Save"
-          icon="aw-icon aw-icon-check"
-          size="small"
-          :disabled="busy"
-          aria-label="Save scope limitation"
-          @click="emit('saveScopeLimitation', scopeNote)"
-        />
+      </div>
+      <div v-if="draft.dirty" class="footer-cell footer-save">
+        <Button label="Save" icon="aw-icon aw-icon-check" size="small" :disabled="busy" aria-label="Save conclusion and scope limitation" @click="saveDraft" />
+        <Button label="Discard" size="small" text severity="secondary" :disabled="busy" @click="draft.discard()" />
       </div>
       <p v-if="scopeDisclosure" class="footer-disclosure">{{ scopeDisclosure }}</p>
       <p v-if="undispositioned" class="footer-warn">
@@ -552,6 +538,7 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
 .footer-row { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1.5rem; padding-top: .75rem; border-top: 1px solid var(--aw-border); }
 .footer-cell { display: flex; align-items: center; gap: .5rem; }
 .footer-cell .aw-label { margin: 0; }
+.calls-paused { margin: 0 0 .5rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .conclusion-select { min-width: 10rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
 .footer-note { color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .scope-cell { flex: 1 1 22rem; }

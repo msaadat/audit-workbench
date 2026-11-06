@@ -4,7 +4,9 @@ import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Popover from 'primevue/popover'
 
-import { affordableMode, useAgentRun } from '../../composables/useAgentRun'
+import {
+  EXPAND_BELOW, PAGE_MIN_WIDTH, PANEL_MIN_WIDTH, affordableMode, useAgentRun,
+} from '../../composables/useAgentRun'
 import { useAssistantChat } from '../../composables/useAssistantChat'
 import { workspaceContextKey } from '../../composables/useWorkspaceContext'
 import type { WorkspaceSummary } from '../../types'
@@ -44,14 +46,26 @@ const chatMenu = ref<InstanceType<typeof Popover> | null>(null)
 const width = ref(440)
 const resizing = ref(false)
 
-const MIN_WIDTH = 360
+const MIN_WIDTH = PANEL_MIN_WIDTH
 const MAX_WIDTH = 720
-/** A surface rail plus a two-pane detail layout that still reads. */
-const MIN_CONTENT_WIDTH = 880
+const MIN_CONTENT_WIDTH = PAGE_MIN_WIDTH
 const WIDTH_KEY = `audit-workbench:assistant-width:${props.workspace.id}`
 
 const mode = computed(() => agent.state.panelMode)
 const expanded = computed(() => mode.value === 'expanded')
+/**
+ * The window width, tracked so the docked panel gives the page what it needs
+ * as the window narrows, and so the Dock button is offered only where docking
+ * is possible: below `EXPAND_BELOW` a request to dock is answered with
+ * expansion, and a button that does nothing is worse than none.
+ */
+const windowWidth = ref(typeof window === 'undefined' ? EXPAND_BELOW : window.innerWidth)
+const canDock = computed(() => windowWidth.value >= EXPAND_BELOW)
+const dockedWidth = computed(() => {
+  void windowWidth.value
+  return clamp(width.value)
+})
+function onWindowResize() { windowWidth.value = window.innerWidth }
 
 onMounted(() => {
   // Guarded like the write below: storage is unavailable in hardened and
@@ -62,10 +76,12 @@ onMounted(() => {
     if (Number.isFinite(saved) && saved > 0) width.value = clamp(saved)
   } catch { /* the default width stands */ }
   window.addEventListener('keydown', onKey)
+  window.addEventListener('resize', onWindowResize)
 })
 onUnmounted(() => {
   stopResize()
   window.removeEventListener('keydown', onKey)
+  window.removeEventListener('resize', onWindowResize)
 })
 
 /**
@@ -176,7 +192,7 @@ const contextRead = computed(() => {
     v-if="mode !== 'closed'"
     class="assistant-panel"
     :class="{ expanded, resizing }"
-    :style="expanded ? undefined : { flexBasis: `${width}px`, width: `${width}px` }"
+    :style="expanded ? undefined : { flexBasis: `${dockedWidth}px`, width: `${dockedWidth}px` }"
   >
     <div v-if="!expanded" class="resize-handle" role="separator" aria-label="Resize the assistant" @pointerdown="startResize" />
 
@@ -208,6 +224,7 @@ const contextRead = computed(() => {
             @click="chatMenu?.toggle($event)"
           />
           <Button
+            v-if="canDock || !expanded"
             :icon="expanded ? 'aw-icon aw-icon-minimize-2' : 'aw-icon aw-icon-maximize-2'"
             text
             size="small"

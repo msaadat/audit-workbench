@@ -693,6 +693,53 @@ def test_a_command_held_when_its_run_was_stopped_reads_as_not_run(workspace_with
     assert card["status_label"] == "Didn't run"
 
 
+def _queued_card(ws, chat_id):
+    return next(
+        item for item in assistant_chats.get_chat(ws, chat_id)["transcript"]
+        if item.get("type") == "run" and ":command:" in item["id"]
+    )
+
+
+def test_a_card_queued_behind_a_paused_run_says_what_will_start_it(workspace_with_data):
+    """B44: the card inherited the paused run's status, so it drew that run's
+    spinner and Pause/Stop buttons and read as a request already underway."""
+
+    ws = workspace_with_data
+    owner = assistant_chats.create_chat(ws)
+    chat = assistant_chats.create_chat(ws)
+    run = store.new_command_run(ws, "auto", {"source": "chat", "text": "full audit", "chat_id": owner["id"]})
+    run["status"] = "paused"
+    run["pending_commands"] = [{"id": "cmd_1", "text": "Draft the findings."}]
+    store.save_run(ws, run)
+    _queued_message(ws, chat["id"], run["id"], "cmd_1")
+
+    card = _queued_card(ws, chat["id"])
+    assert card["status"] == "queued"
+    assert card["queued_command"] == {
+        "command_id": "cmd_1", "state": "queued", "position": 2,
+        "waiting_on_run_id": run["id"], "waiting_on_status": "paused",
+        "resend_text": "Draft the findings.",
+    }
+    assert "paused" in card["current_activity"]
+    assert "resume it" in card["current_activity"]
+
+
+def test_a_request_that_did_not_run_carries_its_words_to_send_again(workspace_with_data):
+    ws = workspace_with_data
+    owner = assistant_chats.create_chat(ws)
+    chat = assistant_chats.create_chat(ws)
+    run = store.new_command_run(ws, "auto", {"source": "chat", "text": "full audit", "chat_id": owner["id"]})
+    run["status"] = "cancelled"
+    run["unrun_commands"] = [{"id": "cmd_1", "status": "not_run", "text": "Draft the findings."}]
+    store.save_run(ws, run)
+    _queued_message(ws, chat["id"], run["id"], "cmd_1")
+
+    card = _queued_card(ws, chat["id"])
+    assert card["status_label"] == "Didn't run"
+    assert card["queued_command"]["state"] == "not_run"
+    assert card["queued_command"]["resend_text"] == "Draft the findings."
+
+
 def test_a_request_queued_behind_a_paused_run_tells_the_coordinator_it_has_not_started(
     workspace_with_data,
 ):
@@ -1475,3 +1522,87 @@ def test_the_context_card_lists_the_sources_that_were_not_available():
     card = narration.context_read(manifest, _Workspace(_documents()))
 
     assert card["unavailable"] == ["the exception rows"]
+
+
+def test_tests_waiting_on_evidence_are_one_calm_line_not_eight_alarms():
+    """The Treasury run's run cards carried eight orange "… stopped: No
+    treasury_deal_ticket record states 'x'" boxes, one per evidence-gap test,
+    on every run that touched fieldwork. They are one fact — evidence that was
+    never supplied — and not a decision the run is waiting for.
+    """
+    from app.agent.executors.fieldwork import EVIDENCE_AWAITED
+
+    titles = [
+        "Run document test — ALCO reporting of out-of-hours deals",
+        "Run document test — Amendment review",
+        "Run document test — Settlement count",
+    ]
+    stage = _stage(
+        "review_required",
+        [
+            _unit("blocked", EVIDENCE_AWAITED, title=title, unit_id=f"u{index}")
+            for index, title in enumerate(titles)
+        ],
+        title="Fieldwork execution",
+        stage_id="fieldwork_execution",
+    )
+    run = _run(stages=[stage])
+
+    items = narration.blockers(run)
+    assert len(items) == 1
+    item = items[0]
+    assert item["severity"] == "evidence"
+    assert item["where"] == "doc-tests"
+    assert "stopped" not in item["message"]
+    assert item["message"].startswith("3 tests are waiting for evidence")
+    assert "Amendment review" in item["message"]
+
+    closing = narration.closing_text(run)
+    assert "need a decision" not in closing
+    assert "3 tests are waiting for evidence" in closing
+
+
+def test_an_evidence_wait_does_not_hide_a_real_decision():
+    from app.agent.executors.fieldwork import EVIDENCE_AWAITED
+
+    stage = _stage(
+        "review_required",
+        [
+            _unit("blocked", EVIDENCE_AWAITED, title="Run document test — Settlement count", unit_id="u1"),
+            _unit("blocked", "ambiguous_relationship_requires_confirmation", title="Join — deals", unit_id="u2"),
+        ],
+    )
+    closing = narration.closing_text(_run(stages=[stage]))
+
+    assert "1 thing needs a decision from you" in closing
+    assert "1 test is waiting for evidence" in closing
+
+
+def test_a_run_waiting_only_on_evidence_does_not_read_needs_you():
+    from app import assistant_chats
+    from app.agent.executors.fieldwork import EVIDENCE_AWAITED
+
+    stage = _stage(
+        "review_required",
+        [_unit("blocked", EVIDENCE_AWAITED, title="Run document test — Settlement count")],
+    )
+    projection = assistant_chats._run_projection(_run(stages=[stage], id="run-1"))
+
+    assert projection["pending_attention"] is False
+    assert projection["blockers"][0]["severity"] == "evidence"
+
+
+def test_a_run_recorded_before_the_code_still_reads_as_awaiting_evidence():
+    """Runs already on disk carry each test's own sentence as the unit error."""
+
+    units = [
+        dict(_unit("blocked", "No treasury_deal_ticket record states 'alco_reporting'",
+                   title="Run document test — ALCO reporting", unit_id="u1"), kind="document_test_execution"),
+        dict(_unit("blocked", "No fx_contract record states 'settlement_count'",
+                   title="Run document test — Settlement count", unit_id="u2"), kind="document_test_execution"),
+    ]
+    items = narration.blockers(_run(stages=[_stage("review_required", units)]))
+
+    assert len(items) == 1
+    assert items[0]["severity"] == "evidence"
+    assert items[0]["message"].startswith("2 tests are waiting for evidence")

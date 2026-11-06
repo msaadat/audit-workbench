@@ -19,6 +19,8 @@ import ProvenanceRail from '../agent/ProvenanceRail.vue'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 import UiVerdictBar from '../ui/UiVerdictBar.vue'
+import { CONTROL_CONCLUSIONS, useConclusionDraft } from './conclusionDraft'
+import type { ConclusionChanges } from './conclusionDraft'
 import { plural, pluralWord, verb } from '../../format'
 
 const props = defineProps<{
@@ -38,8 +40,7 @@ const emit = defineEmits<{
   saveChecks: []
   saveAttributes: []
   setState: [value: DocTestDispositionState, note?: string]
-  saveConclusion: []
-  saveScopeLimitation: [note: string]
+  saveConclusion: [changes: ConclusionChanges]
   generateFinding: [regenerate: boolean]
   openFinding: [findingId: string]
   updateEvidenceRequest: [requestId: string, status: 'received' | 'cancelled']
@@ -63,15 +64,6 @@ const kindLabel: Record<string, string> = {
   qa: 'Cited Q&A',
   cycle_vouch: 'Cycle vouch',
 }
-// Short labels: the field is already called "Conclusion", so repeating
-// "Control" in every option only spent width the footer row does not have.
-const controlConclusions = [
-  { label: 'Not concluded', value: 'no_conclusion' },
-  { label: 'Effective', value: 'effective' },
-  { label: 'Partially effective', value: 'partially_effective' },
-  { label: 'Ineffective', value: 'ineffective' },
-  { label: 'Not applicable', value: 'not_applicable' },
-]
 
 const documentOptions = computed(() => props.documents.map(doc => ({ label: doc.title, value: doc.id })))
 const attachable = computed(() => documentOptions.value.filter(option => !props.item.document_ids.includes(option.value)))
@@ -287,32 +279,18 @@ const openItems = computed(() => {
 /* ---- The footer row ----------------------------------------------------- */
 
 /**
- * The conclusion is per test and the page carries one test at a time, so Save
- * appears only once the select has actually moved. A permanent Save beside an
- * untouched select is a control that does nothing, and this row has room for
- * exactly one thing that does.
+ * The conclusion and the scope limitation are one draft with one Save, the same
+ * on every test kind: see `conclusionDraft.ts`. Save appears only once
+ * something has moved; a permanent Save beside untouched fields does nothing.
  */
-const savedConclusion = ref(props.test.control_conclusion)
-// A new revision from the server — a save, or a reload — is by definition what
-// is on the file. A change *without* one is the auditor moving the select, and
-// that is the only thing Save exists for.
-watch([() => props.test.id, () => props.test.sha1], () => {
-  savedConclusion.value = props.test.control_conclusion
-})
-const conclusionChanged = computed(() => props.test.control_conclusion !== savedConclusion.value)
-// The auditor's own scope text. The disclosure written beneath it is the
-// file's, regenerated on every save, so it is shown and never edited.
-const scopeNote = ref(props.test.scope_limitation_note ?? '')
-const savedScopeNote = ref(props.test.scope_limitation_note ?? '')
-watch(() => props.test.id, () => {
-  scopeNote.value = props.test.scope_limitation_note ?? ''
-  savedScopeNote.value = props.test.scope_limitation_note ?? ''
-})
-watch(() => props.test.scope_limitation_note, value => {
-  scopeNote.value = value ?? ''
-  savedScopeNote.value = value ?? ''
-})
-const scopeNoteChanged = computed(() => scopeNote.value !== savedScopeNote.value)
+const draft = useConclusionDraft(() => ({
+  key: props.test.id,
+  conclusion: props.test.control_conclusion,
+  scopeNote: props.test.scope_limitation_note ?? '',
+}))
+function saveDraft() {
+  if (draft.dirty) emit('saveConclusion', draft.changes())
+}
 const scopeDisclosure = computed(() => props.test.scope_limitation_disclosure ?? '')
 const provenanceOpen = ref(false)
 
@@ -745,43 +723,28 @@ onMounted(() => { void focusAssertion() })
     <div class="footer-row">
       <div class="footer-cell">
         <p class="aw-label">Conclusion</p>
-        <Select
-          v-model="test.control_conclusion"
-          :options="controlConclusions"
-          optionLabel="label"
-          optionValue="value"
-          size="small"
-          class="conclusion-select"
-        />
-        <Button
-          v-if="conclusionChanged"
-          label="Save"
-          icon="aw-icon aw-icon-check"
-          size="small"
-          :disabled="busy"
-          @click="emit('saveConclusion')"
-        />
-        <span v-else-if="!settled" class="footer-note">Record your call first.</span>
+        <select v-model="draft.conclusion" class="conclusion-select" aria-label="Control conclusion">
+          <option v-for="option in CONTROL_CONCLUSIONS" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+        <span v-if="!draft.dirty && !settled" class="footer-note">Record your call first.</span>
       </div>
 
       <div class="footer-cell scope-cell">
         <p class="aw-label">Scope limitation</p>
         <input
-          v-model="scopeNote"
+          v-model="draft.scopeNote"
           class="scope-input"
           type="text"
           aria-label="Scope limitation"
           placeholder="What the evidence could not establish"
+          @keydown.enter.prevent="saveDraft"
         />
-        <Button
-          v-if="scopeNoteChanged"
-          label="Save"
-          icon="aw-icon aw-icon-check"
-          size="small"
-          :disabled="busy"
-          aria-label="Save scope limitation"
-          @click="emit('saveScopeLimitation', scopeNote)"
-        />
+      </div>
+      <div v-if="draft.dirty" class="footer-cell footer-save">
+        <Button label="Save" icon="aw-icon aw-icon-check" size="small" :disabled="busy" aria-label="Save conclusion and scope limitation" @click="saveDraft" />
+        <Button label="Discard" size="small" text severity="secondary" :disabled="busy" @click="draft.discard()" />
       </div>
       <p v-if="scopeDisclosure" class="footer-disclosure">{{ scopeDisclosure }}</p>
       <div class="footer-cell">
@@ -986,7 +949,7 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
 .footer-disclosure { flex: 1 1 100%; margin: 0; padding: .4rem .6rem; border-radius: var(--aw-radius-control); background: var(--aw-surface-sunken, var(--aw-panel)); color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: pre-line; }
 .footer-warn, .footer-provenance { grid-column: 1 / -1; margin: 0; }
 .footer-warn { color: var(--aw-warn-ink); font-size: var(--aw-text-sm); line-height: 1.45; }
-.conclusion-select { min-width: 10rem; }
+.conclusion-select { min-width: 10rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--aw-border-strong); border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink); font: inherit; }
 .finding-chip {
   display: inline-flex; align-items: center; gap: .35rem;
   padding: .125rem .5rem;

@@ -52,6 +52,7 @@ const agent = useAgentRun(props.id)
  * whether a run is live without being opened.
  */
 const assistantOpen = computed(() => agent.state.panelMode !== 'closed')
+const pageCovered = computed(() => agent.state.panelMode === 'expanded')
 const assistantAttention = computed(() => {
   const status = agent.state.run?.status ?? ''
   return status === 'awaiting_approval' || status === 'awaiting_input' || status === 'failed'
@@ -212,7 +213,16 @@ onUnmounted(() => {
     </Teleport>
 
     <div class="workspace-layout">
-      <router-view />
+      <!-- Expanded, the assistant covers the page, which stays mounted beneath
+           so `Esc` returns to it. Covered is not gone: without `inert` its
+           buttons kept their focus order and accessible names, so Tab, a
+           screen reader or a scripted click still reached "Confirm for
+           reporting" through an opaque panel, and nothing happened that
+           anyone could see. `display: contents` keeps the page the layout's
+           flex item, as if the wrapper were not there. -->
+      <div class="workspace-surface" :inert="pageCovered">
+        <router-view />
+      </div>
       <AssistantPanel :workspace="workspace" />
     </div>
 
@@ -267,6 +277,8 @@ onUnmounted(() => {
 .drop-overlay-card i { font-size: var(--aw-text-3xl); color: var(--aw-mint); }
 .drop-overlay-card strong { font-size: var(--aw-text-lg); }
 .drop-overlay-card span { color: var(--aw-on-navy-muted); font-size: var(--aw-text-sm); }
+
+.workspace-surface { display: contents; }
 
 .workspace-layout {
   position: relative;

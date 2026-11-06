@@ -32,6 +32,9 @@ const meta: Record<string, { icon: string; tone: string; label: string }> = {
   incomplete: { icon: 'aw-icon-inbox', tone: 'warn', label: 'Incomplete' },
   needs_review: { icon: 'aw-icon-eye', tone: 'warn', label: 'Needs review' },
   stale: { icon: 'aw-icon-history', tone: 'warn', label: 'Stale' },
+  // An evaluated item with no disposition yet. Drawn as "Not run" it sat
+  // beside "Evaluation: Failed" as a contradiction; it is the auditor's turn.
+  awaiting_call: { icon: 'aw-icon-hand', tone: 'warn', label: 'Awaiting your call' },
   // The runner could run the check but not settle it — distinct from an
   // auditor's 'needs_review', which is a decision to defer.
   inconclusive: { icon: 'aw-icon-circle-help', tone: 'warn', label: 'Inconclusive' },

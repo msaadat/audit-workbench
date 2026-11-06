@@ -198,6 +198,14 @@ def untested_populations(workspace: Workspace) -> list[str]:
 # fieldwork.executed deterministic execution (P7F.2)
 # --------------------------------------------------------------------------- #
 EVIDENCE_UNAVAILABLE = "Evidence is unavailable."
+#: The error a unit settles with when its Document Test is waiting on evidence
+#: nobody supplied. A stable code rather than the test's own scope-limitation
+#: sentence: that sentence differed per test, so eight such tests were eight
+#: unrelated "… stopped: No treasury_deal_ticket record states 'x'" alarms on
+#: every run card instead of one line saying evidence is outstanding. The
+#: reason itself stays where it is read — the test's scope limitation and its
+#: evidence requests.
+EVIDENCE_AWAITED = "document_test_awaits_evidence"
 
 
 @dataclass(frozen=True)
@@ -301,7 +309,7 @@ def run_document_test(
         return ExecutionOutcome(
             reference,
             "blocked",
-            str(test.get("scope_limitations") or "") or EVIDENCE_UNAVAILABLE,
+            EVIDENCE_AWAITED,
             executed=False,
         )
     if test.get("kind") == "qa":
@@ -681,6 +689,7 @@ __all__ = [
     "DOCUMENT_QA_EXECUTOR",
     "DOCUMENT_QA_EXECUTOR_ID",
     "DocumentQaExecutorTarget",
+    "EVIDENCE_AWAITED",
     "EVIDENCE_UNAVAILABLE",
     "ExecutionOutcome",
     "data_test_result_ref",

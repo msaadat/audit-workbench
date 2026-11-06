@@ -819,6 +819,15 @@ _BLOCKERS: dict[str, dict] = {
         "fallback_subject": "this test",
         "where": "doc-tests",
     },
+    # Not a failure and not a decision: the test is correctly waiting for
+    # evidence that was never supplied. Its own severity keeps it out of the
+    # "things need a decision" count and draws it without the alarm colour.
+    "document_test_awaits_evidence": {
+        "message": "{subject} is waiting for evidence that hasn't been supplied.",
+        "fallback_subject": "A document test",
+        "severity": "evidence",
+        "where": "doc-tests",
+    },
     "ambiguous_relationship_requires_confirmation": {
         "message": "More than one join looks plausible for {subject}; I won't guess which one is right.",
         "fallback_subject": "these tables",
@@ -841,8 +850,19 @@ _OPEN_UNIT_STATUSES = {"blocked", "awaiting_input", "awaiting_confirmation"}
 _FAILED_UNIT_STATUSES = {"failed", "conflict"}
 
 
+#: ``executors.fieldwork.EVIDENCE_AWAITED``, restated rather than imported so
+#: narration stays below the executors.
+_EVIDENCE_AWAITED = "document_test_awaits_evidence"
+
+
 def _blocker(stage: dict, unit: dict) -> dict:
     code = str(unit.get("error") or "").strip()
+    # A Document Test unit blocks for one reason only: its evidence was never
+    # supplied. Runs recorded before that had a code carry the test's own
+    # scope-limitation sentence instead, and reading the unit's kind is what
+    # lets those runs say it the same way.
+    if unit.get("kind") == "document_test_execution" and unit.get("status") == "blocked":
+        code = _EVIDENCE_AWAITED
     entry = _BLOCKERS.get(code, {})
     subject = subject_of(unit) or entry.get("fallback_subject") or ""
     template = entry.get("message")
@@ -904,7 +924,14 @@ def blockers(run: dict) -> list[dict]:
         if item["subject"]:
             existing["subjects"].append(item["subject"])
     for item in grouped.values():
-        if len(item["unit_ids"]) > 1:
+        if item["severity"] == "evidence" and len(item["unit_ids"]) > 1:
+            subjects = _joined(item["subjects"], "and")
+            item["message"] = (
+                f"{_count(len(item['unit_ids']), 'test is', 'tests are')} waiting for "
+                "evidence that hasn't been supplied"
+                + (f": {subjects}." if subjects and len(subjects) < 240 else ".")
+            )
+        elif len(item["unit_ids"]) > 1:
             subjects = _joined(item["subjects"], "and")
             item["message"] = (
                 f"{_count(len(item['unit_ids']), 'item')} stopped for the same reason"
@@ -1137,8 +1164,15 @@ def closing_text(run: dict, status: str | None = None) -> str:
             )
 
     if open_items:
-        blocking = [item for item in open_items if item["severity"] != "review"]
+        blocking = [
+            item for item in open_items if item["severity"] not in {"review", "evidence"}
+        ]
         reviewing = [item for item in open_items if item["severity"] == "review"]
+        awaiting = sum(
+            len(item.get("unit_ids") or [item.get("unit_id")])
+            for item in open_items
+            if item["severity"] == "evidence"
+        )
         if blocking:
             # Each of these gets its own card with the question and the answers,
             # so restating the sentence here would print it twice in a row. The
@@ -1146,6 +1180,14 @@ def closing_text(run: dict, status: str | None = None) -> str:
             lines.append(
                 f"{_count(len(blocking), 'thing needs', 'things need')} a decision from you"
                 + (" — the options are below." if any(item["suggestions"] for item in blocking) else ", below.")
+            )
+        if awaiting:
+            # Facts about the engagement's evidence, not decisions: counted
+            # among "things that need a decision", they made a run with one
+            # real question read as nine.
+            lines.append(
+                f"{_count(awaiting, 'test is', 'tests are')} waiting for evidence "
+                "that hasn't been supplied; they're listed on the Document Tests page."
             )
         if reviewing:
             # Review items carry no card, so this is the only place they are said.

@@ -66,12 +66,20 @@ type InvalidationListener = () => void
 export type AgentMode = 'auto' | 'permission'
 export type PanelMode = 'closed' | 'docked' | 'expanded'
 
+/** The narrowest a docked panel is drawn, and what the page beside it needs. */
+export const PANEL_MIN_WIDTH = 360
+/** A surface rail plus a two-pane detail layout that still reads. */
+export const PAGE_MIN_WIDTH = 880
+
 /**
  * Below this, a docked panel would leave the page less than it needs, so a
- * request to dock is answered by expanding instead. `440 + 880`: the panel's
- * default width plus a surface rail and a two-pane detail that still reads.
+ * request to dock is answered by expanding instead. It is the panel's
+ * *narrowest* width plus the page's, not its default width: the docked panel
+ * shrinks to fit. Sized from the default (1320) it put a 1280px laptop — the
+ * commonest width there is — into the expanded panel every time, where the
+ * chat covers the page and the Dock button did nothing.
  */
-export const EXPAND_BELOW = 1320
+export const EXPAND_BELOW = PANEL_MIN_WIDTH + PAGE_MIN_WIDTH
 
 /** What the window can actually accommodate, whatever was asked for. */
 export function affordableMode(mode: PanelMode): PanelMode {
