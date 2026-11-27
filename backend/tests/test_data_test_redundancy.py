@@ -141,6 +141,33 @@ def test_a_test_with_nothing_to_compare_is_not_comparable(workspace_with_data):
     assert passing["redundancy"]["peers"] == []
 
 
+def test_a_passing_test_does_not_keep_every_mark_stale(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    passing = _polars_test(
+        ws,
+        row,
+        title="Nothing over a million",
+        code='result = tables["transactions"].filter(pl.col("amount") > 1_000_000)',
+    )
+    _polars_test(ws, row, title="Customer C1", code=_BY_CUSTOMER)
+
+    data_tests.run_all(ws)
+
+    # The clean pass is stamped with the result it was judged against, so the
+    # sweep it just had is current and a roll-up reads the stored marks rather
+    # than re-reading and re-comparing every result.
+    assert passing["redundancy"]["result_sha1"] == passing["last_run"]["result_sha1"]
+    assert data_test_redundancy.marks_are_current(ws)
+
+    def rescan(*_args, **_kwargs):
+        raise AssertionError("current marks must not be re-scanned")
+
+    monkeypatch.setattr(data_test_redundancy, "annotate", rescan)
+    marks = data_test_redundancy.current_marks(ws)
+    assert marks[passing["id"]]["state"] == data_test_redundancy.NOT_COMPARABLE
+
+
 def test_scan_does_not_write_and_annotate_does(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)

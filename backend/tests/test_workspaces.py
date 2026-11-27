@@ -346,6 +346,79 @@ def test_delete_closes_other_threads_telemetry_and_frees_the_name():
     telemetry_db.connect(again.root).execute("SELECT 1").fetchone()
 
 
+def test_a_finished_threads_telemetry_connections_are_released():
+    """An agent run, or a parallel stage's pool worker, is a thread that ends.
+
+    Its telemetry connection must end with it rather than stay registered —
+    and open — for the life of the process.
+    """
+    import gc
+    import sqlite3
+    import threading
+
+    from app import telemetry_db
+
+    ws = workspaces.create_workspace("Short-lived threads")
+    key = str(telemetry_db.database_path(ws.root))
+    opened = []
+
+    def run():
+        connection = telemetry_db.connect(ws.root)
+        connection.execute("SELECT 1").fetchone()
+        opened.append(id(connection))
+
+    for _ in range(5):
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join()
+    gc.collect()
+
+    assert len(opened) == 5
+    assert len(telemetry_db._open_connections.get(key, ())) == 0
+
+    # The calling thread's own connection is still the cached, live one.
+    mine = telemetry_db.connect(ws.root)
+    assert mine is telemetry_db.connect(ws.root)
+    assert len(telemetry_db._open_connections[key]) == 1
+    mine.execute("SELECT 1").fetchone()
+    telemetry_db.close_all()
+    with pytest.raises(sqlite3.ProgrammingError):
+        mine.execute("SELECT 1")
+
+
+def test_opening_a_workspace_with_no_journal_does_not_wait_on_the_writer_lock():
+    """A read must not queue behind a save or a checkpoint capture to find nothing."""
+    import threading
+
+    from app.workspace_transactions import JOURNAL_DIRNAME, recover_linked_writes
+
+    ws = workspaces.create_workspace("Busy writer")
+    (ws.root / JOURNAL_DIRNAME).mkdir(exist_ok=True)
+    held, release = threading.Event(), threading.Event()
+
+    def writer():
+        with workspaces.workspace_write_lock(ws.root):
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=writer)
+    holder.start()
+    held.wait(5)
+    try:
+        reader = threading.Thread(target=lambda: workspaces.load_workspace(ws.uid))
+        reader.start()
+        reader.join(2)
+        assert not reader.is_alive()
+    finally:
+        release.set()
+        holder.join()
+
+    # A journal left behind is still resolved, under the lock.
+    (ws.root / JOURNAL_DIRNAME / "txn-stray.json").write_text("not json", encoding="utf-8")
+    recover_linked_writes(ws.root)
+    assert not list((ws.root / JOURNAL_DIRNAME).glob("txn-*.json"))
+
+
 def test_create_clears_leftover_folder_without_manifest():
     ws = workspaces.create_workspace("Leftover")
     root = ws.root

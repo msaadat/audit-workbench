@@ -346,11 +346,15 @@ def scan(workspace: Workspace) -> dict:
     for item in items:
         test_id = str(item["id"])
         if test_id not in marks:
+            # Stamped with the result it was judged against, like a comparable
+            # mark. Left empty, every test that passed cleanly made
+            # ``marks_are_current`` false for the whole workspace, and each
+            # roll-up re-read and re-compared every result to learn nothing.
             marks[test_id] = {
                 "state": NOT_COMPARABLE,
                 "group_id": "",
                 "peers": [],
-                "result_sha1": "",
+                "result_sha1": str((item.get("last_run") or {}).get("result_sha1") or ""),
                 "checked_at": _utcnow(),
             }
     return {

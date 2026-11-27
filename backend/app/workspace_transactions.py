@@ -188,6 +188,13 @@ def rollback_linked_write(write: LinkedWrite) -> None:
         write.journal_path.unlink(missing_ok=True)
 
 
+def _has_journal(journal_dir: Path) -> bool:
+    try:
+        return any(journal_dir.glob("txn-*.json"))
+    except OSError:
+        return False
+
+
 def recover_linked_writes(root: Path) -> None:
     """Resolve prepared linked writes left by an interrupted desktop process.
 
@@ -196,12 +203,20 @@ def recover_linked_writes(root: Path) -> None:
     artifacts cached against that revision.
     """
     root = root.resolve()
+    journal_dir = root / JOURNAL_DIRNAME
+    # Every workspace open passes through here, and the directory outlives its
+    # first save. Looking for a journal before taking the writer lock keeps an
+    # ordinary read from queuing behind a save or a checkpoint capture to find
+    # nothing. A journal this look misses was prepared after it, by a writer
+    # still in flight that completes or rolls it back itself — the lock never
+    # covered that: linked writes are completed after ``mutate`` releases it.
+    # A journal the look finds is checked again under the lock.
+    if not _has_journal(journal_dir):
+        return
     with workspace_write_lock(root):
-        journal_dir = root / JOURNAL_DIRNAME
-        if not journal_dir.is_dir():
+        if not _has_journal(journal_dir):
             return
-        if any(journal_dir.glob("txn-*.json")):
-            clear_artifact_cache(root)
+        clear_artifact_cache(root)
         try:
             current_revision = int(
                 json.loads((root / "workspace.json").read_text(encoding="utf-8")).get("revision")

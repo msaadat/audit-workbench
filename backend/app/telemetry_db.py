@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import weakref
 from pathlib import Path
 
 DB_FILENAME = "telemetry.db"
@@ -34,8 +35,17 @@ _open_guard = threading.Lock()
 # cache below makes one connection per (thread, workspace); deleting a workspace
 # has to reach the ones other threads opened, because on Windows an open handle
 # on ``telemetry.db`` makes the folder undeletable.
+#
+# Held weakly.  The thread-local cache is a connection's only owner, so a
+# thread that ends — an agent run's, a parallel stage's pool worker — takes its
+# connections with it and they close.  A strong set kept every one of them open
+# for the life of the process: three file descriptors and a page cache per run.
 _registry_guard = threading.Lock()
-_open_connections: dict[str, set[sqlite3.Connection]] = {}
+_open_connections: dict[str, "weakref.WeakSet[_Connection]"] = {}
+
+
+class _Connection(sqlite3.Connection):
+    """A connection that can be held weakly; ``sqlite3.Connection`` cannot."""
 _epochs: dict[str, int] = {}
 _migration_guard = threading.Lock()
 _import_guard = threading.Lock()
@@ -242,7 +252,7 @@ def connect(root: Path) -> sqlite3.Connection:
     connection = cached[0] if cached and cached[1] == _epochs.get(key, 0) else None
     if connection is None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(key, check_same_thread=False)
+        connection = sqlite3.connect(key, check_same_thread=False, factory=_Connection)
         connection.row_factory = sqlite3.Row
         # Each thread opens its own connection, so two fresh threads meet here
         # on a brand-new file; see :func:`_configure`.
@@ -250,7 +260,7 @@ def connect(root: Path) -> sqlite3.Connection:
             _configure(connection)
             migrate(connection)
         with _registry_guard:
-            _open_connections.setdefault(key, set()).add(connection)
+            _open_connections.setdefault(key, weakref.WeakSet()).add(connection)
             cache[key] = (connection, _epochs.get(key, 0))
         import_legacy(root, connection)
     return connection
@@ -266,7 +276,7 @@ def close_workspace(root: Path) -> None:
     key = str(database_path(root))
     with _registry_guard:
         _epochs[key] = _epochs.get(key, 0) + 1
-        connections = _open_connections.pop(key, set())
+        connections = list(_open_connections.pop(key, ()))
     for connection in connections:
         try:
             connection.close()
