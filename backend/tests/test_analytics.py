@@ -251,6 +251,48 @@ def test_referential_names_where_the_unmatched_keys_do_resolve():
     assert set(result.summary["resolves_in"].to_list()) == {"req_master.req_id (2)"}
 
 
+def test_orphan_diagnosis_reads_each_frames_keys_once(monkeypatch):
+    """A probe sweep asks this about a thousand times of the same frames.
+
+    Reading every column of every frame on each call was 96% of the register
+    floor; the key columns are now read once per set of frames, and the answer
+    is the one a full pass would give.
+    """
+    from app import analytics
+
+    frames = {
+        "po_master": pl.DataFrame({"po_number": ["PO1", "PO2"], "note": ["a", "a"]}),
+        "req_master": pl.DataFrame({"req_id": ["RQ9", "RQ8"], "owner": ["RQ9", "X"]}),
+        "invoices": pl.DataFrame({"po_link": ["RQ9", "PO1"]}),
+    }
+    source = FrameSource(resolve=frames.__getitem__, tables=tuple(frames))
+    reads = []
+    original = analytics.key_strings
+    monkeypatch.setattr(analytics, "key_strings", lambda column: reads.append(column) or original(column))
+
+    first = analytics._resolves_in({"RQ9", "RQ8"}, source, set())
+    columns_read = len(reads)
+    again = analytics._resolves_in({"RQ9"}, source, {"req_master"})
+    assert len(reads) == columns_read
+
+    # Two hits beat one; a non-unique column ("note") is never a key; ties by name.
+    assert first == [("req_master.req_id", 2), ("invoices.po_link", 1), ("req_master.owner", 1)]
+    # The lookup table is excluded, and so is the column under test by name.
+    assert again == [("invoices.po_link", 1)]
+    assert analytics._resolves_in({"RQ9"}, source, set(), ("invoices", "po_link")) == [
+        ("req_master.owner", 1),
+        ("req_master.req_id", 1),
+    ]
+
+    # A frame that changes is a different frame: its keys are read again.
+    frames["req_master"] = pl.DataFrame({"req_id": ["RQ7"]})
+    assert analytics._resolves_in({"RQ9", "RQ7"}, source, set()) == [
+        ("invoices.po_link", 1),
+        ("req_master.req_id", 1),
+    ]
+    assert len(reads) > columns_read
+
+
 def test_referential_separates_a_null_key_from_an_unmatched_one():
     """A row referencing nothing is a completeness question, not a broken
     reference. Merging the two would report one number for two findings."""

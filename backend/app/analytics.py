@@ -12,6 +12,9 @@ the UI, exported to Excel in full).
 from __future__ import annotations
 
 import re
+import threading
+import weakref
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -748,6 +751,48 @@ def key_strings(column: str) -> pl.Expr:
 
 MAX_RESOLVES_IN = 3
 
+#: Key indexes, by the exact frames they were read from. A probe sweep calls
+#: :func:`_resolves_in` about a thousand times over the same view, and reading
+#: every column of every frame each time was 96% of the register floor: 55 s on
+#: an engagement whose largest table has 55 rows. Keyed by frame identity, held
+#: weakly, so an index can never outlive or misdescribe the frames behind it.
+_KEY_INDEXES: "OrderedDict[tuple, tuple[tuple, dict[str, tuple[tuple[str, str], ...]]]]" = OrderedDict()
+_KEY_INDEXES_LIMIT = 8
+_KEY_INDEXES_LOCK = threading.Lock()
+
+
+def _key_index(frames: list[tuple[str, pl.DataFrame]]) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Every key value in ``frames``, to the key columns that hold it.
+
+    A key column is one whose trimmed text values are all distinct: only such a
+    column can explain an orphan set, since a description column that happens
+    to contain one of the values explains nothing.
+    """
+    identity = tuple((name, id(frame)) for name, frame in frames)
+    with _KEY_INDEXES_LOCK:
+        cached = _KEY_INDEXES.get(identity)
+        if cached is not None and all(
+            ref() is frame for ref, (_name, frame) in zip(cached[0], frames)
+        ):
+            _KEY_INDEXES.move_to_end(identity)
+            return cached[1]
+    index: dict[str, list[tuple[str, str]]] = {}
+    for table, frame in frames:
+        for column in frame.columns:
+            series = frame.select(key_strings(column)).to_series().drop_nulls()
+            if not len(series) or series.n_unique() != len(series):
+                continue
+            for value in series.to_list():
+                index.setdefault(value, []).append((table, column))
+    frozen = {value: tuple(locations) for value, locations in index.items()}
+    refs = tuple(weakref.ref(frame) for _name, frame in frames)
+    with _KEY_INDEXES_LOCK:
+        _KEY_INDEXES[identity] = (refs, frozen)
+        _KEY_INDEXES.move_to_end(identity)
+        while len(_KEY_INDEXES) > _KEY_INDEXES_LIMIT:
+            _KEY_INDEXES.popitem(last=False)
+    return frozen
+
 
 def _resolves_in(
     orphans: set[str],
@@ -772,31 +817,30 @@ def _resolves_in(
     whole frame to avoid the trivial self-match would report a self-reference as
     resolving nowhere — turning the commonest correct shape in a master file
     into a reconciliation failure.
+
+    The key columns are read once per set of frames (:func:`_key_index`), not
+    once per call; exclusions are applied to the lookup, so the answer is the
+    one a full pass over the columns would give.
     """
     if not orphans:
         return []
-    found: list[tuple[str, int]] = []
+    frames: list[tuple[str, pl.DataFrame]] = []
     for table in source.tables:
-        if table in exclude:
-            continue
         try:
-            frame = source.resolve(table)
+            frames.append((table, source.resolve(table)))
         except Exception:
             # A frame that will not load explains nothing, which is the same
             # answer as a frame that holds none of the values. Diagnosis is a
             # courtesy on top of the count; it may never fail the test.
             continue
-        for column in frame.columns:
-            if exclude_column == (table, column):
+    index = _key_index(frames)
+    hits: Counter[tuple[str, str]] = Counter()
+    for value in orphans:
+        for location in index.get(value, ()):
+            if location[0] in exclude or location == exclude_column:
                 continue
-            series = frame.select(key_strings(column)).to_series().drop_nulls()
-            # Only a key column can explain an orphan set: a description column
-            # that happens to contain one of the values explains nothing.
-            if not len(series) or series.n_unique() != len(series):
-                continue
-            hits = len(orphans & set(series.to_list()))
-            if hits:
-                found.append((f"{table}.{column}", hits))
+            hits[location] += 1
+    found = [(f"{table}.{column}", count) for (table, column), count in hits.items()]
     found.sort(key=lambda item: (-item[1], item[0]))
     return found[:MAX_RESOLVES_IN]
 
