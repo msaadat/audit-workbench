@@ -114,7 +114,23 @@ def validate_cycle_shape(
                     f"'{document_type}', which this engagement does not hold; "
                     f"choose from: {', '.join(sorted(allowed_types)) or 'none held'}."
                 )
-            roles.append({"name": role_name, "document_type": document_type})
+            role = {"name": role_name, "document_type": document_type}
+            # How many records of the type fill the position, and whether a
+            # linked set must hold one. Optional: the rules the cycle design
+            # proposes read them, and a role that never says is one record,
+            # required — what the ruleset store assumes.
+            cardinality = str(raw_role.get("cardinality") or "").strip()
+            if cardinality:
+                if cardinality not in {"one", "many"}:
+                    problems.append(
+                        f"Role '{role_name}' of '{step_name}' has cardinality "
+                        f"'{cardinality}'; it is 'one' or 'many'."
+                    )
+                else:
+                    role["cardinality"] = cardinality
+            if raw_role.get("required") is not None:
+                role["required"] = bool(raw_role.get("required"))
+            roles.append(role)
 
         populations = []
         for raw_population in raw.get("populations") or []:
@@ -138,6 +154,16 @@ def validate_cycle_shape(
             if columns:
                 population["columns"] = [
                     str(column).strip() for column in columns if str(column).strip()
+                ]
+            # The columns that date this step's records on a population that is
+            # the whole table. ``columns`` narrows a population to the part of a
+            # neighbour's table this step's records live on; a step whose rows
+            # *are* the table still has its own dated column, and saying which
+            # one is not a narrowing.
+            dates = raw_population.get("dates")
+            if dates:
+                population["dates"] = [
+                    str(column).strip() for column in dates if str(column).strip()
                 ]
             if raw_population.get("anchor"):
                 anchors += 1
@@ -233,8 +259,17 @@ def expand_data_steps(cycle: Mapping, steps: Sequence[Mapping]) -> tuple[dict, l
     """Write each cycle step's populations from the data steps it names.
 
     The model names which data steps a cycle step is; this writes the columns.
-    A population the model gave for the same table keeps its anchor flag and
-    takes the data step's columns. Returns the cycle and any unknown ids.
+    A population the model gave for the same table keeps its anchor flag. Where
+    it narrowed that population to columns, it takes the data step's columns;
+    where it is the whole table, the data step's columns become its ``dates``
+    and it stays whole — the step's rows are still the table's rows.
+
+    Treasury lost three of its six steps' dates to the old rule, which wrote
+    columns only onto a population that already had some: "Capture the deal"
+    on the whole of ``04_deals`` kept no ``CAPTURE_TIMESTAMP``, coverage then
+    credited it with the table's first date, and the run warned that the
+    capture was a step the cycle did not name. Returns the cycle and any
+    unknown ids.
     """
     by_id = {str(step["id"]): step for step in steps}
     unknown: list[str] = []
@@ -260,6 +295,8 @@ def expand_data_steps(cycle: Mapping, steps: Sequence[Mapping]) -> tuple[dict, l
                     populations.append({"table": table, "columns": columns})
                 elif existing.get("columns"):
                     existing["columns"] = columns
+                else:
+                    existing["dates"] = columns
             step["populations"] = populations
         out_steps.append(step)
     return {**dict(cycle), "steps": out_steps}, unknown
@@ -269,8 +306,9 @@ def cycle_record_coverage(cycle: Mapping, steps: Sequence[Mapping]) -> tuple[lis
     """Cycle steps with no dated record of their own, and data steps no step names.
 
     A cycle step is recorded when one of its populations holds a data step's
-    date: on its listed columns, or — for a whole-table population — on the
-    table's first data step.
+    date: on its listed columns, on the ``dates`` a whole-table population
+    names, or — for a whole-table population that names none — on the table's
+    first data step.
     """
     first_of_table: dict[str, str] = {}
     for step in steps:
@@ -281,7 +319,11 @@ def cycle_record_coverage(cycle: Mapping, steps: Sequence[Mapping]) -> tuple[lis
         recorded = False
         for population in raw.get("populations") or []:
             table = str(population.get("table") or "")
-            columns = population.get("columns") or ([first_of_table[table]] if table in first_of_table else [])
+            columns = (
+                population.get("columns")
+                or population.get("dates")
+                or ([first_of_table[table]] if table in first_of_table else [])
+            )
             for step in steps:
                 if step["table"] == table and step["columns"][0] in columns:
                     claimed.add((table, step["columns"][0]))

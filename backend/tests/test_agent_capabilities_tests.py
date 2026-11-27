@@ -189,45 +189,45 @@ def _uncontracted_matrix(workspace):
     return workspaces.load_workspace(workspace.id)
 
 
-def test_the_stage_is_keyed_on_the_strategy_not_on_the_contract():
-    """What this stage exists to write is the very thing it used to require.
-
-    Keyed on ``schema_backed``, an uncontracted matrix reported the stage
-    satisfied and proposed for nobody — which is every matrix, now that the
-    contract is authored here.
-    """
+def test_the_approval_gate_is_keyed_on_the_strategy_not_on_the_contract():
+    """An attribute is contracted when its cycle test is written, so a matrix
+    reaching this gate is uncontracted. Keyed on ``schema_backed``, it would
+    report nothing asked of the rules on every engagement that asks."""
 
     workspace = _uncontracted_matrix(_workspace_with_a_voucher())
 
     (attribute,) = test_capabilities._cycle_attributes(workspace)
     assert attribute["key"] == "three_way_match"
 
-    readiness = test_capabilities._ruleset_ready(workspace, {})
-    assert readiness.state == "missing"
+    readiness = test_capabilities._ruleset_approval_ready(workspace, {})
+    assert readiness.state == "review_required"
+    assert "proposed no rules" in readiness.reasons[0]
+    # Nothing to approve is not work a run can do, in either mode.
+    assert test_capabilities._ruleset_approval_units(
+        workspace, {"permission_mode": False}
+    ) == []
 
-    (unit,) = test_capabilities._ruleset_units(workspace, {})
-    assert unit.kind == "cycle_ruleset_proposal"
-    # The guarded parents are the rows the comparisons will land on.
-    (row,) = workspace.rcm
-    assert unit.parent_refs == (f"rcm:{row['id']}",)
 
+def test_a_waiting_proposal_is_approval_work_whether_or_not_the_matrix_asks():
+    """The cycle design proposes rules whenever the documents can be linked,
+    before any matrix exists to ask for them."""
 
-def test_a_committed_proposal_does_not_re_expand_after_the_rows_change():
-    """The write-back rewrites the rows this unit is guarded on.
-
-    ``invalidate_on=("rcm",)`` therefore fires on the stage's own commit, and
-    without the existing-ruleset check that would be a loop: propose, write
-    back, invalidate, propose again.
-    """
-
-    workspace = _uncontracted_matrix(_workspace_with_a_voucher())
-    assert test_capabilities._ruleset_units(workspace, {})
-
-    cycle_rulesets.save(workspace, _ruleset_payload())
+    workspace = _workspace_with_a_voucher()
+    document_schemas.save_schema(workspace, "vendor_invoice", _INVOICE_FIELDS)
+    document_schemas.save_schema(workspace, "purchase_order", _ORDER_FIELDS)
     workspace = workspaces.load_workspace(workspace.id)
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+    workspace = workspaces.load_workspace(workspace.id)
+    assert test_capabilities._cycle_attributes(workspace) == []
 
-    assert test_capabilities._ruleset_units(workspace, {}) == []
-    assert test_capabilities._ruleset_ready(workspace, {}).state == "satisfied"
+    permission = test_capabilities._ruleset_approval_ready(workspace, {})
+    assert permission.state == "review_required"
+    assert test_capabilities._ruleset_approval_units(workspace, {}) == []
+
+    auto = {"permission_mode": False}
+    assert test_capabilities._ruleset_approval_ready(workspace, auto).state == "missing"
+    (unit,) = test_capabilities._ruleset_approval_units(workspace, auto)
+    assert unit.parent_refs == (f"cycle_ruleset:{record['ruleset_id']}",)
 
 
 def test_cause_is_the_matrix_when_no_attribute_asks_for_a_cycle():
@@ -246,7 +246,7 @@ def test_cause_is_the_missing_proposal_when_the_matrix_asks():
     cause, sentence, ruleset_id = test_capabilities._unvouched_cause(workspace)
 
     assert cause == "no_ruleset"
-    assert "has been proposed" in sentence
+    assert "proposed no rules" in sentence
     assert ruleset_id == ""
 
 

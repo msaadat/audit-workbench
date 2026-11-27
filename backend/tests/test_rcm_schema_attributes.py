@@ -399,11 +399,12 @@ def test_a_row_with_no_cycle_attribute_reports_nothing(engagement):
 
 
 # ------------------------------------------------------------------- ordering
-def test_the_rcm_waits_for_types_but_no_longer_for_schemas():
+def test_the_rcm_waits_for_types_and_reaches_schemas_only_through_the_cycle():
     """The matrix needs to know which record kinds exist, not what fields they
     carry: it says a requirement needs linked source records and stops, and the
-    cycle design names the fields once the schemas are induced. The dropped edge
-    is what stops a re-derived schema invalidating the whole matrix."""
+    row's cycle test names the fields from the approved rules. It has no schema
+    edge of its own; it reaches the schemas through the cycle, whose rules are
+    written in them, and is held stale against the cycle's shape alone."""
 
     from app.agent.workflows import audit
 
@@ -417,11 +418,8 @@ def test_the_rcm_waits_for_types_but_no_longer_for_schemas():
         "documents.types_classified",
     )
     assert "documents.schemas_stamped" not in audit.DEPENDENCIES["planning.rcm_ready"]
-    assert audit.DEPENDENCIES["tests.cycle_ruleset_proposed"] == (
-        "planning.rcm_ready",
-        "planning.cycle_ready",
-        "documents.schemas_stamped",
-    )
+    assert "documents.schemas_stamped" in audit.DEPENDENCIES["planning.cycle_ready"]
+    assert "tests.cycle_ruleset_proposed" not in audit.DEPENDENCIES
 
 
 # ----------------------------------------------------- the authoring turn

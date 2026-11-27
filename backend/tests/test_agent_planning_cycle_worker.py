@@ -235,7 +235,7 @@ def test_a_document_type_the_engagement_lacks_is_refused_with_the_allowed_values
     shape["steps"][0]["roles"][0]["document_type"] = "bank_statement"
 
     with pytest.raises(WorkerRunError) as error:
-        _run([json.dumps(shape), json.dumps(shape)])
+        _run([json.dumps(shape)] * 3)
 
     message = str(error.value)
     assert "which this engagement does not hold" in message
@@ -247,7 +247,7 @@ def test_a_table_that_was_not_imported_is_refused_with_the_allowed_values():
     shape["steps"][0]["populations"] = [{"table": "gl_entries"}]
 
     with pytest.raises(WorkerRunError) as error:
-        _run([json.dumps(shape), json.dumps(shape)])
+        _run([json.dumps(shape)] * 3)
 
     message = str(error.value)
     assert "is not an imported table" in message
@@ -278,7 +278,7 @@ def test_a_theme_placed_twice_is_refused_rather_than_settled_locally():
     shape["steps"][2]["themes"] = ["Segregation of duties"]
 
     with pytest.raises(WorkerRunError) as error:
-        _run([json.dumps(shape), json.dumps(shape)])
+        _run([json.dumps(shape)] * 3)
 
     assert "assign it to exactly one" in str(error.value)
 
@@ -288,7 +288,7 @@ def test_two_steps_may_not_share_a_role():
     shape["steps"][1]["roles"][0]["name"] = "order"
 
     with pytest.raises(WorkerRunError) as error:
-        _run([json.dumps(shape), json.dumps(shape)])
+        _run([json.dumps(shape)] * 3)
 
     assert "a role fills one position in the cycle" in str(error.value)
 
@@ -298,7 +298,7 @@ def test_only_one_population_may_be_the_anchor():
     shape["steps"][2]["populations"] = [{"table": "invoice_data", "anchor": True}]
 
     with pytest.raises(WorkerRunError) as error:
-        _run([json.dumps(shape), json.dumps(shape)])
+        _run([json.dumps(shape)] * 3)
 
     assert "at most one anchor population" in str(error.value)
 
@@ -318,7 +318,7 @@ def test_a_step_with_no_held_document_type_is_accepted_with_no_roles():
 
 def test_a_response_with_no_steps_is_refused_by_the_schema():
     with pytest.raises(WorkerRunError) as error:
-        _run([json.dumps({"name": "Procure-to-pay"})] * 2)
+        _run([json.dumps({"name": "Procure-to-pay"})] * 3)
 
     assert "carries no steps" in str(error.value)
 
@@ -340,15 +340,17 @@ def test_one_repair_is_asked_for_and_carries_the_draft_and_its_faults():
     assert [step["name"] for step in result.proposal["steps"]][0] == "Purchase order"
 
 
-def test_a_second_failure_is_not_repaired_again():
+def test_a_third_failure_is_not_repaired_again():
+    """Two repairs, as the linkage turn this worker absorbed was allowed."""
+
     broken = _shape()
     broken["steps"][0]["populations"] = [{"table": "gl_entries"}]
-    gateway = _Gateway([json.dumps(broken), json.dumps(broken)])
+    gateway = _Gateway([json.dumps(broken)] * 3)
 
     with pytest.raises(WorkerRunError):
         WORKERS.execute(_request(), gateway)
 
-    assert len(gateway.calls) == 2
+    assert len(gateway.calls) == 3
 
 
 # --------------------------------------------------------------------------- #

@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
-from ... import apm_analytics, cycle_vouching, markdown_sections, planning_delta, planning_revision
+from ... import (
+    apm_analytics,
+    cycle_rulesets,
+    cycle_vouching,
+    markdown_sections,
+    planning_delta,
+    planning_revision,
+)
 from ...workspaces import Workspace, WorkspaceError, slugify, validate_cycle
 from ..capabilities import _shared as audit_hashes
 from ..artifact_index import canonical_id
@@ -265,22 +272,144 @@ def _cycle_material(cycle: Mapping | None) -> dict | None:
     return {key: cycle.get(key) for key in ("name", "steps", "cross_cutting")}
 
 
+def _plain(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _anchor_population(cycle: Mapping[str, object]) -> dict:
+    """The population a cycle test starts from, and the step that holds it."""
+
+    for step in cycle.get("steps") or []:
+        if not isinstance(step, Mapping):
+            continue
+        for population in step.get("populations") or []:
+            if isinstance(population, Mapping) and population.get("anchor"):
+                return {"step": step, "population": population}
+    return {}
+
+
+def bound_to_the_cycle(rules: Mapping[str, object], cycle: object) -> dict:
+    """Fill in from the shape what the model was told not to write.
+
+    The anchor's table is the shape's, not the response's: the governing rule
+    of the redesign is that the model names things and local code finds them,
+    and a table name copied by a model is an identifier it can get wrong. A
+    role the response declared unreachable is dropped from the stored rules —
+    ``cycle_rulesets.validate`` would refuse the whole ruleset over a role no
+    join key reaches — while the shape keeps it, because it is still a step of
+    the process.
+    """
+
+    bound = _plain(rules)
+    unreachable = {
+        str(item.get("role"))
+        for item in bound.pop("unreachable", None) or []
+        if isinstance(item, Mapping) and item.get("role")
+    }
+    if unreachable:
+        bound["roles"] = [
+            role
+            for role in bound.get("roles") or []
+            if str(role.get("name")) not in unreachable
+        ]
+    if not isinstance(cycle, Mapping) or not cycle.get("steps"):
+        return bound
+    population = _anchor_population(cycle).get("population") or {}
+    table = str(population.get("table") or "")
+    if not table:
+        return bound
+    anchor = dict(bound.get("anchor") or {})
+    anchor["table"] = table
+    # Only the *table* is the shape's. Which of its columns carries the
+    # identifier is a judgement about the data, and the designing turn is
+    # shown every column to make it — so the response keeps that field, except
+    # where the shape has already named the columns a borrowed population
+    # lives in.
+    #
+    # Deriving it instead cost a treasuryfull ruleset: the role's document
+    # field (`deal_reference`) was written in as the column, `04_deals` carries
+    # `DEAL_ID`, and nothing refused it. `cycle_rulesets.validate` now does.
+    columns = [str(value) for value in population.get("columns") or []]
+    if columns:
+        anchor["column"] = columns[0]
+    bound["anchor"] = anchor
+    return bound
+
+
+def _stored_rules(workspace: Workspace, rules: Mapping[str, object] | None) -> dict | None:
+    """The live ruleset stating exactly these rules, where one is stored."""
+
+    if not rules or not rules.get("roles"):
+        return None
+    try:
+        expected = cycle_rulesets.validate(
+            workspace, bound_to_the_cycle(rules, workspace.planning.get("cycle"))
+        )
+    except WorkspaceError:
+        return None
+    return next(
+        (
+            record
+            for record in cycle_rulesets.list_rulesets(workspace)
+            if str(record.get("status")) in {"proposed", "approved"}
+            and str(record.get("ruleset_hash") or "")
+            == str(expected.get("ruleset_hash") or "")
+        ),
+        None,
+    )
+
+
 def _cycle_result(
     request: ExecutorRequest,
     workspace: Workspace,
     *,
     revision_before: int,
+    ruleset: Mapping[str, object] | None = None,
+    ruleset_action: str = "",
 ) -> ExecutorResult:
     cycle = workspace.planning.get("cycle") or {}
+    rules = request.proposal.get("rules") or {}
+    refs = [CYCLE_ARTIFACT_REF]
+    postconditions = parent_hashes(workspace, [CYCLE_ARTIFACT_REF])
+    rules_output: dict[str, object] = {
+        "unreachable": _plain(list(rules.get("unreachable") or [])),
+    }
+    if ruleset:
+        ruleset_id = str(ruleset.get("ruleset_id") or "")
+        refs.append(f"cycle_ruleset:{ruleset_id}")
+        # A ruleset lives in a side store, so ``parent_hashes`` has nothing to
+        # say about it; its own rules hash is the honest postcondition.
+        postconditions[f"cycle_ruleset:{ruleset_id}"] = hashlib.sha1(
+            str(ruleset.get("ruleset_hash") or "").encode("utf-8")
+        ).hexdigest()
+        rules_output.update({
+            "ruleset_id": ruleset_id,
+            "ruleset_status": str(ruleset.get("status") or ""),
+            "ruleset_action": ruleset_action,
+            "roles": len(list(ruleset.get("roles") or [])),
+            "join_keys": len(list(ruleset.get("join_keys") or [])),
+            "assertions": len(list(ruleset.get("assertions") or [])),
+            "field_pair_assertions": sum(
+                1
+                for item in ruleset.get("assertions") or []
+                if isinstance(item, Mapping)
+                and item.get("proposed_by") == "schema_names"
+            ),
+            "declined_pairs": len(list(ruleset.get("declined_pairs") or [])),
+        })
     return ExecutorResult(
         executor_id=request.executor_id,
         capability_id=request.capability_id,
         unit_id=request.unit_id,
         workspace_revision_before=revision_before,
         workspace_revision_after=workspace.revision,
-        artifact_refs=[CYCLE_ARTIFACT_REF],
+        artifact_refs=refs,
         applied_parents=dict(request.expected_parents),
-        postcondition_hashes=parent_hashes(workspace, [CYCLE_ARTIFACT_REF]),
+        postcondition_hashes=postconditions,
         output={
             "status": "updated",
             "created_by": "agent",
@@ -288,13 +417,24 @@ def _cycle_result(
                 str(step.get("name") or "") for step in cycle.get("steps") or []
             ],
             "auditor_edits_preserved": True,
+            "rules": rules_output,
         },
     )
 
 
 def execute_cycle(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
-    """Commit one accepted cycle shape under the memorandum parent-hash guard."""
+    """Commit one accepted cycle design under the memorandum parent-hash guard.
+
+    The shape lands in planning and the rules in the ruleset store, in one
+    transaction: the ruleset records the cycle it was written against, so the
+    shape is stored first. Proposing is never approving — the record lands
+    ``proposed`` with no approver, and only an auditor, or a run the auditor
+    put in ``auto`` mode, makes it effective. A design restating rules already
+    stored files no second proposal for anyone to choose between.
+    """
     target, shape = _validated_cycle(request, raw_target)
+    rules = request.proposal.get("rules")
+    state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> None:
         existing = fresh.planning.get("cycle") or {}
@@ -315,10 +455,26 @@ def execute_cycle(request: ExecutorRequest, raw_target: object) -> ExecutorResul
                     "agent_run_id": target.run_id,
                     "created_by": "agent",
                     "workflow_parents": dict(request.expected_parents),
+                    # The vocabulary the rules were written in. Stamped even
+                    # where no rules were owed, so a cycle designed against
+                    # these schemas is current against them either way.
+                    "schema_basis": cycle_rulesets.schema_basis(fresh),
                 }
             },
             agent=True,
         )
+        if not isinstance(rules, Mapping) or not rules.get("roles"):
+            return
+        existing_rules = _stored_rules(fresh, rules)
+        if existing_rules is not None:
+            state.update(ruleset=existing_rules, action="unchanged")
+            return
+        record = cycle_rulesets.save(
+            fresh,
+            bound_to_the_cycle(rules, fresh.planning.get("cycle")),
+            proposed_by="agent",
+        )
+        state.update(ruleset=record, action="proposed")
 
     committed = mutate(
         target.workspace,
@@ -330,6 +486,8 @@ def execute_cycle(request: ExecutorRequest, raw_target: object) -> ExecutorResul
         request,
         committed.workspace,
         revision_before=committed.revision - 1,
+        ruleset=state.get("ruleset"),
+        ruleset_action=str(state.get("action") or ""),
     )
 
 
@@ -362,11 +520,17 @@ def reconcile_cycle(
         normalized = _cycle_material(validate_cycle(current, shape))
     except WorkspaceError:
         normalized = None
+    rules = request.proposal.get("rules")
+    owed = isinstance(rules, Mapping) and bool(rules.get("roles"))
+    ruleset = _stored_rules(current, rules) if owed else None
     if (
         normalized is not None
         and _cycle_material(stored) == normalized
         and stored.get("created_by") == "agent"
         and stored.get("agent_run_id") == target.run_id
+        # The rules land in the same transaction as the shape; a shape stored
+        # without them is a commit to repeat, and repeating it files them once.
+        and (ruleset is not None or not owed)
     ):
         if current.revision <= request.expected_revision:
             return ExecutorReconciliation(
@@ -379,6 +543,8 @@ def reconcile_cycle(
                 request,
                 current,
                 revision_before=max(request.expected_revision, current.revision - 1),
+                ruleset=ruleset,
+                ruleset_action="proposed" if ruleset else "",
             ),
             reason="The accepted cycle postcondition already holds.",
         )

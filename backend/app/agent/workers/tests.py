@@ -28,18 +28,17 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import (
-    cycle_field_pairs,
     cycle_linking,
     cycle_rulesets,
     cycle_vouching,
     doc_tests,
     document_population,
-    document_types,
     sandbox,
 )
-from ...text import counted, relevance_tokens, verb
+from ...text import relevance_tokens
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
+from . import cycle_rules
 from .model import (
     AUDITOR_INSTRUCTION_RULE,
     auditor_instruction,
@@ -154,7 +153,15 @@ def _model_transaction_manifest(value: object) -> object:
             "table": (value.get("anchor") or {}).get("table"),
             "column": (value.get("anchor") or {}).get("column"),
         },
-        "assertions": value.get("assertions") or [],
+        "assertions": [
+            {
+                key: item.get(key)
+                for key in ("id", "label", "left", "right", "requirement")
+                if item.get(key) is not None or key == "right"
+            }
+            for item in value.get("assertions") or []
+            if isinstance(item, Mapping)
+        ],
         "reach": value.get("reach") or {},
     }
 
@@ -458,7 +465,13 @@ GENERATE_WORKER_ID = "tests.generate"
 # registry-backed test definition and ordinary document questions retain their
 # existing shape.
 GENERATE_RESPONSE_CONTRACT = {
-    "envelope": {"required": ["tests"], "additional_fields": False},
+    "envelope": {
+        "required": ["tests"],
+        # Transaction-cycle requirements the approved rules cannot answer,
+        # each with its reason. Re-routed locally to the strongest path open.
+        "optional": ["unsupported"],
+        "additional_fields": False,
+    },
     # Accepted on every variant, and never required: the id of the test on this
     # row that the returned one replaces. Absent means a new test.
     "optional": ["revises"],
@@ -482,6 +495,9 @@ GENERATE_RESPONSE_CONTRACT = {
                 "procedure_key",
                 "selection",
             ],
+            # One entry per requirement the rules have not yet been bound to:
+            # which approved assertions answer it, the roles it reads, its gaps.
+            "optional": ["answers"],
             "source": "document",
             "kind": "cycle_vouch",
             "forbidden": [
@@ -590,28 +606,55 @@ Return JSON with a non-empty `tests` array. A test is one of:
    you. Before calling a value missing, look in `table_metadata`: a value a
    supplied table holds is answered by a Data Test, not requested as evidence.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
-   requirement_refs, procedure_key, and selection. It has no assertions,
-   definition, roles, or steps: the roles, the join keys and the assertions were
-   approved in the cycle rules review, and local code reads them from there.
+   requirement_refs, answers, procedure_key, and selection. It has no
+   definition, roles, steps or assertions of its own: the roles, the join keys
+   and the assertions were approved in the cycle rules review, and local code
+   reads them from there.
 
-For Cycle Vouch you decide two things: which requirements belong in one
-procedure, and which rows it runs over. Nothing else.
+For Cycle Vouch you decide three things: which requirements belong in one
+procedure, which approved assertions answer each of them, and which rows it
+runs over. Nothing else.
 
 `transaction_evidence` carries the approved rules — the cycle label, the roles,
-the anchor table and column the population is seeded from, and what the rules
-reach across it. Do not repeat any of it: local code reads it from the ruleset
-the test names.
+the anchor table and column the population is seeded from, every assertion
+with the role and field on each side and the requirement it states, and what
+the rules reach across the population. Do not repeat any of it.
 
 requirement_refs use `<RCM id>:<control attribute key>` and must name control
 attributes of this row whose evidence_kind is `transaction_cycle`. Every such
-attribute must be referenced by some returned cycle test. Group requirements
-that share one population into one test: a three-way match over an
-invoice-grain population is one test, not four.
+attribute is either referenced by a returned cycle test or listed in the
+response's `unsupported`. Group requirements that share one population into
+one test: a three-way match over an invoice-grain population is one test, not
+four.
 
-If the approved rules hold no assertion answering a requirement, the test is
-refused locally and the gap is reported. Do not substitute a nearby comparison
-and do not reference that requirement: return your other tests and leave it
-uncovered, so the gap is reported rather than papered over.
+`answers` carries one entry for each requirement_ref whose attribute states no
+`required_comparisons` yet:
+  {{"requirement_ref", "reads": [role], "assertion_ids": [assertion id],
+   "gaps": [{{"role", "reason"}}]}}
+`reads` names every role whose records the requirement is about, in the
+approved roles' names: each record it says must agree with another, or must
+state something. `assertion_ids` lists every approved assertion the
+requirement needs — one for each thing it says must agree or be stated, not
+the first of them. A requirement that the confirmation match the deal on five
+terms is five assertions; one that a record be matched to two others needs
+assertions reading all three. Every role in reads must be read by one of the
+assertions named, and every assertion named must read a role in reads. Every
+document a requirement names is in reads: the validator finds them in the
+requirement's own words, by each type's name and abbreviations, so "matched to
+the purchase order and the goods receipt note" is about the order and the
+receipt as well as the invoice, and checks that the invoice cites them do not
+read them. Where no approved assertion states what is asked of a role, list
+the role under `gaps` with the reason, and keep the assertions that do apply:
+the gap is what tells the auditor which part of the control is untested. Do
+not drop a role from reads to avoid a gap, and do not reach for a nearby
+comparison. A join key shows that two records refer to each other, never that
+what they state agrees.
+
+Where no approved assertion answers a requirement at all, do not reference it
+from a cycle test. List it in the response's top-level `unsupported` as
+{{"requirement_ref", "reason"}}, saying what the documents would need to
+state; local code re-routes it to the population or the documents, and you
+answer it in the same response as you would any other attribute.
 
 Evidence-linked selection is targeted evidence only. Sampling uses random,
 interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
@@ -620,6 +663,8 @@ seed. assurance_scope is derived locally and may be omitted.
 The exact Cycle Vouch response shape is:
 {{"source":"document","kind":"cycle_vouch","title":"Three-way match of paid invoices",
 "objective":"...","requirement_refs":["RCM-ID:attribute_key"],
+"answers":[{{"requirement_ref":"RCM-ID:attribute_key","reads":["invoice","order","receipt"],
+"assertion_ids":["invoice_amount_agrees_with_order_total","receipt_quantity_agrees_with_order_quantity"]}}],
 "procedure_key":"invoice-three-way-match",
 "selection":{{"mode":"evidence_linked"}}}}
 
@@ -916,7 +961,19 @@ def _validate_generate_cycle_test(
         )
         return None
     rcm_row = _generate_rcm_row(request)
-    comparisons = cycle_linking.required_comparisons_for(rcm_row, requirement_refs)
+    contract = _answered_requirements(
+        path, value, requirement_refs, candidate=candidate, rcm_row=rcm_row,
+        rcm_id=rcm_id, errors=errors,
+    )
+    if contract is None:
+        return None
+    comparisons = cycle_linking.required_comparisons_for(
+        rcm_row, requirement_refs
+    ) + [
+        comparison
+        for answer in contract.values()
+        for comparison in answer["comparisons"]
+    ]
     if not comparisons:
         errors.append(
             f"{path}.requirement_refs cite no transaction_cycle control "
@@ -925,6 +982,9 @@ def _validate_generate_cycle_test(
         )
         return None
     return {
+        # The comparisons each newly answered requirement contracts, written
+        # onto the row in the same commit as the test that runs them.
+        **({"contract": contract} if contract else {}),
         "source": "document",
         "kind": "cycle_vouch",
         "title": str(value.get("title") or "").strip(),
@@ -940,6 +1000,171 @@ def _validate_generate_cycle_test(
     }
 
 
+def _cycle_attribute(rcm_row: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
+    return next(
+        (
+            attribute
+            for attribute in rcm_row.get("control_attributes") or []
+            if isinstance(attribute, Mapping)
+            and str(attribute.get("key") or "") == key
+            and attribute.get("evidence_kind") == "transaction_cycle"
+        ),
+        None,
+    )
+
+
+def _answered_requirements(
+    path: str,
+    value: Mapping[str, Any],
+    requirement_refs: list,
+    *,
+    candidate: Mapping[str, Any],
+    rcm_row: Mapping[str, Any],
+    rcm_id: str,
+    errors: list[str],
+) -> dict[str, dict] | None:
+    """Bind each cited requirement to the approved assertions that answer it.
+
+    The coverage the cycle linkage turn used to write for every requirement at
+    once, written now for one row by the turn that writes the row's test, and
+    held to the same three checks (``cycle_rules.coverage_problems``). A
+    requirement whose attribute already states its comparisons — contracted by
+    an earlier test, or by the stage that preceded this one — needs no answer.
+
+    Returns ``{attribute key: {comparisons, gaps}}``, or ``None`` where an
+    error made the test unusable.
+    """
+
+    raw_answers = value.get("answers")
+    if raw_answers is not None and not isinstance(raw_answers, list):
+        errors.append(f"{path}.answers must be an array")
+        return None
+    answers: dict[str, dict] = {}
+    for index, raw in enumerate(raw_answers or []):
+        label = f"{path}.answers[{index}]"
+        try:
+            entry = cycle_rules.parse_coverage(raw, label)
+        except WorkerResponseValidationError as error:
+            errors.extend(error.errors if hasattr(error, "errors") else [str(error)])
+            return None
+        reference = str((raw or {}).get("requirement_ref") or "").strip()
+        key = reference.split(":", 1)[-1]
+        if reference not in {str(item) for item in requirement_refs}:
+            errors.append(
+                f"{label}.requirement_ref '{reference}' is not one of this "
+                "test's requirement_refs"
+            )
+            return None
+        if key in answers:
+            errors.append(f"{path}.answers answers '{reference}' twice; give one entry")
+            return None
+        answers[key] = entry
+    roles = {
+        str(role.get("name") or ""): dict(role)
+        for role in candidate.get("roles") or []
+        if isinstance(role, Mapping)
+    }
+    role_types = {name: str(role.get("document_type") or "") for name, role in roles.items()}
+    assertions = [
+        dict(item) for item in candidate.get("assertions") or [] if isinstance(item, Mapping)
+    ]
+    by_id = {str(item.get("id") or ""): item for item in assertions}
+    contract: dict[str, dict] = {}
+    for reference in requirement_refs:
+        key = str(reference).split(":", 1)[-1]
+        attribute = _cycle_attribute(rcm_row, key)
+        if attribute is None or not cycle_linking.uncontracted(attribute):
+            continue
+        entry = answers.get(key)
+        if entry is None:
+            errors.append(
+                f"{path}.answers has no entry for '{reference}'. Its attribute "
+                "states no comparisons yet: name the approved assertions that "
+                "answer it, the roles it reads, and any gaps — or list it under "
+                "`unsupported` and leave it out of this test."
+            )
+            continue
+        problems = cycle_rules.coverage_problems(
+            (rcm_id, key),
+            str(attribute.get("requirement") or ""),
+            entry,
+            assertions=assertions,
+            roles=role_types,
+        )
+        if problems:
+            errors.extend(f"{path}: {problem}" for problem in problems)
+            continue
+        comparisons = [
+            comparison
+            for assertion_id in cycle_rulesets.coverage_assertion_ids(entry)
+            if (comparison := cycle_rules.derived_comparison(by_id[assertion_id], roles))
+            is not None
+        ]
+        contract[key] = {
+            "comparisons": comparisons,
+            "gaps": list(entry.get("gaps") or []),
+        }
+    return contract
+
+
+def _validated_unsupported(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+    rcm_id: str,
+    errors: list[str],
+) -> list[dict]:
+    """Requirements the approved rules cannot answer, each with its reason.
+
+    Only where rules are approved — without them nothing has been asked of the
+    rules yet, and re-routing the requirement would close the linked-evidence
+    path before the auditor approved the cycle that opens it. Only for an
+    attribute still waiting for its comparisons: a contracted one is answered.
+    """
+
+    raw = proposal.get("unsupported")
+    if not raw:
+        return []
+    candidate = _generate_cycle_candidate(request)
+    if not candidate.get("ruleset_id"):
+        errors.append(
+            "unsupported is only for requirements the approved cycle rules "
+            "cannot answer, and no cycle rules are approved; omit it and answer "
+            "the row with the tests that are available"
+        )
+        return []
+    row = _generate_rcm_row(request)
+    out: list[dict] = []
+    for index, item in enumerate(raw):
+        label = f"unsupported[{index}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{label} must be an object")
+            continue
+        reference = str(item.get("requirement_ref") or "").strip()
+        key = reference.split(":", 1)[-1]
+        attribute = _cycle_attribute(row, key)
+        if not reference.startswith(f"{rcm_id}:") or attribute is None:
+            errors.append(
+                f"{label}.requirement_ref '{reference}' names no transaction_cycle "
+                f"control attribute of {rcm_id}"
+            )
+            continue
+        if not cycle_linking.uncontracted(attribute):
+            errors.append(
+                f"{label}.requirement_ref '{reference}' already states its "
+                "comparisons; answer it with a cycle test instead"
+            )
+            continue
+        reason = str(item.get("reason") or "").strip()
+        if not reason:
+            errors.append(
+                f"{label} gives no reason. Say what the documents would need to "
+                "state for the approved rules to answer it."
+            )
+            continue
+        out.append({"requirement_ref": reference, "reason": reason})
+    return out
+
+
 def _generate_response_schema(response: str) -> Mapping[str, Any]:
     payload = _json_payload(response)
     if not isinstance(payload, dict):
@@ -949,7 +1174,12 @@ def _generate_response_schema(response: str) -> Mapping[str, Any]:
         raise WorkerResponseValidationError(
             "the response must be a JSON object with a `tests` array"
         )
-    return {"tests": values}
+    unsupported = payload.get("unsupported")
+    if unsupported is None:
+        return {"tests": values}
+    if not isinstance(unsupported, list):
+        raise WorkerResponseValidationError("`unsupported` must be an array")
+    return {"tests": values, "unsupported": unsupported}
 
 
 def _import_bindings(node: ast.Import | ast.ImportFrom) -> set[str]:
@@ -1566,6 +1796,10 @@ def validate_generate_proposal(
     cycle_identities: set[tuple[str, str, str, str]] = set()
     attempted_refs: set[str] = set()
     known_test_ids = _generate_existing_test_ids(request)
+    unsupported = _validated_unsupported(proposal, request, rcm_id, errors)
+    unsupported_keys = {
+        item["requirement_ref"].split(":", 1)[-1] for item in unsupported
+    }
     for index, raw in enumerate(values, 1):
         path = f"tests[{index - 1}]"
         errors_before = len(errors)
@@ -1620,6 +1854,19 @@ def validate_generate_proposal(
             cycle_test = _validate_generate_cycle_test(
                 path, value, request=request, rcm_id=rcm_id, errors=errors
             )
+            doubled = sorted(
+                key
+                for key in (
+                    str(reference).split(":", 1)[-1]
+                    for reference in value.get("requirement_refs") or []
+                )
+                if key in unsupported_keys
+            )
+            if doubled:
+                errors.append(
+                    f"{path} references {', '.join(doubled)}, which the response "
+                    "also lists as unsupported; keep one answer"
+                )
             if cycle_test is not None:
                 # One procedure over one population is one test. The population
                 # comes from the approved anchor, so two cycle tests of this row
@@ -1699,7 +1946,7 @@ def validate_generate_proposal(
         if len(errors) == errors_before:
             clean.append(entry)
     coverage = _missing_cycle_coverage(
-        request, rcm_id, normalized, attempted=attempted_refs
+        request, rcm_id, normalized, attempted=attempted_refs | unsupported_keys
     )
     # Both row-level gaps: a transaction-cycle requirement with no cycle test,
     # and a population a requirement names with no step about it.
@@ -1715,9 +1962,13 @@ def validate_generate_proposal(
         # record, and its siblings are durable work worth keeping.
         raise WorkerResponseValidationError(
             errors,
-            partial=({"tests": clean} if clean and not row_level else None),
+            partial=(
+                {"tests": clean, **({"unsupported": unsupported} if unsupported else {})}
+                if clean and not row_level
+                else None
+            ),
         )
-    return {"tests": normalized}
+    return {"tests": normalized, **({"unsupported": unsupported} if unsupported else {})}
 
 
 def _redraft_scope_errors(
@@ -1900,8 +2151,9 @@ def _missing_cycle_coverage(
     return [
         f"{rcm_id} control attribute '{key}' declares transaction_cycle evidence "
         "and no returned cycle_vouch test references it; add a cycle test whose "
-        f"requirement_refs contain '{rcm_id}:{key}', or group it into an existing "
-        "one over the same population"
+        f"requirement_refs contain '{rcm_id}:{key}', group it into an existing "
+        "one over the same population, or list it under `unsupported` with the "
+        "reason the approved rules cannot answer it"
         for key in missing
     ]
 
@@ -1985,1191 +2237,6 @@ GENERATE_WORKER = WorkerDefinition(
 WORKERS.register(GENERATE_WORKER)
 
 
-# --------------------------------------------------------------------------- #
-# cycle linkage proposal
-# --------------------------------------------------------------------------- #
-LINKAGE_WORKER_ID = "tests.cycle_linkage"
-CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
-CYCLE_REQUIREMENT_SOURCE_ID = "cycle_requirements"
-
-LINKAGE_SYSTEM = f"""[agent:cycle_linkage]
-Describe how this engagement's documents relate, as rules an auditor can review.
-
-You are given the document types the engagement holds and the fields each one
-carries. Propose the cycle they form.
-
-roles name the positions in the cycle. A role is *not* a document type: it is a
-place in the flow that a type fills, which is what lets one cycle hold two of the
-same type — an original and a revised invoice, two counterparty confirmations.
-
-Where a `cycle` is supplied, the roles are **given**, in the order the cycle
-runs, and are used exactly as named: the shape was read from the audit planning
-memorandum's process flow and the matrix is already written against it. Return
-each of them with the document_type the cycle states. Do not rename one, do not
-add one, and do not drop one — except where a role's document type carries no
-identifier field at all, in which case no join key can reach it: list it under
-`unreachable` as {{"role", "reason"}} and leave it out of `roles`. Where no
-cycle is supplied, name the roles yourself, each a short lower_snake_case name.
-
-anchor names where a cycle starts from a population row. The supplied cycle
-flags which step's population it is and the `table` is filled in locally from
-it, so give three things: the `role` that population's rows are vouched to, the
-identifier `field` of that role, and the `column` of that table whose values
-carry the same identifier. The column is a column *of the anchor table* as
-TABLES spells it — not a document field name repeated, which names nothing in
-the accounting records and would match no row.
-
-join_keys say which document reaches which. Each names a field on one role that
-should equal a field on another. **Only ever an identifier field** — a reference
-that could tie two documents together. Never join on an amount or a date: two
-records sharing a value there is a coincidence, not a link, and joining on one
-would fuse unrelated transactions.
-
-assertions say what must then agree once the documents are linked. These are the
-audit tests: an amount that must match, a date that must not follow another, an
-approval that must be present.
-
-Where `field_pairs` are supplied, they were found from the schemas alone: two
-fields on documents of different roles with the same value type whose names are
-the same or share a word. They are proposals. Each one becomes an assertion
-under its own id unless you decline it in `declined_pairs` as
-{{"id", "reason"}}.
-
-Decline a pair only when its two fields describe different things: an address
-and a name, a contact person and the organisation, the status of one document
-and the status of another. Never decline a pair because its values may
-legitimately differ. Two fields describing the same thing — a quantity ordered
-and a quantity received, a notional booked and a notional confirmed, an amount
-billed and an amount paid — are what a comparison is for, partial deliveries,
-part payments and amendments included: a difference is what the auditor has to
-see and have explained, and declining the pair hides it. Cite a kept pair in
-coverage by its id. You may write an assertion
-over a supplied pair's two fields to state its requirement better; it then
-replaces the pair, so do not also decline it. Decline only what is wrong: a pair
-you do not mention is kept, and a pair you decline is shown to whoever approves
-the rules beside your reason.
-
-`unpaired_fields` are the amount, number and date fields that no supplied pair
-connects to some other linked role; `no_pair_with` names those roles. Names do
-not find two fields that call one value different things — a principal and an
-amount, a rate and a price. For each, decide whether it states the
-same value as a field on another linked role, and where it does, write that
-assertion yourself. Where two dates must fall in an order rather than be equal,
-say so in the assertion's requirement.
-
-Propose only what the fields support. A rule naming a field a type does not carry
-cannot run, and a plausible rule that never runs is worse than an absent one —
-it reads as a passing test.
-
-Where requirements are supplied, they are what the matrix has decided this cycle
-must demonstrate, stated in words. The matrix has read none of these documents
-and names no fields; choosing which fields answer a requirement is your work,
-and it is the reason you are the turn that sees the schemas.
-
-Answer every one. Return `coverage`, one entry per supplied requirement, either
-  {{"rcm_id", "control_attribute", "reads", "assertion_ids", "gaps"}}
-naming the assertions that answer it, or
-  {{"rcm_id", "control_attribute", "unsupported": true, "reason"}}
-where no field these schemas carry can express it. Copy rcm_id and
-control_attribute exactly. Say unsupported rather than reaching for a nearby
-field: a requirement about amounts answered by comparing vendor names proves
-something else, and the control reads as tested when it is not.
-
-`reads` names every role whose records the requirement is about, in the
-cycle's role names: each record it says must agree with another, or must state
-something. Then `assertion_ids` lists every assertion the requirement needs —
-one for each thing it says must agree or be stated, not the first of them. A
-requirement that the confirmation match the deal on five terms is five
-assertions; a requirement that one record be matched to two others needs
-assertions reading all three. Every role in reads must be read by at least one
-of the assertions named, and every assertion named must read a role in reads.
-Every document a requirement names is in reads: the validator finds them in
-the requirement's own words, by each type's name and abbreviations, so "matched
-to the purchase order and the goods receipt note" is about the order and the
-receipt as well as the invoice, and checks that the invoice cites them do not
-read them.
-
-Where what is asked of a role cannot be written as a pair of its fields — a
-value that must equal a product or a sum of others, a comparison against
-something no document states — list it in `gaps` as {{"role", "reason"}} and
-keep the assertions that do apply. Do not drop a role from reads to avoid a
-gap: the gap is what tells the auditor which part of the control is untested.
-
-Several requirements routinely want the same pair of fields, because more than
-one control depends on that pair. They are one assertion, not one each: name it
-in each of their coverage entries rather than writing a second rule over the
-same fields.
-
-A join key shows that two records refer to each other. It never shows that what
-they state agrees: that a record cites another's reference says nothing about
-whether the quantities, amounts, dates or parties the two state are the same.
-Where a requirement is that records
-agree, answer it with assertions over the fields that must agree, never with
-the join that linked them and never with a rule over some other record. Where a
-requirement is only that a record cites another, a one-sided assertion that the
-citing field is stated answers it, and the join then shows what it points to.
-
-Give every rule a short lower_snake_case id and a one-sentence rationale saying
-why it holds. The rationale is what an auditor reads when deciding whether to
-approve it, so state the reason, not the mechanics. An id names the rule and
-refers to nothing outside it: letters, digits and underscores only. Do not reuse
-an identifier from the material you were given — a requirement's key is not an
-id, and an id containing a dot is refused.
-
-{JSON_RULES} {LANGUAGE_RULES}
-Keys:
-  cycle_label   short name for the cycle
-  roles         array of {{"name", "document_type", "cardinality": "one" | "many",
-                "required": true | false}}
-  anchor        {{"role", "field", "column"}} — the table comes from the cycle
-  join_keys     array of {{"id", "left": {{"role", "field"}},
-                "right": {{"role", "field"}}, "rationale"}}
-  assertions    array of {{"id", "label", "left": {{"role", "field"}},
-                "right": {{"role", "field"}} or null, "requirement",
-                "rationale"}}
-  coverage      array of {{"rcm_id", "control_attribute", "reads": [role],
-                "assertion_ids": [assertion id], "gaps": [{{"role", "reason"}}]}}
-                or {{"rcm_id", "control_attribute", "unsupported": true,
-                "reason"}}, one per supplied requirement; omit where none were
-                supplied, and omit gaps where there are none
-  unreachable   array of {{"role", "reason"}} for a supplied role whose document
-                type carries no identifier field; omit where there are none
-  declined_pairs array of {{"id", "reason"}} for supplied field pairs that do
-                not state the same value; omit where you decline none
-
-requirement says what these fields must show for the control to hold, in the
-terms the control is written in — "the invoice is settled for the amount the
-order committed". Do not say how to compare them. Whether two values agree is
-settled later against the values themselves, by a reader that can see one
-document prints an amount with its currency and another without, and that one
-scanned date carries a stray space. You are proposing rules for approval and
-have read neither document.
-
-Give an assertion a right operand when the requirement is that two fields
-agree, and omit it — null — when the requirement is that a field be stated at
-all."""
-
-
-def _linkage_operand(raw: object, label: str) -> dict[str, Any]:
-    if not isinstance(raw, Mapping):
-        raise WorkerResponseValidationError(f"{label} must be an object.")
-    role = str(raw.get("role") or "").strip()
-    field = str(raw.get("field") or "").strip()
-    if not role or not field:
-        raise WorkerResponseValidationError(f"{label} needs a role and a field.")
-    return {"role": role, "field": field}
-
-
-def _name_list(raw: object, label: str) -> list[str]:
-    if raw is None:
-        return []
-    if not isinstance(raw, (list, tuple)):
-        raise WorkerResponseValidationError(f"{label} must be an array of names.")
-    names: list[str] = []
-    for value in raw:
-        name = str(value or "").strip()
-        if name and name not in names:
-            names.append(name)
-    return names
-
-
-def _linkage_response_schema(response: str) -> Mapping[str, Any]:
-    payload = decode_json_response(response)
-    if not isinstance(payload, Mapping):
-        raise WorkerResponseValidationError("The linkage response must be an object.")
-    roles = []
-    for index, raw in enumerate(payload.get("roles") or []):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(f"roles[{index}] must be an object.")
-        roles.append({
-            "name": str(raw.get("name") or "").strip(),
-            "document_type": str(raw.get("document_type") or "").strip(),
-            "cardinality": str(raw.get("cardinality") or "one"),
-            "required": bool(raw.get("required", True)),
-        })
-    if not roles:
-        raise WorkerResponseValidationError("The response must name at least one role.")
-
-    join_keys = []
-    for index, raw in enumerate(payload.get("join_keys") or []):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(f"join_keys[{index}] must be an object.")
-        join_keys.append({
-            "id": str(raw.get("id") or "").strip(),
-            "left": _linkage_operand(raw.get("left"), f"join_keys[{index}].left"),
-            "right": _linkage_operand(raw.get("right"), f"join_keys[{index}].right"),
-            "match": "normalized_equal",
-            "rationale": str(raw.get("rationale") or "").strip(),
-        })
-
-    assertions = []
-    for index, raw in enumerate(payload.get("assertions") or []):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(f"assertions[{index}] must be an object.")
-        right = raw.get("right")
-        assertions.append({
-            "id": str(raw.get("id") or "").strip(),
-            "label": str(raw.get("label") or "").strip(),
-            "left": _linkage_operand(raw.get("left"), f"assertions[{index}].left"),
-            "right": (
-                _linkage_operand(right, f"assertions[{index}].right")
-                if right is not None
-                else None
-            ),
-            "requirement": str(
-                raw.get("requirement") or raw.get("rationale") or ""
-            ).strip(),
-            "rationale": str(raw.get("rationale") or "").strip(),
-        })
-    # Not refused here when empty: kept field pairs become assertions in the
-    # validator, so a response that only reviews them is complete. A cycle
-    # left with no assertion at all is refused there, after the floor.
-
-    declined_pairs = []
-    for index, raw in enumerate(payload.get("declined_pairs") or []):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(
-                f"declined_pairs[{index}] must be an object."
-            )
-        declined_pairs.append({
-            "id": str(raw.get("id") or "").strip(),
-            "reason": str(raw.get("reason") or "").strip(),
-        })
-
-    coverage = []
-    for index, raw in enumerate(payload.get("coverage") or []):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(f"coverage[{index}] must be an object.")
-        entry = {
-            "rcm_id": str(raw.get("rcm_id") or "").strip(),
-            "control_attribute": str(raw.get("control_attribute") or "").strip(),
-        }
-        if raw.get("unsupported"):
-            entry["unsupported"] = True
-            entry["reason"] = str(raw.get("reason") or "").strip()
-        else:
-            entry["reads"] = _name_list(raw.get("reads"), f"coverage[{index}].reads")
-            if raw.get("assertion_ids") is not None:
-                _name_list(raw.get("assertion_ids"), f"coverage[{index}].assertion_ids")
-            entry["assertion_ids"] = cycle_rulesets.coverage_assertion_ids(raw)
-            gaps = []
-            for gap_index, gap in enumerate(raw.get("gaps") or []):
-                if not isinstance(gap, Mapping):
-                    raise WorkerResponseValidationError(
-                        f"coverage[{index}].gaps[{gap_index}] must be an object."
-                    )
-                gaps.append({
-                    "role": str(gap.get("role") or "").strip(),
-                    "reason": str(gap.get("reason") or "").strip(),
-                })
-            if gaps:
-                entry["gaps"] = gaps
-        coverage.append(entry)
-
-    unreachable = []
-    for index, raw in enumerate(payload.get("unreachable") or []):
-        if not isinstance(raw, Mapping):
-            raise WorkerResponseValidationError(
-                f"unreachable[{index}] must be an object."
-            )
-        unreachable.append({
-            "role": str(raw.get("role") or "").strip(),
-            "reason": str(raw.get("reason") or "").strip(),
-        })
-
-    anchor = payload.get("anchor")
-    if not isinstance(anchor, Mapping):
-        raise WorkerResponseValidationError("The response must name an anchor.")
-    return {
-        "cycle_label": str(payload.get("cycle_label") or "").strip(),
-        "roles": roles,
-        # ``table`` and ``column`` are still parsed where a response volunteers
-        # them, because a proposal written without a cycle shape has nowhere
-        # else to state them. Where a shape *is* supplied the executor fills
-        # both from its flagged population and whatever arrived here is
-        # replaced: the model names things, local code finds things.
-        "anchor": {
-            "table": str(anchor.get("table") or "").strip(),
-            "column": str(anchor.get("column") or "").strip(),
-            "role": str(anchor.get("role") or "").strip(),
-            "field": str(anchor.get("field") or "").strip(),
-        },
-        "join_keys": join_keys,
-        "assertions": assertions,
-        "declined_pairs": declined_pairs,
-        # Absent where nothing was asked, which is the shape a proposal written
-        # from the vocabulary alone has always had.
-        "coverage": coverage,
-        "unreachable": unreachable,
-    }
-
-
-def _supplied_schemas(request: WorkerRequest) -> list[object]:
-    """The engagement's vocabulary, as one atomic supplied item.
-
-    Read through one accessor by both the prompt and the validator, so what a
-    proposal is judged against is exactly what it was shown.
-    """
-
-    item = _resolved_item(request, CYCLE_SCHEMA_SOURCE_ID)
-    if isinstance(item, Mapping):
-        return list(item.get("schemas") or [])
-    return list(item or [])
-
-
-def _supplied_requirements(request: WorkerRequest) -> list[dict]:
-    """What the matrix asks this cycle to demonstrate, if it asks anything.
-
-    Optional by declaration: an engagement may propose rules before its matrix
-    asks anything of them. Where it does ask, these are what the assertions have
-    to answer, and they are read through one accessor by both the prompt and the
-    validator so a proposal is judged against exactly what it was shown.
-    """
-
-    try:
-        item = _resolved_item(request, CYCLE_REQUIREMENT_SOURCE_ID)
-    except WorkerContractError:
-        return []
-    if isinstance(item, Mapping):
-        return [
-            dict(value)
-            for value in item.get("cycle_requirements") or []
-            if isinstance(value, Mapping)
-        ]
-    return []
-
-
-def _as_rule_id(value: str) -> str:
-    """The nearest well-formed id to one that is not, for a repair to copy."""
-
-    cleaned = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
-    return cleaned if re.match(r"^[a-z]", cleaned) else f"rule_{cleaned}".rstrip("_")
-
-
-def _refuse_malformed_ids(proposal: Mapping[str, Any]) -> None:
-    """Refuse ids the ruleset store will not keep.
-
-    Reported together and with the corrected form spelled out. A proposal that
-    took the id convention from somewhere else took it from there everywhere —
-    all 54 assertions of one treasury proposal were dotted — so naming the first
-    and stopping would spend the repair turn on a single character.
-    """
-
-    fields = (("roles", "name", "Role"), ("join_keys", "id", "Join key"),
-              ("assertions", "id", "Assertion"))
-    offenders = [
-        (label, str((item or {}).get(key) or ""))
-        for section, key, label in fields
-        for item in proposal.get(section) or []
-        if not cycle_rulesets.valid_rule_id((item or {}).get(key))
-    ]
-    if not offenders:
-        return
-    shown = "; ".join(
-        f"{label} '{raw}' should be '{_as_rule_id(raw)}'"
-        for label, raw in offenders[:5]
-    )
-    rest = (
-        f" The same applies to {counted(len(offenders) - 5, 'other id')}."
-        if len(offenders) > 5
-        else ""
-    )
-    raise WorkerResponseValidationError(
-        f"{counted(len(offenders), 'id')} in this proposal "
-        f"{verb(len(offenders), 'is', 'are')} not {cycle_rulesets.RULE_ID_RULE}. "
-        f"Rewrite: {shown}.{rest} An id is a name for the rule, not a reference "
-        "to anything outside it — do not carry over a key from the requirements "
-        "you were given."
-    )
-
-
-def _supplied_cycle_roles(request: WorkerRequest) -> dict[str, str]:
-    """The positions the cycle declares, as ``name -> document_type``.
-
-    Empty where no shape was supplied, which is the state of an engagement whose
-    cycle has not been designed — there the worker still names its own roles.
-    """
-
-    cycle = request.unit_input.get("cycle") or {}
-    if not isinstance(cycle, Mapping):
-        return {}
-    return {
-        str(role.get("name") or ""): str(role.get("document_type") or "")
-        for step in cycle.get("steps") or []
-        if isinstance(step, Mapping)
-        for role in step.get("roles") or []
-        if isinstance(role, Mapping) and role.get("name")
-    }
-
-
-def _supplied_cycle_role_list(request: WorkerRequest) -> list[dict]:
-    """The cycle's roles in the order it runs them, each ``{name, document_type}``."""
-
-    return [
-        {"name": name, "document_type": document_type}
-        for name, document_type in _supplied_cycle_roles(request).items()
-    ]
-
-
-def _supplied_field_pairs(request: WorkerRequest) -> dict:
-    """The pairs the schemas propose, computed from exactly what the turn is shown.
-
-    Read by the prompt and by the validator through this one accessor, so a
-    pair the review is asked about is the pair its answer is checked against.
-    Empty where no cycle was supplied: without declared roles there are no
-    positions to pair fields between, and the turn names its own roles.
-    """
-
-    roles = _supplied_cycle_role_list(request)
-    if not roles:
-        return {"pairs": [], "omitted": 0}
-    return cycle_field_pairs.candidates(_plain_json(_supplied_schemas(request)), roles)
-
-
-def _require_the_cycle_s_roles(
-    proposal: Mapping[str, Any], request: WorkerRequest
-) -> None:
-    """The roles are an input now, so the response may not invent or lose one.
-
-    The shape named the positions once, after the memorandum, and the matrix is
-    written against those names. A rule naming a role the cycle does not declare
-    addresses a position nothing else in the engagement knows about; a declared
-    role the response drops silently removes a step of the process from every
-    test built on the ruleset.
-
-    Dropping one *is* allowed where its document type carries no identifier
-    field — no join key can reach it and ``cycle_rulesets.validate`` would
-    refuse the whole ruleset over it — but only by saying so under
-    ``unreachable``, which the executor reports to the auditor.
-    """
-
-    declared = _supplied_cycle_roles(request)
-    if not declared:
-        return
-    proposed = {
-        str(role.get("name")): str(role.get("document_type"))
-        for role in proposal.get("roles") or []
-    }
-    problems: list[str] = []
-    for name, document_type in proposed.items():
-        if name not in declared:
-            problems.append(
-                f"Role '{name}' is not one the cycle declares; its roles are: "
-                f"{', '.join(declared) or 'none'}."
-            )
-        elif document_type != declared[name]:
-            problems.append(
-                f"Role '{name}' is filled by '{declared[name]}' in the cycle, "
-                f"not '{document_type}'."
-            )
-    excused = {
-        str(item.get("role"))
-        for item in proposal.get("unreachable") or []
-        if isinstance(item, Mapping)
-    }
-    for name in declared:
-        if name in proposed or name in excused:
-            continue
-        problems.append(
-            f"Role '{name}' is declared by the cycle and the response omits it. "
-            "Return it, or list it under unreachable with the reason no "
-            "identifier field can reach it."
-        )
-    for item in proposal.get("unreachable") or []:
-        if not isinstance(item, Mapping):
-            continue
-        name = str(item.get("role"))
-        if name not in declared:
-            problems.append(f"Unreachable role '{name}' is not one the cycle declares.")
-        elif not str(item.get("reason") or "").strip():
-            problems.append(f"Unreachable role '{name}' states no reason.")
-    if problems:
-        raise WorkerResponseValidationError(problems)
-
-
-def _require_every_role_reachable(proposal: Mapping[str, Any]) -> None:
-    """Every role must be reachable from the anchor by join keys.
-
-    ``cycle_rulesets.validate`` enforces this too, and that copy fires at commit
-    — after the model turn has succeeded and outside any repair loop, so it
-    costs the whole run. It cost one: a treasuryfull proposal declared
-    ``broker_ack`` and wrote no join key that reaches it, and the stage failed
-    with nothing to show for two model calls. Asked here, it costs one turn, and
-    the repair has two honest ways out — add the join key, or say the role is
-    ``unreachable`` and why.
-    """
-
-    roles = {str(role.get("name")) for role in proposal.get("roles") or []}
-    anchor = str((proposal.get("anchor") or {}).get("role") or "")
-    if not roles or anchor not in roles:
-        return
-    reachable = {anchor}
-    changed = True
-    while changed:
-        changed = False
-        for key in proposal.get("join_keys") or []:
-            left = str((key.get("left") or {}).get("role") or "")
-            right = str((key.get("right") or {}).get("role") or "")
-            for source, target in ((left, right), (right, left)):
-                if source in reachable and target in roles and target not in reachable:
-                    reachable.add(target)
-                    changed = True
-    stranded = sorted(roles - reachable)
-    if stranded:
-        raise WorkerResponseValidationError([
-            f"No join key reaches role '{name}' from the anchor role "
-            f"'{anchor}'. Give it a join key on an identifier field it shares "
-            "with a role already reachable, or drop it from roles and list it "
-            "under unreachable with the reason no identifier field can reach it."
-            for name in stranded
-        ])
-
-
-def validate_linkage_proposal(
-    proposal: Mapping[str, Any], request: WorkerRequest
-) -> Mapping[str, Any]:
-    """Check the proposal against the schemas it was shown.
-
-    The identifier rule is enforced here rather than left to the store because
-    it is the one mistake worth spending a repair turn on: a join key on an
-    amount reads perfectly and fuses every transaction sharing that amount.
-
-    The *id* rule is enforced here for the opposite reason — not because it is
-    subtle but because the store's copy of it fires too late to matter. A
-    malformed id raises ``RulesetError`` at commit, after the model turn has
-    already succeeded and outside any repair loop, so it costs the entire run.
-    Asked here, it costs one turn.
-    """
-
-    schemas = {
-        str(item.get("document_type")): {
-            str(field.get("name")): field for field in item.get("fields") or []
-        }
-        for item in _supplied_schemas(request)
-    }
-    roles = {
-        str(role.get("name")): str(role.get("document_type"))
-        for role in proposal.get("roles") or []
-    }
-    for name, document_type in roles.items():
-        if document_type not in schemas:
-            raise WorkerResponseValidationError(
-                f"Role '{name}' names '{document_type}', which this engagement "
-                "has no schema for."
-            )
-    _require_the_cycle_s_roles(proposal, request)
-    _refuse_malformed_ids(proposal)
-
-    def field_of(operand: Mapping[str, Any], label: str) -> Mapping[str, Any]:
-        role = str(operand.get("role"))
-        if role not in roles:
-            raise WorkerResponseValidationError(f"{label} names unknown role '{role}'.")
-        field = schemas[roles[role]].get(str(operand.get("field")))
-        if field is None:
-            raise WorkerResponseValidationError(
-                f"{label} names field '{operand.get('field')}', which "
-                f"'{roles[role]}' does not carry."
-            )
-        return field
-
-    for item in proposal.get("join_keys") or []:
-        for side in ("left", "right"):
-            field = field_of(item[side], f"Join key '{item['id']}' {side}")
-            if str(field.get("role")) != "identifier":
-                raise WorkerResponseValidationError(
-                    f"Join key '{item['id']}' joins on '{field.get('name')}', which "
-                    f"is a {field.get('role')} field. Only identifier fields can "
-                    "join — two records sharing an amount is a coincidence, not a link."
-                )
-    for item in proposal.get("assertions") or []:
-        field_of(item["left"], f"Assertion '{item['id']}' left")
-        if item.get("right") is not None:
-            field_of(item["right"], f"Assertion '{item['id']}' right")
-        # The tolerance a numeric comparison used to carry is gone with the
-        # operator that took one. A rule states what the fields must show; how
-        # close two amounts have to be is part of that sentence, and is read
-        # with the values rather than parsed out of the rule.
-        if not str(item.get("requirement") or item.get("rationale") or "").strip():
-            raise WorkerResponseValidationError(
-                f"Assertion '{item['id']}' states no requirement. Say what these "
-                "fields must show for the control to hold."
-            )
-    field_of(proposal["anchor"], "The anchor")
-    _require_every_role_reachable(proposal)
-    proposal = _apply_field_pairs(proposal, request)
-    _require_every_requirement_answered(proposal, request)
-    return proposal
-
-
-def _apply_field_pairs(
-    proposal: Mapping[str, Any], request: WorkerRequest
-) -> dict[str, Any]:
-    """Make every field pair the review kept an assertion, and record the rest.
-
-    Silence keeps a pair. That is the property the floor exists for: a review
-    that ignores the list, or reads a requirement too narrowly to want the
-    pair, still leaves the comparison in the rules, and cycle vouching
-    evaluates every rule on every item whatever the coverage says. A pair
-    leaves the rules only by being declined, with a reason, and the decline is
-    kept on the ruleset where whoever approves it can disagree.
-
-    An assertion the turn wrote over a candidate's two fields is that pair
-    kept in its own words: it replaces the candidate, and coverage citing the
-    candidate's id is pointed at it.
-
-    Refused here, where a repair can still fix it: a decline naming no
-    candidate or giving no reason; a pair both declined and written; an
-    authored rule taking a candidate's id; an authored assertion over a join
-    key's own pair, which restates the link and cannot fail; and a cycle left
-    with no assertion at all.
-    """
-
-    candidates = _supplied_field_pairs(request)
-    roles = {str(role.get("name") or "") for role in proposal.get("roles") or []}
-    pairs = [
-        pair
-        for pair in candidates["pairs"]
-        if pair["left"]["role"] in roles and pair["right"]["role"] in roles
-    ]
-    by_id = {pair["id"]: pair for pair in pairs}
-    # Every pair the turn was shown, including those on a role it then listed
-    # unreachable. Declining one of those is the right answer to a pair that
-    # cannot be bound, so it is accepted, and dropped with the role.
-    supplied = {pair["id"] for pair in candidates["pairs"]}
-    problems: list[str] = []
-
-    declined: dict[str, str] = {}
-    for item in proposal.get("declined_pairs") or []:
-        pair_id = str(item.get("id") or "")
-        if pair_id in supplied and pair_id not in by_id:
-            continue
-        if pair_id not in by_id:
-            problems.append(
-                f"declined_pairs names '{pair_id or 'nothing'}', which is not one "
-                "of the field pairs supplied. Decline a pair by the id it was "
-                "given."
-            )
-        elif not str(item.get("reason") or "").strip():
-            problems.append(
-                f"Field pair '{pair_id}' is declined with no reason. Say why the "
-                "two fields do not state the same value."
-            )
-        else:
-            declined[pair_id] = str(item.get("reason")).strip()
-
-    authored = [dict(item) for item in proposal.get("assertions") or []]
-    pair_ids = {cycle_field_pairs.signature(pair): pair["id"] for pair in pairs}
-    joined = {
-        cycle_field_pairs.signature(key) for key in proposal.get("join_keys") or []
-    }
-    replaced: dict[str, str] = {}
-    for item in authored:
-        signature = cycle_field_pairs.signature(item)
-        own_id = str(item.get("id") or "")
-        if own_id in by_id and pair_ids.get(signature) != own_id:
-            # Written out under a pair's id is the pair kept in the turn's own
-            # words — handled below. Under a pair's id over other fields is two
-            # rules claiming one name.
-            problems.append(
-                f"Assertion '{own_id}' uses the id of a supplied field pair but "
-                "compares different fields. Give it its own id, or compare the "
-                "pair's two fields."
-            )
-        elif signature in pair_ids:
-            # The turn wrote the pair itself, which is the pair kept in its own
-            # words. Its rule replaces the candidate, and coverage citing the
-            # candidate's id follows it there.
-            pair_id = pair_ids[signature]
-            if pair_id in declined:
-                problems.append(
-                    f"Field pair '{pair_id}' is declined, and assertion "
-                    f"'{item.get('id')}' compares the same two fields. Keep one "
-                    "answer: remove the assertion, or withdraw the decline."
-                )
-            replaced[pair_id] = str(item.get("id") or "")
-        elif item.get("right") is not None and signature in joined:
-            problems.append(
-                f"Assertion '{item.get('id')}' compares the two fields a join key "
-                "already links. The join made them equal for every linked "
-                "record, so the rule cannot fail: remove it, and test what the "
-                "linked records state instead."
-            )
-
-    kept = [
-        cycle_field_pairs.as_assertion(
-            pair,
-            _plain_json(_supplied_schemas(request)),
-            _supplied_cycle_role_list(request),
-        )
-        for pair in pairs
-        if pair["id"] not in declined and pair["id"] not in replaced
-    ]
-    assertions = authored + kept
-    if not assertions and not problems:
-        problems.append(
-            "The response must leave at least one assertion; a cycle that tests "
-            "nothing is not a cycle."
-        )
-    if problems:
-        raise WorkerResponseValidationError(problems)
-
-    result = dict(proposal)
-    result["assertions"] = assertions
-    if replaced:
-        result["coverage"] = [
-            (
-                {
-                    **{key: value for key, value in entry.items() if key != "assertion_id"},
-                    "assertion_ids": [
-                        replaced.get(value, value)
-                        for value in cycle_rulesets.coverage_assertion_ids(entry)
-                    ],
-                }
-                if not entry.get("unsupported")
-                else dict(entry)
-            )
-            for entry in proposal.get("coverage") or []
-        ]
-    result["declined_pairs"] = [
-        {
-            "id": pair["id"],
-            "left": dict(pair["left"]),
-            "right": dict(pair["right"]),
-            "basis": pair["basis"],
-            "reason": declined[pair["id"]],
-        }
-        for pair in pairs
-        if pair["id"] in declined
-    ]
-    return result
-
-
-def _reach_problems(
-    target: tuple[str, str],
-    entry: Mapping[str, Any],
-    named: list[str],
-    *,
-    assertion_roles: Mapping[str, set[str]],
-    known_roles: set[str],
-    unreachable_roles: set[str],
-) -> list[str]:
-    """Hold one coverage entry to the roles it says its requirement is about.
-
-    Naming an assertion that exists proves only that it exists. A procurement
-    proposal answered "the invoice is matched to the purchase order and the
-    goods receipt" with a rule that the payment voucher is signed, and a
-    treasury one answered "matched on counterparty, principal, rate, value
-    date and maturity date" with the rate alone. Both validated, both were
-    approved, and the first left a short delivery that only the receipt states
-    untested.
-
-    So the entry declares ``reads`` — every role whose records the requirement
-    is about, in the cycle's own role names — and is then held to it, in two
-    directions. Every declared role is read by at least one of its assertions,
-    or is stated as a gap with the reason no pair of its fields can express
-    what is asked of it; a role no join key can reach is already a stated gap.
-    And every assertion it names reads at least one declared role, because a
-    rule over records the requirement is not about cannot answer it.
-
-    Nothing here counts roles or asks for a comparison: a requirement can be
-    about one record, and a field that must merely be stated is a one-sided
-    assertion on that record. What it refuses is a declaration the named
-    rules do not live up to — a structural check over role names, the same in
-    any cycle. The declaration itself can still leave a document out, which is
-    what ``_named_document_problems`` answers from the requirement's words.
-    """
-
-    label = f"Requirement {target[0]}/{target[1]}"
-    reads = _name_list(entry.get("reads"), "reads")
-    if not reads:
-        return [
-            f"{label} declares no roles in reads. Name every role whose records "
-            "this requirement is about, using the cycle's role names."
-        ]
-    problems: list[str] = []
-    unknown = [role for role in reads if role not in known_roles]
-    if unknown:
-        problems.append(
-            f"{label} reads '{unknown[0]}', which is not a role of this "
-            f"proposal; its roles are: {', '.join(sorted(known_roles))}."
-        )
-    gap_roles: set[str] = set()
-    for gap in entry.get("gaps") or []:
-        if not isinstance(gap, Mapping):
-            continue
-        role = str(gap.get("role") or "").strip()
-        if not str(gap.get("reason") or "").strip():
-            problems.append(
-                f"{label} states a gap{f' on role {role!r}' if role else ''} "
-                "with no reason. Say what is asked of those records that no "
-                "pair of their fields can express."
-            )
-        if role and role not in reads:
-            problems.append(
-                f"{label} states a gap on role '{role}', which it does not "
-                "list in reads."
-            )
-        if role:
-            gap_roles.add(role)
-    read_by_rules = set().union(*(assertion_roles.get(value, set()) for value in named))
-    unread = [
-        role
-        for role in reads
-        if role not in unknown
-        and role not in read_by_rules
-        and role not in unreachable_roles
-        and role not in gap_roles
-    ]
-    if unread:
-        listed = ", ".join(f"'{role}'" for role in unread)
-        problems.append(
-            f"{label} is about {listed}, and none of its assertions "
-            f"({', '.join(named)}) reads "
-            f"{'it' if len(unread) == 1 else 'them'}. For each, add an "
-            "assertion over the field that must agree or be stated, or list "
-            "the role under gaps with the reason no field of it can express "
-            "what the requirement asks. A join key that reaches a record "
-            "shows that the record exists, not that what it states agrees."
-        )
-    wanted = set(reads)
-    for value in named:
-        if assertion_roles.get(value, set()) & wanted:
-            continue
-        problems.append(
-            f"{label} names assertion '{value}', which reads "
-            f"{', '.join(sorted(assertion_roles.get(value) or {'nothing'}))} "
-            f"and none of the roles it is about ({', '.join(reads)}). Remove "
-            "it from this entry, or add the role to reads if the requirement "
-            "is about it."
-        )
-    return problems
-
-
-def _named_document_problems(
-    target: tuple[str, str],
-    requirement: str,
-    entry: Mapping[str, Any],
-    named: list[str],
-    *,
-    assertion_roles: Mapping[str, set[str]],
-    role_types: Mapping[str, str],
-    unreachable_roles: set[str],
-) -> list[str]:
-    """Hold an entry to every document its requirement names, from the words.
-
-    ``reads`` is the entry's own account of what the requirement is about, and
-    the reach check above holds the entry only to that account. Procurement's
-    three-way match — "the invoice is matched to the purchase order and the
-    goods receipt note" — was answered reading the invoice alone: two checks
-    that it cites a PO and a GRN, with ``reads`` naming the invoice and nothing
-    else. It validated, and the matrix recorded a matching control as tested by
-    two references that agree with nothing.
-
-    So the documents are taken from the requirement as well. Each cycle
-    document type the sentence names (by label, alias or head noun) must have
-    one of its roles read by a named assertion, stated as a gap, or be
-    unreachable. A name read where the sentence meant something else costs a
-    gap with a reason, which the approver sees; a document left out costs the
-    control's test.
-    """
-
-    by_type: dict[str, list[str]] = {}
-    for role, document_type in role_types.items():
-        if document_type:
-            by_type.setdefault(document_type, []).append(role)
-    gap_roles = {
-        str(gap.get("role") or "").strip()
-        for gap in entry.get("gaps") or []
-        if isinstance(gap, Mapping)
-    }
-    read = set().union(*(assertion_roles.get(value, set()) for value in named))
-    problems: list[str] = []
-    for document_type in document_types.mentioned(requirement, by_type):
-        roles = by_type[document_type]
-        if any(role in read or role in gap_roles or role in unreachable_roles for role in roles):
-            continue
-        label = document_types.label(document_type)
-        listed = ", ".join(f"'{role}'" for role in roles)
-        problems.append(
-            f"Requirement {target[0]}/{target[1]} names the {label.lower()} "
-            f"(roles {listed}), and none of its assertions reads it. Add the "
-            "role to reads, and either an assertion comparing what that record "
-            "states with the records it is matched to, or a gap with the reason "
-            "no field of it can express what the requirement asks. A check that "
-            "another document cites it shows only that they refer to each other."
-        )
-    return problems
-
-
-def _require_every_requirement_answered(
-    proposal: Mapping[str, Any], request: WorkerRequest
-) -> None:
-    """Refuse a proposal that leaves a matrix requirement unanswered.
-
-    The same check ``tests.specified`` runs, run here instead. It used to fire
-    three stages downstream, by which time the ruleset had been approved and an
-    approved ruleset is immutable — so the repair was a successor proposal and a
-    second signature, for a defect the worker's own bounded loop could have
-    fixed for one attempt.
-
-    What changed is who answers. The matrix used to name the fields and this
-    turn had to hit them exactly; now the matrix states the requirement and this
-    turn names the fields, so coverage is what the proposal *says* it covers and
-    the check is that it said something about everything it was asked.
-
-    Scoped to what the worker was shown. A requirement whose row is not part of
-    this cycle at all is not this proposal's to answer — but a requirement is
-    now words rather than operands, so there is no document type on it to scope
-    by, and every supplied requirement is in scope by construction: the
-    candidates are built from the matrix's uncontracted cycle attributes, which
-    is precisely the set this stage exists to serve.
-    """
-
-    required = _supplied_requirements(request)
-    if not required:
-        return
-    assertion_ids = {
-        str(item.get("id") or "") for item in proposal.get("assertions") or []
-    }
-    # The roles each assertion reads, which is what the declared ``reads`` of a
-    # requirement is held to. A one-sided assertion reads one role.
-    assertion_roles = {
-        str(item.get("id") or ""): {
-            str((item.get(side) or {}).get("role") or "")
-            for side in ("left", "right")
-            if isinstance(item.get(side), Mapping)
-        }
-        for item in proposal.get("assertions") or []
-    }
-    unreachable_roles = {
-        str(item.get("role") or "")
-        for item in proposal.get("unreachable") or []
-        if isinstance(item, Mapping)
-    }
-    known_roles = {
-        str(role.get("name") or "") for role in proposal.get("roles") or []
-    } | unreachable_roles
-    # Every role's document type: the proposal's own, then the cycle's for a
-    # role the proposal lists as unreachable rather than declaring.
-    role_types = {
-        role: kind
-        for role, kind in {
-            **_supplied_cycle_roles(request),
-            **{
-                str(role.get("name") or ""): str(role.get("document_type") or "")
-                for role in proposal.get("roles") or []
-                if isinstance(role, Mapping)
-            },
-        }.items()
-        if role in known_roles
-    }
-    answered: dict[tuple[str, str], Mapping[str, Any]] = {}
-    problems: list[str] = []
-    # Counted over the requirements, not over the problems: one requirement can
-    # raise several (answered twice, a role it never reads), and a repair
-    # prompt saying the proposal answered minus-one of two teaches nothing.
-    unanswered: set[tuple[str, str]] = set()
-    for entry in proposal.get("coverage") or []:
-        target = (
-            str(entry.get("rcm_id") or ""),
-            str(entry.get("control_attribute") or ""),
-        )
-        if target in answered:
-            problems.append(
-                f"Requirement {target[0]}/{target[1]} has two coverage entries. "
-                "Give exactly one per requirement; where the same assertion "
-                "answers several, name it in each of their entries."
-            )
-            continue
-        answered[target] = entry
-    for item in required:
-        target = (
-            str(item.get("rcm_id") or ""),
-            str(item.get("control_attribute") or ""),
-        )
-        entry = answered.get(target)
-        requirement = str(item.get("requirement") or "")
-        before = len(problems)
-        if entry is None:
-            problems.append(
-                f"Requirement {target[0]}/{target[1]} has no coverage entry: "
-                f"\"{requirement}\". Name the assertion that answers it, or "
-                "say it is unsupported and why."
-            )
-            unanswered.add(target)
-            continue
-        if entry.get("unsupported"):
-            if not str(entry.get("reason") or "").strip():
-                problems.append(
-                    f"Requirement {target[0]}/{target[1]} is reported "
-                    "unsupported with no reason. Say which field these schemas "
-                    "would need to carry."
-                )
-                unanswered.add(target)
-            continue
-        named = cycle_rulesets.coverage_assertion_ids(entry)
-        if not named:
-            problems.append(
-                f"Requirement {target[0]}/{target[1]} names no assertion. List "
-                "in assertion_ids every assertion it needs, or say the "
-                "requirement is unsupported."
-            )
-            unanswered.add(target)
-            continue
-        missing = [value for value in named if value not in assertion_ids]
-        declined_ids = {
-            str(item.get("id") or "") for item in proposal.get("declined_pairs") or []
-        }
-        if missing and missing[0] in declined_ids:
-            problems.append(
-                f"Requirement {target[0]}/{target[1]} names field pair "
-                f"'{missing[0]}', which this proposal declines. Keep the pair, "
-                "or name the assertions that do answer the requirement."
-            )
-            unanswered.add(target)
-            continue
-        if missing:
-            # An id naming nothing is the one failure mode that reads as
-            # coverage from every angle: the requirement is answered, the
-            # proposal validates, and the executor finds no assertion to derive
-            # a comparison from.
-            problems.append(
-                f"Requirement {target[0]}/{target[1]} names assertion "
-                f"'{missing[0]}', which this proposal does not contain. Name "
-                "its own assertions, or say the requirement is unsupported."
-            )
-            unanswered.add(target)
-            continue
-        problems.extend(
-            _reach_problems(
-                target,
-                entry,
-                named,
-                assertion_roles=assertion_roles,
-                known_roles=known_roles,
-                unreachable_roles=unreachable_roles,
-            )
-        )
-        problems.extend(
-            _named_document_problems(
-                target,
-                requirement,
-                entry,
-                named,
-                assertion_roles=assertion_roles,
-                role_types=role_types,
-                unreachable_roles=unreachable_roles,
-            )
-        )
-        if len(problems) > before:
-            unanswered.add(target)
-    if not problems:
-        return
-    raise WorkerResponseValidationError(
-        f"The proposal answers {len(required) - len(unanswered)} of "
-        f"{counted(len(required), 'supplied requirement')}. "
-        + " ".join(problems)
-    )
-
-
-def run_linkage_worker(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-) -> str:
-    """Send the engagement's schemas and ask how its documents relate."""
-
-    # Unwrapped, not just listed: ``WorkerRequest`` returns a recursively
-    # immutable input, so each entry arrives as ``MappingProxyType`` and
-    # ``json.dumps`` refuses it. The same shape stopped the RCM's schema
-    # catalog reaching its authoring turn, and stayed invisible there because
-    # the only catalog ever serialized was the empty one.
-    payload = {
-        "schemas": _plain_json(_supplied_schemas(request)),
-        "tables": _plain_json(list(request.unit_input.get("tables") or [])),
-    }
-    # The positions this cycle holds, in the order it runs them, decided after
-    # the memorandum and before the matrix. Supplying them is what stops two
-    # model-authored artifacts having to agree by luck: this turn chooses
-    # fields, and no longer invents the places those fields fill.
-    cycle = _plain_json(request.unit_input.get("cycle") or {})
-    if cycle.get("steps"):
-        payload["cycle"] = cycle
-    # Read through the same accessor the gate reads, so the proposal is judged
-    # against exactly what it was shown. It was resolved into the context and
-    # left out of the message before this: the prompt promised the worker the
-    # matrix's requirements, the worker was sent the vocabulary alone, and the
-    # gate then refused it for not answering questions it was never asked.
-    requirements = _supplied_requirements(request)
-    if requirements:
-        payload["requirements"] = requirements
-    # Found locally from the schemas, and read back through the same accessor
-    # by the validator, so what the review answers is what it was asked.
-    candidates = _supplied_field_pairs(request)
-    if candidates["pairs"]:
-        payload["field_pairs"] = [
-            {
-                "id": pair["id"],
-                "left": pair["left"],
-                "right": pair["right"],
-                "basis": pair["basis"],
-                **({"shared_words": pair["words"]} if pair["words"] else {}),
-            }
-            for pair in candidates["pairs"]
-        ]
-        if candidates["omitted"]:
-            payload["field_pairs_omitted"] = candidates["omitted"]
-        payload["unpaired_fields"] = cycle_field_pairs.unpaired_fields(
-            _plain_json(_supplied_schemas(request)),
-            _supplied_cycle_role_list(request),
-            candidates["pairs"],
-        )
-    user = json.dumps(payload, indent=1, default=str)
-    if attempt.is_repair:
-        user += (
-            "\n\nYour previous response could not be used: "
-            + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
-        )
-    activity = dict(request.activity)
-    activity.setdefault(
-        "context_metrics",
-        {
-            "worker_kind": "cycle_linkage",
-            "total_characters": request.context.supplied_size.characters,
-            "estimated_tokens": request.context.supplied_size.estimated_tokens,
-            "selected_items": request.context.supplied_size.items,
-        },
-    )
-    return gateway.complete(LINKAGE_SYSTEM, user, activity, attempt=attempt.number)
-
-
-LINKAGE_RESPONSE_SCHEMA = WorkerResponseSchema(
-    schema_id="tests.cycle_linkage.response",
-    schema_hash=_sha256_text(
-        "tests-cycle-linkage-response:roles-joins-assertions-coverage-reads-field-pairs-v3"
-    ),
-    validator=_linkage_response_schema,
-)
-LINKAGE_WORKER = WorkerDefinition(
-    worker_id=LINKAGE_WORKER_ID,
-    prompt_hash=_sha256_text(LINKAGE_SYSTEM),
-    response_schema=LINKAGE_RESPONSE_SCHEMA,
-    # Two, as the evidence read and test generation have: the response now
-    # carries a review of the field pairs beside its own rules, and each check
-    # it can fail names its own repair. A ruleset that fails here costs the
-    # stage, and every cycle test behind it.
-    repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=2,
-        guidance_hash=_sha256_text(
-            "Repair the cycle linkage proposal against the supplied schemas."
-        ),
-    ),
-    implementation=run_linkage_worker,
-    semantic_validator=validate_linkage_proposal,
-)
-
-WORKERS.register(LINKAGE_WORKER)
 
 __all__ = [
     "DEFAULT_COMPARISON_METHOD",

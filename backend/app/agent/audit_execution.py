@@ -33,7 +33,6 @@ from .. import (
     document_classification,
     rcm_execution,
     report,
-    tooling,
 )
 from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
@@ -74,7 +73,6 @@ from .documents_execution import (
 )
 from .context import (
     ContextResolver,
-    cycle_linkage_scope,
     apm_document_methodology_scope,
     apm_table_profile_candidates,
     cycle_scope,
@@ -107,7 +105,7 @@ from .executors.planning import (
     RcmExecutorTarget,
     RcmRevisionExecutorTarget,
 )
-from .executors.tests import CycleRulesetExecutorTarget, TestGenerateExecutorTarget
+from .executors.tests import TestGenerateExecutorTarget
 from .executors.reporting import (
     VERIFICATION_REF,
     FindingExecutorTarget,
@@ -1878,6 +1876,8 @@ class AuditWorkflowExecution(ActionExecution):
             self.record_artifact(
                 "planning", "cycle", "planning:cycle", "updated", task
             )
+            output = (outcome.receipt.output if outcome.receipt else {}) or {}
+            self._report_cycle_rules(dict(output.get("rules") or {}))
             # A step the memorandum describes but no held document type records
             # is a fact worth seeing rather than an error: the process runs, and
             # this engagement holds nothing that evidences that part of it.
@@ -1982,6 +1982,11 @@ class AuditWorkflowExecution(ActionExecution):
                             if str(row.get("process") or "").strip()
                         }
                     ),
+                    # The induced schemas the rules are written in, by digest:
+                    # a schema induced or re-derived since moves the unit's
+                    # input hash, so a persisted design is never reused as one
+                    # written against today's vocabulary.
+                    "schema_basis": cycle_rulesets.schema_basis(self.ws),
                 },
                 activity={
                     "artifact_refs": ["planning:cycle"],
@@ -2006,6 +2011,44 @@ class AuditWorkflowExecution(ActionExecution):
             on_committed=on_committed,
             conflict_handler=conflict_handler,
         )
+
+    def _report_cycle_rules(self, output: dict) -> None:
+        """Say what the cycle design proposed about its documents.
+
+        The rules are the half of the design a reader cannot see from the
+        strip of steps, and proposed is not approved: until they are, no cycle
+        test can be generated from them, and a run that ends quietly here reads
+        as one that linked the evidence.
+        """
+
+        ruleset_id = str(output.get("ruleset_id") or "")
+        if ruleset_id and output.get("ruleset_action") == "proposed":
+            self.record_artifact("cycle_ruleset", ruleset_id, "", "created", None)
+            if output.get("ruleset_status") == "proposed":
+                self.warn(
+                    f"Cycle rules {ruleset_id} are proposed and await an "
+                    "auditor's approval; until they are approved no cycle test "
+                    "can be generated from them."
+                )
+        # A step of the process the rules cannot bind, because its document
+        # type carries no identifier field for a join key to reach it by. The
+        # shape keeps the step; the ruleset cannot test it.
+        for item in output.get("unreachable") or []:
+            self.warn(
+                f"Cycle role '{item.get('role')}' could not be bound into the "
+                f"rules ({item.get('reason') or 'no reason given'}), so no "
+                "cycle test reaches that step of the process."
+            )
+        # Pairs the schemas proposed and review turned down. Usually noise
+        # — an address is not a name — but a declined true pair is the one
+        # omission an approver cannot see from the rules alone.
+        if output.get("declined_pairs"):
+            self.warn(
+                f"The cycle design declined "
+                f"{counted(int(output.get('declined_pairs') or 0), 'field pair')} "
+                "the document schemas suggested; each is listed on the ruleset "
+                "with its reason, for review before approval."
+            )
 
     def _bind_rcm(
         self,
@@ -2216,136 +2259,6 @@ class AuditWorkflowExecution(ActionExecution):
             on_committed=on_committed,
         )
 
-    def _bind_cycle_ruleset(
-        self,
-        subject: Workspace,
-        run: dict,
-        capability: workflow.Capability,
-        stage: dict,
-        unit: dict,
-    ) -> BoundUnitPipeline:
-        """Bind the one unit that proposes this engagement's cycle rules.
-
-        The schemas travel on the unit input rather than through a declared
-        context, and they are the unit's guarded parents: rules naming a field
-        are only rules while that field is what the schema says it is, so a
-        re-derived schema must conflict this commit rather than leave a
-        proposal an auditor would approve against a vocabulary that moved.
-        """
-
-        self.ws = subject
-        parents = list(unit.get("parent_refs") or [])
-        expected_parents = parent_hashes(self.ws, parents)
-        target = CycleRulesetExecutorTarget(self.ws, self.run["id"])
-        task = self.add_task(
-            "cycle_ruleset", "workflow:cycle_ruleset", "Cycle rules for review"
-        )
-
-        def on_committed(_stage, _unit, outcome) -> None:
-            self.ws = target.workspace
-            output = (outcome.receipt.output if outcome.receipt else {}) or {}
-            ruleset_id = str(output.get("ruleset_id") or "")
-            if ruleset_id:
-                self.record_artifact(
-                    "cycle_ruleset", ruleset_id, "", "created", None
-                )
-                # Proposed is not approved, and a reader of the run should not
-                # have to know the difference from the artifact alone.
-                self.warn(
-                    f"Cycle rules {ruleset_id} are proposed and await an "
-                    "auditor's approval; until they are approved no cycle test "
-                    "can be generated from them."
-                )
-            # A requirement the extracted schemas cannot express. The attribute
-            # kept its requirement and took the strongest evidence path still
-            # open to it, which is the honest outcome and not a silent one:
-            # the control is now answered from the population or from a
-            # document rather than from linked source records.
-            # A step of the process the rules cannot bind, because its document
-            # type carries no identifier field for a join key to reach it by.
-            # The shape keeps the step; the ruleset cannot test it.
-            for item in output.get("unreachable") or []:
-                self.warn(
-                    f"Cycle role '{item.get('role')}' could not be bound into the "
-                    f"rules ({item.get('reason') or 'no reason given'}), so no "
-                    "cycle test reaches that step of the process."
-                )
-            for item in output.get("downgraded") or []:
-                self.warn(
-                    f"Control attribute '{item.get('control_attribute')}' of RCM "
-                    f"row {item.get('rcm_id')} asked for transaction-cycle "
-                    "evidence that this engagement's document schemas cannot "
-                    f"express ({item.get('reason') or 'no reason given'}), so it "
-                    "was re-routed to the strongest path they do support."
-                )
-            # Pairs the schemas proposed and review turned down. Usually noise
-            # — an address is not a name — but a declined true pair is the one
-            # omission an approver cannot see from the rules alone.
-            if output.get("declined_pairs"):
-                self.warn(
-                    f"The cycle rules proposal declined "
-                    f"{counted(int(output.get('declined_pairs') or 0), 'field pair')} "
-                    "the document schemas suggested; each is listed on the ruleset "
-                    "with its reason, for review before approval."
-                )
-            # Answered for some of the records the requirement is about. What
-            # could be written as a comparison is contracted and will be
-            # tested; this names what will not be, so it is not read as done.
-            for item in output.get("partial") or []:
-                role = str(item.get("role") or "")
-                self.warn(
-                    f"Control attribute '{item.get('control_attribute')}' of RCM "
-                    f"row {item.get('rcm_id')} is only partly answered by the "
-                    "cycle rules"
-                    + (f": nothing tests what it asks of '{role}'" if role else "")
-                    + f" ({item.get('reason') or 'no reason given'})."
-                )
-
-        return BoundUnitPipeline(
-            request=UnitPipelineRequest(
-                capability_id=capability.id,
-                unit_id=unit["id"],
-                worker_id="tests.cycle_linkage",
-                executor_id="tests.cycle_ruleset",
-                unit_input={
-                    "kind": unit.get("kind"),
-                    "input_sha1": unit.get("input_sha1"),
-                    "parent_refs": parents,
-                    # The population an anchor is matched from. Schema only —
-                    # no rows reach a proposal, which is authored from what the
-                    # data *is*, never from what it happens to contain. The
-                    # document schemas arrive as declared context instead.
-                    "tables": tooling.table_schemas(self.ws),
-                    # The positions this cycle holds, decided after the
-                    # memorandum. This stage chooses fields; it no longer
-                    # invents the places those fields fill, and the anchor's
-                    # table and column are read off the shape at commit.
-                    "cycle": self.ws.planning.get("cycle") or {},
-                },
-                activity={
-                    "artifact_refs": ["workflow:cycle_ruleset"],
-                    "task_id": task["id"],
-                },
-                expected_revision=self.ws.revision,
-                expected_parents=expected_parents,
-                capability_definition_hash=workflow.capability_definition_hash(capability),
-                approval_kind=None,
-                proposal_reference=unit.get("proposal_sidecar"),
-                receipt_reference=unit.get("receipt_sidecar"),
-            ),
-            context_provider=lambda: resolve_context(
-                self, self.context_resolver, capability, unit,
-                cycle_linkage_scope(self.ws),
-            ),
-            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
-                capability, manifest
-            ),
-            target=target,
-            approval_provider=None,
-            readiness_provider=None,
-            on_committed=on_committed,
-        )
-
     def _bind_test_generate(
         self,
         subject: Workspace,
@@ -2413,7 +2326,16 @@ class AuditWorkflowExecution(ActionExecution):
             ]
             accepted = self.request_approval("test_specs", task, proposed)
             tests = [dict(item["spec"]) for item in accepted]
-            return {"tests": tests} if tests else None
+            if not tests:
+                return None
+            # The row's requirements the approved rules cannot answer travel
+            # with whatever tests were accepted: re-routing them is part of
+            # the same row decision, not a test anyone approves on its own.
+            unsupported = list(proposal.get("unsupported") or [])
+            return {
+                "tests": tests,
+                **({"unsupported": unsupported} if unsupported else {}),
+            }
 
         def on_committed(_stage, _unit, outcome) -> None:
             self.ws = target.workspace
@@ -2427,6 +2349,30 @@ class AuditWorkflowExecution(ActionExecution):
                 changes[f"test_{action}"] = changes.get(f"test_{action}", 0) + 1
                 self.record_artifact(
                     str(item["kind"]), str(item["id"]), "", action, None
+                )
+            output = (outcome.receipt.output if outcome.receipt else {}) or {}
+            # A requirement no approved rule could express. The attribute kept
+            # its requirement and took the strongest evidence path still open
+            # to it, which is the honest outcome and not a silent one.
+            for item in output.get("downgraded") or []:
+                self.warn(
+                    f"Control attribute '{item.get('control_attribute')}' of RCM "
+                    f"row {item.get('rcm_id')} asked for transaction-cycle "
+                    "evidence that the approved cycle rules cannot express "
+                    f"({item.get('reason') or 'no reason given'}), so it was "
+                    "re-routed to the strongest path they do support."
+                )
+            # Answered for some of the records the requirement is about. What
+            # could be written as a comparison is contracted and will be
+            # tested; this names what will not be, so it is not read as done.
+            for item in output.get("partial") or []:
+                role = str(item.get("role") or "")
+                self.warn(
+                    f"Control attribute '{item.get('control_attribute')}' of RCM "
+                    f"row {item.get('rcm_id')} is only partly answered by the "
+                    "cycle rules"
+                    + (f": nothing tests what it asks of '{role}'" if role else "")
+                    + f" ({item.get('reason') or 'no reason given'})."
                 )
             # A requirement the evidence cannot answer produces no cycle test
             # and no validation error — the generation turn has no move that
@@ -3525,10 +3471,6 @@ def build_audit_workflow_runner(
         "planning.apm_revised": (
             adapter._bind_apm_revision,
             {"worker": "planning.apm_revision", "executor": "planning.apm_revision"},
-        ),
-        "tests.cycle_ruleset_proposed": (
-            adapter._bind_cycle_ruleset,
-            {"worker": "tests.cycle_linkage", "executor": "tests.cycle_ruleset"},
         ),
         "tests.specified": (
             adapter._bind_test_generate,

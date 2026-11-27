@@ -201,11 +201,52 @@ def test_data_steps_bind_cycle_populations_and_find_steps_with_no_record():
     assert unknown == ["S09"]
     # The model named the step; local code wrote its columns over the guess.
     assert cycle["steps"][1]["populations"] == [{"table": "req", "columns": ["APPROVAL_DATE", "APPROVED_BY"]}]
-    assert cycle["steps"][0]["populations"] == [{"table": "req", "anchor": True}]
+    # A whole-table population stays whole; the step's dates are recorded
+    # beside it rather than narrowing it to them.
+    assert cycle["steps"][0]["populations"] == [
+        {"table": "req", "anchor": True, "dates": ["REQ_DATE", "REQUESTER_ID"]}
+    ]
     assert all("data_steps" not in step for step in cycle["steps"])
     unrecorded, unclaimed = planning_cycle.cycle_record_coverage(cycle, steps)
     assert unrecorded == ["Refer excess", "Ghost"]
     assert [s["id"] for s in unclaimed] == ["S03"]
+
+
+def test_two_steps_on_one_whole_table_each_keep_their_own_date():
+    """Treasury's shape: the deal and its capture are both the deals table.
+
+    The capture step named its own data step and lost it, so coverage credited
+    it with the deal date and warned that ``CAPTURE_TIMESTAMP`` recorded a step
+    the cycle did not name. The same for the confirmation's receipt.
+    """
+
+    steps = [
+        {"id": "S01", "table": "04_deals", "columns": ["DEAL_DATE", "COUNTERPARTY_ID"]},
+        {"id": "S02", "table": "04_deals", "columns": ["CAPTURE_TIMESTAMP", "CAPTURED_BY_ID"]},
+        {"id": "S03", "table": "05_confirmations", "columns": ["SENT_DATE", "CONFIRMED_BY_ID"]},
+        {"id": "S04", "table": "05_confirmations", "columns": ["COUNTERPARTY_RECEIVED_DATE"]},
+    ]
+    proposal = {"name": "Treasury", "steps": [
+        {"name": "Execute", "data_steps": ["S01"], "populations": [{"table": "04_deals"}]},
+        {"name": "Capture", "data_steps": ["S02"], "populations": [{"table": "04_deals", "anchor": True}]},
+        {"name": "Dispatch", "data_steps": ["S03"], "populations": [{"table": "05_confirmations"}]},
+        {"name": "Receive", "data_steps": ["S04"], "populations": [{"table": "05_confirmations"}]},
+    ]}
+    cycle, unknown = planning_cycle.expand_data_steps(proposal, steps)
+    assert unknown == []
+    assert cycle["steps"][1]["populations"] == [
+        {"table": "04_deals", "anchor": True, "dates": ["CAPTURE_TIMESTAMP", "CAPTURED_BY_ID"]}
+    ]
+    unrecorded, unclaimed = planning_cycle.cycle_record_coverage(cycle, steps)
+    assert unrecorded == []
+    assert unclaimed == []
+    # And the shape validator keeps what the expansion wrote.
+    stored = planning_cycle.validate_cycle_shape(
+        cycle, allowed_types=set(), base_tables={"04_deals", "05_confirmations"}
+    )
+    assert stored["steps"][3]["populations"] == [
+        {"table": "05_confirmations", "dates": ["COUNTERPARTY_RECEIVED_DATE"]}
+    ]
 
 
 # -------------------------------------------------------------- the library

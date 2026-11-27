@@ -16,7 +16,7 @@ import pytest
 
 from app import cycle_field_pairs, cycle_rulesets, document_schemas, workspaces
 from app.agent.workers.model import WorkerResponseValidationError
-from app.agent.workers.tests import _linkage_response_schema, validate_linkage_proposal
+from app.agent.workers import cycle_rules, planning
 
 
 def _field(name, value_type="text", role="attribute", label=None):
@@ -227,6 +227,9 @@ def test_a_kept_pair_is_worded_from_the_schema_labels():
 
 
 # -------------------------------------------------------------- the review
+# The review is the cycle design's: the same turn places the roles and keeps
+# or declines the pairs, so the pairs are proposed between document types and
+# bound to the roles the response declares.
 class _Item:
     def __init__(self, source_id, content):
         self.source_id, self.content = source_id, content
@@ -236,96 +239,119 @@ class _Context:
     def __init__(self, items):
         self.items = items
 
+    def to_dict(self):
+        return {"items": [{"source_id": item.source_id} for item in self.items]}
+
 
 class _Request:
-    def __init__(self, requirements=None):
-        steps = [
-            {"name": "Purchase order", "roles": [ROLES[2]], "populations": [], "themes": []},
-            {"name": "Goods receipt", "roles": [ROLES[3]], "populations": [], "themes": []},
-            {"name": "Invoice", "roles": [ROLES[4]],
-             "populations": [{"table": "invoices", "anchor": True}], "themes": []},
-        ]
-        self.unit_input = {"cycle": {"name": "P2P", "steps": steps}}
-        items = [_Item("cycle_schemas", {"schemas": [ORDER, RECEIPT, INVOICE]})]
-        if requirements is not None:
-            items.append(_Item("cycle_requirements", {"cycle_requirements": requirements}))
-        self.context = _Context(items)
+    """A ``planning.cycle`` request: types, one anchor table, and the schemas."""
+
+    def __init__(self, schemas=(ORDER, RECEIPT, INVOICE)):
+        self.unit_input = {
+            "risk_themes": [],
+            "document_types": [
+                {"document_type": schema["document_type"], "documents": 1}
+                for schema in schemas
+            ],
+        }
+        self.context = _Context([
+            _Item("current_apm", "# APM"),
+            _Item("planning_context", {"context": {}}),
+            _Item("cycle_schemas", {"schemas": list(schemas)}),
+            _Item("table_metadata", {"table": "invoices",
+                                     "columns": [{"name": "INVOICE_ID"}]}),
+        ])
 
 
-QUANTITY = "pair_order_quantity_receipt_quantity_received"
-TOTAL = "pair_order_po_total_invoice_invoice_amount"
-VENDOR_ADDRESS_TO_NAME = "pair_order_vendor_address_receipt_vendor_name"
+QUANTITY = "pair_purchase_order_quantity_goods_receipt_quantity_received"
+TOTAL = "pair_purchase_order_po_total_vendor_invoice_invoice_amount"
+VENDOR_ADDRESS_TO_NAME = "pair_purchase_order_vendor_address_goods_receipt_vendor_name"
 
 
-def _response(**overrides):
+def _design(**rules):
     response = {
-        "cycle_label": "P2P",
-        "roles": [
-            {"name": "order", "document_type": "purchase_order"},
-            {"name": "receipt", "document_type": "goods_receipt"},
-            {"name": "invoice", "document_type": "vendor_invoice"},
+        "name": "P2P",
+        "steps": [
+            {"name": "Purchase order", "themes": [], "populations": [],
+             "roles": [{"name": "order", "document_type": "purchase_order"}]},
+            {"name": "Goods receipt", "themes": [], "populations": [],
+             "roles": [{"name": "receipt", "document_type": "goods_receipt"}]},
+            {"name": "Invoice", "themes": [],
+             "populations": [{"table": "invoices", "anchor": True}],
+             "roles": [{"name": "invoice", "document_type": "vendor_invoice"}]},
         ],
-        "anchor": {"role": "invoice", "field": "invoice_number", "column": "INVOICE_ID"},
-        "join_keys": [
-            {"id": "order_to_receipt",
-             "left": {"role": "order", "field": "order_reference"},
-             "right": {"role": "receipt", "field": "purchase_order_number"},
-             "rationale": "A receipt records its order."},
-            {"id": "order_to_invoice",
-             "left": {"role": "order", "field": "order_reference"},
-             "right": {"role": "invoice", "field": "purchase_reference"},
-             "rationale": "An invoice cites its order."},
-        ],
-        "assertions": [],
+        "rules": {
+            "anchor": {"role": "invoice", "field": "invoice_number", "column": "INVOICE_ID"},
+            "join_keys": [
+                {"id": "order_to_receipt",
+                 "left": {"role": "order", "field": "order_reference"},
+                 "right": {"role": "receipt", "field": "purchase_order_number"},
+                 "rationale": "A receipt records its order."},
+                {"id": "order_to_invoice",
+                 "left": {"role": "order", "field": "order_reference"},
+                 "right": {"role": "invoice", "field": "purchase_reference"},
+                 "rationale": "An invoice cites its order."},
+            ],
+            "assertions": [],
+        },
     }
-    response.update(overrides)
-    return _linkage_response_schema(json.dumps(response))
+    response["rules"].update(rules)
+    return response
 
 
-def _ids(proposal):
-    return [item["id"] for item in proposal["assertions"]]
+def _review(response, request=None):
+    """The rules half of a validated design."""
+
+    shaped = planning._cycle_response_schema(json.dumps(response))
+    return planning.validate_cycle_proposal(shaped, request or _Request())["rules"]
+
+
+def _ids(rules):
+    return [item["id"] for item in rules["assertions"]]
+
+
+def test_the_pairs_are_shown_between_document_types():
+    """Proposed before any role is placed, so their sides name types."""
+
+    user = json.loads(planning._cycle_user(_Request()))
+    pair = next(item for item in user["FIELD PAIRS"] if item["id"] == QUANTITY)
+    assert pair["left"] == {"document_type": "purchase_order", "field": "quantity"}
+    assert pair["right"] == {"document_type": "goods_receipt", "field": "quantity_received"}
 
 
 def test_a_review_that_says_nothing_keeps_every_pair():
     """Its worst case is the floor: the receipt quantity is compared anyway."""
 
-    proposal = validate_linkage_proposal(_response(), _Request())
-    assert QUANTITY in _ids(proposal)
-    assert proposal["declined_pairs"] == []
+    rules = _review(_design())
+    kept = next(item for item in rules["assertions"] if item["id"] == QUANTITY)
+    # Bound onto the roles the response declared.
+    assert kept["left"] == {"role": "order", "field": "quantity"}
+    assert kept["right"] == {"role": "receipt", "field": "quantity_received"}
+    assert rules["declined_pairs"] == []
 
 
 def test_a_declined_pair_leaves_the_rules_and_is_recorded_with_its_reason():
-    proposal = validate_linkage_proposal(
-        _response(declined_pairs=[{
-            "id": VENDOR_ADDRESS_TO_NAME,
-            "reason": "An address is not a name.",
-        }]),
-        _Request(),
-    )
-    assert VENDOR_ADDRESS_TO_NAME not in _ids(proposal)
-    (declined,) = proposal["declined_pairs"]
+    rules = _review(_design(declined_pairs=[{
+        "id": VENDOR_ADDRESS_TO_NAME,
+        "reason": "An address is not a name.",
+    }]))
+    assert VENDOR_ADDRESS_TO_NAME not in _ids(rules)
+    (declined,) = rules["declined_pairs"]
     assert declined["reason"] == "An address is not a name."
     assert declined["left"] == {"role": "order", "field": "vendor_address"}
 
 
 def test_a_decline_without_a_reason_is_refused():
     with pytest.raises(WorkerResponseValidationError, match="with no reason"):
-        validate_linkage_proposal(
-            _response(declined_pairs=[{"id": QUANTITY, "reason": ""}]), _Request()
-        )
+        _review(_design(declined_pairs=[{"id": QUANTITY, "reason": ""}]))
 
 
 def test_a_decline_naming_no_supplied_pair_is_refused():
     with pytest.raises(WorkerResponseValidationError, match="not one of the field pairs"):
-        validate_linkage_proposal(
-            _response(declined_pairs=[{"id": "pair_invented", "reason": "x"}]),
-            _Request(),
-        )
+        _review(_design(declined_pairs=[{"id": "pair_invented", "reason": "x"}]))
 
 
 def test_an_authored_rule_over_a_pair_s_fields_replaces_it():
-    """The pair kept in the turn's own words, and coverage follows it."""
-
     authored = {
         "id": "received_quantity_agrees", "label": "Received in full",
         "left": {"role": "receipt", "field": "quantity_received"},
@@ -333,20 +359,9 @@ def test_an_authored_rule_over_a_pair_s_fields_replaces_it():
         "requirement": "Every unit ordered was received.",
         "rationale": "Billing in full needs receipt in full.",
     }
-    requirement = {"rcm_id": "RCM-1", "control_attribute": "match",
-                   "requirement": "The invoice is matched to the order and receipt."}
-    proposal = validate_linkage_proposal(
-        _response(
-            assertions=[authored],
-            coverage=[{"rcm_id": "RCM-1", "control_attribute": "match",
-                       "reads": ["order", "receipt", "invoice"],
-                       "assertion_ids": [QUANTITY, TOTAL]}],
-        ),
-        _Request(requirements=[requirement]),
-    )
-    assert "received_quantity_agrees" in _ids(proposal)
-    assert QUANTITY not in _ids(proposal)
-    assert proposal["coverage"][0]["assertion_ids"] == ["received_quantity_agrees", TOTAL]
+    rules = _review(_design(assertions=[authored]))
+    assert "received_quantity_agrees" in _ids(rules)
+    assert QUANTITY not in _ids(rules)
 
 
 def test_a_pair_both_declined_and_written_is_refused():
@@ -357,11 +372,8 @@ def test_a_pair_both_declined_and_written_is_refused():
         "requirement": "Every unit ordered was received.", "rationale": "x",
     }
     with pytest.raises(WorkerResponseValidationError, match="Keep one"):
-        validate_linkage_proposal(
-            _response(assertions=[authored],
-                      declined_pairs=[{"id": QUANTITY, "reason": "Not comparable."}]),
-            _Request(),
-        )
+        _review(_design(assertions=[authored],
+                        declined_pairs=[{"id": QUANTITY, "reason": "Not comparable."}]))
 
 
 def test_a_rule_restating_a_join_key_is_refused():
@@ -374,96 +386,22 @@ def test_a_rule_restating_a_join_key_is_refused():
         "requirement": "The receipt names the order.", "rationale": "x",
     }
     with pytest.raises(WorkerResponseValidationError, match="cannot fail"):
-        validate_linkage_proposal(_response(assertions=[authored]), _Request())
+        _review(_design(assertions=[authored]))
 
 
-def test_coverage_citing_a_declined_pair_is_refused():
-    requirement = {"rcm_id": "RCM-1", "control_attribute": "match",
-                   "requirement": "The receipt agrees with the order."}
-    with pytest.raises(WorkerResponseValidationError, match="which this proposal declines"):
-        validate_linkage_proposal(
-            _response(
-                declined_pairs=[{"id": QUANTITY, "reason": "Not comparable."}],
-                coverage=[{"rcm_id": "RCM-1", "control_attribute": "match",
-                           "reads": ["order", "receipt"], "assertion_ids": [QUANTITY]}],
-            ),
-            _Request(requirements=[requirement]),
-        )
-
-
-def test_a_kept_pair_answers_the_reach_check():
-    """Citing the floor's pairs reads every document the match names."""
-
-    requirement = {"rcm_id": "RCM-1", "control_attribute": "match",
-                   "requirement": "The invoice is matched to the order and receipt."}
-    proposal = validate_linkage_proposal(
-        _response(coverage=[{
-            "rcm_id": "RCM-1", "control_attribute": "match",
-            "reads": ["order", "receipt", "invoice"], "assertion_ids": [QUANTITY, TOTAL],
-        }]),
-        _Request(requirements=[requirement]),
-    )
-    assert proposal["coverage"][0]["assertion_ids"] == [QUANTITY, TOTAL]
-
-
-def test_a_match_answered_from_the_invoice_alone_is_refused():
-    """Measured live: "matched to the purchase order and the goods receipt
-    note" answered by two checks that the invoice cites them, with reads naming
-    the invoice and nothing else."""
-
-    requirement = {"rcm_id": "RCM-1", "control_attribute": "match",
-                   "requirement": "The invoice is matched to the purchase order and "
-                                  "the goods receipt note."}
-    cites = {
-        "id": "invoice_cites_po", "label": "Invoice cites its order",
-        "left": {"role": "invoice", "field": "purchase_reference"}, "right": None,
-        "requirement": "The invoice states its PO.", "rationale": "x",
-    }
-    with pytest.raises(WorkerResponseValidationError) as raised:
-        validate_linkage_proposal(
-            _response(assertions=[cites], coverage=[{
-                "rcm_id": "RCM-1", "control_attribute": "match",
-                "reads": ["invoice"], "assertion_ids": ["invoice_cites_po"],
-            }]),
-            _Request(requirements=[requirement]),
-        )
-    message = str(raised.value)
-    assert "names the purchase order (roles 'order')" in message
-    assert "names the goods receipt (roles 'receipt')" in message
-    assert "names the vendor invoice" not in message
-
-
-def test_a_named_document_may_be_stated_as_a_gap():
-    requirement = {"rcm_id": "RCM-1", "control_attribute": "match",
-                   "requirement": "The invoice is matched to the order and receipt."}
-    proposal = validate_linkage_proposal(
-        _response(coverage=[{
-            "rcm_id": "RCM-1", "control_attribute": "match",
-            "reads": ["order", "receipt", "invoice"], "assertion_ids": [QUANTITY],
-            "gaps": [{"role": "invoice", "reason": "No invoice field states what was billed."}],
-        }]),
-        _Request(requirements=[requirement]),
-    )
-    assert proposal["coverage"][0]["gaps"][0]["role"] == "invoice"
-
-
-def test_pairs_on_a_role_the_proposal_cannot_reach_are_dropped():
+def test_pairs_on_a_role_the_rules_cannot_reach_are_dropped():
     """A role listed unreachable is out of the rules, and so are its pairs."""
 
-    response = _response()
-    response["roles"] = [role for role in response["roles"] if role["name"] != "receipt"]
-    response["join_keys"] = [
-        key for key in response["join_keys"] if key["id"] != "order_to_receipt"
-    ]
-    response["unreachable"] = [{"role": "receipt", "reason": "No identifier."}]
-    response["assertions"] = [{
-        "id": "invoice_within_order", "label": "Billed as ordered",
-        "left": {"role": "invoice", "field": "invoice_amount"},
-        "right": {"role": "order", "field": "po_total"},
-        "requirement": "The invoice bills no more than the order.", "rationale": "x",
-    }]
-    proposal = validate_linkage_proposal(response, _Request())
-    assert not any("receipt" in assertion_id for assertion_id in _ids(proposal))
+    response = _design(
+        join_keys=[{"id": "order_to_invoice",
+                    "left": {"role": "order", "field": "order_reference"},
+                    "right": {"role": "invoice", "field": "purchase_reference"},
+                    "rationale": "x"}],
+        unreachable=[{"role": "receipt", "reason": "No identifier."}],
+    )
+    rules = _review(response)
+    assert [role["name"] for role in rules["roles"]] == ["order", "invoice"]
+    assert not any("goods_receipt" in assertion_id for assertion_id in _ids(rules))
 
 
 def test_a_pair_written_out_under_its_own_id_is_the_pair_kept():
@@ -475,8 +413,8 @@ def test_a_pair_written_out_under_its_own_id_is_the_pair_kept():
         "right": {"role": "receipt", "field": "quantity_received"},
         "requirement": "Every unit ordered was received.", "rationale": "x",
     }
-    proposal = validate_linkage_proposal(_response(assertions=[authored]), _Request())
-    (kept,) = [item for item in proposal["assertions"] if item["id"] == QUANTITY]
+    rules = _review(_design(assertions=[authored]))
+    (kept,) = [item for item in rules["assertions"] if item["id"] == QUANTITY]
     assert kept["requirement"] == "Every unit ordered was received."
 
 
@@ -488,27 +426,81 @@ def test_a_pair_s_id_over_other_fields_is_refused():
         "requirement": "x", "rationale": "x",
     }
     with pytest.raises(WorkerResponseValidationError, match="compares different fields"):
-        validate_linkage_proposal(_response(assertions=[authored]), _Request())
+        _review(_design(assertions=[authored]))
 
 
 def test_declining_a_pair_on_a_role_it_cannot_reach_is_accepted():
     """Measured live: a statement with no identifier was declined, correctly."""
 
-    response = _response()
-    response["roles"] = [role for role in response["roles"] if role["name"] != "receipt"]
-    response["join_keys"] = [
-        key for key in response["join_keys"] if key["id"] != "order_to_receipt"
-    ]
-    response["unreachable"] = [{"role": "receipt", "reason": "No identifier."}]
-    response["assertions"] = [{
-        "id": "invoice_within_order", "label": "Billed as ordered",
-        "left": {"role": "invoice", "field": "invoice_amount"},
-        "right": {"role": "order", "field": "po_total"},
-        "requirement": "x", "rationale": "x",
-    }]
-    response["declined_pairs"] = [{"id": QUANTITY, "reason": "The receipt is unreachable."}]
-    proposal = validate_linkage_proposal(response, _Request())
-    assert proposal["declined_pairs"] == []
+    response = _design(
+        join_keys=[{"id": "order_to_invoice",
+                    "left": {"role": "order", "field": "order_reference"},
+                    "right": {"role": "invoice", "field": "purchase_reference"},
+                    "rationale": "x"}],
+        unreachable=[{"role": "receipt", "reason": "No identifier."}],
+        declined_pairs=[{"id": QUANTITY, "reason": "The receipt is unreachable."}],
+    )
+    assert _review(response)["declined_pairs"] == []
+
+
+# --------------------------------------------- coverage, against kept pairs
+# Which of the approved assertions answer a requirement is said when the
+# requirement's test is written; the checks are the ones the linkage turn ran.
+def _coverage(requirement, entry, rules=None):
+    rules = rules or _review(_design())
+    return cycle_rules.coverage_problems(
+        ("RCM-1", "match"), requirement, entry,
+        assertions=rules["assertions"],
+        roles={role["name"]: role["document_type"] for role in rules["roles"]},
+    )
+
+
+def test_a_kept_pair_answers_the_reach_check():
+    """Citing the floor's pairs reads every document the match names."""
+
+    assert _coverage(
+        "The invoice is matched to the order and receipt.",
+        {"reads": ["order", "receipt", "invoice"], "assertion_ids": [QUANTITY, TOTAL]},
+    ) == []
+
+
+def test_coverage_citing_a_declined_pair_is_refused():
+    rules = _review(_design(declined_pairs=[{"id": QUANTITY, "reason": "Not comparable."}]))
+    problems = _coverage(
+        "The receipt agrees with the order.",
+        {"reads": ["order", "receipt"], "assertion_ids": [QUANTITY]},
+        rules,
+    )
+    assert problems and "do not hold" in problems[0]
+
+
+def test_a_match_answered_from_the_invoice_alone_is_refused():
+    """Measured live: "matched to the purchase order and the goods receipt
+    note" answered by two checks that the invoice cites them, with reads naming
+    the invoice and nothing else."""
+
+    cites = {
+        "id": "invoice_cites_po", "label": "Invoice cites its order",
+        "left": {"role": "invoice", "field": "purchase_reference"}, "right": None,
+        "requirement": "The invoice states its PO.", "rationale": "x",
+    }
+    rules = _review(_design(assertions=[cites]))
+    message = " ".join(_coverage(
+        "The invoice is matched to the purchase order and the goods receipt note.",
+        {"reads": ["invoice"], "assertion_ids": ["invoice_cites_po"]},
+        rules,
+    ))
+    assert "names the purchase order (roles 'order')" in message
+    assert "names the goods receipt (roles 'receipt')" in message
+    assert "names the vendor invoice" not in message
+
+
+def test_a_named_document_may_be_stated_as_a_gap():
+    assert _coverage(
+        "The invoice is matched to the order and receipt.",
+        {"reads": ["order", "receipt", "invoice"], "assertion_ids": [QUANTITY],
+         "gaps": [{"role": "invoice", "reason": "No invoice field states what was billed."}]},
+    ) == []
 
 
 # --------------------------------------------------------------- the store

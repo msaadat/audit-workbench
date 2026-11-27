@@ -364,18 +364,17 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     # Each milestone is handed off in the agent's own voice, so a long run reads
     # as work arriving piece by piece rather than as a block of cards at the end.
     #
-    # What the memorandum hands off *to* moved again when the matrix stopped
-    # authoring evidence contracts. It needs to know which record *kinds* the
-    # engagement holds — hence the type classification between the two — and no
-    # longer what fields they carry, so the expensive evidence read now follows
-    # the matrix rather than standing between it and the memorandum.
+    # What the memorandum hands off *to* moved again when the cycle design
+    # began proposing its own rules: they are written in the induced field
+    # vocabulary, so the evidence read stands between the memorandum and the
+    # cycle, and the matrix hands off to the approval of those rules.
     said = [item["content"] for item in completed["messages"] if item["role"] == "agent"]
     assert (
         "Audit planning memorandum is done — now working on document types."
         in said
     )
     assert (
-        "Risk and control matrix is done — now working on evidence readings."
+        "Risk and control matrix is done — now working on cycle rules made effective."
         in said
     )
     # The last stage hands off to nothing: the closing turn is the run's last word.

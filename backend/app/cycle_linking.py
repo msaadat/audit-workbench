@@ -1788,6 +1788,12 @@ def candidate(workspace) -> dict:
                 "label": str(item.get("label") or ""),
                 "operator": str(item.get("operator") or ""),
                 "rationale": str(item.get("rationale") or ""),
+                # The operands and the requirement, because the turn writing a
+                # row's tests now chooses which assertions answer each of its
+                # requirements, and is checked on the roles they read.
+                "left": dict(item.get("left") or {}),
+                "right": dict(item["right"]) if item.get("right") else None,
+                "requirement": str(item.get("requirement") or ""),
             }
             for item in ruleset.get("assertions") or []
         ],
@@ -1838,10 +1844,10 @@ def schema_backed(attribute: Mapping[str, object]) -> bool:
 def uncontracted(attribute: Mapping[str, object]) -> bool:
     """Whether this attribute asks for linked evidence and has not been told what.
 
-    The legitimate state between the matrix and the cycle design. The matrix
+    The legitimate state between the matrix and the row's tests. The matrix
     decides that a requirement needs several source records read together; the
-    cycle design, which is the stage that has the engagement's own schemas in
-    front of it, decides which fields must then agree. Between the two the
+    turn writing the row's cycle test, which has the cycle's approved rules in
+    front of it, decides which of them answer it. Between the two the
     attribute is complete and answerable and names no comparison, and nothing
     should read that as a defect.
     """
@@ -2360,14 +2366,22 @@ def unanswerable_cycle_requirements(workspace, rcm_row: Mapping[str, object]) ->
         and attribute.get("evidence_kind") == "transaction_cycle"
     ]
     rcm_id = str(rcm_row.get("id") or "")
-    # An attribute the cycle design never reached. It asks for linked source
-    # records and nothing has said which fields must agree, so there is nothing
-    # for a cycle test to run — the same silence as an unanswerable comparison,
-    # arriving one stage earlier and needing to be said just as plainly.
+    ruleset = cycle_rulesets.effective(workspace)
+    # An attribute no cycle test has bound to the rules. It asks for linked
+    # source records and nothing has said which fields must agree, so there is
+    # nothing for a cycle test to run. Its comparisons are chosen when its test
+    # is written, against approved rules — so the cause is either that no rules
+    # are approved, or that the tests written for the row did not answer it.
     notes = [
         f"{rcm_id} control attribute '{attribute.get('key')}' declares "
-        "transaction_cycle evidence and no cycle design has run for it, so no "
-        "cycle test could be generated for it and the requirement is untested."
+        "transaction_cycle evidence and "
+        + (
+            "this engagement has no approved cycle rules"
+            if ruleset is None
+            else "no cycle test bound it to the approved cycle rules"
+        )
+        + ", so no cycle test could be generated for it and the requirement "
+        "is untested."
         for attribute in cycle_attributes
         if uncontracted(attribute)
     ]
@@ -2376,7 +2390,6 @@ def unanswerable_cycle_requirements(workspace, rcm_row: Mapping[str, object]) ->
     ]
     if not attributes:
         return notes
-    ruleset = cycle_rulesets.effective(workspace)
     if ruleset is None:
         return notes + [
             f"{rcm_id} control attribute '{attribute.get('key')}' declares "

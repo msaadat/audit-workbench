@@ -1193,6 +1193,33 @@ def apm_revision_scope(
 CYCLE_PLANNING_SOURCE_ID = "planning_context"
 CYCLE_CURRENT_APM_SOURCE_ID = "current_apm"
 CYCLE_TABLE_METADATA_SOURCE_ID = "table_metadata"
+CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
+
+
+def _cycle_schema_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Every induced schema, as one candidate the rules are written against.
+
+    One item carrying every type, not one per type. A cycle is a statement
+    about how the whole set relates, so the vocabulary is atomic: a budget that
+    dropped one schema would leave rules describing a cycle with a role missing
+    and no way to say which one, which is worse than proposing none. No rows
+    and no document text: rules describe what the documents *are*.
+    """
+
+    from ... import cycle_linking
+
+    schemas = cycle_linking.schema_catalog(workspace)
+    if not schemas:
+        return ()
+    content = {"schemas": schemas}
+    return (
+        ContextCandidate(
+            source_ref="workspace:schemas",
+            source=content,
+            representations={"cycle_schema": content},
+            metadata={"document_types": [item["document_type"] for item in schemas]},
+        ),
+    )
 
 
 def cycle_scope(
@@ -1203,12 +1230,12 @@ def cycle_scope(
 ) -> ContextScope:
     """Build the local candidate scope for the cycle-design capability.
 
-    Three sources and no fourth. The shape of a process is stated in the
-    memorandum, and what it may name is settled by lists the binder computes
-    locally — so this turn is shown the memorandum, the planning context and
-    the table columns, and nothing that had to be extracted from a document.
-    That is the whole point of the stage sitting where it does: it runs before
-    the evidence read, so it cannot depend on it.
+    The shape of a process is stated in the memorandum, and what it may name is
+    settled by lists the binder computes locally — so this turn is shown the
+    memorandum, the planning context and the table columns. The rules linking
+    the cycle's documents are written in the induced field vocabulary, so it is
+    also shown every schema: what a record of each type states, never what any
+    record contains.
     """
     context = dict(planning_context or workspace.planning.get("context") or {})
     planning_content = {
@@ -1241,6 +1268,7 @@ def cycle_scope(
             CYCLE_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
                 workspace, imported_only=True
             ),
+            CYCLE_SCHEMA_SOURCE_ID: _cycle_schema_candidates(workspace),
         },
         selector_context=dict(context),
     )
@@ -1604,7 +1632,7 @@ def test_generate_schema_candidates(
     withholding the vocabulary there would have it invent a field instead.
 
     One atomic candidate carrying the scoped set, following
-    :func:`cycle_linkage_scope`: a budget that dropped one schema would leave a
+    :func:`cycle_scope`: a budget that dropped one schema would leave a
     turn writing questions against a vocabulary with a hole in it and nothing
     saying where. Starved, the source reports as starved.
     """
@@ -4274,108 +4302,6 @@ def document_classification_scope(
                 ),
             ),
         },
-    )
-
-
-CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
-CYCLE_REQUIREMENT_SOURCE_ID = "cycle_requirements"
-
-
-def _cycle_requirement_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
-    """What the matrix asks this engagement's cycle to demonstrate.
-
-    Supplied because a ruleset exists to answer the matrix, and a worker shown
-    only the vocabulary was being asked to guess the question. It guessed a
-    reasonable cycle and answered a different one: the matrix required the goods
-    receipt to name its purchase order, the proposal bound the pair by the
-    order naming its receipt, and nothing tested the inspection the matrix asked
-    for. Neither turn was wrong on its own; they were never shown each other.
-
-    Carried as the requirement in words, with the row's risk and control for
-    context, and no operands. Naming the fields is this worker's job and only
-    this worker's: it is the one turn that has the induced schemas in front of
-    it, and the matrix that used to name them had never seen a document of any
-    of these types. What the matrix contributes is the question.
-
-    Only *uncontracted* attributes. One already carrying comparisons was
-    answered by a previous proposal, and re-asking would invite a second
-    assertion over the same pair.
-    """
-
-    from ... import cycle_linking
-
-    required: list[dict] = []
-    for row in workspace.rcm or []:
-        for attribute in row.get("control_attributes") or []:
-            if not isinstance(attribute, Mapping):
-                continue
-            if not cycle_linking.uncontracted(attribute):
-                continue
-            required.append({
-                "rcm_id": str(row.get("id") or ""),
-                "control_attribute": str(attribute.get("key") or ""),
-                "assertion": str(attribute.get("assertion") or ""),
-                "requirement": str(attribute.get("requirement") or ""),
-                "control": str(row.get("control") or ""),
-                "risk": str(row.get("risk") or ""),
-                "process": str(row.get("process") or ""),
-            })
-    if not required:
-        return ()
-    content = {"cycle_requirements": required}
-    return (
-        ContextCandidate(
-            source_ref="workspace:rcm",
-            source=content,
-            representations={"planning_context": content},
-            metadata={"requirements": len(required)},
-        ),
-    )
-
-
-def cycle_linkage_scope(workspace: Workspace) -> ContextScope:
-    """The vocabulary a cycle proposal may be written against, and what it must answer.
-
-    One candidate per induced schema, carrying the type and its fields — the
-    whole vocabulary, because a rule naming anything else cannot be evaluated.
-    No rows and no document text: rules describe what the documents *are*, and
-    a proposal authored from what they happen to contain would fit itself to
-    this corpus rather than to the cycle.
-    """
-
-    from ... import cycle_linking
-
-    schemas = cycle_linking.schema_catalog(workspace)
-    requirements = _cycle_requirement_candidates(workspace)
-    if not schemas:
-        return ContextScope(
-            candidates={
-                CYCLE_SCHEMA_SOURCE_ID: (),
-                CYCLE_REQUIREMENT_SOURCE_ID: requirements,
-            }
-        )
-    # One item carrying every type, not one per type. A cycle is a statement
-    # about how the whole set relates, so the vocabulary is atomic: a budget
-    # that dropped one schema would leave a proposal describing a cycle with a
-    # role missing and no way to say which one, which is worse than not
-    # proposing at all.
-    content = {"schemas": schemas}
-    return ContextScope(
-        candidates={
-            CYCLE_SCHEMA_SOURCE_ID: (
-                ContextCandidate(
-                    source_ref="workspace:schemas",
-                    source=content,
-                    representations={"cycle_schema": content},
-                    metadata={
-                        "document_types": [
-                            item["document_type"] for item in schemas
-                        ]
-                    },
-                ),
-            ),
-            CYCLE_REQUIREMENT_SOURCE_ID: requirements,
-        }
     )
 
 

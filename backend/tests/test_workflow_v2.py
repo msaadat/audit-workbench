@@ -235,20 +235,17 @@ def test_partial_goal_prunes_current_prerequisites():
         "planning.context_ready",
         "planning.apm_ready",
         "documents.types_classified",
-        # The shape of the process, read out of the memorandum: the vocabulary
-        # the matrix's ``process`` is drawn from, and no extraction to reach it.
-        "planning.cycle_ready",
-        # The matrix needs the record kinds, not their fields, so it runs
-        # before the expensive read rather than behind it.
-        "planning.rcm_ready",
+        # The cycle's rules are written in the induced field vocabulary, so the
+        # evidence read now stands in front of the cycle design — and so in
+        # front of the matrix, whose ``process`` names are the cycle's steps.
         "documents.evidence_read",
         "documents.schemas_stamped",
-        # Both in the closure, and both reused rather than staged: this matrix
-        # classifies no attribute as transaction-cycle evidence, so there are
-        # no cycle rules for anyone to write and none to approve. An engagement
-        # without a cycle must not wait on a proposal nobody would read, nor on
-        # an approval of it.
-        "tests.cycle_ruleset_proposed",
+        "planning.cycle_ready",
+        "planning.rcm_ready",
+        # In the closure and reused rather than staged: this matrix classifies
+        # no attribute as transaction-cycle evidence and no rules are waiting,
+        # so there is nothing to approve. The proposal stage that sat here is
+        # gone; the cycle design proposes its own rules.
         "tests.cycle_ruleset_approved",
         "tests.specified",
     ]

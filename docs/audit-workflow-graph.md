@@ -86,17 +86,15 @@ Capability modules attach behaviour to these IDs; they never restate an edge.
                                   planning.apm_ready                   analyses)
                                        │           │
                           planning.cycle_ready ◄───┤ (+ sources.imported,
-                                       │           │   documents.types_classified)
+                          (steps + rules)  │           │   documents.types_classified,
+                                       │           │   documents.schemas_stamped)
                                        ▼           ▼
                                   planning.rcm_ready
                                     (+ documents.categorized,
                                        documents.types_classified)
                                        │
-                     tests.cycle_ruleset_proposed
-                        (+ planning.cycle_ready,
-                           documents.schemas_stamped)
-                                       │
                      tests.cycle_ruleset_approved   ← auditor gate in permission mode
+                        (on planning.cycle_ready)
                                        │
                                  tests.specified  (+ planning.rcm_ready)
                                        │
@@ -135,14 +133,17 @@ DAG, not a chain.
   prerequisite: with no planning-relevant document in scope, every document
   capability's readiness is satisfied, no unit expands, and the audit runs
   unchanged.
-- **`planning.cycle_ready` sits in front of the matrix, not behind the
-  schemas.** The cycle shape is read out of the memorandum alone, so it costs no
-  extraction; its step names become the vocabulary a matrix row's `process` is
-  chosen from.
-- **There is no schema edge into `planning.rcm_ready`.** A matrix row says a
-  requirement needs linked source records and stops; *which* fields must agree
-  is decided downstream by the cycle ruleset, where the induced schemas are in
-  hand. That keeps a re-derived schema from invalidating the whole matrix.
+- **`planning.cycle_ready` sits behind the schemas and in front of the
+  matrix.** It designs the cycle whole — steps, roles and the rules linking
+  the documents — and the rules are written in the induced field vocabulary.
+  Its step names become the vocabulary a matrix row's `process` is chosen
+  from, so the matrix now reaches the evidence read through the cycle.
+- **There is no schema edge into `planning.rcm_ready` itself.** A matrix row
+  says a requirement needs linked source records and stops; *which* approved
+  assertions answer it is decided when the row's cycle test is written. The
+  matrix is held stale against the cycle's shape, not its rules, so a
+  re-derived schema re-proposes the rules without redrafting the matrix unless
+  the redesigned shape differs.
 - **`tests.specified` does not depend on `analysis.executed`**, and
   `planning.apm_ready` does not depend on the analysis branch. Making either an
   edge would drag the whole exploratory branch into every request that reaches
@@ -537,11 +538,10 @@ it: `llm.chat` retries transport and rate-limit errors up to
 | --- | --- | --- | --- | --- | --- |
 | `planning.context` | `{context: {...}}` | yes | 1 | — | yes |
 | `planning.apm` | Markdown memorandum | **no** | 1 | — | yes |
-| `planning.cycle` | `{name, steps[], cross_cutting}` | yes | 1 | — | yes |
+| `planning.cycle` | `{name, steps[], cross_cutting, rules?: {anchor, join_keys[], assertions[], declined_pairs[]?, unreachable[]?}}` | yes | **2** | — | yes |
 | `planning.rcm` | `{rows[], quarantined[]?}` | yes | 1 | — | yes |
 | `planning.delta_review` | `{impact: none\|apm\|rcm\|both, summary, apm_changes[], rcm_changes[]}` | yes | 1 | — | yes |
-| `tests.cycle_linkage` | `{roles[], join_keys[], assertions[]}` | yes | 1 | — | yes |
-| `tests.generate` | `{tests[]}` | yes | **2** | — | yes |
+| `tests.generate` | `{tests[], unsupported[]?}` — a cycle test carries `answers[]` for each requirement it binds | yes | **2** | — | yes |
 | `fieldwork.document_qa` | `{answer, conclusion, control_conclusion, outcome, citations[]}` | yes | 1 | — | yes |
 | `fieldwork.cycle_vouch` | `{cells[]: check_id, verdict, compared, reason}` | yes | 1 | — | yes |
 | `reporting.finding` | Markdown draft (title / severity / narrative) | **no** | 1 | — | yes |
@@ -576,7 +576,7 @@ unrelated workspace revisions to advance. (The alternative,
 uses it.)
 
 `planning.apm`, `planning.cycle`, `planning.context`, `planning.rcm`,
-`planning.delta`, `tests.cycle_ruleset`, `tests.generate`, `fieldwork.document_qa`,
+`planning.delta`, `tests.generate`, `fieldwork.document_qa`,
 `fieldwork.cycle_vouch`, `reporting.finding` (which also writes a consolidated
 lead's redraft in place), `documents.category`,
 `documents.classification`, `documents.read`, `documents.stamp`,
@@ -704,7 +704,7 @@ control.
 nothing. It admits the field names, roles and value types an induced schema
 states — never a value any document printed — so a context permitted to see a
 schema is not thereby permitted to see the text it was induced from. Two presets
-declare it: `tests.cycle_linkage`, which writes the cycle rules against that
+declare it: `planning.cycle`, which writes the cycle rules against that
 vocabulary, and `tests.generate`, which uses it in place of evidence-document
 prose (see below). `allow_file_metadata` is used only by the intake sibling
 graph.
@@ -724,10 +724,9 @@ Budgets below are `items / characters`.
 | --- | --- | --- | --- |
 | `planning.context` | 9 / 50k | planning_context, document_text | `current_planning_context` (opt, 1/10k), `planning_documents` (**req**, 8/40k, deterministic category rule, `summary` or `raw_pages`) |
 | `planning.apm` | 47 / 96k | planning_context, template_text, document_text, table_metadata, table_profiles, analysis_summary, auditor_instruction | `planning_context` (req), `apm_template` (req), `current_apm` (opt, 32k), `analysis_summary` (opt, 24k), `population_summary` (opt), `table_metadata` (12/8k), `table_profiles` (12/16k), `documents` (lexical, 12/40k), `methodology` (lexical, 5/8k), `instruction` (opt) |
-| `planning.cycle` | 26 / 86k | planning_context, document_text, table_metadata | `planning_context` (req), `current_apm` (**req, 60k**), `table_metadata` (24/16k). Names and shapes only — no document source is declared, so no evidence text can reach this turn. |
+| `planning.cycle` | 28 / 152k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `current_apm` (**req, 60k**), `table_metadata` (24/16k), `cycle_schemas` (opt, 1 item carrying every induced type, 64k), `instruction`. Names, shapes and field vocabularies — the only document source is the schema catalog, so no evidence text can reach this turn. |
 | `planning.rcm` | 255 / 138k | planning_context, template_text, document_text, table_metadata, table_profiles, **small_table_rows**, auditor_instruction | `planning_context`, three required templates (`rcm`, `rcm_controls`, `rcm_attributes`), `current_apm` (**req, 60k**), `current_rcm` (opt, 200/40k), `table_metadata`, `table_profiles`, `small_table_rows` (8/16k), `documents` (lexical), `methodology` (lexical), `instruction` |
 | `planning.delta` | 210 / 120k | planning_context, document_text, auditor_instruction | `new_document_analyses` (**req**, 8/40k), `current_apm` (opt, 32k), `current_rcm` (opt, 200/40k), `planning_context` (req), `instruction` |
-| `tests.cycle_linkage` | 2 / 88k | planning_context, **document_schemas** | `cycle_schemas` (req, 1 item carrying every induced type, 64k), `cycle_requirements` (opt, 24k). The schemas and what the matrix asks of them — nothing either was induced or drafted from. |
 | `tests.generate` | 180 / 160k | planning_context, document_text, **document_schemas**, table_metadata, auditor_instruction | `planning_context` (req), `rcm_row` (req, 16k), `table_metadata` (lexical, 12/24k), `transaction_evidence` (req, 1/40k), `planning_documents` (**lexical_retained**, 8/20k — planning material only), `evidence_types` (opt, 1/4k — one item per document type, with how many records of it), `evidence_schemas` (opt, 1/32k, row-scoped), `methodology` (lexical), `instruction`. No profiles: test code is validated against schema-only empty frames. |
 | `fieldwork.document_qa` | 66 / 44k | document_text | `qa_item` (req, 4k), `document_reading` (opt, 1/4k — one record's structured reading), `criteria_excerpt` (opt, 4/12k — the policy the answer is judged against), `document_pages` (opt, 60/26k — `raw_pages` when the auditor scoped pages, `excerpt` otherwise) |
 | `fieldwork.cycle_vouch` | 1 / 40k | document_text | `cycle_item` (req) — the whole linked cycle and its pending checks as one candidate, because a comparison needs both sides |
@@ -944,12 +943,51 @@ embed directives already flattened to citations.
 
 | | |
 | --- | --- |
-| Depends on | `planning.apm_ready`, `sources.imported` (partial), `documents.types_classified` |
-| Readiness | existence. The cycle records the memorandum it was read out of (`apm_sha1`, `workflow_parents["planning:apm"]`) as provenance, but is **not** held stale against it: the memorandum is a live document, and editing it must not invalidate the audit (`LIVE_PARENTS`). A run that redrafts the memorandum still reschedules the cycle through `invalidate_on`; at rest, re-reading it is the auditor's request. The matrix is held stale against the cycle, not the memorandum. |
-| Units | one (`cycle`), parent `planning:apm` |
+| Depends on | `planning.apm_ready`, `sources.imported` (partial), `documents.types_classified`, `documents.schemas_stamped` |
+| Readiness | the shape exists, and was designed against today's schemas. The cycle records the memorandum it was read out of (`apm_sha1`, `workflow_parents["planning:apm"]`) as provenance, but is **not** held stale against it: the memorandum is a live document (`LIVE_PARENTS`). It also records `schema_basis`, a digest of every induced schema; a schema induced or re-derived since makes the cycle `stale`, so its rules are proposed again. A cycle drafted before the design proposed rules carries no stamp, and is `missing` where schemas exist and no ruleset was ever proposed. The matrix is held stale against the cycle's shape (`planning:cycle`), not its rules. |
+| Units | one (`cycle`), parent `planning:apm`; `schema_basis` rides on the unit input |
 | Binding | pipeline — worker `planning.cycle`, executor `planning.cycle` |
-| Context | `planning.cycle` (26 / 86k) — planning context, the **whole** memorandum (60k), table metadata. Names and shapes only. |
-| Output | `{name, steps[]: {name, roles[], populations[], themes[]}, cross_cutting}` — roles are document types chosen from the types held, spelled exactly; populations are tables whose rows *are* that step |
+| Context | `planning.cycle` (28 / 152k) — planning context, the **whole** memorandum (60k), table metadata, and the schema catalog as one atomic item (64k) |
+| Output | `{name, steps[]: {name, roles[], populations[], themes[], data_steps[]}, cross_cutting, rules?}` — roles are document types chosen from the types held; populations are tables whose rows *are* that step; `rules` is `{anchor: {role, field, column}, join_keys[], assertions[], declined_pairs[]?, unreachable[]?}` |
+| Commit | the shape lands in planning and, in the same transaction, the rules are filed in the ruleset store as `proposed` (a design restating stored rules files nothing new), with the anchor table read off the flagged population |
+
+One turn designs the cycle whole. It used to be two: the shape here, drawn from
+the memorandum before any extraction, and `tests.cycle_ruleset_proposed` after
+the matrix, which wrote the rules and the coverage of the matrix's
+requirements in one `tests.cycle_linkage` turn. That second turn ran only where
+the matrix classified an attribute as `transaction_cycle`, so an engagement
+whose matrix asked nothing — treasury, first time round — had a cycle with no
+relationships at all, and the cycle page drew a strip of steps and boxes.
+
+The split was at the wrong seam. Which field joins which, and which values two
+linked documents must agree on, are properties of the schemas — the field-pair
+floor is computed from them alone. Only the coverage (which assertions answer
+which requirement) needs the matrix. So the rules moved forward, into this
+turn, and the coverage moved later, into the turn that writes a row's cycle
+test (`tests.specified`, below).
+
+**Every check the linkage turn ran is kept**, in `agent/workers/cycle_rules.py`:
+join keys on identifier fields only; ids `lower_snake_case`; every operand a
+role a step declared and a field its type carries; every role reachable from
+the anchor's role, or listed `unreachable` with a reason (it stays on its step,
+and leaves the rules); an assertion over a join key's own pair refused; and the
+field-pair review (a pair not declined, with a reason, becomes an assertion).
+New here: the anchor column must be a column of the anchor population's table,
+and rules are owed — refused if missing — wherever schemas exist for a role and
+a population is flagged.
+
+**The field pairs are proposed between types.** They are computed before the
+turn places any role, so `cycle_field_pairs.candidates` runs over one
+provisional position per held type, and the prompt shows each side as a
+`document_type`. After the response, `cycle_rules.bind_pairs` moves each side
+onto the role its type fills — the last in cycle order, the rule
+`cycle_field_pairs.positions` has always applied. Pair ids are minted from the
+type names, so a decline written against an id still finds it.
+
+The cost is the one the original design avoided: the evidence read now stands
+between the memorandum and the matrix, because the matrix's step names come
+from a cycle that waits for the schemas. Reasoning for the turn is `medium`,
+what the linkage turn ran at; `low` served the shape alone.
 
 ### `planning.rcm_ready` — Risk and control matrix
 
@@ -1024,61 +1062,11 @@ returns `revise_next` (the revision outcomes, memorandum first) and
 `basis_sha1`, which `run_outcomes` passes as `from_assessment`; the binder
 renders that assessment's changes into the worker's instruction.
 
-### `tests.cycle_ruleset_proposed` — Cycle rules proposed for review
+### Field pairs, and how the review of them was tuned
 
-| | |
-| --- | --- |
-| Depends on | `planning.rcm_ready`, `planning.cycle_ready`, `documents.schemas_stamped` |
-| Readiness | **satisfied where nothing asks** — an engagement whose matrix classifies no attribute as `transaction_cycle` needs no rules. Where the matrix asks and no schema has been induced: `review_required`. |
-| Units | one, and only when the matrix asks and no ruleset exists |
-| Binding | pipeline — worker `tests.cycle_linkage`, executor `tests.cycle_ruleset` |
-| Context | `tests.cycle_linkage` — the induced schemas as **one atomic item** (a cycle is a statement about how the whole set relates, so a budget that admitted some of it would produce a proposal missing a role with nothing saying which), plus the matrix's requirements |
-| Input | the schema hashes ride on the unit's `input_sha1`, so a re-derived schema re-proposes rather than leaving an auditor approving rules against a vocabulary that moved |
-| Output | `{roles[], join_keys[], assertions[], coverage[], unreachable[]}` |
-
-This is the only stage that sees the matrix's requirements, the cycle's roles,
-*and* the induced field vocabulary at once, which is why the evidence contract
-is authored here.
-
-**A requirement is answered by every assertion it needs, held to the roles it
-reads.** A coverage entry is `{rcm_id, control_attribute, reads[], assertion_ids[],
-gaps[]?}` or `{…, unsupported: true, reason}`. `reads` names the cycle roles whose
-records the requirement is about; the validator refuses an entry unless every
-role in it is read by one of its assertions, unreachable, or stated under `gaps`
-with a reason, and unless every assertion it names reads one of those roles. The
-executor writes *every* named assertion back as the row's `required_comparisons`
-and reports each gap as `partial`, which the run warns about beside `downgraded`.
-
-Both rules came from approved rulesets that read as complete and were not. A
-procurement proposal answered "the invoice is matched to the order and the goods
-receipt" with a rule that the payment voucher is signed, so a receipt recording 17
-laptops against 20 billed and paid was never compared; and a treasury proposal
-answered a five-term confirmation match with its rate alone, because coverage
-then held one assertion per requirement. The check does not count roles (a
-single-document cycle reads one), and does not refuse a one-sided assertion (a
-field that must be stated is one).
-
-`reads` is still the entry's own account, and it can leave a document out.
-Procurement's next proposal answered the same three-way match with two checks
-that the invoice cites a PO and a GRN, and `reads: ["invoice_approval"]`. It
-validated, and the row recorded a matching control as tested by references that
-agree with nothing. So the documents are also taken from the requirement's
-words. `document_types.mentioned` finds every cycle document type the sentence
-names, by label, alias ("PO", "GRN", "goods receipt note"), id or head noun
-("invoice"), as whole words. The head nouns "order", "note", "request",
-"advice", "report" and "record" are skipped, and a short abbreviation counts
-only in capitals. `_named_document_problems` then requires one role of each
-named type to be read by a named assertion, stated as a gap with a reason, or
-unreachable. A name matched where the sentence meant something else costs a
-visible gap; a document left out costs the control's test. Replayed, the stored
-response is refused on that requirement alone, naming the order and the receipt,
-and the other four procurement requirements pass. What it cannot catch is a
-requirement whose assertions read
-the right roles but leave out terms — that is the prompt's to ask for, by
-listing them all. The prompt also says what a join key is not: that two records
-cite each other shows they belong together, never that what they state agrees.
-A singular `assertion_id` from an earlier proposal is still read, as a list of
-one.
+The design notes below were written when the review of the field pairs was
+`tests.cycle_linkage`'s; it is now the cycle design's, and every rule they
+describe is unchanged.
 
 **The field pairs are proposed from the schemas, and the turn reviews them.**
 Which field of one document is which field of another is a property of the
@@ -1138,7 +1126,9 @@ worker's allowance is 2.
 
 | | |
 | --- | --- |
-| Depends on | `tests.cycle_ruleset_proposed` |
+| Depends on | `planning.cycle_ready` |
+| Readiness | satisfied when a ruleset is effective, or when none is waiting and the matrix asks for no linked evidence. A waiting proposal is approval work whether or not the matrix asks — the cycle design proposes rules before any matrix exists. Nothing waiting where the matrix asks is `review_required` in both modes: approving is not the repair. |
+| Invalidated by | `planning:cycle` — a run that redesigns the cycle has proposed new rules |
 | Binding | **deterministic** (`tests.cycle_ruleset_approval`) |
 | Context | none — and no worker. The judgement this gate exists for was made when the auditor chose the mode; re-asking a model to bless its own rules would add ceremony, not a check. |
 
@@ -1161,9 +1151,37 @@ The two run modes part here:
 | Binding | pipeline — worker `tests.generate`, executor `tests.generate` |
 | Context | `tests.generate` (180 / 160k) |
 | Input | the RCM row — or `{row, regenerate_test_ids[]}` when the request named specific tests, which is part of the unit's input identity so a whole-row proposal is never reused as a single-test rewrite |
-| Output | `{tests[]}` |
+| Output | `{tests[], unsupported[]?}`; a cycle test carries `answers[]` |
+| Commit | the row's newly answered requirements are written back as `required_comparisons` (and `unsupported` ones re-routed) inside the same guarded commit as the tests; the tests are stamped with the row's pre-commit hash, which is what reconciliation reads them back by |
 | Repairs | **2** |
 | Barrier | **parallel** |
+
+**Binding a requirement to the rules happens here.** The cycle design proposes
+the rules without having read a requirement, so a row's transaction-cycle
+attributes reach this stage uncontracted. A cycle test answers each one it
+cites with `{requirement_ref, reads[], assertion_ids[], gaps[]?}` against the
+approved assertions `transaction_evidence` now carries with their operands; a
+requirement no approved assertion answers goes in the response's `unsupported`
+with a reason, and is re-routed by `cycle_linking.downgrade_uncontracted` to the
+population or the documents. `unsupported` is refused where no rules are
+approved — re-routing then would close the linked-evidence path before the
+auditor approved the cycle that opens it.
+
+The checks are the ones the linkage turn ran when it answered every
+requirement at once (`cycle_rules.coverage_problems`), and the history behind
+them still holds. A requirement is answered by every assertion it needs, held
+to the roles it reads: a procurement proposal answered "the invoice is matched
+to the order and the goods receipt" with a rule that the payment voucher is
+signed, and a treasury one answered a five-term confirmation match with its
+rate alone. So every role in `reads` must be read by a named assertion, stated
+as a gap with a reason, or be unreachable, and every named assertion must read
+a role in `reads`. And `reads` is still the answer's own account, so the
+documents are also taken from the requirement's words
+(`document_types.mentioned`): procurement once answered the three-way match
+with two checks that the invoice cites a PO and a GRN, reading the invoice
+alone. What changed is that the rules are approved before the requirement is
+read, so a requirement the rules fall short of is stated as a gap — which the
+run reports as `partial` — rather than met by writing a new rule.
 
 Naming a test *is* the instruction: it says the row is not settled whatever the
 manifest reports, and which test is wrong — so neither the coverage gate nor
@@ -1185,7 +1203,7 @@ per document — eighteen payment instructions describing what a payment
 instruction is. The `documents` source now carries an evidence document's
 identity and its `document_type`; `evidence_schemas` carries what a document of
 that type *states*, once per type, through the same `schema_catalog` projection
-`tests.cycle_linkage` uses. Planning material is untouched: a policy has no
+`planning.cycle` uses. Planning material is untouched: a policy has no
 induced schema, and its prose is the thing being reasoned about rather than one
 sample of a population.
 

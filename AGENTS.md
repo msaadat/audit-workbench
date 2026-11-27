@@ -667,8 +667,8 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `evidence_read` → `schemas_stamped`, and `text_ready`+`categorized` →
   `analysis_chunks_ready` → `analysis_generated`) and the exploratory-analysis
   branch both run ahead of planning; planning is `context_ready` → `apm_ready` →
-  `cycle_ready` → `rcm_ready`; testing is `cycle_ruleset_proposed` →
-  `cycle_ruleset_approved` → `tests.specified` → `tests.promoted_from_analysis`
+  `cycle_ready` (which also waits for `schemas_stamped`) → `rcm_ready`; testing
+  is `cycle_ruleset_approved` → `tests.specified` → `tests.promoted_from_analysis`
   → `fieldwork.executed` → `results.rolled_up`; and findings, working papers and
   the report branch off the roll-up into `audit.verified`, the findings branch
   grouping its exceptions (`findings.consolidated`) before it drafts them.
@@ -1285,7 +1285,7 @@ npm run build
   `document_type`; a second declared source, `evidence_schemas`, carries what a
   document of that type *states*, once per type, under
   `allow_document_schemas` and through the same `schema_catalog` projection
-  `tests.cycle_linkage` uses. Planning material keeps its summary — a policy has
+  `planning.cycle` uses. Planning material keeps its summary — a policy has
   no induced schema, and its prose is the thing being reasoned about rather than
   one sample of a population. The schemas are scoped to the row: the types its
   `transaction_cycle` comparisons name, else a weighted lexical match over type
@@ -1301,14 +1301,25 @@ npm run build
   `tests.specified`'s dependency closure, so no edge was added.
   Details and the measured per-workspace effect are in
   [docs/audit-workflow-graph.md](docs/audit-workflow-graph.md).
-- The matrix is written against a **cycle**, and its transaction-cycle evidence
-  is contracted by a **ruleset**. `planning.cycle_ready` reads the process flow
-  out of the memorandum alone — no extraction, so it sits in front of the matrix
-  rather than behind the schemas — and its step names are the vocabulary a row's
-  `process` is chosen from. `tests.cycle_ruleset_proposed` is then the only
-  stage that sees the matrix's requirements, the cycle's roles, and the induced
-  field vocabulary at once, which is why the evidence contract is authored
-  there. **The memorandum is a live document**: the cycle and every matrix row
+- The matrix is written against a **cycle**, and the cycle carries its own
+  **ruleset**. `planning.cycle_ready` is one model turn after the schemas are
+  stamped: it reads the steps out of the memorandum, places the held document
+  types on them as roles, and writes the rules linking those documents — the
+  anchor, the identifier join keys, and the assertions (the field-pair floor
+  from `cycle_field_pairs`, proposed between types and bound to the roles the
+  same response declares). The executor stores the shape and files the
+  ruleset as `proposed` in one commit, and stamps the cycle with
+  `schema_basis`, so a schema induced later makes the cycle stale and the
+  rules are proposed again. The relationships therefore exist whether or not
+  the matrix asks for linked evidence. Which approved assertions answer a
+  matrix requirement is not the cycle's question: it is answered when that
+  row's cycle test is written (`answers` on the test, `unsupported` on the
+  response), checked by `agent/workers/cycle_rules.py`, and written back as
+  `required_comparisons` in the same commit as the test. The retired
+  `tests.cycle_ruleset_proposed` / `tests.cycle_linkage` turn did both halves
+  after the matrix, and only where the matrix asked. The cycle's step names are
+  the vocabulary a row's `process` is chosen from, so the matrix now waits on
+  the evidence read through the cycle. **The memorandum is a live document**: the cycle and every matrix row
   record which memorandum they were drafted from (`apm_sha1`, and
   `planning:apm` in `workflow_parents`), but readiness never holds them stale
   against it (`capabilities.planning.LIVE_PARENTS`). An auditor editing the
@@ -1320,7 +1331,8 @@ npm run build
 - `tests.cycle_ruleset_approved` is a gate, and the two run modes part there. In
   `permission` mode it expands no unit: the stage reports from its own readiness
   and the run carries on without a cycle. In `auto` mode the auditor has
-  delegated the run's approvals, so one unit makes the rules effective. Its edge
+  delegated the run's approvals, so one unit makes the waiting proposal
+  effective, whether or not the matrix asks for linked evidence yet. Its edge
   into `tests.specified` is partial and must stay partial — generation has
   always been able to proceed without a cycle by writing document-question tests
   instead, and making an unapproved ruleset withhold every test in the

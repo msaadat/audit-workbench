@@ -8,11 +8,18 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import cycle_rulesets, cycle_vouching, markdown_sections, planning_cycle
+from ... import (
+    cycle_field_pairs,
+    cycle_rulesets,
+    cycle_vouching,
+    markdown_sections,
+    planning_cycle,
+)
 from ...text import counted, relevance_tokens
 from .. import prompts
 from ..prompts import JSON_RULES, LANGUAGE_RULES
 from ..runtime.model_gateway import ModelGateway
+from . import cycle_rules
 from .model import (
     AUDITOR_INSTRUCTION_RULE,
     AUDITOR_INSTRUCTION_SOURCE_ID,
@@ -2652,8 +2659,8 @@ def run_rcm_worker(
     that failed and routed to the call whose job it was.
 
     What a transaction-cycle attribute must *show* is settled further
-    downstream still, by the stage that has this engagement's document schemas
-    in front of it.
+    downstream still, when its test is written against the cycle's approved
+    rules.
     """
 
     if attempt.is_repair:
@@ -3930,16 +3937,19 @@ WORKERS.register(PLANNING_CONTEXT_WORKER)
 # --------------------------------------------------------------------------- #
 CYCLE_WORKER_ID = "planning.cycle"
 CYCLE_SYSTEM = f"""[agent:planning_cycle]
-Name the steps of the process this engagement audits, as the audit planning
-memorandum names them, in the order it gives them. The memorandum's process
-flow is the source; do not invent a step it does not describe, and do not
-merge two it separates.
+Design the cycle this engagement audits: the steps of the process, the
+documents and tables that record each step, and the rules that link those
+documents to each other.
 
-Return {{"name": ..., "steps": [...], "cross_cutting": {{...}}}}.
+PART ONE — THE STEPS
+
+Name the steps of the process as the audit planning memorandum names them, in
+the order it gives them. The memorandum's process flow is the source; do not
+invent a step it does not describe, and do not merge two it separates.
 
 - `name` is the cycle as a whole, in the entity's own words where the
   memorandum gives them ("Procure-to-pay", "Treasury dealing and settlement").
-- Each step has `name`, `roles`, `populations` and `themes`.
+- Each step has `name`, `roles`, `populations`, `themes` and `data_steps`.
 - Every name — the cycle's, each step's, the cross-cutting bucket's — is a
   label of at most {planning_cycle.MAX_CYCLE_NAME_CHARACTERS} characters,
   not the memorandum's sentence. Keep the memorandum's own wording where it
@@ -3950,15 +3960,19 @@ Return {{"name": ..., "steps": [...], "cross_cutting": {{...}}}}.
   TYPES HELD and spelled exactly as listed. A role's `name` is a short
   lowercase identifier for the position it fills in the cycle (`order`,
   `receipt`, `invoice`), unique across the whole cycle, and is not the type id
-  repeated. A step no held document type records has no roles; say so by
-  leaving the list empty rather than by naming a type the engagement lacks.
+  repeated. A role may say `"cardinality": "many"` where one transaction
+  carries several records of it (several confirmations of one deal), and
+  `"required": false` where a transaction may lawfully have none; both are
+  one record, required, when omitted. A step no held document type records
+  has no roles; say so by leaving the list empty rather than by naming a type
+  the engagement lacks.
 - `populations` are the tables whose rows *are* that step, chosen from TABLES
   and spelled exactly. Where a step's records live on another step's table,
   give that table with the `columns` that hold them. A step with no table has
   an empty list.
 - Flag `anchor: true` on the one population a test of this cycle would start
   from — the table whose rows are the transactions being vouched. Exactly one
-  population in the whole cycle carries it.
+  population in the whole cycle carries it, wherever any step has one.
 - `themes` assigns each entry of PLANNED RISK THEMES to the one step that
   answers it, copied verbatim. A theme that belongs to no single step goes to
   `cross_cutting`. Every theme is placed exactly once.
@@ -3979,14 +3993,97 @@ Where EXISTING STEP NAMES or EXISTING PROCESS NAMES describe a step you are
 naming, reuse that wording exactly: the matrix's rows are grouped by it, and
 renaming a step it already uses orphans them.
 
-You are describing the process, not assessing it. No risks, no controls, no
-judgement about whether a step is adequately covered. {JSON_RULES} 
+PART TWO — THE RULES
+
+Where DOCUMENT SCHEMAS are supplied, they state the fields every record of
+each held type carries. Return `rules`: how the documents your roles name
+relate, as rules an auditor reviews and approves before any test runs on them.
+Rules name roles — the positions you declared on the steps — never document
+types, and only roles whose type has a schema. With no schemas supplied, omit
+`rules`.
+
+`anchor` is where a cycle test starts from a population row: the anchor
+population's rows are vouched to one role. Give the `role`, that role's
+identifier `field`, and the `column` of the anchor population's table whose
+values carry the same identifier. The column is a column of that table as
+TABLES spells it — not the document field name repeated, which names nothing in
+the accounting records and would match no row.
+
+`join_keys` say which document reaches which. Each names a field on one role
+that should equal a field on another. **Only ever an identifier field** — a
+reference that could tie two documents together. Never join on an amount or a
+date: two records sharing a value there is a coincidence, not a link, and
+joining on one would fuse unrelated transactions. Every role must be reachable
+from the anchor's role through join keys. A role whose type carries no
+identifier field that could reach it goes under `unreachable` as
+{{"role", "reason"}}; the step keeps the role, and the rules leave it out.
+
+`assertions` say what must then agree once the documents are linked. These are
+the audit tests: an amount that must match, a date that must not follow
+another, an approval that must be present. Give an assertion a `right` operand
+when two fields must agree, and null when a field must merely be stated. Its
+`requirement` says what the fields must show, in the terms a control is
+written in — "the confirmation states the notional the deal booked" — and not
+how to compare them: whether two values agree is settled later, against the
+values themselves, by a reader that can see one document prints an amount with
+its currency and another without. A join key shows that two records refer to
+each other; it never shows that what they state agrees, so never write an
+assertion over the two fields a join key already links.
+
+FIELD PAIRS were found from the schemas alone: two fields on documents of
+different types with the same value type whose names are the same or share a
+word. Their sides name document types; once your roles are placed, each side
+is the role that type fills (the last one in cycle order, where a type fills
+several). Each pair becomes an assertion under its own id unless you decline
+it in `declined_pairs` as {{"id", "reason"}}.
+
+Decline a pair only when its two fields describe different things: an address
+and a name, a contact person and the organisation, the status of one document
+and the status of another. Never decline a pair because its values may
+legitimately differ. Two fields describing the same thing — a quantity ordered
+and a quantity received, a notional booked and a notional confirmed, an amount
+billed and an amount paid — are what a comparison is for, partial deliveries,
+part payments and amendments included: a difference is what the auditor has to
+see and have explained, and declining the pair hides it. You may write an
+assertion over a pair's two fields to state its requirement better; it then
+replaces the pair, so do not also decline it. A pair you do not mention is
+kept.
+
+UNPAIRED FIELDS are the amount, number and date fields that no pair connects to
+some other type; `no_pair_with` names those types. Names do not find two fields
+that call one value different things — a principal and an amount, a rate and a
+price. For each, decide whether it states the same value as a field on another
+linked role, and where it does, write that assertion yourself. Where two dates
+must fall in an order rather than be equal, say so in the requirement.
+
+Propose only what the fields support. A rule naming a field a type does not
+carry cannot run, and a plausible rule that never runs is worse than an absent
+one — it reads as a passing test. Give every join key and assertion a short
+lower_snake_case `id` (letters, digits and underscores, starting with a
+letter) and a one-sentence `rationale` saying why it holds; the rationale is
+what the approver reads.
+
+Return {{"name", "steps", "cross_cutting", "rules"}} where
+  rules = {{"anchor": {{"role", "field", "column"}},
+           "join_keys": [{{"id", "left": {{"role", "field"}},
+                          "right": {{"role", "field"}}, "rationale"}}],
+           "assertions": [{{"id", "label", "left": {{"role", "field"}},
+                           "right": {{"role", "field"}} or null,
+                           "requirement", "rationale"}}],
+           "declined_pairs": [{{"id", "reason"}}],
+           "unreachable": [{{"role", "reason"}}]}}
+omitting declined_pairs and unreachable where there are none.
+
+You are describing the process and how its records relate, not assessing it.
+No risks, no controls, no judgement about whether a step is adequately covered.
+{JSON_RULES}
 Where AUDITOR INSTRUCTION includes or excludes part of the process ("stop at
 confirmation", "settlement is out of scope"), the steps follow it: a step it
 excludes is not a step.""" + f"\n\n{AUDITOR_INSTRUCTION_RULE}" + LANGUAGE_RULES
 
 CYCLE_PLANNING_SOURCE_ID = "planning_context"
 CYCLE_CURRENT_APM_SOURCE_ID = "current_apm"
+CYCLE_SCHEMA_SOURCE_ID = "cycle_schemas"
 
 
 def _cycle_response_schema(response: str) -> Mapping[str, Any]:
@@ -3996,11 +4093,16 @@ def _cycle_response_schema(response: str) -> Mapping[str, Any]:
     steps = payload.get("steps")
     if not isinstance(steps, (list, tuple)):
         raise WorkerResponseValidationError("the cycle response carries no steps")
-    return {
+    shaped = {
         "name": str(payload.get("name") or ""),
         "steps": [_plain_json(step) for step in steps],
         "cross_cutting": _plain_json(payload.get("cross_cutting")),
     }
+    # Parsed by the semantic validator, which alone knows whether schemas were
+    # supplied and so whether rules are owed.
+    if payload.get("rules") is not None:
+        shaped["rules"] = _plain_json(payload.get("rules"))
+    return shaped
 
 
 def _cycle_allowed_values(request: WorkerRequest) -> tuple[list[str], list[str]]:
@@ -4013,6 +4115,46 @@ def _cycle_allowed_values(request: WorkerRequest) -> tuple[list[str], list[str]]
     ]
     tables = [entry["table"] for entry in _table_column_names(request)]
     return types, tables
+
+
+def _cycle_schemas(request: WorkerRequest) -> list[dict]:
+    """The induced schemas of the held types, or none before any exists.
+
+    Read by the prompt and the validator through this one accessor, so rules
+    are judged against exactly the vocabulary they were written in. Limited to
+    the types the turn may name a role for: a schema of a type it was not
+    offered is a vocabulary no role can use.
+    """
+
+    try:
+        item = _resolved_item(request, CYCLE_SCHEMA_SOURCE_ID)
+    except WorkerContractError:
+        return []
+    schemas = item.get("schemas") if isinstance(item, Mapping) else item
+    held, _tables = _cycle_allowed_values(request)
+    return [
+        _plain_json(schema)
+        for schema in schemas or []
+        if isinstance(schema, Mapping) and str(schema.get("document_type")) in held
+    ]
+
+
+def _cycle_field_pairs(request: WorkerRequest) -> dict:
+    """Field pairs between the held types, proposed before any role is placed."""
+
+    schemas = _cycle_schemas(request)
+    if len(schemas) < 2:
+        return {"pairs": [], "omitted": 0, "unpaired": []}
+    positions = cycle_rules.type_positions(
+        [str(schema.get("document_type")) for schema in schemas]
+    )
+    found = cycle_field_pairs.candidates(schemas, positions)
+    return {
+        **found,
+        "unpaired": cycle_field_pairs.unpaired_fields(
+            schemas, positions, found["pairs"]
+        ),
+    }
 
 
 def _cycle_placed_themes(cycle: Mapping[str, Any]) -> list[str]:
@@ -4051,23 +4193,140 @@ def _cycle_with_unplaced_themes(
     return {**cycle, "cross_cutting": cross}
 
 
+def _anchor_population(shape: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for step in shape.get("steps") or []:
+        for population in step.get("populations") or []:
+            if population.get("anchor"):
+                return population
+    return None
+
+
+def _validate_cycle_rules(
+    shape: Mapping[str, Any], raw_rules: object, request: WorkerRequest
+) -> dict[str, Any] | None:
+    """Check the rules half of a design against the shape it was written with.
+
+    Returns the rules in the shape the ruleset store keeps — roles included,
+    read off the steps — or ``None`` where no rules are owed: no schema
+    supplied, no role whose type has one, or no population a test could start
+    from. Everything that used to be ``tests.cycle_linkage``'s gate is here
+    except coverage, which needs a requirement and is answered when that
+    requirement's test is written.
+    """
+
+    schemas = _cycle_schemas(request)
+    by_type = {
+        str(schema.get("document_type")): {
+            str(field.get("name")): field for field in schema.get("fields") or []
+        }
+        for schema in schemas
+    }
+    declared = [
+        role
+        for step in shape.get("steps") or []
+        for role in step.get("roles") or []
+    ]
+    schema_roles = [role for role in declared if role["document_type"] in by_type]
+    anchor_population = _anchor_population(shape)
+    has_population = any(step.get("populations") for step in shape.get("steps") or [])
+    if not schema_roles or not has_population:
+        return None
+    if anchor_population is None:
+        raise WorkerResponseValidationError(
+            "No population is flagged anchor: true. The rules start from the "
+            "anchor population's rows, so flag the one table whose rows are "
+            "the transactions being vouched."
+        )
+    if raw_rules is None:
+        raise WorkerResponseValidationError(
+            "DOCUMENT SCHEMAS were supplied and the response has no rules. "
+            "Return rules: the anchor, the join keys and the assertions that "
+            "link the documents your roles name."
+        )
+    rules = cycle_rules.parse_rules(raw_rules)
+    declared_names = {role["name"] for role in declared}
+    problems: list[str] = []
+    unreachable: dict[str, str] = {}
+    for item in rules["unreachable"]:
+        name = item["role"]
+        if name not in declared_names:
+            problems.append(f"Unreachable role '{name}' is not a role of any step.")
+        elif not item["reason"]:
+            problems.append(f"Unreachable role '{name}' states no reason.")
+        else:
+            unreachable[name] = item["reason"]
+    if problems:
+        raise WorkerResponseValidationError(problems)
+    roles = [
+        {
+            "name": role["name"],
+            "document_type": role["document_type"],
+            "cardinality": str(role.get("cardinality") or "one"),
+            "required": bool(role.get("required", True)),
+        }
+        for role in schema_roles
+        if role["name"] not in unreachable
+    ]
+    if not roles:
+        # Every role was declared unreachable: the documents cannot be linked,
+        # which is a finding about the evidence rather than a defect to repair.
+        return {"roles": [], "unreachable": rules["unreachable"]}
+    role_types = {role["name"]: role["document_type"] for role in roles}
+    cycle_rules.refuse_malformed_ids(rules)
+    cycle_rules.check_fields(rules, role_types, by_type)
+    table = str(anchor_population.get("table") or "")
+    columns = next(
+        (entry["columns"] for entry in _table_column_names(request) if entry["table"] == table),
+        [],
+    )
+    if not anchor_population.get("columns") and rules["anchor"]["column"] not in columns:
+        raise WorkerResponseValidationError(
+            f"rules.anchor.column is '{rules['anchor']['column']}', which is not a "
+            f"column of the anchor population '{table}'; its columns are: "
+            f"{', '.join(columns) or 'none supplied'}."
+        )
+    cycle_rules.require_every_role_reachable(rules, role_types)
+    candidates = _cycle_field_pairs(request)
+    rules = cycle_rules.apply_field_pairs(
+        rules,
+        pairs=cycle_rules.bind_pairs(candidates["pairs"], roles),
+        supplied_ids={pair["id"] for pair in candidates["pairs"]},
+        schemas=schemas,
+        roles=roles,
+    )
+    return {
+        "cycle_label": str(shape.get("name") or ""),
+        "roles": roles,
+        "anchor": dict(rules["anchor"]),
+        "join_keys": rules["join_keys"],
+        "assertions": rules["assertions"],
+        "declined_pairs": rules["declined_pairs"],
+        "unreachable": rules["unreachable"],
+    }
+
+
 def validate_cycle_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
 ) -> Mapping[str, Any]:
-    """Gate one proposed cycle shape against the vocabularies it was given.
+    """Gate one proposed cycle design against the vocabularies it was given.
 
-    The structural rules are :func:`planning_cycle.validate_cycle_shape`, which
-    is also what the commit and every auditor edit run through — checked here
-    against the *supplied* lists rather than against a workspace this worker
-    must not reach, so a shape that passes here is a shape the workspace will
-    store. What is added is the part only this turn knows: the themes it was
-    asked to place.
+    The structural rules of the shape are :func:`planning_cycle.validate_cycle_shape`,
+    which is also what the commit and every auditor edit run through — checked
+    here against the *supplied* lists rather than against a workspace this
+    worker must not reach, so a shape that passes here is a shape the workspace
+    will store. Then the rules, against the schemas and the roles the shape
+    just declared: the same turn placed both, so a rule naming a role the shape
+    lacks is a contradiction within one response, and costs one repair.
     """
     planned = [
         str(theme) for theme in request.unit_input.get("risk_themes") or [] if theme
     ]
-    cycle = _cycle_with_unplaced_themes(dict(proposal), planned)
+    raw_rules = proposal.get("rules")
+    cycle = _cycle_with_unplaced_themes(
+        {key: value for key, value in dict(proposal).items() if key != "rules"},
+        planned,
+    )
     supplied = list(request.unit_input.get("data_steps") or [])
     cycle, unknown = planning_cycle.expand_data_steps(cycle, supplied)
     if unknown:
@@ -4077,17 +4336,25 @@ def validate_cycle_proposal(
         )
     allowed_types, allowed_tables = _cycle_allowed_values(request)
     try:
-        return planning_cycle.validate_cycle_shape(
+        shape = planning_cycle.validate_cycle_shape(
             cycle,
             allowed_types=set(allowed_types),
             base_tables=set(allowed_tables),
         )
     except planning_cycle.CycleShapeError as error:
         raise WorkerResponseValidationError(str(error)) from error
+    rules = _validate_cycle_rules(shape, raw_rules, request)
+    return {**shape, **({"rules": rules} if rules is not None else {})}
 
 
 def _cycle_user(request: WorkerRequest) -> str:
     instruction = auditor_instruction(request)
+    schemas = _cycle_schemas(request)
+    pairs = _cycle_field_pairs(request) if schemas else {"pairs": [], "unpaired": []}
+
+    def typed(side: Mapping[str, Any]) -> dict:
+        return {"document_type": side.get("role"), "field": side.get("field")}
+
     return json.dumps(
         {
             **({"AUDITOR INSTRUCTION": instruction} if instruction else {}),
@@ -4113,6 +4380,39 @@ def _cycle_user(request: WorkerRequest) -> str:
             "EXISTING PROCESS NAMES": [
                 str(name) for name in request.unit_input.get("existing_processes") or []
             ],
+            **({"DOCUMENT SCHEMAS": schemas} if schemas else {}),
+            **(
+                {
+                    "FIELD PAIRS": [
+                        {
+                            "id": pair["id"],
+                            "left": typed(pair["left"]),
+                            "right": typed(pair["right"]),
+                            "basis": pair["basis"],
+                            **({"shared_words": pair["words"]} if pair["words"] else {}),
+                        }
+                        for pair in pairs["pairs"]
+                    ]
+                }
+                if pairs["pairs"]
+                else {}
+            ),
+            **(
+                {
+                    "UNPAIRED FIELDS": [
+                        {
+                            "document_type": item["role"],
+                            "field": item["field"],
+                            "value_type": item["value_type"],
+                            "label": item["label"],
+                            "no_pair_with": item["no_pair_with"],
+                        }
+                        for item in pairs["unpaired"]
+                    ]
+                }
+                if pairs["unpaired"]
+                else {}
+            ),
             "RESOLVED CONTEXT": _context_from_sources(
                 request, CYCLE_PLANNING_SOURCE_ID
             ),
@@ -4127,7 +4427,7 @@ def run_cycle_worker(
     gateway: ModelGateway,
     attempt: WorkerAttempt,
 ) -> str:
-    """Transform the supplied bundle into one small structured cycle request."""
+    """Transform the supplied bundle into one structured cycle design."""
 
     user = _cycle_user(request)
     if attempt.is_repair:
@@ -4136,8 +4436,8 @@ def run_cycle_worker(
         user += (
             "\n\nThe previous cycle draft failed the engagement quality gate: "
             + "; ".join(attempt.validation_errors)
-            + ". Return the complete corrected cycle, keeping the steps that "
-            "did not fail."
+            + ". Return the complete corrected cycle, steps and rules, keeping "
+            "what did not fail."
         )
     return gateway.complete(
         CYCLE_SYSTEM,
@@ -4149,17 +4449,23 @@ def run_cycle_worker(
 
 CYCLE_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="planning.cycle.response",
-    schema_hash=_sha256_text("cycle-response:v1:name-steps-roles-populations-themes"),
+    schema_hash=_sha256_text(
+        "cycle-response:v2:name-steps-roles-populations-themes-rules"
+    ),
     validator=_cycle_response_schema,
 )
 CYCLE_WORKER = WorkerDefinition(
     worker_id=CYCLE_WORKER_ID,
     prompt_hash=_sha256_text(CYCLE_SYSTEM),
     response_schema=CYCLE_RESPONSE_SCHEMA,
+    # Two, as the linkage turn it absorbed had: the response now carries a
+    # review of the field pairs and the rules beside the steps, and each check
+    # it can fail names its own repair.
     repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=1,
+        max_repair_attempts=2,
         guidance_hash=_sha256_text(
-            "Repair a cycle shape against the supplied types, tables and themes."
+            "Repair a cycle design against the supplied types, tables, themes "
+            "and schemas."
         ),
     ),
     implementation=run_cycle_worker,

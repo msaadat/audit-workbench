@@ -29,7 +29,7 @@ plan into line with an edited memorandum is a request (``planning.rcm_revised``,
 
 from __future__ import annotations
 
-from ... import planning_delta, planning_revision
+from ... import cycle_rulesets, planning_delta, planning_revision
 from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec
@@ -157,19 +157,45 @@ def _planning_apm_ready() -> Capability:
 # planning.cycle_ready
 # --------------------------------------------------------------------------- #
 def _cycle_ready(workspace: Workspace, _scope: dict) -> Readiness:
-    """Whether a cycle shape exists.
+    """Whether the cycle is designed, rules included, against today's schemas.
 
     The shape is read out of the memorandum's process flow, and it used to go
     stale whenever the memorandum moved. It no longer does: the memorandum is a
     live document, and an auditor editing it had every artifact from the cycle
     to the report declared out of date. Its only stamped parent is the
-    memorandum, so a cycle that exists is current; re-reading it is the
-    auditor's request.
+    memorandum, so a cycle that exists is current against it; re-reading it is
+    the auditor's request.
+
+    The rules are the other half, and they are written in the induced field
+    vocabulary. The cycle stamps the schemas it was designed against
+    (``schema_basis``); a schema induced or re-derived since makes the cycle
+    stale, so the rules are proposed again against the fields that exist now.
+    A cycle drafted before the design proposed its own rules carries no stamp:
+    where schemas exist and no ruleset was ever proposed, it is missing its
+    rules; where one was, it is left as it stands.
     """
     cycle = workspace.planning.get("cycle") or {}
     steps = cycle.get("steps") or []
     if not steps:
         return Readiness("missing", ("no cycle has been designed",))
+    current_basis = cycle_rulesets.schema_basis(workspace)
+    stamped_basis = cycle.get("schema_basis")
+    if stamped_basis is None:
+        if current_basis and not cycle_rulesets.list_rulesets(workspace):
+            return Readiness(
+                "missing",
+                ("the cycle has steps and no rules linking its documents",),
+                details={"artifact_count": len(steps)},
+            )
+    elif str(stamped_basis) != current_basis:
+        return Readiness(
+            "stale",
+            (
+                "document schemas were induced or changed after the cycle's "
+                "rules were proposed",
+            ),
+            details={"artifact_count": len(steps)},
+        )
     state = _currency(workspace, _held_parents(cycle.get("workflow_parents")))
     if state.stale:
         return Readiness(

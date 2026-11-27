@@ -17,19 +17,17 @@ from __future__ import annotations
 #: Absent, a kind gets whatever the operator configured, which is the right
 #: default for the turns whose whole job is judgement.
 REASONING_BY_WORKER_KIND: dict[str, str] = {
-    # A cycle read off a field vocabulary, with every requirement it must
-    # answer supplied. Middling: choosing join keys is genuinely a judgement,
-    # and joining on the wrong field fuses unrelated transactions.
-    "cycle_linkage": "medium",
     # Closed-vocabulary classification against a supplied catalogue. The call
     # that spent 56,944 of its 65,853 completion tokens reasoning was doing
     # this and the rest of the matrix at once; on its own it is a lookup.
     "rcm_attributes": "low",
-    # Naming the steps a memorandum already names, choosing each one's document
-    # types and population from supplied lists, and assigning themes to them.
-    # Recall from one document, not deduction. Declared as ``rcm_scope`` before
-    # the shape had a stage of its own.
-    "planning_cycle": "low",
+    # The steps a memorandum already names, each one's document types and
+    # population from supplied lists — recall — and the rules linking those
+    # documents, read off their field vocabulary. Middling, for the second
+    # half: choosing join keys is genuinely a judgement, and joining on the
+    # wrong field fuses unrelated transactions. ``low`` while the turn drew
+    # the steps alone; ``medium`` is what the linkage turn it absorbed ran at.
+    "planning_cycle": "medium",
 }
 
 

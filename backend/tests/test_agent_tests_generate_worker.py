@@ -2263,3 +2263,148 @@ def test_a_document_question_is_allowed_on_types_alone_with_no_planning_document
     payload = json.loads(gateway.calls[0]["user"])
     assert payload["planning_documents"] == []
     assert "document_question" in payload["allowed_test_variants"]
+
+
+# -------------------------------------------- binding a requirement to rules
+# The cycle design proposes the rules without having read any requirement, so
+# the turn writing a row's cycle test says which approved assertions answer
+# each requirement its row has not yet been bound for.
+_BOUND_RULES = [
+    {
+        "id": "as_total", "label": "Totals agree",
+        "left": {"role": "invoice", "field": "total_amount"},
+        "right": {"role": "order", "field": "total_amount"},
+        "requirement": "The amount billed is the amount ordered.",
+    },
+    {
+        "id": "as_cited", "label": "Order cited",
+        "left": {"role": "invoice", "field": "order_number"}, "right": None,
+        "requirement": "The invoice names its order.",
+    },
+]
+
+
+def _unbound_bundle(**overrides):
+    row = _cycle_row()
+    row["control_attributes"] = [{
+        key: value
+        for key, value in row["control_attributes"][0].items()
+        if key != "required_comparisons"
+    }]
+    row["control_attributes"][0]["requirement"] = (
+        "The invoice agrees to the purchase order it bills against."
+    )
+    return _bundle(
+        rcm_payload=row,
+        transaction_manifest=_approved_rules(assertions=_BOUND_RULES),
+        **overrides,
+    )
+
+
+_ORDINARY = {
+    "source": "document", "title": "Read the invoices",
+    "objective": "Read them.",
+    "steps": [{
+        "label": "Read", "instruction": "Read it.", "mode": "question",
+        "document_ids": ["DOC-1"], "question": "What does it say?",
+    }],
+}
+
+
+def test_an_unbound_requirement_is_answered_and_its_contract_proposed():
+    answered = _cycle_test(answers=[{
+        "requirement_ref": "RCM-1:invoice_match",
+        "reads": ["invoice", "order"],
+        "assertion_ids": ["as_total", "as_cited"],
+    }])
+    gateway = _Gateway([json.dumps({"tests": [answered]})])
+
+    result = WORKERS.execute(_request(_unbound_bundle()), gateway)
+
+    contract = result.proposal["tests"][0]["contract"]["invoice_match"]
+    assert [item["key"] for item in contract["comparisons"]] == ["as_total", "as_cited"]
+    assert dict(contract["comparisons"][0]["left"]) == {
+        "document_type": "vendor_invoice", "field": "total_amount",
+    }
+    assert contract["comparisons"][1]["right"] is None
+    # The approved assertions reach the turn with their operands.
+    supplied = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
+    assert supplied["assertions"][0]["left"] == {"role": "invoice", "field": "total_amount"}
+
+
+def test_an_unbound_requirement_with_no_answer_is_refused():
+    stubborn = json.dumps({"tests": [_cycle_test()]})
+    gateway = _Gateway([stubborn] * 3)
+
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_unbound_bundle()), gateway)
+
+    assert "answers has no entry for 'RCM-1:invoice_match'" in str(raised.value)
+
+
+def test_an_answer_naming_no_approved_assertion_is_refused():
+    stubborn = json.dumps({"tests": [_cycle_test(answers=[{
+        "requirement_ref": "RCM-1:invoice_match",
+        "reads": ["invoice", "order"],
+        "assertion_ids": ["as_invented"],
+    }])]})
+    gateway = _Gateway([stubborn] * 3)
+
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_unbound_bundle()), gateway)
+
+    assert "do not hold" in str(raised.value)
+
+
+def test_an_answer_that_never_reads_the_document_its_words_name_is_refused():
+    """"agrees to the purchase order", answered by the invoice citing one."""
+
+    stubborn = json.dumps({"tests": [_cycle_test(answers=[{
+        "requirement_ref": "RCM-1:invoice_match",
+        "reads": ["invoice"],
+        "assertion_ids": ["as_cited"],
+    }])]})
+    gateway = _Gateway([stubborn] * 3)
+
+    with pytest.raises(WorkerRunError) as raised:
+        WORKERS.execute(_request(_unbound_bundle()), gateway)
+
+    assert "names the purchase order" in str(raised.value)
+
+
+def test_a_requirement_the_rules_cannot_answer_is_declared_unsupported():
+    gateway = _Gateway([json.dumps({
+        "tests": [_ORDINARY],
+        "unsupported": [{
+            "requirement_ref": "RCM-1:invoice_match",
+            "reason": "No approved rule compares the invoice with its order.",
+        }],
+    })])
+
+    result = WORKERS.execute(_request(_unbound_bundle()), gateway)
+
+    (item,) = result.proposal["unsupported"]
+    assert item["requirement_ref"] == "RCM-1:invoice_match"
+
+
+def test_unsupported_is_refused_where_no_rules_are_approved():
+    """Re-routing then would close the linked-evidence path before the auditor
+    approved the cycle that opens it."""
+
+    row = _cycle_row()
+    stubborn = json.dumps({
+        "tests": [_ORDINARY],
+        "unsupported": [{"requirement_ref": "RCM-1:invoice_match", "reason": "x"}],
+    })
+    gateway = _Gateway([stubborn] * 3)
+
+    result = WORKERS.execute(_request(_bundle(rcm_payload=row)), gateway)
+
+    # Asked to drop it twice, and committed without it: the row's other tests
+    # are durable work, and the attribute stays transaction_cycle.
+    assert len(gateway.calls) == 3
+    assert "unsupported" not in result.proposal
+    with pytest.raises(WorkerResponseValidationError, match="no cycle rules are approved"):
+        tests_workers.validate_generate_proposal(
+            json.loads(stubborn), _request(_bundle(rcm_payload=row))
+        )

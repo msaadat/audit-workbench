@@ -1959,6 +1959,16 @@ class Workspace:
         cycle["workflow_parents"] = {
             str(ref): str(value) for ref, value in dict(parents or {}).items()
         }
+        # The induced schemas the cycle's rules were proposed against. Written
+        # by the design commit; an auditor's edit to the steps keeps it, since
+        # editing the shape proposes no rules and changes no vocabulary.
+        basis = (
+            supplied.get("schema_basis", stored.get("schema_basis"))
+            if agent
+            else stored.get("schema_basis")
+        )
+        if basis is not None:
+            cycle["schema_basis"] = str(basis)
         cycle["updated"] = self._updated_now()
         return cycle
 

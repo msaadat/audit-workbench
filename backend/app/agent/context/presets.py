@@ -1234,6 +1234,21 @@ PRESETS.register(
                     representations=(ContextRepresentation("table_metadata"),),
                     budget=ContextBudget(max_items=24, max_characters=16_000),
                 ),
+                # The induced schemas, as one item carrying every type: the
+                # field vocabulary the cycle's rules are written in. Atomic for
+                # the reason it was atomic for the linkage turn this replaced —
+                # a cycle is a statement about how the whole set relates, so a
+                # budget that admitted some of it would produce rules missing a
+                # role with nothing saying which. Optional: an engagement with
+                # no documents designs its steps and proposes no rules.
+                ContextSource(
+                    id="cycle_schemas",
+                    source_type="documents",
+                    required=False,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("cycle_schema"),),
+                    budget=ContextBudget(max_items=1, max_characters=64_000),
+                ),
                 # What the auditor asked for, when a person asked for something.
                 # Optional: absent on every run the workflow schedules itself.
                 ContextSource(
@@ -1245,67 +1260,23 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=2_000),
                 ),
             ),
-            budget=ContextBudget(max_items=27, max_characters=88_000),
-            # Names and shapes only. No document text, no profile, no row: this
-            # stage runs *before* the evidence read, and a cycle that needed any
-            # of them would put the extraction pass back in front of the matrix,
-            # which is the one thing step 1 of the redesign removed.
+            budget=ContextBudget(max_items=28, max_characters=152_000),
+            # Names, shapes and field vocabularies. No document text, no
+            # profile, no row: the schemas say what a record of each type
+            # *states*, never what any one record contains, and the rules are
+            # written from that — a rule fitted to the values of this corpus
+            # would describe the corpus rather than the cycle.
             #
             # ``allow_document_text`` is here for the memorandum alone, which
-            # travels as ``current_artifact`` under that permission. No document
-            # source is declared, so no evidence text can reach this turn.
+            # travels as ``current_artifact`` under that permission. The only
+            # document source is the schema catalog, so no evidence text can
+            # reach this turn.
             privacy=ContextPrivacy(
                 allow_auditor_instruction=True,
                 allow_planning_context=True,
                 allow_document_text=True,
+                allow_document_schemas=True,
                 allow_table_metadata=True,
-            ),
-        ),
-    )
-)
-
-
-PRESETS.register(
-    ContextPreset(
-        preset_id="tests.cycle_linkage",
-        spec=ContextSpec(
-            sources=(
-                ContextSource(
-                    id="cycle_schemas",
-                    source_type="documents",
-                    required=True,
-                    selector=ContextSelector(selector_id="documents.all"),
-                    representations=(ContextRepresentation("cycle_schema"),),
-                    # One item, carrying every induced type. The vocabulary is
-                    # atomic for this worker: a cycle is a statement about how
-                    # the whole set relates, so a budget that admitted some of
-                    # it would produce a proposal missing a role with nothing
-                    # saying which. Starved, the source reports as starved.
-                    budget=ContextBudget(max_items=1, max_characters=64_000),
-                ),
-                ContextSource(
-                    id="cycle_requirements",
-                    source_type="artifacts",
-                    # Not required: an engagement may propose rules before its
-                    # matrix asks anything of them, and a proposal written from
-                    # the vocabulary alone is still a proposal. Where the matrix
-                    # does ask, this is what the rules have to answer.
-                    required=False,
-                    selector=ContextSelector(selector_id="artifacts.current"),
-                    # Planning content, which is what the matrix is. Not
-                    # ``current_artifact``: that representation travels under
-                    # document-text permission, and nothing here is read from a
-                    # document — these are the field references the matrix
-                    # names, in the vocabulary the schemas already declare.
-                    representations=(ContextRepresentation("planning_context"),),
-                    budget=ContextBudget(max_items=1, max_characters=24_000),
-                ),
-            ),
-            budget=ContextBudget(max_items=2, max_characters=88_000),
-            # The schemas, what the matrix asks of them, and nothing either was
-            # induced or drafted from.
-            privacy=ContextPrivacy(
-                allow_document_schemas=True, allow_planning_context=True
             ),
         ),
     )
@@ -1417,7 +1388,7 @@ PRESETS.register(
                 # the fields that one document happened to fill.
                 #
                 # Scoped to the row by the adapter, not to the engagement. One
-                # item, following ``tests.cycle_linkage``: a partial vocabulary
+                # item, following ``planning.cycle``: a partial vocabulary
                 # is a question written against a field list with a hole in it.
                 ContextSource(
                     id="evidence_schemas",

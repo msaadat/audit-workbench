@@ -1,5 +1,13 @@
 # RCM generation redesign: a staged pipeline, delivered in small steps
 
+> **Superseded in part (November 2026).** The cycle is no longer one artifact
+> authored in two turns either side of the matrix. `planning.cycle_ready` now
+> runs after `documents.schemas_stamped` and designs the shape *and* its rules
+> in one turn; `tests.cycle_ruleset_proposed` and the `tests.cycle_linkage`
+> worker are gone, and the coverage that turn wrote is answered per row by
+> `tests.generate`. See `docs/audit-workflow-graph.md`.
+
+
 **Status:** steps 0 to 3 and step 5 are implemented (4-5 September 2026); step
 4 is still design. Step 5, the cycle design after the APM, superseded 4a and
 4b; **step 4 is now the next step to build**, on step 5's artifact.

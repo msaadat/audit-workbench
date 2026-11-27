@@ -295,14 +295,12 @@ data.relationships_inferred                  │   │
 planning.context_ready  <────────────────────┴───┘
   -> planning.apm_ready
      -> planning.cycle_ready        (+ sources.imported,
-     |                                 documents.types_classified)
-     -> planning.rcm_ready          (+ planning.cycle_ready,
-           |                            documents.categorized,
-           |                            documents.types_classified)
-           -> tests.cycle_ruleset_proposed  (+ planning.cycle_ready,
-              |                                documents.schemas_stamped)
-              -> tests.cycle_ruleset_approved
-                 -> tests.specified          (+ planning.rcm_ready)
+        |                              documents.types_classified,
+        |                              documents.schemas_stamped)
+        -> planning.rcm_ready       (+ documents.categorized,
+        |                              documents.types_classified)
+        -> tests.cycle_ruleset_approved
+              -> tests.specified          (+ planning.rcm_ready)
                     -> tests.promoted_from_analysis
                        -> fieldwork.executed
                           -> results.rolled_up
@@ -334,14 +332,19 @@ rest of the graph unchanged. The document capabilities are declared once, in
 composes seven of the eight through `CapabilityGroupView` — generation only,
 never auditor review — rather than restating them.
 
-**The cycle sits in front of the matrix, not behind the schemas.**
-`planning.cycle_ready` reads the process flow out of the memorandum alone, so it
-costs no extraction, and its step names become the vocabulary a matrix row's
-`process` is chosen from. There is deliberately *no* schema edge into
-`planning.rcm_ready`: a matrix row says a requirement needs linked source
-records and stops, and which fields must then agree is decided downstream by
-`tests.cycle_ruleset_proposed`, where the induced schemas are in hand. That
-keeps a re-derived schema from invalidating the whole matrix.
+**The cycle is designed whole, after the schemas and before the matrix.**
+`planning.cycle_ready` is one turn: the steps read out of the memorandum, the
+document roles on them, and the rules linking those documents, written in the
+induced field vocabulary and filed as a proposed ruleset in the same commit.
+Its step names are the vocabulary a matrix row's `process` is chosen from, so
+the matrix reaches the evidence read through the cycle; there is still no
+schema edge into `planning.rcm_ready` itself, and the matrix is held stale
+against the cycle's shape, not its rules. Which approved assertions answer a
+row's requirement is decided when that row's cycle test is written
+(`tests.specified`) and written back onto the row there. The cycle used to be
+two turns — a shape before the matrix, and `tests.cycle_ruleset_proposed` after
+it — and the second ran only where the matrix asked, which left an engagement
+whose matrix asked nothing with a cycle that had no relationships at all.
 
 **`tests.cycle_ruleset_approved` is a gate, not work.** In `permission` mode it
 expands no unit, settles from its own readiness, and the run carries on without

@@ -235,7 +235,7 @@ def test_every_stage_names_a_phase_the_payload_declares(stub_store):
     """
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00")]),
+             [_milestone("tests.cycle_ruleset_approved", "2026-08-14T06:01:00+00:00")]),
     ])
     result = engagement_record.record(_Workspace())
     declared = {phase["id"] for phase in result["phases"]}
@@ -320,11 +320,11 @@ def test_a_stage_outside_the_spine_is_still_given_its_phase(stub_store):
     """The cycle ruleset is registered and has no spine row, and still belongs."""
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00")]),
+             [_milestone("tests.cycle_ruleset_approved", "2026-08-14T06:01:00+00:00")]),
     ])
     rows = _rows(engagement_record.record(_Workspace()))
 
-    assert rows["tests.cycle_ruleset_proposed"]["phase"] == "planning"
+    assert rows["tests.cycle_ruleset_approved"]["phase"] == "planning"
 
 
 def _papers(root, *row_ids):
@@ -508,18 +508,18 @@ def test_a_run_that_cannot_be_loaded_is_skipped_rather_than_failing_the_record(
 def test_a_stage_the_record_has_not_learned_yet_shows_its_own_briefing(stub_store):
     """A stage the workflows declare and the record has no entry for.
 
-    `tests.cycle_ruleset_proposed` is exactly that today: a real capability of
+    `tests.cycle_ruleset_approved` is exactly that today: a real capability of
     the audit graph with no row of its own here. It shows what it filed rather
     than vanishing because the record is behind the graph.
     """
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [dict(_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00"),
+             [dict(_milestone("tests.cycle_ruleset_approved", "2026-08-14T06:01:00+00:00"),
                    summary="A stage the record has never seen")]),
     ])
-    row = _rows(engagement_record.record(_Workspace()))["tests.cycle_ruleset_proposed"]
+    row = _rows(engagement_record.record(_Workspace()))["tests.cycle_ruleset_approved"]
 
-    assert "tests.cycle_ruleset_proposed" not in engagement_record._SPINE
+    assert "tests.cycle_ruleset_approved" not in engagement_record._SPINE
     assert row["filed"] is None
     assert row["status"] == "completed"
     assert row["summary"] == "A stage the record has never seen"
@@ -555,11 +555,11 @@ def test_every_stage_row_carries_the_same_keys(stub_store):
     """
     stub_store([
         _run("r1", "2026-08-14T06:00:00+00:00",
-             [_milestone("tests.cycle_ruleset_proposed", "2026-08-14T06:01:00+00:00")]),
+             [_milestone("tests.cycle_ruleset_approved", "2026-08-14T06:01:00+00:00")]),
     ])
     rows = _rows(engagement_record.record(_Workspace()))
     spine = set(rows["sources.imported"])
-    assert set(rows["tests.cycle_ruleset_proposed"]) == spine
+    assert set(rows["tests.cycle_ruleset_approved"]) == spine
     for removed in ("history", "highlights", "current", "live_body"):
         assert removed not in spine
 

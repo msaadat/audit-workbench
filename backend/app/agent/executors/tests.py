@@ -18,7 +18,6 @@ from dataclasses import dataclass
 
 from ... import (
     cycle_linking,
-    cycle_rulesets,
     cycle_vouching,
     data_tests,
     doc_tests,
@@ -131,6 +130,7 @@ def _generation_result(
     *,
     revision_before: int,
     outcomes: list[dict],
+    contracted: Mapping[str, list[dict]] | None = None,
 ) -> ExecutorResult:
     # A retired test no longer exists, so it has no postcondition hash; its
     # replacement is the ref that proves the commit.
@@ -153,7 +153,12 @@ def _generation_result(
         artifact_refs=refs,
         applied_parents=dict(request.expected_parents),
         postcondition_hashes=parent_hashes(workspace, refs),
-        output={"status": "updated", "tests": outcomes},
+        output={
+            "status": "updated",
+            "tests": outcomes,
+            "partial": list((contracted or {}).get("partial") or []),
+            "downgraded": list((contracted or {}).get("downgraded") or []),
+        },
     )
 
 
@@ -685,6 +690,80 @@ def _retire_replaced_test(
     }
 
 
+def _contract_row(
+    fresh: Workspace,
+    rcm_id: str,
+    specs: list[dict],
+    unsupported: list[Mapping[str, object]],
+) -> dict[str, list[dict]]:
+    """Write what this row's cycle tests answered back onto the row.
+
+    The row schema does not change and neither does anything reading it: an
+    attribute has always carried ``required_comparisons`` and the cycle test has
+    always read them there. Only the author moved — from a ruleset proposal
+    that answered every requirement at once, before any rules were approved, to
+    the turn writing this row's tests against approved ones. Written inside the
+    same guarded commit as the tests, so the test is built against the contract
+    it was proposed with.
+
+    Returns what the run reports: ``partial``, a requirement answered for some
+    of the records it is about and stated as a gap for the rest; and
+    ``downgraded``, a requirement no approved rule can express, re-routed to
+    the strongest path still open to it.
+    """
+
+    report: dict[str, list[dict]] = {"partial": [], "downgraded": []}
+    contracts: dict[str, dict] = {}
+    for spec in specs:
+        for key, answer in dict(spec.get("contract") or {}).items():
+            contracts[str(key)] = dict(answer)
+    if not contracts and not unsupported:
+        return report
+    working = dict(_current_row(fresh, rcm_id))
+    for item in unsupported:
+        key = str(item.get("requirement_ref") or "").split(":", 1)[-1]
+        working = cycle_linking.downgrade_uncontracted(fresh, working, key)
+        report["downgraded"].append({
+            "rcm_id": rcm_id,
+            "control_attribute": key,
+            "reason": str(item.get("reason") or ""),
+        })
+    attributes = []
+    for attribute in working.get("control_attributes") or []:
+        key = str((attribute or {}).get("key") or "")
+        answer = contracts.get(key)
+        if (
+            answer is None
+            or not isinstance(attribute, Mapping)
+            or not cycle_linking.uncontracted(attribute)
+            or not answer.get("comparisons")
+        ):
+            attributes.append(attribute)
+            continue
+        attributes.append({
+            **attribute,
+            "required_comparisons": list(answer["comparisons"]),
+        })
+        for gap in answer.get("gaps") or []:
+            report["partial"].append({
+                "rcm_id": rcm_id,
+                "control_attribute": key,
+                "role": str(gap.get("role") or ""),
+                "reason": str(gap.get("reason") or ""),
+            })
+    try:
+        # Exact, against this engagement's schemas. ``update_rcm`` validates
+        # shape alone, so a field a schema does not state would otherwise be
+        # persisted and surface later as a cycle test that cannot be built.
+        validated = cycle_vouching.validate_control_attributes(
+            attributes, workspace=fresh
+        )
+    except cycle_vouching.CycleSchemaError as error:
+        raise WorkspaceError(f"RCM row '{rcm_id}': {error}") from error
+    fresh.update_rcm(rcm_id, {"control_attributes": validated}, agent=True)
+    return report
+
+
 def execute_test_generation(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
     """Commit one RCM row's generated tests under its parent-hash guard.
 
@@ -694,12 +773,21 @@ def execute_test_generation(request: ExecutorRequest, raw_target: object) -> Exe
     visible with an intermediate ``draft`` status (merge plan sections 2.1, 8).
     """
     target, specs = _validated_generation(request, raw_target)
-    state: dict[str, int] = {}
+    unsupported = [
+        _plain_json(item)
+        for item in request.proposal.get("unsupported") or []
+        if isinstance(item, Mapping)
+    ]
+    state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> list[dict]:
         state["revision_before"] = fresh.revision
         row = _current_row(fresh, target.rcm_id)
+        # The proposal's parent, taken before the contract is written: it is
+        # what the tests were generated against, and what reconciliation reads
+        # them back by.
         parent_sha1 = audit_hashes.rcm_row_sha1(row)
+        state["contracted"] = _contract_row(fresh, target.rcm_id, specs, unsupported)
         outcomes: list[dict] = []
         for spec in specs:
             kind = str(spec["kind"])
@@ -758,8 +846,9 @@ def execute_test_generation(request: ExecutorRequest, raw_target: object) -> Exe
     return _generation_result(
         request,
         committed.workspace,
-        revision_before=state["revision_before"],
+        revision_before=int(state["revision_before"]),
         outcomes=committed.value,
+        contracted=dict(state.get("contracted") or {}),
     )
 
 
@@ -866,435 +955,6 @@ def reconcile_test_generation(
     )
 
 
-# --------------------------------------------------------------------------- #
-# tests.cycle_ruleset
-# --------------------------------------------------------------------------- #
-CYCLE_RULESET_EXECUTOR_ID = "tests.cycle_ruleset"
-
-
-@dataclass
-class CycleRulesetExecutorTarget:
-    """Mutable target for one proposed cycle ruleset."""
-
-    workspace: Workspace
-    run_id: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.workspace, Workspace):
-            raise ValueError("Cycle ruleset target requires a Workspace.")
-        run_id = str(self.run_id or "").strip()
-        if not run_id:
-            raise ValueError("Cycle ruleset target requires a run_id.")
-        self.run_id = run_id
-
-
-def cycle_ruleset_ref(ruleset_id: str) -> str:
-    return f"cycle_ruleset:{ruleset_id}"
-
-
-def _cycle_ruleset_result(
-    request: ExecutorRequest,
-    workspace: Workspace,
-    *,
-    revision_before: int,
-    record: Mapping[str, object],
-    downgraded: list[dict] | None = None,
-    partial: list[dict] | None = None,
-    unreachable: list[dict] | None = None,
-) -> ExecutorResult:
-    ref = cycle_ruleset_ref(str(record.get("ruleset_id") or ""))
-    return ExecutorResult(
-        executor_id=request.executor_id,
-        capability_id=request.capability_id,
-        unit_id=request.unit_id,
-        workspace_revision_before=revision_before,
-        workspace_revision_after=workspace.revision,
-        artifact_refs=[ref],
-        applied_parents=dict(request.expected_parents),
-        # A ruleset lives in a side store, so ``parent_hashes`` has nothing to
-        # say about it; its own rules hash is the honest postcondition. The
-        # hash deliberately excludes ``measured``, so a fan-out that moved
-        # because documents arrived does not read as a different commit.
-        postcondition_hashes={
-            ref: hashlib.sha1(
-                str(record.get("ruleset_hash") or "").encode("utf-8")
-            ).hexdigest()
-        },
-        output={
-            "status": "proposed",
-            "ruleset_id": str(record.get("ruleset_id") or ""),
-            "ruleset_hash": str(record.get("ruleset_hash") or ""),
-            "cycle_label": str(record.get("cycle_label") or ""),
-            "roles": len(list(record.get("roles") or [])),
-            "join_keys": len(list(record.get("join_keys") or [])),
-            "assertions": len(list(record.get("assertions") or [])),
-            # Requirements no field these schemas carry could express. The
-            # attribute kept its requirement and took the strongest path still
-            # open to it, and an auditor is told which control that happened on.
-            "downgraded": list(downgraded or []),
-            # Requirements answered for some of the records they are about. The
-            # comparisons that could be written are contracted; the rest is
-            # named, role by role, with the reason no pair of fields states it.
-            "partial": list(partial or []),
-            # Rules the field-name floor proposed and review kept, and the pairs
-            # review declined. The declines are on the ruleset with their
-            # reasons; the count is what the run reports.
-            "field_pair_assertions": sum(
-                1
-                for item in record.get("assertions") or []
-                if isinstance(item, Mapping) and item.get("proposed_by") == "schema_names"
-            ),
-            "declined_pairs": len(list(record.get("declined_pairs") or [])),
-            # A position the cycle holds that no join key can reach, because its
-            # document type carries no identifier field. Dropped from the rules
-            # so the rest of the ruleset can stand, kept on the shape because
-            # the step still happens, and reported so it is not a silent gap.
-            "unreachable": list(unreachable or []),
-        },
-    )
-
-
-def _derived_comparison(
-    assertion: Mapping[str, object], roles: Mapping[str, Mapping[str, object]]
-) -> dict | None:
-    """One matrix comparison, read off the assertion that answers a requirement.
-
-    The matrix says what must be shown; the assertion says which fields show
-    it; this restates the second in the vocabulary the first is stored in. The
-    translation is the role: a rule names a *position* in the cycle, and a row
-    names the document type filling it.
-    """
-
-    def operand(side: object) -> dict | None:
-        if not isinstance(side, Mapping):
-            return None
-        role = roles.get(str(side.get("role") or ""))
-        document_type = str((role or {}).get("document_type") or "")
-        field = str(side.get("field") or "")
-        if not document_type or not field:
-            return None
-        return {"document_type": document_type, "field": field}
-
-    left = operand(assertion.get("left"))
-    if left is None:
-        return None
-    raw_right = assertion.get("right")
-    right = None
-    if raw_right is not None:
-        right = operand(raw_right)
-        if right is None:
-            return None
-    return {
-        "key": str(assertion.get("id") or ""),
-        "left": left,
-        "right": right,
-        # The requirement in the terms the control is written in, which is what
-        # an auditor reading the row needs and what the rule already carries.
-        "rationale": str(
-            assertion.get("requirement") or assertion.get("rationale") or ""
-        ),
-    }
-
-
-def _contract_matrix_rows(
-    fresh: Workspace, proposal: Mapping[str, object]
-) -> list[dict]:
-    """Write each answered requirement back onto the matrix row that asked it.
-
-    The row schema does not change and neither does anything reading it: the
-    matrix has always carried ``required_comparisons`` and downstream has
-    always read them there. Only the author moved — to the one turn that has
-    this engagement's induced schemas in front of it.
-
-    Returns what the run reports: ``downgraded``, a requirement no field these
-    schemas carry can express, which is a real limit an auditor has to be told
-    which control it landed on; and ``partial``, a requirement answered for
-    some of the records it is about and stated as a gap for the rest, so the
-    part of the control nothing tests is named rather than implied away.
-    """
-
-    coverage = [
-        entry for entry in proposal.get("coverage") or [] if isinstance(entry, Mapping)
-    ]
-    if not coverage:
-        return {"downgraded": [], "partial": []}
-    roles = {
-        str(role.get("name") or ""): role
-        for role in proposal.get("roles") or []
-        if isinstance(role, Mapping)
-    }
-    assertions = {
-        str(item.get("id") or ""): item
-        for item in proposal.get("assertions") or []
-        if isinstance(item, Mapping)
-    }
-    by_row: dict[str, list[Mapping[str, object]]] = {}
-    for entry in coverage:
-        by_row.setdefault(str(entry.get("rcm_id") or ""), []).append(entry)
-    rows = {str(row.get("id") or ""): row for row in fresh.rcm or []}
-    # Profiled once. The fallback asks which population bears on a row, and
-    # answering that per attribute would re-profile every table each time.
-    answers = cycle_linking.tabular_evidence_answers(fresh)
-    report: dict[str, list[dict]] = {"downgraded": [], "partial": []}
-    for rcm_id, entries in by_row.items():
-        row = rows.get(rcm_id)
-        if row is None:
-            # The matrix moved under the proposal. Not this executor's to
-            # repair: the unit's guarded parents are these rows, so a rewritten
-            # one conflicts the commit rather than reaching here.
-            continue
-        working = dict(row)
-        for entry in entries:
-            attribute_key = str(entry.get("control_attribute") or "")
-            if entry.get("unsupported"):
-                working = cycle_linking.downgrade_uncontracted(
-                    fresh, working, attribute_key, answers=answers
-                )
-                report["downgraded"].append({
-                    "rcm_id": rcm_id,
-                    "control_attribute": attribute_key,
-                    "reason": str(entry.get("reason") or ""),
-                })
-                continue
-            # Every assertion the requirement needs, not the first of them: a
-            # contract holding one of five comparisons understates what the
-            # control has to show and what a cycle test is refused without.
-            comparisons = []
-            for assertion_id in cycle_rulesets.coverage_assertion_ids(entry):
-                assertion = assertions.get(assertion_id)
-                comparison = (
-                    _derived_comparison(assertion, roles)
-                    if assertion is not None
-                    else None
-                )
-                if comparison is not None:
-                    comparisons.append(comparison)
-            if not comparisons:
-                continue
-            # A gap is reported only where it lands: an attribute an earlier
-            # proposal already contracted is left alone, and so is its report.
-            lands = any(
-                isinstance(attribute, Mapping)
-                and str(attribute.get("key") or "") == attribute_key
-                and cycle_linking.uncontracted(attribute)
-                for attribute in working.get("control_attributes") or []
-            )
-            for gap in (entry.get("gaps") or []) if lands else []:
-                if isinstance(gap, Mapping):
-                    report["partial"].append({
-                        "rcm_id": rcm_id,
-                        "control_attribute": attribute_key,
-                        "role": str(gap.get("role") or ""),
-                        "reason": str(gap.get("reason") or ""),
-                    })
-            working = {
-                **working,
-                "control_attributes": [
-                    (
-                        {**attribute, "required_comparisons": comparisons}
-                        if isinstance(attribute, Mapping)
-                        and str(attribute.get("key") or "") == attribute_key
-                        and cycle_linking.uncontracted(attribute)
-                        else attribute
-                    )
-                    for attribute in working.get("control_attributes") or []
-                ],
-            }
-        try:
-            # Exact, against this engagement's schemas. ``update_rcm`` validates
-            # shape alone — it has no workspace to check against — so a field a
-            # schema does not state would otherwise be persisted and surface
-            # three stages on as a cycle test that cannot be generated.
-            attributes = cycle_vouching.validate_control_attributes(
-                working.get("control_attributes"), workspace=fresh
-            )
-        except cycle_vouching.CycleSchemaError as error:
-            raise WorkspaceError(
-                f"RCM row '{rcm_id}': {error}"
-            ) from error
-        fresh.update_rcm(rcm_id, {"control_attributes": attributes}, agent=True)
-    return report
-
-
-def _anchor_population(cycle: Mapping[str, object]) -> dict:
-    """The population a cycle test starts from, and the step that holds it."""
-
-    for step in cycle.get("steps") or []:
-        if not isinstance(step, Mapping):
-            continue
-        for population in step.get("populations") or []:
-            if isinstance(population, Mapping) and population.get("anchor"):
-                return {"step": step, "population": population}
-    return {}
-
-
-def _bound_to_the_cycle(proposal: Mapping[str, object], cycle: object) -> dict:
-    """Fill in from the shape what the model was told not to write.
-
-    The anchor's table and column are the shape's, not the response's: the
-    governing rule of the redesign is that the model names things and local code
-    finds them, and a table name copied by a model is an identifier it can get
-    wrong. A role the response declared unreachable is dropped from the stored
-    rules — ``cycle_rulesets.validate`` would refuse the whole ruleset over a
-    role no join key reaches — while the shape keeps it, because it is still a
-    step of the process.
-    """
-
-    bound = _plain_json(proposal)
-    unreachable = {
-        str(item.get("role"))
-        for item in bound.pop("unreachable", None) or []
-        if isinstance(item, Mapping) and item.get("role")
-    }
-    if unreachable:
-        bound["roles"] = [
-            role
-            for role in bound.get("roles") or []
-            if str(role.get("name")) not in unreachable
-        ]
-    if not isinstance(cycle, Mapping) or not cycle.get("steps"):
-        return bound
-    anchored = _anchor_population(cycle)
-    population = anchored.get("population") or {}
-    table = str(population.get("table") or "")
-    if not table:
-        return bound
-    anchor = dict(bound.get("anchor") or {})
-    anchor["table"] = table
-    # Only the *table* is the shape's. Which of its columns carries the
-    # identifier is a judgement about the data, and the proposing turn is shown
-    # every column to make it — so the response keeps that field, except where
-    # the shape has already named the columns a borrowed population lives in.
-    #
-    # Deriving it instead cost a treasuryfull ruleset: the role's document field
-    # (`deal_reference`) was written in as the column, `04_deals` carries
-    # `DEAL_ID`, and nothing refused it. `cycle_rulesets.validate` now does.
-    columns = [str(value) for value in population.get("columns") or []]
-    if columns:
-        anchor["column"] = columns[0]
-    bound["anchor"] = anchor
-    return bound
-
-
-def execute_cycle_ruleset(
-    request: ExecutorRequest, raw_target: object
-) -> ExecutorResult:
-    """Store one model-proposed cycle ruleset. Proposing is never approving.
-
-    The record lands with ``status: proposed`` and no approver, which is the
-    whole point of the separation: an agent authors rules, and only an auditor
-    reading the measured fan-out can make them able to produce a result.
-    """
-
-    if not isinstance(raw_target, CycleRulesetExecutorTarget):
-        raise WorkspaceError("Unsupported cycle ruleset target.")
-    proposal = request.proposal
-    if not isinstance(proposal, Mapping):
-        raise WorkspaceError("A cycle ruleset commit requires a proposal.")
-    target = raw_target
-    state: dict[str, object] = {}
-    unreachable = [
-        _plain_json(item)
-        for item in (proposal.get("unreachable") or [])
-        if isinstance(item, Mapping)
-    ]
-
-    def commit(fresh: Workspace) -> dict:
-        state["revision_before"] = fresh.revision
-        # Read inside the guarded callback, like everything else this commit
-        # rests on: ``planning:cycle`` is one of the unit's parents, so the
-        # shape the anchor is bound against here is the one the proposal was
-        # written against or the commit does not happen at all.
-        bound = _bound_to_the_cycle(proposal, fresh.planning.get("cycle"))
-        record = cycle_rulesets.save(fresh, bound, proposed_by="agent")
-        # Inside the same guarded callback as the save: the unit's parents are
-        # the matrix rows these comparisons land on, so a row rewritten since
-        # the proposal was authored conflicts the whole commit rather than
-        # being quietly overwritten with a contract answering the old wording.
-        state.update(_contract_matrix_rows(fresh, proposal))
-        return record
-
-    # Through the transaction even though the ruleset lands in a side store,
-    # for the reason the schema freeze is: it takes the write lock, re-checks
-    # the schemas it was written against have not moved underneath, and
-    # publishes a revision so the proposal is an event rather than a file.
-    committed = mutate(
-        target.workspace,
-        commit,
-        expected_parents=request.expected_parents,
-    )
-    target.workspace = committed.workspace
-    return _cycle_ruleset_result(
-        request,
-        committed.workspace,
-        revision_before=int(state["revision_before"]),
-        record=dict(committed.value),
-        downgraded=list(state.get("downgraded") or []),
-        partial=list(state.get("partial") or []),
-        unreachable=unreachable,
-    )
-
-
-def reconcile_cycle_ruleset(
-    request: ExecutorRequest,
-    raw_target: object,
-) -> ExecutorReconciliation:
-    """Classify an interrupted proposal commit.
-
-    Keyed on the rules hash rather than on the ruleset id: the id is minted at
-    save time, so a resumed run cannot know the one its interrupted attempt
-    produced. A stored proposal asserting exactly these rules *is* this commit,
-    and re-running would file a second identical proposal for an auditor to
-    choose between for no reason.
-    """
-
-    if not isinstance(raw_target, CycleRulesetExecutorTarget):
-        raise WorkspaceError("Unsupported cycle ruleset target.")
-    target = raw_target
-    proposal = request.proposal
-    if not isinstance(proposal, Mapping):
-        return ExecutorReconciliation("not_applied")
-    current = Workspace(target.workspace.root)
-    try:
-        expected = cycle_rulesets.validate(current, _plain_json(proposal))
-    except WorkspaceError:
-        # The schemas moved under the proposal, so it is not this commit and
-        # cannot become it. Re-running is what reports that honestly.
-        return ExecutorReconciliation("not_applied")
-    stored = next(
-        (
-            record
-            for record in cycle_rulesets.list_rulesets(current)
-            if str(record.get("ruleset_hash") or "")
-            == str(expected.get("ruleset_hash") or "")
-        ),
-        None,
-    )
-    if stored is None:
-        return ExecutorReconciliation("not_applied")
-    target.workspace = current
-    return ExecutorReconciliation(
-        "already_applied",
-        result=_cycle_ruleset_result(
-            request,
-            current,
-            revision_before=max(request.expected_revision, current.revision - 1),
-            record=stored,
-        ),
-        reason="This run's cycle ruleset proposal already holds.",
-    )
-
-
-CYCLE_RULESET_EXECUTOR = ExecutorDefinition(
-    executor_id=CYCLE_RULESET_EXECUTOR_ID,
-    concurrency=ExecutorConcurrency("parent_hashes"),
-    implementation=execute_cycle_ruleset,
-    reconciler=reconcile_cycle_ruleset,
-)
-
-EXECUTORS.register(CYCLE_RULESET_EXECUTOR)
-
-
 GENERATE_EXECUTOR = ExecutorDefinition(
     executor_id=GENERATE_EXECUTOR_ID,
     concurrency=ExecutorConcurrency("parent_hashes"),
@@ -1306,9 +966,6 @@ EXECUTORS.register(GENERATE_EXECUTOR)
 
 
 __all__ = [
-    "CYCLE_RULESET_EXECUTOR",
-    "CYCLE_RULESET_EXECUTOR_ID",
-    "CycleRulesetExecutorTarget",
     "GENERATE_EXECUTOR",
     "GENERATE_EXECUTOR_ID",
     "TestGenerateExecutorTarget",

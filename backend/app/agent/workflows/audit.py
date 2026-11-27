@@ -117,59 +117,56 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # missing or out-of-date artifact instead.
     "planning.rcm_revised": (),
     "planning.apm_revised": (),
+    # The cycle is designed whole, in one turn: the steps, the document roles
+    # each holds, and the rules that link those documents — which field joins
+    # which, which values must agree. The rules are written in the induced
+    # field vocabulary, so the schemas come first. That puts the evidence read
+    # in front of the matrix again, which the shape-only design had avoided;
+    # the trade is a cycle that exists complete the moment it is drawn, rather
+    # than one whose relationships waited on the matrix to ask for them and
+    # never came where it did not. Which document field is which is a property
+    # of the schemas, not of any requirement's wording.
     "planning.cycle_ready": (
         "planning.apm_ready",
         "sources.imported",
         "documents.types_classified",
+        "documents.schemas_stamped",
     ),
     # Classification, not extraction. Both are cheap — page-one text and the
     # type of each document — and the matrix needs them: a row choosing an
     # evidence strategy has to know which record kinds this engagement actually
     # holds, or ``transaction_cycle`` is a guess about a corpus it never saw.
     #
-    # The *schema* edge is gone. A matrix row now says a requirement needs
-    # linked source records and stops; which fields must then agree is decided
-    # by the cycle design, downstream, where the induced schemas are in hand.
-    # What that buys is a matrix no longer invalidated by a re-derived schema —
-    # the expensive extraction pass no longer sits between the memorandum and
-    # the matrix, and a schema that moves re-runs the cycle design rather than
-    # the whole RCM.
+    # There is no direct schema edge. A matrix row says a requirement needs
+    # linked source records and stops; which fields answer it is chosen when
+    # the row's tests are written, from the rules the cycle already holds. The
+    # matrix is held stale against the cycle's shape (``planning:cycle``), not
+    # its rules, which live in the ruleset store; a schema that moves re-runs
+    # the cycle design, and the matrix follows only if the shape it returns
+    # differs — which the turn is asked to avoid by reusing the step names the
+    # matrix already groups its rows by.
     #
-    # The *cycle* edge is new, and is a vocabulary rather than a wait: the
-    # shape's step names are what a row's ``process`` is chosen from, so the
-    # matrix can no longer invent a process structure the engagement has not
-    # written down. It costs no extraction — the shape is drafted from the
-    # memorandum alone — so the closure's order does not move.
+    # The cycle edge is a vocabulary: the shape's step names are what a row's
+    # ``process`` is chosen from, so the matrix cannot invent a process
+    # structure the engagement has not written down.
     "planning.rcm_ready": (
         "planning.apm_ready",
         "planning.cycle_ready",
         "documents.categorized",
         "documents.types_classified",
     ),
-    # Rules are written against the matrix's requirements, the cycle's roles and
-    # the induced field vocabulary, so all three must exist first — and this is
-    # the only stage that sees all three, which is why the evidence contract is
-    # authored here. What the cycle edge changes is that the roles are now an
-    # input: this stage chooses fields, and no longer invents the positions
-    # those fields fill. Proposing is still not approving — they are two
-    # capabilities, and the second one below is where the two run modes part.
-    "tests.cycle_ruleset_proposed": (
-        "planning.rcm_ready",
-        "planning.cycle_ready",
-        "documents.schemas_stamped",
-    ),
     # Approval is on the graph, and in ``permission`` mode it is a gate that
     # reports and never acts: the stage expands no unit, settles from its own
     # readiness, and the run carries on without a cycle. In ``auto`` mode the
     # auditor has delegated the run's approvals, so the stage approves the
-    # rules the previous one wrote and the cycle test becomes generatable.
+    # rules the cycle design proposed and the cycle test becomes generatable.
     #
     # The edge into ``tests.specified`` is partial (``_PARTIAL_DEPENDENCIES``
     # in ``agent/audit_execution.py``) and must stay partial. Generation has
     # always been able to proceed without a cycle — it writes document-question
     # tests instead — and making an unapproved ruleset withhold every test in
     # the engagement would break permission-mode runs to serve auto-mode ones.
-    "tests.cycle_ruleset_approved": ("tests.cycle_ruleset_proposed",),
+    "tests.cycle_ruleset_approved": ("planning.cycle_ready",),
     "tests.specified": ("planning.rcm_ready", "tests.cycle_ruleset_approved"),
     # Placing an exploratory procedure needs the matrix to place it in. It sits
     # after test generation so a promoted test is written against a matrix whose

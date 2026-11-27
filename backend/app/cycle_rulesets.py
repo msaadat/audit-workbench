@@ -460,6 +460,25 @@ def validate(workspace: Workspace, payload: object) -> dict:
     return record
 
 
+def schema_basis(workspace: Workspace) -> str:
+    """One digest over every induced schema, or empty where none exists.
+
+    What the cycle design's rules were written against. The cycle records it
+    when it commits, and readiness compares: a schema induced or re-derived
+    since is a vocabulary the rules were never written in, so the cycle is
+    designed again rather than leaving an auditor approving rules against
+    fields that have moved. Every type, not only the types the cycle's roles
+    name — a type induced since may be the one a step had no role for.
+    """
+
+    items = sorted(
+        (str(item.get("document_type") or ""), str(item.get("schema_hash") or ""))
+        for item in document_schemas.list_schemas(workspace)
+        if item.get("document_type")
+    )
+    return canonical_sha256(items) if items else ""
+
+
 def _cycle_sha1(workspace: Workspace) -> str:
     """The hash of the cycle shape's material projection, or empty where none."""
 
