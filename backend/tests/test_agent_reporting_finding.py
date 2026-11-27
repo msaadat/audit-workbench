@@ -334,7 +334,7 @@ def test_finding_worker_is_given_the_exception_rows_and_told_to_identify_them():
     user = gateway.calls[0]["user"]
     # The identifier reaches the prompt, so the draft can name the record.
     assert "INV2024008" in user
-    assert '"rows_withheld": 0' in user.replace(" ", " ")
+    assert json.loads(user)["EXCEPTION ROWS"]["rows_withheld"] == 0
     assert "identify the records that failed" in gateway.calls[0]["system"].casefold()
 
 
@@ -354,7 +354,7 @@ def test_finding_worker_runs_without_an_exception_table():
     result = WORKERS.execute(request, gateway)
 
     assert result.repaired is False
-    assert '"EXCEPTION ROWS": null' in gateway.calls[0]["user"]
+    assert json.loads(gateway.calls[0]["user"])["EXCEPTION ROWS"] is None
 
 
 def test_finding_worker_takes_its_required_sections_from_the_supplied_template():

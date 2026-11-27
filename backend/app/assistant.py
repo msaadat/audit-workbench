@@ -1367,7 +1367,7 @@ def ask(
     session = _Session(workspace, chat_id=chat_id, commander=commander)
     command_schemas = _command_schemas(commander)
     tools = TOOLS + command_schemas
-    manifest_text = json.dumps(workspace_manifest(workspace), indent=1)
+    manifest_text = json.dumps(workspace_manifest(workspace), separators=(",", ":"))
     system_prompt = SYSTEM_PROMPT % manifest_text
     if command_schemas:
         system_prompt += COMMAND_RULES

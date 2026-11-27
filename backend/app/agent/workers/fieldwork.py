@@ -661,7 +661,7 @@ def run_cycle_vouch_worker(
             },
             "grid": list(checks.values()),
         },
-        indent=1,
+        separators=(",", ":"),
     )
     if attempt.is_repair:
         user += (

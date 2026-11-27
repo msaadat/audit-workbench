@@ -528,7 +528,7 @@ def run_join_utility_worker(
         "JOIN CANDIDATES": catalog,
         "TABLE SCHEMAS": schemas,
         "REQUIRED OUTPUT": f"Call {JOIN_UTILITY_SUBMISSION_TOOL} exactly once.",
-    }, indent=1, ensure_ascii=False)
+    }, separators=(",", ":"), ensure_ascii=False)
     conversation = None
     if attempt.is_repair:
         # The prior decisions are replayed, not summarized into a list of
@@ -921,7 +921,7 @@ def run_analysis_authoring_worker(
                 AUDITOR_INSTRUCTION_SOURCE_ID,
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
         default=str,
     )
@@ -1590,7 +1590,7 @@ def run_analysis_reading_worker(
                 "actually want to make."
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
     if attempt.is_repair:
@@ -2989,7 +2989,7 @@ def run_analysis_summary_worker(
                 request, AUDITOR_INSTRUCTION_SOURCE_ID, SUMMARY_READING_SOURCE_ID
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
         default=str,
     )
@@ -3014,7 +3014,7 @@ def run_analysis_summary_worker(
                     "wording rather than adding facts."
                 ),
             },
-            indent=1,
+            separators=(",", ":"),
             ensure_ascii=False,
             default=str,
         )
@@ -3390,7 +3390,7 @@ def run_analysis_promotion_worker(
                 "a decline carrying a reason."
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
     if attempt.is_repair:

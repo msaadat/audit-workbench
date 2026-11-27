@@ -317,7 +317,7 @@ def run_apm_worker(
                 AUDITOR_INSTRUCTION_SOURCE_ID,
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
     if attempt.is_repair:
@@ -2408,7 +2408,7 @@ def _rcm_risks_user(request: WorkerRequest) -> str:
                 "Omission never deletes an existing row."
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
 
@@ -2468,7 +2468,7 @@ def _controls_user(request: WorkerRequest, rows: list[dict]) -> str:
                 "the gate with no control and fails there."
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
 
@@ -2730,7 +2730,7 @@ def _attributes_user(request: WorkerRequest, rows: list[dict]) -> str:
                 "attributes and fails there."
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
 
@@ -3024,7 +3024,7 @@ def _scoped_repair_user(
             ],
             "INSTRUCTIONS": instructions,
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
 
@@ -3068,7 +3068,7 @@ def _repaired_stage(
         system,
         json.dumps(
             {envelope: pending, "INSTRUCTIONS": instructions},
-            indent=1,
+            separators=(",", ":"),
             ensure_ascii=False,
         ),
         _rcm_activity(request, worker_kind),
@@ -3158,7 +3158,7 @@ def _repaired_attributes(
                     "must not be returned."
                 ),
             },
-            indent=1,
+            separators=(",", ":"),
             ensure_ascii=False,
         ),
         _rcm_activity(request, "rcm_attributes_repair"),
@@ -3317,7 +3317,7 @@ def _rcm_revision_user(request: WorkerRequest, attempt: WorkerAttempt) -> str:
             "Return the whole response again with every listed error fixed and "
             "nothing else changed."
         )
-    return json.dumps(payload, indent=1, ensure_ascii=False, default=str)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 def run_rcm_revision_worker(
@@ -3669,7 +3669,7 @@ def run_apm_revision_worker(
     )
     return gateway.complete(
         APM_REVISION_SYSTEM,
-        json.dumps(payload, indent=1, ensure_ascii=False),
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
         activity,
         attempt=attempt.number,
     )
@@ -4417,7 +4417,7 @@ def _cycle_user(request: WorkerRequest) -> str:
                 request, CYCLE_PLANNING_SOURCE_ID
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
 

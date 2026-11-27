@@ -904,7 +904,7 @@ def run_chunk_worker(
     # expected here.
     user = (
         "DOCUMENT METADATA (context only; not citation evidence):\n"
-        f"{json.dumps(document_metadata(document), indent=1, default=str)}\n"
+        f"{json.dumps(document_metadata(document), separators=(",", ":"), default=str)}\n"
         f"SOURCE SHA: {document.get('source_sha1')}\nPAGE: {chunk['page']}\n"
         f"CHARACTER RANGE: {chunk['start_character']}..{chunk['end_character']}\n"
         "DOCUMENT OPENING CHUNK: "
@@ -1098,7 +1098,7 @@ def run_visual_worker(
     document = _resolved_item(request, DOCUMENT_METADATA_SOURCE_ID)
     user = (
         "DOCUMENT METADATA (context only):\n"
-        f"{json.dumps(document_metadata(document), indent=1, default=str)}\n"
+        f"{json.dumps(document_metadata(document), separators=(",", ":"), default=str)}\n"
         f"PAGE/FRAME: {handles[0]['page']}\n"
         "PREPARED PARTS (overview first, then row-major details):\n"
         + json.dumps(
@@ -1235,7 +1235,7 @@ def run_reduction_worker(
     analyses = _supplied_chunk_analyses(request)
     user = (
         "DOCUMENT METADATA (context only; not citation evidence):\n"
-        f"{json.dumps(document_metadata(document), indent=1, default=str)}\n"
+        f"{json.dumps(document_metadata(document), separators=(",", ":"), default=str)}\n"
         f"GENERATED CHUNK ANALYSES:\n{json.dumps(analyses, default=str)}"
     )
     if attempt.is_repair:
@@ -1417,7 +1417,7 @@ def run_category_worker(
         "title": str(request.unit_input.get("title") or ""),
         "text": str(request.unit_input.get("text") or ""),
     }
-    user = json.dumps(payload, indent=1, default=str)
+    user = json.dumps(payload, separators=(",", ":"), default=str)
     if attempt.is_repair:
         user += (
             "\n\nYour previous response could not be used: "
@@ -1561,7 +1561,7 @@ def run_classification_worker(
         "title": str(request.unit_input.get("title") or ""),
         "text": str(request.unit_input.get("text") or ""),
     }
-    user = json.dumps(payload, indent=1, default=str)
+    user = json.dumps(payload, separators=(",", ":"), default=str)
     if attempt.is_repair:
         user += (
             "\n\nYour previous response could not be used: "
@@ -2025,7 +2025,7 @@ def run_structured_worker(
         "page": request.unit_input.get("page"),
     }
     user = (
-        f"{json.dumps(payload, indent=1, default=str)}\n\n"
+        f"{json.dumps(payload, separators=(",", ":"), default=str)}\n\n"
         f"RAW SOURCE CHUNK:\n{chunk['text']}"
     )
     if attempt.is_repair:
@@ -2986,7 +2986,7 @@ def run_read_worker(
         "scanned_pages": sorted({int(item.get("page") or 0) for item in handles}),
     }
     user = (
-        f"{json.dumps(payload, indent=1, default=str)}\n\n"
+        f"{json.dumps(payload, separators=(",", ":"), default=str)}\n\n"
         f"DOCUMENT TEXT:\n{supplied['text']}"
     )
     if handles:

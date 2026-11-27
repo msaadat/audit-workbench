@@ -200,7 +200,7 @@ def run_classification_worker(
         "batch_id": str(request.unit_input.get("batch_id") or ""),
         "items": supplied_files(request),
     }
-    user = json.dumps(payload, indent=1, default=str)
+    user = json.dumps(payload, separators=(",", ":"), default=str)
     if attempt.is_repair:
         user += (
             "\n\nYour previous response could not be used: "

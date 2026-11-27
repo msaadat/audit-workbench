@@ -443,7 +443,7 @@ def run_finding_worker(
                 str(_resolved_item(request, FINDING_TEMPLATE_SOURCE_ID) or "")
             ),
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
     )
     if attempt.is_repair:
@@ -742,7 +742,7 @@ def run_consolidation_worker(
                 "singletons": ["OBS-…"],
             },
         },
-        indent=1,
+        separators=(",", ":"),
         ensure_ascii=False,
         default=_plain_json,
     )

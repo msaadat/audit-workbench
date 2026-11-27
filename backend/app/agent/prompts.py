@@ -186,7 +186,7 @@ Keys:
 def fix_code_user(code: str, error: str, table_meta: dict | None) -> str:
     parts = [f"Failed code:\n{code}", f"Error:\n{error}"]
     if table_meta:
-        parts.append(f"Table metadata:\n{json.dumps(table_meta, indent=1, default=str)}")
+        parts.append(f"Table metadata:\n{json.dumps(table_meta, separators=(",", ":"), default=str)}")
     return "\n\n".join(parts)
 
 
