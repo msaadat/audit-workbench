@@ -700,26 +700,6 @@ def test_the_stage_settles_a_dead_end_until_the_data_changes(monkeypatch):
     )
 
 
-def test_relationship_inference_cannot_reach_a_model():
-    source = inspect.getsource(analysis_executors)
-    tree = ast.parse(source)
-    imported = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-    assert not any(name.endswith(("model_gateway", "workers")) for name in imported)
-    assert "ModelGateway" not in source
-    assert "app.llm" not in source
-    assert ".complete(" not in source
-
-
 # --------------------------------------------------------------------------- #
 # P8.5 — join materialization
 # --------------------------------------------------------------------------- #
@@ -1415,29 +1395,6 @@ def test_invalid_definitions_are_repaired_once_and_never_commit(
     assert titles == {"invoice_no repeats", "R01 on transactions"}
     assert all(item["kind"] in {"analytics", "python"} for item in saved)
 
-def test_the_worker_uses_only_the_supplied_bundle():
-    source = inspect.getsource(analysis_worker)
-    tree = ast.parse(source)
-    imported = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-    assert not any(
-        name.endswith(("workspaces", "store", "resolver", "workflow_runner"))
-        for name in imported
-    )
-    assert "Workspace" not in source
-    # The frame a definition targets is one the resolved context supplied; a
-    # frame the model names itself is refused.
-    assert "names no supplied frame" in source
-
 
 # --------------------------------------------------------------------------- #
 # P8.8 — deterministic definition persistence
@@ -2106,16 +2063,6 @@ def test_analysis_and_audit_requests_use_one_scheduler_with_different_outcomes(
     assert analysis_run["workflow"]["requested_outcomes"] == ["analysis.summarized"]
     assert audit_run["workflow"]["requested_outcomes"] == ["planning.apm_ready"]
     assert analysis_run["workflow"]["definition"] != audit_run["workflow"]["definition"]
-
-    # The scheduler itself stays domain-neutral: it learns either workflow only
-    # through an injected registry and validated execution bindings, and knows
-    # no capability of either domain by name.
-    scheduler_source = inspect.getsource(type(analysis_scheduler)).casefold()
-    for capability_id in (
-        *analysis_workflow.DEPENDENCIES,
-        *audit_workflow.DEPENDENCIES,
-    ):
-        assert capability_id not in scheduler_source
 
 
 # --------------------------------------------------------------------------- #

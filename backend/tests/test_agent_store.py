@@ -119,11 +119,6 @@ def test_new_run_persists_the_one_retained_protocol_engine(workspace_with_data):
     assert store.load_run(workspace_with_data, run["id"])["engine"] == store.INTAKE_ENGINE
 
 
-def test_new_run_rejects_the_retired_analysis_kind(workspace_with_data):
-    with pytest.raises(WorkspaceError, match="run kind"):
-        store.new_run(workspace_with_data, "auto", None, kind="analysis")
-
-
 def test_new_command_run_chooses_no_engine_before_routing(workspace_with_data):
     """Creation persists no engine; routing selects one before thread launch."""
     run = store.new_command_run(

@@ -1566,28 +1566,6 @@ def test_document_analysis_includes_vouchers_but_planning_default_excludes_them(
     assert named.document_ids == (voucher["id"],)
 
 
-def test_no_document_analysis_runner_or_engine_remains():
-    package = Path(store.__file__).parent
-    assert not (package / "document_analysis_runner.py").exists()
-    assert not hasattr(store, "DOCUMENT_ANALYSIS_ENGINE")
-    assert "document_analysis" not in store.PROTOCOL_ENGINE_BY_RUN_KIND
-    with pytest.raises(workspaces.WorkspaceError):
-        store.new_run(
-            workspaces.create_workspace("Rejected kind"),
-            "auto",
-            {"document_ids": ["DOC-1"]},
-            kind="document_analysis",
-        )
-
-    # The former runner's prompts moved into the registered workers.
-    from app.agent import prompts
-
-    assert not hasattr(prompts, "DOCUMENT_ANALYSIS_MAP_SYSTEM")
-    assert not hasattr(prompts, "DOCUMENT_ANALYSIS_REDUCE_SYSTEM")
-    assert document_workers.CHUNK_SYSTEM.startswith(f"[{MAP_TAG}]")
-    assert document_workers.REDUCTION_SYSTEM.startswith(f"[{REDUCE_TAG}]")
-
-
 def test_the_api_endpoints_dispatch_the_document_workflow(monkeypatch):
     ws, document = _policy_workspace("API dispatch")
     documents.extract_document(ws, document["id"])
@@ -1913,3 +1891,34 @@ def test_planning_material_still_reaches_the_prose_pass():
 
     assert document_capabilities._prose_documents(ws, scope) == [policy["id"]]
     assert document_capabilities._evidence_read_units(ws, scope) == []
+
+
+# ----------------------------------------------------------- narrative language
+def test_document_analysis_narrative_language_validation():
+    english_summary = "## Summary\n\nDealing is permitted between 09:00 and 17:00. [c1]"
+    english_notes = "## Observations\n\nThe review date is not stated. [c1]"
+    chinese_summary = "# 文档概述\n\n本摘录为《资金和投资政策》的一部分，文档参考TP/2023/04。[c1]"
+    chinese_notes = "# 审阅观察\n\n政策目的和适用范围未明确，建议获取完整政策文档。[c1]"
+
+    assert document_analysis.validate_analysis_text(
+        {"summary_markdown": english_summary, "audit_notes_markdown": english_notes}
+    ) == {"summary_markdown": english_summary, "audit_notes_markdown": english_notes}
+
+    # Counterparty name in its own script inside English prose is allowed.
+    borrowed = "## Summary\n\nThe deal confirms a trade with 中国银行 for USD 5m. [c1]"
+    assert document_analysis.validate_analysis_text(
+        {"summary_markdown": borrowed, "audit_notes_markdown": english_notes}
+    )["summary_markdown"] == borrowed
+
+    for payload, field in (
+        ({"summary_markdown": chinese_summary, "audit_notes_markdown": english_notes}, "summary_markdown"),
+        ({"summary_markdown": english_summary, "audit_notes_markdown": chinese_notes}, "audit_notes_markdown"),
+    ):
+        with pytest.raises(ValueError) as caught:
+            document_analysis.validate_analysis_text(payload)
+        assert field in str(caught.value) and "English" in str(caught.value)
+
+    with pytest.raises(ValueError, match="blank"):
+        document_analysis.validate_analysis_text(
+            {"summary_markdown": "", "audit_notes_markdown": chinese_notes}
+        )

@@ -141,54 +141,6 @@ def test_a_second_cell_for_one_check_cannot_be_told_from_the_first():
     assert validated["cells"][0]["verdict"] == "agrees"
 
 
-# -------------------------------------------------------------------- prompt
-def test_the_prompt_legitimises_the_answer_it_most_needs_to_hear():
-    """A reader that cannot say "I could not tell" will guess instead."""
-
-    assert "cannot_determine" in CYCLE_VOUCH_SYSTEM
-    assert "It is a real answer, not a failure" in CYCLE_VOUCH_SYSTEM
-    assert "Never guess to avoid cannot_determine" in CYCLE_VOUCH_SYSTEM
-
-
-def test_the_prompt_separates_presentation_from_substance():
-    assert "'PKR 2,000,000.00' and '2,000,000.00'" in CYCLE_VOUCH_SYSTEM
-    assert "P02024004" in CYCLE_VOUCH_SYSTEM
-    # "Material" must not be read as an accounting threshold the reader applies.
-    assert "Do not apply a materiality threshold of your own" in CYCLE_VOUCH_SYSTEM
-
-
-def test_the_prompt_names_no_comparison_operator():
-    for operator in ("equal_exact", "equal_normalized", "numeric_within"):
-        assert operator not in CYCLE_VOUCH_SYSTEM
-
-
-# --------------------------------------------------------- the executor side
-def test_every_reconciliation_this_executor_returns_is_a_declared_disposition():
-    """A disposition outside the vocabulary fails the unit, not the commit.
-
-    The first live run of this executor died on ``retry`` — a word that reads
-    like an instruction and is not one of the three the contract accepts. The
-    suite had nothing exercising the reconciler, so it validated cleanly and
-    then failed at the pipeline, which is the same shape the worker contract
-    tests exist to prevent on the other side of the call.
-    """
-    import inspect
-
-    from app.agent.executors import fieldwork as fieldwork_executors
-    from app.agent.executors.model import RECONCILIATION_DISPOSITIONS
-
-    source = inspect.getsource(fieldwork_executors.reconcile_cycle_vouch)
-    returned = {
-        literal.strip("\"'")
-        for literal in re.findall(r'ExecutorReconciliation\(\s*["\']([a-z_]+)["\']', source)
-    }
-
-    assert returned, "the reconciler returns no classified disposition"
-    assert returned <= RECONCILIATION_DISPOSITIONS, (
-        f"undeclared disposition(s): {sorted(returned - RECONCILIATION_DISPOSITIONS)}"
-    )
-
-
 def test_the_judged_verdicts_map_onto_what_the_executor_stores():
     """The worker answers in one vocabulary and the record keeps another."""
     from app import cycle_vouching

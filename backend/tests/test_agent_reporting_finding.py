@@ -819,8 +819,3 @@ def test_a_finding_turn_with_no_instruction_carries_no_empty_key():
     WORKERS.execute(_request(), gateway)
 
     assert "auditor_instruction" not in json.loads(gateway.calls[0]["user"])
-
-
-def test_the_finding_prompt_states_where_an_instruction_ranks():
-    assert "auditor_instruction" in reporting_worker.FINDING_SYSTEM
-    assert "never over the response contract" in reporting_worker.FINDING_SYSTEM

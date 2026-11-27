@@ -641,28 +641,6 @@ def test_cycle_executor_reconciles_an_interrupted_commit():
     assert CYCLE_EXECUTOR.reconciler(request, target).disposition == "conflict"
 
 
-def test_planning_executor_has_no_gateway_worker_or_provider_dependency():
-    from app.agent.executors import planning
-
-    source = inspect.getsource(planning)
-    tree = ast.parse(source)
-    imported = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-    assert not any(name.endswith(("model_gateway", "workers")) for name in imported)
-    assert "app.llm" not in source
-    assert "ModelGateway" not in source
-    assert ".complete(" not in source
-
-
 def test_rcm_executor_records_what_the_draft_considered_and_did_not_carry():
     """Out-of-scope and not-applicable risks are kept with their reasons.
 

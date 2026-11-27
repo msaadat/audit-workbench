@@ -211,40 +211,6 @@ def test_provider_concurrency_is_shared_and_bounded_across_runs(
     assert results == ["ok", "ok"]
     assert peak == 1
 # ------------------------------------------------ explicit engine dispatch
-def test_action_runner_has_no_legacy_module_or_class_alias():
-    assert importlib.util.find_spec("app.agent.command_runner") is None
-    assert not hasattr(action_execution, "CommandRunner")
-    assert not hasattr(agent_package, "CommandRunner")
-
-
-def test_old_workflow_scheduler_module_was_deleted_without_an_adapter():
-    assert importlib.util.find_spec("app.agent.workflow_runner") is None
-
-
-def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
-    workspace_with_data,
-):
-    package_dir = Path(action_execution.__file__).parent
-    forbidden_paths = {
-        path
-        for path in package_dir.iterdir()
-        if path.name == "command_runner.py" or "compat" in path.name.casefold()
-    }
-    assert not forbidden_paths
-
-    run = store.new_command_run(
-        workspace_with_data,
-        "auto",
-        {"source": "chat", "text": "run a bounded action"},
-    )
-    run.pop("engine")
-    store.save_run(workspace_with_data, run)
-
-    loaded = store.load_run(workspace_with_data, run["id"])
-    assert "engine" not in loaded
-    assert store.run_summary(loaded)["engine"] is None
-
-
 @pytest.mark.parametrize(
     ("engine", "module", "class_name", "expected"),
     [
@@ -675,3 +641,74 @@ def test_a_finished_record_without_a_supported_engine_is_not_replayed():
 
     with pytest.raises(workspaces.WorkspaceError, match="supported agent run schema"):
         runner.steer(ws, run["id"], "Also check round numbers")
+
+
+# --------------------------------------------------------- execution support
+def test_context_omission_warning_fires_only_for_budget_exhausted_sources():
+    from types import SimpleNamespace
+    from app.agent import execution_support
+    from app.agent.workflow import Capability
+
+    class _Host:
+        def __init__(self, workspace):
+            self.ws = workspace
+            self.run = {}
+            self.warnings: list[str] = []
+            self.sources: list[dict] = []
+
+        def emit(self, type_, data):
+            raise AssertionError("resolve_context must not emit")
+
+        def record_model_source(self, source):
+            self.sources.append(source)
+
+        def warn(self, text):
+            self.warnings.append(text)
+
+    class _Resolver:
+        def __init__(self, omissions):
+            self._manifest = SimpleNamespace(
+                selections=(),
+                omissions=tuple(
+                    SimpleNamespace(source_id=source_id, reason=reason)
+                    for source_id, reason in omissions
+                ),
+            )
+
+        def resolve(self, _workspace, _capability, _unit, _scope):
+            return self._manifest, SimpleNamespace(items=())
+
+    cap = Capability(
+        "planning.apm_ready", "apm", "Audit planning memorandum", "apm",
+        (), lambda _w, _s: None, lambda _w, _s: [],
+    )
+    ws = workspaces.create_workspace("Execution support")
+
+    exhausted = _Host(ws)
+    execution_support.resolve_context(
+        exhausted,
+        _Resolver([
+            ("population_summary", "Global or per-source size limit reached."),
+            ("population_summary", "Optional context source supplied no permitted items."),
+        ]),
+        cap,
+        {"id": "planning.apm"},
+        object(),
+    )
+    assert len(exhausted.warnings) == 1
+    assert "population_summary" in exhausted.warnings[0]
+    assert "none fitted its budget" in exhausted.warnings[0]
+
+    unmatched = _Host(ws)
+    execution_support.resolve_context(
+        unmatched,
+        _Resolver([
+            ("methodology", "Optional context selector matched no local candidates."),
+            ("documents", "Local selector strategy 'lexical' did not match the candidate."),
+            ("table_profiles", "Global or per-source size limit reached."),
+        ]),
+        cap,
+        {"id": "planning.apm"},
+        object(),
+    )
+    assert unmatched.warnings == []

@@ -336,3 +336,69 @@ def test_an_unknown_setting_is_refused(monkeypatch):
 
     with pytest.raises(llm.LLMError, match="LLM_TOOLS_API"):
         llm.chat([{"role": "user", "content": "hi"}], tools=[TOOL])
+
+
+# ------------------------------------------------------- agent & vision profiles
+def test_agent_and_vision_profile_resolution(monkeypatch):
+    import base64
+    from app import assistant_settings
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    for var in ("AGENT_PROVIDER", "AGENT_BACKEND", "AGENT_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    settings = llm._settings("agent")
+    assert (settings.backend, settings.model) == ("groq", "llama-3.3-70b-versatile")
+
+    monkeypatch.setenv("AGENT_MODEL", "llama-3.1-8b-instant")
+    assert llm._settings("agent").model == "llama-3.1-8b-instant"
+    assert llm._settings().model == "llama-3.3-70b-versatile"
+
+    monkeypatch.setenv("AGENT_PROVIDER", "mistral")
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    assert llm._settings("agent").model == assistant_settings.PROVIDERS["mistral"]["default_model"]
+
+    monkeypatch.setenv("AGENT_MODEL", "mistral-large-latest")
+    monkeypatch.setenv("MISTRAL_API_KEY", "key")
+    status = llm.agent_status()
+    assert status["configured"] is True
+    assert status["provider"] == "mistral"
+    assert status["model"] == "mistral-large-latest"
+
+    for var in ("AGENT_VISION_PROVIDER", "AGENT_VISION_BACKEND", "AGENT_VISION_MODEL", "AGENT_VISION_CAPABILITIES"):
+        monkeypatch.delenv(var, raising=False)
+    assistant_settings.save({"provider": "mistral", "model": "mistral-large-latest", "vision_profile": None})
+    assert llm._settings("vision").model == "pixtral-large-latest"
+    assert llm.agent_status()["vision_configured"] is True
+    part = llm.image_part(b"image", "image/png")
+    assert base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) == b"image"
+
+    monkeypatch.setenv("AGENT_PROVIDER", "nonsense")
+    bad = llm.agent_status()
+    assert bad["configured"] is False and "nonsense" in bad["error"]
+
+
+def test_agent_and_vision_profiles_honor_base_url_override(monkeypatch):
+    monkeypatch.setenv("AGENT_PROVIDER", "lmstudio")
+    monkeypatch.setenv("AGENT_MODEL", "local-text")
+    monkeypatch.setenv("AGENT_VISION_PROVIDER", "lmstudio")
+    monkeypatch.setenv("AGENT_VISION_MODEL", "local-vision")
+    monkeypatch.setenv("AGENT_VISION_CAPABILITIES", "vision")
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
+    default_hashes = {
+        name: llm.resolve_model_profile(name).profile_hash for name in ("agent", "vision")
+    }
+
+    endpoint = "http://gpu01.internal:1234/v1"
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", endpoint)
+    snapshot = llm.model_profile_snapshot()
+    assert snapshot["text"]["base_url"] == endpoint
+    assert snapshot["vision"]["base_url"] == endpoint
+    assert llm._settings("agent").base_url == endpoint
+    assert llm._settings("vision").base_url == endpoint
+    assert llm._settings(snapshot["text"]).base_url == endpoint
+    assert snapshot["text"]["profile_hash"] == default_hashes["agent"]
+    assert snapshot["vision"]["profile_hash"] == default_hashes["vision"]
+
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", "ftp://gpu01.internal/v1")
+    invalid = llm.agent_status()
+    assert invalid["configured"] is False and "LMSTUDIO_BASE_URL" in invalid["error"]

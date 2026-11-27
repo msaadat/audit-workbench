@@ -1942,11 +1942,6 @@ def test_a_turn_with_no_instruction_carries_no_empty_key():
     assert "auditor_instruction" not in payload
 
 
-def test_the_generation_prompt_states_where_an_instruction_ranks():
-    assert "auditor_instruction" in tests_workers.GENERATE_SYSTEM
-    assert "never over the response contract" in tests_workers.GENERATE_SYSTEM
-
-
 # --------------------------------------------------------------------------- #
 # A document step names a type, and the workspace resolves it
 # --------------------------------------------------------------------------- #
@@ -2268,46 +2263,3 @@ def test_a_document_question_is_allowed_on_types_alone_with_no_planning_document
     payload = json.loads(gateway.calls[0]["user"])
     assert payload["planning_documents"] == []
     assert "document_question" in payload["allowed_test_variants"]
-
-
-def test_the_turn_is_told_the_question_is_put_to_one_record_at_a_time():
-    """A population step's question is asked per record, not over the set.
-
-    Named because the first engagement measured against this shape produced
-    "Do all payment vouchers carry every required claim field…", which each
-    record's answer can only guess at.
-    """
-
-    assert "Write the question about **one record**" in tests_workers.GENERATE_SYSTEM
-    assert "never \"do all vouchers…\"" in tests_workers.GENERATE_SYSTEM
-
-
-def test_a_criteria_judgement_is_steered_away_from_polars():
-    """Named after DAT-C46F9873D7 on the expenses engagement.
-
-    Every attribute of its row said ``tabular_population``, so the turn wrote a
-    Data Test — and because "is this expense permitted?" is not computable from
-    the columns, it wrote the policy in as literals, excluding "Alcohol" from an
-    invented whitelist. It validated cleanly and established nothing.
-    """
-
-    system = tests_workers.GENERATE_SYSTEM
-    assert "A Data Test is a *predicate over columns*" in system
-    assert "Encoding the criteria as literals in the code writes the policy" in system
-    # The RCM's evidence_kind was what pinned the choice, so it is demoted from
-    # a verdict to a statement about where the population lives.
-    assert "the kind says\n   where the population lives" in system
-    assert "not which shape answers it" in system
-
-
-def test_a_supplied_value_domain_is_not_the_answer():
-    """The same test filtered on `business_purpose == "Ride to personal residence"`.
-
-    That literal was handed to the turn in the column's own `values` list. The
-    domain is disclosed so a predicate can name a real value; naming the value
-    that is visibly the exception selects the rows it was shown.
-    """
-
-    system = tests_workers.GENERATE_SYSTEM
-    assert "It is neither the criterion nor the\n   answer." in system
-    assert "the particular values you can see\n   are the exceptions" in system

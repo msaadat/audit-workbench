@@ -165,27 +165,3 @@ the report), not on its analyses or planning memorandum alone.
 There are 14 table items and 5 document items, 19 in all, plus 3 judgement items
 that are scored as raised or not raised. Values overlap across items (the
 127 chain appears three times), so do not sum the value column.
-
-### Scoring the analyses automatically
-
-`backend/tests/eda_answer_key.py` scores a workspace's saved analyses against
-P-01 to P-14. It matches the records each item names in the table above
-against the rows an analysis actually flagged, whatever test or code flagged
-them, and counts an item only when every one of its records is flagged on the
-right population (requisition items on requisition rows, P-11 on PO rows). It
-reports a result that flags some of the records as partial, one that buries
-them among many other rows as broad, and one that flags its whole population
-as saturated; none of those count. Run it on one or more workspace folders:
-
-```powershell
-.venv\Scripts\python.exe backend\tests\eda_answer_key.py Workspaces\Users\local\Workspaces\procurement
-```
-
-It measures only how far the exploratory analyses reached. A run can capture
-an item in a finding through a data test that no analysis reached, and an
-analysis can reach an item that never becomes a finding. Score the run's
-findings against the tables above.
-
-The scorer replaced an earlier A01-A33 key. That key was written for a larger
-edition of this data (118 invoices), and most of its records do not exist in
-this pack.

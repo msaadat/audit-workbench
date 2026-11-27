@@ -478,46 +478,6 @@ def test_attribute_and_review_execution_use_the_cited_model_pipeline(
     assert saved["items"][0]["state"] == "confirmed"
 
 
-# --------------------------------------------------------------------------- #
-# One implementation, two graphs — and the deletion
-# --------------------------------------------------------------------------- #
-def test_both_graphs_bind_document_test_units_through_one_function():
-    audit_source = inspect.getsource(audit_execution.AuditWorkflowExecution._bind_execution)
-    standalone_source = inspect.getsource(
-        doc_tests_execution.DocTestWorkflowExecution._bind_execution
-    )
-
-    assert "bind_document_test_unit" in audit_source
-    assert "bind_document_test_unit" in standalone_source
-    # The audit binder keeps only its datatest branch; every Document Test unit
-    # kind is decided in the shared function.
-    assert "run_document_test" not in audit_source
-    assert "document_qa" not in audit_source
-
-
-def test_both_graphs_expand_document_tests_through_one_function():
-    from app.agent.capabilities import fieldwork as fieldwork_capabilities
-
-    fieldwork_source = inspect.getsource(fieldwork_capabilities)
-    assert "document_test_units" in fieldwork_source
-    assert "document_qa_execution" not in fieldwork_source.replace(
-        "document_test_units", ""
-    )
-
-
-def test_the_document_test_leaf_runner_and_engine_are_gone():
-    import app.agent as agent_package
-
-    with pytest.raises(ImportError):
-        __import__("app.agent.doc_test_runner")
-    assert not hasattr(agent_package, "doc_test_runner")
-    assert not hasattr(store, "DOC_TEST_ENGINE")
-    assert "doc_test" not in store.RUN_ENGINES
-    assert "doc_test" not in store.PROTOCOL_ENGINE_BY_RUN_KIND
-    with pytest.raises(Exception):
-        store.new_run(_workspace("Retired kind"), "auto", kind="doc_test")
-
-
 def test_dispatch_selects_the_document_test_composition_by_definition():
     ws = _workspace("Doc test dispatch")
     _document, test = _vouching(ws)

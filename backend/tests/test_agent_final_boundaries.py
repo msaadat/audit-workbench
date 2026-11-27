@@ -255,3 +255,47 @@ def test_no_declaration_package_calls_a_provider():
     for package in ("workflows", "capabilities", "workers", "executors", "context"):
         paths = sorted((AGENT_ROOT / package).rglob("*.py"))
         assert _provider_calls(paths) == [], package
+
+
+def test_runtime_modules_do_not_import_audit_or_product_domains():
+    forbidden = (
+        "app.analysis_payloads",
+        "app.data_tests",
+        "app.doc_tests",
+        "app.document_analysis",
+        "app.document_context",
+        "app.document_search",
+        "app.documents",
+        "app.engagement_progress",
+        "app.findings",
+        "app.planning",
+        "app.rcm_execution",
+        "app.report",
+        "app.templates_store",
+        "app.working_papers",
+        "app.agent.audit_capabilities",
+        "app.agent.audit_execution",
+        "app.agent.audit_workers",
+        "app.agent.capabilities",
+        "app.agent.workflows",
+    )
+    assert not _violations("runtime", forbidden)
+
+
+def test_every_declared_context_preset_compiles():
+    from app.agent import capabilities
+    from app.agent.context import PRESETS
+
+    preset_ids = {
+        str(preset_id)
+        for registry in capabilities.REGISTRY_BY_WORKFLOW.values()
+        for capability in registry.all()
+        for preset_id in (
+            capability.context.values()
+            if isinstance(capability.context, dict)
+            else (capability.context,)
+        )
+        if preset_id
+    }
+    assert preset_ids
+    assert all(PRESETS.compile(preset_id) is not None for preset_id in preset_ids)

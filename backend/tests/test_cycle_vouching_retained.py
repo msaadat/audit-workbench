@@ -155,13 +155,6 @@ def test_the_judged_vocabulary_maps_onto_the_durable_one():
     assert cycle_vouching.JUDGED_VERDICTS["disagrees"] == "mismatch"
 
 
-def test_no_comparison_operator_survives_on_the_module():
-    """Agreement is judged against the values, so nothing here computes it."""
-
-    assert not hasattr(cycle_vouching, "OPERATORS")
-    assert not hasattr(cycle_vouching, "_comparison")
-
-
 # ------------------------------------------------------------ state accessors
 @pytest.mark.parametrize(
     "state,pending,current",

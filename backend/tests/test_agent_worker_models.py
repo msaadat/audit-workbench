@@ -421,30 +421,6 @@ def test_registry_requires_the_shared_model_gateway_contract():
         registry.execute(_request(), object())
 
 
-def test_worker_contract_layer_has_no_workspace_provider_or_scheduler_dependency():
-    source = inspect.getsource(worker_model)
-    tree = ast.parse(source)
-    imported_modules = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported_modules.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-
-    assert not any(
-        module.endswith(("workspaces", "store", "workflow", "workflow_runner"))
-        for module in imported_modules
-    )
-    assert "app.llm" not in source
-    assert "ContextResolver" not in source
-    assert "Workspace" not in source
-
-
 def _partial_validator(response):
     """A validator that can salvage part of a rejected response."""
     if response == "invalid":

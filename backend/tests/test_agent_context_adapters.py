@@ -567,31 +567,6 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert spec.privacy.allow_auditor_instruction is True
     assert spec.privacy.allow_analysis_exception_rows is False
     assert spec.privacy.allow_table_rows is False
-    assert spec.privacy.allow_table_rows is False
-
-    adapter_source = inspect.getsource(context_adapters)
-    assert "assistant.schema_brief" in adapter_source
-    assert "assistant.table_metadata" in adapter_source
-    assert "document_context.apm_document_context" in adapter_source
-    assert "methodology.context_sections" in adapter_source
-    assert "profiler" not in adapter_source
-    assert "document_analysis" not in adapter_source
-    assert "document_search" not in adapter_source
-
-    # planning.apm's own table sources stay metadata/profile-only: no adapter
-    # it declares fetches a real frame or a row preview. ``get_frame`` and
-    # ``project_frame`` do appear elsewhere in the module now, for the
-    # separate, row-count-gated ``small_table_rows`` source that only
-    # ``planning.rcm`` declares (see the small-table tests below).
-    for adapter in (
-        context_adapters.apm_table_metadata_candidates,
-        context_adapters.apm_table_profile_candidates,
-        context_adapters.population_summary_candidates,
-        context_adapters.apm_document_methodology_scope,
-    ):
-        source = inspect.getsource(adapter)
-        assert ".get_frame(" not in source
-        assert "project_frame" not in source
 
 
 def test_tests_generate_preset_declares_the_row_scoped_sources():

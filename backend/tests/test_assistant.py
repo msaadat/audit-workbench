@@ -1127,123 +1127,19 @@ def test_llm_chat_wraps_remote_disconnect(monkeypatch):
         llm.chat([{"role": "user", "content": "hello"}])
 
 
-def test_llm_chat_supports_openrouter(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    assistant_settings.save({"provider": "openrouter", "model": "openai/test-model"})
-    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
-    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-
-    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
-    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
-    assert captured["headers"]["authorization"] == "Bearer router-key"
-    assert captured["body"]["model"] == "openai/test-model"
-
-
-def test_llm_chat_supports_mistral(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    assistant_settings.save({"provider": "mistral", "model": "mistral-large-latest"})
-    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-key")
-    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-
-    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
-    assert captured["url"] == "https://api.mistral.ai/v1/chat/completions"
-    assert captured["headers"]["authorization"] == "Bearer mistral-key"
-    assert captured["body"]["model"] == "mistral-large-latest"
-
-
-def test_llm_chat_supports_opencode_zen_with_default_model(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    assistant_settings.save({"provider": "opencode", "model": ""})
-    monkeypatch.setenv("OPENCODE_API_KEY", "zen-key")
-    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-
-    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
-    assert captured["url"] == "https://opencode.ai/zen/v1/chat/completions"
-    assert captured["headers"]["authorization"] == "Bearer zen-key"
-    assert captured["body"]["model"] == "deepseek-v4-flash-free"
-
-
-def test_llm_chat_supports_cerebras_with_default_model(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse()
-
-    assistant_settings.save({"provider": "cerebras", "model": ""})
-    monkeypatch.setenv("CEREBRAS_API_KEY", "cerebras-key")
-    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-
-    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
-    assert captured["url"] == "https://api.cerebras.ai/v1/chat/completions"
-    assert captured["headers"]["authorization"] == "Bearer cerebras-key"
-    assert captured["body"]["model"] == "gpt-oss-120b"
-
-
-def test_llm_chat_supports_lmstudio(monkeypatch):
+@pytest.mark.parametrize(
+    ("provider", "model", "env_var", "api_key", "expected_url", "expected_auth", "expected_model", "expected_timeout"),
+    [
+        ("openrouter", "openai/test-model", "OPENROUTER_API_KEY", "router-key", "https://openrouter.ai/api/v1/chat/completions", "Bearer router-key", "openai/test-model", None),
+        ("mistral", "mistral-large-latest", "MISTRAL_API_KEY", "mistral-key", "https://api.mistral.ai/v1/chat/completions", "Bearer mistral-key", "mistral-large-latest", None),
+        ("opencode", "", "OPENCODE_API_KEY", "zen-key", "https://opencode.ai/zen/v1/chat/completions", "Bearer zen-key", "deepseek-v4-flash-free", None),
+        ("cerebras", "", "CEREBRAS_API_KEY", "cerebras-key", "https://api.cerebras.ai/v1/chat/completions", "Bearer cerebras-key", "gpt-oss-120b", None),
+        ("lmstudio", "", "LMSTUDIO_API_KEY", None, "http://localhost:1234/v1/chat/completions", "Bearer lm-studio", "", llm.LOCAL_REQUEST_TIMEOUT),
+    ],
+)
+def test_llm_chat_supports_configured_providers(
+    monkeypatch, provider, model, env_var, api_key, expected_url, expected_auth, expected_model, expected_timeout
+):
     captured = {}
 
     class FakeResponse:
@@ -1263,16 +1159,20 @@ def test_llm_chat_supports_lmstudio(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
-    assistant_settings.save({"provider": "lmstudio", "model": ""})
-    monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
-    monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+    assistant_settings.save({"provider": provider, "model": model})
+    if api_key is None:
+        monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv(env_var, api_key)
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
-    assert captured["url"] == "http://localhost:1234/v1/chat/completions"
-    assert captured["headers"]["authorization"] == "Bearer lm-studio"
-    assert captured["body"]["model"] == ""
-    assert captured["timeout"] == llm.LOCAL_REQUEST_TIMEOUT
+    assert captured["url"] == expected_url
+    assert captured["headers"]["authorization"] == expected_auth
+    assert captured["body"]["model"] == expected_model
+    if expected_timeout is not None:
+        assert captured["timeout"] == expected_timeout
 
 
 def test_llm_request_timeout_can_be_overridden(monkeypatch):

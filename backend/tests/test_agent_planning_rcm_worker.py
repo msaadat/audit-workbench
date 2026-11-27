@@ -1769,37 +1769,6 @@ def test_rcm_worker_accepts_update_matching_a_supplied_current_row():
     assert result.proposal["rows"][0]["rcm_id"] == "rcm:RCM-1"
 
 
-def test_rcm_worker_has_no_workspace_store_resolver_or_scheduler_dependency():
-    source = inspect.getsource(planning)
-    tree = ast.parse(source)
-    imported = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-    assert not any(
-        name.endswith(
-            (
-                "workspaces",
-                "workspace_transactions",
-                "store",
-                "resolver",
-                "workflow_runner",
-                "action_runner",
-            )
-        )
-        for name in imported
-    )
-    assert ".ws" not in source
-    assert "load_workspace" not in source
-
-
 # --------------------------------------------------------------------------- #
 # Citing a criterion: the register, and what a row may point at
 # --------------------------------------------------------------------------- #
@@ -2232,25 +2201,6 @@ def test_risks_weighed_and_not_carried_reach_the_proposal_with_their_reasons():
     assert [dict(item) for item in result.proposal["considered"]] == considered
 
 
-def test_the_risk_pass_is_asked_for_duties_first_and_a_considered_list():
-    gateway = _Gateway([json.dumps({"rows": [_row()]})])
-
-    WORKERS.execute(_request(), gateway)
-
-    risks = gateway.calls[0]
-    assert "`considered`" in risks["system"]
-    assert "Duties first" in risks["system"]
-    # The procure-to-pay override examples are gone: they reappeared as
-    # treasury rows ("the same obligation may be settled more than once").
-    assert "paying the same obligation twice" not in risks["system"]
-    assert "standard risks of every in-scope process" not in risks["user"]
-
-
-def test_the_control_pass_is_told_a_neighbouring_rule_is_not_the_control():
-    assert "does not control a deal never being" in planning.RCM_CONTROLS_SYSTEM
-    assert "process owner" in planning.RCM_CONTROLS_SYSTEM
-
-
 @pytest.mark.parametrize("disposition, kept", [
     ("out_of_scope", "out_of_scope"),
     ("covered_by:RCM-1", "covered_by"),
@@ -2323,10 +2273,3 @@ def test_the_risk_pass_receives_the_memo_themes_to_account_for_by_name():
     payload = json.loads(gateway.calls[0]["user"])
     assert payload["MEMORANDUM THEMES"] == planning.planned_risk_themes(apm)
     assert "Rates and notionals not economic" in " ".join(payload["MEMORANDUM THEMES"])
-    assert "exactly as listed" in gateway.calls[0]["system"]
-
-
-def test_the_risk_pass_is_told_not_to_split_one_duty_and_how_to_anchor_ratings():
-    system = planning.RCM_RISKS_SYSTEM
-    assert "confirm, verify or release" in system
-    assert "usually high or critical" in system

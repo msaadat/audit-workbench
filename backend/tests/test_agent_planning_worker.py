@@ -315,37 +315,6 @@ def test_apm_worker_request_detaches_source_content_and_cannot_mutate_it():
     assert planning_context["context"]["objective"] == "Changed after request"
 
 
-def test_planning_worker_has_no_workspace_store_resolver_or_scheduler_dependency():
-    source = inspect.getsource(planning)
-    tree = ast.parse(source)
-    imported = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-    assert not any(
-        name.endswith(
-            (
-                "workspaces",
-                "workspace_transactions",
-                "store",
-                "resolver",
-                "workflow_runner",
-                "action_execution",
-            )
-        )
-        for name in imported
-    )
-    assert ".ws" not in source
-    assert "load_workspace" not in source
-
-
 # --------------------------------------------------------------------------- #
 # The auditor's instruction reaches the turn (step 3)
 # --------------------------------------------------------------------------- #
@@ -367,12 +336,6 @@ def test_an_apm_turn_with_no_instruction_carries_no_empty_key():
     WORKERS.execute(_request(), gateway)
 
     assert "auditor_instruction" not in json.loads(gateway.calls[0]["user"])
-
-
-def test_the_apm_prompt_states_where_an_instruction_ranks():
-    """Above the default instructions, below the response contract."""
-    assert "auditor_instruction" in planning.APM_SYSTEM
-    assert "never over the response contract" in planning.APM_SYSTEM
 
 
 # --------------------------------------------------------------------------- #

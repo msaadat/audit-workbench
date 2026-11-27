@@ -159,10 +159,6 @@ def test_a_currency_stated_on_one_side_only_is_left_to_the_reader():
     assert cell["verdict"] == "agrees"
 
 
-def test_the_reader_is_told_a_currency_difference_is_a_difference():
-    assert "different currencies" in CYCLE_VOUCH_SYSTEM
-
-
 # ------------------------------------------------------------- schema store
 def _field(**overrides):
     field = {

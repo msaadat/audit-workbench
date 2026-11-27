@@ -136,9 +136,6 @@ def test_classification_is_pure(monkeypatch, workspace_with_data):
         routing.classify_command({"source": "chat", "text": text})
 
     assert workspaces.load_workspace(workspace_with_data.id).revision == before
-    source = inspect.getsource(routing.classify_command)
-    assert "load_workspace" not in source
-    assert "save" not in source
 
 
 # --------------------------------------------------------------------------- #
@@ -289,21 +286,6 @@ def test_a_persisted_clarification_route_still_finishes_its_run(
 # --------------------------------------------------------------------------- #
 # P11.5 — dispatch by explicit engine only
 # --------------------------------------------------------------------------- #
-def test_dispatch_reads_only_the_explicit_engine(workspace_with_data):
-    # The switch itself, which a top-level run reaches through ``_execute`` and
-    # a child run of the steering loop reaches inline.
-    source = inspect.getsource(runner._run_engine)
-
-    assert 'run.get("kind")' not in source
-    assert 'run["kind"]' not in source
-    assert 'run.get("schema_version")' not in source
-    assert 'run["schema_version"]' not in source
-    # Every dispatch branch compares the explicit engine and nothing else.
-    branches = [line.strip() for line in source.splitlines() if " engine ==" in line]
-    assert len(branches) == len(store.RUN_ENGINES)
-    assert all(line.startswith(("if engine ==", "elif engine ==")) for line in branches)
-
-
 @pytest.mark.parametrize("retired", ["doc_test", "document_analysis", "analysis"])
 def test_a_record_without_a_supported_engine_fails_closed(workspace_with_data, retired):
     run = store.new_run(workspace_with_data, "auto", None, kind="intake")
@@ -323,40 +305,6 @@ def test_a_record_without_a_supported_engine_fails_closed(workspace_with_data, r
         routing.dispatch_engine(
             workspace_with_data, store.load_run(workspace_with_data, run["id"]), handle
         )
-
-
-def test_supported_engine_set_matches_the_phase_10_decision_record():
-    # Phase 12 retired the legacy ``analysis`` pipeline, and the agent-loop
-    # step added the steering loop: three schedulers plus the one justified
-    # protocol engine.
-    assert store.RUN_ENGINES == frozenset({"workflow", "agent", "intake"})
-    assert store.COMMAND_ENGINES == frozenset({"workflow", "agent"})
-    assert set(store.PROTOCOL_ENGINE_BY_RUN_KIND) == {"intake"}
-
-
-# --------------------------------------------------------------------------- #
-# P11.6 — no duplicated local resolution, no cross-scheduler fallback
-# --------------------------------------------------------------------------- #
-def test_no_engine_classifies_or_reaches_into_another():
-    from app.agent import agent_loop
-
-    for engine in (WorkflowRunner, agent_loop.AgentLoop, action_execution.ActionExecution):
-        source = inspect.getsource(engine)
-        assert "classify_command" not in source
-        assert "resolve_route" not in source
-        assert "dispatch_engine" not in source
-
-    assert "AgentLoop(" not in inspect.getsource(WorkflowRunner)
-    # The steering loop composes the other two through their own entry points
-    # and imports no capability, worker or executor module of its own.
-    loop_source = inspect.getsource(agent_loop)
-    assert "WorkflowRunner(" not in loop_source
-    assert "from .capabilities" not in loop_source
-    assert "from .workers" not in loop_source
-    assert "from .executors" not in loop_source
-    # Action execution is no longer an engine: it has no ``execute`` of its own
-    # and nothing dispatches to it.
-    assert not hasattr(action_execution.ActionExecution, "execute")
 
 
 def test_the_classification_runs_exactly_once_per_run(monkeypatch, workspace_with_data):

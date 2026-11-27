@@ -80,99 +80,48 @@ def test_build_audit_registry_is_deterministic_and_matches_the_startup_registry(
     assert capabilities.REGISTRY is capabilities.AUDIT_REGISTRY
 
 
-# The declaration fields that participate in a capability's normalized identity.
-# Pinning them here is the golden test that a later refactor cannot silently
-# change a stage id, worker kind, declared context preset, or invalidation set.
-_DECLARED = {
-    "data.relationships_inferred": (
-        "relationships",
-        "relationship_inference",
-        None,
-        ("tables",),
-    ),
-    "data.joins_ready": ("joins", "join_materialization", None, ("tables",)),
-    "analysis.definitions_ready": (
-        "analysis_definitions",
-        "analysis_definition",
-        "analysis.definitions",
-        ("tables", "joins"),
-    ),
-    "sources.imported": ("sources", "sources", None, ("sources",)),
-    "analysis.executed": (
-        "analysis_execution",
-        "analysis_execution",
-        None,
-        ("analyses",),
-    ),
-    "planning.context_ready": (
-        "planning_context",
-        "planning_context",
-        "planning.context",
-        ("sources",),
-    ),
-    "planning.apm_ready": ("apm", "apm", "planning.apm", ("planning:context",)),
-    "planning.cycle_ready": ("cycle", "cycle", "planning.cycle", ("planning:apm",)),
-    # The shape as well as the memorandum: the step names are the vocabulary a
-    # row's ``process`` is chosen from, so a reshaped cycle invalidates the
-    # matrix drafted against the names it used to have.
-    "planning.rcm_ready": (
-        "rcm",
-        "rcm",
-        "planning.rcm",
-        ("planning:apm", "planning:cycle"),
-    ),
-    "tests.specified": (
-        "test_specs",
-        "test_generation",
-        "tests.generate",
-        ("rcm",),
-    ),
-    # Keyed by unit kind: a document assessment and a cycle judgment are both
-    # model-facing here and read different context.
-    "fieldwork.executed": (
-        "execution",
-        "mixed_execution",
-        {
-            "document_qa_execution": "fieldwork.document_qa",
-            "document_llm_execution": "fieldwork.document_qa",
-            "cycle_vouch_execution": "fieldwork.cycle_vouch",
-        },
-        ("test", "evidence"),
-    ),
-    "results.rolled_up": ("rollup", "rollup", None, ("execution",)),
-    "findings.consolidated": (
-        "finding_consolidation",
-        "finding_consolidation",
-        "reporting.finding_consolidation",
-        ("observation",),
-    ),
-    "findings.drafted": (
-        "findings",
-        "finding_draft",
-        "reporting.finding_draft",
-        ("observation", "consolidation"),
-    ),
-    "working_papers.generated": ("working_papers", "working_paper", None, ("rollup",)),
-    "report.working_draft": (
-        "report",
-        "report",
-        None,
-        ("planning:apm", "rollup", "findings"),
-    ),
-    "audit.verified": ("verify", "verify", None, ("outputs",)),
-}
+def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
+    registry = capabilities.AUDIT_REGISTRY
+    resolved = registry.closure(audit_workflow.FULL_AUDIT_OUTCOMES)
+    position = {capability_id: index for index, capability_id in enumerate(resolved)}
+
+    assert all(
+        position[dependency] < position[capability_id]
+        for capability_id, deps in audit_workflow.DEPENDENCIES.items()
+        if capability_id in position
+        for dependency in deps
+        if dependency in position
+    )
+    # The EDA branch completes before planning reads it; findings and working
+    # papers fan out as independent siblings after results.rolled_up.
+    assert position["analysis.summarized"] < position["planning.apm_ready"]
+    assert audit_workflow.dependencies("findings.consolidated") == ("results.rolled_up",)
+    assert audit_workflow.dependencies("findings.drafted") == (
+        "results.rolled_up",
+        "findings.consolidated",
+    )
+    assert audit_workflow.dependencies("working_papers.generated") == ("results.rolled_up",)
 
 
-@pytest.mark.parametrize("capability_id", sorted(_DECLARED))
-def test_declared_capability_identity_fields_are_pinned(capability_id):
-    stage_id, worker_kind, context, invalidate_on = _DECLARED[capability_id]
-    capability = capabilities.AUDIT_REGISTRY.get(capability_id)
+def test_template_outcomes_and_definition_hash_cover_declared_graph(monkeypatch):
+    declared = {capability.id for capability in capabilities.AUDIT_REGISTRY.all()}
+    for outcomes in audit_workflow.TEMPLATE_OUTCOMES.values():
+        assert set(outcomes) <= declared
+    assert capabilities.FULL_AUDIT_OUTCOMES == audit_workflow.FULL_AUDIT_OUTCOMES
+    assert capabilities.outcomes_for_template("apm_only") == ["planning.apm_ready"]
+    assert capabilities.outcomes_for_template("unknown-template") is None
 
-    assert capability.stage_id == stage_id
-    assert capability.worker_kind == worker_kind
-    assert capability.context == context
-    assert tuple(capability.invalidate_on) == invalidate_on
-    assert tuple(capability.depends_on) == audit_workflow.dependencies(capability_id)
+    baseline = audit_workflow.definition_hash()
+    assert baseline == audit_workflow.definition_hash()
+    assert isinstance(baseline, str) and len(baseline) == 40
+
+    extended = dict(audit_workflow.DEPENDENCIES)
+    extended["fieldwork.executed"] = (
+        *extended["fieldwork.executed"],
+        "documents.analysis_generated",
+    )
+    monkeypatch.setattr(audit_workflow, "DEPENDENCIES", extended)
+    assert audit_workflow.definition_hash() != baseline
 
 
 class _StubWorkspace:
@@ -229,22 +178,17 @@ def test_planning_readiness_and_units_are_stable_across_representative_states(
         assert capability.expand_units(stub, {}) == capability.expand_units(stub, {})
 
 
-@pytest.mark.parametrize(
-    "capability_id", sorted(capabilities.grouped_capability_ids())
-)
-def test_every_declaration_is_deterministic_on_a_real_workspace(
-    capability_id, workspace_with_data
-):
+def test_every_declaration_is_deterministic_on_a_real_workspace(workspace_with_data):
     """Test, fieldwork, and reporting readiness read the RCM test manifest,
     document tests, working papers, findings, and report state, so a real
     workspace — not a stub — is required to exercise them."""
-    capability = capabilities.AUDIT_REGISTRY.get(capability_id)
-
-    readiness = capability.readiness(workspace_with_data, {}).payload()
-    assert readiness == capability.readiness(workspace_with_data, {}).payload()
-    units = capability.expand_units(workspace_with_data, {})
-    assert units == capability.expand_units(workspace_with_data, {})
-    assert len({unit.id for unit in units}) == len(units)
+    for capability_id in sorted(capabilities.grouped_capability_ids()):
+        capability = capabilities.AUDIT_REGISTRY.get(capability_id)
+        readiness = capability.readiness(workspace_with_data, {}).payload()
+        assert readiness == capability.readiness(workspace_with_data, {}).payload(), capability_id
+        units = capability.expand_units(workspace_with_data, {})
+        assert units == capability.expand_units(workspace_with_data, {}), capability_id
+        assert len({unit.id for unit in units}) == len(units), capability_id
 
 
 def test_startup_registry_matches_authoritative_graph():

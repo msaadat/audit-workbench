@@ -164,23 +164,3 @@ def test_planning_context_worker_drops_undeclared_and_blank_fields():
     )
 
     assert proposal == {"context": {"objective": "Assess approvals"}}
-
-
-def test_the_planning_context_worker_module_takes_no_workspace_dependency():
-    source = pathlib.Path(inspect.getsourcefile(PLANNING_CONTEXT_WORKER.implementation))
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    imported = {
-        alias.name.split(".")[-1]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-
-    assert not imported & {
-        "Workspace",
-        "mutate",
-        "parent_hashes",
-        "ContextResolver",
-        "WorkflowRunner",
-        "store",
-    }

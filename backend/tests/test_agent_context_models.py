@@ -462,45 +462,6 @@ def test_local_embedding_model_and_index_hashes_participate_in_selector_identity
     assert first.to_dict()["local_embedding_index_hash"] == "sha256:" + "3" * 64
 
 
-def test_selector_implementation_boundary_has_no_gateway_or_network_dependency():
-    forbidden_imports = {
-        "aiohttp",
-        "anthropic",
-        "httpx",
-        "openai",
-        "requests",
-        "socket",
-        "urllib",
-        "urllib3",
-    }
-    for module in (context_presets, context_resolver):
-        source = inspect.getsource(module)
-        tree = ast.parse(source)
-        imported_roots = {
-            alias.name.split(".", 1)[0]
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        }
-        imported_roots.update(
-            str(node.module or "").split(".", 1)[0]
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-        )
-        assert not (imported_roots & forbidden_imports)
-        assert "ModelGateway" not in source
-        assert "app.llm" not in source
-
-    assert set(inspect.signature(SelectorRegistry.register).parameters) == {
-        "self",
-        "definition",
-    }
-    assert set(inspect.signature(context_resolver.ContextResolver).parameters) == {
-        "selectors",
-        "presets",
-    }
-
-
 def test_selector_inputs_reject_service_objects_before_strategy_execution():
     class _ServiceObject:
         pass

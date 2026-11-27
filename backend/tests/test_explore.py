@@ -168,3 +168,30 @@ def test_dates_serialize_as_iso(transactions_df):
     result = run_query(df, {"page_size": 1})
     date_index = result["columns"].index("tx_date")
     assert result["rows"][0][date_index] == "2026-01-15"
+
+
+# --------------------------------------------------------- field names & profiler
+def test_resolve_column_accepts_only_unique_case_difference():
+    from app.field_names import resolve_column
+
+    assert resolve_column("po_number", ["PO_NUMBER", "PO_NUMBER_LINK"]) == "PO_NUMBER"
+    with pytest.raises(ValueError, match="PO_NUMBER_LINK"):
+        resolve_column("po_number", ["PO_NUMBER_LINK"])
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_column("FIELD", ["Field", "field"])
+
+
+def test_a_time_of_day_is_not_typed_as_a_date():
+    import datetime as dt
+    from app import profiler
+
+    df = pl.DataFrame({
+        "DEAL_DATE": [dt.date(2025, 1, 31), dt.date(2025, 2, 10)],
+        "DEAL_TIME": [dt.time(9, 18, 34), dt.time(16, 49, 37)],
+    })
+    assert profiler.profile_column(df, "DEAL_DATE")["inferred_type"] == "date"
+    time_profile = profiler.profile_column(df, "DEAL_TIME")
+    assert time_profile["inferred_type"] == "time"
+    assert time_profile["min"] and time_profile["max"]
+    kinds = {item["name"]: item["kind"] for item in profiler.schema_payload(df)}
+    assert kinds == {"DEAL_DATE": "date", "DEAL_TIME": "time"}

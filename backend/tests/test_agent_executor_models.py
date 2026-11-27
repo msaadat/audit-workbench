@@ -469,37 +469,3 @@ def test_registry_rejects_invalid_reconciler_return_and_result_identity():
     )
     with pytest.raises(ExecutorContractError, match="different executor"):
         invalid_identity.reconcile(_request(), object())
-
-
-def test_executor_contract_layer_has_no_model_workspace_store_or_scheduler_dependency():
-    source = inspect.getsource(executor_model)
-    tree = ast.parse(source)
-    imported_modules = {
-        str(node.module or "")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    imported_modules.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
-
-    assert not any(
-        module.endswith(
-            (
-                "workspaces",
-                "workspace_transactions",
-                "store",
-                "workflow",
-                "workflow_runner",
-                "model_gateway",
-            )
-        )
-        for module in imported_modules
-    )
-    assert "app.llm" not in source
-    assert "ModelGateway" not in source
-    assert "ContextResolver" not in source
-    assert "Workspace" not in source

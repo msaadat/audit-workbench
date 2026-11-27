@@ -625,3 +625,104 @@ def test_the_run_record_reports_the_mode_the_run_actually_used(
     assert recorded["vocabulary_mode"] == audit_capabilities.documents.vocabulary_mode(
         persisted.get("context", {}).get("scope") or {"generation_mode": "reuse_existing"}
     )
+
+
+# ----------------------------------------- forced reclassification of auditor types
+def _forced_reclass_voucher(name: str):
+    ws = workspaces.create_workspace(name)
+    document = documents.add_document(
+        ws,
+        "EXP-2025-027_PV-2025-027.txt",
+        b"EMPLOYEE EXPENSE PAYMENT VOUCHER\nVoucher PV-2025-027\nAmount paid PKR 18,400",
+        category="evidence",
+    )
+    documents.extract_document(ws, str(document["id"]))
+    return ws, str(document["id"])
+
+
+def _forced_reclass_request(ws, document_id: str):
+    from app.agent.executors import documents as document_executors
+    from app.agent.executors.documents import document_ref
+    from app.agent.executors.model import ExecutorRequest
+    from app.workspace_transactions import parent_hashes
+
+    return ExecutorRequest(
+        executor_id=document_executors.CLASSIFICATION_EXECUTOR_ID,
+        capability_id="documents.types_classified",
+        unit_id=f"document_classification:{document_id}",
+        proposal={
+            "document_type": "payment_voucher",
+            "confidence": "high",
+            "rationale": "An employee expense payment voucher.",
+        },
+        expected_parents=parent_hashes(ws, [document_ref(document_id)]),
+        expected_revision=ws.revision,
+    )
+
+
+def test_a_forced_sweep_skips_and_reconciles_auditor_typed_documents():
+    from app import document_classification as dc
+    from app.agent import capabilities as capability_registries
+    from app.agent.executors import EXECUTORS
+    from app.agent.executors import documents as document_executors
+    from app.agent.executors.documents import DOCUMENT_TYPE_PRESERVED
+
+    ws, document_id = _forced_reclass_voucher("Forced sweep")
+    capability = capability_registries.build_documents_registry().get("documents.types_classified")
+    scope = {"target_refs": [f"document:{document_id}"], "generation_mode": "force"}
+
+    dc.assign(ws, document_id, "payment_voucher", assigned_by="model")
+    assert [u.id for u in capability.expand_units(ws, scope)] == [f"document_classification:{document_id}"]
+
+    dc.retype(ws, document_id, type_id="payment_voucher")
+    assert capability.expand_units(ws, scope) == []
+
+    # Reconciler reports conflict for auditor-owned type, already_applied for own commit.
+    target = document_executors.DocumentClassificationExecutorTarget(
+        ws, "20260905-181549-404aaa", document_id, catalog_sha1=dc.catalog_signature(ws),
+    )
+    reconciliation = EXECUTORS.reconcile(_forced_reclass_request(ws, document_id), target)
+    assert reconciliation.disposition == "conflict"
+    assert reconciliation.reason == DOCUMENT_TYPE_PRESERVED
+
+    ws2, doc2 = _forced_reclass_voucher("Reconcile an interrupted commit")
+    req2 = _forced_reclass_request(ws2, doc2)
+    target2 = document_executors.DocumentClassificationExecutorTarget(
+        ws2, "run-1", doc2, catalog_sha1=dc.catalog_signature(ws2),
+    )
+    document_executors.execute_document_classification(req2, target2)
+    assert EXECUTORS.reconcile(req2, target2).disposition == "already_applied"
+
+
+def test_a_forced_run_over_an_auditor_typed_document_finishes(monkeypatch):
+    from app import document_classification as dc, llm
+    from app.agent import runner
+    from conftest import FakeAgentLLM, wait_run
+
+    ws, document_id = _forced_reclass_voucher("Forced run")
+    dc.assign(ws, document_id, "payment_voucher", assigned_by="auditor")
+    fake = FakeAgentLLM({})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"configured": True, "provider": "local", "model": "test"},
+    )
+
+    run = wait_run(ws, runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Analyze 1 selected document(s).",
+            "goal_template": "document_analysis",
+            "requested_outcomes": ["documents.types_classified"],
+            "target_refs": [f"document:{document_id}"],
+            "generation_mode": "force",
+        },
+        context={"document_ids": [document_id], "action": "refresh"},
+    )["id"])
+
+    assert run["status"] == "completed"
+    assert "workspace_revision_after" not in str(run.get("error") or "")
+    assert [c for c in fake.calls if c["tag"] == "agent:document_classification"] == []
+    assert dc.classification(workspaces.load_workspace(ws.id), document_id)["assigned_by"] == "auditor"

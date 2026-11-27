@@ -191,51 +191,50 @@ def test_a_proposal_without_an_anchor_is_refused():
 
 
 # -------------------------------------------------------- semantic contract
-def test_joining_on_an_amount_is_refused_with_the_reason_stated():
-    """The one mistake worth spending a repair turn on: it reads perfectly and
-    fuses every transaction sharing that amount."""
-
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda p: p["join_keys"][0].update(
+                left={"role": "invoice", "field": "total_amount"},
+                right={"role": "order", "field": "total_amount"},
+            ),
+            "coincidence, not a link",
+        ),
+        (
+            lambda p: p["join_keys"][0].update(left={"role": "invoice", "field": "approval"}),
+            "is a control field",
+        ),
+        (
+            lambda p: p["assertions"][0].update(left={"role": "invoice", "field": "vat_amount"}),
+            "does not carry",
+        ),
+        (
+            lambda p: p["roles"][1].update(document_type="bank_statement"),
+            "no schema for",
+        ),
+        (
+            lambda p: p["assertions"][0].update(left={"role": "receipt", "field": "total_amount"}),
+            "unknown role 'receipt'",
+        ),
+        (
+            lambda p: p["anchor"].update(field="not_a_field"),
+            "The anchor names field",
+        ),
+    ],
+    ids=[
+        "join-on-amount",
+        "join-on-control-field",
+        "missing-field",
+        "uninduced-type",
+        "unknown-role",
+        "missing-anchor-field",
+    ],
+)
+def test_invalid_linkage_proposals_are_refused(mutate, expected_error):
     payload = _proposal()
-    payload["join_keys"][0]["left"] = {"role": "invoice", "field": "total_amount"}
-    payload["join_keys"][0]["right"] = {"role": "order", "field": "total_amount"}
-    with pytest.raises(WorkerResponseValidationError, match="coincidence, not a link"):
-        validate_linkage_proposal(payload, _request())
-
-
-def test_joining_on_a_control_field_is_refused_too():
-    payload = _proposal()
-    payload["join_keys"][0]["left"] = {"role": "invoice", "field": "approval"}
-    with pytest.raises(WorkerResponseValidationError, match="is a control field"):
-        validate_linkage_proposal(payload, _request())
-
-
-def test_a_field_the_type_does_not_carry_is_refused():
-    """A rule naming an absent field reads as a passing test forever."""
-
-    payload = _proposal()
-    payload["assertions"][0]["left"] = {"role": "invoice", "field": "vat_amount"}
-    with pytest.raises(WorkerResponseValidationError, match="does not carry"):
-        validate_linkage_proposal(payload, _request())
-
-
-def test_a_role_naming_an_uninduced_type_is_refused():
-    payload = _proposal()
-    payload["roles"][1]["document_type"] = "bank_statement"
-    with pytest.raises(WorkerResponseValidationError, match="no schema for"):
-        validate_linkage_proposal(payload, _request())
-
-
-def test_an_unknown_role_is_refused():
-    payload = _proposal()
-    payload["assertions"][0]["left"] = {"role": "receipt", "field": "total_amount"}
-    with pytest.raises(WorkerResponseValidationError, match="unknown role 'receipt'"):
-        validate_linkage_proposal(payload, _request())
-
-
-def test_the_anchor_is_checked_like_any_other_operand():
-    payload = _proposal()
-    payload["anchor"]["field"] = "not_a_field"
-    with pytest.raises(WorkerResponseValidationError, match="The anchor names field"):
+    mutate(payload)
+    with pytest.raises(WorkerResponseValidationError, match=expected_error):
         validate_linkage_proposal(payload, _request())
 
 
@@ -986,21 +985,6 @@ def test_a_proposal_is_still_valid_where_the_matrix_asks_nothing():
 
     assert proposal["assertions"]
     assert not proposal.get("coverage")
-
-
-def test_the_prompt_tells_the_worker_what_the_requirements_are_for():
-    from app.agent.workers.tests import LINKAGE_SYSTEM
-
-    assert "Answer every one." in LINKAGE_SYSTEM
-    # The reason this worker names the fields and the matrix does not: it is
-    # the only turn that has seen what the documents actually carry.
-    assert "names no fields" in LINKAGE_SYSTEM
-    assert "unsupported" in LINKAGE_SYSTEM
-    # A join links records; it is never the answer to a requirement that they
-    # agree. The earlier wording let a join stand in for a three-way match.
-    assert "never shows that what" in LINKAGE_SYSTEM
-    assert "`reads`" in LINKAGE_SYSTEM
-    assert "`gaps`" in LINKAGE_SYSTEM
 
 
 def test_a_malformed_id_is_refused_where_a_repair_can_still_fix_it():
