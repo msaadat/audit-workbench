@@ -551,6 +551,16 @@ const hasHighlights = computed(() => Boolean(
 ))
 const showAnnotated = computed(() => sourceView.value === 'annotated' && hasHighlights.value)
 const showFields = computed(() => sourceView.value === 'fields' && hasRecords.value)
+/**
+ * Every PDF page is drawn the same way — the server's page image on the
+ * sheet — whether or not anything has been read from it. Analysis adds the
+ * highlight layer and nothing else. An unanalysed PDF used to fall through to
+ * the browser's own viewer, a dark toolbar and a thumbnail at 44%, so the same
+ * file looked like a different product before and after it was read. The
+ * browser's viewer is still one click away through "Open the original file".
+ */
+const showPdfSheet = computed(() => isPdf.value && !showFields.value
+  && (sourceView.value === 'original' || sourceView.value === 'annotated'))
 const showTextView = computed(() => !isImage.value && !showFields.value && !showAnnotated.value
   && (!hasOriginalView.value || sourceView.value === 'text'))
 const fileUrl = computed(() => selected.value ? `/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/file` : '')
@@ -1455,13 +1465,13 @@ onUnmounted(() => {
               />
             </section>
             <PdfHighlightViewer
-              v-else-if="showAnnotated && highlights"
+              v-else-if="showPdfSheet"
               :workspace-id="props.workspace.id"
               :document-id="selected.id"
               :page="currentPage"
-              :page-count="highlights.page_count || selected.pages || 1"
-              :items="highlights.items"
-              :notes="highlights.notes ?? []"
+              :page-count="highlights?.page_count || selected.pages || 1"
+              :items="showAnnotated ? highlights?.items ?? [] : []"
+              :notes="showAnnotated ? highlights?.notes ?? [] : []"
               :active-key="activeHighlightKey"
               :active-note-key="activeNoteKey"
               :cache-bust="selected.sha1"
@@ -1472,7 +1482,6 @@ onUnmounted(() => {
               @edit-notes="readingTab = 'notes'"
             />
             <img v-else-if="isImage" class="document-image" :src="fileUrl" :alt="selected.title" />
-            <iframe v-else-if="isPdf && sourceView === 'original'" :key="`${selected.id}:${currentPage}`" class="document-frame" :src="`${fileUrl}#page=${currentPage}`" :title="selected.title" />
             <div v-else-if="isDocx && sourceView === 'original'" :key="selected.id" class="docx-stage" @click="activeNoteKey && (activeNoteKey = null)">
               <div v-if="(docxAnnotations?.citedCount || docxNotes.length)" class="docx-hl-bar" @click.stop>
                 <span class="docx-hl-stat">
@@ -2024,7 +2033,6 @@ onUnmounted(() => {
 .scan-notice p { margin: .25rem 0 0; }
 .document-image { display: block; max-width: 100%; max-height: 34rem; margin: auto; }
 /* `flex: 1`, not a height guessed from the chrome above it. */
-.document-frame { width: 100%; flex: 1 1 auto; min-height: 24rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .docx-stage { display: flex; flex-direction: column; gap: .625rem; flex: 1 1 auto; min-height: 0; position: relative; }
 .docx-hl-bar {
   display: flex; align-items: center; flex-wrap: wrap; gap: .5rem .75rem;

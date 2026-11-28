@@ -61,6 +61,7 @@ const pageImageUrl = computed(() => {
   return `/api/workspaces/${props.workspaceId}/documents/${props.documentId}/pages/${props.page}/image${q}`
 })
 
+const fileUrl = computed(() => `/api/workspaces/${props.workspaceId}/documents/${props.documentId}/file`)
 const allNotes = computed(() => props.notes ?? [])
 const pageItems = computed(() => props.items.filter(item => item.page === props.page))
 const pageNotes = computed(() => allNotes.value.filter(note => note.page === props.page))
@@ -147,8 +148,10 @@ function stepNote(delta: number) {
 
 <template>
   <div class="pdf-hl">
-    <div class="pdf-hl-bar">
-      <span class="pdf-hl-stat">
+    <!-- A page with nothing read from it yet is drawn on the same sheet, with
+         no bar: there is nothing to count and no layer to toggle. -->
+    <div v-if="items.length || allNotes.length || totalPages > 1" class="pdf-hl-bar">
+      <span v-if="items.length || allNotes.length" class="pdf-hl-stat">
         <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
         <strong v-if="pageItems.length">{{ plural(pageItems.length, 'field') }}</strong>
         <template v-if="pageItems.length && pageNotes.length"><span aria-hidden="true">·</span></template>
@@ -190,7 +193,7 @@ function stepNote(delta: number) {
     <div ref="stageRef" class="pdf-hl-stage" @click="activeNoteKey && emit('select-note', null)">
       <div v-if="imageError" class="pdf-hl-fallback">
         <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />
-        <span>Could not render this PDF page for visual highlighting. Switch to <b>Original</b> to view the PDF.</span>
+        <span>Could not render this PDF page. <a :href="fileUrl" target="_blank" rel="noopener noreferrer">Open the original file</a> to view it.</span>
       </div>
       <div v-else class="pdf-sheet" :class="{ loading: imageLoading }">
         <img
