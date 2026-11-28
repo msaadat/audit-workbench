@@ -1259,7 +1259,13 @@ describe('EngagementRecordTab', () => {
     await buttons[2].trigger('click')
     expect(wrapper.find('[data-testid="record-phases"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="record-phases"] .tab')).toHaveLength(4)
-    expect(wrapper.findAll('[data-testid="record-phases"] .scard')).toHaveLength(3)
+    expect(wrapper.findAll('[data-testid="record-phases"] .ledger tbody tr')).toHaveLength(3)
+    // The review a person owes leads the Now row, and the page says nothing twice:
+    // no tagline, no cost footer.
+    expect(wrapper.find('[data-testid="record-phases"] .now-card[data-kind="needs"]').text())
+      .toContain(point().message)
+    expect(wrapper.find('.subtitle').exists()).toBe(false)
+    expect(wrapper.find('footer.summary').exists()).toBe(false)
 
     // Overview (focus card + quiet file grid)
     await buttons[3].trigger('click')

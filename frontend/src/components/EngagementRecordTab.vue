@@ -19,7 +19,7 @@ import UiStateIcon, { type UiState } from './ui/UiStateIcon.vue'
 import RecordBoardView from './record/RecordBoardView.vue'
 import RecordPhasesView from './record/RecordPhasesView.vue'
 import RecordOverviewView from './record/RecordOverviewView.vue'
-import type { RecordLayout, RecordPhaseGroup } from './record/recordViewModel'
+import type { RecordLayout, RecordPhaseGroup, RecordRunNow } from './record/recordViewModel'
 
 /**
  * The engagement record: what this engagement holds, and what it still owes.
@@ -270,6 +270,30 @@ const liveElapsed = computed(() => {
   if (!since) return ''
   const started = new Date(since).valueOf()
   return Number.isNaN(started) ? '' : duration(Math.max(0, now.value - started))
+})
+
+/**
+ * The run in flight with one progress figure, for layouts that say it once.
+ * The run's own unit count (4 of 32) is the figure a reader can check against
+ * the work; the stage count is the fallback, and on a one-stage run there is
+ * no figure at all rather than a bar that can only read empty or full.
+ */
+const runNow = computed<RecordRunNow | null>(() => {
+  const value = live.value
+  if (!value) return null
+  const activity = agent.state.run?.activity
+  const units = activity?.total ? Math.min(activity.current ?? 0, activity.total) : null
+  const parts: string[] = []
+  if (units !== null && activity?.total) parts.push(`${units} of ${activity.total}`)
+  else if (value.step) parts.push(value.step)
+  if (liveElapsed.value) parts.push(liveElapsed.value)
+  return {
+    title: value.headline,
+    status: value.state,
+    detail: parts.join(' · '),
+    fraction: units !== null && activity?.total ? units / activity.total : value.progress,
+    waiting: value.waiting,
+  }
 })
 
 /** The thread is where a run is watched in detail; the ledger stays on screen. */
@@ -815,7 +839,7 @@ const viewGroups = computed<RecordPhaseGroup[]>(() =>
     <div class="bar">
       <div class="bar-title">
         <h2>Engagement record</h2>
-        <span class="subtitle">Local Polars compute · Human-gated sign-off</span>
+        <span v-if="layout !== 'phases'" class="subtitle">Local Polars compute · Human-gated sign-off</span>
       </div>
       <span v-if="data?.refreshing" class="updating" role="status">
         <i class="aw-icon aw-icon-spin aw-icon-loader-circle" aria-hidden="true" />Updating status…
@@ -901,8 +925,9 @@ const viewGroups = computed<RecordPhaseGroup[]>(() =>
       </section>
 
       <!-- While a run is in flight it, not the next step, is the news. -->
+      <!-- The Phases layout says the run once, in its own Now row. -->
       <section
-        v-if="live"
+        v-if="live && layout !== 'phases'"
         class="brief live"
         :class="{ stepped: live.progress !== null }"
         :data-wait="live.waiting ? '1' : null"
@@ -942,8 +967,11 @@ const viewGroups = computed<RecordPhaseGroup[]>(() =>
         v-else-if="layout === 'phases'"
         :groups="viewGroups"
         :starting="starting"
+        :open-points="openPoints"
+        :run="runNow"
         @start="start"
         @open-point="openPoint"
+        @watch="watchRun"
       />
 
       <RecordOverviewView
@@ -1107,7 +1135,8 @@ const viewGroups = computed<RecordPhaseGroup[]>(() =>
         </section>
       </section>
 
-      <footer class="summary">
+      <!-- What the engagement cost is bookkeeping; the Phases layout leaves it to Debug. -->
+      <footer v-if="layout !== 'phases'" class="summary">
         <span>{{ totalLine }}</span>
         <span class="grow"></span>
         <span v-if="quietRuns" class="quiet">{{ plural(quietRuns, 'run') }} filed nothing</span>

@@ -50,6 +50,19 @@ export interface RecordPhaseGroup {
   items: RecordStageItem[]
 }
 
+/**
+ * The run in flight, said once. `fraction` is the one progress figure the
+ * record shows: the unit count where the run reports one (4 of 32 controls),
+ * else the stage count, and null where neither says anything.
+ */
+export interface RecordRunNow {
+  title: string
+  status: string
+  detail: string
+  fraction: number | null
+  waiting: boolean
+}
+
 export interface RecordStartRequest {
   prompt: string
   outcomes: string[]
