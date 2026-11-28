@@ -382,3 +382,62 @@ def test_a_tool_conversation_is_not_mistaken_for_a_repair(workspace_with_data, m
     _record_messages(ws, monkeypatch, [(first, "calling a tool"), (second, "Started the revision.")], refs=())
 
     assert _replay(ws, monkeypatch, "shorten the matrix", refs=())["content"] == "calling a tool"
+
+
+def test_replay_matches_non_streamed_recording_when_caller_streams_tools(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    tools = [{
+        "type": "function",
+        "function": {"name": "list_tables", "description": "List tables", "parameters": {"type": "object", "properties": {}}},
+    }]
+    monkeypatch.setenv("GROQ_API_KEY", "live-key")
+    monkeypatch.setattr(
+        llm.urllib.request, "urlopen",
+        lambda request, timeout: FakeResponse("There is 1 table."),
+    )
+    with debug_store.trace_context(
+        workspace_id=ws.id, workspace_root=str(ws.root), chat_id="chat_1",
+        stage="assistant.tool_loop",
+    ):
+        llm.chat(_messages("list the tables"), tools=tools, profile="assistant")
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv(llm_replay.ENV_VAR, "on")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("network")))
+    deltas: list[str] = []
+    with debug_store.trace_context(
+        workspace_id=ws.id, workspace_root=str(ws.root), chat_id="chat_1",
+        stage="assistant.tool_loop",
+    ):
+        replayed = llm.chat(
+            _messages("list the tables"),
+            tools=tools,
+            profile="assistant",
+            on_delta=deltas.append,
+            stream_tools=True,
+        )
+    assert replayed["content"] == "There is 1 table."
+    assert deltas == ["There is 1 table."]
+
+
+def test_read_stream_reassembles_tool_calls_without_index_or_repeated_name_and_honors_cancel():
+    import threading
+
+    chunks = [
+        b'data: {"choices":[{"delta":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"list_tables","arguments":"{\\"a\\""}}]}}]}\n',
+        b'data: {"choices":[{"delta":{"tool_calls":[{"id":"c1","function":{"name":"list_tables","arguments":":1}"}}]}}]}\n',
+        b'data: {"choices":[{"delta":{"tool_calls":[{"id":"c2","type":"function","function":{"name":"table_profile","arguments":"{\\"t\\":\\"x\\"}"}}]}}]}\n',
+        b"data: [DONE]\n",
+    ]
+    payload, _ = llm._read_stream(iter(chunks), lambda _s: None)
+    calls = payload["choices"][0]["message"]["tool_calls"]
+    assert len(calls) == 2
+    assert calls[0]["id"] == "c1"
+    assert calls[0]["function"] == {"name": "list_tables", "arguments": '{"a":1}'}
+    assert calls[1]["id"] == "c2"
+    assert calls[1]["function"] == {"name": "table_profile", "arguments": '{"t":"x"}'}
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(llm.LLMCancelledError):
+        llm._read_stream(iter(chunks), lambda _s: None, cancel_event=cancel)

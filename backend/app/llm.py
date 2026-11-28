@@ -141,6 +141,10 @@ class LLMUnreachableError(LLMError):
     """
 
 
+class LLMCancelledError(LLMError):
+    """Raised when a caller's cancel event aborts an in-flight streamed call."""
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     backend: str
@@ -997,6 +1001,8 @@ def chat(
     on_delta: Callable[[str], None] | None = None,
     response_format: dict | None = None,
     reasoning: str | int | None = None,
+    stream_tools: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
@@ -1019,7 +1025,8 @@ def chat(
     ``reasoning`` is this call's deliberation budget — an effort name or a
     token count — and overrides ``LLM_REASONING`` except where that is ``off``.
     """
-    streaming = on_delta is not None and not tools
+    use_responses = bool(tools) and _tools_api() == "responses"
+    streaming = on_delta is not None and (not tools or (stream_tools and not use_responses))
     call_started = time.monotonic()
     try:
         settings = _settings(profile)
@@ -1042,7 +1049,6 @@ def chat(
 
     if temperature is None:
         temperature = configured_temperature()
-    use_responses = bool(tools) and _tools_api() == "responses"
     body: dict = {
         "model": settings.model,
         "messages": messages if use_responses else _without_reasoning_items(messages),
@@ -1143,12 +1149,16 @@ def chat(
         response_headers = None
         raw_body = b""
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise LLMCancelledError("LLM request cancelled.")
             with urllib.request.urlopen(request, timeout=settings.timeout) as response:
                 headers_at = time.monotonic()
                 response_headers = getattr(response, "headers", {})
                 if streaming:
                     assert on_delta is not None
-                    payload, raw_body = _read_stream(response, on_delta)
+                    payload, raw_body = _read_stream(
+                        response, on_delta, cancel_event=cancel_event
+                    )
                 else:
                     raw_body = response.read()
                 body_at = time.monotonic()
@@ -1166,6 +1176,16 @@ def chat(
                 finally:
                     parsed_at = time.monotonic()
                     attempt_record["parse_ms"] = round((parsed_at - body_at) * 1000, 3)
+        except LLMCancelledError as error:
+            attempt_record["error"] = str(error)
+            _finish_attempt(attempt_record, attempt_started)
+            if call_id:
+                debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                debug_store.finish_call(
+                    trace_workspace_id, call_id, error=str(error),
+                    started_monotonic=call_started,
+                )
+            raise
         except urllib.error.HTTPError as error:
             raw_error, error_payload, detail = _read_http_error(error)
             hint = _http_error_hint(settings, error, detail, endpoint=endpoint)
@@ -1460,7 +1480,10 @@ def _response_error(payload: object) -> tuple[object | None, str] | None:
 
 
 def _read_stream(
-    response: Any, on_delta: Callable[[str], None]
+    response: Any,
+    on_delta: Callable[[str], None],
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict, bytes]:
     """Consume a streamed completion, reporting text as it arrives.
 
@@ -1476,10 +1499,15 @@ def _read_stream(
     """
     content: list[str] = []
     reasoning: list[str] = []
+    tool_calls_by_index: dict[int, dict] = {}
+    next_tool_index = 0
+    last_tool_index: int | None = None
     finish_reason = None
     usage = None
     role = "assistant"
     for raw_line in response:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelledError("LLM request cancelled.")
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line or line.startswith(":"):
             continue
@@ -1506,6 +1534,49 @@ def _read_stream(
             if piece:
                 content.append(str(piece))
                 on_delta(str(piece))
+            for tc in delta.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                raw_idx = tc.get("index")
+                if raw_idx is not None:
+                    idx = int(raw_idx)
+                    next_tool_index = max(next_tool_index, idx + 1)
+                else:
+                    tc_id = str(tc.get("id") or "")
+                    if tc_id and (
+                        last_tool_index is None
+                        or tool_calls_by_index.get(last_tool_index, {}).get("id") not in ("", tc_id)
+                    ):
+                        idx = next_tool_index
+                        next_tool_index += 1
+                    elif last_tool_index is not None:
+                        idx = last_tool_index
+                    else:
+                        idx = next_tool_index
+                        next_tool_index += 1
+                last_tool_index = idx
+                entry = tool_calls_by_index.setdefault(
+                    idx,
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    },
+                )
+                if tc.get("id"):
+                    entry["id"] = str(tc["id"])
+                if tc.get("type"):
+                    entry["type"] = str(tc["type"])
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                if fn.get("name"):
+                    name_piece = str(fn["name"])
+                    existing_name = entry["function"]["name"]
+                    if not existing_name:
+                        entry["function"]["name"] = name_piece
+                    elif name_piece != existing_name:
+                        entry["function"]["name"] += name_piece
+                if fn.get("arguments"):
+                    entry["function"]["arguments"] += str(fn["arguments"])
             # Reasoning streams on its own delta field. Kept apart from the text
             # twice over: it never reaches ``on_delta``, because a reader
             # following the turn is owed the answer and not the deliberation;
@@ -1520,6 +1591,10 @@ def _read_stream(
                 finish_reason = choice["finish_reason"]
     text = "".join(content)
     message: dict = {"role": role, "content": text}
+    if tool_calls_by_index:
+        message["tool_calls"] = [
+            tool_calls_by_index[idx] for idx in sorted(tool_calls_by_index)
+        ]
     if reasoning:
         message["reasoning"] = "".join(reasoning)
     payload: dict = {

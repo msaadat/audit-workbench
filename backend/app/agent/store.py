@@ -20,11 +20,14 @@ API layer goes through the runner's control surface instead of writing here.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import hashlib
 import json
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -120,8 +123,19 @@ PARTIAL_STATUSES = frozenset(
 
 _event_locks: dict[str, threading.Lock] = {}
 _event_locks_guard = threading.Lock()
+_event_notifiers: dict[str, threading.Condition] = {}
+_event_notifier_waiters: dict[str, int] = {}
+_async_event_waiters: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
+_event_versions: dict[str, int] = {}
+_EVENT_VERSIONS_MAX = 512
+_event_notifiers_guard = threading.Lock()
 _run_locks: dict[str, threading.RLock] = {}
 _run_locks_guard = threading.Lock()
+# Cached run summaries keyed by absolute run.json path -> (ino, mtime_ns, size, summary).
+# Atomic saves replace the file inode, so any write invalidates immediately.
+_run_summary_cache: dict[str, tuple[int, int, int, dict]] = {}
+_run_summary_cache_lock = threading.Lock()
+_RUN_SUMMARY_CACHE_MAX = 512
 
 
 def utcnow() -> str:
@@ -500,11 +514,24 @@ def list_runs(workspace: Workspace) -> list[dict]:
         if not path.exists():
             continue
         try:
+            stat = path.stat()
+            cache_key = str(path)
+            signature = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            with _run_summary_cache_lock:
+                cached = _run_summary_cache.get(cache_key)
+            if cached is not None and cached[:3] == signature:
+                summaries.append(copy.deepcopy(cached[3]))
+                continue
             run = json.loads(path.read_text(encoding="utf-8"))
             _hydrate_run(run)
+            summary = run_summary(run)
+            with _run_summary_cache_lock:
+                if len(_run_summary_cache) >= _RUN_SUMMARY_CACHE_MAX:
+                    _run_summary_cache.clear()
+                _run_summary_cache[cache_key] = (*signature, summary)
+            summaries.append(copy.deepcopy(summary))
         except (OSError, json.JSONDecodeError):
             continue
-        summaries.append(run_summary(run))
     return summaries
 
 
@@ -594,6 +621,76 @@ def read_sidecar(workspace: Workspace, run_id: str, ref: dict) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def event_version(run_id: str) -> int:
+    with _event_notifiers_guard:
+        return int(_event_versions.get(run_id, 0))
+
+
+def subscribe_events(
+    run_id: str, loop: asyncio.AbstractEventLoop
+) -> tuple[asyncio.Event, Callable[[], None]]:
+    """Register an asyncio wakeup for ``run_id`` without holding a worker thread."""
+    event = asyncio.Event()
+    token = (loop, event)
+    with _event_notifiers_guard:
+        _async_event_waiters.setdefault(run_id, set()).add(token)
+
+    def unsubscribe() -> None:
+        with _event_notifiers_guard:
+            waiters = _async_event_waiters.get(run_id)
+            if waiters is not None:
+                waiters.discard(token)
+                if not waiters:
+                    _async_event_waiters.pop(run_id, None)
+
+    return event, unsubscribe
+
+
+def wait_for_event(run_id: str, last_version: int, timeout: float = 2.0) -> int:
+    """Block until an event is appended for ``run_id`` or ``timeout`` elapses."""
+    with _event_notifiers_guard:
+        current = int(_event_versions.get(run_id, 0))
+        if current != last_version:
+            return current
+        condition = _event_notifiers.get(run_id)
+        if condition is None:
+            condition = threading.Condition()
+            _event_notifiers[run_id] = condition
+        _event_notifier_waiters[run_id] = _event_notifier_waiters.get(run_id, 0) + 1
+    try:
+        with condition:
+            current = event_version(run_id)
+            if current != last_version:
+                return current
+            condition.wait(timeout=max(0.05, float(timeout)))
+            return event_version(run_id)
+    finally:
+        with _event_notifiers_guard:
+            remaining = _event_notifier_waiters.get(run_id, 0) - 1
+            if remaining <= 0:
+                _event_notifier_waiters.pop(run_id, None)
+                _event_notifiers.pop(run_id, None)
+            else:
+                _event_notifier_waiters[run_id] = remaining
+
+
+def _notify_event(run_id: str) -> None:
+    with _event_notifiers_guard:
+        if run_id not in _event_versions and len(_event_versions) >= _EVENT_VERSIONS_MAX:
+            _event_versions.pop(next(iter(_event_versions)), None)
+        _event_versions[run_id] = int(_event_versions.get(run_id, 0)) + 1
+        condition = _event_notifiers.get(run_id)
+        async_waiters = list(_async_event_waiters.get(run_id) or ())
+    if condition is not None:
+        with condition:
+            condition.notify_all()
+    for loop, event in async_waiters:
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass
+
+
 # ------------------------------------------------------------------- events
 def append_event(workspace: Workspace, run_id: str, type_: str, data: dict) -> dict:
     """Append one event and return it, with its per-run sequence number.
@@ -615,6 +712,7 @@ def append_event(workspace: Workspace, run_id: str, type_: str, data: dict) -> d
             (run_id, seq, event["at"], type_, telemetry_db.dumps(data)),
         )
         handle.commit()
+    _notify_event(run_id)
     return event
 
 

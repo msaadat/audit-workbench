@@ -658,6 +658,10 @@ class ActionExecution(BaseRunner):
                     action["args"] = response["args"]; actions.validate_action(action)
                 ledger.transition(action, "ready")
             else:
+                reason = str(response.get("reason") or "").strip()
+                if reason:
+                    action["rejection_reason"] = reason
+                    action["error"] = f"Rejected by auditor: {reason}"
                 ledger.transition(action, "skipped")
         else:
             if decision == "retry":
@@ -665,10 +669,15 @@ class ActionExecution(BaseRunner):
                 ledger.transition(action, "proposed")
             else:
                 ledger.transition(action, "skipped")
+        reason_text = str(response.get("reason") or "").strip()
         self.runtime.resolve_interaction(
             interaction,
             response,
-            event_data={"action_id": action["id"], "decision": decision},
+            event_data={
+                "action_id": action["id"],
+                "decision": decision,
+                **({"reason": reason_text} if reason_text else {}),
+            },
             persist=lambda: self._save_action(action),
         )
 

@@ -432,8 +432,89 @@ def _safe_trace(steps: list[dict]) -> list[dict]:
                 summary[key] = f"{len(value)} items"
             elif isinstance(value, dict):
                 summary[key] = f"{len(value)} fields"
-        trace.append({"tool": str(step.get("tool") or ""), "ok": bool(step.get("ok")), "args": summary})
+        entry = {
+            "tool": str(step.get("tool") or ""),
+            "ok": bool(step.get("ok")),
+            "args": summary,
+        }
+        if step.get("label"):
+            entry["label"] = str(step["label"])[:120]
+        if step.get("duration_ms") is not None:
+            entry["duration_ms"] = step["duration_ms"]
+        if step.get("summary"):
+            entry["summary"] = str(step["summary"])[:160]
+        if step.get("error"):
+            entry["error"] = str(step["error"])[:240]
+        trace.append(entry)
     return trace
+
+
+def _sanitize_ui_context(raw: object) -> dict | None:
+    if not isinstance(raw, Mapping):
+        return None
+    cleaned = {}
+    for key in ("surface", "label", "ref", "title"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            cleaned[key] = value[:160]
+    return cleaned or None
+
+
+def mention_candidates(workspace: Workspace, query: str = "", limit: int = 30) -> list[dict]:
+    """Compact @-mention targets across workspace artifacts and tables."""
+    from .agent import artifact_index
+
+    needle = str(query or "").strip().casefold()
+    limit = max(1, min(int(limit or 30), 80))
+    seen: set[str] = set()
+    pinned: list[dict] = []
+    tables: list[dict] = []
+    artifacts: list[dict] = []
+
+    def add(bucket: list[dict], ref: str, kind: str, label: str, detail: str = "") -> None:
+        if not ref or ref in seen:
+            return
+        if needle and needle not in f"{ref} {kind} {label} {detail}".casefold():
+            return
+        seen.add(ref)
+        bucket.append({"ref": ref, "kind": kind, "label": label[:90], "detail": detail[:90]})
+
+    if str((workspace.planning or {}).get("apm_markdown") or "").strip():
+        add(pinned, "planning:apm", "planning", "Audit Planning Memorandum", "APM")
+    if str((workspace.report or {}).get("markdown") or "").strip():
+        add(pinned, "report:working", "report", "Draft Audit Report", "Report")
+    for table_name in workspace.table_names():
+        add(tables, f"table:{table_name}", "table", table_name, "Table")
+    index = artifact_index.compact(artifact_index.build(workspace))
+    kind_labels = {
+        "rcm": "RCM row",
+        "datatest": "Data test",
+        "doctest": "Document test",
+        "finding": "Finding",
+        "observation": "Observation",
+        "document": "Document",
+        "analysis": "Analysis",
+        "ruleset": "Validation rules",
+    }
+    for entry in index.get("artifacts") or []:
+        kind = str(entry.get("kind") or "")
+        if kind not in kind_labels:
+            continue
+        ref = str(entry.get("ref") or "")
+        title = str(entry.get("title") or entry.get("id") or ref)
+        add(artifacts, ref, kind, title, kind_labels[kind])
+        if len(artifacts) >= limit:
+            break
+
+    # Reserve room for artifacts so a workspace with many tables never hides
+    # RCM rows, tests, findings, or documents from the mention picker.
+    remaining = max(0, limit - len(pinned))
+    if artifacts and len(tables) + len(artifacts) > remaining:
+        table_cap = min(len(tables), max(1, remaining // 3))
+        artifact_take = artifacts[: max(0, remaining - table_cap)]
+        table_take = tables[: max(0, remaining - len(artifact_take))]
+        return (pinned + table_take + artifact_take)[:limit]
+    return (pinned + tables + artifacts)[:limit]
 
 
 def _write_artifacts(workspace: Workspace, chat_id: str, message_id: str, values: list[dict]) -> list[str]:
@@ -638,7 +719,14 @@ def _finalize(workspace: Workspace, chat_id: str, user_id: str, updater) -> None
         write_json_atomic(path, record)
 
 
-def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
+def send_message(
+    workspace: Workspace,
+    chat_id: str,
+    payload: dict,
+    *,
+    on_event=None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
     content = str(payload.get("content") or "").strip()
     if not content:
         raise WorkspaceError("Write a message first.")
@@ -777,11 +865,30 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                         not isinstance(value, str) or not value.strip() for value in raw_ids
                     ):
                         raise WorkspaceError("rcm_ids must be a list of non-empty strings.")
+            ui_context = _sanitize_ui_context(payload.get("ui_context"))
+            extra_kwargs = {}
+            if ui_context is not None:
+                extra_kwargs["ui_context"] = ui_context
+            if on_event is not None:
+                extra_kwargs["on_event"] = on_event
+            if cancel_event is not None:
+                extra_kwargs["cancel_event"] = cancel_event
             outcome = _process_message(
                 workspace, chat_id, user, record, mode, goal_template, run_kind,
                 run_context, requested_outcomes, local_handler,
+                **extra_kwargs,
             )
             return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
+        except assistant.AskCancelledError:
+            outcome = {"kind": "cancelled"}
+            def cancelled(record, user):
+                user["state"] = "failed"
+                user["error"] = "Cancelled."
+                user["outcome"] = outcome
+            if 'user_id' in locals():
+                _finalize(workspace, chat_id, user_id, cancelled)
+                return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
+            raise
         except Exception as error:
             try:
                 outcome = {"kind": "error", "message": str(error)}
@@ -1079,6 +1186,7 @@ def _queued_outcome(workspace: Workspace, run_id: str, response: dict, user: dic
 
 def _commander(
     workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
+    *, ui_context: dict | None = None,
 ) -> assistant.Commander:
     """Bind this message's launch policy for the assistant tool loop.
 
@@ -1124,6 +1232,7 @@ def _commander(
             run_context={
                 "conversation_seed": _conversation_seed(record, user),
                 **({"document_ids": attached_docs} if attached_docs else {}),
+                **({"ui_context": ui_context} if ui_context else {}),
                 # Whether the whole workspace may be regenerated is decided
                 # here, from what the auditor actually wrote, and never by the
                 # loop reading its own brief: the brief is the coordinator's
@@ -1180,6 +1289,7 @@ def _process_message(
     workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
     goal_template: str | None, run_kind: str | None = None, run_context: dict | None = None,
     requested_outcomes: list[str] | None = None, local_handler: str | None = None,
+    *, ui_context: dict | None = None, on_event=None, cancel_event: threading.Event | None = None,
 ) -> dict:
     slash_command = None
     slash_argument = ""
@@ -1250,18 +1360,27 @@ def _process_message(
         # An explicit Ask is a promise the workspace will not change, so the
         # coordinator is lent no mutating capability for it.
         commander = (
-            _commander(workspace, chat_id, user, record, mode)
+            _commander(workspace, chat_id, user, record, mode, ui_context=ui_context)
             if resolved == "coordinate" else None
         )
         with debug_store.trace_context(
             workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=chat_id,
             stage="assistant.answer", purpose="assistant_answer",
         ):
+            ask_kwargs = {
+                "prior_turns": history,
+                "chat_id": chat_id,
+                "commander": commander,
+            }
+            if ui_context:
+                ask_kwargs["ui_context"] = ui_context
+            if on_event is not None:
+                ask_kwargs["on_event"] = on_event
+            if cancel_event is not None:
+                ask_kwargs["cancel_event"] = cancel_event
             result = assistant.ask(
                 workspace, user["content"], doc_ids,
-                prior_turns=history,
-                chat_id=chat_id,
-                commander=commander,
+                **ask_kwargs,
             )
         final_snapshot = _document_snapshot(
             workspace, doc_ids, manifest=(result.get("document_context") or {}).get("manifest") or []
@@ -1281,7 +1400,7 @@ def _process_message(
                 rec, kind="text", content=str(result.get("answer") or ""), resolved=final_intent,
                 reply_to=stored["id"], document_context=final_snapshot, artifact_ids=artifact_ids,
                 outcome=answer_outcome, citation_ids=[str(item.get("id") or _new_id("citation")) for item in result.get("citations") or []],
-                citations=result.get("citations") or [], tool_trace=_safe_trace(result.get("steps") or []),
+                citations=result.get("citations") or [], tool_trace=_safe_trace(result.get("step_details") or result.get("steps") or []),
                 document_manifest=result.get("document_context"),
             )
             answer["id"] = answer_id
@@ -1708,11 +1827,12 @@ def _run_projection(run: dict) -> dict:
         # unexplained runs that appeared at the same time.
         "children": list(run.get("children") or []),
         "suggestions": list(run.get("suggestions") or []),
+        "tool_trace": list(run.get("loop_trace") or [])[-30:],
     })
     return summary
 
 
-def get_chat(workspace: Workspace, chat_id: str) -> dict:
+def get_chat(workspace: Workspace, chat_id: str, *, include_suggestions: bool = True) -> dict:
     record = _read(workspace, chat_id)
     # Missing documents remain in immutable message snapshots but are removed
     # from the active composer context and explicitly reported.
@@ -1974,36 +2094,41 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
     ))
 
     workflow_state = None
-    # Both calls below independently resolve Document Test scope for every
-    # capability they check, which otherwise re-materializes the same
-    # cycle-vouching tests many times over for one read-only chat render.
-    # Nothing in this span writes a test, so the two calls can safely share
-    # one cache.
-    with doc_tests.request_cache_scope():
-        try:
-            from .agent import capabilities as audit_capabilities
-
-            workflow_state = audit_capabilities.workflow_state(workspace)
-        except Exception:
-            # Recommendation UI must not make an otherwise durable chat unreadable.
-            workflow_state = None
-        if workflow_state is not None:
+    suggestions: list[dict] | None = None
+    guided_workflows: list[dict] | None = None
+    if include_suggestions:
+        # Both calls below independently resolve Document Test scope for every
+        # capability they check, which otherwise re-materializes the same
+        # cycle-vouching tests many times over for one read-only chat render.
+        # Nothing in this span writes a test, so the two calls can safely share
+        # one cache.
+        with doc_tests.request_cache_scope():
             try:
-                workflow_state = {
-                    **workflow_state,
-                    **audit_capabilities.doc_tests_workflow_state(workspace),
-                }
+                from .agent import capabilities as audit_capabilities
+
+                workflow_state = audit_capabilities.workflow_state(workspace)
             except Exception:
-                # Keep audit recommendations available if a standalone worklist
-                # cannot be inspected.
-                pass
+                # Recommendation UI must not make an otherwise durable chat unreadable.
+                workflow_state = None
+            if workflow_state is not None:
+                try:
+                    workflow_state = {
+                        **workflow_state,
+                        **audit_capabilities.doc_tests_workflow_state(workspace),
+                    }
+                except Exception:
+                    # Keep audit recommendations available if a standalone worklist
+                    # cannot be inspected.
+                    pass
+        suggestions = _chat_suggestions(workspace, workflow_state, linked_runs)
+        guided_workflows = narration.guided_workflows(workflow_state)
 
     result = dict(record)
     result.update({
         "transcript": transcript, "artifacts": artifacts, "artifact_errors": artifact_errors,
         "runs": linked, "missing_document_ids": missing, "capabilities": capabilities(),
-        "suggestions": _chat_suggestions(workspace, workflow_state, linked_runs),
-        "guided_workflows": narration.guided_workflows(workflow_state),
+        "suggestions": suggestions,
+        "guided_workflows": guided_workflows,
     })
     active_statuses = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
     active_summary = next(

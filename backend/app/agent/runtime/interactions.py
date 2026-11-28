@@ -304,6 +304,8 @@ def submit_approval_response(
     normalized = list(decisions or [])
     approval["submitted_decisions"] = normalized
     approval["response_submitted_at"] = store.utcnow()
+    if handle is None and run["status"] not in store.TERMINAL_STATUSES:
+        run["status"] = "interrupted"
     store.save_run(workspace, run)
     store.append_event(
         workspace,
@@ -314,9 +316,6 @@ def submit_approval_response(
     if handle is not None:
         handle.decisions[approval_id] = normalized
         handle.approval_resolved.set()
-    elif run["status"] not in store.TERMINAL_STATUSES:
-        run["status"] = "interrupted"
-        store.save_run(workspace, run)
     return run
 
 
@@ -345,6 +344,8 @@ def submit_interaction_response(
     normalized = dict(response or {})
     interaction["submitted_response"] = normalized
     interaction["response_submitted_at"] = store.utcnow()
+    if handle is None and run["status"] not in store.TERMINAL_STATUSES:
+        run["status"] = "interrupted"
     store.save_run(workspace, run)
     store.append_event(
         workspace,
@@ -356,7 +357,4 @@ def submit_interaction_response(
         with handle.lock:
             handle.interaction_responses[interaction_id] = normalized
         handle.interaction_resolved.set()
-    elif run["status"] not in store.TERMINAL_STATUSES:
-        run["status"] = "interrupted"
-        store.save_run(workspace, run)
     return run

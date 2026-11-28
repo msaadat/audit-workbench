@@ -57,6 +57,39 @@ describe('ChatComposer argument-bearing slash commands', () => {
     await nextTick()
     expect(wrapper.find('.command-menu').exists()).toBe(false)
   })
+
+  it('offers @-mention autocomplete, inserts typed refs, shows active view context, and exposes cancel when busy', async () => {
+    const wrapper = mount(ChatComposer, {
+      props: {
+        busy: true,
+        capabilities,
+        mode: 'auto',
+        documents: [],
+        selectedIds: [],
+        activeContext: { surface: 'rcm', label: 'RCM-4', ref: 'rcm:RCM-4' },
+        mentions: [
+          { ref: 'rcm:RCM-4', kind: 'rcm', label: 'Vendor approval risk', detail: 'RCM row' },
+          { ref: 'table:invoices', kind: 'table', label: 'invoices', detail: 'Table' },
+        ],
+      },
+      global: { plugins: [PrimeVue] },
+    })
+
+    expect(wrapper.find('.view-chip').text()).toContain('Viewing: RCM-4')
+    expect(wrapper.find('[aria-label="Cancel reply"]').exists()).toBe(true)
+
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('Check @inv')
+    await nextTick()
+    expect(wrapper.find('.mention-menu').exists()).toBe(true)
+    expect(wrapper.find('.mention-menu').text()).toContain('@table:invoices')
+
+    await wrapper.find('.mention-menu li').trigger('mousedown')
+    await nextTick()
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('Check @table:invoices ')
+    await textarea.setValue('Check @RCM-1')
+    expect(wrapper.emitted('mention-query')?.at(-1)).toEqual(['rcm-1'])
+  })
 })
 
 describe('ChatList active status indicator', () => {

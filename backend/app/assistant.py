@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +29,10 @@ import polars as pl
 
 from . import analysis_results, analytics, apm_analytics, debug_store, document_context as document_context_module, document_search, documents, explore, llm, model_context, sandbox, tooling
 from .workspaces import Workspace, WorkspaceError
+
+
+class AskCancelledError(RuntimeError):
+    """Raised when the auditor aborts an in-flight assistant turn."""
 
 MAX_STEPS = 8
 # Model previews are capped hard so large populations fit in context.
@@ -627,6 +633,7 @@ class _Session:
         self._frames: dict[str, pl.DataFrame] = {}
         self.artifacts: list[dict] = []
         self.steps: list[dict] = []
+        self.step_details: list[dict] = []
         # The action planner's artifact reads, minus the operations block: this
         # session answers questions and hands work over as a brief, so the
         # action vocabulary is one it cannot spend. The empty catalog is what
@@ -1337,6 +1344,99 @@ def _parse_document_answer(value: str) -> tuple[str, list[dict]]:
     return str(parsed.get("answer") or raw), [item for item in citations if isinstance(item, dict)]
 
 
+_TOOL_DISPLAY_LABELS = {
+    "get_audit_progress": "Checking audit progress",
+    "get_latest_run": "Checking latest run",
+    "inspect_audit_artifacts": "Inspecting audit artifacts",
+    "search_documents": "Searching documents",
+    "get_document_records": "Reading document records",
+    "search_document": "Searching written document",
+    "read_document": "Reading written document",
+    "list_artifacts": "Listing artifacts",
+    "get_artifact": "Reading artifact",
+    "list_tables": "Listing tables",
+    "describe_table": "Profiling table",
+    "get_table_schemas": "Reading table schemas",
+    "get_table_profile": "Profiling table",
+    "query_table": "Querying table",
+    "run_analytics": "Running audit analytic",
+    "run_python": "Running Polars analysis",
+    "start_command": "Starting workflow",
+    "take_action": "Handing off to agent",
+}
+
+
+def _describe_tool_step(name: str, args: dict) -> str:
+    base = _TOOL_DISPLAY_LABELS.get(name, name.replace("_", " ").capitalize())
+    for key in ("ref", "table", "area", "document_type", "command_id", "query", "pattern"):
+        value = str(args.get(key) or "").strip()
+        if value:
+            clipped = value if len(value) <= 48 else value[:47] + "…"
+            return f"{base}: {clipped}"
+    return base
+
+
+def _compact_step_args(args: dict) -> dict:
+    summary: dict[str, str] = {}
+    for key, value in (args or {}).items():
+        if key == "code":
+            summary[key] = f"{len(str(value))} chars"
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            summary[key] = str(value)[:120]
+        elif isinstance(value, list):
+            summary[key] = f"{len(value)} items"
+        elif isinstance(value, dict):
+            summary[key] = f"{len(value)} fields"
+    return summary
+
+
+def _summarize_tool_result(name: str, content: object, ok: bool) -> str:
+    if not ok:
+        if isinstance(content, dict) and content.get("error"):
+            return str(content["error"])[:160]
+        return "Failed"
+    if not isinstance(content, dict):
+        return "Done"
+    if "result" in content and isinstance(content["result"], dict):
+        rows = content["result"].get("total_rows")
+        if rows is not None:
+            return f"{rows} row{'s' if rows != 1 else ''}"
+    if "results" in content and isinstance(content["results"], list):
+        count = len(content["results"])
+        return f"{count} match{'es' if count != 1 else ''}"
+    if "artifacts" in content and isinstance(content["artifacts"], list):
+        count = len(content["artifacts"])
+        return f"{count} artifact{'s' if count != 1 else ''}"
+    if "tables" in content and isinstance(content["tables"], list):
+        count = len(content["tables"])
+        return f"{count} table{'s' if count != 1 else ''}"
+    if "verdict_text" in content and content.get("verdict_text"):
+        return str(content["verdict_text"])[:100]
+    if "kind" in content and content.get("kind") in {"run_started", "command_queued", "steering_delivered"}:
+        return str(content["kind"]).replace("_", " ")
+    if "total" in content and isinstance(content["total"], int):
+        return f"{content['total']} items"
+    return "Done"
+
+
+def _ui_context_block(ui_context: dict | None) -> str:
+    if not isinstance(ui_context, dict):
+        return ""
+    surface = str(ui_context.get("surface") or "").strip()
+    label = str(ui_context.get("label") or "").strip()
+    ref = str(ui_context.get("ref") or "").strip()
+    title = str(ui_context.get("title") or "").strip()
+    if not any((surface, label, ref, title)):
+        return ""
+    parts = [part for part in (label or surface, ref, title) if part]
+    return (
+        "\nActive workspace view (what the auditor currently has open on screen): "
+        + " · ".join(parts)
+        + ". When the auditor says 'this', 'this row', 'this finding', or 'this document' "
+        "without naming another artifact, resolve it against this view first."
+    )
+
+
 def ask(
     workspace: Workspace,
     question: str,
@@ -1345,6 +1445,9 @@ def ask(
     prior_turns: list[dict] | None = None,
     chat_id: str | None = None,
     commander: Commander | None = None,
+    ui_context: dict | None = None,
+    on_event: Callable[[str, dict], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """Run the tool-calling loop for one message.
 
@@ -1371,6 +1474,9 @@ def ask(
     system_prompt = SYSTEM_PROMPT % manifest_text
     if command_schemas:
         system_prompt += COMMAND_RULES
+    ui_block = _ui_context_block(ui_context)
+    if ui_block:
+        system_prompt += ui_block
     if document_context:
         system_prompt += DOCUMENT_CONTEXT_RULES % _document_prompt(document_context)
     messages = [{"role": "system", "content": system_prompt}]
@@ -1379,14 +1485,42 @@ def ask(
     # therefore never truncated by the conversation-context policy.
     messages.append({"role": "user", "content": question})
 
+    def _emit(kind: str, payload: dict) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(kind, payload)
+        except Exception:
+            pass
+
+    def _check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise AskCancelledError("Cancelled by auditor.")
+
     answer = ""
     for step in range(MAX_STEPS):
+        _check_cancelled()
         with debug_store.trace_context(
             workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=chat_id, stage="assistant.tool_loop",
             purpose="assistant_answer", document_ids=attached_ids,
             tool_step=step + 1,
         ):
-            message = llm.chat(messages, tools=tools)
+            try:
+                if on_event is not None and not document_context:
+                    def _on_delta(piece: str) -> None:
+                        _check_cancelled()
+                        _emit("delta", {"text": piece})
+
+                    chat_kwargs: dict = {"on_delta": _on_delta, "stream_tools": True}
+                    if cancel_event is not None:
+                        chat_kwargs["cancel_event"] = cancel_event
+                    message = llm.chat(messages, tools=tools, **chat_kwargs)
+                else:
+                    chat_kwargs = {"cancel_event": cancel_event} if cancel_event is not None else {}
+                    message = llm.chat(messages, tools=tools, **chat_kwargs)
+            except llm.LLMCancelledError as error:
+                raise AskCancelledError("Cancelled by auditor.") from error
+        _check_cancelled()
         raw_tool_calls = message.get("tool_calls") or []
         tool_calls = (
             [call for call in raw_tool_calls if isinstance(call, dict)]
@@ -1406,6 +1540,7 @@ def ask(
             break
 
         for call in tool_calls:
+            _check_cancelled()
             function = call.get("function") if isinstance(call.get("function"), dict) else {}
             name = function.get("name", "")
             raw_args = function.get("arguments") or "{}"
@@ -1416,12 +1551,43 @@ def ask(
                 args = dict(parsed_args)
             except (json.JSONDecodeError, TypeError, ValueError):
                 args = {}
+            step_index = len(session.steps)
+            label = _describe_tool_step(name, args)
+            safe_args = _compact_step_args(args)
+            _emit("tool_start", {"index": step_index, "tool": name, "label": label, "args": safe_args})
+            started = time.monotonic()
             try:
                 content, _artifact = session.dispatch(name, args)
                 ok = True
+                error_text = None
             except Exception as error:  # tool failures are fed back to the model
                 content, ok = {"error": str(error)}, False
+                error_text = str(error)[:240]
+            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            summary = _summarize_tool_result(name, content, ok)
             session.steps.append({"tool": name, "args": args, "ok": ok})
+            session.step_details.append({
+                "tool": name,
+                "label": label,
+                "args": args,
+                "ok": ok,
+                "duration_ms": duration_ms,
+                "summary": summary,
+                "error": error_text,
+            })
+            _emit(
+                "tool_end",
+                {
+                    "index": step_index,
+                    "tool": name,
+                    "label": label,
+                    "args": safe_args,
+                    "ok": ok,
+                    "duration_ms": duration_ms,
+                    "summary": summary,
+                    "error": error_text,
+                },
+            )
             messages.append(
                 {
                     "role": "tool",
@@ -1468,6 +1634,7 @@ def ask(
     return {
         "answer": answer,
         "steps": session.steps,
+        "step_details": session.step_details,
         "artifacts": session.artifacts,
         "citations": citations,
         "started_run": session.started_run,

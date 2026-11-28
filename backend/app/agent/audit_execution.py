@@ -1539,10 +1539,17 @@ class AuditWorkflowExecution(ActionExecution):
                 if decision.get("decision") == "keep":
                     continue
                 before = rows_before.get(str(decision.get("rcm_id"))) or {}
+                changes = decision.get("changes") if isinstance(decision.get("changes"), dict) else {}
+                before_fields = {
+                    key: before.get(key)
+                    for key in changes
+                    if isinstance(before.get(key), str) and before.get(key)
+                }
                 spec = {
                     **dict(decision),
                     "risk": before.get("risk"),
                     "tests": len(before.get("test_refs") or []),
+                    **({"before_fields": before_fields} if before_fields else {}),
                 }
                 items.append(
                     self.proposal_item(

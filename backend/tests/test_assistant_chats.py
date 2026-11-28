@@ -1096,3 +1096,220 @@ def test_composer_document_context_forwards_to_document_analysis_and_loop(
     })
     assert res_loop["outcome"]["kind"] == "run_started"
     assert launched[1]["context"]["document_ids"] == [doc["id"]]
+
+
+def test_get_chat_can_skip_suggestions_for_lightweight_refreshes(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    chat = assistant_chats.create_chat(ws)
+    from app.agent import capabilities as audit_capabilities
+
+    called = {"workflow_state": 0}
+    real_ws = audit_capabilities.workflow_state
+
+    def spy_workflow_state(workspace):
+        called["workflow_state"] += 1
+        return real_ws(workspace)
+
+    monkeypatch.setattr(audit_capabilities, "workflow_state", spy_workflow_state)
+
+    light = assistant_chats.get_chat(ws, chat["id"], include_suggestions=False)
+    assert called["workflow_state"] == 0
+    assert light["suggestions"] is None
+    assert light["guided_workflows"] is None
+
+    full = assistant_chats.get_chat(ws, chat["id"], include_suggestions=True)
+    assert called["workflow_state"] == 1
+    assert isinstance(full["suggestions"], list)
+
+
+def test_streaming_events_ui_context_cancellation_and_mentions(workspace_with_data, monkeypatch):
+    import threading
+
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+
+    # 1. Mention candidates include workspace tables.
+    mentions = assistant_chats.mention_candidates(ws, query="transactions")
+    assert any(item["ref"] == "table:transactions" for item in mentions)
+
+    # 2. Streaming emits tool_start, tool_end, delta, and injects ui_context into prompt.
+    events: list[tuple[str, dict]] = []
+    seen_system: list[str] = []
+
+    def fake_chat(messages, tools=None, on_delta=None, stream_tools=False, **kwargs):
+        seen_system.append(messages[0]["content"])
+        if len(seen_system) == 1:
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_t1",
+                    "type": "function",
+                    "function": {"name": "list_tables", "arguments": "{}"},
+                }],
+            }
+        if on_delta is not None:
+            on_delta("Found ")
+            on_delta("transactions.")
+        return {"content": "Found transactions."}
+
+    monkeypatch.setattr(assistant_chats.assistant.llm, "chat", fake_chat)
+    res = assistant_chats.send_message(
+        ws,
+        chat["id"],
+        {
+            "content": "What is in this table?",
+            "intent": "ask",
+            "mode": "auto",
+            "request_id": "req-stream-trace-1",
+            "source": "composer",
+            "ui_context": {"surface": "tables", "label": "transactions", "ref": "table:transactions"},
+        },
+        on_event=lambda kind, data: events.append((kind, data)),
+    )
+    assert res["outcome"]["kind"] == "answer"
+    assert "Active workspace view" in seen_system[0]
+    assert "table:transactions" in seen_system[0]
+    kinds = [kind for kind, _ in events]
+    assert "tool_start" in kinds
+    assert "tool_end" in kinds
+    assert "delta" in kinds
+    reply = res["chat"]["messages"][-1]
+    assert reply["tool_trace"][0]["label"] == "Listing tables"
+    assert reply["tool_trace"][0]["duration_ms"] >= 0
+
+    # 3. Pre-set cancel_event stops cleanly before calling the provider.
+    cancel = threading.Event()
+    cancel.set()
+    cancelled = assistant_chats.send_message(
+        ws,
+        chat["id"],
+        {
+            "content": "Should abort immediately",
+            "intent": "ask",
+            "mode": "auto",
+            "request_id": "req-stream-cancel-1",
+            "source": "composer",
+        },
+        cancel_event=cancel,
+    )
+    assert cancelled["outcome"]["kind"] == "cancelled"
+
+
+def test_stream_route_cancels_worker_on_generator_close_and_keeps_contextvars(workspace_with_data, monkeypatch):
+    import asyncio
+    import threading
+    from app import auth
+    from app.routes import assistant_chat_routes
+
+    ws = workspace_with_data
+    chat = assistant_chats.create_chat(ws)
+    seen_principal: list[str] = []
+    seen_cancel = threading.Event()
+    worker_started = threading.Event()
+
+    def slow_send_message(workspace, chat_id, payload, *, on_event=None, cancel_event=None, **kwargs):
+        seen_principal.append(auth.current_principal().id)
+        worker_started.set()
+        if cancel_event is not None and cancel_event.wait(timeout=2.0):
+            seen_cancel.set()
+            return {"outcome": {"kind": "cancelled"}, "chat": assistant_chats.get_chat(workspace, chat_id)}
+        return {"outcome": {"kind": "answer"}, "chat": assistant_chats.get_chat(workspace, chat_id)}
+
+    monkeypatch.setattr(assistant_chats, "send_message", slow_send_message)
+    monkeypatch.setattr(assistant_chat_routes.workspaces, "load_workspace", lambda _wid: ws)
+    monkeypatch.setenv("AUTH_MODE", "multi_user")
+
+    class _DummyRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def exercise():
+        custom = auth.Principal(user_id="usr_stream_ctx")
+        with auth.principal_scope(custom):
+            response = await assistant_chat_routes.send_message_stream(
+                ws.id, chat["id"], _DummyRequest(),
+                {"content": "Cancel me", "intent": "ask", "mode": "auto", "request_id": "req-gen-close-1"},
+            )
+        gen = response.body_iterator
+        # Pull once while worker blocks, then close generator like Starlette's
+        # listen_for_disconnect task group does on client abort.
+        next_task = asyncio.create_task(gen.__anext__())
+        await asyncio.to_thread(worker_started.wait, 2.0)
+        next_task.cancel()
+        try:
+            await next_task
+        except asyncio.CancelledError:
+            pass
+        await gen.aclose()
+        assert await asyncio.to_thread(seen_cancel.wait, 2.0)
+
+    asyncio.run(exercise())
+    assert seen_principal == ["usr_stream_ctx"]
+
+
+def test_mention_candidates_do_not_starve_artifacts_and_store_prunes_waiters(workspace_with_data):
+    import asyncio
+    from app.agent import store
+    from app.agent.runtime import interactions
+    from app.routes import agent_routes
+
+    ws = workspace_with_data
+    ws.add_rcm({"risk": "Unapproved payments", "control": "Dual sign-off", "assertion": "Authorization"})
+    for idx in range(35):
+        ws.add_table(f"extra_table_{idx}.csv", b"id\n1\n")
+
+    # Even with 36+ tables and a small limit, artifacts still appear.
+    initial = assistant_chats.mention_candidates(ws, query="", limit=20)
+    assert any(item["kind"] == "rcm" for item in initial)
+    assert any(item["kind"] == "table" for item in initial)
+
+    # Querying specifically for the RCM row finds it.
+    queried = assistant_chats.mention_candidates(ws, query="Unapproved", limit=10)
+    assert any(item["kind"] == "rcm" for item in queried)
+
+    # list_runs returns deep copies so mutating nested dicts never poisons cache.
+    run = store.new_command_run(ws, "auto", {"source": "chat", "text": "Review"})
+    first = store.list_runs(ws)
+    first[0]["usage"]["llm_turns"] = 9999
+    second = store.list_runs(ws)
+    assert second[0]["usage"]["llm_turns"] != 9999
+
+    # Offline approval submission marks the run interrupted before appending
+    # approval_response_stored, and the live SSE stream closes immediately
+    # (well below the 15 s heartbeat) and prunes its waiter registration.
+    run["status"] = "awaiting_approval"
+    run["approvals"].append({
+        "id": "apr_test_1",
+        "kind": "rcm",
+        "status": "pending",
+        "items": [],
+    })
+    store.save_run(ws, run)
+
+    class _DummyRequest:
+        headers: dict = {}
+
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def check_sse_closes_immediately():
+        response = await agent_routes.run_events(ws.id, run["id"], _DummyRequest(), cursor=0)
+        gen = response.body_iterator
+
+        async def collect():
+            frames = []
+            async for chunk in gen:
+                frames.append(chunk)
+            return frames
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0.05)
+        interactions.submit_approval_response(ws, run["id"], "apr_test_1", [], handle=None)
+        frames = await asyncio.wait_for(task, timeout=2.0)
+        joined = "".join(frames)
+        assert "event: approval_response_stored" in joined
+        assert "event: stream_end" in joined
+        assert run["id"] not in store._async_event_waiters
+
+    asyncio.run(check_sse_closes_immediately())

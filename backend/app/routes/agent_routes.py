@@ -29,7 +29,7 @@ from ..agent import actions, runner, store, suggest
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
-POLL_SECONDS = 0.4
+POLL_SECONDS = 0.5
 HEARTBEAT_SECONDS = 15.0
 
 # The generic creation endpoint's historical default was the fixed v1 analysis
@@ -243,30 +243,61 @@ async def run_events(
 
     async def stream(after: int):
         idle = 0.0
-        while True:
-            if await request.is_disconnected():
-                return
-            events = await asyncio.to_thread(store.read_events, ws, run_id, after)
-            for event in events:
-                after = event["seq"]
-                idle = 0.0
-                yield (
-                    f"id: {event['seq']}\n"
-                    f"event: {event['type']}\n"
-                    f"data: {json.dumps(event, default=str)}\n\n"
-                )
-            run = await asyncio.to_thread(store.load_run, ws, run_id)
-            if not events and run["status"] in (
-                *store.TERMINAL_STATUSES,
-                "interrupted",
-            ):
-                yield "event: stream_end\ndata: {}\n\n"
-                return
-            await asyncio.sleep(POLL_SECONDS)
-            idle += POLL_SECONDS
-            if idle >= HEARTBEAT_SECONDS:
-                idle = 0.0
-                yield ": keep-alive\n\n"
+        check_status = True
+        loop = asyncio.get_running_loop()
+        wakeup, unsubscribe = store.subscribe_events(run_id, loop)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                # Clear before reading so any event appended during read_events
+                # sets the wakeup and is picked up immediately on the next pass.
+                wakeup.clear()
+                events = await asyncio.to_thread(store.read_events, ws, run_id, after)
+                for event in events:
+                    after = event["seq"]
+                    idle = 0.0
+                    event_type = event["type"]
+                    if (
+                        event_type == "run_status"
+                        and not (
+                            isinstance(event.get("data"), dict)
+                            and event["data"].get("child_run_id")
+                        )
+                    ) or event_type in {
+                        "approval_response_stored",
+                        "interaction_response_stored",
+                    }:
+                        check_status = True
+                    yield (
+                        f"id: {event['seq']}\n"
+                        f"event: {event_type}\n"
+                        f"data: {json.dumps(event, default=str)}\n\n"
+                    )
+                if not events and check_status:
+                    run = await asyncio.to_thread(store.load_run, ws, run_id)
+                    check_status = False
+                    if run["status"] in (
+                        *store.TERMINAL_STATUSES,
+                        "interrupted",
+                    ):
+                        yield "event: stream_end\ndata: {}\n\n"
+                        return
+                if events and check_status:
+                    continue
+                started_wait = loop.time()
+                try:
+                    await asyncio.wait_for(wakeup.wait(), timeout=POLL_SECONDS)
+                    continue
+                except asyncio.TimeoutError:
+                    elapsed = loop.time() - started_wait
+                    idle += elapsed
+                    if idle >= HEARTBEAT_SECONDS:
+                        idle = 0.0
+                        check_status = True
+                        yield ": keep-alive\n\n"
+        finally:
+            unsubscribe()
 
     return StreamingResponse(
         stream(cursor),

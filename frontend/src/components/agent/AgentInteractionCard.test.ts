@@ -1,7 +1,8 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
 import PrimeVue from 'primevue/config'
 
+import { api } from '../../api'
 import type { AgentInteraction } from '../../types'
 import AgentInteractionCard from './AgentInteractionCard.vue'
 
@@ -65,5 +66,71 @@ describe('AgentInteractionCard clarification options', () => {
       response: { option_id: '1' },
     }))
     expect(wrapper.text()).toContain('Selected: Merge duplicate risks')
+  })
+
+  it('renders a unified diff for backend preview.args shape and emits contextual Request changes feedback', async () => {
+    const wrapper = mountCard(clarification({
+      type: 'proposal_approval',
+      options: [],
+      prompt: 'Review and approve: Edit an exact passage.',
+      payload: {
+        preview: {
+          action_type: 'edit_document_text',
+          target: 'planning:apm',
+          title: 'Audit Planning Memorandum',
+          args: {
+            old_str: 'Old materiality threshold is $50,000.',
+            new_str: 'Updated materiality threshold is $25,000.',
+          },
+        },
+      },
+    }))
+
+    expect(wrapper.find('.diff-view .diff-line.del').text()).toContain('$50,000')
+    expect(wrapper.find('.diff-view .diff-line.add').text()).toContain('$25,000')
+
+    const reqBtn = wrapper.findAll('button').find(btn => btn.text().includes('Request changes'))
+    expect(reqBtn).toBeTruthy()
+    await reqBtn!.trigger('click')
+    await wrapper.find('.feedback-form textarea').setValue('Use $30,000 instead.')
+    await wrapper.find('.feedback-form').trigger('submit')
+
+    expect(wrapper.emitted('respond')).toEqual([[{ decision: 'reject', reason: 'Use $30,000 instead.' }]])
+    const emittedFeedback = wrapper.emitted('feedback')?.[0]?.[0] as string
+    expect(emittedFeedback).toContain('run R1')
+    expect(emittedFeedback).toContain('Audit Planning Memorandum')
+    expect(emittedFeedback).toContain('planning:apm')
+    expect(emittedFeedback).toContain('Use $30,000 instead.')
+  })
+
+  it('loads edit_document_text diff from the sidecar when preview.args is Stored in sidecar', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      action_type: 'edit_document_text',
+      args: {
+        old_str: 'Long original passage.',
+        new_str: 'Long revised passage.',
+      },
+    })
+    try {
+      const wrapper = mountCard(clarification({
+        type: 'proposal_approval',
+        options: [],
+        prompt: 'Review and approve: Edit an exact passage.',
+        payload: {
+          sidecar: { sha1: 'abc123' },
+          preview: {
+            action_type: 'edit_document_text',
+            target: 'report:working',
+            title: 'Draft Audit Report',
+            args: 'Stored in sidecar',
+          },
+        },
+      }))
+      await flushPromises()
+      expect(wrapper.find('.diff-view .diff-line.del').text()).toContain('Long original passage.')
+      expect(wrapper.find('.diff-view .diff-line.add').text()).toContain('Long revised passage.')
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

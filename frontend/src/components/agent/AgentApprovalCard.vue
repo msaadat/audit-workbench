@@ -5,12 +5,13 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import type { AgentApproval, AgentDecision } from '../../types'
+import { diffLines, type DiffLine } from './textDiff'
 
 // One editable approval batch. Every item starts approved (the agent only
-// proposes what passed local validation); the auditor can reject items or
-// open an item's exact spec and edit it as JSON before applying the batch.
-const props = defineProps<{ approval: AgentApproval; busy: boolean }>()
-const emit = defineEmits<{ decide: [AgentDecision[]] }>()
+// proposes what passed local validation); the auditor can reject items, request
+// changes with feedback, or open an item's exact spec to edit as JSON.
+const props = defineProps<{ approval: AgentApproval; busy: boolean; runId?: string }>()
+const emit = defineEmits<{ decide: [AgentDecision[]]; feedback: [string] }>()
 
 const kindLabel: Record<string, string> = {
   join: 'Proposed joins',
@@ -34,8 +35,8 @@ const decisionLabel: Record<string, string> = {
 }
 
 // Fields a revision item carries that the summary grid must not dump: section
-// bodies run to pages, and the change list is drawn as its own list below.
-const REVISION_DETAIL_KEYS = new Set(['markdown', 'before', 'changes', 'row', 'reason', 'decision'])
+// bodies run to pages, and the change list is drawn as its own diff below.
+const REVISION_DETAIL_KEYS = new Set(['markdown', 'before', 'before_fields', 'changes', 'row', 'reason', 'decision'])
 
 interface ItemState {
   action: 'approve' | 'reject'
@@ -56,6 +57,8 @@ for (const item of props.approval.items) {
   }
 }
 const submitting = ref(false)
+const feedbackOpen = ref(false)
+const feedbackNote = ref('')
 // Reset the local loading state when the parent's busy flag clears, so a
 // failed decide call doesn't leave the Apply button spinning forever.
 watch(() => props.busy, (value) => { if (!value) submitting.value = false })
@@ -100,18 +103,64 @@ function apply() {
   emit('decide', decisions)
 }
 
+function submitFeedback() {
+  const note = feedbackNote.value.trim()
+  if (!note) return
+  const decisions: AgentDecision[] = props.approval.items.map((item) => ({
+    item_id: item.id,
+    action: 'reject',
+  }))
+  const kind = kindLabel[props.approval.kind] ?? props.approval.kind
+  const titles = props.approval.items.map(item => item.title).filter(Boolean)
+  const titleSummary = titles.length > 3
+    ? `${titles.slice(0, 3).join(', ')} (+${titles.length - 3} more)`
+    : titles.join(', ')
+  const contextParts = [
+    `Changes requested on ${kind}`,
+    props.runId ? `run ${props.runId}` : '',
+    titleSummary,
+  ].filter(Boolean)
+  submitting.value = true
+  feedbackOpen.value = false
+  feedbackNote.value = ''
+  emit('decide', decisions)
+  emit('feedback', `[${contextParts.join(' · ')}]: ${note}`)
+}
+
 function revisionKind(): boolean {
   return props.approval.kind === 'rcm_revision' || props.approval.kind === 'apm_revision'
 }
 
-// The fields a revise decision rewrites, or an added row's fields, as
-// "field: new value" lines. Attributes are classified separately and omitted.
-function revisionChanges(spec: Record<string, unknown>): Array<{ label: string; value: string }> {
+// The fields a revise decision rewrites, or an added row's fields, paired with
+// any prior field value so the auditor reads a before -> after diff.
+function revisionChanges(spec: Record<string, unknown>): Array<{ label: string; before?: string; value: string }> {
   const source = (spec.changes ?? spec.row) as Record<string, unknown> | undefined
+  const beforeFields = (spec.before_fields && typeof spec.before_fields === 'object'
+    ? spec.before_fields
+    : {}) as Record<string, unknown>
   if (!source || typeof source !== 'object') return []
   return Object.entries(source)
     .filter(([key, value]) => key !== 'control_attributes' && typeof value === 'string' && value)
-    .map(([key, value]) => ({ label: key.replaceAll('_', ' '), value: String(value) }))
+    .map(([key, value]) => {
+      const prev = typeof beforeFields[key] === 'string' && beforeFields[key] !== value
+        ? String(beforeFields[key])
+        : undefined
+      return { label: key.replaceAll('_', ' '), before: prev, value: String(value) }
+    })
+}
+
+function sectionDiff(spec: Record<string, unknown>): DiffLine[] {
+  if (props.approval.kind !== 'apm_revision') return []
+  if (typeof spec.before !== 'string' || typeof spec.markdown !== 'string') return []
+  if (!spec.before.trim()) return []
+  return diffLines(spec.before, spec.markdown)
+}
+
+function codePreview(spec: Record<string, unknown>): string {
+  if (typeof spec.code === 'string' && spec.code.trim()) return spec.code
+  const nested = spec.spec as Record<string, unknown> | undefined
+  if (nested && typeof nested.code === 'string' && nested.code.trim()) return nested.code
+  return ''
 }
 
 function readableSpec(spec: Record<string, unknown>): Array<{ label: string; value: string }> {
@@ -188,10 +237,20 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
       </dl>
       <ul v-if="revisionKind() && revisionChanges(item.spec).length" class="changes">
         <li v-for="change in revisionChanges(item.spec)" :key="change.label">
-          <span class="aw-label">{{ change.label }}</span> {{ change.value }}
+          <span class="aw-label">{{ change.label }}</span>
+          <del v-if="change.before" class="diff-del-inline">{{ change.before }}</del>
+          <ins v-if="change.before" class="diff-add-inline">{{ change.value }}</ins>
+          <template v-else>{{ change.value }}</template>
         </li>
       </ul>
-      <pre v-if="approval.kind === 'apm_revision' && item.spec.markdown" class="section-preview">{{ item.spec.markdown }}</pre>
+      <div v-if="sectionDiff(item.spec).length" class="diff-view" role="region" aria-label="Proposed text diff">
+        <div v-for="(line, idx) in sectionDiff(item.spec)" :key="idx" class="diff-line" :class="line.kind">
+          <span class="diff-mark" aria-hidden="true">{{ line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : line.kind === 'skip' ? '·' : ' ' }}</span>
+          <span>{{ line.text }}</span>
+        </div>
+      </div>
+      <pre v-else-if="approval.kind === 'apm_revision' && item.spec.markdown" class="section-preview">{{ item.spec.markdown }}</pre>
+      <pre v-else-if="codePreview(item.spec)" class="code-preview">{{ codePreview(item.spec) }}</pre>
       <small v-if="items[item.id].edited" class="edited">
         <i class="aw-icon aw-icon-pencil" /> edited — the modified spec will be applied
       </small>
@@ -211,13 +270,38 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
       </div>
     </div>
 
-    <Button
-      class="apply"
-      label="Apply decisions"
-      icon="aw-icon aw-icon-play"
-      :loading="busy || submitting"
-      @click="apply"
-    />
+    <form v-if="feedbackOpen" class="feedback-form" @submit.prevent="submitFeedback">
+      <Textarea
+        v-model="feedbackNote"
+        rows="2"
+        autoResize
+        placeholder="Tell the agent what to adjust — this rejects the batch and sends your feedback…"
+        :disabled="busy || submitting"
+      />
+      <div class="feedback-actions">
+        <Button label="Cancel" severity="secondary" outlined size="small" :disabled="busy || submitting" @click="feedbackOpen = false" />
+        <Button type="submit" label="Reject & send feedback" severity="secondary" outlined size="small" :loading="busy || submitting" :disabled="!feedbackNote.trim()" />
+      </div>
+    </form>
+
+    <div class="footer-actions">
+      <Button
+        label="Request changes"
+        icon="aw-icon aw-icon-pencil"
+        severity="secondary"
+        outlined
+        size="small"
+        :disabled="busy || submitting"
+        @click="feedbackOpen = !feedbackOpen"
+      />
+      <Button
+        class="apply"
+        label="Apply decisions"
+        icon="aw-icon aw-icon-play"
+        :loading="busy || submitting"
+        @click="apply"
+      />
+    </div>
     </template>
   </div>
 </template>
@@ -257,9 +341,26 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
 .spec-summary dd { margin: .08rem 0 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .edited { display: block; color: var(--aw-teal); font-size: var(--aw-text-xs); margin-top: 0.15rem; }
 .changes { margin: .4rem 0 0; padding: 0; list-style: none; font-size: var(--aw-text-xs); }
-.changes li { padding: .1rem 0; }
+.changes li { display: grid; gap: .15rem; padding: .2rem 0; }
 .changes .aw-label { margin-right: .3rem; color: var(--aw-muted); }
-.section-preview {
+.diff-del-inline { padding: .15rem .3rem; border-radius: var(--aw-radius-control); background: var(--aw-danger-soft); color: var(--aw-danger); text-decoration: line-through; }
+.diff-add-inline { padding: .15rem .3rem; border-radius: var(--aw-radius-control); background: var(--aw-teal-soft); color: var(--aw-ink-strong); text-decoration: none; }
+.diff-view {
+  max-height: 14rem;
+  margin: .45rem 0 0;
+  overflow: auto;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-canvas);
+  font-size: var(--aw-text-xs);
+  line-height: 1.45;
+}
+.diff-line { display: grid; grid-template-columns: 1.1rem minmax(0, 1fr); gap: .3rem; padding: .1rem .45rem; white-space: pre-wrap; word-break: break-word; }
+.diff-line.del { background: var(--aw-danger-soft); color: var(--aw-danger); }
+.diff-line.add { background: var(--aw-teal-soft); color: var(--aw-ink-strong); }
+.diff-line.skip { color: var(--aw-muted); font-style: italic; background: var(--aw-raised); }
+.diff-mark { user-select: none; font-family: var(--aw-font-mono, ui-monospace, monospace); font-weight: 700; }
+.section-preview, .code-preview {
   max-height: 12rem;
   margin: .45rem 0 0;
   padding: .45rem;
@@ -271,9 +372,14 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
   font-size: var(--aw-text-xs);
   white-space: pre-wrap;
 }
+.code-preview { font-family: var(--aw-font-mono, ui-monospace, monospace); }
 .editor { margin-top: 0.45rem; }
 .editor :deep(textarea) { width: 100%; font-family: ui-monospace, monospace; font-size: var(--aw-text-sm); }
 .editor-actions { display: flex; gap: 0.4rem; margin-top: 0.35rem; }
 .error { color: var(--aw-danger); font-size: var(--aw-text-xs); }
-.apply { width: 100%; margin-top: 0.25rem; }
+.feedback-form { display: grid; gap: .4rem; margin: .45rem 0; }
+.feedback-form :deep(textarea) { width: 100%; }
+.feedback-actions { display: flex; justify-content: flex-end; gap: .4rem; }
+.footer-actions { display: flex; align-items: center; gap: .45rem; margin-top: 0.35rem; }
+.apply { flex: 1; }
 </style>

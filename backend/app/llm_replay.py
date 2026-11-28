@@ -230,8 +230,25 @@ def _order_free_request(request: Mapping) -> dict:
     return result
 
 
+_STREAM_TRANSPORT_KEYS = ("stream", "stream_options")
+
+
+def _without_stream_options(request: Any) -> Any:
+    """Strip transport-only streaming flags so streamed and non-streamed calls
+    for the same prompt match each other in replay mode."""
+    if not isinstance(request, Mapping):
+        return request
+    if not any(key in request for key in _STREAM_TRANSPORT_KEYS):
+        return request
+    return {
+        key: value
+        for key, value in request.items()
+        if key not in _STREAM_TRANSPORT_KEYS
+    }
+
+
 def _canonical_sha(request: Any, *, order_free: bool = False) -> tuple[str, list[str]]:
-    request = _without_workspace_identity(request)
+    request = _without_workspace_identity(_without_stream_options(request))
     if order_free and isinstance(request, Mapping):
         request = _order_free_request(request)
     text, tokens = canonical(json.dumps(request))
@@ -411,18 +428,23 @@ def _same_request(first: Mapping, second: Mapping) -> bool:
 
 
 def _exact(handle, body: Mapping) -> Recording | None:
-    rows = handle.execute(
-        "SELECT id FROM llm_calls"
-        " WHERE status = 'completed'"
-        " AND json_extract(record, '$.request_sha256') = ?"
-        " AND json_extract(record, '$.replay') IS NULL"
-        " ORDER BY started_at DESC",
-        (request_sha256(body),),
-    ).fetchall()
-    for row in rows:
-        record = _load(handle, row["id"])
-        if record is not None and _usable(record):
-            return _recording(handle, record, "exact")
+    hashes = [request_sha256(body)]
+    stripped = _without_stream_options(body)
+    if stripped is not body:
+        hashes.append(request_sha256(stripped))
+    for digest in hashes:
+        rows = handle.execute(
+            "SELECT id FROM llm_calls"
+            " WHERE status = 'completed'"
+            " AND json_extract(record, '$.request_sha256') = ?"
+            " AND json_extract(record, '$.replay') IS NULL"
+            " ORDER BY started_at DESC",
+            (digest,),
+        ).fetchall()
+        for row in rows:
+            record = _load(handle, row["id"])
+            if record is not None and _usable(record):
+                return _recording(handle, record, "exact")
     return None
 
 

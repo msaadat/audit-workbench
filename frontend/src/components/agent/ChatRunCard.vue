@@ -215,6 +215,15 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       :active="active"
     />
 
+    <details v-if="!showAttention && projection.tool_trace?.length" class="run-trace">
+      <summary>{{ projection.tool_trace.length }} agent tool step{{ projection.tool_trace.length === 1 ? '' : 's' }}</summary>
+      <div v-for="(step, index) in projection.tool_trace" :key="index" class="run-trace-row" :class="{ failed: !step.ok }">
+        <i :class="step.ok ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-x'" />
+        <span>{{ step.label || step.tool }}</span>
+        <small v-if="step.duration_ms != null" class="aw-figure">{{ step.duration_ms < 1000 ? `${Math.round(step.duration_ms)}ms` : `${(step.duration_ms / 1000).toFixed(1)}s` }}</small>
+      </div>
+    </details>
+
     <!-- A run owned by another chat has neither its narration nor its closing
          message projected here, so its card carries the one-line result. -->
     <p v-if="showAttention && projection.summary_line" class="summary-line">{{ projection.summary_line }}</p>
@@ -260,4 +269,10 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 .control.danger:hover:not(:disabled){color:var(--aw-danger)}
 .control i{font-size:var(--aw-text-xs)}
 .head-row :deep(.p-tag){flex:0 0 auto;padding:.1rem .35rem;font-size:var(--aw-text-2xs)}
+.run-trace{padding:0 .55rem .45rem;font-size:var(--aw-text-xs);color:var(--aw-muted)}
+.run-trace summary{cursor:pointer}
+.run-trace-row{display:flex;align-items:baseline;gap:.35rem;padding:.1rem .25rem}
+.run-trace-row.failed>i{color:var(--aw-danger)}
+.run-trace-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run-trace-row small{flex:none;color:var(--aw-muted);font-size:var(--aw-text-2xs)}
 </style>

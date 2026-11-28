@@ -3,7 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 
 import { TERMINAL_STATUSES, useAgentRun } from '../../composables/useAgentRun'
-import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantContextProjection, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AssistantSuggestion, AuditDocument, EvidenceRef } from '../../types'
+import type { LiveTurnState } from '../../composables/useAssistantChat'
+import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantContextProjection, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AssistantStep, AssistantSuggestion, AuditDocument, EvidenceRef } from '../../types'
 import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import MarkdownView from '../MarkdownView.vue'
 import AgentApprovalCard from './AgentApprovalCard.vue'
@@ -15,7 +16,7 @@ import ChatArtifactCard from './ChatArtifactCard.vue'
 import ChatRunCard from './ChatRunCard.vue'
 import { plural } from '../../format'
 
-const props = defineProps<{ workspaceId: string; chat: AssistantChat; documents: AuditDocument[]; actionBusy?: boolean; busy?: boolean; needsSources?: boolean }>()
+const props = defineProps<{ workspaceId: string; chat: AssistantChat; documents: AuditDocument[]; actionBusy?: boolean; busy?: boolean; liveTurn?: LiveTurnState | null; needsSources?: boolean }>()
 const emit = defineEmits<{
   shortcut: [string, string]
   command: [string]
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   import: []
   respond: [string, AssistantInteractionProjection['interaction'], Record<string, unknown>]
   decide: [string, AssistantApprovalProjection['approval'], AgentDecision[]]
+  feedback: [string]
 }>()
 const agent = useAgentRun(props.workspaceId)
 const scroller = ref<HTMLElement | null>(null)
@@ -186,6 +188,14 @@ function documentTitle(id: string) {
   const found = props.documents.find(item => item.id === id)
   return found?.source || found?.title || 'Unavailable document'
 }
+function stepMeta(step: AssistantStep): string {
+  const parts: string[] = []
+  if (step.summary && step.summary !== 'Done') parts.push(step.summary)
+  if (step.duration_ms != null) {
+    parts.push(step.duration_ms < 1000 ? `${Math.round(step.duration_ms)}ms` : `${(step.duration_ms / 1000).toFixed(1)}s`)
+  }
+  return parts.join(' · ')
+}
 function messageTime(value: string) {
   const time = new Date(value)
   return Number.isNaN(time.getTime()) ? undefined : time.toLocaleString()
@@ -247,8 +257,8 @@ function messageTime(value: string) {
         <p v-if="isEmptyMilestone(item)" class="quiet-line">{{ emptyMilestoneLine(item) }}</p>
         <AgentMilestoneCard v-else :milestone="item.milestone" />
       </template>
-      <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" />
-      <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />
+      <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" @feedback="emit('feedback', $event)" />
+      <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" :runId="item.run_id" @decide="emit('decide', item.run_id, item.approval, $event)" @feedback="emit('feedback', $event)" />
       <div v-else class="message" :class="[item.role, item.kind, item.state]">
         <div class="bubble" :title="messageTime(item.created_at)">
           <i v-if="item.state === 'pending'" class="aw-icon aw-icon-spin aw-icon-loader-circle" />
@@ -258,7 +268,14 @@ function messageTime(value: string) {
           <small v-if="item.role === 'user' && item.requested_intent !== 'auto'" class="intent">{{ item.requested_intent }}</small>
         </div>
         <Button v-if="item.state === 'failed' && item.role === 'user'" label="Retry" icon="aw-icon aw-icon-refresh-cw" text size="small" @click="emit('retry', item)" />
-        <details v-if="item.tool_trace?.length" class="trace"><summary>{{ plural(item.tool_trace.length, 'local tool step') }}</summary><div v-for="(step,index) in item.tool_trace" :key="index"><i :class="step.ok ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-x'" /> {{ step.tool }}</div></details>
+        <details v-if="item.tool_trace?.length" class="trace">
+          <summary>{{ plural(item.tool_trace.length, 'local tool step') }}</summary>
+          <div v-for="(step,index) in item.tool_trace" :key="index" class="trace-row" :class="{ failed: !step.ok }">
+            <i :class="step.ok ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-x'" />
+            <span class="trace-label">{{ step.label || step.tool }}</span>
+            <small v-if="stepMeta(step)" class="trace-meta aw-figure">{{ stepMeta(step) }}</small>
+          </div>
+        </details>
         <div v-if="item.document_manifest?.trimmed" class="warning"><i class="aw-icon aw-icon-triangle-alert" /> Some attached document text was trimmed to the safe context budget.</div>
         <div v-if="item.citations?.length" class="citations">
           <Button v-for="citation in item.citations" :key="citation.id" :label="`${documentTitle(citation.source_id)} · p. ${citation.page}`" icon="aw-icon aw-icon-link" size="small" severity="secondary" outlined :disabled="citation.available === false || !documents.some(doc => doc.id === citation.source_id)" @click="openCitation(citation)" />
@@ -280,8 +297,16 @@ function messageTime(value: string) {
       />
     </div>
     <div v-else-if="busy" class="message assistant">
-      <div class="bubble typing">
-        <AgentThinking :intent="pendingIntent" />
+      <div class="bubble typing live-turn">
+        <div v-if="liveTurn?.steps.length" class="live-steps">
+          <div v-for="(step, index) in liveTurn.steps" :key="index" class="trace-row" :class="{ running: step.running, failed: !step.running && !step.ok }">
+            <i :class="step.running ? 'aw-icon aw-icon-spin aw-icon-loader-circle' : step.ok ? 'aw-icon aw-icon-check' : 'aw-icon aw-icon-x'" />
+            <span class="trace-label">{{ step.label || step.tool }}</span>
+            <small v-if="!step.running && stepMeta(step)" class="trace-meta aw-figure">{{ stepMeta(step) }}</small>
+          </div>
+        </div>
+        <MarkdownView v-if="liveTurn?.text" class="bubble-markdown" :markdown="liveTurn.text" />
+        <AgentThinking v-else-if="!liveTurn?.steps.length" :intent="pendingIntent" />
       </div>
     </div>
     <div v-else-if="canOfferNextStep" class="next-steps">
@@ -315,5 +340,5 @@ function messageTime(value: string) {
 .next-steps .shortcuts{justify-content:flex-start}
 /* A run the loop drove for itself, shown as part of the request above it. */
 .loop-child{padding-left:.9rem;border-left:2px solid var(--aw-border)}
-.intent{align-self:flex-end;opacity:.65;font-size:var(--aw-text-2xs)}.trace{margin:.3rem 0;font-size:var(--aw-text-xs);color:var(--aw-muted)}.trace summary{cursor:pointer}.trace div{padding:.1rem .3rem}.citations{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.warning{margin-top:.35rem;padding:.4rem;border-radius:var(--aw-radius-control);background:var(--aw-warn-soft);color:var(--aw-warn-ink);font-size:var(--aw-text-xs)}
+.intent{align-self:flex-end;opacity:.65;font-size:var(--aw-text-2xs)}.trace{margin:.3rem 0;font-size:var(--aw-text-xs);color:var(--aw-muted)}.trace summary{cursor:pointer}.trace-row{display:flex;align-items:baseline;gap:.35rem;padding:.12rem .3rem;font-size:var(--aw-text-xs);color:var(--aw-muted)}.trace-row.running{color:var(--aw-ink)}.trace-row.running>i{color:var(--aw-teal)}.trace-row.failed>i{color:var(--aw-danger)}.trace-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-meta{flex:none;color:var(--aw-muted);font-size:var(--aw-text-2xs)}.live-turn{display:grid;gap:.4rem;padding:.25rem 0;width:100%}.live-steps{display:grid;gap:.15rem;padding-left:.5rem;border-left:2px solid var(--aw-border)}.citations{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.warning{margin-top:.35rem;padding:.4rem;border-radius:var(--aw-radius-control);background:var(--aw-warn-soft);color:var(--aw-warn-ink);font-size:var(--aw-text-xs)}
 </style>

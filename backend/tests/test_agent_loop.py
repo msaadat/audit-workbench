@@ -1549,3 +1549,25 @@ def test_attached_document_ids_reach_the_loop_conversation(monkeypatch, workspac
     conversation = agent_loop.ConversationStore(workspace_with_data, run["id"]).load()["messages"]
     first_user = next(item for item in conversation if item["role"] == "user")["content"]
     assert "DOC-1, DOC-2" in first_user
+
+
+def test_loop_records_tool_trace_and_ui_context(monkeypatch, workspace_with_data):
+    script = LoopScript(
+        tool_turn("get_audit_progress", {}),
+        finish_turn("Checked progress."),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop(
+        workspace_with_data,
+        text="Check this row.",
+        context={"ui_context": {"surface": "rcm", "label": "RCM-4", "ref": "rcm:RCM-4"}},
+    )
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    assert run["status"] == "completed"
+    trace = run.get("loop_trace") or []
+    assert any(item["tool"] == "get_audit_progress" and item["ok"] for item in trace)
+    conversation = agent_loop.ConversationStore(workspace_with_data, run["id"]).load()["messages"]
+    first_user = next(item for item in conversation if item["role"] == "user")["content"]
+    assert "Currently viewing in UI: RCM-4 · rcm:RCM-4" in first_user

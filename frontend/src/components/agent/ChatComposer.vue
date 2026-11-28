@@ -4,7 +4,7 @@ import Button from 'primevue/button'
 import Menu from 'primevue/menu'
 import Textarea from 'primevue/textarea'
 
-import type { AssistantCapabilities, AssistantSlashCommand, AuditDocument } from '../../types'
+import type { AssistantCapabilities, AssistantMention, AssistantSlashCommand, AssistantUiContext, AuditDocument } from '../../types'
 import type { AgentMode } from '../../composables/useAgentRun'
 
 const props = defineProps<{
@@ -13,6 +13,8 @@ const props = defineProps<{
   mode: AgentMode
   documents: AuditDocument[]
   selectedIds: string[]
+  activeContext?: AssistantUiContext | null
+  mentions?: AssistantMention[]
   runActive?: boolean
   /** The active run reads what is sent to it (the steering loop); a workflow
    *  run does not, and a request sent during one waits behind it. */
@@ -24,7 +26,9 @@ const emit = defineEmits<{
   'update:mode': [AgentMode]
   documents: []
   removeDocument: [string]
+  dismissContext: []
   stop: []
+  'mention-query': [string]
 }>()
 const draft = ref('')
 const textareaRef = ref()
@@ -63,7 +67,7 @@ const placeholder = computed(() => {
   if (props.runActive && props.runSteerable) return 'Send a message to steer the run…'
   if (props.runActive && props.runPaused) return 'Ask a question — a request will wait until the paused run is resumed…'
   if (props.runActive) return 'Ask a question, or queue a request for after this run…'
-  return 'Ask a question, or type / for commands…'
+  return 'Ask a question, type / for commands, or @ to reference an artifact…'
 })
 
 // Slash-command autocomplete. Commands that take an instruction (such as
@@ -112,7 +116,49 @@ async function selectCommand(item: AssistantSlashCommand) {
   el?.setSelectionRange?.(draft.value.length, draft.value.length)
 }
 
-function submit() { const value = draft.value.trim(); if (!value || !canSend.value) return; draft.value = ''; menuOpen.value = false; emit('send', value) }
+// @-mention autocomplete over workspace artifacts and tables.
+const mentionToken = computed(() => {
+  const match = draft.value.match(/(?:^|\s)@([^\s@]*)$/)
+  if (!match) return null
+  return { raw: match[0], query: match[1].toLowerCase() }
+})
+const mentionMatches = computed<AssistantMention[]>(() => {
+  const token = mentionToken.value
+  if (!token) return []
+  const all = props.mentions ?? []
+  if (!token.query) return all.slice(0, 12)
+  return all
+    .filter(item => `${item.ref} ${item.label} ${item.detail} ${item.kind}`.toLowerCase().includes(token.query))
+    .slice(0, 12)
+})
+const mentionOpen = ref(false)
+const mentionIndex = ref(0)
+let suppressMentionReopen = false
+watch(mentionMatches, matches => {
+  mentionIndex.value = 0
+  if (suppressMentionReopen) { suppressMentionReopen = false; return }
+  mentionOpen.value = matches.length > 0
+})
+watch(mentionToken, token => {
+  if (!token) {
+    mentionOpen.value = false
+    emit('mention-query', '')
+    return
+  }
+  emit('mention-query', token.query)
+})
+
+async function selectMention(item: AssistantMention) {
+  suppressMentionReopen = true
+  draft.value = draft.value.replace(/(^|\s)@[^\s@]*$/, `$1@${item.ref} `)
+  mentionOpen.value = false
+  await nextTick()
+  const el = textareaRef.value?.$el ?? textareaRef.value
+  el?.focus?.()
+  el?.setSelectionRange?.(draft.value.length, draft.value.length)
+}
+
+function submit() { const value = draft.value.trim(); if (!value || !canSend.value) return; draft.value = ''; menuOpen.value = false; mentionOpen.value = false; emit('send', value) }
 /** Put back a message the thread could not send, unless something new was typed. */
 function restore(text: string) { if (!draft.value.trim()) draft.value = text }
 defineExpose({ restore })
@@ -125,6 +171,16 @@ function keydown(event: KeyboardEvent) {
     if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey && !event.isComposing) {
       event.preventDefault()
       void selectCommand(commandMatches.value[activeIndex.value])
+      return
+    }
+  }
+  if (mentionOpen.value && mentionMatches.value.length) {
+    if (event.key === 'ArrowDown') { event.preventDefault(); mentionIndex.value = (mentionIndex.value + 1) % mentionMatches.value.length; return }
+    if (event.key === 'ArrowUp') { event.preventDefault(); mentionIndex.value = (mentionIndex.value - 1 + mentionMatches.value.length) % mentionMatches.value.length; return }
+    if (event.key === 'Escape') { event.preventDefault(); mentionOpen.value = false; return }
+    if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey && !event.isComposing) {
+      event.preventDefault()
+      void selectMention(mentionMatches.value[mentionIndex.value])
       return
     }
   }
@@ -148,7 +204,22 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
           <span v-if="item.description" class="command-description">{{ item.description }}</span>
         </li>
       </ul>
-      <div v-if="selectedIds.length" class="chips">
+      <ul v-if="mentionOpen && mentionMatches.length" class="command-menu mention-menu" role="listbox" aria-label="Mention artifacts">
+        <li
+          v-for="(item, index) in mentionMatches" :key="item.ref" role="option" :aria-selected="index === mentionIndex"
+          :class="{ active: index === mentionIndex }"
+          @mousedown.prevent="selectMention(item)" @mouseenter="mentionIndex = index"
+        >
+          <span class="command-slash">@{{ item.ref }}</span>
+          <span class="command-label">{{ item.label }}</span>
+          <span v-if="item.detail" class="command-description">{{ item.detail }}</span>
+        </li>
+      </ul>
+      <div v-if="activeContext || selectedIds.length" class="chips">
+        <span v-if="activeContext" class="view-chip" :title="activeContext.ref || activeContext.label">
+          <i class="aw-icon aw-icon-eye" />Viewing: {{ activeContext.label }}
+          <button type="button" aria-label="Dismiss active view context" @click="emit('dismissContext')"><i class="aw-icon aw-icon-x" /></button>
+        </span>
         <span v-for="id in selectedIds" :key="id"><i class="aw-icon aw-icon-file" />{{ label(id) }}<button :aria-label="`Remove ${label(id)}`" @click="emit('removeDocument', id)"><i class="aw-icon aw-icon-x" /></button></span>
       </div>
       <!-- Stays enabled while busy so the next message can be drafted during a long reply. -->
@@ -165,9 +236,8 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
           </template>
         </Menu>
         <span class="grow" />
-        <!-- Stopping a run is a first-class action, not something to hunt for
-             inside an expanded card. -->
-        <Button v-if="runActive" icon="aw-icon aw-icon-circle-stop" size="small" severity="danger" outlined aria-label="Stop the run" @click="emit('stop')" />
+        <!-- Stopping a run or aborting an in-flight reply is a first-class action. -->
+        <Button v-if="runActive || busy" icon="aw-icon aw-icon-circle-stop" size="small" severity="danger" outlined :aria-label="runActive ? 'Stop the run' : 'Cancel reply'" @click="emit('stop')" />
         <Button class="send" label="Send" icon="aw-icon aw-icon-send" iconPos="right" size="small" aria-label="Send" :loading="busy" :disabled="!canSend" @click="submit" />
       </div>
     </div>
@@ -186,7 +256,7 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
 .command-description{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--aw-text-xs);color:var(--aw-muted)}
 .composer :deep(textarea){width:100%;min-height:1.6rem;padding:.18rem 0;border:0;border-radius:0;background:transparent;box-shadow:none;font-size:var(--aw-text-sm);line-height:1.35;max-height:9rem;resize:none}
 .composer :deep(textarea:enabled:focus){border-color:transparent;outline:0;box-shadow:none}
-.toolbar{display:flex;align-items:center;gap:.35rem}.grow{flex:1}.control{font-size:var(--aw-text-xs)}.control :deep(.p-button-label){font-weight:600}.control :deep(.p-button-icon){font-size:var(--aw-text-xs)}.mode{min-width:3.15rem}.send{font-size:var(--aw-text-xs)}.send :deep(.p-button-label){font-weight:700}.send :deep(.p-button-icon){font-size:var(--aw-text-2xs)}.chips{display:flex;gap:.3rem;overflow:auto}.chips span{display:flex;align-items:center;gap:.25rem;flex:0 0 auto;max-width:11rem;padding:.25rem .4rem;border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-2xs)}.chips span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chips button{border:0;background:transparent;color:inherit;cursor:pointer;padding:0}
+.toolbar{display:flex;align-items:center;gap:.35rem}.grow{flex:1}.control{font-size:var(--aw-text-xs)}.control :deep(.p-button-label){font-weight:600}.control :deep(.p-button-icon){font-size:var(--aw-text-xs)}.mode{min-width:3.15rem}.send{font-size:var(--aw-text-xs)}.send :deep(.p-button-label){font-weight:700}.send :deep(.p-button-icon){font-size:var(--aw-text-2xs)}.chips{display:flex;gap:.3rem;overflow:auto}.chips span{display:flex;align-items:center;gap:.25rem;flex:0 0 auto;max-width:11rem;padding:.25rem .4rem;border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-2xs)}.chips span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chips span.view-chip{background:var(--aw-raised);color:var(--aw-ink-soft);border:1px solid var(--aw-border)}.chips button{border:0;background:transparent;color:inherit;cursor:pointer;padding:0}
 .mode-item{display:flex;align-items:flex-start;gap:.5rem;padding:.5rem .7rem}.mode-item i{padding-top:.15rem;font-size:var(--aw-text-2xs);color:var(--aw-teal)}.mode-item span{display:grid;gap:.1rem}.mode-item strong{font-size:var(--aw-text-sm)}.mode-item small{max-width:18rem;color:var(--aw-muted);font-size:var(--aw-text-xs);line-height:1.35;white-space:normal}
 @media(max-width:520px){.composer{padding:.4rem}.control{padding-inline:.4rem}.control :deep(.p-button-label){display:none}.mode :deep(.p-button-label){display:inline}.send{padding-inline:.5rem}}
 </style>

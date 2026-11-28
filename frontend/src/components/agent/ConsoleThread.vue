@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -10,7 +11,7 @@ import Tag from 'primevue/tag'
 import { api, ApiError } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
 import { ChatNotSentError, useAssistantChat } from '../../composables/useAssistantChat'
-import type { AgentApproval, AgentDecision, AgentInteraction, AssistantChat, AssistantMessageIntent, AssistantSuggestion, AuditDocument, WorkspaceSummary } from '../../types'
+import type { AgentApproval, AgentDecision, AgentInteraction, AssistantChat, AssistantMention, AssistantMessageIntent, AssistantSuggestion, AssistantUiContext, AuditDocument, WorkspaceSummary } from '../../types'
 import ChatComposer from './ChatComposer.vue'
 import ChatTranscript from './ChatTranscript.vue'
 import DocumentContextPicker from './DocumentContextPicker.vue'
@@ -23,6 +24,7 @@ import { workspaceContextKey } from '../../composables/useWorkspaceContext'
  */
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const route = useRoute()
 const toast = useToast()
 const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
@@ -33,6 +35,11 @@ const actionBusy = ref(false)
 const renameOpen = ref(false)
 const renameTitle = ref('')
 const documents = ref<AuditDocument[]>([])
+const baseMentions = ref<AssistantMention[]>([])
+const mentions = ref<AssistantMention[]>([])
+let mentionQueryTimer: number | undefined
+let mentionSearchSeq = 0
+const dismissedContextKey = ref('')
 const mode = agent.launchMode
 // The shell owns the import dialog. Both places this thread renders — the
 // console surface and the sidecar drawer — sit under `WorkspaceView`, so the
@@ -58,13 +65,84 @@ const displayChat = computed<AssistantChat | null>(() => {
   return { ...chat, transcript: [...chat.transcript, { ...global, foreign: true }] }
 })
 
+const routeContext = computed<AssistantUiContext | null>(() => {
+  const name = String(route?.name ?? '')
+  const params = (route?.params ?? {}) as Record<string, unknown>
+  const query = (route?.query ?? {}) as Record<string, unknown>
+  if (name === 'workspace-rcm-row' && params.rowId) {
+    const id = String(params.rowId)
+    return { surface: 'rcm', label: id, ref: `rcm:${id}` }
+  }
+  if (name === 'workspace-file') {
+    const section = String(params.section ?? '')
+    if (section === 'apm') return { surface: 'apm', label: 'APM', ref: 'planning:apm' }
+    if (section === 'coverage' || section === 'rcm') {
+      const rcmId = String(query.rcm || '').trim()
+      return rcmId
+        ? { surface: 'rcm', label: rcmId, ref: `rcm:${rcmId}` }
+        : { surface: 'rcm', label: 'RCM' }
+    }
+    if (section === 'data-tests') {
+      const testId = String(query.test || '').trim()
+      return testId
+        ? { surface: 'data-tests', label: testId, ref: `datatest:${testId}` }
+        : { surface: 'data-tests', label: 'Data Tests' }
+    }
+    if (section === 'doc-tests') {
+      const testId = String(query.test || '').trim()
+      return testId
+        ? { surface: 'doc-tests', label: testId, ref: `doctest:${testId}` }
+        : { surface: 'doc-tests', label: 'Document Tests' }
+    }
+    if (section === 'findings') {
+      const findingId = String(query.finding || '').trim()
+      return findingId
+        ? { surface: 'findings', label: findingId, ref: `finding:${findingId}` }
+        : { surface: 'findings', label: 'Findings' }
+    }
+    if (section === 'report') return { surface: 'report', label: 'Draft Report', ref: 'report:working' }
+  }
+  if (name === 'workspace-bench') {
+    const section = String(params.section ?? '')
+    if (section === 'documents') {
+      const docId = String(query.doc || '').trim()
+      if (docId) {
+        const doc = documents.value.find(item => item.id === docId)
+        return { surface: 'documents', label: doc?.title || docId, ref: `document:${docId}` }
+      }
+      return { surface: 'documents', label: 'Documents' }
+    }
+    if (section === 'tables') return { surface: 'tables', label: 'Tables' }
+    if (section === 'query') return { surface: 'query', label: 'Query' }
+    if (section === 'analysis') return { surface: 'analysis', label: 'Analysis' }
+  }
+  return null
+})
+const routeContextKey = computed(() => {
+  const ctx = routeContext.value
+  return ctx ? `${ctx.surface}:${ctx.ref ?? ctx.label}` : ''
+})
+const activeViewContext = computed<AssistantUiContext | null>(() => {
+  const ctx = routeContext.value
+  if (!ctx || dismissedContextKey.value === routeContextKey.value) return null
+  return ctx
+})
+function dismissActiveContext() {
+  dismissedContextKey.value = routeContextKey.value
+}
+
 onMounted(async () => {
-  await Promise.all([agent.init(), chats.init(), loadDocuments()]).catch(error => fail('Could not open the assistant', error))
+  await Promise.all([agent.init(), chats.init(), loadDocuments(), loadMentions()]).catch(error => fail('Could not open the assistant', error))
+})
+
+// Status transitions refresh suggestions and the chat list; mid-run activity
+// ticks only refresh the open transcript without recomputing 34-capability
+// readiness or re-scanning every chat in the workspace.
+watch(() => [agent.state.run?.id, agent.state.run?.status].join(':'), () => {
+  if (chats.state.activeChatId) void chats.refresh()
 })
 
 watch(() => [
-  agent.state.run?.id,
-  agent.state.run?.status,
   agent.state.run?.activity_revision ?? 0,
   agent.state.run?.graph_revision ?? 0,
   agent.state.eventRevision ?? 0,
@@ -76,7 +154,9 @@ watch(() => [
   agent.state.run?.milestones?.length ?? 0,
   agent.state.run?.messages?.length ?? 0,
 ].join(':'), () => {
-  if (chats.state.activeChatId) void chats.refresh()
+  if (!chats.state.activeChatId) return
+  if (runActive.value) void chats.refreshTranscript({ includeSuggestions: false })
+  else void chats.refresh()
 })
 
 // The watcher above only tracks a run. What the assistant should suggest next,
@@ -86,21 +166,77 @@ watch(() => [
 const unsubscribeInvalidated = agent.onWorkspaceInvalidated(() => {
   if (chats.state.activeChatId) void chats.refresh()
   void loadDocuments()
+  void loadMentions()
 })
-onUnmounted(unsubscribeInvalidated)
+onUnmounted(() => {
+  unsubscribeInvalidated()
+  if (mentionQueryTimer) window.clearTimeout(mentionQueryTimer)
+})
 
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
 }
+async function loadMentions() {
+  try {
+    const items = (await api.get<{ items: AssistantMention[] }>(`/api/workspaces/${props.workspace.id}/assistant/mentions?limit=80`)).items
+    baseMentions.value = items
+    mentions.value = items
+  } catch {
+    baseMentions.value = []
+    mentions.value = []
+  }
+}
+function searchMentions(query: string) {
+  if (mentionQueryTimer) window.clearTimeout(mentionQueryTimer)
+  const trimmed = query.trim()
+  const seq = ++mentionSearchSeq
+  if (!trimmed) {
+    mentions.value = baseMentions.value
+    return
+  }
+  mentionQueryTimer = window.setTimeout(async () => {
+    try {
+      const result = await api.get<{ items: AssistantMention[] }>(
+        `/api/workspaces/${props.workspace.id}/assistant/mentions?q=${encodeURIComponent(trimmed)}&limit=30`,
+      )
+      if (seq === mentionSearchSeq) mentions.value = result.items
+    } catch {
+      /* keep current mentions on transient lookup failure */
+    }
+  }, 150)
+}
 async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', command?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer', requestedOutcomes?: string[]) {
   try {
-    await chats.send(content, sendIntent, mode.value, { command, source, requestedOutcomes })
+    await chats.send(content, sendIntent, mode.value, {
+      command,
+      source,
+      requestedOutcomes,
+      uiContext: source === 'composer' ? activeViewContext.value : null,
+    })
   } catch (error) {
     // The composer cleared its draft on submit; a message the server never
     // saw goes back into it rather than disappearing.
     if (error instanceof ChatNotSentError && source === 'composer') composerRef.value?.restore(content)
     fail('Message not sent', error)
   }
+}
+async function sendFeedback(note: string) {
+  const trimmed = note.trim()
+  if (!trimmed) return
+  try {
+    // Approval feedback carries its own approval/run context prefix; do not
+    // attach the currently viewed page as uiContext.
+    await chats.send(trimmed, 'auto', mode.value, { source: 'composer', uiContext: null })
+  } catch (error) {
+    fail('Feedback not sent', error)
+  }
+}
+function stopAction() {
+  if (chats.state.busy && !runActive.value) {
+    chats.abortSend()
+    return
+  }
+  stopRun()
 }
 function nextStep(suggestion: AssistantSuggestion) {
   // An offer the agent left as a question goes back as a question: it has no
@@ -203,7 +339,7 @@ defineExpose({ rename, remove })
       <slot name="head-actions" />
     </header>
     <div v-if="chats.state.loading && !displayChat" class="loading"><i class="aw-icon aw-icon-spin aw-icon-loader-circle" /> Loading chat…</div>
-    <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" :needsSources="needsSources" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @import="shell?.requestImport()" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
+    <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" :liveTurn="chats.state.liveTurn" :needsSources="needsSources" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @feedback="sendFeedback" @import="shell?.requestImport()" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
     <ChatComposer
       v-if="activeChat"
       ref="composerRef"
@@ -212,13 +348,17 @@ defineExpose({ rename, remove })
       :capabilities="chats.state.capabilities"
       :documents="documents"
       :selectedIds="activeChat.composer_context.document_ids"
+      :activeContext="activeViewContext"
+      :mentions="mentions"
       :runActive="runActive"
       :runSteerable="runSteerable"
       :runPaused="runPaused"
       @send="send"
       @documents="pickerOpen = true"
       @removeDocument="chats.removeDocument"
-      @stop="stopRun"
+      @dismissContext="dismissActiveContext"
+      @stop="stopAction"
+      @mention-query="searchMentions"
     />
   </div>
 

@@ -8,9 +8,16 @@ import type {
   AssistantChatMessage,
   AssistantChatSummary,
   AssistantMessageIntent,
+  AssistantStep,
+  AssistantUiContext,
   AuditDocument,
 } from '../types'
 import { useAgentRun, type AgentMode } from './useAgentRun'
+
+export interface LiveTurnState {
+  steps: AssistantStep[]
+  text: string
+}
 
 interface ChatState {
   workspaceId: string
@@ -21,6 +28,7 @@ interface ChatState {
   initialized: boolean
   loading: boolean
   busy: boolean
+  liveTurn: LiveTurnState | null
   error: string | null
 }
 
@@ -38,13 +46,14 @@ interface ChatTracking {
   chatSeq: number
   summarySeq: number
   pending: Map<string, AssistantChatMessage[]>
+  abortController: AbortController | null
 }
 const tracking = new Map<string, ChatTracking>()
 
 function track(workspaceId: string): ChatTracking {
   let value = tracking.get(workspaceId)
   if (!value) {
-    value = { chatSeq: 0, summarySeq: 0, pending: new Map() }
+    value = { chatSeq: 0, summarySeq: 0, pending: new Map(), abortController: null }
     tracking.set(workspaceId, value)
   }
   return value
@@ -79,7 +88,7 @@ function state(workspaceId: string): ChatState {
   if (!value) {
     value = reactive<ChatState>({
       workspaceId, summaries: [], activeChatId: null, chat: null,
-      capabilities: null, initialized: false, loading: false, busy: false, error: null,
+      capabilities: null, initialized: false, loading: false, busy: false, liveTurn: null, error: null,
     })
     stores.set(workspaceId, value)
   }
@@ -121,20 +130,34 @@ export function useAssistantChat(workspaceId: string) {
     const pending = (tracked.pending.get(chatId) ?? [])
       .filter(item => !chat.messages.some(message => message.request_id === item.request_id))
     if (pending.length) chat.transcript = [...chat.transcript, ...pending]
+    // Mid-run lightweight refreshes omit suggestions/guided_workflows to skip
+    // recomputing 34-capability readiness; keep the previous ones intact.
+    if (chat.suggestions == null) {
+      chat.suggestions = store.chat?.id === chatId ? (store.chat.suggestions ?? []) : []
+    }
+    if (chat.guided_workflows == null) {
+      chat.guided_workflows = store.chat?.id === chatId ? (store.chat.guided_workflows ?? []) : []
+    }
     store.chat = chat
     store.capabilities = chat.capabilities
     return true
   }
 
-  async function fetchChat(chatId: string) {
+  async function fetchChat(chatId: string, includeSuggestions = true) {
     const seq = ++tracked.chatSeq
-    const chat = await api.get<AssistantChat>(`/api/workspaces/${workspaceId}/assistant/chats/${chatId}`)
+    const suffix = includeSuggestions ? '' : '?include_suggestions=false'
+    const chat = await api.get<AssistantChat>(`/api/workspaces/${workspaceId}/assistant/chats/${chatId}${suffix}`)
     if (seq === tracked.chatSeq) applyChat(chatId, chat)
+  }
+
+  async function refreshTranscript(options: { includeSuggestions?: boolean } = {}) {
+    if (!store.activeChatId) return
+    await fetchChat(store.activeChatId, options.includeSuggestions ?? false)
   }
 
   async function refresh() {
     if (!store.activeChatId) return
-    await fetchChat(store.activeChatId)
+    await fetchChat(store.activeChatId, true)
     await loadSummaries()
   }
 
@@ -229,11 +252,26 @@ export function useAssistantChat(workspaceId: string) {
     await setDocuments((store.chat?.composer_context.document_ids ?? []).filter(id => id !== documentId))
   }
 
+  function abortSend() {
+    if (!tracked.abortController) return
+    tracked.abortController.abort()
+    tracked.abortController = null
+  }
+
   async function send(
     content: string,
     intent: AssistantMessageIntent = 'auto',
     mode: AgentMode = 'auto',
-    options: { command?: string | null; goalTemplate?: string | null; source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'; requestedOutcomes?: string[]; runKind?: 'intake'; runContext?: Record<string, unknown>; requestId?: string } = {},
+    options: {
+      command?: string | null
+      goalTemplate?: string | null
+      source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'
+      requestedOutcomes?: string[]
+      runKind?: 'intake'
+      runContext?: Record<string, unknown>
+      uiContext?: AssistantUiContext | null
+      requestId?: string
+    } = {},
   ) {
     await init()
     // Never a silent return: the composer has already cleared its draft by the
@@ -248,6 +286,9 @@ export function useAssistantChat(workspaceId: string) {
     if (!chatId) throw new ChatNotSentError('No chat is open. Send this again in a moment.')
     store.busy = true
     store.error = null
+    store.liveTurn = { steps: [], text: '' }
+    const controller = new AbortController()
+    tracked.abortController = controller
     const rid = options.requestId ?? requestId()
     // Show the user's message immediately; the server response replaces it.
     const optimistic: AssistantChatMessage = {
@@ -265,17 +306,57 @@ export function useAssistantChat(workspaceId: string) {
       if (left.length) tracked.pending.set(chatId, left)
       else tracked.pending.delete(chatId)
     }
+    const payload = {
+      content, intent, mode, request_id: rid,
+      command: options.command ?? null,
+      goal_template: options.goalTemplate ?? null, source: options.source ?? 'composer',
+      requested_outcomes: options.requestedOutcomes ?? [],
+      run_kind: options.runKind ?? null, run_context: options.runContext ?? null,
+      ...(options.uiContext ? { ui_context: options.uiContext } : {}),
+    }
+    const onStreamEvent = (eventType: string, data: unknown) => {
+      if (store.activeChatId !== chatId || !store.liveTurn) return
+      const record = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
+      if (eventType === 'tool_start') {
+        // Clear any short preamble emitted before this tool call so text from
+        // separate model steps never runs together.
+        store.liveTurn.text = ''
+        store.liveTurn.steps.push({
+          tool: String(record.tool ?? ''),
+          label: typeof record.label === 'string' ? record.label : undefined,
+          args: (record.args as Record<string, unknown>) ?? {},
+          ok: true,
+          running: true,
+        })
+      } else if (eventType === 'tool_end') {
+        const index = typeof record.index === 'number' ? record.index : store.liveTurn.steps.length - 1
+        const updated: AssistantStep = {
+          tool: String(record.tool ?? ''),
+          label: typeof record.label === 'string' ? record.label : undefined,
+          args: (record.args as Record<string, unknown>) ?? {},
+          ok: Boolean(record.ok),
+          duration_ms: typeof record.duration_ms === 'number' ? record.duration_ms : undefined,
+          summary: typeof record.summary === 'string' ? record.summary : undefined,
+          error: typeof record.error === 'string' ? record.error : null,
+          running: false,
+        }
+        if (index >= 0 && index < store.liveTurn.steps.length) store.liveTurn.steps[index] = updated
+        else store.liveTurn.steps.push(updated)
+      } else if (eventType === 'delta' && typeof record.text === 'string') {
+        store.liveTurn.text += record.text
+      }
+    }
     try {
-      const result = await api.post<{ outcome: Record<string, unknown>; chat: AssistantChat }>(
-        `/api/workspaces/${workspaceId}/assistant/chats/${chatId}/messages`,
-        {
-          content, intent, mode, request_id: rid,
-          command: options.command ?? null,
-          goal_template: options.goalTemplate ?? null, source: options.source ?? 'composer',
-          requested_outcomes: options.requestedOutcomes ?? [],
-          run_kind: options.runKind ?? null, run_context: options.runContext ?? null,
-        },
-      )
+      const result = typeof api.postStream === 'function'
+        ? await api.postStream<{ outcome: Record<string, unknown>; chat: AssistantChat }>(
+            `/api/workspaces/${workspaceId}/assistant/chats/${chatId}/messages/stream`,
+            payload,
+            { signal: controller.signal, onEvent: onStreamEvent },
+          )
+        : await api.post<{ outcome: Record<string, unknown>; chat: AssistantChat }>(
+            `/api/workspaces/${workspaceId}/assistant/chats/${chatId}/messages`,
+            payload,
+          )
       settle()
       tracked.chatSeq++
       applyChat(chatId, result.chat)
@@ -288,8 +369,31 @@ export function useAssistantChat(workspaceId: string) {
       await loadSummaries()
       return result
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
       settle()
+      const aborted = error instanceof DOMException && error.name === 'AbortError'
+      if (aborted) {
+        if (store.activeChatId === chatId) {
+          await refresh().catch(() => undefined)
+          const stillPending = () => Boolean(
+            store.activeChatId === chatId
+            && store.chat?.messages.some(item => item.request_id === rid && item.state === 'pending'),
+          )
+          if (stillPending()) {
+            void (async () => {
+              for (const delay of [250, 500, 1000, 1500]) {
+                await new Promise(resolve => window.setTimeout(resolve, delay))
+                if (store.activeChatId !== chatId || store.busy || !stillPending()) break
+                await refreshTranscript({ includeSuggestions: false }).catch(() => undefined)
+              }
+              if (store.activeChatId === chatId && !store.busy) {
+                await refresh().catch(() => undefined)
+              }
+            })()
+          }
+        }
+        return undefined
+      }
+      const detail = error instanceof Error ? error.message : String(error)
       if (store.activeChatId !== chatId) throw error
       store.error = detail
       await refresh().catch(() => undefined)
@@ -302,7 +406,11 @@ export function useAssistantChat(workspaceId: string) {
         }
       }
       throw error
-    } finally { store.busy = false }
+    } finally {
+      if (tracked.abortController === controller) tracked.abortController = null
+      store.liveTurn = null
+      store.busy = false
+    }
   }
 
   async function retry(message: AssistantChatMessage, mode: AgentMode) {
@@ -337,8 +445,8 @@ export function useAssistantChat(workspaceId: string) {
     state: readonly(store) as Readonly<ChatState>,
     activeChat: computed(() => store.chat),
     documentIds: computed(() => store.chat?.composer_context.document_ids ?? []),
-    init, refresh, createChat, switchChat, rename, deleteActive,
-    setDocuments, addDocument, removeDocument, send, retry,
+    init, refresh, refreshTranscript, createChat, switchChat, rename, deleteActive,
+    setDocuments, addDocument, removeDocument, send, abortSend, retry,
     updateArtifact, rerunArtifact,
   }
 }

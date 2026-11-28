@@ -2559,8 +2559,27 @@ export interface AssistantProvider {
 
 export interface AssistantStep {
   tool: string
+  label?: string
   args: Record<string, unknown>
   ok: boolean
+  duration_ms?: number
+  summary?: string
+  error?: string | null
+  running?: boolean
+}
+
+export interface AssistantUiContext {
+  surface: string
+  label: string
+  ref?: string
+  title?: string
+}
+
+export interface AssistantMention {
+  ref: string
+  kind: string
+  label: string
+  detail: string
 }
 
 export interface AssistantArtifact {
@@ -2870,6 +2889,8 @@ export interface AssistantRunProjection extends AgentRunSummary {
   children?: string[]
   /** Next steps the loop offered when it finished. */
   suggestions?: AssistantRunSuggestion[]
+  /** Bounded tool calls made by a steering-loop run. */
+  tool_trace?: AssistantStep[]
   /** Set when this card is a request waiting on another run, not a run. */
   queued_command?: AssistantQueuedCommand
 }

@@ -397,8 +397,20 @@ class AgentLoop(BaseRunner):
             for value in ((self.run.get("context") or {}).get("document_ids") or [])
             if str(value).strip()
         ]
-        if request and attached_docs:
-            request = f"{request}\n\nAttached document IDs: {', '.join(attached_docs)}"
+        ui_ctx = (self.run.get("context") or {}).get("ui_context")
+        notes: list[str] = []
+        if attached_docs:
+            notes.append(f"Attached document IDs: {', '.join(attached_docs)}")
+        if isinstance(ui_ctx, dict):
+            parts = [
+                str(ui_ctx.get(k) or "").strip()
+                for k in ("label", "ref", "title")
+                if str(ui_ctx.get(k) or "").strip()
+            ]
+            if parts:
+                notes.append(f"Currently viewing in UI: {' · '.join(parts)}")
+        if request and notes:
+            request = f"{request}\n\n" + "\n".join(notes)
         if request:
             self.conversation.append({"role": "user", "content": request})
         if not self.conversation:
@@ -473,11 +485,15 @@ class AgentLoop(BaseRunner):
             return
         self.run.setdefault("usage", {})["tool_calls"] = spent + 1
         self.save()
+        label = loop_tools.describe_tool_call(name, args)
         self.set_activity(
             "loop.tool",
-            loop_tools.describe_tool_call(name, args),
+            label,
             task_id="loop",
         )
+        started = time.monotonic()
+        ok = True
+        error_text = None
         try:
             result = self._run_tool(name, args)
         except (Cancelled, LimitExceeded):
@@ -487,6 +503,31 @@ class AgentLoop(BaseRunner):
             # A tool that cannot answer does not end the request; a loop that
             # cannot make progress will say so through ``finish``.
             result = {"error": str(error)}
+            ok = False
+            error_text = str(error)[:240]
+        duration_ms = round((time.monotonic() - started) * 1000, 1)
+        safe_args = {
+            str(k): (
+                str(v)[:100]
+                if isinstance(v, (str, int, float, bool)) or v is None
+                else f"{len(v)} items" if isinstance(v, list)
+                else f"{len(v)} fields" if isinstance(v, dict)
+                else str(v)[:60]
+            )
+            for k, v in list(args.items())[:6]
+        }
+        trace = self.run.setdefault("loop_trace", [])
+        trace.append({
+            "tool": name,
+            "label": label,
+            "args": safe_args,
+            "ok": ok,
+            "duration_ms": duration_ms,
+            "error": error_text,
+        })
+        if len(trace) > 60:
+            del trace[: len(trace) - 60]
+        self.save()
         self._append_tool_result(call, result)
 
     def _run_tool(self, name: str, args: dict) -> dict:
