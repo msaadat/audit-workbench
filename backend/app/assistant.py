@@ -243,9 +243,9 @@ _TOOL_SCHEMAS = [
         },
     ),
     tooling.function_tool(
-        "search_document",
+        "search_work_product",
         (
-            "Find lines in a long written document — the memorandum "
+            "Find lines in a long written audit work product — the memorandum "
             "(planning:apm), a finding's narrative (finding:<id>), the report "
             "(report:working) or the analysis memo (analysis_summary:current). "
             "Returns each matching line with its line number and section, and "
@@ -327,31 +327,6 @@ _TOOL_SCHEMAS = [
                     },
                     "limit": {"type": "integer"},
                 },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_tables",
-            "description": "List the workspace's tables and joins with their row counts and column schema.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "describe_table",
-            "description": (
-                "Aggregate profile of one table: per-column null %, distinct "
-                "count, numeric min/max/mean, and category labels for "
-                "low-cardinality columns. Use it to learn a column's values "
-                "before filtering."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"table": {"type": "string"}},
-                "required": ["table"],
             },
         },
     },
@@ -478,10 +453,8 @@ _TOOL_HANDLERS = {
     "list_artifacts": "list_artifacts",
     "get_artifact": "get_artifact",
     "get_document_records": "get_document_records",
-    "search_document": "search_document",
+    "search_work_product": "search_work_product",
     "read_document": "read_document",
-    "list_tables": "list_tables",
-    "describe_table": "describe_table",
     "query_table": "query_table",
     "run_analytics": "run_analytics",
     "run_python": "run_python",
@@ -948,9 +921,6 @@ class _Session:
             "findings, report, or analysis."
         )
 
-    def list_tables(self, _args: dict):
-        return {"tables": schema_brief(self.workspace)}, None
-
     def get_table_schemas(self, args: dict):
         return {
             "tables": tooling.table_schemas(
@@ -1004,7 +974,7 @@ class _Session:
     def get_artifact(self, args: dict):
         return self._artifact_read("get_artifact", args)
 
-    def search_document(self, args: dict):
+    def search_work_product(self, args: dict):
         from . import markdown_artifacts
 
         return markdown_artifacts.search(
@@ -1057,10 +1027,6 @@ class _Session:
         # one type and needs another, does not spend a round trip discovering
         # what it could have asked for.
         return {**result, "types": catalog}, None
-
-    def describe_table(self, args: dict):
-        table = args.get("table")
-        return table_metadata(self.workspace, table), None
 
     def get_table_profile(self, args: dict):
         return tooling.table_profile(self.workspace, str(args.get("table") or "")), None
@@ -1242,7 +1208,7 @@ artifact, the area survey for "what is the state of X".
 - Do not assume verbs such as show, summarize, compare, inspect, count, or \
 calculate imply table analysis. Select tools from the subject of the question \
 and its conversation context.
-- For dataset questions, discover schema with list_tables / describe_table \
+- For dataset questions, discover schema with get_table_schemas / get_table_profile \
 before querying unfamiliar columns.
 - Prefer query_table for filters and group-by aggregations, run_analytics for \
 the canned audit tests, and run_python only when the structured tools can't \
@@ -1350,12 +1316,10 @@ _TOOL_DISPLAY_LABELS = {
     "inspect_audit_artifacts": "Inspecting audit artifacts",
     "search_documents": "Searching documents",
     "get_document_records": "Reading document records",
-    "search_document": "Searching written document",
+    "search_work_product": "Searching work product",
     "read_document": "Reading written document",
     "list_artifacts": "Listing artifacts",
     "get_artifact": "Reading artifact",
-    "list_tables": "Listing tables",
-    "describe_table": "Profiling table",
     "get_table_schemas": "Reading table schemas",
     "get_table_profile": "Profiling table",
     "query_table": "Querying table",

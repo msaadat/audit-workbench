@@ -1145,7 +1145,7 @@ def test_streaming_events_ui_context_cancellation_and_mentions(workspace_with_da
                 "tool_calls": [{
                     "id": "call_t1",
                     "type": "function",
-                    "function": {"name": "list_tables", "arguments": "{}"},
+                    "function": {"name": "get_table_schemas", "arguments": "{}"},
                 }],
             }
         if on_delta is not None:
@@ -1175,7 +1175,7 @@ def test_streaming_events_ui_context_cancellation_and_mentions(workspace_with_da
     assert "tool_end" in kinds
     assert "delta" in kinds
     reply = res["chat"]["messages"][-1]
-    assert reply["tool_trace"][0]["label"] == "Listing tables"
+    assert reply["tool_trace"][0]["label"] == "Reading table schemas"
     assert reply["tool_trace"][0]["duration_ms"] >= 0
 
     # 3. Pre-set cancel_event stops cleanly before calling the provider.

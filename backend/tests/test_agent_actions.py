@@ -638,19 +638,57 @@ def _start_loop(workspace, text, mode="auto") -> dict:
 
 
 def test_every_registered_action_is_reachable_as_a_loop_tool():
-    """The catalog is the contract; the tool list is derived from it."""
+    """The catalog is the contract; top-level tools stay compact while every
+    callable action is reachable through describe_action + run_action."""
 
-    offered = {schema["function"]["name"] for schema in loop_tools.action_tools()}
+    callable_actions = loop_tools.callable_action_names()
     registered = {definition.type for definition in actions.REGISTRY.all()}
 
-    assert offered == registered - loop_tools.UNOFFERED_ACTIONS
-    assert {item["action"] for item in actions.ACTION_COVERAGE} >= offered
-    # A tool takes the action's own declared schema, not a paraphrase of it.
+    assert callable_actions == registered - loop_tools.UNOFFERED_ACTIONS
+    assert {item["action"] for item in actions.ACTION_COVERAGE} >= callable_actions
+    # Only high-frequency actions are expanded as top-level tools.
+    top_level = {schema["function"]["name"] for schema in loop_tools.action_tools()}
+    assert top_level == loop_tools.TOP_LEVEL_ACTIONS
     for schema in loop_tools.action_tools():
         definition = actions.REGISTRY.get(schema["function"]["name"])
         properties = schema["function"]["parameters"]["properties"]
         assert properties["args"]["type"] == definition.input_schema["type"]
         assert bool(definition.target_kinds) == ("target" in properties)
+    # describe_action and run_action expose every callable action in their enum.
+    by_name = {schema["function"]["name"]: schema for schema in loop_tools.tool_schemas()}
+    assert set(by_name["run_action"]["function"]["parameters"]["properties"]["action_type"]["enum"]) == callable_actions
+    assert set(by_name["describe_action"]["function"]["parameters"]["properties"]["action_types"]["items"]["enum"]) == callable_actions
+
+
+def test_describe_action_and_run_action_execute_through_the_loop(
+    monkeypatch, workspace_with_data
+):
+    finding = findings.add(workspace_with_data, {"title": "Stale draft finding"})
+    _configured_loop(
+        monkeypatch,
+        _loop_action_turn("describe_action", {"action_types": ["delete_finding"]}),
+        _loop_action_turn(
+            "run_action",
+            {
+                "action_type": "delete_finding",
+                "target": {"kind": "finding", "id": finding["id"]},
+                "args": {},
+            },
+        ),
+        _finish_turn("Described and deleted the finding."),
+    )
+
+    started = _start_loop(workspace_with_data, f"delete finding {finding['id']}")
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert [item["type"] for item in completed["actions"]] == ["delete_finding"]
+    assert completed["actions"][0]["status"] == "succeeded"
+    assert not workspaces.load_workspace(workspace_with_data.id).findings
+    assert any(
+        entry["tool"] == "describe_action" and entry["ok"]
+        for entry in completed.get("loop_trace") or []
+    )
 
 
 def test_a_destructive_action_runs_without_confirmation_in_auto_mode(
@@ -660,8 +698,12 @@ def test_a_destructive_action_runs_without_confirmation_in_auto_mode(
     _configured_loop(
         monkeypatch,
         _loop_action_turn(
-            "delete_finding",
-            {"args": {}, "target": {"kind": "finding", "id": finding["id"]}},
+            "run_action",
+            {
+                "action_type": "delete_finding",
+                "args": {},
+                "target": {"kind": "finding", "id": finding["id"]},
+            },
         ),
         _finish_turn("Removed it."),
     )
@@ -686,8 +728,12 @@ def test_a_destructive_action_still_waits_for_confirmation_in_permission_mode(
     _configured_loop(
         monkeypatch,
         _loop_action_turn(
-            "delete_finding",
-            {"args": {}, "target": {"kind": "finding", "id": finding["id"]}},
+            "run_action",
+            {
+                "action_type": "delete_finding",
+                "args": {},
+                "target": {"kind": "finding", "id": finding["id"]},
+            },
         ),
         _finish_turn("Removed it."),
     )
@@ -727,13 +773,17 @@ def test_a_reversible_edit_can_still_be_undone(monkeypatch, workspace_with_data)
     _configured_loop(
         monkeypatch,
         _loop_action_turn(
-            "edit_finding",
+            "run_action",
             {
+                "action_type": "edit_finding",
                 "args": {"changes": {"severity": "high"}},
                 "target": {"kind": "finding", "id": finding["id"]},
             },
         ),
-        _loop_action_turn("undo_action", {"args": {"action_id": "PLACEHOLDER"}}),
+        _loop_action_turn(
+            "run_action",
+            {"action_type": "undo_action", "args": {"action_id": "PLACEHOLDER"}},
+        ),
         _finish_turn("Changed it and put it back."),
     )
 
@@ -763,6 +813,81 @@ def test_a_reversible_edit_can_still_be_undone(monkeypatch, workspace_with_data)
     )
     assert undone is not None
     assert severity == ("medium" if undone["status"] == "succeeded" else "high")
+
+
+def test_legacy_direct_action_name_still_dispatches_safely(
+    monkeypatch, workspace_with_data
+):
+    finding = findings.add(workspace_with_data, {"title": "Legacy direct call"})
+    _configured_loop(
+        monkeypatch,
+        _loop_action_turn(
+            "delete_finding",
+            {"args": {}, "target": {"kind": "finding", "id": finding["id"]}},
+        ),
+        _finish_turn("Removed via direct call."),
+    )
+
+    started = _start_loop(workspace_with_data, f"remove finding {finding['id']}")
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert [item["type"] for item in completed["actions"]] == ["delete_finding"]
+    assert not workspaces.load_workspace(workspace_with_data.id).findings
+
+
+def test_run_action_validation_errors_and_describe_action_read_only_accounting(
+    monkeypatch, workspace_with_data
+):
+    from app.agent import agent_loop
+
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": store.LOOP_COMMAND_SOURCE, "text": "test action validation"},
+    )
+    loop = agent_loop.AgentLoop(workspace_with_data, run, None)
+
+    # Unknown / unoffered action is refused without touching the ledger.
+    with pytest.raises(loop_tools.ToolError, match="not available"):
+        loop.tools.run_action({"action_type": "edit_apm", "args": {}})
+    with pytest.raises(loop_tools.ToolError, match="not available"):
+        loop.tools.run_action({"action_type": "no_such_action", "args": {}})
+    # Non-object args refused.
+    with pytest.raises(loop_tools.ToolError, match="JSON object"):
+        loop.tools.run_action({"action_type": "create_rcm_row", "args": ["bad"]})
+    # Missing or wrong target refused before appending any failed action.
+    with pytest.raises(loop_tools.ToolError, match="requires a target"):
+        loop.tools.run_action({"action_type": "delete_finding", "args": {}})
+    with pytest.raises(loop_tools.ToolError, match="target.kind"):
+        loop.tools.run_action(
+            {"action_type": "delete_finding", "target": {"kind": "rcm", "id": "RCM-1"}, "args": {}}
+        )
+    assert run["actions"] == []
+
+    # describe_action reuses action_tools definitions and refuses unoffered types.
+    summary = loop.tools.describe_action({})
+    assert any(item["type"] == "delete_finding" for item in summary["actions"])
+    assert all(item["type"] not in loop_tools.UNOFFERED_ACTIONS for item in summary["actions"])
+    detail = loop.tools.describe_action({"action_types": ["delete_finding"]})
+    assert detail["actions"][0]["input_schema"]["type"] == "object"
+    with pytest.raises(loop_tools.ToolError):
+        loop.tools.describe_action({"action_types": ["edit_apm"]})
+
+    # Human-readable activity label (no snake_case or 'schema' jargon).
+    label = loop_tools.describe_tool_call("describe_action", {"action_types": ["delete_finding"]})
+    assert "delete_finding" not in label
+    assert "schema" not in label.lower()
+
+    # describe_action counts as a read-only turn and triggers the nudge naming run_action.
+    run["limits"]["max_read_turns"] = 2
+    loop.conversation = [{"role": "user", "content": "check"}]
+    call = [{"function": {"name": "describe_action", "arguments": "{}"}}]
+    assert loop._note_read_only_turn(call) is False
+    assert loop._read_only_turns == 1
+    assert loop._note_read_only_turn(call) is False
+    assert loop._read_only_turns == 2
+    assert "run an action" in loop.conversation[-1]["content"]
 
 
 

@@ -53,10 +53,12 @@ How to work:
   document, pass it in target_refs. Never widen a named request to the whole
   workspace.
 - Do not guess what can be done to an artifact. get_artifact and list_artifacts
-  return `operations` for it: the actions that target it, and the outcomes that
-  produce it. An outcome marked `redraws_when_named` will redo that artifact
-  because you named it — no force needed. One marked `accepts_this_ref: false`
-  will run over its whole scope however narrowly you ask.
+  return `operations` for it: the actions that target it (inspect an action's
+  schema with describe_action and invoke it with run_action; edit_document_text
+  is also available directly), and the outcomes that produce it. An outcome
+  marked `redraws_when_named` will redo that artifact because you named it — no
+  force needed. One marked `accepts_this_ref: false` will run over its whole
+  scope however narrowly you ask.
 - A stage that plan_outcomes scores at zero units will run, report success, and
   change nothing. If the thing you were asked to change sits in such a stage,
   you have the wrong outcome: say so or ask, rather than running it anyway.
@@ -84,7 +86,7 @@ How to work:
   instruction (rcm refs narrow a matrix revision to those rows). Those see the
   whole artifact and decide about every part of it. Do not read the artifact
   piece by piece and edit or delete it yourself: write content yourself only
-  for a small, exact change, found with search_document and made with
+  for a small, exact change, found with search_work_product and made with
   edit_document_text.
 - Ask at most when it changes what you would do.
 - Finish by calling finish with a summary that names what was produced, what

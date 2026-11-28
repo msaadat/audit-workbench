@@ -138,6 +138,7 @@ class AgentLoop(BaseRunner):
         self._read_names = {
             str(schema["function"]["name"]) for schema in loop_tool_schemas()
         }
+        self._read_only_turn_names = self._read_names | {"describe_action"}
         self._finish: dict | None = None
         # Consecutive turns whose every tool call was a read. Reading is the
         # cheapest thing a model can always do next, and a request no outcome
@@ -342,7 +343,7 @@ class AgentLoop(BaseRunner):
             for call in calls
             if isinstance(call.get("function"), dict)
         }
-        if not names or not names <= self._read_names:
+        if not names or not names <= self._read_only_turn_names:
             self._read_only_turns = 0
             return False
         self._read_only_turns += 1
@@ -353,9 +354,10 @@ class AgentLoop(BaseRunner):
                     "role": "user",
                     "content": (
                         f"You have taken {self._read_only_turns} turns that only "
-                        "read. Decide now: plan and run an outcome, ask the "
-                        "auditor a question, or finish and say plainly what you "
-                        "cannot do and why. Do not read again first."
+                        "read. Decide now: plan and run an outcome, run an "
+                        "action you looked up, ask the auditor a question, or "
+                        "finish and say plainly what you cannot do and why. "
+                        "Do not read again first."
                     ),
                 }
             )

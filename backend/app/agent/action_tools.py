@@ -340,8 +340,7 @@ class ActionToolSession:
         ]
 
     def _get_action_definitions(self, args: dict) -> dict:
-        ids = {str(value) for value in (args.get("action_types") or []) if str(value)}
-        return {"actions": self._summaries(self.catalog, ids, "type")}
+        return describe_action_definitions(self.catalog, args.get("action_types"))
 
     def _get_validation_checks(self, args: dict) -> dict:
         ids = {str(value) for value in (args.get("check_ids") or []) if str(value)}
@@ -350,6 +349,30 @@ class ActionToolSession:
     def _get_analytics_tests(self, args: dict) -> dict:
         ids = {str(value) for value in (args.get("test_ids") or []) if str(value)}
         return {"analytics_tests": self._summaries(analytics.registry_payload(), ids, "id")}
+
+
+def action_catalog_entries(allowed: set[str] | frozenset[str] | None = None) -> list[dict]:
+    """Serializable action definitions from the catalog, optionally filtered."""
+    return [
+        {
+            "type": definition.type,
+            "description": definition.description,
+            "risk": definition.risk,
+            "target_required": bool(definition.target_kinds),
+            "target_kinds": list(definition.target_kinds),
+            "input_schema": definition.input_schema,
+        }
+        for definition in actions.REGISTRY.all()
+        if allowed is None or definition.type in allowed
+    ]
+
+
+def describe_action_definitions(
+    catalog: list[dict], action_types: list[str] | set[str] | None = None
+) -> dict:
+    """Compact summaries for all actions, or full definitions for named types."""
+    ids = {str(value) for value in (action_types or []) if str(value)}
+    return {"actions": ActionToolSession._summaries(catalog, ids, "type")}
 
 
 def prompts_checks() -> list[dict]:

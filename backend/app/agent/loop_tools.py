@@ -58,6 +58,12 @@ UNOFFERED_ACTIONS = frozenset(
     }
 )
 
+#: High-frequency actions advertised as top-level tools with their full input
+#: schema on every loop turn. Every other callable action is reached through
+#: ``describe_action`` + ``run_action`` so the loop does not pay ~38 CRUD
+#: schemas on every model turn.
+TOP_LEVEL_ACTIONS = frozenset({"edit_document_text"})
+
 _UNSETTLED_UNIT_STATUSES = frozenset(
     {"failed", "conflict", "blocked", "awaiting_input", "awaiting_confirmation"}
 )
@@ -165,6 +171,7 @@ def tool_schemas() -> list[dict]:
     """Wire schemas for the loop's own tools, in a stable order."""
 
     outcomes = sorted(routing.supported_outcomes())
+    callable_actions = sorted(callable_action_names())
     outcome_array = {
         "type": "array",
         "items": {"type": "string", "enum": outcomes},
@@ -301,6 +308,59 @@ def tool_schemas() -> list[dict]:
             },
         ),
         _function(
+            "describe_action",
+            "Inspect the exact argument schema, target kinds, and risk level "
+            "for one or more registered actions before calling run_action. "
+            "Omit action_types for a compact list of all callable actions.",
+            {
+                "type": "object",
+                "properties": {
+                    "action_types": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": callable_actions},
+                        "description": (
+                            "Action names from artifact operations or creating "
+                            "actions. Omit to list all callable actions."
+                        ),
+                    },
+                },
+            },
+        ),
+        _function(
+            "run_action",
+            "Run one registered action through the action ledger with full "
+            "target resolution, approval gating, and receipts. Call "
+            "describe_action first whenever you need an action's exact args "
+            "schema or target kinds.",
+            {
+                "type": "object",
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "enum": callable_actions,
+                        "description": "Registered action type to execute.",
+                    },
+                    "target": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "id": {
+                                "type": "string",
+                                "description": "The artifact's bare id, for example RCM-123.",
+                            },
+                        },
+                        "required": ["kind", "id"],
+                        "description": "Existing artifact this action applies to, when required by the action.",
+                    },
+                    "args": {
+                        "type": "object",
+                        "description": "Arguments matching the action's input schema.",
+                    },
+                },
+                "required": ["action_type", "args"],
+            },
+        ),
+        _function(
             "ask_auditor",
             "Ask the auditor one question and wait for the answer. Use only "
             "when the answer changes what you would do next.",
@@ -356,24 +416,30 @@ def _function(name: str, description: str, parameters: dict) -> dict:
     }
 
 
+def callable_action_names() -> set[str]:
+    """Every registered action the loop may invoke (top-level or via ``run_action``)."""
+
+    return {
+        definition.type
+        for definition in action_catalog.REGISTRY.all()
+        if definition.type not in UNOFFERED_ACTIONS
+    }
+
+
 def action_tools() -> list[dict]:
-    """One tool per registered action, named and shaped by its definition.
+    """Top-level action tool schemas sent on every loop turn.
 
-    The catalog is the contract. A tool here takes the action's own declared
-    argument schema plus the artifact it applies to, and nothing about it is
-    written twice: adding an action to the registry offers it to the loop, and
-    the risk, approval rule, reconciler and receipt it declared all still apply
-    when the loop calls it.
-
-    This is what replaced the action engine. The interpreter used to write a
-    whole DAG of these from the command text before anything ran; the loop
-    calls them one at a time, having read the workspace, and reads each result
-    before deciding the next.
+    Only high-frequency actions in :data:`TOP_LEVEL_ACTIONS` are expanded into
+    top-level schemas. All other registered actions (outside
+    :data:`UNOFFERED_ACTIONS`) remain reachable on demand via
+    ``describe_action`` + ``run_action``, cutting ~38 rarely-used CRUD schemas
+    from every prompt while keeping the exact same action ledger, approval
+    rules, reconcilers, and receipts.
     """
 
     schemas = []
     for definition in action_catalog.REGISTRY.all():
-        if definition.type in UNOFFERED_ACTIONS:
+        if definition.type in UNOFFERED_ACTIONS or definition.type not in TOP_LEVEL_ACTIONS:
             continue
         properties = {
             "args": {
@@ -418,6 +484,8 @@ TOOL_LABELS = {
     "inspect_run": "Reading what happened",
     "rerun_units": "Trying the failed work again",
     "assess_change": "Working out what the new evidence changes",
+    "describe_action": "Checking available actions",
+    "run_action": "Running an action",
     "ask_auditor": "Asking you a question",
     "finish": "Wrapping up",
 }
@@ -664,6 +732,51 @@ class LoopTools:
         rerun = self.loop.child_run(command, context)
         return {"rerun_of": child["id"], "units": wanted, **self._run_report(rerun)}
 
+    def describe_action(self, args: dict) -> dict:
+        """Return compact summaries or full definitions for callable actions."""
+        from . import action_tools
+
+        catalog = action_tools.action_catalog_entries(callable_action_names())
+        wanted = _string_list(args.get("action_types"))
+        try:
+            return action_tools.describe_action_definitions(catalog, wanted)
+        except WorkspaceError as error:
+            raise ToolError(str(error)) from error
+
+    def run_action(self, args: dict) -> dict:
+        """Run one callable registered action by name through the action ledger."""
+
+        action_type = str(args.get("action_type") or "").strip()
+        if not action_type or action_type not in callable_action_names():
+            raise ToolError(f"Action '{action_type}' is not available.")
+        action_args = args.get("args")
+        if action_args is not None and not isinstance(action_args, dict):
+            raise ToolError("Action args must be a JSON object.")
+        definition = action_catalog.REGISTRY.get(action_type)
+        raw_target = args.get("target")
+        if definition.target_kinds:
+            if not isinstance(raw_target, dict):
+                raise ToolError(
+                    f"Action '{action_type}' requires a target with kind in "
+                    f"{list(definition.target_kinds)} and an id."
+                )
+            kind = str(raw_target.get("kind") or "").strip()
+            target_id = str(raw_target.get("id") or raw_target.get("resolved_id") or "").strip()
+            if kind not in definition.target_kinds:
+                raise ToolError(
+                    f"Action '{action_type}' expects target.kind in "
+                    f"{list(definition.target_kinds)}, got '{kind}'."
+                )
+            if not target_id and not raw_target.get("selector"):
+                raise ToolError(f"Action '{action_type}' requires target.id.")
+        return self.run_registered_action(
+            action_type,
+            {
+                "target": raw_target,
+                "args": dict(action_args or {}),
+            },
+        )
+
     def run_registered_action(self, name: str, args: dict) -> dict:
         """Append one registered action to this run's ledger and drive it.
 
@@ -901,7 +1014,7 @@ def dispatch(tools: LoopTools, name: str, args: dict) -> dict:
 
     if name in LOOP_TOOL_NAMES:
         return getattr(tools, name)(args)
-    if name in action_tool_names():
+    if name in callable_action_names():
         return tools.run_registered_action(name, args)
     raise ToolError(f"Unknown tool '{name}'.")
 
@@ -987,6 +1100,23 @@ def _suggestions(value: object) -> list[dict]:
 def describe_tool_call(name: str, args: dict) -> str:
     """A short, safe activity label for one tool call."""
 
+    if name == "run_action":
+        action_type = str(args.get("action_type") or "").strip()
+        if action_type:
+            try:
+                return action_catalog.REGISTRY.get(action_type).description
+            except WorkspaceError:
+                pass
+    if name == "describe_action":
+        wanted = _string_list(args.get("action_types"))
+        if wanted:
+            descriptions = []
+            for action_name in wanted[:3]:
+                try:
+                    descriptions.append(action_catalog.REGISTRY.get(action_name).description)
+                except WorkspaceError:
+                    descriptions.append(narration.humanize(action_name))
+            return f"Checking action details: {', '.join(descriptions)}"
     label = TOOL_LABELS.get(name)
     if label is None:
         from ..assistant_tools import TOOL_LABELS as READ_LABELS
@@ -1018,7 +1148,9 @@ def json_result(payload: object, limit: int) -> str:
 
 __all__ = [
     "LOOP_TOOL_NAMES",
+    "TOP_LEVEL_ACTIONS",
     "action_tools",
+    "callable_action_names",
     "LoopTools",
     "ToolError",
     "describe_tool_call",

@@ -95,7 +95,7 @@ def test_operations_name_both_ways_to_change_an_artifact():
 def test_an_unoffered_action_is_not_advertised():
     """The index and the tool list cannot disagree about what is callable."""
 
-    offered = {schema["function"]["name"] for schema in loop_tools.action_tools()}
+    offered = loop_tools.callable_action_names()
     for kind in ("procedure", "rcm", "doctest", "table"):
         for item in operations.artifact_operations(kind)["actions"]:
             assert item["action"] in offered, item

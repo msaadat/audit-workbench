@@ -442,7 +442,7 @@ def test_the_loop_edits_a_passage_and_is_not_offered_the_whole_memo_rewrite(
 ):
     ws = workspace_with_data
     ws.update_planning({"apm_markdown": COMPLETE_APM})
-    assert "edit_apm" not in loop_tools.action_tool_names()
+    assert "edit_apm" not in loop_tools.callable_action_names()
     assert "edit_document_text" in loop_tools.action_tool_names()
 
     def edit_turn(_script):
@@ -460,7 +460,7 @@ def test_the_loop_edits_a_passage_and_is_not_offered_the_whole_memo_rewrite(
         )
 
     script = LoopScript(
-        tool_turn("search_document", {"ref": "planning:apm", "pattern": "background"}),
+        tool_turn("search_work_product", {"ref": "planning:apm", "pattern": "background"}),
         edit_turn,
         finish_turn("Edited one sentence."),
     )

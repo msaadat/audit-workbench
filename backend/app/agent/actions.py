@@ -1099,7 +1099,7 @@ _register("update_planning_context", "Update engagement planning context", "reve
 _register("edit_apm", "Edit APM content", "reversible_mutation", ("planning",), ("apm_markdown",), {"apm_markdown": STR}, model="draft")
 # One exact passage of a long document, the way an editor changes a file: the
 # passage must occur once, the document must be the one that was read (``sha1``
-# from read_document or search_document), and the template's sections must
+# from read_document or search_work_product), and the template's sections must
 # survive. The memorandum is ``planning:apm``, the report ``report:working``.
 _register(
     "edit_document_text",

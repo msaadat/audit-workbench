@@ -600,7 +600,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   matrix revision refuses a stale matrix rather than redrafting it first. Every
   row removal is recorded in `Planning/.retired_rcm.json`, and
   `planning.rcm_ready` will not add a retired risk back; only a person lifts a
-  retirement. For a small, exact change the loop has `search_document`,
+  retirement. For a small, exact change the loop has `search_work_product`,
   `read_document` and the `edit_document_text` action (one passage, against the
   sha1 it read); `edit_apm`, which replaced the whole memorandum with text the
   loop wrote, is no longer offered to it. The chat reaches the revisions
@@ -631,9 +631,12 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `ActionExecution` (`agent/action_execution.py`) — the same ledger, target
   resolution, optimistic precondition, approval interaction, receipt and
   reconciler the action engine used, without the model-written DAG in front of
-  it. `loop_tools.action_tools()` derives one tool per registered action from
-  its own definition, so adding an action to the catalog offers it to the loop
-  and nothing is written twice. `IntakeRunner` is the one retained protocol
+  it. `loop_tools.action_tools()` expands only high-frequency actions in
+  `TOP_LEVEL_ACTIONS` (`edit_document_text`) directly into the loop's tool list,
+  while every other callable registered action is inspected with
+  `describe_action` and invoked through `run_action` — both derived from the
+  catalog so adding an action offers it to the loop and nothing is written
+  twice. `IntakeRunner` is the one retained protocol
   runner: folder intake is a
   single-unit protocol over a staged batch whose authoritative state lives under
   `Imports/`, not a capability graph over the workspace. The decision, and the
