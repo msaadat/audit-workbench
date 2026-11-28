@@ -213,6 +213,19 @@ function group(fields: Field[], fallback: string): Group[] {
   return groups
 }
 
+/**
+ * Whether a page reference tells the reader anything. On a one-page invoice
+ * every field said `p.1` — seventeen chips stating one fact — so where every
+ * cited field sits on the same page, the reading pane says so once above the
+ * list and the rows carry none. The full-width sheet keeps them.
+ */
+const fieldPages = computed(() => new Set(
+  props.records.flatMap((record, index) => fieldsOf(record, index))
+    .map(field => field.page)
+    .filter((page): page is number => page != null),
+))
+const showPages = computed(() => !props.compact || fieldPages.value.size > 1)
+
 const sheets = computed(() => props.records.map((record, index) => {
   const allFields = fieldsOf(record, index)
   return {
@@ -230,14 +243,54 @@ const sheets = computed(() => props.records.map((record, index) => {
         <span class="eyebrow">
           Record {{ sheet.index + 1 }} of {{ records.length }}<template v-if="schema?.document_type"> · {{ sentenceCase(schema.document_type) }}</template>
         </span>
-        <span v-if="validated" class="pill">Validated</span>
-        <span class="by-model"><i class="aw-icon aw-icon-sparkles" aria-hidden="true" />AI extracted</span>
+        <!-- In the reading pane the heading above the list already says who
+             read these and against what. -->
+        <template v-if="!compact">
+          <span v-if="validated" class="pill">Validated</span>
+          <span class="by-model"><i class="aw-icon aw-icon-sparkles" aria-hidden="true" />AI extracted</span>
+        </template>
       </header>
 
       <div class="body">
         <section v-for="grp in sheet.groups" :key="grp.name" class="field-group">
           <h5 class="group-title">{{ grp.label }}</h5>
-          <div class="field-grid">
+          <!-- The reading pane lists fields as label and value, one per line:
+               boxed cards in a 24rem pane fitted eight fields to a screen. -->
+          <dl v-if="compact" class="field-list">
+            <div
+              v-for="field in grp.fields"
+              :key="field.fieldKey"
+              :data-field-key="field.fieldKey"
+              class="field-card field-row"
+              :class="{ prominent: field.prominent, highlighted: activeKey === field.fieldKey }"
+              @mouseenter="emit('hover', field.fieldKey)"
+              @mouseleave="emit('hover', null)"
+              @click="emit('focus-field', { key: field.fieldKey, citation: field.citation })"
+            >
+              <dt class="field-label">{{ field.label }}</dt>
+              <dd class="field-cell">
+                <button
+                  v-if="field.linkedDoc"
+                  type="button"
+                  class="field-link"
+                  :title="`Open ${field.linkedDoc.title}`"
+                  @click.stop="emit('open-document', field.linkedDoc.id)"
+                >
+                  <span>{{ field.value }}</span>
+                  <i class="aw-icon aw-icon-arrow-up-right" aria-hidden="true" />
+                </button>
+                <span v-else class="field-value">{{ field.value }}</span>
+                <button
+                  v-if="showPages && field.page && field.citation"
+                  type="button"
+                  class="cite"
+                  :title="field.citation.excerpt ? `Page ${field.page}: ${field.citation.excerpt}` : `Jump to page ${field.page}`"
+                  @click.stop="emit('focus-field', { key: field.fieldKey, citation: field.citation }); emit('cite', field.citation)"
+                >p.{{ field.page }}</button>
+              </dd>
+            </div>
+          </dl>
+          <div v-else class="field-grid">
             <div
               v-for="field in grp.fields"
               :key="field.fieldKey"
@@ -403,4 +456,30 @@ const sheets = computed(() => props.records.map((record, index) => {
   border-color: var(--aw-accent);
 }
 .cite.static { cursor: default; }
+
+/* The reading pane's list: label and value on one ruled line. */
+.field-list { display: flex; flex-direction: column; margin: 0; }
+.field-row {
+  display: grid; grid-template-columns: minmax(6.5rem, 38%) minmax(0, 1fr); gap: .75rem;
+  align-items: baseline;
+  padding: .4rem .5rem; margin: 0 -.5rem;
+  border: 0; border-top: 1px solid var(--aw-border); border-radius: 0;
+  background: transparent;
+}
+.field-row:first-child { border-top: 0; }
+.field-row:hover { background: color-mix(in srgb, var(--aw-raised) 70%, transparent); border-color: var(--aw-border); }
+.field-row.highlighted {
+  border-color: var(--aw-border);
+  border-radius: 4px;
+  background: var(--aw-accent-soft);
+  box-shadow: inset 2px 0 0 var(--aw-accent);
+}
+.field-row.prominent { border-color: var(--aw-border); background: transparent; }
+.field-row.prominent.highlighted { background: var(--aw-accent-soft); }
+.field-row .field-label { font-size: var(--aw-text-xs); font-weight: 500; }
+.field-cell { display: flex; align-items: baseline; gap: .4rem; margin: 0; min-width: 0; }
+.field-row .field-value { flex: 1; font-size: var(--aw-text-sm); }
+.field-row.prominent .field-value { color: var(--aw-ink-strong); font-weight: 700; }
+.field-row .field-link { font-size: var(--aw-text-sm); }
+.sheets.compact .field-group { gap: .125rem; }
 </style>

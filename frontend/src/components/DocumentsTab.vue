@@ -26,8 +26,11 @@ import DocumentTypeReview from './documents/DocumentTypeReview.vue'
 import PdfHighlightViewer from './documents/PdfHighlightViewer.vue'
 import StructuredEvidenceSheet from './documents/StructuredEvidenceSheet.vue'
 import { annotateDocxContainer, type DocxAnnotationResult, type DocxNoteInput } from './documents/docxAnnotations'
+import FileBadge from './documents/FileBadge.vue'
+import { documentStatus } from '../composables/documentStatus'
 import {
-  DOCUMENT_QUEUES, documentLabel, documentMeta, documentTone, documentsStatus, filterDocuments, isReviewed, needsReview,
+  DOCUMENT_QUEUES, documentLabel, documentMeta, documentTone, documentsStatus, filterDocuments, isAnalysed, isModelTyped,
+  isReviewed, needsReview,
 } from './documents/documentsStatus'
 import type { DocumentsFilter } from './documents/documentsStatus'
 import { plural, sentenceCase } from '../format'
@@ -252,10 +255,6 @@ const typeBuckets = computed<TypeBucket[]>(() => {
   return out
 })
 
-function toggleTypeFilter(key: string) {
-  typeFilter.value = typeFilter.value === key ? '' : key
-}
-
 const aiCorpusSummary = computed(() => {
   const total = documents.value.length
   if (!total) return null
@@ -272,6 +271,74 @@ const aiCorpusSummary = computed(() => {
   }
 })
 
+/**
+ * The header is the pipeline: what the AI did to the corpus, step by step, and
+ * then what a person did with it. It replaces a count sentence and a separate
+ * "AI-classified" pill that said the same corpus twice, and it puts each chore
+ * — identify, analyse — beside the step it finishes rather than in a row of
+ * buttons with no step to belong to.
+ */
+const pipeline = computed(() => {
+  const analysed = documents.value.filter(isAnalysed).length
+  return {
+    total: documents.value.length,
+    classified: aiCorpusSummary.value?.classified ?? 0,
+    types: typeBuckets.value.filter(bucket => bucket.key !== 'unidentified').length,
+    schemas: vocabulary.value.length,
+    analysed,
+    reviewed: documents.value.filter(isReviewed).length,
+  }
+})
+
+/**
+ * What each category is *for*, drawn as the rail's section heads. A policy and
+ * a voucher used to sit in one list told apart only by a grey group label;
+ * they are different kinds of material — the rules, and the transactions
+ * tested against them — and the rail now says which is which.
+ */
+const CATEGORY_META: Record<string, { icon: string; role: string }> = {
+  policy: { icon: 'aw-icon-shield', role: 'The rules · read for planning' },
+  minutes: { icon: 'aw-icon-messages-square', role: 'Decisions · read for planning' },
+  background: { icon: 'aw-icon-book-open', role: 'Context · read for planning' },
+  evidence: { icon: 'aw-icon-receipt', role: 'Transactions · tested in fieldwork' },
+}
+function categoryMeta(value: string): { icon: string; role: string } {
+  return CATEGORY_META[value] ?? { icon: 'aw-icon-file', role: value ? '' : 'Not classified yet' }
+}
+
+/**
+ * A row's second line. Under a type heading the type is already said, so the
+ * row says nothing unless the AI typed it outside the catalogue — then it says
+ * what the AI called it, which is the thing an auditor has to decide about.
+ */
+function rowMeta(doc: AuditDocument, underTypeHeading: boolean): Array<{ text: string; tone?: string }> {
+  const cls = doc.classification
+  if (cls?.document_type === 'other' && cls.document_type_other) {
+    return [{ text: `AI called it “${cls.document_type_other}”`, tone: 'agent' }]
+  }
+  return underTypeHeading ? [] : documentMeta(doc, documentFacts.value)
+}
+
+/**
+ * The readiness dot, drawn only where it says something is wrong or under way.
+ * Search indexing is a background job the header's chip already reports, so a
+ * row indexing for search draws nothing: on a fresh import that dot was on
+ * every row and said nothing about any one of them.
+ */
+function rowTone(doc: AuditDocument): string {
+  const tone = documentTone(doc, documentFacts.value)
+  // A stale search index is the index's state, not the document's: it was
+  // the only reason for nine of fourteen orange dots on the expenses rail.
+  if (tone === 'warn' && rowStatus(doc).startsWith('Search index')) return ''
+  if (tone === 'warn' || tone === 'bad') return tone
+  const working = doc.text_state === 'pending'
+    || doc.analysis_run_state === 'queued' || doc.analysis_run_state === 'analyzing'
+  return tone === 'info' && working ? 'info' : ''
+}
+function rowStatus(doc: AuditDocument): string {
+  return documentStatus(doc, { visionAvailable: documentFacts.value.visionAvailable }).label
+}
+
 /** Unified classification, confidence and AI rationale for the open document. */
 const selectedClassification = computed(() => {
   const doc = selected.value
@@ -282,14 +349,18 @@ const selectedClassification = computed(() => {
   const assigner = cls?.assigned_by || cls?.category_assigned_by || null
   const confidence = cls?.confidence || cls?.category_confidence || null
   const rationale = (cls?.rationale || cls?.category_rationale || '').trim()
-  const parts: string[] = []
-  if (doc.category) parts.push(sentenceCase(doc.category))
-  if (docType) parts.push(isOther && cls?.document_type_other ? cls.document_type_other : sentenceCase(documentTypeLabel(docType)))
+  const category = doc.category ? sentenceCase(doc.category) : ''
+  const typeLabel = docType
+    ? (isOther && cls?.document_type_other ? sentenceCase(cls.document_type_other) : sentenceCase(documentTypeLabel(docType)))
+    : ''
   return {
     assigner,
     isModel: assigner === 'model',
-    label: parts.join(' · ') || 'Unclassified',
+    // The decision itself, large; what it sits under, small.
+    primary: typeLabel || category || 'Unclassified',
+    secondary: typeLabel ? [category, isOther ? 'not a type in the catalogue' : ''].filter(Boolean).join(' · ') : '',
     confidence,
+    confidenceBars: confidence === 'high' ? 3 : confidence === 'medium' ? 2 : confidence === 'low' ? 1 : 0,
     rationale,
     isOther,
   }
@@ -325,12 +396,25 @@ const auditObservations = computed<string[]>(() => {
   return items
 })
 
-const visibleObservations = computed(() => (
-  showAllObservations.value ? auditObservations.value : auditObservations.value.slice(0, 3)
+/**
+ * A reading that found nothing says so in one quiet line. "Nothing on the face
+ * of this document was reported as irregular" was drawn as an amber card
+ * headed "AI spotted 1 audit observation", counted in a badge and pinned on the
+ * page — a clean result dressed as a finding. Only a lone note of that shape
+ * is treated so; anything with substance keeps the card.
+ */
+const QUIET_NOTE = /^(nothing|no)\b[^.]*\b(irregular|exception|issue|concern|anomal)/i
+const quietObservation = computed(() => (
+  auditObservations.value.length === 1 && QUIET_NOTE.test(auditObservations.value[0]) ? auditObservations.value[0] : ''
 ))
+const findings = computed(() => (quietObservation.value ? [] : auditObservations.value))
+const visibleObservations = computed(() => (
+  showAllObservations.value ? findings.value : findings.value.slice(0, 3)
+))
+const pageNotes = computed(() => (quietObservation.value ? [] : highlights.value?.notes ?? []))
 
 const docxNotes = computed<DocxNoteInput[]>(() =>
-  auditObservations.value.map((text, index) => ({
+  findings.value.map((text, index) => ({
     key: `note:${index + 1}`,
     number: index + 1,
     text,
@@ -354,47 +438,50 @@ const structuredFieldCount = computed(() => {
   return total
 })
 /**
- * The filters, as one choice. The page drew two rows of count chips and three
- * progress lanes under them, which said each number twice (`83 Analysis to
- * review` beside `REVIEWED 0/84`). The counts now sit in the header sentence
- * once, and the filter is one segmented control: All, To review, and whatever
- * else currently has something in it. Who typed a document is a different
- * axis, so it is a checkbox beside the control rather than another segment.
+ * The filters, as two controls in the rail. The page drew a segmented control,
+ * a row of seven type chips and an "AI-assigned only" checkbox above the list —
+ * and the list then grouped by the same types the chips counted. Now the rail
+ * asks one question, To review or All, and everything narrower (a status that
+ * has something in it, or one type) is one menu beside it.
  */
 const filterCounts = computed(() => new Map(
   (status.value.filters ?? []).flatMap(group => group.options.map(option => [option.key, option.value] as const)),
 ))
-const queueFilter = computed<DocumentsFilter | ''>(
-  () => statusFilter.value.find(key => key !== 'model_typed') ?? '',
-)
-const queues = computed(() => DOCUMENT_QUEUES
-  .filter(option => !option.key || option.key === 'needs_review'
-    || (filterCounts.value.get(option.key) ?? 0) > 0 || option.key === queueFilter.value)
-  .map(option => ({ ...option, count: option.key ? filterCounts.value.get(option.key) ?? 0 : documents.value.length })))
-const modelTypedOnly = computed({
-  get: () => statusFilter.value.includes('model_typed'),
-  set: (on: boolean) => {
-    statusFilter.value = [...(queueFilter.value ? [queueFilter.value] : []), ...(on ? ['model_typed' as const] : [])]
-  },
-})
-function setQueue(key: DocumentsFilter | '') {
-  statusFilter.value = [...(key ? [key] : []), ...(modelTypedOnly.value ? ['model_typed' as const] : [])]
+const reviewOnly = computed(() => statusFilter.value.includes('needs_review'))
+function setReviewOnly(on: boolean) {
+  statusFilter.value = [
+    ...(on ? ['needs_review' as const] : []),
+    ...statusFilter.value.filter(key => key !== 'needs_review'),
+  ]
 }
-/** `84 documents · 84 read · 83 analysed · 0 reviewed` — the three lanes, said once. */
-const countSentence = computed(() => {
-  const lane = (key: string) => status.value.lanes.find(item => item.key === key)?.value ?? '0'
-  return [
-    plural(documents.value.length, 'document'),
-    `${lane('read')} read`, `${lane('analysed')} analysed`, `${lane('reviewed')} reviewed`,
-  ].join(' · ')
+const refineValue = computed(() => {
+  const status = statusFilter.value.find(key => key !== 'needs_review')
+  return status ? `status:${status}` : typeFilter.value
 })
+const refineOptions = computed(() => [
+  { label: 'Everything', value: '' },
+  ...DOCUMENT_QUEUES
+    .filter(option => option.key && option.key !== 'needs_review' && option.key !== 'unidentified'
+      && (filterCounts.value.get(option.key) ?? 0) > 0)
+    .map(option => ({ label: `${option.label} · ${filterCounts.value.get(option.key)}`, value: `status:${option.key}` })),
+  ...typeBuckets.value.map(bucket => ({ label: `${bucket.label} · ${bucket.count}`, value: bucket.key })),
+])
+function setRefine(value: string | null) {
+  const choice = value || ''
+  const isStatus = choice.startsWith('status:')
+  statusFilter.value = [
+    ...(reviewOnly.value ? ['needs_review' as const] : []),
+    ...(isStatus ? [choice.slice('status:'.length) as DocumentsFilter] : []),
+  ]
+  typeFilter.value = isStatus ? '' : choice
+}
 
 /**
  * Review walks the list in the order it is drawn. `Mark reviewed and next`
  * lands on the next document after this one that still needs review, wrapping
  * once, so working down a group is one button per document.
  */
-const ordered = computed(() => groups.value.flatMap(group => group.items))
+const ordered = computed(() => groups.value.flatMap(group => group.sections.flatMap(section => section.items)))
 const reviewQueue = computed(() => ordered.value.filter(needsReview))
 const nextToReview = computed(() => {
   const list = ordered.value
@@ -402,12 +489,20 @@ const nextToReview = computed(() => {
   const after = [...list.slice(at + 1), ...list.slice(0, Math.max(at, 0))]
   return after.find(doc => needsReview(doc) && doc.id !== selectedId.value) ?? null
 })
-const queuePosition = computed(() => {
-  const queue = reviewQueue.value
-  if (!queue.length) return 'Nothing left to review'
-  const at = queue.findIndex(doc => doc.id === selectedId.value)
-  return at >= 0 ? `${at + 1} of ${queue.length} to review` : `${queue.length} to review`
-})
+/**
+ * Where the open document sits in the list as drawn, for the reading's own
+ * previous / next. It is a position, so it is said as one (`4 of 13`) and no
+ * longer as `4 of 13 to review`, which read as a count of what was left.
+ */
+const orderedAt = computed(() => ordered.value.findIndex(doc => doc.id === selectedId.value))
+const listPosition = computed(() => (
+  orderedAt.value >= 0 ? `${orderedAt.value + 1} of ${ordered.value.length}` : ''
+))
+const previousDoc = computed(() => (orderedAt.value > 0 ? ordered.value[orderedAt.value - 1] : null))
+const followingDoc = computed(() => (
+  orderedAt.value >= 0 && orderedAt.value < ordered.value.length - 1 ? ordered.value[orderedAt.value + 1] : null
+))
+const leftToReview = computed(() => reviewQueue.value.length)
 
 async function markReviewedAndNext() {
   const next = nextToReview.value
@@ -454,7 +549,34 @@ const readingActions = computed<MenuItem[]>(() => {
   if (analysis.value?.review.summary_override != null) {
     items.push({ label: 'Revert to the generated summary', icon: 'aw-icon aw-icon-undo-2', command: () => void revertAnalysisField('summary') })
   }
+  // The notes editor and the model log used to be tabs beside the reading,
+  // which split one document's account three ways. They are places you go to
+  // from it, so they are here.
+  items.push({ separator: true })
+  if (analysis.value?.effective) {
+    items.push({ label: 'Edit audit notes', icon: 'aw-icon aw-icon-pencil', command: () => { readingTab.value = 'notes' } })
+  }
+  items.push({
+    label: activity.value.length ? `Model activity (${activity.value.length})` : 'Model activity',
+    icon: 'aw-icon aw-icon-history',
+    command: () => { readingTab.value = 'activity' },
+  })
   return items
+})
+
+/** The fields heading's second line: where they are, and what they were read against. */
+const fieldsContext = computed(() => {
+  const effective = analysis.value?.effective
+  if (!effective) return ''
+  const pages = new Set(effective.citations.map(citation => citation.page))
+  const parts: string[] = []
+  if (pages.size === 1) parts.push(`All on page ${[...pages][0]}`)
+  else if (pages.size > 1) parts.push(`Across ${plural(pages.size, 'page')}`)
+  if (effective.schema_ref?.document_type) {
+    parts.push(`against the ${documentTypeLabel(effective.schema_ref.document_type)} schema`)
+  }
+  if (analysis.value?.status.analysis_coverage_state === 'complete') parts.push('validated')
+  return parts.join(', ').replace(/^./, first => first.toUpperCase())
 })
 
 function cancelReadingEdit() {
@@ -488,7 +610,7 @@ function groupValue(doc: AuditDocument): string {
  */
 function subgroups(value: string, items: AuditDocument[]) {
   if (groupBy.value !== 'type' || value !== 'evidence') {
-    return [{ key: '', label: '', items }]
+    return [{ key: '', label: '', byModel: false, warn: false, items }]
   }
   const map = new Map<string, AuditDocument[]>()
   for (const doc of items) {
@@ -501,10 +623,15 @@ function subgroups(value: string, items: AuditDocument[]) {
       // Unread rather than unclassifiable: a document with no type yet has not
       // reached the classification stage, which is a different thing from the
       // `other` bucket an auditor is asked to retype.
-      label: type ? documentTypeLabel(type) : 'not yet identified',
+      label: type === 'other' ? 'needs a type' : type ? documentTypeLabel(type) : 'not yet identified',
+      // The heading carries the AI mark when the AI made every call under it.
+      byModel: Boolean(type) && type !== 'other' && docs.every(isModelTyped),
+      warn: type === 'other',
       items: docs,
     }))
-    .sort((a, b) => (a.key === 'unclassified' ? 1 : 0) - (b.key === 'unclassified' ? 1 : 0)
+    // An AI call that needs a person goes first; documents not yet typed last.
+    .sort((a, b) => (b.warn ? 1 : 0) - (a.warn ? 1 : 0)
+      || (a.key === 'unclassified' ? 1 : 0) - (b.key === 'unclassified' ? 1 : 0)
       || a.label.localeCompare(b.label))
 }
 
@@ -561,6 +688,11 @@ const showFields = computed(() => sourceView.value === 'fields' && hasRecords.va
  */
 const showPdfSheet = computed(() => isPdf.value && !showFields.value
   && (sourceView.value === 'original' || sourceView.value === 'annotated'))
+/** The page itself, with whatever the AI read drawn on it where there is any. */
+const pageView = computed(() => !showFields.value && (sourceView.value === 'original' || sourceView.value === 'annotated'))
+function showPage() {
+  sourceView.value = hasHighlights.value ? 'annotated' : 'original'
+}
 const showTextView = computed(() => !isImage.value && !showFields.value && !showAnnotated.value
   && (!hasOriginalView.value || sourceView.value === 'text'))
 const fileUrl = computed(() => selected.value ? `/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/file` : '')
@@ -1226,14 +1358,56 @@ onUnmounted(() => {
 <template>
   <section class="documents-tab">
     <header class="page-head">
-      <div class="head-copy">
-        <h1>Documents</h1>
-        <p v-if="documents.length" class="aw-type-meta head-count">{{ countSentence }}</p>
-        <span v-if="aiCorpusSummary && aiCorpusSummary.classified" class="ai-corpus-pill">
+      <h1>Documents</h1>
+      <!-- What the AI did to these documents, then what a person did. Each
+           chore sits on the step it finishes. -->
+      <ol v-if="documents.length" class="pipeline" aria-label="What has been done to these documents">
+        <li class="step" data-by="ai">
           <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
-          {{ plural(aiCorpusSummary.classified, 'file') }} AI-classified<template v-if="aiCorpusSummary.schemas"> · {{ plural(aiCorpusSummary.schemas, 'schema') }} induced</template>
-        </span>
-      </div>
+          <span>AI classified</span>
+          <b class="aw-figure">{{ pipeline.classified }}</b>
+          <span v-if="pipeline.types" class="muted">into {{ plural(pipeline.types, 'type') }}</span>
+          <button v-if="unidentifiedCount" type="button" class="step-action" data-tone="warn" @click="typeReviewOpen = true">
+            {{ unidentifiedCount }} {{ unidentifiedCount === 1 ? 'needs' : 'need' }} a type
+          </button>
+        </li>
+        <template v-if="pipeline.schemas">
+          <li class="step-sep" aria-hidden="true">›</li>
+          <li class="step" data-by="ai">
+            <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
+            <span>AI learned</span>
+            <b class="aw-figure">{{ pipeline.schemas }}</b>
+            <span class="muted">field {{ pipeline.schemas === 1 ? 'schema' : 'schemas' }}</span>
+          </li>
+        </template>
+        <li class="step-sep" aria-hidden="true">›</li>
+        <li class="step" data-by="ai">
+          <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
+          <span>AI analysed</span>
+          <b class="aw-figure">{{ pipeline.analysed }}</b>
+          <span class="muted">of {{ pipeline.total }}</span>
+          <button
+            v-if="eligibleDocuments.length"
+            type="button"
+            class="step-action"
+            :disabled="analysisBusy"
+            @click="batchAnalyze"
+          >
+            <i :class="analysisBusy ? 'aw-icon aw-icon-spin aw-icon-loader-circle' : 'aw-icon aw-icon-play'" aria-hidden="true" />
+            Analyse {{ eligibleDocuments.length }}
+          </button>
+        </li>
+        <li class="step-sep" aria-hidden="true">›</li>
+        <li class="step" data-by="you">
+          <i class="aw-icon aw-icon-user-round-check" aria-hidden="true" />
+          <template v-if="pipeline.analysed">
+            <span>You reviewed</span>
+            <b class="aw-figure">{{ pipeline.reviewed }}</b>
+            <span class="muted">of {{ pipeline.analysed }}</span>
+          </template>
+          <span v-else class="muted">Nothing to review until analysed</span>
+        </li>
+      </ol>
       <span class="grow" />
       <!-- A background job, reported at the size of a background job. -->
       <span
@@ -1245,63 +1419,11 @@ onUnmounted(() => {
       >
         <i class="aw-icon aw-icon-spin aw-icon-loader-circle" />Indexing<template v-if="indexingProgress"> {{ indexingProgress }}</template>
       </span>
-      <!-- All three are neutral. The page's one filled button is the review
-           itself — `Mark reviewed and next`, where the reading ends — and
-           these are the chores that feed it. -->
-      <Button
-        v-if="unidentifiedCount"
-        :label="`Identify ${unidentifiedCount}`"
-        icon="aw-icon aw-icon-circle-help"
-        size="small"
-        severity="secondary"
-        outlined
-        @click="typeReviewOpen = true"
-      />
-      <Button
-        v-if="eligibleDocuments.length"
-        :label="`Analyse ${eligibleDocuments.length}`"
-        icon="aw-icon aw-icon-sparkles"
-        size="small"
-        severity="secondary"
-        outlined
-        :loading="analysisBusy"
-        @click="batchAnalyze"
-      />
+      <!-- The page's one filled button is the review itself — `Mark reviewed
+           and next`, where the reading ends. -->
       <Button v-if="documents.length" label="Add documents" icon="aw-icon aw-icon-plus" size="small" outlined severity="secondary" @click="emit('import-requested')" />
       <UiOverflowMenu :items="secondaryActions" tooltip="More document actions" />
     </header>
-
-    <div v-if="documents.length" class="aw-filter-row doc-filter-bar">
-      <div class="aw-segmented" role="group" aria-label="Show">
-        <button
-          v-for="option in queues"
-          :key="option.key || 'all'"
-          type="button"
-          :class="{ on: queueFilter === option.key }"
-          :aria-pressed="queueFilter === option.key"
-          @click="setQueue(option.key)"
-        >{{ option.label }} <span class="aw-figure">{{ option.count }}</span></button>
-      </div>
-      <div v-if="typeBuckets.length > 1" class="type-buckets" role="group" aria-label="Filter by classified type">
-        <button
-          v-for="bucket in typeBuckets"
-          :key="bucket.key"
-          type="button"
-          class="type-bucket"
-          :data-tone="bucket.tone"
-          :class="{ on: typeFilter === bucket.key }"
-          :aria-pressed="typeFilter === bucket.key"
-          @click="toggleTypeFilter(bucket.key)"
-        >
-          <span>{{ bucket.label }}</span>
-          <b class="aw-figure">{{ bucket.count }}</b>
-        </button>
-      </div>
-      <label v-if="filterCounts.get('model_typed')" class="aw-filter-check">
-        <input v-model="modelTypedOnly" type="checkbox">
-        AI-assigned only <span class="aw-figure">{{ filterCounts.get('model_typed') }}</span>
-      </label>
-    </div>
 
     <div v-if="documents.length" class="document-layout">
       <div class="document-grid" :data-pane="pane">
@@ -1311,43 +1433,80 @@ onUnmounted(() => {
               <InputIcon class="aw-icon aw-icon-search" />
               <InputText v-model="search" size="small" :placeholder="`Search ${plural(filtered.length, 'document')}`" />
             </IconField>
+            <div class="rail-filters">
+              <div class="aw-segmented" role="group" aria-label="Show">
+                <button type="button" :class="{ on: reviewOnly }" :aria-pressed="reviewOnly" @click="setReviewOnly(true)">
+                  To review <span class="aw-figure">{{ leftToReview }}</span>
+                </button>
+                <button type="button" :class="{ on: !reviewOnly }" :aria-pressed="!reviewOnly" @click="setReviewOnly(false)">
+                  All <span class="aw-figure">{{ documents.length }}</span>
+                </button>
+              </div>
+              <span class="grow" />
+              <Select
+                class="refine-select"
+                :modelValue="refineValue"
+                :options="refineOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="Everything"
+                size="small"
+                aria-label="Narrow the list"
+                @update:modelValue="setRefine"
+              />
+            </div>
+          </div>
+          <div class="rail-groupby">
             <!-- A link, not a full-width select: grouping is chosen once and
                  then read past. -->
             <button type="button" class="group-by" @click="cycleGrouping">By {{ groupBy }} <i class="aw-icon aw-icon-chevron-down" aria-hidden="true" /></button>
           </div>
           <div v-if="!filtered.length" class="rail-empty">No document matches this view.</div>
-          <div v-for="group in groups" :key="group.key" class="doc-group">
+          <section
+            v-for="group in groups"
+            :key="group.key"
+            class="doc-group"
+            :data-category="groupBy === 'type' ? group.value || 'unread' : null"
+          >
             <button class="group-head" :aria-expanded="!collapsedGroups.has(group.key)" @click="toggleGroup(group.key)">
-              <i :class="collapsedGroups.has(group.key) ? 'aw-icon aw-icon-chevron-right' : 'aw-icon aw-icon-chevron-down'" />
-              <span class="group-name">{{ sentenceCase(group.label) }}</span>
-              <span class="group-count aw-figure">{{ group.items.length }}</span>
+              <span v-if="groupBy === 'type'" class="cat-tile" aria-hidden="true"><i :class="['aw-icon', categoryMeta(group.value).icon]" /></span>
+              <span class="group-copy">
+                <span class="group-name">{{ sentenceCase(group.label) }} <span class="group-count aw-figure">{{ group.items.length }}</span></span>
+                <span v-if="groupBy === 'type' && categoryMeta(group.value).role" class="group-role">{{ categoryMeta(group.value).role }}</span>
+              </span>
+              <i :class="collapsedGroups.has(group.key) ? 'aw-icon aw-icon-chevron-right' : 'aw-icon aw-icon-chevron-down'" class="group-chev" />
             </button>
             <template v-if="!collapsedGroups.has(group.key)">
-              <button
-                v-for="doc in group.items"
-                :key="doc.id"
-                class="doc-row"
-                :class="{ active: doc.id === selectedId }"
-                :title="doc.source"
-                @click="selectDocument(doc.id, 1)"
-              >
-                <span class="dot" :data-tone="documentTone(doc, documentFacts)" aria-hidden="true" />
-                <span class="doc-identity">
-                  <span v-if="documentLabel(doc).reference" class="doc-name doc-ref">{{ documentLabel(doc).reference }}</span>
-                  <span v-else class="doc-name">{{ documentLabel(doc).name }}</span>
-                  <span class="doc-meta">
-                    <template v-if="documentMeta(doc, documentFacts).length">
-                      <template v-for="(part, index) in documentMeta(doc, documentFacts)" :key="part.text">
-                        <span v-if="index" aria-hidden="true"> · </span><span :data-tone="part.tone">{{ part.text }}</span>
+              <div v-for="part in group.sections" :key="part.key || 'all'" class="doc-section">
+                <p v-if="part.label" class="type-head" :data-warn="part.warn || null">
+                  {{ sentenceCase(part.label) }}
+                  <span class="aw-figure">{{ part.items.length }}</span>
+                  <i v-if="part.byModel" class="aw-icon aw-icon-sparkles ai-mark" role="img" aria-label="Type assigned by AI" title="Type assigned by AI" />
+                </p>
+                <button
+                  v-for="doc in part.items"
+                  :key="doc.id"
+                  class="doc-row"
+                  :class="{ active: doc.id === selectedId }"
+                  :title="doc.source"
+                  @click="selectDocument(doc.id, 1)"
+                >
+                  <FileBadge :file="doc.file" />
+                  <span class="doc-identity">
+                    <span v-if="documentLabel(doc).reference" class="doc-name doc-ref">{{ documentLabel(doc).reference }}</span>
+                    <span v-else class="doc-name">{{ documentLabel(doc).name }}</span>
+                    <span v-if="rowMeta(doc, Boolean(part.label)).length" class="doc-meta">
+                      <template v-for="(item, index) in rowMeta(doc, Boolean(part.label))" :key="item.text">
+                        <span v-if="index" aria-hidden="true"> · </span><span :data-tone="item.tone">{{ item.text }}</span>
                       </template>
-                    </template>
-                    <template v-else-if="documentLabel(doc).reference">{{ documentLabel(doc).name }}</template>
+                    </span>
                   </span>
-                </span>
-                <i v-if="isReviewed(doc)" class="aw-icon aw-icon-check reviewed-mark" role="img" aria-label="Reviewed" title="Reviewed" />
-              </button>
+                  <span v-if="rowTone(doc)" class="dot" :data-tone="rowTone(doc)" role="img" :aria-label="rowStatus(doc)" :title="rowStatus(doc)" />
+                  <i v-if="isReviewed(doc)" class="aw-icon aw-icon-check reviewed-mark" role="img" aria-label="Reviewed" title="Reviewed" />
+                </button>
+              </div>
             </template>
-          </div>
+          </section>
           <button v-if="search.trim()" class="rail-deep-search" @click="runContentSearch()">
             <i class="aw-icon aw-icon-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
           </button>
@@ -1378,28 +1537,20 @@ onUnmounted(() => {
              and how it is being looked at. Review lives with the reading. -->
         <main v-if="selected" class="viewer-pane">
           <header class="viewer-head">
-            <Select
-              class="held-select"
-              :modelValue="selected.category"
-              :options="documentCategoryOptions"
-              optionLabel="label"
-              optionValue="value"
-              :disabled="classificationBusy"
-              placeholder="Not yet read"
-              size="small"
-              aria-label="What this engagement holds the document as"
-              v-tooltip.bottom="'Held as'"
-              @update:modelValue="updateClassification"
-            />
+            <!-- What the document is held as moved to the reading, beside the
+                 AI's classification it overrides. -->
+            <FileBadge :file="selected.file" />
             <h2 :title="selected.source">{{ selected.source }}</h2>
             <span class="grow" />
             <span v-if="showPageNav" class="page-nav">
               <Button icon="aw-icon aw-icon-chevron-left" text size="small" :disabled="currentPage <= 1" aria-label="Previous page" @click="currentPage--" /><span class="aw-figure">{{ currentPage }} / {{ selected.pages || previewPages.length || 1 }}</span><Button icon="aw-icon aw-icon-chevron-right" text size="small" :disabled="currentPage >= (selected.pages || previewPages.length || 1)" aria-label="Next page" @click="currentPage++" />
             </span>
             <div v-if="hasOriginalView || hasRecords || hasHighlights" class="source-toggle" role="group" aria-label="Preview mode">
-              <button v-if="hasHighlights" :class="{ active: showAnnotated }" @click="sourceView = 'annotated'">Annotated</button>
-              <button v-if="hasOriginalView || isImage" :class="{ active: !showFields && !showAnnotated && sourceView === 'original' }" @click="sourceView = 'original'">Original</button>
-              <button v-if="!isImage" :class="{ active: showTextView }" @click="sourceView = 'text'">Extracted text</button>
+              <!-- One choice of what to look at. Whether the AI's highlights are
+                   drawn on the page is the page's own Fields / Notes switch,
+                   so there is no separate Annotated and Original. -->
+              <button v-if="hasOriginalView || isImage" :class="{ active: pageView }" @click="showPage">Page</button>
+              <button v-if="!isImage" :class="{ active: showTextView }" @click="sourceView = 'text'">Text</button>
               <button v-if="hasRecords" :class="{ active: showFields }" @click="sourceView = 'fields'">Fields</button>
             </div>
             <Button
@@ -1471,7 +1622,7 @@ onUnmounted(() => {
               :page="currentPage"
               :page-count="highlights?.page_count || selected.pages || 1"
               :items="showAnnotated ? highlights?.items ?? [] : []"
-              :notes="showAnnotated ? highlights?.notes ?? [] : []"
+              :notes="showAnnotated ? pageNotes : []"
               :active-key="activeHighlightKey"
               :active-note-key="activeNoteKey"
               :cache-bust="selected.sha1"
@@ -1531,16 +1682,13 @@ onUnmounted(() => {
 
         <!-- What was read from it, and the review of that reading. -->
         <aside v-if="selected" class="reading-pane" aria-label="Reading">
-          <nav class="reading-tabs">
-            <button type="button" :class="{ on: readingTab === 'reading' }" @click="readingTab = 'reading'">Reading</button>
-            <button type="button" :class="{ on: readingTab === 'notes' }" @click="readingTab = 'notes'">
-              Audit notes<span v-if="auditObservations.length" class="tab-badge warn aw-figure">{{ auditObservations.length }}</span>
+          <!-- One reading, no tabs. The notes editor and the model log are
+               places reached from its menu, with a way back. -->
+          <nav v-if="readingTab !== 'reading'" class="reading-back">
+            <button type="button" @click="readingTab = 'reading'">
+              <i class="aw-icon aw-icon-chevron-left" aria-hidden="true" />Reading
             </button>
-            <button type="button" :class="{ on: readingTab === 'activity' }" @click="readingTab = 'activity'">
-              Activity<span v-if="activity.length" class="tab-badge aw-figure">{{ activity.length }}</span>
-            </button>
-            <span class="grow" />
-            <UiOverflowMenu v-if="readingTab === 'reading'" :items="readingActions" tooltip="Reading actions" />
+            <span class="reading-where">{{ readingTab === 'notes' ? 'Audit notes' : 'Model activity' }}</span>
           </nav>
 
           <!-- The two states that need a sentence. -->
@@ -1564,12 +1712,20 @@ onUnmounted(() => {
                     <i class="aw-icon" :class="readingSource?.edited ? 'aw-icon-user-pen' : selectedClassification.isModel ? 'aw-icon-sparkles' : 'aw-icon-user-pen'" aria-hidden="true" />
                     {{ readingSource?.edited ? 'Edited by auditor' : selectedClassification.isModel ? 'AI classified' : 'Classified' }}
                   </span>
-                  <strong class="ai-class-type">{{ selectedClassification.label }}</strong>
-                  <span v-if="selectedClassification.confidence" class="conf-pill" :data-level="selectedClassification.confidence">
-                    {{ sentenceCase(selectedClassification.confidence) }} confidence
-                  </span>
+                  <span class="grow" />
+                  <UiOverflowMenu :items="readingActions" tooltip="Reading actions" />
                 </div>
-                <p v-if="selectedClassification.rationale" class="ai-class-rationale">{{ selectedClassification.rationale }}</p>
+                <div class="ai-class-title">
+                  <strong class="ai-class-type">{{ selectedClassification.primary }}</strong>
+                  <span v-if="selectedClassification.secondary" class="ai-class-under">{{ selectedClassification.secondary }}</span>
+                </div>
+                <span v-if="selectedClassification.confidence" class="conf" :data-level="selectedClassification.confidence">
+                  <span class="conf-bars" aria-hidden="true">
+                    <i v-for="bar in 3" :key="bar" :class="{ on: bar <= selectedClassification.confidenceBars }" />
+                  </span>
+                  {{ sentenceCase(selectedClassification.confidence) }} confidence
+                </span>
+                <p v-if="selectedClassification.rationale" class="ai-class-rationale"><span class="why">Why:</span> {{ selectedClassification.rationale }}</p>
                 <div class="ai-class-meta">
                   <span v-if="readingSource?.meta" class="aw-type-meta">{{ readingSource.meta }}</span>
                   <template v-if="selectedVocabulary">
@@ -1602,6 +1758,32 @@ onUnmounted(() => {
                     </tr>
                   </tbody>
                 </table>
+                <!-- Where a person overrides the AI's call. -->
+                <div class="ai-class-actions">
+                  <Button
+                    v-if="isEvidence"
+                    label="Change type"
+                    size="small"
+                    severity="secondary"
+                    outlined
+                    @click="typeReviewOpen = true"
+                  />
+                  <label class="held-as">
+                    <span>Held as</span>
+                    <Select
+                      class="held-select"
+                      :modelValue="selected.category"
+                      :options="documentCategoryOptions"
+                      optionLabel="label"
+                      optionValue="value"
+                      :disabled="classificationBusy"
+                      placeholder="Not yet read"
+                      size="small"
+                      aria-label="What this engagement holds the document as"
+                      @update:modelValue="updateClassification"
+                    />
+                  </label>
+                </div>
               </section>
 
               <UiEmptyState
@@ -1614,12 +1796,17 @@ onUnmounted(() => {
                 <Button label="Analyse this document" icon="aw-icon aw-icon-sparkles" :loading="analysisBusy" @click="startAnalysis('analyze')" />
               </UiEmptyState>
               <template v-else>
-                <!-- AI Audit Observations surfaced right on the Reading view -->
-                <section v-if="auditObservations.length" class="observations-card">
+                <!-- A clean result is one quiet line, not a warning. -->
+                <p v-if="quietObservation" class="ai-quiet">
+                  <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
+                  <span>{{ quietObservation }}</span>
+                </p>
+                <!-- What the AI noticed that a person should weigh. -->
+                <section v-else-if="findings.length" class="observations-card">
                   <header class="observations-head">
                     <span class="observations-title">
                       <i class="aw-icon aw-icon-triangle-alert" aria-hidden="true" />
-                      <strong>AI spotted {{ plural(auditObservations.length, 'audit observation') }}</strong>
+                      <strong>AI noted {{ plural(findings.length, 'observation') }}</strong>
                     </span>
                     <button type="button" class="obs-link" @click="readingTab = 'notes'">Edit</button>
                   </header>
@@ -1637,12 +1824,12 @@ onUnmounted(() => {
                     </li>
                   </ol>
                   <button
-                    v-if="auditObservations.length > 3"
+                    v-if="findings.length > 3"
                     type="button"
                     class="obs-more"
                     @click="showAllObservations = !showAllObservations"
                   >
-                    {{ showAllObservations ? 'Show fewer' : `Show all ${auditObservations.length} observations` }}
+                    {{ showAllObservations ? 'Show fewer' : `Show all ${findings.length} observations` }}
                   </button>
                 </section>
 
@@ -1667,10 +1854,10 @@ onUnmounted(() => {
                 <!-- Structured extracted fields right beside the PDF -->
                 <section v-if="analysis.effective.records?.length" class="inline-fields-section">
                   <header class="inline-fields-head">
-                    <h4 class="aw-label">
-                      Extracted fields <span v-if="structuredFieldCount" class="aw-figure">({{ structuredFieldCount }})</span>
+                    <h4 class="fields-title">
+                      <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
+                      {{ plural(structuredFieldCount, 'field') }} read by AI
                     </h4>
-                    <span v-if="analysis.status.analysis_coverage_state === 'complete'" class="validated-pill">Validated</span>
                     <span class="grow" />
                     <button
                       type="button"
@@ -1680,6 +1867,7 @@ onUnmounted(() => {
                       Expand <i class="aw-icon aw-icon-arrow-right" aria-hidden="true" />
                     </button>
                   </header>
+                  <p v-if="fieldsContext" class="fields-context">{{ fieldsContext }}</p>
                   <StructuredEvidenceSheet
                     compact
                     :records="analysis.effective.records ?? []"
@@ -1777,37 +1965,54 @@ onUnmounted(() => {
 
           <!-- Human-in-the-loop review bar where the reading ends. -->
           <footer v-if="analysis?.effective" class="reading-foot">
-            <span class="queue-position">
-              <strong v-if="isReviewed(selected)" class="hitl-done">
-                <i class="aw-icon aw-icon-check" aria-hidden="true" /> Reviewed by auditor
-              </strong>
-              <strong v-else class="hitl-pending">Human review required</strong>
-              <span class="aw-type-meta">· {{ queuePosition }}</span>
-            </span>
-            <template v-if="editingReading">
-              <Button label="Cancel" size="small" text severity="secondary" @click="cancelReadingEdit" />
-              <Button label="Save edits" icon="aw-icon aw-icon-save" size="small" severity="secondary" outlined :loading="analysisBusy" @click="saveReadingEdit" />
-            </template>
-            <template v-else>
+            <!-- The hand-over, said plainly: the AI drafted this, and it is
+                 yours to accept. -->
+            <p class="foot-state" :data-reviewed="isReviewed(selected) || null">
+              <template v-if="isReviewed(selected)">
+                <i class="aw-icon aw-icon-check" aria-hidden="true" />
+                <span>Reviewed by you<template v-if="readingSource?.edited"> · edited</template></span>
+              </template>
+              <template v-else>
+                <i class="aw-icon aw-icon-sparkles" aria-hidden="true" />
+                <span>Drafted by AI<template v-if="readingSource?.edited">, edited by you</template> · <b>waiting for your review</b></span>
+              </template>
+            </p>
+            <div class="foot-row">
+              <span class="list-step">
+                <Button
+                  icon="aw-icon aw-icon-chevron-left"
+                  size="small"
+                  text
+                  severity="secondary"
+                  aria-label="Previous document"
+                  :disabled="!previousDoc"
+                  @click="previousDoc && selectDocument(previousDoc.id, 1)"
+                />
+                <span class="aw-figure">{{ listPosition }}</span>
+                <Button
+                  icon="aw-icon aw-icon-chevron-right"
+                  size="small"
+                  text
+                  severity="secondary"
+                  aria-label="Next document"
+                  :disabled="!followingDoc"
+                  @click="followingDoc && selectDocument(followingDoc.id, 1)"
+                />
+              </span>
+              <template v-if="editingReading">
+                <Button label="Cancel" size="small" text severity="secondary" @click="cancelReadingEdit" />
+                <Button label="Save edits" icon="aw-icon aw-icon-save" size="small" severity="secondary" outlined :loading="analysisBusy" @click="saveReadingEdit" />
+              </template>
               <Button
-                v-if="isEvidence"
-                label="Reclassify"
-                size="small"
-                severity="secondary"
-                outlined
-                @click="typeReviewOpen = true"
-              />
-              <Button
-                v-if="readingTab === 'reading' && !hasStructuredSummary"
-                label="Edit reading"
+                v-else-if="readingTab === 'reading' && !hasStructuredSummary"
+                label="Edit"
                 icon="aw-icon aw-icon-pencil"
                 size="small"
                 severity="secondary"
                 outlined
                 @click="editingReading = true"
               />
-            </template>
-            <span class="grow" />
+              <span class="grow" />
             <Button
               v-if="!isReviewed(selected)"
               :label="nextToReview ? 'Mark reviewed and next' : 'Mark reviewed'"
@@ -1827,6 +2032,7 @@ onUnmounted(() => {
               :disabled="!nextToReview"
               @click="nextToReview && selectDocument(nextToReview.id, 1)"
             />
+            </div>
           </footer>
         </aside>
         <UiEmptyState v-if="!selected" class="no-selection" icon="aw-icon aw-icon-file" title="Choose a document" description="Select a document from the list to read it beside what was read from it." compact />
@@ -1883,45 +2089,36 @@ onUnmounted(() => {
 .documents-tab { display: flex; flex-direction: column; gap: .75rem; height: 100%; min-height: 36rem; min-width: 0; }
 .grow { flex: 1; }
 
-.head-copy { display: flex; align-items: center; gap: .625rem; flex-wrap: wrap; min-width: 0; }
-.head-count { margin: 0; }
-.ai-corpus-pill {
-  display: inline-flex; align-items: center; gap: .35rem;
-  padding: .15rem .6rem;
-  border: 1px solid var(--aw-accent-line);
-  border-radius: var(--aw-radius-pill);
-  background: var(--aw-accent-soft);
-  color: var(--aw-accent);
-  font-size: var(--aw-text-xs);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.doc-filter-bar { flex-wrap: wrap; gap: .5rem .75rem; }
-.type-buckets { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; }
-.type-bucket {
-  display: inline-flex; align-items: center; gap: .35rem;
-  height: var(--aw-control-height-sm);
-  padding: 0 .6rem;
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-pill);
+/* --- the header: the AI's steps, then yours ------------------------------ */
+.pipeline {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  margin: 0 0 0 .5rem; padding: 3px; list-style: none;
+  border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
-  color: var(--aw-ink-soft);
-  font: inherit; font-size: var(--aw-text-xs); font-weight: 500;
-  cursor: pointer;
 }
-.type-bucket:hover { border-color: var(--aw-teal-line); color: var(--aw-ink-strong); }
-.type-bucket b { font-weight: 700; color: var(--aw-ink-strong); }
-.type-bucket[data-tone='ai'] b { color: var(--aw-accent); }
-.type-bucket[data-tone='warn'] { border-color: var(--aw-warn-line); background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
-.type-bucket[data-tone='warn'] b { color: var(--aw-warn); }
-.type-bucket.on {
-  border-color: var(--aw-teal);
-  background: var(--aw-teal-soft);
-  color: var(--aw-teal-strong);
-  font-weight: 600;
+.step {
+  display: inline-flex; align-items: center; gap: .35rem;
+  padding: .25rem .6rem; border-radius: calc(var(--aw-radius-control) - 2px);
+  color: var(--aw-ink-soft); font-size: var(--aw-text-xs); white-space: nowrap;
 }
-.type-bucket.on b { color: var(--aw-teal-strong); }
+.step[data-by='ai'] { background: color-mix(in srgb, var(--aw-accent-soft) 70%, transparent); }
+.step[data-by='ai'] > .aw-icon { color: var(--aw-accent); }
+.step[data-by='you'] > .aw-icon { color: var(--aw-teal); }
+.step b { color: var(--aw-ink-strong); font-weight: 600; }
+.step .muted { color: var(--aw-muted); }
+.step-sep { color: var(--aw-border-strong); font-size: var(--aw-text-xs); }
+.step-action {
+  display: inline-flex; align-items: center; gap: .25rem;
+  margin-left: .15rem; padding: .05rem .45rem;
+  border: 1px solid var(--aw-accent-line); border-radius: var(--aw-radius-pill);
+  background: var(--aw-panel); color: var(--aw-accent);
+  font: inherit; font-size: var(--aw-text-2xs); font-weight: 600; cursor: pointer;
+}
+.step-action:hover:not(:disabled) { border-color: var(--aw-accent); }
+.step-action:disabled { opacity: .6; cursor: default; }
+.step-action[data-tone='warn'] { border-color: var(--aw-warn-line); color: var(--aw-warn-ink); }
+.step-action[data-tone='warn']:hover { border-color: var(--aw-warn); }
+.step-action .aw-icon { font-size: var(--aw-text-2xs); }
 
 /* A running background job, not a problem to be solved. */
 .indexing-chip { display: inline-flex; align-items: center; gap: .4rem; min-height: var(--aw-control-height-sm); padding: .2rem .6rem; border: 1px solid var(--aw-info-line); border-radius: var(--aw-radius-pill); background: var(--aw-info-soft); color: var(--aw-info); font-size: var(--aw-text-xs); font-weight: 600; white-space: nowrap; }
@@ -1965,18 +2162,43 @@ onUnmounted(() => {
 }
 
 /* --- the list ------------------------------------------------------------- */
-.document-rail { min-height: 0; padding: .75rem; border-right: 1px solid var(--aw-border); background: var(--aw-canvas); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.document-rail { min-height: 0; padding: .75rem; border-right: 1px solid var(--aw-border); background: var(--aw-canvas); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .rail-tools { position: sticky; top: -.75rem; z-index: 1; display: flex; align-items: center; gap: .5rem; margin: -.75rem -.75rem .5rem; padding: .75rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-canvas); }
 .rail-tools :deep(.p-iconfield) { flex: 1; min-width: 0; }
 .rail-tools :deep(.p-inputtext) { width: 100%; }
+.rail-tools { flex-wrap: wrap; }
+.rail-filters { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; flex-basis: 100%; min-width: 0; }
+.rail-filters .aw-segmented { flex: none; }
+.rail-filters :deep(.refine-select.p-select) { flex: 1 1 6.5rem; min-width: 6.5rem; min-height: 1.75rem; }
+.rail-filters > .grow { display: none; }
+.rail-filters :deep(.refine-select .p-select-label) { padding: .125rem .25rem .125rem .5rem; font-size: var(--aw-text-xs); }
+.rail-groupby { display: flex; justify-content: flex-end; margin: -.125rem 0 .25rem; }
 .group-by { display: inline-flex; align-items: center; gap: .25rem; flex: none; padding: 0; border: 0; background: none; color: var(--aw-teal); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-transform: capitalize; cursor: pointer; }
 .rail-empty { padding: 2rem .5rem; text-align: center; color: var(--aw-muted); }
-.doc-group { display: grid; gap: .125rem; }
-.group-head { display: flex; align-items: center; gap: .4rem; width: 100%; margin: .5rem 0 .125rem; padding: .2rem .25rem; border: 0; border-radius: var(--aw-radius-control); background: transparent; color: var(--aw-muted); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-align: left; cursor: pointer; }
-.group-head:hover { color: var(--aw-teal); }
-.group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.group-count { margin-left: auto; font-weight: 400; }
-.doc-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .625rem; width: 100%; padding: .375rem .5rem; border: 1px solid transparent; border-radius: var(--aw-radius-control); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+
+/* Each category is its own band, so the rules and the transactions tested
+   against them never read as one list: a different icon, and a different
+   ground, so the difference survives without colour. */
+.doc-group { display: grid; gap: .125rem; margin-bottom: .625rem; padding: 0 .25rem .375rem; border-radius: var(--aw-radius-surface); }
+.doc-group[data-category='policy'] { background: color-mix(in srgb, var(--aw-info-soft) 75%, transparent); }
+.doc-group[data-category='minutes'], .doc-group[data-category='background'] { background: var(--aw-raised); }
+.doc-group[data-category='evidence'] { border: 1px solid var(--aw-border); background: var(--aw-panel); }
+.group-head { display: flex; align-items: center; gap: .6rem; width: 100%; margin: 0; padding: .55rem .4rem .4rem; border: 0; border-radius: var(--aw-radius-control); background: transparent; color: var(--aw-muted); font: inherit; font-size: var(--aw-text-xs); font-weight: 600; text-align: left; cursor: pointer; }
+.group-head:hover .group-name { color: var(--aw-teal-strong); }
+.cat-tile { display: inline-grid; place-items: center; flex: none; width: 1.75rem; height: 1.75rem; border-radius: var(--aw-radius-control); background: var(--aw-panel); color: var(--aw-ink-soft); font-size: var(--aw-text-sm); }
+.doc-group[data-category='policy'] .cat-tile { background: var(--aw-info-line); color: var(--aw-info); }
+.doc-group[data-category='evidence'] .cat-tile { background: var(--aw-ink-strong); color: var(--aw-panel); }
+.group-copy { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.group-name { overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-sm); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.group-count { color: var(--aw-muted); font-weight: 500; }
+.group-role { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.group-chev { flex: none; color: var(--aw-muted); }
+.doc-section { display: grid; gap: .125rem; }
+.type-head { display: flex; align-items: center; gap: .35rem; margin: .35rem 0 0; padding: 0 .5rem 0 2.75rem; color: var(--aw-ink-soft); font-size: var(--aw-text-2xs); font-weight: 600; }
+.type-head .aw-figure { color: var(--aw-muted); font-weight: 500; }
+.type-head .ai-mark { color: var(--aw-accent); font-size: var(--aw-text-2xs); }
+.type-head[data-warn] { color: var(--aw-warn-ink); }
+.doc-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: .55rem; width: 100%; padding: .3rem .5rem .3rem .6rem; border: 1px solid transparent; border-radius: var(--aw-radius-control); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .doc-row:hover { border-color: var(--aw-border); background: var(--aw-panel); }
 .doc-row.active { border-color: var(--aw-teal-line); background: var(--aw-teal-soft); }
 .dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--aw-border-strong); }
@@ -2009,10 +2231,6 @@ onUnmounted(() => {
 .viewer-head { display: flex; align-items: center; gap: .375rem; min-height: 3rem; padding: .375rem .75rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-panel); }
 .viewer-head > :deep(.p-button), .viewer-head > .icon-link, .viewer-head > .source-toggle, .viewer-head > .page-nav { flex: none; }
 .viewer-head h2 { flex: 0 1 auto; min-width: 3rem; margin: 0 0 0 .25rem; overflow: hidden; color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 600; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
-.held-select { flex: none; }
-.viewer-head :deep(.held-select.p-select) { min-height: 1.75rem; border-radius: var(--aw-radius-pill); }
-.viewer-head :deep(.held-select .p-select-label) { padding: .125rem .25rem .125rem .625rem; font-size: var(--aw-text-xs); font-weight: 600; }
-.viewer-head :deep(.held-select .p-select-dropdown) { width: 1.75rem; }
 .viewer-head :deep(.find-on) { color: var(--aw-teal); }
 .icon-link { display: grid; place-items: center; width: var(--aw-control-height); height: var(--aw-control-height); border-radius: var(--aw-radius-control); color: var(--aw-ink-soft); }
 .icon-link:hover { background: var(--aw-raised); color: var(--aw-ink-strong); }
@@ -2122,22 +2340,23 @@ onUnmounted(() => {
 
 /* --- the reading ---------------------------------------------------------- */
 .reading-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--aw-border); background: var(--aw-panel); }
-.reading-tabs { display: flex; align-items: flex-end; gap: 1rem; min-height: 3rem; padding: 0 .5rem 0 1rem; border-bottom: 1px solid var(--aw-border); }
-.reading-tabs > button { display: inline-flex; align-items: center; gap: .3rem; height: 2.5rem; padding: 0 .125rem; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--aw-ink-soft); font: inherit; font-size: var(--aw-text-sm); font-weight: 500; cursor: pointer; }
-.reading-tabs > button:hover { color: var(--aw-ink-strong); }
-.reading-tabs > button.on { border-bottom-color: var(--aw-teal); color: var(--aw-teal-strong); font-weight: 600; }
-.reading-tabs > :deep(*:last-child) { align-self: center; }
-.tab-badge { padding: 0 .35rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600; }
-.tab-badge.warn { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
+.reading-back { display: flex; align-items: center; gap: .5rem; min-height: 3rem; padding: 0 1rem 0 .5rem; border-bottom: 1px solid var(--aw-border); }
+.reading-back button {
+  display: inline-flex; align-items: center; gap: .2rem; padding: .25rem .35rem;
+  border: 0; border-radius: var(--aw-radius-control); background: none;
+  color: var(--aw-teal); font: inherit; font-size: var(--aw-text-sm); font-weight: 600; cursor: pointer;
+}
+.reading-back button:hover { background: var(--aw-teal-soft); }
+.reading-where { color: var(--aw-ink-strong); font-size: var(--aw-text-sm); font-weight: 600; }
 .reading-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: .75rem; padding: .875rem; overflow-y: auto; overscroll-behavior: contain; font-size: var(--aw-text-sm); line-height: 1.5; }
 
 /* AI classification & rationale card */
 .ai-class-card {
-  display: flex; flex-direction: column; gap: .45rem;
-  padding: .65rem .75rem;
+  display: flex; flex-direction: column; gap: .5rem;
+  padding: .7rem .8rem .8rem;
   border: 1px solid var(--aw-accent-line);
-  border-radius: var(--aw-radius-control);
-  background: var(--aw-accent-soft);
+  border-radius: var(--aw-radius-surface);
+  background: color-mix(in srgb, var(--aw-accent-soft) 55%, var(--aw-panel));
 }
 .ai-class-card.thin, .ai-class-card.other {
   border-color: var(--aw-warn-line);
@@ -2153,24 +2372,35 @@ onUnmounted(() => {
   font-size: var(--aw-text-2xs); font-weight: 700;
 }
 .ai-class-head .by[data-edited] { color: var(--aw-ink-soft); }
-.ai-class-type { color: var(--aw-ink-strong); font-size: var(--aw-text-sm); font-weight: 700; }
-.conf-pill {
-  margin-left: auto;
-  padding: .06rem .45rem;
-  border-radius: var(--aw-radius-pill);
-  background: var(--aw-panel);
-  color: var(--aw-muted);
-  font-size: var(--aw-text-2xs); font-weight: 700;
-}
-.conf-pill[data-level='high'] { background: var(--aw-ok-soft); color: var(--aw-ok); }
-.conf-pill[data-level='medium'] { background: var(--aw-warn-soft); color: var(--aw-warn-ink); }
-.conf-pill[data-level='low'] { background: var(--aw-danger-soft); color: var(--aw-danger); }
+.ai-class-head :deep(.p-button) { width: 1.75rem; height: 1.75rem; }
+/* The decision, large; what it sits under, small. */
+.ai-class-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: .15rem .5rem; }
+.ai-class-type { color: var(--aw-ink-strong); font-size: var(--aw-text-lg); font-weight: 600; line-height: 1.25; }
+.ai-class-under { color: var(--aw-ink-soft); font-size: var(--aw-text-xs); }
+/* Confidence as three bars and a word: the word is the meaning. */
+.conf { display: inline-flex; align-items: center; gap: .45rem; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); }
+.conf-bars { display: inline-flex; gap: 2px; }
+.conf-bars i { width: .8rem; height: 4px; border-radius: 2px; background: var(--aw-accent-line); }
+.conf-bars i.on { background: var(--aw-accent); }
+.conf[data-level='medium'], .conf[data-level='low'] { color: var(--aw-warn-ink); font-weight: 600; }
 .ai-class-rationale {
   margin: 0;
   color: var(--aw-ink-soft);
-  font-size: var(--aw-text-xs);
-  line-height: 1.45;
+  font-size: var(--aw-text-sm);
+  line-height: 1.5;
 }
+.ai-class-rationale .why { color: var(--aw-muted); }
+.ai-class-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; padding-top: .15rem; }
+.held-as { display: inline-flex; align-items: center; gap: .4rem; margin-left: auto; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.held-as :deep(.held-select.p-select) { min-height: 1.75rem; }
+.held-as :deep(.held-select .p-select-label) { padding: .125rem .25rem .125rem .5rem; font-size: var(--aw-text-xs); font-weight: 600; }
+
+/* A clean result: one quiet line, still marked as the AI's check. */
+.ai-quiet {
+  display: flex; align-items: flex-start; gap: .45rem; margin: 0; padding: 0 .125rem;
+  color: var(--aw-ink-soft); font-size: var(--aw-text-sm); line-height: 1.45;
+}
+.ai-quiet .aw-icon { flex: none; margin-top: .2rem; color: var(--aw-accent); font-size: var(--aw-text-xs); }
 .ai-class-meta {
   display: flex; align-items: center; flex-wrap: wrap; gap: .35rem;
   color: var(--aw-muted); font-size: var(--aw-text-xs);
@@ -2224,12 +2454,12 @@ onUnmounted(() => {
 .inline-fields-section { display: flex; flex-direction: column; gap: .5rem; }
 .inline-fields-head { display: flex; align-items: center; gap: .45rem; }
 .inline-fields-head h4 { margin: 0; }
-.validated-pill {
-  padding: .05rem .42rem;
-  border-radius: var(--aw-radius-pill);
-  background: var(--aw-ok-soft); color: var(--aw-ok);
-  font-size: var(--aw-text-2xs); font-weight: 700;
+.fields-title {
+  display: inline-flex; align-items: center; gap: .35rem; margin: 0;
+  color: var(--aw-ink-strong); font-size: var(--aw-text-sm); font-weight: 600;
 }
+.fields-title .aw-icon { color: var(--aw-accent); font-size: var(--aw-text-xs); }
+.fields-context { margin: -.15rem 0 .25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.4; }
 .expand-fields-link {
   display: inline-flex; align-items: center; gap: .25rem;
   padding: 0; border: 0; background: none;
@@ -2257,11 +2487,16 @@ onUnmounted(() => {
 .reading-editor { min-height: 14rem; }
 .notes-hint { margin: 0; }
 .notes-actions { display: flex; align-items: center; gap: .5rem; }
-.reading-foot { display: flex; align-items: center; flex-wrap: wrap; gap: .375rem .5rem; padding: .5rem .75rem .625rem; border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
-.reading-foot > :deep(.p-button) { flex: none; }
-.queue-position { flex-basis: 100%; display: flex; align-items: center; gap: .35rem; font-size: var(--aw-text-xs); white-space: nowrap; }
-.hitl-pending { color: var(--aw-warn-ink); font-weight: 700; }
-.hitl-done { display: inline-flex; align-items: center; gap: .25rem; color: var(--aw-ok); font-weight: 700; }
+.reading-foot { display: flex; flex-direction: column; gap: .4rem; padding: .5rem .75rem .625rem; border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
+.foot-state { display: flex; align-items: center; gap: .35rem; margin: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); }
+.foot-state .aw-icon { color: var(--aw-accent); font-size: var(--aw-text-xs); }
+.foot-state b { color: var(--aw-ink-strong); font-weight: 600; }
+.foot-state[data-reviewed] { color: var(--aw-ok); font-weight: 600; }
+.foot-state[data-reviewed] .aw-icon { color: var(--aw-ok); }
+.foot-row { display: flex; align-items: center; flex-wrap: wrap; gap: .375rem .5rem; }
+.foot-row > :deep(.p-button) { flex: none; }
+.list-step { display: inline-flex; align-items: center; gap: .1rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.list-step :deep(.p-button) { width: 1.75rem; height: 1.75rem; }
 
 /* The two states that need a sentence, in the fieldwork strip form. */
 .strip { display: flex; align-items: center; gap: .5rem; margin: 0; padding: .5rem 1rem; border-bottom: 1px solid var(--aw-border); font-size: var(--aw-text-sm); line-height: 1.4; }

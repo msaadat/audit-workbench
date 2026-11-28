@@ -42,9 +42,8 @@ describe('StructuredEvidenceSheet', () => {
     expect(wrapper.text()).toContain('OfficeSupply Co.')
     expect(wrapper.text()).toContain('PKR 2,000,000.00')
 
-    // Clicking a citation badge emits the matching citation object
-    await wrapper.find('button.cite').trigger('click')
-    expect(wrapper.emitted('cite')?.[0]?.[0]).toEqual(CITATIONS[0])
+    // Every field is on page 1, so the compact list repeats no page chip
+    expect(wrapper.find('button.cite').exists()).toBe(false)
 
     // Clicking a matching reference jumps to the related workspace document
     const link = wrapper.find('button.field-link')
@@ -58,5 +57,25 @@ describe('StructuredEvidenceSheet', () => {
     expect(wrapper.emitted('hover')?.[0]).toEqual(['0:vendor_invoice_number:0'])
     await firstCard.trigger('click')
     expect(wrapper.emitted('focus-field')?.[0]?.[0]).toMatchObject({ key: '0:vendor_invoice_number:0' })
+  })
+
+  it('keeps page chips where the fields span more than one page', async () => {
+    const wrapper = mount(StructuredEvidenceSheet, {
+      props: {
+        compact: true,
+        citations: [CITATIONS[0], { ...CITATIONS[3], page: 2 }],
+        records: [{
+          fields: [
+            { name: 'vendor_invoice_number', value: 'VINV001-202404', citation: 'c1' },
+            { name: 'invoice_amount', value: 'PKR 2,000,000.00', citation: 'c12' },
+          ],
+        }],
+      },
+    })
+
+    const chips = wrapper.findAll('button.cite')
+    expect(chips.map(chip => chip.text())).toEqual(['p.1', 'p.2'])
+    await chips[0].trigger('click')
+    expect(wrapper.emitted('cite')?.[0]?.[0]).toEqual(CITATIONS[0])
   })
 })
