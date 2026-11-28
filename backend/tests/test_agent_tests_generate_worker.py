@@ -2411,6 +2411,21 @@ def test_an_empty_response_naming_unsupported_is_told_to_answer_it():
     assert "'RCM-1:invoice_match'" in guidance
     assert result.proposal["unsupported"][0]["requirement_ref"] == "RCM-1:invoice_match"
 
+    # The first turn is offered the cycle alone; the repair that must answer
+    # the re-routed requirement is shown the tables and documents to do it.
+    first = json.loads(gateway.calls[0]["user"])
+    repair = json.loads(gateway.calls[-1]["user"])
+    assert first["allowed_test_variants"] == ["cycle_vouch"]
+    assert first["table_schemas"] == [] and first["planning_documents"] == []
+    assert set(repair["allowed_test_variants"]) == {
+        "data", "document_question", "cycle_vouch",
+    }
+    assert repair["table_schemas"] and repair["planning_documents"]
+    assert repair["instructions"].count("unsupported") == 1
+    assert "only these variants: data, document_question, cycle_vouch" in (
+        gateway.calls[-1]["system"]
+    )
+
 
 def test_unsupported_is_refused_where_no_rules_are_approved():
     """Re-routing then would close the linked-evidence path before the auditor

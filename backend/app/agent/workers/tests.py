@@ -178,9 +178,19 @@ _BASE_TABLE_RESERVE = 3
 
 
 def _relevant_table_schemas(
-    raw_tables: list[object], rcm_row: object, transaction_manifest: object
+    raw_tables: list[object],
+    rcm_row: object,
+    transaction_manifest: object,
+    *,
+    rerouting: bool = False,
 ) -> list[object]:
-    """Keep a bounded, deterministic set of schemas relevant to one RCM row."""
+    """Keep a bounded, deterministic set of schemas relevant to one RCM row.
+
+    ``rerouting`` keeps the tables for a row with no ``tabular_population``
+    attribute: a cycle requirement the turn has declared unsupported is
+    re-routed to the population where a table bears on it, and must be
+    answerable there in the same response.
+    """
     if not isinstance(rcm_row, Mapping):
         return [_plain_json(value) for value in raw_tables[:_SCHEMA_LIMIT]]
     attributes = [
@@ -189,7 +199,7 @@ def _relevant_table_schemas(
         if isinstance(item, Mapping)
     ]
     evidence_kinds = {str(item.get("evidence_kind") or "") for item in attributes}
-    if attributes and "tabular_population" not in evidence_kinds:
+    if attributes and "tabular_population" not in evidence_kinds and not rerouting:
         return []
     query_parts = [
         rcm_row.get(key) for key in ("process", "risk", "control", "criteria")
@@ -293,7 +303,30 @@ def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[ob
     return [_plain_json(item[2]) for item in ranked[:6]]
 
 
-def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
+def _rerouting(attempt: WorkerAttempt | None) -> bool:
+    """Whether the previous attempt declared a cycle requirement unsupported.
+
+    The first turn of a cycle row is offered the cycle alone: most cycle
+    requirements are answered by it, and the tables and documents would be
+    paid for on every one of them. A requirement the approved rules cannot
+    answer is re-routed to the population or the documents, and the repair
+    that must answer it there is then shown them. Without this a cycle-only
+    row whose one requirement no rule reaches had nothing it was allowed to
+    return, and failed every attempt (procurementsol RCM-F89EB5).
+    """
+
+    if attempt is None or not attempt.is_repair or not attempt.previous_response:
+        return False
+    try:
+        previous = _json_payload(attempt.previous_response)
+    except Exception:  # noqa: BLE001 - an unparseable draft re-routes nothing
+        return False
+    return isinstance(previous, Mapping) and bool(previous.get("unsupported"))
+
+
+def _generation_prompt_payload(
+    request: WorkerRequest, *, rerouting: bool = False
+) -> dict[str, object]:
     """Project the durable bundle into the small model-facing generation input.
 
     The context manifest and bundle retain source identity, representations, and
@@ -310,7 +343,7 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     )
     raw_tables = _source_items(request, GENERATE_TABLE_SOURCE_ID)
     table_schemas = _relevant_table_schemas(
-        raw_tables, rcm_row, transaction_evidence
+        raw_tables, rcm_row, transaction_evidence, rerouting=rerouting
     )
     raw_documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
     attributes = (
@@ -329,7 +362,7 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     )
     needs_documents = not attributes or bool(
         evidence_kinds & {"document_content", "manual_inspection", "inquiry", "mixed"}
-    ) or not cycle_available
+    ) or not cycle_available or rerouting
     documents = (
         _relevant_documents(raw_documents, rcm_row)
         if needs_documents
@@ -357,6 +390,12 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
             "transaction_evidence. Choose the requirements it answers and the "
             "rows it runs over; the rules themselves are already settled."
         )
+        if rerouting:
+            variant_instruction += (
+                " A requirement you list under unsupported is answered in this "
+                "same response by a data or document_question test, from the "
+                "table_schemas, evidence_types and planning_documents supplied."
+            )
     else:
         variant_instruction = (
             "Cycle Vouch is forbidden because transaction_evidence supplies no "
@@ -2191,7 +2230,7 @@ def run_generate_worker(
     attempt: WorkerAttempt,
 ) -> str:
     """Transform only the supplied bundle into one budgeted model request."""
-    payload = _generation_prompt_payload(request)
+    payload = _generation_prompt_payload(request, rerouting=_rerouting(attempt))
     user = json.dumps(
         payload,
         separators=(",", ":"),
