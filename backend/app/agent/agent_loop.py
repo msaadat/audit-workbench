@@ -392,6 +392,13 @@ class AgentLoop(BaseRunner):
             and str(item.get("role") or "") in ("user", "assistant")
         ]
         request = str((self.run.get("command") or {}).get("text") or "").strip()
+        attached_docs = [
+            str(value).strip()
+            for value in ((self.run.get("context") or {}).get("document_ids") or [])
+            if str(value).strip()
+        ]
+        if request and attached_docs:
+            request = f"{request}\n\nAttached document IDs: {', '.join(attached_docs)}"
         if request:
             self.conversation.append({"role": "user", "content": request})
         if not self.conversation:
@@ -577,7 +584,21 @@ class AgentLoop(BaseRunner):
         self.save()
         self.emit("checkpoint_request", {"interaction": interaction})
         response = self.runtime.wait_for_interaction(interaction)
-        answer = str(response.get("text") or response.get("option_id") or "").strip()
+        choice = str(response.get("choice") or response.get("option_id") or "").strip()
+        text = str(response.get("text") or "").strip()
+        if choice and not text:
+            matched = next(
+                (
+                    str(opt.get("label") or "").strip()
+                    for opt in interaction["options"]
+                    if str(opt.get("id") or "") == choice
+                    or str(opt.get("label") or "") == choice
+                ),
+                "",
+            )
+            answer = matched or choice
+        else:
+            answer = text or choice
         if not answer:
             raise WorkspaceError("A clarification response is required.")
         self._mark_messages_delivered()

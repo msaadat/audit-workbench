@@ -67,6 +67,7 @@ watch(() => [
   agent.state.run?.status,
   agent.state.run?.activity_revision ?? 0,
   agent.state.run?.graph_revision ?? 0,
+  agent.state.eventRevision ?? 0,
   agent.state.run?.warnings.length ?? 0,
   agent.state.run?.pending_commands?.length ?? 0,
   // Narration and the agent's own turns are the live content of the transcript,

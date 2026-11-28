@@ -50,6 +50,7 @@ const stage = computed(() => {
   const list = stages.value
   return list.find(item => item.status === 'running')?.title
     ?? agent.state.stream?.label
+    ?? working.value?.current_activity
     ?? 'Working'
 })
 

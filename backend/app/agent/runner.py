@@ -38,6 +38,7 @@ class RunHandle:
         self.workspace_id = workspace_id
         self.owner_id = owner_id
         self.run_id = run_id
+        self.parent_run_id: str | None = None
         self.thread: threading.Thread | None = None
         self.cancel = threading.Event()
         self.cancel_context: dict = {}
@@ -65,6 +66,7 @@ class RunHandle:
         """
 
         child = cls(parent.workspace_id, run_id, owner_id=parent.owner_id)
+        child.parent_run_id = parent.run_id
         child.thread = parent.thread
         child.cancel = parent.cancel
         child.cancel_context = parent.cancel_context
@@ -677,6 +679,38 @@ def steer(
         )
         return {"handled": "steering", "run": run}
 
+    # A child workflow running inline on a live steering loop's thread never
+    # drains a command queue on exit; deliver non-interview messages to the
+    # parent loop's inbox so steering reaches its next turn instead of vanishing.
+    if (
+        store.is_command_run(run)
+        and run.get("engine") != store.AGENT_ENGINE
+        and run["status"] not in store.TERMINAL_STATUSES
+        and not (run.get("interview") or {}).get("pending_question")
+        and run.get("parent_run_id")
+    ):
+        parent_id = str(run["parent_run_id"])
+        parent_handle = get_handle(parent_id)
+        if parent_handle is not None:
+            try:
+                parent = store.load_run(workspace, parent_id)
+            except WorkspaceError:
+                parent = None
+            if (
+                parent is not None
+                and parent.get("engine") == store.AGENT_ENGINE
+                and parent["status"] not in store.TERMINAL_STATUSES
+            ):
+                with parent_handle.lock:
+                    parent_handle.inbox.append(content)
+                store.append_event(
+                    workspace,
+                    parent_id,
+                    "message",
+                    {"message": {"role": "user", "content": content, "at": store.utcnow()}},
+                )
+                return {"handled": "steering", "run": parent}
+
     if store.is_command_run(run):
         command = {
             "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
@@ -859,6 +893,14 @@ def run_child_run(
     if child["id"] not in children:
         children.append(child["id"])
         store.save_run(workspace, parent_run)
+    # Announce the child immediately so any client streaming the parent run
+    # refreshes its transcript and tracks the child while it executes.
+    store.append_event(
+        workspace,
+        parent_run["id"],
+        "child_run",
+        {"run_id": child["id"], "status": "queued"},
+    )
     return _drive_child(workspace, child, parent_handle)
 
 
@@ -891,6 +933,16 @@ def _drive_child(
     try:
         _run_engine(workspace, child, handle)
     finally:
+        with handle.lock:
+            stranded, handle.command_queue = handle.command_queue[:], []
+        handle.command_queued.clear()
+        if stranded:
+            try:
+                latest_child = store.load_run(workspace, child["id"])
+                latest_child.setdefault("pending_commands", []).extend(stranded)
+                store.save_run(workspace, latest_child)
+            except Exception:
+                pass
         with _HANDLES_LOCK:
             if _HANDLES.get(child["id"]) is handle:
                 _HANDLES.pop(child["id"], None)

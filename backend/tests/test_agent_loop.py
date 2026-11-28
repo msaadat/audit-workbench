@@ -1418,3 +1418,134 @@ def test_the_account_of_a_child_run_says_where_its_instruction_went():
     account = loop_tools.run_account(child)
 
     assert account["instruction"] == "Your instructions were given to: Risk and control matrix."
+
+
+def test_child_run_events_are_forwarded_to_parent_loop_stream(monkeypatch, workspace_with_data):
+    script = LoopScript(
+        tool_turn("run_outcomes", {"requested_outcomes": [APM_OUTCOME]}),
+        finish_turn("Done."),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop(workspace_with_data)
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    assert run["status"] == "completed"
+    child_id = run["children"][0]
+    parent_events = store.read_events(workspace_with_data, run["id"])
+    assert any(
+        ev["type"] == "child_run"
+        and ev["data"].get("run_id") == child_id
+        and ev["data"].get("status") == "queued"
+        for ev in parent_events
+    )
+    forwarded = [
+        ev for ev in parent_events if ev["data"].get("child_run_id") == child_id
+    ]
+    assert forwarded, "expected child workflow events to be forwarded to parent loop stream"
+    assert any(ev["type"] == "run_status" for ev in forwarded)
+    assert any(ev["type"] == "stage_update" for ev in forwarded)
+
+
+def test_steering_during_a_live_child_workflow_reaches_parent_loop_inbox(
+    monkeypatch, workspace_with_data
+):
+    ws = workspace_with_data
+    delivered: list[str] = []
+    steer_result: dict = {}
+
+    script = LoopScript(
+        tool_turn("run_outcomes", {"requested_outcomes": [APM_OUTCOME]}),
+        finish_turn("Noted the steering."),
+    )
+
+    def apm(_user: str) -> dict:
+        parent = store.load_run(ws, steer_result["parent_id"])
+        child_id = parent["children"][0]
+        # Steer the child run directly (the exact run `_active_run` selects).
+        steer_result["response"] = runner.steer(
+            ws, child_id, "Also check duplicate vendor approvals."
+        )
+        return APM_DRAFT
+
+    class _Fake(FakeAgentLLM):
+        def __call__(self, messages, **kwargs):
+            if str(messages[0]["content"]).startswith("[agent:loop]"):
+                delivered.append(
+                    " | ".join(
+                        str(item.get("content") or "")
+                        for item in messages
+                        if item.get("role") == "user"
+                    )
+                )
+            return super().__call__(messages, **kwargs)
+
+    fake = _Fake({"agent:loop": script, "agent:apm": apm})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm, "agent_status", lambda: {"configured": True, "backend": "fake", "model": "fake"}
+    )
+
+    started = start_loop(ws)
+    steer_result["parent_id"] = started["id"]
+    run = wait_run(ws, started["id"], timeout=60)
+
+    assert run["status"] == "completed"
+    assert steer_result["response"]["handled"] == "steering"
+    assert steer_result["response"]["run"]["id"] == started["id"]
+    assert "duplicate vendor approvals" in delivered[-1]
+
+
+def test_ask_auditor_options_resolve_choice_id_to_option_label(monkeypatch, workspace_with_data):
+    ws = workspace_with_data
+    script = LoopScript(
+        tool_turn(
+            "ask_auditor",
+            {"question": "How should I proceed?", "options": ["Keep existing", "Redraft now"]},
+        ),
+        finish_turn("Proceeded as asked."),
+    )
+    configured(monkeypatch, script)
+
+    started = start_loop(ws)
+    # Wait until the pending clarification interaction appears, then answer by choice id.
+    import time
+    deadline = time.monotonic() + 15
+    interaction_id = None
+    while time.monotonic() < deadline:
+        current = store.load_run(ws, started["id"])
+        pending = next(
+            (item for item in current.get("interactions") or [] if item.get("status") == "pending"),
+            None,
+        )
+        if pending is not None:
+            interaction_id = pending["id"]
+            break
+        time.sleep(0.05)
+    assert interaction_id is not None
+    runner.resolve_interaction(ws, started["id"], interaction_id, {"choice": "1"})
+
+    run = wait_run(ws, started["id"], timeout=60)
+    assert run["status"] == "completed"
+    conversation = agent_loop.ConversationStore(ws, run["id"]).load()["messages"]
+    tool_reply = json.loads(
+        next(item for item in conversation if item["role"] == "tool")["content"]
+    )
+    assert tool_reply["answer"] == "Redraft now"
+
+
+def test_attached_document_ids_reach_the_loop_conversation(monkeypatch, workspace_with_data):
+    script = LoopScript(finish_turn("Reviewed attached docs."))
+    configured(monkeypatch, script)
+
+    started = start_loop(
+        workspace_with_data,
+        text="Assess what these documents change.",
+        context={"document_ids": ["DOC-1", "DOC-2"]},
+    )
+    run = wait_run(workspace_with_data, started["id"], timeout=60)
+
+    assert run["status"] == "completed"
+    conversation = agent_loop.ConversationStore(workspace_with_data, run["id"]).load()["messages"]
+    first_user = next(item for item in conversation if item["role"] == "user")["content"]
+    assert "DOC-1, DOC-2" in first_user

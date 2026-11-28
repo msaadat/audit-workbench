@@ -36,20 +36,24 @@ interface AgentState {
   panelAutoOpened: boolean
   connected: boolean
   starting: boolean
+  /** Incremented when the watched run (or a child run forwarded through its SSE stream) emits state events. */
+  eventRevision: number
+  /** True while a child workflow run is awaiting auditor approval or input. */
+  childAttention: boolean
   lastChange: (WorkspaceChange & { at: number }) | null
   /**
    * Live text from the model call in flight. Transient by design: it is never
    * part of the run record, is dropped when the call ends, and exists only so a
    * long generation shows movement instead of a frozen label.
    */
-  stream: { callId: string; stage: string; label: string; text: string } | null
+  stream: { runId: string; callId: string; stage: string; label: string; text: string } | null
   /**
    * Structured read of the same call — headings drafted so far, rows drafted
    * so far — for a response whose raw text (JSON, mostly) is not worth
    * showing a reader directly. Same lifecycle as `stream`: transient, cleared
    * the moment the call settles.
    */
-  progress: { callId: string; stage: string; items: AgentProgressItem[] } | null
+  progress: { runId: string; callId: string; stage: string; items: AgentProgressItem[] } | null
 }
 
 export interface AgentProgressItem {
@@ -187,6 +191,8 @@ function state(workspaceId: string): AgentState {
       panelAutoOpened: false,
       connected: false,
       starting: false,
+      eventRevision: 0,
+      childAttention: false,
       lastChange: null,
       stream: null,
       progress: null,
@@ -231,6 +237,7 @@ function disconnect(workspaceId: string) {
   sources.get(workspaceId)?.close()
   sources.delete(workspaceId)
   state(workspaceId).connected = false
+  state(workspaceId).childAttention = false
   state(workspaceId).stream = null
   state(workspaceId).progress = null
 }
@@ -251,10 +258,12 @@ function scheduleRefetch(workspaceId: string, runId: string) {
         )
         if (store.run?.id === runId || !store.run) {
           store.run = run
+          store.eventRevision += 1
           if (
             run.status === 'awaiting_approval' ||
             run.status === 'awaiting_input' ||
-            run.status === 'failed'
+            run.status === 'failed' ||
+            store.childAttention
           ) {
             showPanel(store)
           } else if (
@@ -315,25 +324,55 @@ function connect(workspaceId: string, runId: string) {
     'interaction_response_stored',
     'approval_response_stored',
     'evidence_available',
+    'child_run',
   ]) {
     source.addEventListener(type, refetch)
   }
+  // Track attention state on child runs forwarded through the parent loop's
+  // stream so Ask-first approvals and interactions surface immediately instead
+  // of stalling until a manual reload.
+  for (const type of ['approval_request', 'interaction_request', 'checkpoint_request']) {
+    source.addEventListener(type, (event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data)
+        if (payload?.data?.child_run_id) store.childAttention = true
+      } catch { /* ignore malformed frame */ }
+    })
+  }
+  for (const type of ['approval_resolved', 'interaction_resolved', 'checkpoint_resolved']) {
+    source.addEventListener(type, (event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data)
+        if (payload?.data?.child_run_id) store.childAttention = false
+      } catch { /* ignore malformed frame */ }
+    })
+  }
+  source.addEventListener('run_status', (event) => {
+    try {
+      const payload = JSON.parse((event as MessageEvent).data)
+      if (!payload?.data?.child_run_id) return
+      const childStatus = String(payload.data.status ?? '')
+      store.childAttention = ['awaiting_approval', 'awaiting_input', 'failed'].includes(childStatus)
+    } catch { /* ignore malformed frame */ }
+  })
   // Deliberately not in the list above: streamed text carries its own payload
   // and must never trigger a refetch of the run record, which is exactly the
   // cost this event exists to avoid.
   source.addEventListener('model_stream', (event) => {
     try {
       const payload = JSON.parse((event as MessageEvent).data)
-      const { call_id: callId, stage, label, text } = payload.data as {
+      const { call_id: callId, stage, label, text, child_run_id: childRunId } = payload.data as {
         call_id: string
         stage: string
         label: string
         text: string
+        child_run_id?: string
       }
       // Accumulate within one call only. A new call id starts a new tail, so
       // two calls of the same stage never run together into one block.
       const current = store.stream?.callId === callId ? store.stream.text : ''
       store.stream = {
+        runId: childRunId || runId,
         callId,
         stage,
         label,
@@ -349,12 +388,13 @@ function connect(workspaceId: string, runId: string) {
   source.addEventListener('model_progress', (event) => {
     try {
       const payload = JSON.parse((event as MessageEvent).data)
-      const { call_id: callId, stage, items } = payload.data as {
+      const { call_id: callId, stage, items, child_run_id: childRunId } = payload.data as {
         call_id: string
         stage: string
         items: AgentProgressItem[]
+        child_run_id?: string
       }
-      store.progress = { callId, stage, items }
+      store.progress = { runId: childRunId || runId, callId, stage, items }
     } catch {
       /* malformed frame — the next one replaces it */
     }

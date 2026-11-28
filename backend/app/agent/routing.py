@@ -647,15 +647,16 @@ def resolution_scope(
     # narrowing rather than reaching back into the record.
     instruction = str((run.get("context") or {}).get("instruction") or "").strip()
     command = run.get("command") or {}
-    if (
-        not instruction
-        and str(command.get("goal_template") or "") in REVISION_TEMPLATES
-        and not str(command.get("text") or "").strip().startswith("/")
-    ):
-        # A revision started from a registered command has no other place to
-        # carry what was asked: the auditor's own message is the instruction.
-        # A bare slash command carries none, and the revision says so.
-        instruction = str(command.get("text") or "").strip()
+    if not instruction and str(command.get("goal_template") or "") in REVISION_TEMPLATES:
+        raw_text = str(command.get("text") or "").strip()
+        if raw_text.startswith("/"):
+            from . import commands as command_registry
+
+            _, instruction = command_registry.parse_slash(raw_text)
+        else:
+            # A revision started from a registered command has no other place to
+            # carry what was asked: the auditor's own message is the instruction.
+            instruction = raw_text
     if instruction:
         scope["instruction"] = instruction
     # A change assessment a revision was asked to apply, by the basis it is

@@ -811,15 +811,20 @@ class CommandLaunchError(WorkspaceError):
 def auditor_instruction_of(user: Mapping) -> str:
     """The auditor's message as an instruction, or empty when it is not one.
 
-    Typed in the composer and not a bare slash command. Everything else that
-    reaches a launcher is a label for the command it starts.
+    Typed in the composer and not a bare slash command. Slash commands that
+    accept arguments (such as ``/revise rcm ...``) contribute their trailing
+    argument text as the instruction. Everything else that reaches a launcher
+    is a label for the command it starts.
     """
 
     if str(user.get("source") or "composer") != "composer":
         return ""
     text = str(user.get("content") or "").strip()
-    if not text or text.startswith("/"):
+    if not text:
         return ""
+    if text.startswith("/"):
+        _, argument = commands.parse_slash(text)
+        return argument
     # A message that is, whole, one of a command's registered phrases
     # ("Generate the audit report.") is the command, like a button: it asks
     # for nothing the command does not already do.
@@ -932,6 +937,12 @@ def _launch_command(
             if (identifier := str(name or "").strip())
         ]
     elif goal_template == "document_analysis":
+        # Inherit composer-attached documents when a composer message asks for
+        # document analysis without an explicit tab-button document list.
+        if not planning_context.get("document_ids") and str(user.get("source") or "composer") == "composer":
+            composer_docs = list((user.get("document_context") or {}).get("document_ids") or [])
+            if composer_docs:
+                planning_context["document_ids"] = composer_docs
         # The Documents tab names the documents it is showing; they travel as
         # refs, the same narrowing every document capability already reads.
         target_refs = [
@@ -985,7 +996,8 @@ def _launch_command(
         # than a queued command, and says so: "queued behind" would describe
         # the opposite of what happened.
         if response.get("handled") == "steering":
-            return {"kind": "steering_delivered", "run_id": active["id"]}
+            target_run_id = str((response.get("run") or {}).get("id") or active["id"])
+            return {"kind": "steering_delivered", "run_id": target_run_id}
         return _queued_outcome(workspace, active["id"], response, user)
 
     parent_id = None
@@ -1103,11 +1115,15 @@ def _commander(
         )
 
     def launch_loop(brief: str) -> dict:
+        attached_docs = list(
+            (user.get("document_context") or {}).get("document_ids") or []
+        )
         return _launch_command(
             workspace, chat_id, user, record, mode, text=brief,
             source=store.LOOP_COMMAND_SOURCE,
             run_context={
                 "conversation_seed": _conversation_seed(record, user),
+                **({"document_ids": attached_docs} if attached_docs else {}),
                 # Whether the whole workspace may be regenerated is decided
                 # here, from what the auditor actually wrote, and never by the
                 # loop reading its own brief: the brief is the coordinator's
@@ -1166,8 +1182,9 @@ def _process_message(
     requested_outcomes: list[str] | None = None, local_handler: str | None = None,
 ) -> dict:
     slash_command = None
+    slash_argument = ""
     if commands.is_slash(user["content"]):
-        slash_command = commands.match_slash(user["content"])
+        slash_command, slash_argument = commands.parse_slash(user["content"])
         if slash_command and slash_command.local_handler:
             local_handler = slash_command.local_handler
 
@@ -1199,7 +1216,10 @@ def _process_message(
     if requested == "auto" and commands.is_slash(user["content"]):
         # An explicit slash command is resolved outright, the same as a caller
         # passing `command` directly — it never reaches the model.
-        matched_command = slash_command or commands.match_slash(user["content"])
+        matched_command = slash_command
+        matched_argument = slash_argument
+        if matched_command is None:
+            matched_command, matched_argument = commands.parse_slash(user["content"])
         if matched_command is None:
             text = f"Unknown command. Available: {commands.help_text()}"
             outcome = {"kind": "clarification_requested"}
@@ -1210,6 +1230,8 @@ def _process_message(
             return outcome
         resolved = "act"
         goal_template = matched_command.goal_template
+        if matched_argument:
+            run_context = {**(run_context or {}), "instruction": matched_argument}
     elif requested == "auto":
         # A message that *is* a registered command phrase resolves without a
         # model turn. Anything else is left to the coordinator, which decides
@@ -1764,16 +1786,18 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         if run_id and outcome.get("kind") == "command_queued" and launched is not None:
             # The queue drained: this command became its own run. Show that run
             # in the message's place rather than a card still saying "queued".
+            launched_id = launched["run_id"]
+            launched_run = linked_runs.get(launched_id) or {}
             transcript.append(dict(
                 launched,
-                created_at=_run_card_anchor(linked_runs.get(run_id) or {}, item.get("created_at")),
+                created_at=_run_card_anchor(launched_run, item.get("created_at")),
                 ordinal=RUN_CARD_ORDINAL,
                 source_message_id=item["id"],
             ))
-            if launched.get("plan_line") and run_id not in plan_line_seen:
-                plan_line_seen.add(run_id)
+            if launched.get("plan_line") and launched_id not in plan_line_seen:
+                plan_line_seen.add(launched_id)
                 transcript.append(_plan_line_entry(
-                    run_id, launched["plan_line"], linked_runs.get(run_id) or {}, item.get("created_at"),
+                    launched_id, launched["plan_line"], launched_run, item.get("created_at"),
                 ))
         elif run_id and outcome.get("kind") == "command_queued":
             try:

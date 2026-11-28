@@ -1003,3 +1003,96 @@ def test_apm_regenerate_redrafts_a_current_memorandum_and_nothing_upstream(works
     stages = store.load_run(ws, run["id"])["workflow"]["stages"]
     assert [stage["capability"] for stage in stages] == ["planning.apm_ready"]
     assert stages[0]["scheduled_because"] == "forced"
+
+
+def test_revise_slash_commands_accept_trailing_instruction(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched: list[dict] = []
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.append({"command": dict(command), "context": dict(context or {})})
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    monkeypatch.setattr(
+        assistant_chats.assistant,
+        "ask",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("slash command must not call model")),
+    )
+    chat = assistant_chats.create_chat(ws)
+
+    rcm_res = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/revise rcm merge duplicate vendor risks",
+        "intent": "auto", "mode": "auto", "request_id": "req-slash-revise-rcm", "source": "composer",
+    })
+    assert rcm_res["outcome"]["kind"] == "run_started"
+    assert launched[0]["command"]["goal_template"] == "rcm_revision"
+    assert launched[0]["context"]["instruction"] == "merge duplicate vendor risks"
+
+    apm_res = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/revise apm tighten the materiality scope",
+        "intent": "auto", "mode": "auto", "request_id": "req-slash-revise-apm", "source": "composer",
+    })
+    assert apm_res["outcome"]["kind"] == "run_started"
+    assert launched[1]["command"]["goal_template"] == "apm_revision"
+    assert launched[1]["context"]["instruction"] == "tighten the materiality scope"
+
+    # Commands that do not accept arguments still reject trailing text.
+    bad_res = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/generate apm extra words",
+        "intent": "auto", "mode": "auto", "request_id": "req-slash-bad-args", "source": "composer",
+    })
+    assert bad_res["outcome"]["kind"] == "clarification_requested"
+
+
+def test_composer_document_context_forwards_to_document_analysis_and_loop(
+    workspace_with_data, monkeypatch
+):
+    from app import documents as document_service
+
+    ws = workspace_with_data
+    doc = document_service.add_document(
+        ws, "policy.txt", b"Approval limits require director sign-off above 5000."
+    )
+    configured(monkeypatch)
+    launched: list[dict] = []
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.append({"command": dict(command), "context": dict(context or {})})
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    assistant_chats.update_chat(ws, chat["id"], {"document_ids": [doc["id"]]})
+
+    res = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/analyze documents",
+        "intent": "auto", "mode": "auto", "request_id": "req-doc-ctx-slash", "source": "composer",
+    })
+    assert res["outcome"]["kind"] == "run_started"
+    assert launched[0]["context"]["document_ids"] == [doc["id"]]
+    assert launched[0]["command"]["target_refs"] == [f"document:{doc['id']}"]
+
+    # And when the coordinator hands off to the steering loop via take_action:
+    def fake_ask(_ws, _q, _docs, *, prior_turns=None, chat_id=None, commander=None):
+        started = commander.launch_loop("Assess whether policy.txt changes the RCM.")
+        return {"answer": "On it.", "steps": [], "artifacts": [], "citations": [], "started_run": started}
+
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fake_ask)
+    res_loop = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Does this policy change our RCM?",
+        "intent": "auto", "mode": "auto", "request_id": "req-doc-ctx-loop", "source": "composer",
+    })
+    assert res_loop["outcome"]["kind"] == "run_started"
+    assert launched[1]["context"]["document_ids"] == [doc["id"]]

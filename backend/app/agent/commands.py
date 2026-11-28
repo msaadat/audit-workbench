@@ -41,6 +41,9 @@ class Command:
     # whole-message, never as a substring, so a phrase can be an ordinary
     # imperative without swallowing questions that mention the same artifact.
     phrases: tuple[str, ...] = ()
+    # Whether the slash command accepts trailing instruction text after the
+    # command name (e.g. ``/revise rcm merge duplicate vendor risks``).
+    accepts_arguments: bool = False
 
 
 COMMANDS: dict[str, Command] = {
@@ -104,6 +107,7 @@ COMMANDS: dict[str, Command] = {
                 "says — rewrite, shorten or correct sections. The message itself "
                 "is the instruction."
             ),
+            accepts_arguments=True,
         ),
         Command(
             "revise_rcm", "rcm_revision", "Revise RCM",
@@ -113,6 +117,7 @@ COMMANDS: dict[str, Command] = {
                 "— shorten it, merge or retire rows, reword risks or controls. "
                 "The message itself is the instruction."
             ),
+            accepts_arguments=True,
         ),
         Command(
             "draft_findings", "finding_draft", "Draft findings",
@@ -228,15 +233,53 @@ for _command in COMMANDS.values():
             raise RuntimeError(f"Command phrase '{_phrase}' is claimed by two commands.")
 
 
+_ARGUMENT_PATTERNS: tuple[tuple[re.Pattern[str], Command], ...] = tuple(
+    (
+        re.compile(
+            r"^\s*"
+            + r"[\s_-]+".join(re.escape(part) for part in _normalize(alias).split())
+            + r"(?:\s+(?P<arg>.+))?\s*$",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        command,
+    )
+    for command in COMMANDS.values()
+    if command.accepts_arguments
+    for alias in sorted(command.slash, key=lambda item: len(_normalize(item)), reverse=True)
+)
+
+
 def is_slash(content: str) -> bool:
     return content.strip().startswith("/")
+
+
+def parse_slash(content: str) -> tuple[Command | None, str]:
+    """Resolve a slash-prefixed message into ``(command, argument_text)``.
+
+    Commands with ``accepts_arguments=True`` accept trailing instruction prose
+    after their name (for example ``/revise rcm merge rows 3 and 4``). Every
+    other slash command still matches the whole message only.
+    """
+
+    stripped = content.strip()
+    if not stripped.startswith("/"):
+        return None, ""
+    raw_body = stripped[1:]
+    exact = _SLASH_INDEX.get(_normalize(raw_body))
+    if exact is not None:
+        return exact, ""
+    for pattern, command in _ARGUMENT_PATTERNS:
+        match = pattern.match(raw_body)
+        if match is not None:
+            return command, str(match.group("arg") or "").strip()
+    return None, ""
 
 
 def match_slash(content: str) -> Command | None:
     """Resolve a slash-prefixed message to its command, or ``None`` if unknown."""
 
-    body = _normalize(content.strip()[1:])
-    return _SLASH_INDEX.get(body)
+    command, _argument = parse_slash(content)
+    return command
 
 
 def match_phrase(content: str) -> Command | None:
@@ -258,6 +301,12 @@ def list_for_ui() -> list[dict]:
     """The registry projected for the composer's slash-command autocomplete."""
 
     return [
-        {"id": command.id, "slash": command.slash[0], "label": command.label, "description": command.description}
+        {
+            "id": command.id,
+            "slash": command.slash[0],
+            "label": command.label,
+            "description": command.description,
+            "accepts_arguments": command.accepts_arguments,
+        }
         for command in COMMANDS.values()
     ]

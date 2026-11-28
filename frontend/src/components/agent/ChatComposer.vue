@@ -66,13 +66,21 @@ const placeholder = computed(() => {
   return 'Ask a question, or type / for commands…'
 })
 
-// Slash-command autocomplete. A command is the whole message, never an
-// argument tail, so the menu stays open for as long as the draft is a bare
-// "/query" and closes the moment it stops looking like one being typed.
+// Slash-command autocomplete. Commands that take an instruction (such as
+// `/revise rcm <instruction>`) close the menu once the command prefix is
+// followed by a space so the auditor can type their instruction freely.
 function normalize(text: string) { return text.trim().toLowerCase().replace(/[\s_-]+/g, ' ') }
 const commandQuery = computed(() => {
   if (!draft.value.startsWith('/') || draft.value.includes('\n')) return null
-  return normalize(draft.value.slice(1))
+  const raw = draft.value.slice(1)
+  const all = props.capabilities?.commands ?? []
+  const typingArgument = all.some(item => {
+    if (!item.accepts_arguments) return false
+    const prefix = normalize(item.slash)
+    return normalize(raw).startsWith(`${prefix} `) || (raw.endsWith(' ') && normalize(raw) === prefix)
+  })
+  if (typingArgument) return null
+  return normalize(raw)
 })
 const commandMatches = computed<AssistantSlashCommand[]>(() => {
   const query = commandQuery.value
@@ -96,7 +104,7 @@ watch(commandQuery, query => { if (query === null) menuOpen.value = false })
 
 async function selectCommand(item: AssistantSlashCommand) {
   suppressReopen = true
-  draft.value = `/${item.slash}`
+  draft.value = item.accepts_arguments ? `/${item.slash} ` : `/${item.slash}`
   menuOpen.value = false
   await nextTick()
   const el = textareaRef.value?.$el ?? textareaRef.value

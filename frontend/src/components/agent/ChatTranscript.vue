@@ -129,13 +129,17 @@ const working = computed<AssistantRunProjection | null>(() => {
   }
   return null
 })
-// Live model text belongs to the run this transcript is showing, and only while
-// that run is the one working — a stream left over from another run's call would
-// be attributed to this one.
+// Live model text belongs to the run this transcript is showing (or a child
+// run driven by the watched loop), and only while that run is the one working.
 const liveStream = computed(() => {
   const stream = agent.state.stream
   if (!stream || !working.value) return null
-  return agent.state.run?.id === working.value.run_id ? stream.text : null
+  const activeRunId = working.value.run_id
+  return (
+    stream.runId === activeRunId
+    || agent.state.run?.id === activeRunId
+    || Boolean(agent.state.run?.children?.includes(activeRunId))
+  ) ? stream.text : null
 })
 // Same attribution rule as liveStream: a structured progress read belongs to
 // the run this transcript is showing, and only while that run is the one
@@ -143,7 +147,12 @@ const liveStream = computed(() => {
 const liveProgress = computed(() => {
   const progress = agent.state.progress
   if (!progress || !working.value) return null
-  return agent.state.run?.id === working.value.run_id ? progress.items : null
+  const activeRunId = working.value.run_id
+  return (
+    progress.runId === activeRunId
+    || agent.state.run?.id === activeRunId
+    || Boolean(agent.state.run?.children?.includes(activeRunId))
+  ) ? progress.items : null
 })
 // What this engagement still needs is already computed deterministically for
 // the empty-chat starting state; the same facts are worth repeating once a
@@ -204,7 +213,7 @@ function messageTime(value: string) {
       <p>Ask me anything about this engagement, or tell me what to do next.</p>
       <section class="empty-section">
         <div v-if="chat.suggestions?.length" class="suggestions">
-          <button v-for="item in chat.suggestions" :key="item.capability" class="suggestion" @click="emit('suggestion', item)">
+          <button v-for="item in chat.suggestions" :key="item.capability || item.label" class="suggestion" @click="emit('suggestion', item)">
             <strong>{{ item.label }}</strong>
             <small v-if="item.reason">{{ item.reason }}</small>
           </button>
@@ -278,7 +287,7 @@ function messageTime(value: string) {
     <div v-else-if="canOfferNextStep" class="next-steps">
       <span class="next-steps-label">What's next?</span>
       <div v-if="chat.suggestions?.length" class="suggestions">
-        <button v-for="item in chat.suggestions" :key="item.capability" class="suggestion" @click="emit('suggestion', item)">
+        <button v-for="item in chat.suggestions" :key="item.capability || item.label" class="suggestion" @click="emit('suggestion', item)">
           <strong>{{ item.label }}</strong>
           <small v-if="item.reason">{{ item.reason }}</small>
         </button>

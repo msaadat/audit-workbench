@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import type { EngagementPhase, EngagementSection, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AssistantPanel from '../components/agent/AssistantPanel.vue'
 import ImportDialog from '../components/ImportDialog.vue'
@@ -43,6 +44,7 @@ const phases = ref<EngagementPhase[]>([])
 const sectionById = ref<Record<string, EngagementSection>>({})
 
 const agent = useAgentRun(props.id)
+const chats = useAssistantChat(props.id)
 
 /**
  * The panel's state, in the header, on every page.
@@ -54,6 +56,7 @@ const agent = useAgentRun(props.id)
 const assistantOpen = computed(() => agent.state.panelMode !== 'closed')
 const pageCovered = computed(() => agent.state.panelMode === 'expanded')
 const assistantAttention = computed(() => {
+  if (agent.state.childAttention) return true
   const status = agent.state.run?.status ?? ''
   return status === 'awaiting_approval' || status === 'awaiting_input' || status === 'failed'
 })
@@ -71,6 +74,7 @@ watch(() => route.query, (query: Record<string, unknown>) => {
   if (wanted === 'full') agent.setPanelMode('expanded')
   else if (wanted) agent.openPanel()
   else if (chat) agent.openPanel()
+  if (chat) void chats.init().then(() => chats.switchChat(chat)).catch(() => undefined)
   const rest = { ...route.query }
   delete rest.assistant
   delete rest.chat

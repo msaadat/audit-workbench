@@ -226,6 +226,14 @@ class DefaultRunRuntime:
     def emit(self, type_: str, data: dict[str, Any]) -> None:
         with self._state_lock:
             store.append_event(self.workspace, self.run["id"], type_, data)
+            parent_id = getattr(self.handle, "parent_run_id", None)
+            if parent_id and parent_id != self.run["id"]:
+                forwarded = (
+                    {**data, "child_run_id": self.run["id"]}
+                    if isinstance(data, dict)
+                    else {"child_run_id": self.run["id"], "payload": data}
+                )
+                store.append_event(self.workspace, parent_id, type_, forwarded)
 
     def persist_context_manifest(
         self,

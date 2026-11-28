@@ -41,7 +41,10 @@ const rowActions = [
   { label: 'Delete chat', icon: 'aw-icon aw-icon-trash-2', command: () => emit('remove') },
 ]
 
-const RUNNING = new Set(['running', 'awaiting_approval', 'awaiting_input', 'queued', 'starting'])
+const RUNNING = new Set([
+  'queued', 'interpreting', 'executing', 'awaiting_approval',
+  'awaiting_input', 'verifying', 'running', 'starting',
+])
 function tone(chat: AssistantChatSummary): 'info' | 'warn' | 'ok' | 'neutral' {
   if (chat.last_run_status && RUNNING.has(chat.last_run_status)) return 'info'
   if (chat.failed_run_count) return 'warn'

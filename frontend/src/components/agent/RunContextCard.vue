@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
+import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 import type { ContextRead } from '../../types'
 import { plural } from '../../format'
 
@@ -26,6 +27,11 @@ const props = withDefaults(defineProps<{
 
 const SHOWN = 4
 const expanded = ref(false)
+const nav = useWorkspaceNav()
+
+function openDocument(documentId: string) {
+  if (documentId) void nav.push('documents', { doc: documentId })
+}
 
 const CATEGORY_LABELS: Record<string, string> = {
   background: 'background', policy: 'policy', regulation: 'regulation',
@@ -83,7 +89,14 @@ function when(value: string): string {
     <p class="sentence aw-figure">{{ shape }}</p>
     <p v-if="context.sentence" class="reading">{{ context.sentence }}</p>
 
-    <button v-for="document in documents" :key="document.document_id" type="button" class="row">
+    <button
+      v-for="document in documents"
+      :key="document.document_id"
+      type="button"
+      class="row"
+      :title="`Open ${document.name}`"
+      @click="openDocument(document.document_id)"
+    >
       <i class="aw-icon aw-icon-file" aria-hidden="true" />
       <span class="name">{{ document.name }}</span>
       <span v-if="document.category" class="tag">{{ CATEGORY_LABELS[document.category] || document.category }}</span>
@@ -109,8 +122,9 @@ function when(value: string): string {
   padding: .3rem 0;
   border: 0; border-top: 1px solid var(--aw-border);
   background: none; color: var(--aw-ink); font: inherit; font-size: var(--aw-text-xs);
-  text-align: left; cursor: default;
+  text-align: left; cursor: pointer;
 }
+.row:hover { color: var(--aw-teal); }
 .row .aw-icon { color: var(--aw-teal); font-size: .7rem; }
 .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag { flex: none; color: var(--aw-muted); font-size: var(--aw-text-2xs); }

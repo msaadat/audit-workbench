@@ -34,9 +34,14 @@ const resolvedSummary = computed(() => {
   const response = props.interaction.response
   if (!response) return 'Resolved'
   if (typeof response.text === 'string' && response.text.trim()) return `Answered: ${response.text.trim()}`
-  if (typeof response.choice === 'string' && response.choice) {
-    const option = props.interaction.options?.find(item => (item.ref || item.id || item.value) === response.choice)
-    return `Selected: ${option?.title || option?.label || response.choice}`
+  const choiceValue = typeof response.choice === 'string' && response.choice
+    ? response.choice
+    : typeof response.option_id === 'string' && response.option_id
+      ? response.option_id
+      : ''
+  if (choiceValue) {
+    const option = props.interaction.options?.find(item => (item.ref || item.id || item.value) === choiceValue)
+    return `Selected: ${option?.title || option?.label || choiceValue}`
   }
   if (typeof response.decision === 'string') {
     return { approve: 'Approved', reject: 'Rejected', skip: 'Skipped', retry: 'Retried' }[response.decision] ?? `Decision: ${response.decision}`
@@ -46,6 +51,12 @@ const resolvedSummary = computed(() => {
 
 function choose(option: AgentInteraction['options'][number]) {
   selected.value = option.ref || option.id || option.value || ''
+}
+
+function answerClarificationOption(option: AgentInteraction['options'][number]) {
+  const optionId = option.ref || option.id || option.value || ''
+  const label = option.title || option.label || optionId
+  emit('respond', { choice: optionId, option_id: optionId, text: label })
 }
 
 function approve() {
@@ -78,7 +89,25 @@ function readablePreview(value: unknown) {
     <div v-if="resolved" class="resolution"><i class="aw-icon aw-icon-circle-check" /> {{ resolvedSummary }}</div>
 
     <template v-else-if="interaction.type === 'clarification'">
-      <Textarea v-model="text" rows="2" autoResize placeholder="Provide the missing detail…" />
+      <div v-if="interaction.options?.length" class="clarification-options">
+        <button
+          v-for="option in interaction.options"
+          :key="option.ref || option.id || option.value || option.label"
+          type="button"
+          class="choice"
+          :disabled="busy"
+          @click="answerClarificationOption(option)"
+        >
+          <strong>{{ option.title || option.label || option.id }}</strong>
+          <small v-if="option.reason">{{ option.reason }}</small>
+        </button>
+      </div>
+      <Textarea
+        v-model="text"
+        rows="2"
+        autoResize
+        :placeholder="interaction.options?.length ? 'Or write another answer…' : 'Provide the missing detail…'"
+      />
       <Button label="Continue" size="small" :loading="busy" :disabled="!text.trim()" @click="emit('respond', { text })" />
     </template>
 
@@ -139,7 +168,10 @@ function readablePreview(value: unknown) {
 .resolution i { color: var(--aw-teal); }
 .interaction p, .interaction small { margin: 0; }
 .interaction > small { color: var(--aw-muted); }
+.clarification-options { display: grid; gap: .4rem; }
 .choice { display: grid; text-align: left; gap: .15rem; padding: .55rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: white; cursor: pointer; }
+.choice:hover:not(:disabled) { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
+.choice:disabled { opacity: .6; cursor: default; }
 .choice.selected { border-color: var(--aw-teal); box-shadow: 0 0 0 1px var(--aw-teal); }
 .choice small { color: var(--aw-muted); }
 pre { max-height: 10rem; overflow: auto; margin: 0; padding: .5rem; border-radius: var(--aw-radius-control); background: rgba(255,255,255,.75); font-size: var(--aw-text-xs); white-space: pre-wrap; }

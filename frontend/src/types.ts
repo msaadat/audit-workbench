@@ -2970,6 +2970,7 @@ export interface AssistantSlashCommand {
   slash: string
   label: string
   description: string
+  accepts_arguments?: boolean
 }
 
 export interface AssistantCapabilities {
@@ -3309,6 +3310,7 @@ export interface AgentRun {
   id: string
   workspace_id: string
   parent_run_id: string | null
+  children?: string[]
   planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
