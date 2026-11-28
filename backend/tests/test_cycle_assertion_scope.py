@@ -154,6 +154,20 @@ def test_the_grid_marks_context_columns_and_names_the_scope(engagement):
     assert grid["assertion_counts"]["mismatch"] == 0
 
 
+
+def test_the_grid_counts_open_items_over_the_test_not_the_page(engagement):
+    ws, _ = engagement
+    row = _cycle(ws)
+    test = _build(ws, row, "dated")
+    doc_tests.save_test(ws, evaluate(ws, test, {"INV-2": "mismatch"}))
+    loaded = doc_tests.load_test(ws, test["id"])
+
+    grid = cycle_vouching.grid_projection(loaded, workspace=ws, limit=1)
+
+    assert len(grid["rows"]) == 1
+    assert grid["page"]["total"] == len(loaded["items"]) > 1
+    assert grid["pending_dispositions"] == len(loaded["items"])
+
 def test_a_requirement_answered_by_the_join_is_decided_by_the_linkage(engagement):
     ws, _ = engagement
     row = _cycle(ws)

@@ -646,14 +646,26 @@ async function runOutstandingTests() {
   await runTestIds(outstandingTestIds.value, runningOutstanding, 'Could not start the outstanding document tests')
 }
 async function generateFinding(regenerate: boolean) {
-  const test = currentTest.value
-  if (!test?.rcm_id || !test.status.startsWith('completed')) return
+  // A cycle test is reviewed in its grid with no test loaded — `currentTest`
+  // is null there — so the row and status come from its worklist entry.
+  // Reading only `currentTest` made the grid's button do nothing at all.
+  const cycle = currentTest.value ? null : selectedCycleEntry.value
+  const rcmId = currentTest.value?.rcm_id ?? cycle?.rcm_id ?? null
+  const status = currentTest.value?.status ?? cycle?.test_status ?? ''
+  if (!rcmId) {
+    toast.add({ severity: 'warn', summary: 'Not linked to an RCM row', detail: 'A finding is drafted against the RCM row a test covers.', life: 3600 })
+    return
+  }
+  if (!status.startsWith('completed')) {
+    toast.add({ severity: 'warn', summary: 'Run the test first', detail: 'A finding is drafted from a completed run.', life: 3600 })
+    return
+  }
   try {
     await assistantChat.createChat()
     await assistantChat.send(
-      `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${test.rcm_id}.`,
+      `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${rcmId}.`,
       'act', launchMode.value,
-      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: test.rcm_id } },
+      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: rcmId } },
     )
     agent.openPanel()
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
@@ -951,6 +963,7 @@ function onRulesetApproved(): void {
           @saveConclusion="saveCycleConclusion"
           @generateFinding="generateFinding"
           @openFinding="openFinding"
+          @openRules="rulesetReviewOpen = true"
         />
         <template v-if="currentTest && currentItem">
           <div class="detail-return">

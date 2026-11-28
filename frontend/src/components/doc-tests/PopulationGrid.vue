@@ -65,9 +65,10 @@ function saveDraft() {
 }
 const scopeDisclosure = computed(() => props.test.scope_limitation_disclosure ?? '')
 /** Every record has a call, so the test is ready to be concluded over. */
-const undispositioned = computed(() =>
-  (payload.value?.rows ?? []).filter(row => row.disposition === 'pending').length,
-)
+// Counted by the server over the whole population: the rows here are one page
+// of one outcome, and a count over them declared a test signed off with
+// records on other pages, or under other outcomes, still open.
+const undispositioned = computed(() => payload.value?.pending_dispositions ?? 0)
 
 const payload = ref<PopulationGrid | null>(null)
 const loading = ref(false)
@@ -175,7 +176,7 @@ const populationStory = computed(() => {
     humanTone = 'ok'
     humanBadge = 'Auditor signed off'
   } else if (s.assessed > 0 && pending > 0) {
-    humanTitle = `${pending} of ${p.page.total} record${p.page.total === 1 ? '' : 's'} awaiting call`
+    humanTitle = `${pending} of ${p.population_size} record${p.population_size === 1 ? '' : 's'} awaiting call`
     humanDetail = acceptedUndispositioned.value.length
       ? `Confirm ${acceptedUndispositioned.value.length} accepted record${acceptedUndispositioned.value.length === 1 ? '' : 's'} in one click, or inspect individual rows.`
       : 'Click any row below to inspect its verbatim citation and record your call.'
@@ -664,7 +665,7 @@ defineExpose({ loadGrid })
         <!-- A warning, not a block: concluding over open records is the
              auditor's call, and the backend records what was open. -->
         <p v-if="undispositioned" class="footer-warn">
-          {{ undispositioned }} of {{ payload.page.total }} records carry no call yet. You can
+          {{ undispositioned }} of {{ payload.population_size }} records carry no call yet. You can
           still conclude — it will be recorded as a scope limitation.
         </p>
       </div>

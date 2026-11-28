@@ -68,6 +68,7 @@ function makePayload(title: string, withRoles = true): CycleVouchGridPayload {
     assurance_scope: 'targeted_evidence_only',
     assurance_label: 'Targeted',
     tested_item_counts: {},
+    pending_dispositions: 0,
     assertion_counts: {
       match: 19, mismatch: 1, cannot_determine: 0, missing_evidence: 0,
       invalid_extraction: 0, ambiguous: 0, not_run: 0, total: 20,

@@ -65,8 +65,11 @@ watch(() => props.row.id, () => {
   draft.value = snapshot()
   editing.value = false
 })
+// A background refresh must not overwrite an edit in progress. Saving does
+// not leave edit mode here either: the parent closes the drawer once the save
+// lands, and a failed save leaves the auditor's edit where it was.
 watch(() => props.row.updated, () => {
-  draft.value = snapshot()
+  if (!editing.value) draft.value = snapshot()
 })
 
 const reviewed = computed({
@@ -108,7 +111,6 @@ function cancelEdit() {
 
 function saveEdit() {
   emit('save', { ...draft.value })
-  editing.value = false
 }
 </script>
 

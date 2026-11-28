@@ -48,9 +48,7 @@ const scopeDisclosure = computed(() => payload.value?.scope_limitation_disclosur
 /** Records still carrying no call. A warning beside the conclusion, never a
  *  block: concluding over open records is the auditor's to make, and the
  *  backend records what was open as a scope limitation. */
-const undispositioned = computed(() =>
-  (payload.value?.rows ?? []).filter(row => row.disposition_state === 'pending').length,
-)
+const undispositioned = computed(() => payload.value?.pending_dispositions ?? 0)
 
 const payload = ref<CycleVouchGridPayload | null>(null)
 // One draft for the conclusion and the scope limitation, saved together. The

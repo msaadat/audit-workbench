@@ -28,6 +28,40 @@ const ACTIVE_KEY = 'audit-workbench:assistant-chat:'
 const stores = new Map<string, ChatState>()
 const initializers = new Map<string, Promise<void>>()
 
+/**
+ * Bookkeeping that must not be reactive: the latest request issued per kind,
+ * so an older response never overwrites a newer one, and the messages a send
+ * has shown but the server has not yet returned, so a refresh that lands
+ * mid-send does not erase them.
+ */
+interface ChatTracking {
+  chatSeq: number
+  summarySeq: number
+  pending: Map<string, AssistantChatMessage[]>
+}
+const tracking = new Map<string, ChatTracking>()
+
+function track(workspaceId: string): ChatTracking {
+  let value = tracking.get(workspaceId)
+  if (!value) {
+    value = { chatSeq: 0, summarySeq: 0, pending: new Map() }
+    tracking.set(workspaceId, value)
+  }
+  return value
+}
+
+/**
+ * Forget every cached chat. Called on sign-out and on every 401: a store
+ * initialised under one account would otherwise be shown, as already loaded,
+ * to the next. Composables still holding an old store write into an object
+ * nothing reads any more, so an in-flight response cannot leak across.
+ */
+export function resetAssistantChatState(): void {
+  stores.clear()
+  initializers.clear()
+  tracking.clear()
+}
+
 function savedChatId(workspaceId: string): string | null {
   try { return window.localStorage.getItem(`${ACTIVE_KEY}${workspaceId}`) }
   catch { return null }
@@ -65,22 +99,42 @@ function requestId(): string {
 
 export function useAssistantChat(workspaceId: string) {
   const store = state(workspaceId)
+  const tracked = track(workspaceId)
   const agent = useAgentRun(workspaceId)
 
   async function loadSummaries() {
+    const seq = ++tracked.summarySeq
     const result = await api.get<{ chats: AssistantChatSummary[] }>(
       `/api/workspaces/${workspaceId}/assistant/chats?limit=100`,
     )
-    store.summaries = result.chats
+    if (seq === tracked.summarySeq) store.summaries = result.chats
     return result.chats
+  }
+
+  /**
+   * Install a chat the server returned, if it is still the one on screen.
+   * Messages a send has shown and the server has not yet recorded are carried
+   * over, so a refresh landing mid-send does not make them vanish.
+   */
+  function applyChat(chatId: string, chat: AssistantChat): boolean {
+    if (store.activeChatId !== chatId) return false
+    const pending = (tracked.pending.get(chatId) ?? [])
+      .filter(item => !chat.messages.some(message => message.request_id === item.request_id))
+    if (pending.length) chat.transcript = [...chat.transcript, ...pending]
+    store.chat = chat
+    store.capabilities = chat.capabilities
+    return true
+  }
+
+  async function fetchChat(chatId: string) {
+    const seq = ++tracked.chatSeq
+    const chat = await api.get<AssistantChat>(`/api/workspaces/${workspaceId}/assistant/chats/${chatId}`)
+    if (seq === tracked.chatSeq) applyChat(chatId, chat)
   }
 
   async function refresh() {
     if (!store.activeChatId) return
-    store.chat = await api.get<AssistantChat>(
-      `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}`,
-    )
-    store.capabilities = store.chat.capabilities
+    await fetchChat(store.activeChatId)
     await loadSummaries()
   }
 
@@ -95,6 +149,8 @@ export function useAssistantChat(workspaceId: string) {
 
   async function createChat() {
     const chat = await api.post<AssistantChat>(`/api/workspaces/${workspaceId}/assistant/chats`)
+    // A newer chat supersedes whatever load was in flight for the old one.
+    tracked.chatSeq++
     store.chat = chat
     store.capabilities = chat.capabilities
     store.activeChatId = chat.id
@@ -126,16 +182,23 @@ export function useAssistantChat(workspaceId: string) {
   }
 
   async function rename(title: string) {
-    if (!store.activeChatId) return
-    store.chat = await api.patch<AssistantChat>(
-      `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}`, { title },
+    const chatId = store.activeChatId
+    if (!chatId) return
+    const chat = await api.patch<AssistantChat>(
+      `/api/workspaces/${workspaceId}/assistant/chats/${chatId}`, { title },
     )
+    applyChat(chatId, chat)
     await loadSummaries()
   }
 
   async function deleteActive() {
-    if (!store.activeChatId) return
-    await api.del(`/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}`)
+    const chatId = store.activeChatId
+    if (!chatId) return
+    await api.del(`/api/workspaces/${workspaceId}/assistant/chats/${chatId}`)
+    if (store.activeChatId !== chatId) {
+      await loadSummaries()
+      return
+    }
     store.activeChatId = null
     store.chat = null
     remember(workspaceId, null)
@@ -146,11 +209,13 @@ export function useAssistantChat(workspaceId: string) {
 
   async function setDocuments(values: Array<AuditDocument | string>) {
     await init()
-    if (!store.activeChatId) return
+    const chatId = store.activeChatId
+    if (!chatId) return
     const document_ids = values.map(value => typeof value === 'string' ? value : value.id)
-    store.chat = await api.patch<AssistantChat>(
-      `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}`, { document_ids },
+    const chat = await api.patch<AssistantChat>(
+      `/api/workspaces/${workspaceId}/assistant/chats/${chatId}`, { document_ids },
     )
+    applyChat(chatId, chat)
   }
 
   async function addDocument(document: AuditDocument) {
@@ -177,6 +242,10 @@ export function useAssistantChat(workspaceId: string) {
     // hands the text back to the composer.
     if (!store.activeChatId) await createChat()
     if (store.busy) throw new ChatNotSentError('The previous message is still being sent. Send this one again in a moment.')
+    // The chat this message belongs to, fixed now: switching chats while it is
+    // in flight must neither post it to the new chat nor show its reply there.
+    const chatId = store.activeChatId
+    if (!chatId) throw new ChatNotSentError('No chat is open. Send this again in a moment.')
     store.busy = true
     store.error = null
     const rid = options.requestId ?? requestId()
@@ -189,9 +258,16 @@ export function useAssistantChat(workspaceId: string) {
       artifact_ids: [], outcome: null, error: null,
     }
     store.chat?.transcript.push(optimistic)
+    const pending = tracked.pending.get(chatId) ?? []
+    tracked.pending.set(chatId, [...pending, optimistic])
+    const settle = () => {
+      const left = (tracked.pending.get(chatId) ?? []).filter(item => item.id !== optimistic.id)
+      if (left.length) tracked.pending.set(chatId, left)
+      else tracked.pending.delete(chatId)
+    }
     try {
       const result = await api.post<{ outcome: Record<string, unknown>; chat: AssistantChat }>(
-        `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}/messages`,
+        `/api/workspaces/${workspaceId}/assistant/chats/${chatId}/messages`,
         {
           content, intent, mode, request_id: rid,
           command: options.command ?? null,
@@ -200,8 +276,9 @@ export function useAssistantChat(workspaceId: string) {
           run_kind: options.runKind ?? null, run_context: options.runContext ?? null,
         },
       )
-      store.chat = result.chat
-      store.capabilities = result.chat.capabilities
+      settle()
+      tracked.chatSeq++
+      applyChat(chatId, result.chat)
       const runId = String(result.outcome?.run_id ?? '')
       if (runId) await agent.openRun(runId).catch(() => undefined)
       const outcome = result.outcome as { kind?: string; message?: string } | undefined
@@ -212,11 +289,13 @@ export function useAssistantChat(workspaceId: string) {
       return result
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
+      settle()
+      if (store.activeChatId !== chatId) throw error
       store.error = detail
       await refresh().catch(() => undefined)
       // If the server never recorded the message (network/validation error),
       // keep a failed copy in the transcript so Retry stays available.
-      if (store.chat) {
+      if (store.chat && store.activeChatId === chatId) {
         store.chat.transcript = store.chat.transcript.filter(item => item.id !== optimistic.id)
         if (!store.chat.messages.some(item => item.request_id === rid)) {
           store.chat.transcript.push({ ...optimistic, state: 'failed', error: detail })
@@ -233,22 +312,24 @@ export function useAssistantChat(workspaceId: string) {
   }
 
   async function updateArtifact(artifact: AssistantArtifact, changes: Record<string, unknown>) {
-    if (!store.activeChatId) return
+    const chatId = store.activeChatId
+    if (!chatId) return
     const updated = await api.patch<AssistantArtifact>(
-      `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}/artifacts/${artifact.id}`,
+      `/api/workspaces/${workspaceId}/assistant/chats/${chatId}/artifacts/${artifact.id}`,
       { revision: artifact.revision, changes },
     )
-    if (store.chat) store.chat.artifacts[artifact.id] = updated
+    if (store.chat && store.activeChatId === chatId) store.chat.artifacts[artifact.id] = updated
     return updated
   }
 
   async function rerunArtifact(artifact: AssistantArtifact) {
-    if (!store.activeChatId) return
+    const chatId = store.activeChatId
+    if (!chatId) return
     const updated = await api.post<AssistantArtifact>(
-      `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}/artifacts/${artifact.id}/rerun`,
+      `/api/workspaces/${workspaceId}/assistant/chats/${chatId}/artifacts/${artifact.id}/rerun`,
       { revision: artifact.revision },
     )
-    if (store.chat) store.chat.artifacts[artifact.id] = updated
+    if (store.chat && store.activeChatId === chatId) store.chat.artifacts[artifact.id] = updated
     return updated
   }
 

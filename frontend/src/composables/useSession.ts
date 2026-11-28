@@ -2,6 +2,7 @@ import { computed, reactive } from 'vue'
 
 import { api, resetApiState, setUnauthorizedHandler } from '../api'
 import { resetAgentState } from './useAgentRun'
+import { resetAssistantChatState } from './useAssistantChat'
 
 export interface SessionUser {
   id: string
@@ -21,10 +22,17 @@ export interface SessionIdentity {
 interface SessionState {
   user: SessionUser | null
   singleUser: boolean
+  /** The server has answered who we are. False until it has, and false again
+   *  after a 401, so the next navigation asks rather than guessing. */
   ready: boolean
+  /** The last attempt to ask failed: the API could not be reached. */
+  unreachable: boolean
 }
 
-const state = reactive<SessionState>({ user: null, singleUser: true, ready: false })
+// `singleUser` starts false: until the server says so, nothing is known, and
+// assuming single-user while also having no user is the contradiction that
+// sent the router guard between `/` and `/login` for ever.
+const state = reactive<SessionState>({ user: null, singleUser: false, ready: false, unreachable: false })
 
 /**
  * Everything module-global that is keyed by workspace id or holds a live
@@ -35,6 +43,7 @@ const state = reactive<SessionState>({ user: null, singleUser: true, ready: fals
 function clearClientState(): void {
   resetApiState()
   resetAgentState()
+  resetAssistantChatState()
 }
 
 let bootstrap: Promise<SessionIdentity> | null = null
@@ -52,13 +61,14 @@ export function loadIdentity(force = false): Promise<SessionIdentity> {
         state.user = identity.user
         state.singleUser = identity.single_user
         state.ready = true
+        state.unreachable = false
         return identity
       })
       .catch((error) => {
-        // A failed bootstrap must not latch: the next navigation retries rather
-        // than stranding the app on a blank screen.
+        // A failed bootstrap must not latch: `ready` stays false, so the next
+        // navigation asks again rather than acting on an identity it never had.
         bootstrap = null
-        state.ready = true
+        state.unreachable = true
         throw error
       })
   }
@@ -101,11 +111,23 @@ export async function signOut(): Promise<void> {
   }
 }
 
+let sessionLostHandler: (() => void) | null = null
+
+/**
+ * Where to go once a session is lost. Registered by the router, which this
+ * module cannot import: the router's guard imports this one.
+ */
+export function setSessionLostHandler(handler: (() => void) | null): void {
+  sessionLostHandler = handler
+}
+
 /** Called by the API client when any request comes back 401. */
 function onSessionLost(): void {
   clearClientState()
   state.user = null
+  state.ready = false
   bootstrap = null
+  sessionLostHandler?.()
 }
 
 setUnauthorizedHandler(onSessionLost)

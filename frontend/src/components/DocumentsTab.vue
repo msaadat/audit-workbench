@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderAsync } from 'docx-preview'
+import { DOCX_RENDER_OPTIONS, sanitizeRenderedDocx } from './ui/docxSanitize'
 import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
@@ -733,6 +734,11 @@ async function selectDocument(id: string, page?: number) {
     activeDocxCitationId.value = null
     highlights.value = null
     docxAnnotations.value = null
+    // The previous document's reading must not stay editable under this one:
+    // a Save before the new reading arrives would file it against this id.
+    analysis.value = null
+    summaryDraft.value = ''
+    notesDraft.value = ''
   }
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
@@ -740,25 +746,41 @@ async function selectDocument(id: string, page?: number) {
   await loadDetail()
 }
 
+// Each load is numbered; a response belongs on screen only while it is the
+// latest load and its document is still the selected one. Without this, a
+// slow response for the previous document overwrote the drafts of the next,
+// and Save then filed one document's notes on the other's record.
+let detailSeq = 0
+let analysisSeq = 0
+
 async function loadDetail() {
-  if (!selectedId.value) return
+  const docId = selectedId.value
+  if (!docId) return
+  const seq = ++detailSeq
+  const current = () => seq === detailSeq && selectedId.value === docId
   try {
-    const data = await api.get<{ pages: DocumentPage[] }>(`/api/workspaces/${props.workspace.id}/documents/${selectedId.value}/preview`)
+    const data = await api.get<{ pages: DocumentPage[] }>(`/api/workspaces/${props.workspace.id}/documents/${docId}/preview`)
+    if (!current()) return
     previewPages.value = data.pages
     if (!data.pages.some(page => page.page === currentPage.value)) currentPage.value = data.pages[0]?.page || 1
-    activity.value = (await api.get<{ items: AIActivityEvent[] }>(`/api/workspaces/${props.workspace.id}/ai-activity?document_id=${selectedId.value}`)).items
+    const items = (await api.get<{ items: AIActivityEvent[] }>(`/api/workspaces/${props.workspace.id}/ai-activity?document_id=${docId}`)).items
+    if (!current()) return
+    activity.value = items
     await loadAnalysis()
   } catch (error) {
-    toast.add({ severity: 'error', summary: 'Document unavailable', detail: String(error), life: 5000 })
+    if (current()) toast.add({ severity: 'error', summary: 'Document unavailable', detail: String(error), life: 5000 })
   }
 }
 
 async function loadAnalysis() {
-  if (!selectedId.value) return
   const docId = selectedId.value
-  analysis.value = await api.get<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${docId}/analysis`)
-  summaryDraft.value = analysis.value.effective?.summary_markdown || ''
-  notesDraft.value = analysis.value.effective?.audit_notes_markdown || ''
+  if (!docId) return
+  const seq = ++analysisSeq
+  const loaded = await api.get<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${docId}/analysis`)
+  if (seq !== analysisSeq || selectedId.value !== docId) return
+  analysis.value = loaded
+  summaryDraft.value = loaded.effective?.summary_markdown || ''
+  notesDraft.value = loaded.effective?.audit_notes_markdown || ''
   await loadHighlights(docId)
 }
 
@@ -849,7 +871,7 @@ async function startAnalysis(action: AnalysisAction) {
 }
 
 async function saveAnalysis(reviewed = false): Promise<boolean> {
-  if (!selected.value || !analysis.value) return false
+  if (!selected.value || !analysis.value || analysis.value.document_id !== selected.value.id) return false
   analysisBusy.value = true
   try {
     const payload: Record<string, unknown> = {
@@ -1104,8 +1126,12 @@ async function renderDocx() {
     const response = await fetch(fileUrl.value)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.arrayBuffer()
-    if (token !== docxToken || !docxContainer.value) return
-    await renderAsync(data, docxContainer.value)
+    const container = docxContainer.value
+    if (token !== docxToken || !container) return
+    await renderAsync(data, container, undefined, DOCX_RENDER_OPTIONS)
+    // Whatever the token says now, this container holds what was just
+    // rendered, and nothing from a client's file stays in it unsanitized.
+    sanitizeRenderedDocx(container)
   } catch (error) {
     if (token === docxToken) {
       sourceView.value = 'text'
@@ -1376,7 +1402,7 @@ onUnmounted(() => {
               v-tooltip.bottom="'Find in this document'"
               @click="toggleFind"
             />
-            <a :href="fileUrl" target="_blank" class="icon-link" aria-label="Open the original file" v-tooltip.bottom="'Open the original file'">
+            <a :href="fileUrl" target="_blank" rel="noopener noreferrer" class="icon-link" aria-label="Open the original file" v-tooltip.bottom="'Open the original file'">
               <i class="aw-icon aw-icon-external-link" aria-hidden="true" />
             </a>
             <Button

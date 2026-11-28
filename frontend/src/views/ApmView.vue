@@ -190,8 +190,9 @@ const unsubscribe = agent.onWorkspaceInvalidated(() => {
 })
 onUnmounted(unsubscribe)
 
-async function save(showToast = true) {
-  if (!data.value) return
+/** True once the server holds the memorandum on screen. */
+async function save(showToast = true): Promise<boolean> {
+  if (!data.value) return false
   saving.value = true
   try {
     data.value.planning = await api.patch(`/api/workspaces/${props.workspace.id}/planning`, {
@@ -199,12 +200,15 @@ async function save(showToast = true) {
     })
     emit('changed')
     if (showToast) toast.add({ severity: 'success', summary: 'Memorandum saved', life: 1800 })
-  } catch (error) { fail('Could not save the memorandum', error) }
-  finally { saving.value = false }
+    return true
+  } catch (error) {
+    fail('Could not save the memorandum', error)
+    return false
+  } finally { saving.value = false }
 }
+/** Leave the editor only once the edit is saved: a failed save keeps it open. */
 async function doneEditing() {
-  editing.value = false
-  await save()
+  if (await save()) editing.value = false
 }
 
 /**

@@ -164,8 +164,9 @@ const unsubscribe = agent.onWorkspaceInvalidated(() => {
 })
 onUnmounted(unsubscribe)
 
-async function savePlanning() {
-  if (!data.value) return
+/** True once the server has the planning context; false says nothing may follow. */
+async function savePlanning(): Promise<boolean> {
+  if (!data.value) return false
   saving.value = true
   try {
     data.value.planning = await api.patch(`/api/workspaces/${props.workspace.id}/planning`, {
@@ -174,12 +175,17 @@ async function savePlanning() {
     })
     emit('changed')
     toast.add({ severity: 'success', summary: 'Planning saved', life: 1800 })
-  } catch (error) { fail('Could not save planning', error) }
-  finally { saving.value = false }
+    return true
+  } catch (error) {
+    fail('Could not save planning', error)
+    return false
+  } finally { saving.value = false }
 }
 async function generate() {
   try {
-    await savePlanning()
+    // Planning from context the server never received would plan from the
+    // old context while the screen showed the new.
+    if (!(await savePlanning())) return
     await assistantChat.createChat()
     await assistantChat.send(
       'Update the planning context and APM, then create or reconcile the RCM and the Document and Data Tests that cover it. Do not create a separate audit program.',
@@ -201,9 +207,16 @@ async function addRcm() {
     await reload(); openRcm(row); emit('changed')
   } catch (error) { fail('Could not add the risk', error) }
 }
-async function updateRcm(id: string, changes: Partial<RcmRow>) {
-  try { await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, changes); emit('changed') }
-  catch (error) { fail('Could not update the risk', error) }
+/** True once the row is saved. A caller announcing success must check it. */
+async function updateRcm(id: string, changes: Partial<RcmRow>): Promise<boolean> {
+  try {
+    await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, changes)
+    emit('changed')
+    return true
+  } catch (error) {
+    fail('Could not update the risk', error)
+    return false
+  }
 }
 async function exportRcm() {
   rcmExporting.value = true
@@ -277,10 +290,13 @@ async function saveRcmRow(changes: Partial<RcmRow>) {
   if (!id) return
   saving.value = true
   try {
-    await updateRcm(id, changes)
+    // A failed save keeps the drawer open on the edit, so nothing is lost.
+    if (!(await updateRcm(id, changes))) return
     await reload()
-    detailOpen.value = false
+    closeRcm()
     toast.add({ severity: 'success', summary: 'RCM row saved', life: 1800 })
+  } catch (error) {
+    fail('Saved, but could not reload the matrix', error)
   } finally { saving.value = false }
 }
 /** One-click auditor sign-off from the read-first row drawer. */
@@ -289,9 +305,11 @@ async function approveRcmRow() {
   if (!id) return
   saving.value = true
   try {
-    await updateRcm(id, { review_status: 'reviewed' })
+    if (!(await updateRcm(id, { review_status: 'reviewed' }))) return
     await reload()
     toast.add({ severity: 'success', summary: 'Row signed off by auditor', life: 2200 })
+  } catch (error) {
+    fail('Signed off, but could not reload the matrix', error)
   } finally { saving.value = false }
 }
 /** The drawer asks for removal; the prompt is the one the row's own page asks. */

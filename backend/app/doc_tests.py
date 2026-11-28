@@ -2994,6 +2994,12 @@ def population_grid(
                 ),
             }
         )
+    # Over the whole population, before any outcome filter or page: whether
+    # every record has a call is a property of the test, and a count over the
+    # rows on screen let the grid declare a test signed off with records on
+    # other pages still open.
+    population_size = len(rows)
+    pending_dispositions = sum(1 for row in rows if row["disposition"] == "pending")
     if outcome:
         rows = [row for row in rows if row["outcome"] == outcome]
     rows.sort(
@@ -3026,6 +3032,8 @@ def population_grid(
         "summary": summary,
         "assurance_scope": summary["assurance_scope"],
         "rows": rows[offset : offset + limit],
+        "population_size": population_size,
+        "pending_dispositions": pending_dispositions,
         "page": {"offset": offset, "limit": limit, "total": total},
         "truncated": offset + len(rows[offset : offset + limit]) < total,
     }

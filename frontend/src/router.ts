@@ -7,7 +7,7 @@ import AuditFileView from './views/AuditFileView.vue'
 import RcmRowView from './views/RcmRowView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import DebugView from './views/DebugView.vue'
-import { loadIdentity, useSession } from './composables/useSession'
+import { loadIdentity, setSessionLostHandler, useSession } from './composables/useSession'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -78,7 +78,10 @@ router.beforeEach(async to => {
     try {
       await loadIdentity()
     } catch {
-      // Unreachable API: fall through to the login screen rather than hanging.
+      // Unreachable API: who we are is unknown, so decide nothing. Redirecting
+      // either way on a guess is what looped; the page renders, its own
+      // requests report the outage, and the next navigation asks again.
+      return true
     }
   }
   // Already signed in, or nothing to sign in to: there is no login to show.
@@ -89,6 +92,15 @@ router.beforeEach(async to => {
     return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } }
   }
   return true
+})
+
+// A 401 mid-session: send the person to sign in, carrying where they were. The
+// guard asks the server again on the way, so a single-user server that never
+// needed a login sends them straight back.
+setSessionLostHandler(() => {
+  const current = router.currentRoute.value
+  if (current.meta.anonymous) return
+  void router.replace({ name: 'login', query: current.fullPath === '/' ? {} : { redirect: current.fullPath } })
 })
 
 export default router

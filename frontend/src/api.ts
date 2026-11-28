@@ -42,14 +42,18 @@ function mutationHeaders(url: string, json = true): Record<string, string> {
   return headers
 }
 
-async function handle<T>(url: string, response: Response): Promise<T> {
-  rememberRevision(url, response)
+function noteUnauthorized(url: string, response: Response): void {
   if (response.status === 401 && !url.startsWith('/api/auth/')) {
     // The session expired or was revoked. Let the session composable tear down
     // client state and route to the login screen before anything renders the
     // error as an ordinary failure.
     onUnauthorized?.()
   }
+}
+
+async function handle<T>(url: string, response: Response): Promise<T> {
+  rememberRevision(url, response)
+  noteUnauthorized(url, response)
   if (!response.ok) {
     let detail = `Request failed (${response.status})`
     let code: string | undefined
@@ -139,6 +143,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body ?? {}),
     })
+    noteUnauthorized(url, response)
     if (!response.ok) {
       let detail = `Export failed (${response.status})`
       try {
@@ -159,6 +164,7 @@ export const api = {
   /** GET that streams back a file and triggers a browser download. */
   async downloadGet(url: string, filename: string): Promise<void> {
     const response = await fetch(url, { credentials: 'include' })
+    noteUnauthorized(url, response)
     if (!response.ok) {
       let detail = `Export failed (${response.status})`
       try {

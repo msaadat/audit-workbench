@@ -526,6 +526,26 @@ def test_the_grid_can_be_filtered_to_one_outcome(ws):
     assert {row["outcome"] for row in unrun["rows"]} == {"not_run"}
 
 
+
+def test_the_grid_counts_open_records_over_the_population_not_the_page(ws):
+    # The sign-off banner reads this count. Counted over the rows on screen,
+    # one page — or one outcome — with every call made read as a test fully
+    # ruled while records elsewhere still carried none.
+    test = _test(ws)
+    item_id = test["items"][0]["id"]
+    current = workspaces.load_workspace(ws.id)
+    loaded = doc_tests.load_test(current, test["id"])
+
+    page = doc_tests.population_grid(current, loaded, item_id, limit=1)
+    filtered = doc_tests.population_grid(current, loaded, item_id, outcome="exception")
+
+    assert len(page["rows"]) == 1
+    assert page["population_size"] == 4
+    assert page["pending_dispositions"] == 4
+    assert filtered["rows"] == []
+    assert filtered["population_size"] == 4
+    assert filtered["pending_dispositions"] == 4
+
 # -------------------------------------------------------------------- sample
 def test_a_sample_states_that_it_is_one(ws):
     test = _test(ws, selection={"mode": "sample", "method": "interval", "size": 2})

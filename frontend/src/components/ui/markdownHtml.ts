@@ -10,6 +10,7 @@ import {
   listForm, paragraphForm, tableShape, topBlocks,
 } from './markdownForms'
 import type { Citation, DocumentOptions, LabelledPair, LedItem } from './markdownForms'
+import { safeHref } from './safeHref'
 
 /**
  * One Markdown document, rendered to HTML by the parser the editor uses.
@@ -38,16 +39,6 @@ function escapeHtml(text: string): string {
   return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 }
 
-/**
- * The links this app will emit: a workspace route, a tab switch, or an
- * explicit web address. Anything else — `javascript:`, `data:`, a bare scheme
- * we have no reason to follow — renders as its own text, so the words survive
- * and the navigation does not.
- */
-function safeHref(value: string): string | null {
-  const href = value.trim()
-  return href.startsWith('?tab=') || href.startsWith('/') || href.startsWith('https://') || href.startsWith('http://') ? href : null
-}
 
 /**
  * Milkdown writes an empty paragraph out as a literal `<br />` and strips it

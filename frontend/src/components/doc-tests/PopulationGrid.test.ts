@@ -79,6 +79,8 @@ function payload(overrides: Partial<PopulationGridPayload> = {}): PopulationGrid
         disposition_note: '',
       },
     ],
+    population_size: 3,
+    pending_dispositions: 2,
     page: { offset: 0, limit: 50, total: 3 },
     truncated: false,
     ...overrides,

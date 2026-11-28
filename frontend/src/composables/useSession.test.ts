@@ -101,3 +101,47 @@ describe('sign-out teardown', () => {
     expect(session.state.user).toBeNull()
   })
 })
+
+describe('learning who we are', () => {
+  beforeEach(() => { vi.resetModules() })
+
+  it('does not latch an identity it never received', async () => {
+    // A failed first ask used to set `ready` while `singleUser` kept its
+    // default of true and `user` stayed null — the guard then sent `/` to
+    // `/login` and `/login` back to `/` without end.
+    const { loadIdentity, useSession } = await import('./useSession')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')))
+
+    await expect(loadIdentity()).rejects.toThrow('connection refused')
+    const { state } = useSession()
+    expect(state.ready).toBe(false)
+    expect(state.unreachable).toBe(true)
+    expect(state.singleUser).toBe(false)
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      jsonResponse({ user: null, auth_mode: 'single_user', single_user: true }),
+    ))
+    await loadIdentity()
+    expect(state.ready).toBe(true)
+    expect(state.unreachable).toBe(false)
+    expect(state.singleUser).toBe(true)
+  })
+
+  it('hands a 401 to the registered handler, so the session lost goes to sign-in', async () => {
+    const { api } = await import('../api')
+    const { setSessionLostHandler, useSession } = await import('./useSession')
+    const lost = vi.fn()
+    setSessionLostHandler(lost)
+    const session = useSession()
+    session.state.ready = true
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ detail: 'Sign in' }, { status: 401 })))
+    await expect(api.get('/api/workspaces')).rejects.toThrow()
+    expect(lost).toHaveBeenCalledTimes(1)
+    // The next navigation asks the server again rather than trusting the old answer.
+    expect(session.state.ready).toBe(false)
+
+    await expect(api.downloadGet('/api/workspaces/ws_1/rcm/export', 'rcm.xlsx')).rejects.toThrow()
+    expect(lost).toHaveBeenCalledTimes(2)
+  })
+})

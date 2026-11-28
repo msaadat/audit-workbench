@@ -1377,6 +1377,10 @@ def grid_projection(
         "assurance_label": _assurance_label(scope),
         "tested_item_counts": dict(rollup["item_counts"]),
         "assertion_counts": dict(rollup["assertion_counts"]),
+        # Over every item, not the page: the grid's sign-off banner reads this,
+        # and a count of the rows on screen called a test fully ruled with
+        # records on later pages still carrying no call.
+        "pending_dispositions": int(rollup["pending_dispositions"]),
         "columns": columns,
         "rows": rows,
         # Advisory, not blocking.  Refusing the whole grid over this withheld

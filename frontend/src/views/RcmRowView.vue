@@ -141,23 +141,42 @@ onUnmounted(unsubscribe)
 
 // The paper is rendered on demand: it is one of five tabs, and rendering it on
 // arrival would spend a request on a tab most visits never open.
+// Previous and Next reuse this view for the neighbouring row, so the paper is
+// forgotten whenever the row changes — otherwise the next row showed, copied
+// and printed the previous row's paper under its own heading.
+let paperSeq = 0
+watch(() => props.rowId, () => {
+  paperSeq++
+  workingPaper.value = null
+  currentSection.value = ''
+  paperLoading.value = false
+})
 watch([tab, row], () => {
   if (tab.value === 'paper' && row.value && !workingPaper.value) void loadPaper()
 }, { immediate: true })
 
 async function loadPaper() {
+  const rowId = props.rowId
+  const seq = ++paperSeq
+  const current = () => seq === paperSeq && props.rowId === rowId
   paperLoading.value = true
   try {
-    workingPaper.value = await api.get(`/api/workspaces/${props.id}/rcm/${props.rowId}/working-paper`)
-  } catch (error) { fail('Could not render the working paper', error) }
-  finally { paperLoading.value = false }
+    const paper = await api.get<WorkingPaper>(`/api/workspaces/${props.id}/rcm/${rowId}/working-paper`)
+    if (current()) workingPaper.value = paper
+  } catch (error) { if (current()) fail('Could not render the working paper', error) }
+  finally { if (current()) paperLoading.value = false }
 }
 async function regeneratePaper() {
+  const rowId = props.rowId
+  const seq = ++paperSeq
+  const current = () => seq === paperSeq && props.rowId === rowId
   regenerating.value = true
   try {
-    workingPaper.value = await api.post(`/api/workspaces/${props.id}/rcm/${props.rowId}/working-paper`, {})
+    const paper = await api.post<WorkingPaper>(`/api/workspaces/${props.id}/rcm/${rowId}/working-paper`, {})
+    if (!current()) return
+    workingPaper.value = paper
     toast.add({ severity: 'success', summary: 'Working paper regenerated', life: 1800 })
-  } catch (error) { fail('Could not regenerate the working paper', error) }
+  } catch (error) { if (current()) fail('Could not regenerate the working paper', error) }
   finally { regenerating.value = false }
 }
 

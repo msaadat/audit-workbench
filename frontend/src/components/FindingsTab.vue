@@ -390,8 +390,9 @@ async function addManual() {
   } catch (error) { fail('Could not add the finding', error) }
 }
 
-async function save(changes?: Partial<AuditFinding>) {
-  if (!selected.value) return
+/** True once the finding is saved. A false leaves the screen as it was. */
+async function save(changes?: Partial<AuditFinding>): Promise<boolean> {
+  if (!selected.value) return false
   saving.value = true
   try {
     const item = selected.value
@@ -411,8 +412,11 @@ async function save(changes?: Partial<AuditFinding>) {
     } else {
       toast.add({ severity: 'success', summary: 'Finding saved', life: 1800 })
     }
-  } catch (error) { fail('Could not save the finding', error) }
-  finally { saving.value = false }
+    return true
+  } catch (error) {
+    fail('Could not save the finding', error)
+    return false
+  } finally { saving.value = false }
 }
 
 /**
@@ -422,7 +426,9 @@ async function save(changes?: Partial<AuditFinding>) {
  */
 async function setConfirmed(value: boolean) {
   if (!selected.value) return
-  selected.value.auditor_confirmed = value
+  // Sent as a change rather than written onto the finding first: a refused
+  // save left the verdict bar reading "Confirmed for reporting" over a
+  // finding the server still held as unconfirmed. Success reloads it.
   await save({ auditor_confirmed: value })
 }
 
@@ -583,30 +589,26 @@ const menuItems = computed(() => [
 /** The cause is recorded in the narrative, so recording it opens the editor. */
 function recordCause() { editingNarrative.value = true }
 
+// Each editor closes only once its edit is saved; a failed save keeps it open.
 async function doneEditingHeader() {
-  editingHeader.value = false
-  await save()
+  if (await save()) editingHeader.value = false
 }
 async function doneEditingNarrative() {
-  editingNarrative.value = false
-  await save()
+  if (await save()) editingNarrative.value = false
 }
 async function doneEditingResponse() {
-  editingResponse.value = false
-  await save()
+  if (await save()) editingResponse.value = false
 }
 
 function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
 async function addEvidence(value: EvidenceRef) {
   if (!selected.value || selected.value.evidence_refs.some(item => item.id === value.id)) return
-  selected.value.evidence_refs.push(value)
   evidencePicker.value?.hide()
-  await save()
+  await save({ evidence_refs: [...selected.value.evidence_refs, value] })
 }
 async function removeEvidence(id: string) {
   if (!selected.value) return
-  selected.value.evidence_refs = selected.value.evidence_refs.filter(item => item.id !== id)
-  await save()
+  await save({ evidence_refs: selected.value.evidence_refs.filter(item => item.id !== id) })
 }
 function openPlanning(rcmId: string) {
   void nav.replace('rcm', { rcm: rcmId })

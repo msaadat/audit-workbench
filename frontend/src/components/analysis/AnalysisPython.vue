@@ -203,7 +203,9 @@ async function preview() {
 
 /** Execute the saved procedure and record its conclusion. */
 async function run() {
-  if (dirty.value) await save()
+  // Running after a failed save records a result against the definition the
+  // server still holds while the screen shows another.
+  if (dirty.value && !(await save())) return
   running.value = true
   runError.value = null
   try {
@@ -229,11 +231,12 @@ async function run() {
   }
 }
 
-async function save() {
+/** True once the server holds what is on screen; a run must not follow a false. */
+async function save(): Promise<boolean> {
   const name = title.value.trim()
   if (!name) {
     toast.add({ severity: 'warn', summary: 'A title is required', life: 3000 })
-    return
+    return false
   }
   saving.value = true
   try {
@@ -248,8 +251,10 @@ async function save() {
     )
     emit('changed')
     toast.add({ severity: 'success', summary: 'Saved', detail: name, life: 2500 })
+    return true
   } catch (error) {
     fail('Save failed', error)
+    return false
   } finally {
     saving.value = false
   }

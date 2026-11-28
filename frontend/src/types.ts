@@ -897,6 +897,10 @@ export interface PopulationGrid {
   summary: PopulationSummary
   assurance_scope: CycleAssuranceScope
   rows: PopulationGridRow[]
+  /** Records in the population and those with no call yet, over every
+   *  record — before the outcome filter and the page. */
+  population_size: number
+  pending_dispositions: number
   page: { offset: number; limit: number; total: number }
   truncated: boolean
 }
@@ -1119,6 +1123,8 @@ export interface CycleVouchGridPayload {
   assurance_scope: CycleAssuranceScope
   assurance_label: string
   tested_item_counts: Partial<Record<CycleEvaluationState, number>>
+  /** Items with no current call, over the whole test — never the page. */
+  pending_dispositions: number
   assertion_counts: CycleAssertionCounts
   columns: Array<{
     key: string

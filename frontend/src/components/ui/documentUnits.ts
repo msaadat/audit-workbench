@@ -1,6 +1,7 @@
 import { markdownBlocks } from './markdownBlocks'
 import type { MarkdownBlock } from './markdownBlocks'
 import type { OutlineEntry } from './markdownOutline'
+import { safeHref } from './safeHref'
 
 /**
  * A long work product as the units a reader meets: its title, the prose before
@@ -42,12 +43,18 @@ const SEVERITY_LINE = /^\*\*Severity:\*\*\s*([A-Za-z]+)[^\n]*?(?:\*\*Reference:\
 const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/
 const TRAILER = /^\*\*(Supporting procedures|Management response):\*\*[ \t]*/gm
 
+function decodeOrNull(value: string): string | null {
+  try { return decodeURIComponent(value) } catch { return null }
+}
+
 function reference(text: string | undefined): FindingReference | null {
   const match = LINK.exec(text ?? '')
   if (!match) return null
   const fromHref = /[?&]finding=([^&#]+)/.exec(match[2])?.[1]
-  const id = fromHref ? decodeURIComponent(fromHref) : match[1].trim().split(/\s+/).pop() ?? ''
-  return id ? { id, href: match[2] } : null
+  const id = (fromHref ? decodeOrNull(fromHref) : null) ?? match[1].trim().split(/\s+/).pop() ?? ''
+  // The page binds this to a real anchor, which a middle-click follows past
+  // the click handler, so it is held to the same links the renderer allows.
+  return id ? { id, href: safeHref(match[2]) ?? '#' } : null
 }
 
 /**

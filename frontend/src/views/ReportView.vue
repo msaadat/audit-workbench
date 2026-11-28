@@ -133,8 +133,10 @@ const unsubscribe = agent.onWorkspaceInvalidated(() => {
 })
 onUnmounted(unsubscribe)
 
-async function save(showToast = true) {
-  if (!report.value) return
+/** True once the server holds the report on screen. Nothing that reads the
+ *  saved draft may follow a false. */
+async function save(showToast = true): Promise<boolean> {
+  if (!report.value) return false
   busy.value = true
   try {
     report.value = await api.patch<AuditReport>(`/api/workspaces/${props.workspace.id}/report`, {
@@ -142,13 +144,16 @@ async function save(showToast = true) {
     })
     emit('changed')
     if (showToast) toast.add({ severity: 'success', summary: 'Report saved', life: 1800 })
-  } catch (error) { fail('Could not save the report', error) }
-  finally { busy.value = false }
+    return true
+  } catch (error) {
+    fail('Could not save the report', error)
+    return false
+  } finally { busy.value = false }
 }
 
+/** Leave the editor only once the edit is saved: a failed save keeps it open. */
 async function doneEditing() {
-  editing.value = false
-  await save()
+  if (await save()) editing.value = false
 }
 
 /**
@@ -160,7 +165,7 @@ async function doneEditing() {
  */
 async function generate() {
   if (!report.value) return
-  if (report.value.markdown) await save(false)
+  if (report.value.markdown && !(await save(false))) return
   busy.value = true
   try {
     const regenerate = Boolean(report.value.generated_at)
@@ -196,7 +201,7 @@ async function settle(action: 'keep' | 'replace') {
 }
 
 async function check() {
-  if (hasContent.value) await save(false)
+  if (hasContent.value && !(await save(false))) return
   busy.value = true
   try {
     const quality = await api.post(`/api/workspaces/${props.workspace.id}/report/quality`, { editorial: false })
@@ -211,7 +216,7 @@ async function check() {
  * follow up on any point it raises.
  */
 async function editorialReview() {
-  if (hasContent.value) await save(false)
+  if (hasContent.value && !(await save(false))) return
   try {
     await assistantChat.createChat()
     await assistantChat.send(
@@ -237,12 +242,12 @@ async function addPreliminaryLabel() {
   report.value.markdown = first < 0
     ? `${body}\n\n${banner}\n`
     : `${body.slice(0, first)}\n\n${banner}${body.slice(first)}`
-  await save(false)
+  if (!(await save(false))) return
   await check()
 }
 
 async function copy() {
-  if (hasContent.value) await save(false)
+  if (hasContent.value && !(await save(false))) return
   if (!report.value) return
   await navigator.clipboard.writeText(report.value.markdown)
   toast.add({ severity: 'success', summary: 'Markdown copied', life: 1600 })

@@ -328,10 +328,18 @@ function selectTest(item: DataTest) {
   void nav.replace('data-tests', { test: item.id })
   if (item.last_run) void loadResult(item, item.last_run.id)
 }
+// A stored result belongs on screen only while its test is still the one
+// selected and no later load has started: switching tests quickly otherwise
+// showed one test's exceptions under the other's title.
+let resultSeq = 0
 async function loadResult(item: DataTest, runId: string) {
+  const seq = ++resultSeq
   try {
-    result.value = await api.get(`/api/workspaces/${props.workspace.id}/data-tests/${item.id}/runs/${runId}`)
-  } catch (error) { fail('Could not open the stored result', error) }
+    const loaded = await api.get<DataTestResult>(`/api/workspaces/${props.workspace.id}/data-tests/${item.id}/runs/${runId}`)
+    if (seq === resultSeq && selectedId.value === item.id) result.value = loaded
+  } catch (error) {
+    if (seq === resultSeq && selectedId.value === item.id) fail('Could not open the stored result', error)
+  }
 }
 
 /**
@@ -345,16 +353,21 @@ async function loadResult(item: DataTest, runId: string) {
 async function saveDefinition(thenRun: boolean) {
   saving.value = true
   const creating = definitionMode.value === 'new'
+  // The test the drawer was opened on, not whatever is selected now: a reload
+  // behind the drawer can move the selection, and the edit belongs to the
+  // definition the auditor was looking at.
+  const editingId = creating ? null : definitionSession.value
   try {
     const id = creating
       ? (await api.post<DataTest>(`/api/workspaces/${props.workspace.id}/data-tests`, definitionPayload())).id
-      : selectedId.value
+      : editingId
     if (!id) return
     if (!creating) {
       await api.patch(`/api/workspaces/${props.workspace.id}/data-tests/${id}`, definitionPayload())
     }
     if (thenRun) {
       running.value = true
+      resultSeq++
       result.value = await api.post<DataTestResult>(`/api/workspaces/${props.workspace.id}/data-tests/${id}/run`)
     }
     selectedId.value = id

@@ -263,7 +263,9 @@ async function preview() {
 /** Execute the saved procedure and record its conclusion. */
 async function run() {
   if (!props.analysis) return
-  if (dirty.value) await save()
+  // Running after a failed save records a result against the definition the
+  // server still holds while the screen shows another.
+  if (dirty.value && !(await save())) return
   running.value = true
   try {
     detail.value = await api.post<AnalysisDetail>(
@@ -290,12 +292,13 @@ function spec() {
   return { test: selected.value!.id, params: params.value }
 }
 
-async function save() {
-  if (!selected.value || !table.value) return
+/** True once the server holds what is on screen; a run must not follow a false. */
+async function save(): Promise<boolean> {
+  if (!selected.value || !table.value) return false
   const name = title.value.trim()
   if (!name) {
     toast.add({ severity: 'warn', summary: 'A title is required', life: 3000 })
-    return
+    return false
   }
   saving.value = true
   try {
@@ -324,8 +327,10 @@ async function save() {
       emit('saved', created)
       toast.add({ severity: 'success', summary: 'Saved to analyses', detail: name, life: 2500 })
     }
+    return true
   } catch (error) {
     fail('Save failed', error)
+    return false
   } finally {
     saving.value = false
   }
@@ -626,7 +631,7 @@ watch(table, () => {
           <InputText v-model="title" placeholder="What this procedure tests" size="small" />
         </label>
         <span class="grow" />
-        <Select v-model="table" :disabled="!!props.analysis?.alignment" :options="tableOptions" placeholder="Table" size="small" style="min-width: 12rem" />
+        <Select v-model="table" :disabled="!!props.analysis" :options="tableOptions" placeholder="Table" size="small" style="min-width: 12rem" />
       </div>
       <div v-if="selected && !pickerOpen" class="test-strip">
         <i :class="selected.icon" />
