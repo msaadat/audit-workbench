@@ -607,3 +607,75 @@ def test_a_redraft_unit_is_a_different_unit_from_a_whole_row_regeneration():
         workspace, {"target_refs": [f"datatest:{tests[1]['id']}"]}
     )
     assert one_test[0].input_sha1 != other_test[0].input_sha1
+
+
+# --------------------------------------------------------------------------- #
+# tests.specified: a row waiting for its cycle test, and one with no test
+# --------------------------------------------------------------------------- #
+def _specified_capability():
+    return next(
+        item for item in test_capabilities.capabilities()
+        if item.id == "tests.specified"
+    )
+
+
+def _approved_cycle_row():
+    workspace = _uncontracted_matrix(_workspace_with_a_voucher())
+    workspace.add_table("expense_register.csv", b"INVOICE_NO,amount\n1001,100\n")
+    record = cycle_rulesets.save(workspace, _ruleset_payload())
+    cycle_rulesets.approve(
+        workspace, record["ruleset_id"], approved_by="auditor@example.com"
+    )
+    workspace = workspaces.load_workspace(workspace.id)
+    return workspace, workspace.rcm[0]
+
+
+def test_a_row_with_no_test_is_missing_its_test_not_awaiting_a_cycle_test():
+    """procurementsol RCM-F89EB5: generation failed outright, and the page said
+    the row still held a fallback test that never existed."""
+
+    workspace, row = _approved_cycle_row()
+
+    readiness = _specified_capability().readiness(workspace, {})
+
+    assert readiness.state == "missing"
+    (reason,) = readiness.reasons
+    assert "before a cycle ruleset was approved" not in reason
+    assert "at least one executable test" in reason
+    assert [unit.parent_refs for unit in _specified_capability().expand_units(
+        workspace, {}
+    )] == [(f"rcm:{row['id']}",)]
+
+
+def test_a_row_holding_only_its_fallback_test_is_awaiting_a_cycle_test():
+    workspace, row = _approved_cycle_row()
+    data_tests.create(
+        workspace,
+        {
+            "title": "Amounts screen",
+            "objective": "Screen invoice amounts.",
+            "criteria": "No invoice exceeds its order.",
+            "steps": [{"label": "Screen", "instruction": "Screen"}],
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": {
+                "schema_version": 2,
+                "steps": [{
+                    "label": "Screen",
+                    "instruction": "Screen",
+                    "table_refs": ["expense_register"],
+                    "code": "result = expense_register.filter(pl.col('amount') > 50)",
+                }],
+            },
+        },
+    )
+    workspace = workspaces.load_workspace(workspace.id)
+
+    readiness = _specified_capability().readiness(workspace, {})
+
+    assert readiness.state == "missing"
+    (reason,) = readiness.reasons
+    assert reason == (
+        "1 RCM row declares transaction-cycle evidence and still holds the "
+        "test generated before a cycle ruleset was approved"
+    )

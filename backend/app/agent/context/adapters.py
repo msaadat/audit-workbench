@@ -1876,6 +1876,39 @@ def test_generate_table_metadata_candidates(
     return tuple(candidates)
 
 
+def test_generate_shared_candidates(
+    workspace: Workspace,
+    *,
+    document_ids: Iterable[str] | None = None,
+) -> dict[str, object]:
+    """Workspace-level candidates shared across every RCM row in one stage.
+
+    Computing these once per ``tests.specified`` stage avoids repeating
+    ``cycle_linking.candidate``, table metadata/grain inspection, document
+    listing, evidence-type counts, and methodology loading once per RCM row.
+    """
+    return {
+        "transaction_manifest": cycle_linking.candidate(workspace),
+        TEST_GENERATE_TABLE_METADATA_SOURCE_ID: (
+            test_generate_table_metadata_candidates(
+                workspace, document_ids=document_ids
+            )
+        ),
+        TEST_GENERATE_DOCUMENT_SOURCE_ID: document_test_document_candidates(
+            workspace,
+            document_ids=document_ids,
+            include_audit_notes=False,
+            exclude_evidence=True,
+        ),
+        TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID: (
+            test_generate_evidence_type_candidates(workspace)
+        ),
+        TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
+            workspace
+        ),
+    }
+
+
 def test_generate_scope(
     workspace: Workspace,
     rcm_id: str,
@@ -1883,6 +1916,7 @@ def test_generate_scope(
     planning_context: Mapping[str, object] | None = None,
     document_ids: Iterable[str] | None = None,
     instruction: str | None = None,
+    shared: Mapping[str, object] | None = None,
 ) -> ContextScope:
     """Build the local candidate scope for one merged test-generation unit.
 
@@ -1931,10 +1965,12 @@ def test_generate_scope(
             for key in ("created_by", "agent_run_id", "updated")
         },
     }
-    # The approved cycle rules, and what they reach across the population they
-    # are anchored on. One candidate, not a list of them: the anchor is part of
-    # what the auditor approved.
-    transaction_manifest = cycle_linking.candidate(workspace)
+    workspace_candidates = (
+        shared
+        if shared is not None
+        else test_generate_shared_candidates(workspace, document_ids=document_ids)
+    )
+    transaction_manifest = workspace_candidates["transaction_manifest"]
     return ContextScope(
         candidates={
             TEST_GENERATE_PLANNING_SOURCE_ID: (
@@ -1946,11 +1982,9 @@ def test_generate_scope(
                 ),
             ),
             TEST_GENERATE_ROW_SOURCE_ID: test_draft_row_candidates(workspace, rcm_id),
-            TEST_GENERATE_TABLE_METADATA_SOURCE_ID: (
-                test_generate_table_metadata_candidates(
-                    workspace, document_ids=document_ids
-                )
-            ),
+            TEST_GENERATE_TABLE_METADATA_SOURCE_ID: workspace_candidates[
+                TEST_GENERATE_TABLE_METADATA_SOURCE_ID
+            ],
             TEST_GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID: (
                 ContextCandidate(
                     source_ref=f"transaction-evidence:{rcm_id}",
@@ -1959,33 +1993,18 @@ def test_generate_scope(
                     metadata={"rcm_id": str(rcm_id)},
                 ),
             ),
-            # A test obtains evidence about a control; the audit-notes block is a
-            # numbered list of conclusions already drawn about the document, each
-            # ending in a follow-up. Supplied here, it is the most test-shaped
-            # content in the turn, and the turn writes it back as objectives that
-            # re-confirm a known deficiency instead of testing whether a control
-            # operated. The deficiency is already carried by the RCM row driving
-            # this unit, so nothing is lost by reasoning from the process
-            # description alone.
-            TEST_GENERATE_DOCUMENT_SOURCE_ID: document_test_document_candidates(
-                workspace,
-                document_ids=document_ids,
-                include_audit_notes=False,
-                # Planning material only. Transaction evidence is named by type
-                # in the two sources below, and resolved by the workspace at run
-                # time, so listing eighty-four vouchers here would spend the
-                # prompt on ids no step is allowed to write.
-                exclude_evidence=True,
-            ),
-            TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID: (
-                test_generate_evidence_type_candidates(workspace)
-            ),
+            TEST_GENERATE_DOCUMENT_SOURCE_ID: workspace_candidates[
+                TEST_GENERATE_DOCUMENT_SOURCE_ID
+            ],
+            TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID: workspace_candidates[
+                TEST_GENERATE_EVIDENCE_TYPE_SOURCE_ID
+            ],
             TEST_GENERATE_SCHEMA_SOURCE_ID: test_generate_schema_candidates(
                 workspace, row
             ),
-            TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
-                workspace
-            ),
+            TEST_GENERATE_METHODOLOGY_SOURCE_ID: workspace_candidates[
+                TEST_GENERATE_METHODOLOGY_SOURCE_ID
+            ],
             INSTRUCTION_SOURCE_ID: instruction_candidates(instruction),
         },
         selector_context={**context, "test_generate_query": test_generate_query},
@@ -4591,6 +4610,7 @@ __all__ = [
     "TEST_GENERATE_METHODOLOGY_SOURCE_ID",
     "TEST_GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID",
     "test_generate_scope",
+    "test_generate_shared_candidates",
     "RCM_CURRENT_APM_SOURCE_ID",
     "RCM_CURRENT_ROWS_SOURCE_ID",
     "RCM_DOCUMENT_SOURCE_ID",

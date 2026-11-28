@@ -1140,13 +1140,20 @@ def materialize_cycle_population(
     frame = workspace.get_frame(population["table"])
     source_sha1 = frame_signature(frame)
     column = population["column"]
-    # The whole ledger is walked in order, so it is streamed rather than fetched
-    # a row at a time by index; a sample is the rows it names.
-    selected_rows = (
-        enumerate(frame.iter_rows(named=True))
-        if selection.get("mode") == "evidence_linked"
-        else ((index, frame.row(index, named=True)) for index in sample_row_indices(frame, selection))
-    )
+    # In evidence_linked mode scan only the anchor column first and materialize
+    # full row dicts only for rows that actually link to the evidence corpus.
+    evidence_linked = selection.get("mode") == "evidence_linked"
+    if evidence_linked:
+        selected_anchors = (
+            enumerate(frame.get_column(column).to_list())
+            if column in frame.columns
+            else ()
+        )
+    else:
+        selected_rows = (
+            (index, frame.row(index, named=True))
+            for index in sample_row_indices(frame, selection)
+        )
     prepared = prepare(workspace, ruleset)
     scope = assertion_scope(workspace, validated, ruleset)
     inputs_sha1 = _inputs_sha1(
@@ -1156,13 +1163,22 @@ def materialize_cycle_population(
     existing_by_id = {str(item.get("id") or ""): item for item in test.get("items") or []}
 
     materialized: list[dict] = []
-    for source_row, row in selected_rows:
-        anchor_value = row.get(column)
-        if anchor_value is None or not str(anchor_value).strip():
-            continue
-        linkage = link(prepared, anchor_values=[anchor_value])
-        if selection.get("mode") == "evidence_linked" and not linkage.get("records"):
-            continue
+    iterator = selected_anchors if evidence_linked else selected_rows
+    for entry in iterator:
+        if evidence_linked:
+            source_row, anchor_value = entry
+            if anchor_value is None or not str(anchor_value).strip():
+                continue
+            linkage = link(prepared, anchor_values=[anchor_value])
+            if not linkage.get("records"):
+                continue
+            row = frame.row(source_row, named=True)
+        else:
+            source_row, row = entry
+            anchor_value = row.get(column)
+            if anchor_value is None or not str(anchor_value).strip():
+                continue
+            linkage = link(prepared, anchor_values=[anchor_value])
         item_id = stable_cycle_item_id(validated, anchor_value)
         bindings = list(linkage.get("role_bindings") or [])
         bound_roles = {str(binding.get("role") or "") for binding in bindings}
@@ -1518,8 +1534,8 @@ def coverage_for(workspace, ruleset: Mapping[str, object], table: str, column: s
     linked_rows = 0
     complete = 0
     missing_counts: dict[str, int] = {}
-    for index in range(frame.height):
-        value = frame.row(index, named=True).get(column)
+    values = frame.get_column(column).to_list() if column in frame.columns else ()
+    for value in values:
         if value is None or not str(value).strip():
             continue
         linkage = link(prepared, anchor_values=[value])

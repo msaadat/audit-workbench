@@ -1756,6 +1756,33 @@ def _validate_generate_document_step(
     return normalized, mode
 
 
+def _empty_tests_error(proposal: Mapping[str, Any]) -> str:
+    """Why an empty ``tests`` array is refused, in terms a repair can act on.
+
+    The usual way to arrive here is a row whose only ``transaction_cycle``
+    requirement went to ``unsupported``: listing it there re-routes it, it
+    does not answer it. Saying only "non-empty" left three attempts on
+    procurement repeating the same response.
+    """
+
+    refs = [
+        str(item.get("requirement_ref") or "").strip()
+        for item in proposal.get("unsupported") or []
+        if isinstance(item, Mapping) and str(item.get("requirement_ref") or "").strip()
+    ]
+    if not refs:
+        return "tests must be a non-empty array"
+    return (
+        "tests must be a non-empty array. Listing "
+        f"{', '.join(repr(ref) for ref in refs)} under `unsupported` re-routes "
+        "it to the population or the documents; it does not answer it. Keep "
+        "the `unsupported` entry and answer the requirement in `tests` with a "
+        "data test over the tables or a document qa test over the documents, "
+        "testing what the requirement asks as far as the evidence supplied "
+        "allows."
+    )
+
+
 def validate_generate_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
@@ -1768,7 +1795,7 @@ def validate_generate_proposal(
     """
     values = proposal.get("tests")
     if not isinstance(values, (list, tuple)) or not values:
-        raise WorkerResponseValidationError("tests must be a non-empty array")
+        raise WorkerResponseValidationError(_empty_tests_error(proposal))
     rcm_id = _generate_rcm_id(request)
     regenerate = _generation_regenerate_ids(request)
     methodology_refs = _generate_methodology_refs(request)

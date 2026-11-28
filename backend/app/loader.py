@@ -22,6 +22,8 @@ import hashlib
 import math
 import os
 import re
+import threading
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,8 +39,11 @@ CACHE_DIRNAME = ".cache"
 # person's frames were the only ones resident; with several auditors holding
 # 100MB+ populations at once it is the dominant memory risk on a shared server.
 _cache: "OrderedDict[tuple, pl.DataFrame]" = OrderedDict()
+_cache_lock = threading.Lock()
+_inflight_locks: dict[tuple, threading.Lock] = {}
 
 DEFAULT_CACHE_BUDGET_MB = 2048
+_MAX_DIGEST_ENTRIES = 1024
 
 
 def cache_budget_bytes() -> int:
@@ -58,19 +63,27 @@ def _frame_bytes(frame: pl.DataFrame) -> int:
 
 
 def cache_bytes() -> int:
-    return sum(_frame_bytes(frame) for frame in _cache.values())
+    with _cache_lock:
+        return sum(_frame_bytes(frame) for frame in _cache.values())
+
+
+def _evict_to_budget_locked(budget: int | None = None) -> None:
+    """Drop least-recently-used frames until the cache fits its budget.
+
+    Caller must hold ``_cache_lock``. The frame just read is always kept, even
+    when it alone exceeds the budget: refusing to cache it would not free the
+    memory the caller is already holding, and would re-parse it on every request.
+    """
+    ceiling = cache_budget_bytes() if budget is None else budget
+    total = sum(_frame_bytes(frame) for frame in _cache.values())
+    while len(_cache) > 1 and total > ceiling:
+        _, evicted = _cache.popitem(last=False)
+        total -= _frame_bytes(evicted)
 
 
 def _evict_to_budget(budget: int | None = None) -> None:
-    """Drop least-recently-used frames until the cache fits its budget.
-
-    The frame just read is always kept, even when it alone exceeds the budget:
-    refusing to cache it would not free the memory the caller is already holding,
-    and would re-parse it on every request.
-    """
-    ceiling = cache_budget_bytes() if budget is None else budget
-    while len(_cache) > 1 and cache_bytes() > ceiling:
-        _cache.popitem(last=False)
+    with _cache_lock:
+        _evict_to_budget_locked(budget)
 
 
 @dataclass(frozen=True)
@@ -94,7 +107,8 @@ def _signature(path: Path) -> tuple:
 
 # Content digests by local signature, so a file is hashed once per version per
 # process rather than on every workspace load.
-_digests: dict[tuple, str] = {}
+_digests: "OrderedDict[tuple, str]" = OrderedDict()
+_digests_lock = threading.Lock()
 
 
 def file_signature(path: Path) -> tuple:
@@ -109,11 +123,18 @@ def file_signature(path: Path) -> tuple:
     """
     path = Path(path)
     local = _signature(path)
-    digest = _digests.get(local)
-    if digest is None:
-        with path.open("rb") as handle:
-            digest = hashlib.file_digest(handle, "sha1").hexdigest()
+    with _digests_lock:
+        digest = _digests.get(local)
+        if digest is not None:
+            _digests.move_to_end(local)
+            return ("sha1", local[1], digest)
+    with path.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha1").hexdigest()
+    with _digests_lock:
         _digests[local] = digest
+        _digests.move_to_end(local)
+        while len(_digests) > _MAX_DIGEST_ENTRIES:
+            _digests.popitem(last=False)
     return ("sha1", local[1], digest)
 
 
@@ -131,18 +152,31 @@ def _clear_parquet_cache(path: Path, keep: Path | None = None) -> None:
             stale.unlink(missing_ok=True)
 
 
-def _clear_memory_cache(path: Path) -> None:
+def _clear_memory_cache_locked(path: Path) -> None:
     key = str(path.resolve())
     for cached in [k for k in _cache if k[0] == key]:
         _cache.pop(cached, None)
 
 
+def _clear_memory_cache(path: Path) -> None:
+    with _cache_lock:
+        _clear_memory_cache_locked(path)
+
+
 def clear_cache(path: Path | None = None) -> None:
     """Drop cached frames (memory and on-disk parquet) — all, or just ``path``."""
     if path is None:
-        _cache.clear()
+        with _cache_lock:
+            _cache.clear()
+            _inflight_locks.clear()
+        with _digests_lock:
+            _digests.clear()
         return
+    resolved = str(path.resolve())
     _clear_memory_cache(path)
+    with _digests_lock:
+        for key in [k for k in _digests if k[0] == resolved]:
+            _digests.pop(key, None)
     _clear_parquet_cache(path)
 
 
@@ -259,8 +293,17 @@ def _detect_excel_header_row(path: Path, sheet_name: str | None = None) -> int:
     return _detect_header_row_from_sample(sample)
 
 
-def _read_excel_sheet(path: Path, sheet_name: str | None = None) -> _ExcelSheetFrame:
-    header_row = _detect_excel_header_row(path, sheet_name)
+def _read_excel_sheet(
+    path: Path,
+    sheet_name: str | None = None,
+    *,
+    sample: pl.DataFrame | None = None,
+) -> _ExcelSheetFrame:
+    header_row = (
+        _detect_header_row_from_sample(sample)
+        if sample is not None
+        else _detect_excel_header_row(path, sheet_name)
+    )
     options = {
         "read_options": {"header_row": header_row},
         "raise_if_empty": False,
@@ -284,8 +327,11 @@ def _read_all_excel_sheets(path: Path) -> list[_ExcelSheetFrame]:
         raise_if_empty=False,
     )
     if not isinstance(samples, dict):
-        return [_read_excel_sheet(path)]
-    return [_read_excel_sheet(path, sheet_name) for sheet_name in samples]
+        return [_read_excel_sheet(path, sample=samples)]
+    return [
+        _read_excel_sheet(path, sheet_name, sample=sample)
+        for sheet_name, sample in samples.items()
+    ]
 
 
 def _consolidate_excel_sheets(sheets: list[_ExcelSheetFrame]) -> pl.DataFrame:
@@ -317,6 +363,17 @@ def _read_excel(path: Path) -> pl.DataFrame:
     return _consolidate_excel_sheets(sheets)
 
 
+def _write_parquet_atomic(df: pl.DataFrame, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:6]}.tmp")
+    try:
+        df.write_parquet(tmp)
+        os.replace(tmp, target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def read_table(path: Path) -> pl.DataFrame:
     """Read a CSV/TSV/Excel file into a typed DataFrame, cached by signature."""
     path = Path(path)
@@ -324,36 +381,49 @@ def read_table(path: Path) -> pl.DataFrame:
         raise ValueError(f"Unsupported file type: {path.suffix}")
 
     sig = _signature(path)
-    if sig in _cache:
-        # Touch: most-recently-used entries move to the end, so eviction takes
-        # the frame nobody has asked for in the longest time.
-        _cache.move_to_end(sig)
-        return _cache[sig]
+    with _cache_lock:
+        if sig in _cache:
+            # Touch: most-recently-used entries move to the end, so eviction takes
+            # the frame nobody has asked for in the longest time.
+            _cache.move_to_end(sig)
+            return _cache[sig]
+        gate = _inflight_locks.setdefault(sig, threading.Lock())
 
-    suffix = path.suffix.lower()
-    if suffix in (".csv", ".tsv"):
-        df = pl.read_csv(
-            path,
-            separator="\t" if suffix == ".tsv" else ",",
-            try_parse_dates=True,
-            infer_schema_length=10_000,
-            ignore_errors=True,
-        )
-    else:
-        parquet_cache = _parquet_cache_path(path, sig)
-        if parquet_cache.exists():
-            df = pl.read_parquet(parquet_cache)
-        else:
-            df = _read_excel(path)
-            try:
-                parquet_cache.parent.mkdir(parents=True, exist_ok=True)
-                df.write_parquet(parquet_cache)
-                _clear_parquet_cache(path, keep=parquet_cache)
-            except OSError:
-                pass  # best-effort: an unwritable cache dir shouldn't break reads
+    with gate:
+        try:
+            with _cache_lock:
+                if sig in _cache:
+                    _cache.move_to_end(sig)
+                    return _cache[sig]
 
-    # Drop stale in-memory entries for the same file before caching the new read.
-    _clear_memory_cache(path)
-    _cache[sig] = df
-    _evict_to_budget()
-    return df
+            suffix = path.suffix.lower()
+            if suffix in (".csv", ".tsv"):
+                df = pl.read_csv(
+                    path,
+                    separator="\t" if suffix == ".tsv" else ",",
+                    try_parse_dates=True,
+                    infer_schema_length=10_000,
+                    ignore_errors=True,
+                )
+            else:
+                parquet_cache = _parquet_cache_path(path, sig)
+                if parquet_cache.exists():
+                    df = pl.read_parquet(parquet_cache)
+                else:
+                    df = _read_excel(path)
+                    try:
+                        _write_parquet_atomic(df, parquet_cache)
+                        _clear_parquet_cache(path, keep=parquet_cache)
+                    except OSError:
+                        pass  # best-effort: an unwritable cache dir shouldn't break reads
+
+            # Drop stale in-memory entries for the same file before caching the new read.
+            with _cache_lock:
+                _clear_memory_cache_locked(path)
+                _cache[sig] = df
+                _evict_to_budget_locked()
+            return df
+        finally:
+            with _cache_lock:
+                if _inflight_locks.get(sig) is gate:
+                    _inflight_locks.pop(sig, None)

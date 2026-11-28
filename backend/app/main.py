@@ -51,6 +51,23 @@ from .workspaces import (
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _WORKSPACE_PATH = re.compile(r"^/api/workspaces/([^/]+)(?:/|$)")
+# Workspace POST endpoints that compute/export/search without mutating any
+# engagement artifact or readiness state. Skipping ``stage_status.mark_dirty``
+# on these avoids scheduling a background readiness sweep and dropping
+# ``projection_cache`` entries on every query-builder click or search.
+_READONLY_WORKSPACE_POST = re.compile(
+    r"^/api/workspaces/[^/]+/(?:"
+    r"tables/[^/]+/(?:query(?:/export)?|analytics/[^/]+(?:/export)?|validate(?:/(?:detail|export|report))?)"
+    r"|analyses/[^/]+/(?:preview|export)"
+    r"|documents/search"
+    r"|doc-tests/cycle-vouch/candidates"
+    r"|doc-tests/prepare-evidence-aware"
+    r"|matching/compare"
+    r"|report/quality"
+    r"|assistant"
+    r"|run-python"
+    r")/?$"
+)
 
 # A dev server that calls the API directly is a different origin, so it is both
 # a CORS origin and an accepted Origin for state-changing requests.  The Vite
@@ -157,6 +174,10 @@ def create_app() -> FastAPI:
             # the existing not-found response.
             return await call_next(request)
         token = None
+        is_mutating = request.method in UNSAFE_METHODS and not (
+            request.method == "POST"
+            and _READONLY_WORKSPACE_POST.match(request.url.path) is not None
+        )
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and expected is not None:
             token = set_request_revision(expected)
         try:
@@ -164,7 +185,7 @@ def create_app() -> FastAPI:
         finally:
             if token is not None:
                 reset_request_revision(token)
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            if is_mutating:
                 # Whatever the route wrote, and however it wrote it, the stored
                 # stage status no longer answers for it.
                 try:
@@ -174,12 +195,13 @@ def create_app() -> FastAPI:
                     stage_status.mark_dirty(workspace_root_of(workspace_id))
                 except WorkspaceError:
                     pass
-        try:
-            from .workspaces import read_revision
+        if is_mutating:
+            try:
+                from .workspaces import read_revision
 
-            current = read_revision(workspace_id)
-        except WorkspaceError:
-            pass
+                current = read_revision(workspace_id)
+            except WorkspaceError:
+                pass
         if current is not None:
             response.headers["ETag"] = f'"rev-{current}"'
             response.headers["X-Workspace-Revision"] = str(current)

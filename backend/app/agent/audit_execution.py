@@ -16,6 +16,7 @@ handler.
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from collections.abc import Mapping
 
@@ -85,6 +86,7 @@ from .context import (
     rcm_revision_scope,
     rcm_scope,
     test_generate_scope,
+    test_generate_shared_candidates,
 )
 from .executors import EXECUTORS
 from .executors.fieldwork import (
@@ -466,6 +468,21 @@ class AuditWorkflowExecution(ActionExecution):
         super().__init__(workspace, run, handle, runtime=runtime)
         self.context_resolver = context_resolver or ContextResolver()
         self.scheduler: WorkflowRunner | None = None
+        self._test_generate_shared_lock = threading.Lock()
+        self._test_generate_shared_cache: tuple[tuple[str, ...] | None, dict[str, object]] | None = None
+
+    def _clear_stage_caches(self) -> None:
+        with self._test_generate_shared_lock:
+            self._test_generate_shared_cache = None
+
+    def _test_generate_shared(self, document_ids: list[str] | None) -> dict[str, object]:
+        key = tuple(document_ids) if document_ids is not None else None
+        with self._test_generate_shared_lock:
+            if self._test_generate_shared_cache is not None and self._test_generate_shared_cache[0] == key:
+                return self._test_generate_shared_cache[1]
+            shared = test_generate_shared_candidates(self.ws, document_ids=document_ids)
+            self._test_generate_shared_cache = (key, shared)
+            return shared
 
     # ------------------------------------------------------------ ledger
     def _refresh_dynamic_limits(self) -> None:
@@ -2302,6 +2319,7 @@ class AuditWorkflowExecution(ActionExecution):
         )
 
         def context_provider():
+            curated_docs = self._curated_document_ids()
             return resolve_context(
                 self,
                 self.context_resolver,
@@ -2310,8 +2328,9 @@ class AuditWorkflowExecution(ActionExecution):
                 test_generate_scope(
                     self.ws,
                     rcm_id,
-                    document_ids=self._curated_document_ids(),
+                    document_ids=curated_docs,
                     instruction=workflow_scope(self.run).get("instruction"),
+                    shared=self._test_generate_shared(curated_docs),
                 ),
             )
 
@@ -3675,6 +3694,7 @@ def build_audit_workflow_runner(
         stage: dict,
     ) -> None:
         adapter.ws = subject
+        adapter._clear_stage_caches()
         document_adapter.ws = subject
         analysis_adapter.ws = subject
         checkpoint = stage_checkpoints.get(capability.id)

@@ -189,7 +189,10 @@ def _awaits_cycle_test(workspace: Workspace, row: dict, tests: list[dict]) -> bo
         and attribute.get("evidence_kind") == "transaction_cycle"
         for attribute in row.get("control_attributes") or []
     )
-    if not declares:
+    if not declares or not tests:
+        # A row with no test at all is not holding a fallback; it is missing
+        # its tests, and saying otherwise sent the reader looking for a test
+        # that never existed (a generation that failed outright landed here).
         return False
     return not any(str(item.get("test_kind") or "") == "cycle_vouch" for item in tests)
 
@@ -223,8 +226,9 @@ def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
             (
                 f"{counted(awaiting_cycle, 'RCM row')} "
                 f"{verb(awaiting_cycle, 'declares', 'declare')} transaction-cycle "
-                "evidence and still hold the test generated before a cycle "
-                "ruleset was approved",
+                "evidence and still "
+                f"{verb(awaiting_cycle, 'holds', 'hold')} the test generated "
+                "before a cycle ruleset was approved",
             ),
             details={"ready": ready, "total": total, "awaiting_cycle": awaiting_cycle},
         )

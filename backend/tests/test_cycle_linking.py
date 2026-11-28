@@ -406,3 +406,31 @@ def test_a_traversal_is_memoized_by_normalized_anchor_and_limits(ws, monkeypatch
     assert other["records"] == []
     assert first is not narrow
     assert narrow["state"] == "needs_review"
+
+
+def test_test_generate_shared_candidates_reuse_cycle_candidate_across_rows(ws, monkeypatch):
+    from app.agent.context import test_generate_scope, test_generate_shared_candidates
+
+    _memo_corpus(ws)
+    approved(ws)
+    row_a = ws.add_rcm({"process": "P2P", "risk": "R1", "control": "C1"})
+    row_b = ws.add_rcm({"process": "P2P", "risk": "R2", "control": "C2"})
+
+    calls = 0
+    real_candidate = cycle_linking.candidate
+
+    def counted_candidate(workspace):
+        nonlocal calls
+        calls += 1
+        return real_candidate(workspace)
+
+    monkeypatch.setattr(cycle_linking, "candidate", counted_candidate)
+    shared = test_generate_shared_candidates(ws)
+    scope_a = test_generate_scope(ws, row_a["id"], shared=shared)
+    scope_b = test_generate_scope(ws, row_b["id"], shared=shared)
+
+    assert calls == 1
+    assert (
+        scope_a.candidates["transaction_evidence"][0].source
+        == scope_b.candidates["transaction_evidence"][0].source
+    )

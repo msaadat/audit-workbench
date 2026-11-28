@@ -2387,6 +2387,31 @@ def test_a_requirement_the_rules_cannot_answer_is_declared_unsupported():
     assert item["requirement_ref"] == "RCM-1:invoice_match"
 
 
+def test_an_empty_response_naming_unsupported_is_told_to_answer_it():
+    """procurementsol RCM-F89EB5: the row's one requirement went to
+    `unsupported` with no test beside it, three times, because the repair
+    was told only that the array must be non-empty."""
+
+    stubborn = json.dumps({
+        "tests": [],
+        "unsupported": [{
+            "requirement_ref": "RCM-1:invoice_match",
+            "reason": "No approved rule compares the invoice with its order.",
+        }],
+    })
+    gateway = _Gateway([stubborn, json.dumps({
+        "tests": [_ORDINARY],
+        "unsupported": json.loads(stubborn)["unsupported"],
+    })])
+
+    result = WORKERS.execute(_request(_unbound_bundle()), gateway)
+
+    guidance = json.dumps(gateway.calls[-1]["conversation"])
+    assert "does not answer it" in guidance
+    assert "'RCM-1:invoice_match'" in guidance
+    assert result.proposal["unsupported"][0]["requirement_ref"] == "RCM-1:invoice_match"
+
+
 def test_unsupported_is_refused_where_no_rules_are_approved():
     """Re-routing then would close the linked-evidence path before the auditor
     approved the cycle that opens it."""

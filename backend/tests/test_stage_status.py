@@ -271,3 +271,35 @@ def test_a_deleted_workspace_is_not_recreated_by_a_late_refresh():
     stage_status.schedule_refresh(root)
     assert stage_status.wait_idle()
     assert not (root / stage_status.DIRNAME).exists()
+
+
+def test_read_only_posts_do_not_mark_stage_status_dirty(monkeypatch):
+    ws = _engagement("Read-only POSTs")
+    client = TestClient(create_app())
+    client.get(f"/api/workspaces/{ws.id}/engagement/record")
+    assert stage_status.wait_idle()
+    status_file = ws.root / stage_status.DIRNAME / stage_status.FILENAME
+    generation_before = json.loads(status_file.read_text(encoding="utf-8"))["generation"]
+
+    scheduled = []
+    monkeypatch.setattr(stage_status, "schedule_refresh", lambda root: scheduled.append(root))
+
+    query_resp = client.post(
+        f"/api/workspaces/{ws.id}/tables/invoices/query",
+        json={"page_size": 5},
+    )
+    validate_resp = client.post(
+        f"/api/workspaces/{ws.id}/tables/invoices/validate",
+        json={"rules": []},
+    )
+    search_resp = client.post(
+        f"/api/workspaces/{ws.id}/documents/search",
+        json={"query": "invoice"},
+    )
+
+    assert query_resp.status_code == 200
+    assert validate_resp.status_code == 200
+    assert search_resp.status_code == 200
+    assert scheduled == []
+    assert stage_status.lookup(ws.root).current
+    assert json.loads(status_file.read_text(encoding="utf-8"))["generation"] == generation_before

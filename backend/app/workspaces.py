@@ -1140,6 +1140,7 @@ class Workspace:
         else:
             expected = self.revision
         current = 0
+        on_disk = None
         if self.definition_path.exists():
             try:
                 on_disk = json.loads(self.definition_path.read_text(encoding="utf-8"))
@@ -1149,6 +1150,7 @@ class Workspace:
                 if on_disk.get(stage_status.FLAG):
                     self.status_store = True
             except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
+                on_disk = None
                 current = 0
         if current != expected:
             raise WorkspaceConflict(expected, current)
@@ -1166,12 +1168,7 @@ class Workspace:
             "tables": self.tables,
             "joins": self.joins,
         }
-        before = None
-        if self.definition_path.exists():
-            try:
-                before = json.loads(self.definition_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                before = None
+        before = on_disk if isinstance(on_disk, dict) else None
         before_artifacts = self._artifact_snapshot
         after_artifacts = self._artifact_state()
         writes = self._changed_artifact_writes(before_artifacts, after_artifacts)

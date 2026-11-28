@@ -136,3 +136,59 @@ def test_file_signature_is_the_content_not_where_or_when_it_was_written(tmp_path
 
     moved.write_text("id,amount\n1,10\n2,21\n", encoding="utf-8")
     assert loader.file_signature(moved) != loader.file_signature(original)
+
+
+def test_excel_multi_sheet_reads_samples_once(tmp_path, monkeypatch):
+    import polars as pl
+
+    path = tmp_path / "two_sheets.xlsx"
+    _write_workbook(
+        path,
+        [
+            ("part1", ["id", "amount"], [(1, 10), (2, 20)]),
+            ("part2", ["id", "amount"], [(3, 30), (4, 40)]),
+        ],
+    )
+    calls = []
+    real_read_excel = pl.read_excel
+
+    def counting_read_excel(*args, **kwargs):
+        calls.append(kwargs)
+        return real_read_excel(*args, **kwargs)
+
+    monkeypatch.setattr(pl, "read_excel", counting_read_excel)
+    frame = loader.read_table(path)
+
+    assert frame.shape == (4, 2)
+    # 1 multi-sheet sample pass + 1 full read per sheet (1 + N, not 1 + 2N).
+    assert len(calls) == 3
+    cache_dir = path.parent / loader.CACHE_DIRNAME
+    assert list(cache_dir.glob("*.parquet"))
+    assert not list(cache_dir.glob("*.tmp"))
+
+
+def test_concurrent_read_table_shares_one_parse_safely(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+    import polars as pl
+
+    path = tmp_path / "concurrent.csv"
+    path.write_text("id,amount\n1,10\n2,20\n3,30\n", encoding="utf-8")
+    parse_calls = 0
+    lock = threading.Lock()
+    real_read_csv = pl.read_csv
+
+    def slow_read_csv(*args, **kwargs):
+        nonlocal parse_calls
+        with lock:
+            parse_calls += 1
+        time.sleep(0.03)
+        return real_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(pl, "read_csv", slow_read_csv)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda _: loader.read_table(path), range(6)))
+
+    assert parse_calls == 1
+    assert all(frame.shape == (3, 2) for frame in results)
